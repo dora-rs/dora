@@ -76,7 +76,7 @@ pub fn lib_main() -> Result<()> {
             let id = node.dataflow_id();
             let path = Path::new("out")
                 .join(id.to_string())
-                .join(format!("archive-{}.rerun", id));
+                .join(format!("archive-{id}.rerun"));
 
             rerun::RecordingStreamBuilder::new("dora-rerun")
                 .save(path)
@@ -368,7 +368,7 @@ pub fn lib_main() -> Result<()> {
                     "jointstate"
                 };
                 if encoding != "jointstate" {
-                    warn!("Got unexpected encoding: {} on position pose", encoding);
+                    warn!("Got unexpected encoding: {encoding} on position pose");
                     continue;
                 }
                 // Convert to Vec<f32>
@@ -386,6 +386,7 @@ pub fn lib_main() -> Result<()> {
                     if dof < positions.len() {
                         positions.truncate(dof);
                     } else {
+                        #[allow(clippy::same_item_push)]
                         for _ in 0..(dof - positions.len()) {
                             positions.push(0.);
                         }
@@ -393,7 +394,7 @@ pub fn lib_main() -> Result<()> {
 
                     update_visualization(&rec, chain, &id, &positions)?;
                 } else {
-                    println!("Could not find chain for {}. You may not have set its", id);
+                    println!("Could not find chain for {id}. You may not have set its");
                 }
             } else if id.as_str().contains("series") {
                 update_series(&rec, id, data).context("could not plot series")?;
@@ -452,7 +453,7 @@ pub fn lib_main() -> Result<()> {
                         .context("could not log points")?;
                 }
             } else {
-                println!("Could not find handler for {}", id);
+                println!("Could not find handler for {id}");
             }
         }
     }

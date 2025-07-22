@@ -8,6 +8,7 @@ use futures_concurrency::stream::Merge;
 
 /// A Dora event or an event from an external source.
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum MergedEvent<E> {
     /// A Dora event
     Dora(super::Event),

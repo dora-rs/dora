@@ -15,7 +15,7 @@ fn main() -> eyre::Result<()> {
                 "message" => {
                     let received_string: &str =
                         TryFrom::try_from(&data).context("expected string message")?;
-                    println!("sink received message: {}", received_string);
+                    println!("sink received message: {received_string}");
                     if !received_string.starts_with("operator received random value ") {
                         bail!("unexpected message format (should start with 'operator received random value')")
                     }

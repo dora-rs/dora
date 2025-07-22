@@ -72,12 +72,12 @@ pub fn lib_main() -> Result<()> {
                         .map(|s| s.as_str())
                         .unwrap_or("av1");
                     if encoding != "av1" {
-                        warn!("Unsupported encoding {}", encoding);
+                        warn!("Unsupported encoding {encoding}");
                         continue;
                     }
                     match dec.send_data(data, None, None, None) {
                         Err(e) => {
-                            warn!("Error sending data to the decoder: {}", e);
+                            warn!("Error sending data to the decoder: {e}");
                         }
                         Ok(()) => {
                             if let Ok(p) = dec.get_picture() {
@@ -136,8 +136,7 @@ pub fn lib_main() -> Result<()> {
                                             }
                                             _ => {
                                                 warn!(
-                                                    "Unsupported output encoding {}",
-                                                    output_encoding
+                                                    "Unsupported output encoding {output_encoding}"
                                                 );
                                                 continue;
                                             }

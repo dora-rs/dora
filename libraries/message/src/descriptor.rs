@@ -108,6 +108,7 @@ pub struct ResolvedNode {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[allow(clippy::large_enum_variant)]
 pub enum CoreNodeKind {
     /// Dora runtime node
     #[serde(rename = "operators")]

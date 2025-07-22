@@ -152,7 +152,7 @@ pub async fn spawn_listener_loop(
             if !tmpfile_dir.exists() {
                 std::fs::create_dir_all(&tmpfile_dir).context("could not create tmp dir")?;
             }
-            let socket_file = tmpfile_dir.join(format!("{}.sock", node_id));
+            let socket_file = tmpfile_dir.join(format!("{node_id}.sock"));
             let socket = match UnixListener::bind(&socket_file) {
                 Ok(socket) => socket,
                 Err(err) => {

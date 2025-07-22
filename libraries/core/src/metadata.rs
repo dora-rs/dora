@@ -8,6 +8,11 @@ use eyre::Context;
 pub trait ArrowTypeInfoExt {
     fn empty() -> Self;
     fn byte_array(data_len: usize) -> Self;
+
+    /// # Safety
+    ///
+    /// This function assumes that the `ArrayData` is backed by a memory region that starts at `region_start`
+    /// and has a length of `region_len`. It will panic if the `ArrayData` does not conform to this assumption.
     unsafe fn from_array(
         array: &ArrayData,
         region_start: *const u8,

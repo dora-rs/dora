@@ -79,7 +79,7 @@ async fn main() -> eyre::Result<()> {
                                 if let Err(e) =
                                     write_event(&mut writer, data, &metadata, schema.clone()).await
                                 {
-                                    println!("Error writing event data into parquet file: {:?}", e)
+                                    println!("Error writing event data into parquet file: {e:?}")
                                 };
                             }
                             writer.close().await
@@ -101,7 +101,7 @@ async fn main() -> eyre::Result<()> {
                 Some(tx) => drop(tx),
             },
             Event::Error(err) => {
-                println!("Error: {}", err);
+                println!("Error: {err}");
             }
             event => {
                 println!("Event: {event:#?}")
