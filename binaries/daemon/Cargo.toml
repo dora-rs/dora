@@ -49,3 +49,4 @@ url = "2.5.4"
 git2 = { workspace = true }
 dunce = "1.0.5"
 itertools = "0.14"
+memchr = "2.7.5"
