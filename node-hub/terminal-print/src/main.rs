@@ -19,10 +19,10 @@ fn main() -> eyre::Result<()> {
                             dora_node_api::arrow::datatypes::DataType::Utf8 => {
                                 let received_string: &str =
                                     TryFrom::try_from(&data).context("expected string message")?;
-                                println!("Received id: {}, data: {}", id, received_string);
+                                println!("Received id: {id}, data: {received_string}");
                             }
                             _other => {
-                                println!("Received id: {}, data: {:#?}", id, data);
+                                println!("Received id: {id}, data: {data:#?}");
                             }
                         },
                         _other => {}
@@ -33,7 +33,7 @@ fn main() -> eyre::Result<()> {
             }
             Err(err) => {
                 if err.to_string() == printed_error {
-                    println!("{:#?}", err);
+                    println!("{err:#?}");
                     println!("🕐 waiting for node `terminal-print` to be available...");
                     printed_error = err.to_string();
                 }

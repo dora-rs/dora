@@ -2,6 +2,7 @@
 name = "dora-rerun"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 documentation.workspace = true
 description.workspace = true
 license.workspace = true
@@ -28,6 +29,7 @@ pyo3 = { workspace = true, features = [
 ], optional = true }
 bytemuck = "1.20.0"
 rand = "0.9.1"
+pinyin = "0.10.0"
 
 
 [lib]

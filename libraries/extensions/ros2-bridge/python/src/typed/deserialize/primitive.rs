@@ -36,7 +36,7 @@ impl<'de> serde::de::DeserializeSeed<'de> for PrimitiveDeserializer<'_> {
 /// Based on https://docs.rs/serde_yaml/0.9.22/src/serde_yaml/value/de.rs.html#14-121
 struct PrimitiveValueVisitor;
 
-impl<'de> serde::de::Visitor<'de> for PrimitiveValueVisitor {
+impl serde::de::Visitor<'_> for PrimitiveValueVisitor {
     type Value = ArrayData;
 
     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {

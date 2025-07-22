@@ -1,3 +1,10 @@
+//! The `dora run` command is a quick and easy way to run a dataflow locally.
+//! It does not support distributed dataflows and will throw an error if there are any `deploy` keys in the YAML file.
+//!
+//! The `dora run` command does not interact with any `dora coordinator` or `dora daemon` instances, or with any other parallel `dora run` commands.
+//!
+//! Use `dora build --local` or manual build commands to build your nodes.
+
 use super::Executable;
 use crate::{
     common::{handle_dataflow_result, resolve_dataflow},

@@ -12,6 +12,7 @@ use dora_node_api::{
 };
 use eyre::{bail, eyre, Context, Result};
 
+use pinyin::ToPinyin;
 use rerun::{
     components::ImageBuffer, external::log::warn, ImageFormat, Points2D, Points3D, SpawnOptions,
 };
@@ -75,7 +76,7 @@ pub fn lib_main() -> Result<()> {
             let id = node.dataflow_id();
             let path = Path::new("out")
                 .join(id.to_string())
-                .join(format!("archive-{}.rerun", id));
+                .join(format!("archive-{id}.rerun"));
 
             rerun::RecordingStreamBuilder::new("dora-rerun")
                 .save(path)
@@ -315,7 +316,24 @@ pub fn lib_main() -> Result<()> {
                 let buffer: StringArray = data.to_data().into();
                 buffer.iter().try_for_each(|string| -> Result<()> {
                     if let Some(str) = string {
-                        rec.log(id.as_str(), &rerun::TextLog::new(str))
+                        let chars = str.chars().collect::<Vec<_>>();
+                        let mut new_string = vec![];
+                        for char in chars {
+                            // Check if the character is a Chinese character
+                            if char.is_ascii() || char.is_control() {
+                                new_string.push(char);
+                                continue;
+                            }
+                            // If it is a Chinese character, replace it with its pinyin
+                            if let Some(pinyin) = char.to_pinyin() {
+                                for char in pinyin.with_tone().chars() {
+                                    new_string.push(char);
+                                }
+                                new_string.push(' ');
+                            }
+                        }
+                        let pinyined_str = new_string.iter().collect::<String>();
+                        rec.log(id.as_str(), &rerun::TextLog::new(pinyined_str))
                             .wrap_err("Could not log text")
                     } else {
                         Ok(())
@@ -350,7 +368,7 @@ pub fn lib_main() -> Result<()> {
                     "jointstate"
                 };
                 if encoding != "jointstate" {
-                    warn!("Got unexpected encoding: {} on position pose", encoding);
+                    warn!("Got unexpected encoding: {encoding} on position pose");
                     continue;
                 }
                 // Convert to Vec<f32>
@@ -368,6 +386,7 @@ pub fn lib_main() -> Result<()> {
                     if dof < positions.len() {
                         positions.truncate(dof);
                     } else {
+                        #[allow(clippy::same_item_push)]
                         for _ in 0..(dof - positions.len()) {
                             positions.push(0.);
                         }
@@ -375,7 +394,7 @@ pub fn lib_main() -> Result<()> {
 
                     update_visualization(&rec, chain, &id, &positions)?;
                 } else {
-                    println!("Could not find chain for {}. You may not have set its", id);
+                    println!("Could not find chain for {id}. You may not have set its");
                 }
             } else if id.as_str().contains("series") {
                 update_series(&rec, id, data).context("could not plot series")?;
@@ -434,7 +453,7 @@ pub fn lib_main() -> Result<()> {
                         .context("could not log points")?;
                 }
             } else {
-                println!("Could not find handler for {}", id);
+                println!("Could not find handler for {id}");
             }
         }
     }

@@ -15,7 +15,7 @@ pub struct GitManager {
     pub clones_in_use: BTreeMap<PathBuf, BTreeSet<DataflowId>>,
     /// Builds that are prepared, but not done yet.
     prepared_builds: BTreeMap<SessionId, PreparedBuild>,
-    reuse_for: BTreeMap<PathBuf, PathBuf>,
+    // reuse_for: BTreeMap<PathBuf, PathBuf>,
 }
 
 #[derive(Default)]

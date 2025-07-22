@@ -374,7 +374,7 @@ impl Logger {
             .await
             .wrap_err("failed to send log message to dora-coordinator")
         {
-            Ok(()) => return,
+            Ok(()) => (),
             Err(err) => tracing::warn!("{err:?}"),
         }
     }
@@ -416,7 +416,7 @@ struct Indent<'a>(&'a str);
 impl std::fmt::Display for Indent<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for line in self.0.lines() {
-            write!(f, "   {}", line)?;
+            write!(f, "   {line}")?;
         }
         Ok(())
     }

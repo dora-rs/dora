@@ -49,6 +49,7 @@ members = [
 
 [workspace.package]
 edition = "2021"
+rust-version = "1.85.0"
 # Make sure to also bump `apis/node/python/__init__.py` version.
 version = "0.3.12"
 description = "`dora` goal is to be a low latency, composable, and distributed data flow."
@@ -97,6 +98,7 @@ serde_yaml = "0.9.33"
 
 [package]
 name = "dora-examples"
+rust-version = "1.85.0"
 version = "0.0.0"
 edition.workspace = true
 license = "Apache-2.0"

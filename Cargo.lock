@@ -3230,6 +3230,7 @@ dependencies = [
  "futures",
  "pyo3",
  "pyo3-build-config",
+ "pyo3_special_method_derive",
  "pythonize",
  "serde_yaml 0.9.34+deprecated",
  "tokio",
@@ -3359,6 +3360,7 @@ dependencies = [
  "eyre",
  "k",
  "ndarray 0.15.6",
+ "pinyin",
  "pyo3",
  "rand 0.9.1",
  "rerun",
@@ -3414,6 +3416,7 @@ dependencies = [
  "eyre",
  "futures",
  "pyo3",
+ "pyo3_special_method_derive",
  "serde",
  "serde_assert",
 ]
@@ -8450,6 +8453,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8b870d8c151b6f2fb93e84a13146138f05d02ed11c7e7c54f8826aaaf7c9f184"
 
 [[package]]
+name = "pinyin"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "16f2611cd06a1ac239a0cea4521de9eb068a6ca110324ee00631aa68daa74fc0"
+
+[[package]]
 name = "piper"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8993,6 +9002,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "pyo3_special_method_derive"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b75ccfc0eef7c0478db8aa23d23e97b39c74e29da21d9bf1e1934e63ad0709d"
+dependencies = [
+ "pyo3",
+ "pyo3_special_method_derive_macro",
+]
+
+[[package]]
+name = "pyo3_special_method_derive_macro"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cfc6e17b94c919f8295729dcddd368b7cd78231c39a3c23cdeec77b5834010cf"
+dependencies = [
+ "proc-macro2",
+ "pyo3",
+ "quote",
+ "quote_into",
+ "syn 2.0.101",
+]
+
+[[package]]
 name = "python3-dll-a"
 version = "0.2.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9176,6 +9208,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1885c039570dc00dcb4ff087a89e185fd56bae234ddc7f056a945bf36467248d"
 dependencies = [
  "proc-macro2",
+]
+
+[[package]]
+name = "quote_into"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "93886ed56f228a5d960fc4d26afa3736df12a251872869cf24f5efe5f07699b9"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "quote_into_macro",
+]
+
+[[package]]
+name = "quote_into_macro"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "36b828998c40452b5afe441c75194e93181432e669585f4ceb7b0d32a3f73525"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
 ]
 
 [[package]]

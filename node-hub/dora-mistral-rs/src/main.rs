@@ -13,7 +13,7 @@ async fn main() -> eyre::Result<()> {
         .with_logging()
         .build()
         .await
-        .map_err(|e| Report::msg(format!("Model Build error: {}", e))) // Convert error
+        .map_err(|e| Report::msg(format!("Model Build error: {e}"))) // Convert error
         .expect("Failed to build model");
 
     while let Some(event) = events.recv_async().await {
@@ -33,7 +33,7 @@ async fn main() -> eyre::Result<()> {
                     let response = model
                         .send_chat_request(messages)
                         .await
-                        .map_err(|e| Report::msg(format!("Model Response error: {}", e))) // Convert error
+                        .map_err(|e| Report::msg(format!("Model Response error: {e}"))) // Convert error
                         .expect("Failed to get response from model");
 
                     let output = response.choices[0].message.content.as_ref().unwrap();

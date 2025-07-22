@@ -1,133 +1,91 @@
-use std::{ptr::NonNull, sync::Arc};
-
-use aligned_vec::{AVec, ConstAlign};
-use dora_arrow_convert::{ArrowData, IntoArrow};
+use dora_arrow_convert::ArrowData;
 use dora_core::config::{DataId, OperatorId};
-use dora_message::metadata::{ArrowTypeInfo, BufferOffset, Metadata};
-use eyre::{Context, Result};
-use shared_memory_extended::{Shmem, ShmemConf};
+use dora_message::metadata::Metadata;
 
+/// Represents an incoming Dora event.
+///
+/// Events might be triggered by other nodes, by Dora itself, or by some external user input.
+///
+/// It's safe to ignore event types that are not relevant to the node.
+///
+/// This enum is marked as `non_exhaustive` because we might add additional
+/// variants in the future. Please ignore unknown event types instead of throwing an
+/// error to avoid breakage when updating Dora.
 #[derive(Debug)]
 #[non_exhaustive]
+#[allow(clippy::large_enum_variant)]
 pub enum Event {
-    Stop(StopCause),
-    Reload {
-        operator_id: Option<OperatorId>,
-    },
+    /// An input was received from another node.
+    ///
+    /// This event corresponds to one of the `inputs` of the node as specified
+    /// in the dataflow YAML file.
     Input {
+        /// The input ID, as specified in the YAML file.
+        ///
+        /// Note that this is not the output ID of the sender, but the ID
+        /// assigned to the input in the YAML file.
         id: DataId,
+        /// Meta information about this input, e.g. the timestamp.
         metadata: Metadata,
+        /// The actual data in the Apache Arrow data format.
         data: ArrowData,
     },
+    /// An input was closed by the sender.
+    ///
+    /// The sending node mapped to an input exited, so this input will receive
+    /// no more data.
     InputClosed {
+        /// The ID of the input that was closed, as specified in the YAML file.
+        ///
+        /// Note that this is not the output ID of the sender, but the ID
+        /// assigned to the input in the YAML file.
         id: DataId,
     },
+    /// Notification that the event stream is about to close.
+    ///
+    /// The [`StopCause`] field contains the reason for the event stream closure.
+    ///
+    /// Typically, nodes should exit once the event stream closes. One notable
+    /// exception are nodes with no inputs, which will receive aa
+    /// `Event::Stop(StopCause::AllInputsClosed)` right at startup. Source nodes
+    /// might want to keep producing outputs still. (There is currently an open
+    /// discussion of changing this behavior and not sending `AllInputsClosed`
+    /// to nodes without inputs.)
+    ///
+    /// Note: Stop events with `StopCause::Manual` indicate a manual stop operation
+    /// issued through `dora stop` or a `ctrl-c`. Nodes **must exit** once receiving
+    /// such a stop event, otherwise they will be killed by Dora.
+    Stop(StopCause),
+    /// Instructs the node to reload itself or one of its operators.
+    ///
+    /// This event is currently only used for reloading Python operators that are
+    /// started by a `dora runtime` process. So this event should not be sent to normal
+    /// nodes yet.
+    Reload {
+        /// The ID of the operator that should be reloaded.
+        ///
+        /// There is currently no case where `operator_id` is `None`.
+        operator_id: Option<OperatorId>,
+    },
+    /// Notifies the node about an unexpected error that happened inside Dora.
+    ///
+    /// It's a good idea to output or log this error for debugging.
     Error(String),
 }
 
+/// The reason for closing the event stream.
+///
+/// This enum is marked as `non_exhaustive` because we might add additional
+/// variants in the future.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum StopCause {
+    /// The dataflow is stopped early after a `dora stop` command (or on `ctrl-c`).
+    ///
+    /// Nodes should exit as soon as possible if they receive a stop event of
+    /// this type. Dora will kill nodes that keep running for too long after
+    /// receiving such a stop event.
     Manual,
+    /// The event stream is closed because all of the node's inputs were closed.
     AllInputsClosed,
 }
-
-pub enum RawData {
-    Empty,
-    Vec(AVec<u8, ConstAlign<128>>),
-    SharedMemory(SharedMemoryData),
-}
-
-impl RawData {
-    pub fn into_arrow_array(self, type_info: &ArrowTypeInfo) -> Result<arrow::array::ArrayData> {
-        let raw_buffer = match self {
-            RawData::Empty => return Ok(().into_arrow().into()),
-            RawData::Vec(data) => {
-                let ptr = NonNull::new(data.as_ptr() as *mut _).unwrap();
-                let len = data.len();
-
-                unsafe { arrow::buffer::Buffer::from_custom_allocation(ptr, len, Arc::new(data)) }
-            }
-            RawData::SharedMemory(data) => {
-                let ptr = NonNull::new(data.data.as_ptr() as *mut _).unwrap();
-                let len = data.data.len();
-
-                unsafe { arrow::buffer::Buffer::from_custom_allocation(ptr, len, Arc::new(data)) }
-            }
-        };
-
-        buffer_into_arrow_array(&raw_buffer, type_info)
-    }
-}
-
-pub struct SharedMemoryData {
-    pub data: MappedInputData,
-    pub _drop: flume::Sender<()>,
-}
-
-fn buffer_into_arrow_array(
-    raw_buffer: &arrow::buffer::Buffer,
-    type_info: &ArrowTypeInfo,
-) -> eyre::Result<arrow::array::ArrayData> {
-    if raw_buffer.is_empty() {
-        return Ok(arrow::array::ArrayData::new_empty(&type_info.data_type));
-    }
-
-    let mut buffers = Vec::new();
-    for BufferOffset { offset, len } in &type_info.buffer_offsets {
-        buffers.push(raw_buffer.slice_with_length(*offset, *len));
-    }
-
-    let mut child_data = Vec::new();
-    for child_type_info in &type_info.child_data {
-        child_data.push(buffer_into_arrow_array(raw_buffer, child_type_info)?)
-    }
-
-    arrow::array::ArrayData::try_new(
-        type_info.data_type.clone(),
-        type_info.len,
-        type_info
-            .validity
-            .clone()
-            .map(arrow::buffer::Buffer::from_vec),
-        type_info.offset,
-        buffers,
-        child_data,
-    )
-    .context("Error creating Arrow array")
-}
-
-impl std::fmt::Debug for RawData {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Data").finish_non_exhaustive()
-    }
-}
-
-pub struct MappedInputData {
-    memory: Box<Shmem>,
-    len: usize,
-}
-
-impl MappedInputData {
-    pub(crate) unsafe fn map(shared_memory_id: &str, len: usize) -> eyre::Result<Self> {
-        let memory = Box::new(
-            ShmemConf::new()
-                .os_id(shared_memory_id)
-                .writable(false)
-                .open()
-                .wrap_err("failed to map shared memory input")?,
-        );
-        Ok(MappedInputData { memory, len })
-    }
-}
-
-impl std::ops::Deref for MappedInputData {
-    type Target = [u8];
-
-    fn deref(&self) -> &Self::Target {
-        unsafe { &self.memory.as_slice()[..self.len] }
-    }
-}
-
-unsafe impl Send for MappedInputData {}
-unsafe impl Sync for MappedInputData {}

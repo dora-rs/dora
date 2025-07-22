@@ -16,6 +16,7 @@ dir=$(pwd)
 # Get the base name of the directory (without the path)
 base_dir=$(basename "$dir")
 
+export GIT_LFS_SKIP_SMUDGE=1 
 # Large node list requiring space cleanup
 large_node=("dora-phi4")
 
@@ -40,7 +41,6 @@ if [[ " ${large_node[@]} " =~ " ${base_dir} " ]] && [[ "$CI" == "true" ]]; then
     sudo rm -rf /usr/share/dotnet/
     sudo rm -rf /opt/ghc/
 fi
-
 
 # Check if the directory name is in the ignored list
 if [[ " ${ignored_folders[@]} " =~ " ${base_dir} " ]]; then

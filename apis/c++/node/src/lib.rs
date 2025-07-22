@@ -87,10 +87,6 @@ mod ffi {
     }
 }
 
-mod arrow_ffi {
-    pub use arrow::ffi::{FFI_ArrowArray, FFI_ArrowSchema};
-}
-
 #[cfg(feature = "ros2-bridge")]
 pub mod ros2 {
     pub use dora_ros2_bridge::*;
@@ -215,7 +211,7 @@ unsafe fn event_as_arrow_input(
             }
         }
         Err(e) => ffi::DoraResult {
-            error: format!("Error exporting Arrow array to C++: {:?}", e),
+            error: format!("Error exporting Arrow array to C++: {e:?}"),
         },
     }
 }
@@ -276,7 +272,7 @@ unsafe fn send_arrow_output(
             }
         }
         Err(e) => ffi::DoraResult {
-            error: format!("Error importing array from C++: {:?}", e),
+            error: format!("Error importing array from C++: {e:?}"),
         },
     }
 }
