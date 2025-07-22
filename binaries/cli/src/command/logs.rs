@@ -1,6 +1,7 @@
+use std::io::Write;
+
 use super::{default_tracing, Executable};
 use crate::common::{connect_to_coordinator, query_running_dataflows};
-use bat::{Input, PrettyPrinter};
 use clap::Args;
 use communication_layer_request_reply::TcpRequestReplyConnection;
 use dora_core::topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST};
@@ -17,6 +18,14 @@ pub struct LogsArgs {
     /// Show logs for the given node
     #[clap(value_name = "NAME")]
     pub node: String,
+    /// Number of lines to show from the end of the logs
+    ///
+    /// Default (`0`) is to show all lines.
+    #[clap(long, short = 'n', default_value_t = 0)]
+    pub tail: usize,
+    /// Follow log output
+    #[clap(long, short)]
+    pub follow: bool,
     /// Address of the dora coordinator
     #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
     pub coordinator_addr: std::net::IpAddr,
@@ -34,19 +43,24 @@ impl Executable for LogsArgs {
                 .wrap_err("failed to connect to dora coordinator")?;
         let list =
             query_running_dataflows(&mut *session).wrap_err("failed to query running dataflows")?;
-        if let Some(dataflow) = self.dataflow {
-            let uuid = Uuid::parse_str(&dataflow).ok();
-            let name = if uuid.is_some() { None } else { Some(dataflow) };
-            logs(&mut *session, uuid, name, self.node)
-        } else {
-            let active = list.get_active();
-            let uuid = match &active[..] {
-                [] => bail!("No dataflows are running"),
-                [uuid] => uuid.clone(),
-                _ => inquire::Select::new("Choose dataflow to show logs:", active).prompt()?,
-            };
-            logs(&mut *session, Some(uuid.uuid), None, self.node)
-        }
+        let (uuid, name) = match self.dataflow.as_ref().map(|it| Uuid::parse_str(it)) {
+            Some(Ok(uuid)) => (Some(uuid), None),
+            Some(Err(_)) => (None, self.dataflow.clone()),
+            None => {
+                let active = list.get_active();
+                let uuid = match &active[..] {
+                    [] => bail!("No dataflows are running"),
+                    [uuid] => uuid.uuid,
+                    _ => {
+                        let uuid = inquire::Select::new("Choose dataflow to show logs:", active)
+                            .prompt()?;
+                        uuid.uuid
+                    }
+                };
+                (Some(uuid), None)
+            }
+        };
+        logs(&mut *session, uuid, name, self.node, self.tail, self.follow)
     }
 }
 
@@ -55,6 +69,8 @@ pub fn logs(
     uuid: Option<Uuid>,
     name: Option<String>,
     node: String,
+    tail: usize,
+    follow: bool,
 ) -> Result<()> {
     let logs = {
         let reply_raw = session
@@ -63,6 +79,7 @@ pub fn logs(
                     uuid,
                     name,
                     node: node.clone(),
+                    tail,
                 })
                 .wrap_err("")?,
             )
@@ -75,16 +92,9 @@ pub fn logs(
         }
     };
 
-    PrettyPrinter::new()
-        .header(false)
-        .grid(false)
-        .line_numbers(false)
-        .paging_mode(bat::PagingMode::QuitIfOneScreen)
-        .inputs(vec![Input::from_bytes(&logs)
-            .name("Logs")
-            .title(format!("Logs from {node}.").as_str())])
-        .print()
-        .wrap_err("Something went wrong with viewing log file")?;
+    std::io::stdout()
+        .write_all(&logs)
+        .expect("failed to write logs to stdout");
 
     Ok(())
 }

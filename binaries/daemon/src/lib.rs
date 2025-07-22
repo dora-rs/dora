@@ -39,9 +39,10 @@ use shared_memory_server::ShmemConf;
 use socket_stream_utils::socket_stream_send;
 use spawn::Spawner;
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     env::current_dir,
     future::Future,
+    io,
     net::SocketAddr,
     path::{Path, PathBuf},
     pin::pin,
@@ -51,7 +52,7 @@ use std::{
 use sysinfo::Pid;
 use tokio::{
     fs::File,
-    io::AsyncReadExt,
+    io::{AsyncReadExt, AsyncSeekExt},
     net::TcpStream,
     sync::{
         broadcast,
@@ -801,6 +802,7 @@ impl Daemon {
             DaemonCoordinatorEvent::Logs {
                 dataflow_id,
                 node_id,
+                tail,
             } => {
                 match self.working_dir.get(&dataflow_id) {
                     Some(working_dir) => {
@@ -815,10 +817,17 @@ impl Daemon {
                                             log::log_path(&working_dir, &dataflow_id, &node_id)
                                         ))?;
 
-                                let mut contents = vec![];
-                                file.read_to_end(&mut contents)
-                                    .await
-                                    .wrap_err("Could not read content of log file")?;
+                                let mut contents = if tail == 0 {
+                                    let mut contents = vec![];
+                                    file.read_to_end(&mut contents).await.map(|_| contents)
+                                } else {
+                                    read_last_n_lines(&mut file, tail).await
+                                }
+                                .wrap_err("Could not read last n lines of log file")?;
+                                if !contents.ends_with(b"\n") {
+                                    // Append newline for better readability
+                                    contents.push(b'\n');
+                                }
                                 Result::<Vec<u8>, eyre::Report>::Ok(contents)
                             }
                             .await
@@ -2164,6 +2173,60 @@ impl Daemon {
             }
         }
     }
+}
+
+async fn read_last_n_lines(file: &mut File, mut tail: usize) -> io::Result<Vec<u8>> {
+    let mut pos = file.seek(io::SeekFrom::End(0)).await?;
+
+    let mut output = VecDeque::<u8>::new();
+    let mut extend_slice_to_start = |slice: &[u8]| {
+        output.extend(slice);
+        output.rotate_right(slice.len());
+    };
+
+    let mut buffer = vec![0; 2048];
+    let mut estimated_line_length = 0;
+    let mut at_end = true;
+    'main: while tail > 0 && pos > 0 {
+        let new_pos = pos.saturating_sub(buffer.len() as u64);
+        file.seek(io::SeekFrom::Start(new_pos)).await?;
+        let read_len = (pos - new_pos) as usize;
+        pos = new_pos;
+
+        let read = file.read(&mut buffer[..read_len]).await?;
+        if read < read_len {
+            break;
+        }
+        let read_buf = if at_end {
+            at_end = false;
+            &buffer[..read].trim_ascii_end()
+        } else {
+            &buffer[..read]
+        };
+
+        let mut iter = memchr::memrchr_iter(b'\n', read_buf);
+        let mut lines = 1;
+        loop {
+            let Some(pos) = iter.next() else {
+                extend_slice_to_start(read_buf);
+                break;
+            };
+            lines += 1;
+            tail -= 1;
+            if tail == 0 {
+                extend_slice_to_start(&read_buf[(pos + 1)..]);
+                break 'main;
+            }
+        }
+
+        estimated_line_length = estimated_line_length.max((read_buf.len() + 1).div_ceil(lines));
+        let estimated_buffer_length = estimated_line_length * tail;
+        if estimated_buffer_length >= buffer.len() * 2 {
+            buffer.resize(buffer.len() * 2, 0);
+        }
+    }
+
+    Ok(output.into())
 }
 
 async fn set_up_event_stream(
