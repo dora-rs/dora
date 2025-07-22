@@ -320,7 +320,7 @@ async fn chat_completions_handler(
     let body_bytes = match to_bytes(req.body_mut()).await {
         Ok(body_bytes) => body_bytes,
         Err(e) => {
-            let err_msg = format!("Fail to read buffer from request body. {}", e);
+            let err_msg = format!("Fail to read buffer from request body. {e}");
 
             // log
             error!(target: "stdout", "{}", &err_msg);
@@ -331,10 +331,10 @@ async fn chat_completions_handler(
     let mut chat_request: ChatCompletionRequest = match serde_json::from_slice(&body_bytes) {
         Ok(chat_request) => chat_request,
         Err(e) => {
-            let mut err_msg = format!("Fail to deserialize chat completion request: {}.", e);
+            let mut err_msg = format!("Fail to deserialize chat completion request: {e}.");
 
             if let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(&body_bytes) {
-                err_msg = format!("{}\njson_value: {}", err_msg, json_value);
+                err_msg = format!("{err_msg}\njson_value: {json_value}");
             }
 
             // log
@@ -393,7 +393,7 @@ async fn chat_completions_handler(
                 response
             }
             Err(e) => {
-                let err_msg = format!("Failed chat completions in stream mode. Reason: {}", e);
+                let err_msg = format!("Failed chat completions in stream mode. Reason: {e}");
 
                 // log
                 error!(target: "stdout", "{}", &err_msg);
@@ -411,7 +411,7 @@ async fn chat_completions_handler(
                 let s = match serde_json::to_string(&chat_completion_object) {
                     Ok(s) => s,
                     Err(e) => {
-                        let err_msg = format!("Failed to serialize chat completion object. {}", e);
+                        let err_msg = format!("Failed to serialize chat completion object. {e}");
 
                         // log
                         error!(target: "stdout", "{}", &err_msg);
@@ -438,7 +438,7 @@ async fn chat_completions_handler(
                     }
                     Err(e) => {
                         let err_msg =
-                            format!("Failed chat completions in non-stream mode. Reason: {}", e);
+                            format!("Failed chat completions in non-stream mode. Reason: {e}");
 
                         // log
                         error!(target: "stdout", "{}", &err_msg);
@@ -448,7 +448,7 @@ async fn chat_completions_handler(
                 }
             }
             Err(e) => {
-                let err_msg = format!("Failed to get chat completions. Reason: {}", e);
+                let err_msg = format!("Failed to get chat completions. Reason: {e}");
 
                 // log
                 error!(target: "stdout", "{}", &err_msg);
