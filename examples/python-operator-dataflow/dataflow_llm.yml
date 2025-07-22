@@ -29,7 +29,8 @@ nodes:
   ## Speech to text
   - id: keyboard
     custom:
-      source: keyboard_op.py
+      path: keyboard_op.py
+      source: Local
       outputs:
         - buffer
         - submitted
