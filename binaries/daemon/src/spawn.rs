@@ -357,7 +357,24 @@ impl PreparedNode {
 
     pub async fn spawn(mut self, logger: &mut NodeLogger<'_>) -> eyre::Result<RunningNode> {
         let mut child = match &mut self.command {
-            Some(command) => command.spawn().wrap_err(self.spawn_error_msg)?,
+            Some(command) => {
+                let std_command = command.as_std();
+                logger
+                    .log(
+                        LogLevel::Info,
+                        Some("spawner".into()),
+                        format!(
+                            "spawning `{}` in `{}`",
+                            std_command.get_program().to_string_lossy(),
+                            std_command
+                                .get_current_dir()
+                                .unwrap_or(Path::new("<unknown>"))
+                                .display(),
+                        ),
+                    )
+                    .await;
+                command.spawn().wrap_err(self.spawn_error_msg)?
+            }
             None => {
                 return Ok(RunningNode {
                     pid: None,
@@ -672,13 +689,6 @@ async fn path_spawn_command(
                     cmd
                 }
                 _ => {
-                    logger
-                        .log(
-                            LogLevel::Info,
-                            Some("spawner".into()),
-                            format!("spawning: {}", resolved_path.display()),
-                        )
-                        .await;
                     if uv {
                         let mut cmd = tokio::process::Command::new("uv");
                         cmd.arg("run");
