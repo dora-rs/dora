@@ -16,6 +16,8 @@ jobs:
       - run: cargo --version --verbose
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
 
       - name: Update Schema
         run: cargo run -p dora-core --bin generate_schema
