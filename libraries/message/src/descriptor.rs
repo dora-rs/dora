@@ -1,3 +1,5 @@
+#![warn(missing_docs)]
+
 use crate::{
     config::{CommunicationConfig, Input, InputMapping, NodeRunConfig},
     id::{DataId, NodeId, OperatorId},
@@ -12,6 +14,8 @@ use std::{
 };
 
 pub const SHELL_SOURCE: &str = "shell";
+/// Set the [`Node::path`] field to this value to treat the node as a
+/// [_dynamic node_](https://docs.rs/dora-node-api/latest/dora_node_api/).
 pub const DYNAMIC_SOURCE: &str = "dynamic";
 
 /// # Dataflow Specification
