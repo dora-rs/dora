@@ -4,11 +4,16 @@ use std::{
 };
 
 use super::{default_tracing, Executable};
-use crate::{common::{connect_to_coordinator, query_running_dataflows}, output::print_log_message};
+use crate::{
+    common::{connect_to_coordinator, query_running_dataflows},
+    output::print_log_message,
+};
 use clap::Args;
 use communication_layer_request_reply::{TcpConnection, TcpRequestReplyConnection};
 use dora_core::topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST};
-use dora_message::{cli_to_coordinator::ControlRequest, common::LogMessage, coordinator_to_cli::ControlRequestReply};
+use dora_message::{
+    cli_to_coordinator::ControlRequest, common::LogMessage, coordinator_to_cli::ControlRequestReply,
+};
 use eyre::{bail, Context, Result};
 use uuid::Uuid;
 
