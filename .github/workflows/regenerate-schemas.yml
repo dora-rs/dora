@@ -2,7 +2,7 @@ name: Regenerate JSON schemas
 
 on:
   push:
-    branches: ["main"]
+    branches: ["main", "automate-schema-regenerate"]
 
 jobs:
   regenerate_schemas:
