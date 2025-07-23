@@ -25,7 +25,8 @@ jobs:
               git add libraries/core/dora-schema.json
               git config user.email "dora-bot@phil-opp.com"
               git config user.name "Dora Bot"
-              git commit -m "Update JSON schema for `dora-core`"
+              git commit -m "Update JSON schema for \`dora-core\`"
+              git push -u origin HEAD
               gh pr create --fill
           fi
           
