@@ -32,6 +32,7 @@ jobs:
               git config user.name "Dora Bot"
               git commit -m "Update JSON schema for \`dora-core\`"
               git push -u origin HEAD
+              git fetch origin main
               gh pr create --fill
           fi
           
