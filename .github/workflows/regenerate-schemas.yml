@@ -23,6 +23,8 @@ jobs:
           else
               git switch -c schema-update-for-${{ github.sha }}
               git add libraries/core/dora-schema.json
+              git config user.email "dora-bot@phil-opp.com"
+              git config user.name "Dora Bot"
               git commit -m "Update JSON schema for `dora-core`"
               gh pr create --fill
           fi
