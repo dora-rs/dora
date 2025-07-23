@@ -11,6 +11,10 @@ jobs:
       pull-requests: write
     steps:
       - uses: actions/checkout@v4
+      - uses: r7kamura/rust-problem-matchers@v1.1.0
+      - run: cargo --version --verbose
+
+      - uses: Swatinem/rust-cache@v2
 
       - name: Update Schema
         run: cargo run -p dora-core --bin generate_schema
