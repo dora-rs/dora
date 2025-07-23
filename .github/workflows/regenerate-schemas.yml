@@ -1,0 +1,40 @@
+name: Regenerate JSON schemas
+
+on:
+  push:
+    branches: ["main"]
+
+jobs:
+  regenerate_schemas:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: r7kamura/rust-problem-matchers@v1.1.0
+      - run: cargo --version --verbose
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Update Schema
+        run: cargo run -p dora-core --bin generate_schema
+      - name: Create if changed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if git diff --exit-code -- libraries/core/dora-schema.json; then
+              echo "Schema file was not changed"
+          else
+              git switch -c schema-update-for-${{ github.sha }}
+              git add libraries/core/dora-schema.json
+              git config user.email "dora-bot@phil-opp.com"
+              git config user.name "Dora Bot"
+              git commit -m "Update JSON schema for \`dora-core\`"
+              git push -u origin HEAD
+              git fetch origin main
+              gh pr create --fill
+          fi
+          
