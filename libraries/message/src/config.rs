@@ -43,7 +43,7 @@ pub struct Input {
     pub queue_size: Option<usize>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum InputDef {
     MappingOnly(InputMapping),
