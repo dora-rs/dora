@@ -1117,8 +1117,19 @@ impl Daemon {
 
         let mut stopped = Vec::new();
 
-        let node_working_dirs = build_id
-            .and_then(|build_id| self.builds.get(&build_id))
+        let build_info = build_id.and_then(|build_id| self.builds.get(&build_id));
+        let node_with_git_source = nodes.values().find(|n| n.has_git_source());
+        if let Some(git_node) = node_with_git_source {
+            if build_info.is_none() {
+                eyre::bail!(
+                    "node {} has git source, but no `dora build` was run yet\n\n\
+                    nodes with a `git` field must be built using `dora build` before starting the \
+                    dataflow",
+                    git_node.id
+                )
+            }
+        }
+        let node_working_dirs = build_info
             .map(|info| info.node_working_dirs.clone())
             .unwrap_or_default();
 
@@ -1186,12 +1197,16 @@ impl Daemon {
                     .entry(node.id.clone())
                     .or_insert_with(|| Arc::new(ArrayQueue::new(STDERR_LOG_LINES)))
                     .clone();
-                logger
-                    .log(LogLevel::Info, Some("daemon".into()), "spawning")
-                    .await;
-                let node_working_dir = node_working_dirs
-                    .get(&node_id)
-                    .cloned()
+
+                let configured_node_working_dir = node_working_dirs.get(&node_id).cloned();
+                if configured_node_working_dir.is_none() && node.has_git_source() {
+                    eyre::bail!(
+                        "node {} has git source, but no git clone directory was found for it\n\n\
+                        try running `dora build` again",
+                        node.id
+                    )
+                }
+                let node_working_dir = configured_node_working_dir
                     .or_else(|| {
                         node.deploy
                             .as_ref()
