@@ -1,29 +1,25 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "dora-rs specification",
-  "description": "The main configuration structure for defining a Dora dataflow. Dataflows are specified through YAML files that describe the nodes, their connections, and execution parameters.\n\n## Structure\n\nA dataflow consists of: - **Nodes**: The computational units that process data - **Communication**: Optional communication configuration - **Deployment**: Optional deployment configuration (unstable) - **Debug options**: Optional development and debugging settings (unstable)\n\n## Example\n\n```yaml nodes: - id: webcam operator: python: webcam.py inputs: tick: dora/timer/millis/100 outputs: - image - id: plot operator: python: plot.py inputs: image: webcam/image ```",
+  "description": "The main configuration structure for defining a Dora dataflow. Dataflows are\nspecified through YAML files that describe the nodes, their connections, and\nexecution parameters.\n\n## Structure\n\nA dataflow consists of:\n- **Nodes**: The computational units that process data\n- **Communication**: Optional communication configuration\n- **Deployment**: Optional deployment configuration (unstable)\n- **Debug options**: Optional development and debugging settings (unstable)\n\n## Example\n\n```yaml\nnodes:\n - id: webcam\n    operator:\n      python: webcam.py\n      inputs:\n        tick: dora/timer/millis/100\n      outputs:\n        - image\n  - id: plot\n    operator:\n      python: plot.py\n      inputs:\n        image: webcam/image\n```",
   "type": "object",
-  "required": [
-    "nodes"
-  ],
   "properties": {
     "nodes": {
-      "description": "List of nodes in the dataflow\n\nThis is the most important field of the dataflow specification. Each node must be identified by a unique `id`:\n\n## Example\n\n```yaml nodes: - id: foo path: path/to/the/executable # ... (see below) - id: bar path: path/to/another/executable # ... (see below) ```\n\nFor each node, you need to specify the `path` of the executable or script that Dora should run when starting the node. Most of the other node fields are optional, but you typically want to specify at least some `inputs` and/or `outputs`.",
+      "description": "List of nodes in the dataflow\n\nThis is the most important field of the dataflow specification.\nEach node must be identified by a unique `id`:\n\n## Example\n\n```yaml\nnodes:\n  - id: foo\n    path: path/to/the/executable\n    # ... (see below)\n  - id: bar\n    path: path/to/another/executable\n    # ... (see below)\n```\n\nFor each node, you need to specify the `path` of the executable or script that Dora should run when starting the node.\nMost of the other node fields are optional, but you typically want to specify at least some `inputs` and/or `outputs`.",
       "type": "array",
       "items": {
-        "$ref": "#/definitions/Node"
+        "$ref": "#/$defs/Node"
       }
     }
   },
   "additionalProperties": true,
-  "definitions": {
+  "required": [
+    "nodes"
+  ],
+  "$defs": {
     "CustomNode": {
       "description": "Contains the input and output configuration of the node.",
       "type": "object",
-      "required": [
-        "path",
-        "source"
-      ],
       "properties": {
         "args": {
           "description": "Args for the executable.",
@@ -45,26 +41,28 @@
             "null"
           ],
           "additionalProperties": {
-            "$ref": "#/definitions/EnvValue"
+            "$ref": "#/$defs/EnvValue"
           }
         },
         "inputs": {
-          "description": "Inputs for the nodes as a map from input ID to `node_id/output_id`.\n\ne.g.\n\ninputs:\n\nexample_input: example_node/example_output1",
-          "default": {},
+          "description": "Inputs for the nodes as a map from input ID to `node_id/output_id`.\n\ne.g.\n\ninputs:\n\n  example_input: example_node/example_output1",
           "type": "object",
-          "additionalProperties": true
+          "additionalProperties": {
+            "$ref": "#/$defs/Input"
+          },
+          "default": {}
         },
         "outputs": {
-          "description": "List of output IDs.\n\ne.g.\n\noutputs:\n\n- output_1\n\n- output_2",
-          "default": [],
+          "description": "List of output IDs.\n\ne.g.\n\noutputs:\n\n - output_1\n\n - output_2",
           "type": "array",
+          "default": [],
           "items": {
-            "$ref": "#/definitions/DataId"
+            "$ref": "#/$defs/DataId"
           },
           "uniqueItems": true
         },
         "path": {
-          "description": "Path of the source code\n\nIf you want to use a specific `conda` environment. Provide the python path within the source.\n\nsource: /home/peter/miniconda3/bin/python\n\nargs: some_node.py\n\nSource can match any executable in PATH.",
+          "description": "Path of the source code\n\nIf you want to use a specific `conda` environment.\nProvide the python path within the source.\n\nsource: /home/peter/miniconda3/bin/python\n\nargs: some_node.py\n\nSource can match any executable in PATH.",
           "type": "string"
         },
         "send_stdout_as": {
@@ -75,31 +73,35 @@
           ]
         },
         "source": {
-          "$ref": "#/definitions/NodeSource"
+          "$ref": "#/$defs/NodeSource"
         }
-      }
+      },
+      "required": [
+        "path",
+        "source"
+      ]
     },
     "DataId": {
       "type": "string"
     },
     "Duration": {
       "type": "object",
-      "required": [
-        "nanos",
-        "secs"
-      ],
       "properties": {
         "nanos": {
           "type": "integer",
           "format": "uint32",
-          "minimum": 0.0
+          "minimum": 0
         },
         "secs": {
           "type": "integer",
           "format": "uint64",
-          "minimum": 0.0
+          "minimum": 0
         }
-      }
+      },
+      "required": [
+        "secs",
+        "nanos"
+      ]
     },
     "EnvValue": {
       "anyOf": [
@@ -123,121 +125,125 @@
       "oneOf": [
         {
           "type": "object",
-          "required": [
-            "Branch"
-          ],
           "properties": {
             "Branch": {
               "type": "string"
             }
           },
-          "additionalProperties": true
+          "additionalProperties": true,
+          "required": [
+            "Branch"
+          ]
         },
         {
           "type": "object",
-          "required": [
-            "Tag"
-          ],
           "properties": {
             "Tag": {
               "type": "string"
             }
           },
-          "additionalProperties": true
+          "additionalProperties": true,
+          "required": [
+            "Tag"
+          ]
         },
         {
           "type": "object",
-          "required": [
-            "Rev"
-          ],
           "properties": {
             "Rev": {
               "type": "string"
             }
           },
-          "additionalProperties": true
+          "additionalProperties": true,
+          "required": [
+            "Rev"
+          ]
         }
       ]
     },
     "Input": {
-      "type": "object",
-      "required": [
-        "mapping"
-      ],
-      "properties": {
-        "mapping": {
-          "$ref": "#/definitions/InputMapping"
+      "anyOf": [
+        {
+          "$ref": "#/$defs/InputMapping"
         },
-        "queue_size": {
-          "type": [
-            "integer",
-            "null"
-          ],
-          "format": "uint",
-          "minimum": 0.0
+        {
+          "type": "object",
+          "properties": {
+            "queue_size": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint",
+              "minimum": 0
+            },
+            "source": {
+              "$ref": "#/$defs/InputMapping"
+            }
+          },
+          "required": [
+            "source"
+          ]
         }
-      }
+      ]
     },
     "InputMapping": {
       "oneOf": [
         {
           "type": "object",
-          "required": [
-            "Timer"
-          ],
           "properties": {
             "Timer": {
               "type": "object",
-              "required": [
-                "interval"
-              ],
               "properties": {
                 "interval": {
-                  "$ref": "#/definitions/Duration"
+                  "$ref": "#/$defs/Duration"
                 }
-              }
+              },
+              "required": [
+                "interval"
+              ]
             }
           },
-          "additionalProperties": true
+          "additionalProperties": true,
+          "required": [
+            "Timer"
+          ]
         },
         {
           "type": "object",
-          "required": [
-            "User"
-          ],
           "properties": {
             "User": {
-              "$ref": "#/definitions/UserInputMapping"
+              "$ref": "#/$defs/UserInputMapping"
             }
           },
-          "additionalProperties": true
+          "additionalProperties": true,
+          "required": [
+            "User"
+          ]
         }
       ]
     },
     "Node": {
       "title": "Dora Node Configuration",
-      "description": "A node represents a computational unit in a Dora dataflow. Each node runs as a separate process and can communicate with other nodes through inputs and outputs.",
+      "description": "A node represents a computational unit in a Dora dataflow. Each node runs as a\nseparate process and can communicate with other nodes through inputs and outputs.",
       "type": "object",
-      "required": [
-        "id"
-      ],
       "properties": {
         "args": {
-          "description": "Command-line arguments passed to the executable.\n\nThe command-line arguments that should be passed to the executable/script specified in `path`. The arguments should be separated by space. This field is optional and defaults to an empty argument list.\n\n## Example ```yaml nodes: - id: example path: example-node args: -v --some-flag foo ```",
+          "description": "Command-line arguments passed to the executable.\n\nThe command-line arguments that should be passed to the executable/script specified in `path`.\nThe arguments should be separated by space.\nThis field is optional and defaults to an empty argument list.\n\n## Example\n```yaml\nnodes:\n  - id: example\n    path: example-node\n    args: -v --some-flag foo\n```",
           "type": [
             "string",
             "null"
           ]
         },
         "branch": {
-          "description": "Git branch to checkout after cloning.\n\nThe `branch` field is only allowed in combination with the [`git`](#git) field. It specifies the branch that should be checked out after cloning. Only one of `branch`, `tag`, or `rev` can be specified.\n\n## Example\n\n```yaml nodes: - id: rust-node git: https://github.com/dora-rs/dora.git branch: some-branch-name ```",
+          "description": "Git branch to checkout after cloning.\n\nThe `branch` field is only allowed in combination with the [`git`](#git) field.\nIt specifies the branch that should be checked out after cloning.\nOnly one of `branch`, `tag`, or `rev` can be specified.\n\n## Example\n\n```yaml\nnodes:\n  - id: rust-node\n    git: https://github.com/dora-rs/dora.git\n    branch: some-branch-name\n```",
           "type": [
             "string",
             "null"
           ]
         },
         "build": {
-          "description": "Build commands executed during `dora build`. Each line runs separately.\n\nThe `build` key specifies the command that should be invoked for building the node. The key expects a single- or multi-line string.\n\nEach line is run as a separate command. Spaces are used to separate arguments.\n\nNote that all the environment variables specified in the [`env`](Self::env) field are also applied to the build commands.\n\n## Special treatment of `pip`\n\nBuild lines that start with `pip` or `pip3` are treated in a special way: If the `--uv` argument is passed to the `dora build` command, all `pip`/`pip3` commands are run through the [`uv` package manager](https://docs.astral.sh/uv/).\n\n## Example\n\n```yaml nodes: - id: build-example build: cargo build -p receive_data --release path: target/release/receive_data - id: multi-line-example build: | pip install requirements.txt pip install -e some/local/package path: package ```\n\nIn the above example, the `pip` commands will be replaced by `uv pip` when run through `dora build --uv`.",
+          "description": "Build commands executed during `dora build`. Each line runs separately.\n\nThe `build` key specifies the command that should be invoked for building the node.\nThe key expects a single- or multi-line string.\n\nEach line is run as a separate command.\nSpaces are used to separate arguments.\n\nNote that all the environment variables specified in the [`env`](Self::env) field are also\napplied to the build commands.\n\n## Special treatment of `pip`\n\nBuild lines that start with `pip` or `pip3` are treated in a special way:\nIf the `--uv` argument is passed to the `dora build` command, all `pip`/`pip3` commands are\nrun through the [`uv` package manager](https://docs.astral.sh/uv/).\n\n## Example\n\n```yaml\nnodes:\n- id: build-example\n  build: cargo build -p receive_data --release\n  path: target/release/receive_data\n- id: multi-line-example\n  build: |\n      pip install requirements.txt\n      pip install -e some/local/package\n  path: package\n```\n\nIn the above example, the `pip` commands will be replaced by `uv pip` when run through\n`dora build --uv`.",
           "type": [
             "string",
             "null"
@@ -247,7 +253,7 @@
           "description": "Legacy node configuration (deprecated).\n\nPlease use the top-level [`path`](Self::path), [`args`](Self::args), etc. fields instead.",
           "anyOf": [
             {
-              "$ref": "#/definitions/CustomNode"
+              "$ref": "#/$defs/CustomNode"
             },
             {
               "type": "null"
@@ -255,55 +261,53 @@
           ]
         },
         "description": {
-          "description": "Detailed description of the node's functionality.\n\n## Example\n\n```yaml nodes: - id: camera_node description: \"Captures video frames from webcam\" ```",
+          "description": "Detailed description of the node's functionality.\n\n## Example\n\n```yaml\nnodes:\n  - id: camera_node\n    description: \"Captures video frames from webcam\"\n```",
           "type": [
             "string",
             "null"
           ]
         },
         "env": {
-          "description": "Environment variables for node builds and execution.\n\nKey-value map of environment variables that should be set for both the [`build`](Self::build) operation and the node execution (i.e. when the node is spawned through [`path`](Self::path)).\n\nSupports strings, numbers, and booleans.\n\n## Example\n\n```yaml nodes: - id: example-node path: path/to/node env: DEBUG: true PORT: 8080 API_KEY: \"secret-key\" ```",
+          "description": "Environment variables for node builds and execution.\n\nKey-value map of environment variables that should be set for both the\n[`build`](Self::build) operation and the node execution (i.e. when the node is spawned\nthrough [`path`](Self::path)).\n\nSupports strings, numbers, and booleans.\n\n## Example\n\n```yaml\nnodes:\n  - id: example-node\n    path: path/to/node\n    env:\n      DEBUG: true\n      PORT: 8080\n      API_KEY: \"secret-key\"\n```",
           "type": [
             "object",
             "null"
           ],
           "additionalProperties": {
-            "$ref": "#/definitions/EnvValue"
+            "$ref": "#/$defs/EnvValue"
           }
         },
         "git": {
-          "description": "Git repository URL for downloading nodes.\n\nThe `git` key allows downloading nodes (i.e. their source code) from git repositories. This can be especially useful for distributed dataflows.\n\nWhen a `git` key is specified, `dora build` automatically clones the specified repository (or reuse an existing clone). Then it checks out the specified [`branch`](Self::branch), [`tag`](Self::tag), or [`rev`](Self::rev), or the default branch if none of them are specified. Afterwards it runs the [`build`](Self::build) command if specified.\n\nNote that the git clone directory is set as working directory for both the [`build`](Self::build) command and the specified [`path`](Self::path).\n\n## Example\n\n```yaml nodes: - id: rust-node git: https://github.com/dora-rs/dora.git build: cargo build -p rust-dataflow-example-node path: target/debug/rust-dataflow-example-node ```\n\nIn the above example, `dora build` will first clone the specified `git` repository and then run the specified `build` inside the local clone directory. When `dora run` or `dora start` is invoked, the working directory will be the git clone directory too. So a relative `path` will start from the clone directory.",
+          "description": "Git repository URL for downloading nodes.\n\nThe `git` key allows downloading nodes (i.e. their source code) from git repositories.\nThis can be especially useful for distributed dataflows.\n\nWhen a `git` key is specified, `dora build` automatically clones the specified repository\n(or reuse an existing clone).\nThen it checks out the specified [`branch`](Self::branch), [`tag`](Self::tag), or\n[`rev`](Self::rev), or the default branch if none of them are specified.\nAfterwards it runs the [`build`](Self::build) command if specified.\n\nNote that the git clone directory is set as working directory for both the\n[`build`](Self::build) command and the specified [`path`](Self::path).\n\n## Example\n\n```yaml\nnodes:\n  - id: rust-node\n    git: https://github.com/dora-rs/dora.git\n    build: cargo build -p rust-dataflow-example-node\n    path: target/debug/rust-dataflow-example-node\n```\n\nIn the above example, `dora build` will first clone the specified `git` repository and then\nrun the specified `build` inside the local clone directory.\nWhen `dora run` or `dora start` is invoked, the working directory will be the git clone\ndirectory too. So a relative `path` will start from the clone directory.",
           "type": [
             "string",
             "null"
           ]
         },
         "id": {
-          "description": "Unique node identifier. Must not contain `/` characters.\n\nNode IDs can be arbitrary strings with the following limitations:\n\n- They must not contain any `/` characters (slashes). - We do not recommend using whitespace characters (e.g. spaces) in IDs\n\nEach node must have an ID field.\n\n## Example\n\n```yaml nodes: - id: camera_node - id: some_other_node ```",
-          "allOf": [
-            {
-              "$ref": "#/definitions/NodeId"
-            }
-          ]
+          "description": "Unique node identifier. Must not contain `/` characters.\n\nNode IDs can be arbitrary strings with the following limitations:\n\n- They must not contain any `/` characters (slashes).\n- We do not recommend using whitespace characters (e.g. spaces) in IDs\n\nEach node must have an ID field.\n\n## Example\n\n```yaml\nnodes:\n  - id: camera_node\n  - id: some_other_node\n```",
+          "$ref": "#/$defs/NodeId"
         },
         "inputs": {
-          "description": "Input data connections from other nodes.\n\nDefines the inputs that this node is subscribing to.\n\nThe `inputs` field should be a key-value map of the following format:\n\n`input_id: source_node_id/source_node_output_id`\n\nThe components are defined as follows:\n\n- `input_id` is the local identifier that should be used for this input.\n\nThis will map to the `id` field of [`Event::Input`](https://docs.rs/dora-node-api/latest/dora_node_api/enum.Event.html#variant.Input) events sent to the node event loop. - `source_node_id` should be the `id` field of the node that sends the output that we want to subscribe to - `source_node_output_id` should be the identifier of the output that that we want to subscribe to\n\n## Example\n\n```yaml nodes: - id: example-node outputs: - one - two - id: receiver inputs: my_input: example-node/two ```",
-          "default": {},
+          "description": "Input data connections from other nodes.\n\nDefines the inputs that this node is subscribing to.\n\nThe `inputs` field should be a key-value map of the following format:\n\n`input_id: source_node_id/source_node_output_id`\n\nThe components are defined as follows:\n\n  - `input_id` is the local identifier that should be used for this input.\n\n    This will map to the `id` field of\n    [`Event::Input`](https://docs.rs/dora-node-api/latest/dora_node_api/enum.Event.html#variant.Input)\n    events sent to the node event loop.\n  - `source_node_id` should be the `id` field of the node that sends the output that we want\n    to subscribe to\n  - `source_node_output_id` should be the identifier of the output that that we want\n    to subscribe to\n\n## Example\n\n```yaml\nnodes:\n  - id: example-node\n    outputs:\n      - one\n      - two\n  - id: receiver\n    inputs:\n        my_input: example-node/two\n```",
           "type": "object",
-          "additionalProperties": true
+          "additionalProperties": {
+            "$ref": "#/$defs/Input"
+          },
+          "default": {}
         },
         "name": {
-          "description": "Human-readable node name for documentation.\n\nThis optional field can be used to define a more descriptive name in addition to a short [`id`](Self::id).\n\n## Example\n\n```yaml nodes: - id: camera_node name: \"Camera Input Handler\"",
+          "description": "Human-readable node name for documentation.\n\nThis optional field can be used to define a more descriptive name in addition to a short\n[`id`](Self::id).\n\n## Example\n\n```yaml\nnodes:\n  - id: camera_node\n    name: \"Camera Input Handler\"",
           "type": [
             "string",
             "null"
           ]
         },
         "operator": {
-          "description": "Single operator configuration.\n\nThis is a convenience field for defining runtime nodes that contain only a single operator. This field is an alternative to the [`operators`](Self::operators) field, which can be used if there is only a single operator defined for the runtime node.\n\n## Example\n\n```yaml nodes: - id: runtime-node operator: id: processor python: script.py outputs: [data] ```",
+          "description": "Single operator configuration.\n\nThis is a convenience field for defining runtime nodes that contain only a single operator.\nThis field is an alternative to the [`operators`](Self::operators) field, which can be used\nif there is only a single operator defined for the runtime node.\n\n## Example\n\n```yaml\nnodes:\n  - id: runtime-node\n    operator:\n      id: processor\n      python: script.py\n      outputs: [data]\n```",
           "anyOf": [
             {
-              "$ref": "#/definitions/SingleOperatorDefinition"
+              "$ref": "#/$defs/SingleOperatorDefinition"
             },
             {
               "type": "null"
@@ -311,54 +315,58 @@
           ]
         },
         "operators": {
-          "description": "Multiple operators running in a shared runtime process.\n\nOperators are an experimental, lightweight alternative to nodes. Instead of running as a separate process, operators are linked into a runtime process. This allows running multiple operators to share a single address space (not supported for Python currently).\n\nOperators are defined as part of the node list, as children of a runtime node. A runtime node is a special node that specifies no [`path`](Self::path) field, but contains an `operators` field instead.\n\n## Example\n\n```yaml nodes: - id: runtime-node operators: - id: processor python: process.py ```",
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "$ref": "#/definitions/OperatorDefinition"
-          }
+          "description": "Multiple operators running in a shared runtime process.\n\nOperators are an experimental, lightweight alternative to nodes.\nInstead of running as a separate process, operators are linked into a runtime process.\nThis allows running multiple operators to share a single address space (not supported for\nPython currently).\n\nOperators are defined as part of the node list, as children of a runtime node.\nA runtime node is a special node that specifies no [`path`](Self::path) field, but contains\nan `operators` field instead.\n\n## Example\n\n```yaml\nnodes:\n  - id: runtime-node\n    operators:\n      - id: processor\n        python: process.py\n```",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RuntimeNode"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "outputs": {
-          "description": "Output data identifiers produced by this node.\n\nList of output identifiers that the node sends. Must contain all `output_id` values that the node uses when sending output, e.g. through the [`send_output`](https://docs.rs/dora-node-api/latest/dora_node_api/struct.DoraNode.html#method.send_output) function.\n\n## Example\n\n```yaml nodes: - id: example-node outputs: - processed_image - metadata ```",
-          "default": [],
+          "description": "Output data identifiers produced by this node.\n\nList of output identifiers that the node sends.\nMust contain all `output_id` values that the node uses when sending output, e.g. through the\n[`send_output`](https://docs.rs/dora-node-api/latest/dora_node_api/struct.DoraNode.html#method.send_output)\nfunction.\n\n## Example\n\n```yaml\nnodes:\n  - id: example-node\n    outputs:\n      - processed_image\n      - metadata\n```",
           "type": "array",
+          "default": [],
           "items": {
-            "$ref": "#/definitions/DataId"
+            "$ref": "#/$defs/DataId"
           },
           "uniqueItems": true
         },
         "path": {
-          "description": "Path to executable or script that should be run.\n\nSpecifies the path of the executable or script that Dora should run when starting the dataflow. This can point to a normal executable (e.g. when using a compiled language such as Rust) or a Python script.\n\nDora will automatically append a `.exe` extension on Windows systems when the specified file name has no extension.\n\n## Example\n\n```yaml nodes: - id: rust-example path: target/release/rust-node - id: python-example path: ./receive_data.py ```\n\n## URL as Path\n\nThe `path` field can also point to a URL instead of a local path. In this case, Dora will download the given file when starting the dataflow.\n\nNote that this is quite an old feature and using this functionality is **not recommended** anymore. Instead, we recommend using a [`git`][Self::git] and/or [`build`](Self::build) key.",
+          "description": "Path to executable or script that should be run.\n\nSpecifies the path of the executable or script that Dora should run when starting the\ndataflow.\nThis can point to a normal executable (e.g. when using a compiled language such as Rust) or\na Python script.\n\nDora will automatically append a `.exe` extension on Windows systems when the specified\nfile name has no extension.\n\n## Example\n\n```yaml\nnodes:\n  - id: rust-example\n    path: target/release/rust-node\n  - id: python-example\n    path: ./receive_data.py\n```\n\n## URL as Path\n\nThe `path` field can also point to a URL instead of a local path.\nIn this case, Dora will download the given file when starting the dataflow.\n\nNote that this is quite an old feature and using this functionality is **not recommended**\nanymore. Instead, we recommend using a [`git`][Self::git] and/or [`build`](Self::build)\nkey.",
           "type": [
             "string",
             "null"
           ]
         },
         "rev": {
-          "description": "Git revision (e.g. commit hash) to checkout after cloning.\n\nThe `rev` field is only allowed in combination with the [`git`](#git) field. It specifies the git revision (e.g. a commit hash) that should be checked out after cloning. Only one of `branch`, `tag`, or `rev` can be specified.\n\n## Example\n\n```yaml nodes: - id: rust-node git: https://github.com/dora-rs/dora.git rev: 64ab0d7c ```",
+          "description": "Git revision (e.g. commit hash) to checkout after cloning.\n\nThe `rev` field is only allowed in combination with the [`git`](#git) field.\nIt specifies the git revision (e.g. a commit hash) that should be checked out after cloning.\nOnly one of `branch`, `tag`, or `rev` can be specified.\n\n## Example\n\n```yaml\nnodes:\n  - id: rust-node\n    git: https://github.com/dora-rs/dora.git\n    rev: 64ab0d7c\n```",
           "type": [
             "string",
             "null"
           ]
         },
         "send_stdout_as": {
-          "description": "Redirect stdout/stderr to a data output.\n\nThis field can be used to send all stdout and stderr output of the node as a Dora output. Each output line is sent as a separate message.\n\n## Example\n\n```yaml nodes: - id: example send_stdout_as: stdout_output - id: logger inputs: example_output: example/stdout_output ```",
+          "description": "Redirect stdout/stderr to a data output.\n\nThis field can be used to send all stdout and stderr output of the node as a Dora output.\nEach output line is sent as a separate message.\n\n\n## Example\n\n```yaml\nnodes:\n  - id: example\n    send_stdout_as: stdout_output\n  - id: logger\n    inputs:\n        example_output: example/stdout_output\n```",
           "type": [
             "string",
             "null"
           ]
         },
         "tag": {
-          "description": "Git tag to checkout after cloning.\n\nThe `tag` field is only allowed in combination with the [`git`](#git) field. It specifies the git tag that should be checked out after cloning. Only one of `branch`, `tag`, or `rev` can be specified.\n\n## Example\n\n```yaml nodes: - id: rust-node git: https://github.com/dora-rs/dora.git tag: v0.3.0 ```",
+          "description": "Git tag to checkout after cloning.\n\nThe `tag` field is only allowed in combination with the [`git`](#git) field.\nIt specifies the git tag that should be checked out after cloning.\nOnly one of `branch`, `tag`, or `rev` can be specified.\n\n## Example\n\n```yaml\nnodes:\n  - id: rust-node\n    git: https://github.com/dora-rs/dora.git\n    tag: v0.3.0\n```",
           "type": [
             "string",
             "null"
           ]
         }
       },
-      "additionalProperties": true
+      "additionalProperties": true,
+      "required": [
+        "id"
+      ]
     },
     "NodeId": {
       "type": "string"
@@ -373,15 +381,9 @@
         },
         {
           "type": "object",
-          "required": [
-            "GitBranch"
-          ],
           "properties": {
             "GitBranch": {
               "type": "object",
-              "required": [
-                "repo"
-              ],
               "properties": {
                 "repo": {
                   "type": "string"
@@ -389,49 +391,28 @@
                 "rev": {
                   "anyOf": [
                     {
-                      "$ref": "#/definitions/GitRepoRev"
+                      "$ref": "#/$defs/GitRepoRev"
                     },
                     {
                       "type": "null"
                     }
                   ]
                 }
-              }
+              },
+              "required": [
+                "repo"
+              ]
             }
           },
-          "additionalProperties": true
+          "additionalProperties": true,
+          "required": [
+            "GitBranch"
+          ]
         }
       ]
     },
     "OperatorDefinition": {
       "type": "object",
-      "oneOf": [
-        {
-          "type": "object",
-          "required": [
-            "shared-library"
-          ],
-          "properties": {
-            "shared-library": {
-              "type": "string"
-            }
-          },
-          "additionalProperties": true
-        },
-        {
-          "type": "object",
-          "required": [
-            "python"
-          ],
-          "properties": {
-            
-          },
-          "additionalProperties": true
-        }
-      ],
-      "required": [
-        "id"
-      ],
       "properties": {
         "build": {
           "description": "Build commands for this operator",
@@ -449,17 +430,15 @@
         },
         "id": {
           "description": "Unique operator identifier within the runtime",
-          "allOf": [
-            {
-              "$ref": "#/definitions/OperatorId"
-            }
-          ]
+          "$ref": "#/$defs/OperatorId"
         },
         "inputs": {
           "description": "Input data connections",
-          "default": {},
           "type": "object",
-          "additionalProperties": true
+          "additionalProperties": {
+            "$ref": "#/$defs/Input"
+          },
+          "default": {}
         },
         "name": {
           "description": "Human-readable operator name",
@@ -470,10 +449,10 @@
         },
         "outputs": {
           "description": "Output data identifiers",
-          "default": [],
           "type": "array",
+          "default": [],
           "items": {
-            "$ref": "#/definitions/DataId"
+            "$ref": "#/$defs/DataId"
           },
           "uniqueItems": true
         },
@@ -484,54 +463,71 @@
             "null"
           ]
         }
-      }
-    },
-    "OperatorId": {
-      "type": "string"
-    },
-    "PythonSource": {
-      "type": "object",
-      "required": [
-        "source"
-      ],
-      "properties": {
-        "conda_env": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "source": {
-          "type": "string"
-        }
-      }
-    },
-    "SingleOperatorDefinition": {
-      "type": "object",
+      },
       "oneOf": [
         {
           "type": "object",
-          "required": [
-            "shared-library"
-          ],
           "properties": {
             "shared-library": {
               "type": "string"
             }
           },
-          "additionalProperties": true
+          "required": [
+            "shared-library"
+          ]
         },
         {
           "type": "object",
+          "properties": {
+            "python": {
+              "$ref": "#/$defs/PythonSource"
+            }
+          },
           "required": [
             "python"
-          ],
-          "properties": {
-            
-          },
-          "additionalProperties": true
+          ]
         }
       ],
+      "required": [
+        "id"
+      ]
+    },
+    "OperatorId": {
+      "type": "string"
+    },
+    "PythonSource": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "conda_env": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "source": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "source"
+          ]
+        }
+      ]
+    },
+    "RuntimeNode": {
+      "description": "List of operators running in this runtime",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/OperatorDefinition"
+      }
+    },
+    "SingleOperatorDefinition": {
+      "type": "object",
       "properties": {
         "build": {
           "description": "Build commands for this operator",
@@ -551,7 +547,7 @@
           "description": "Operator identifier (optional for single operators)",
           "anyOf": [
             {
-              "$ref": "#/definitions/OperatorId"
+              "$ref": "#/$defs/OperatorId"
             },
             {
               "type": "null"
@@ -560,9 +556,11 @@
         },
         "inputs": {
           "description": "Input data connections",
-          "default": {},
           "type": "object",
-          "additionalProperties": true
+          "additionalProperties": {
+            "$ref": "#/$defs/Input"
+          },
+          "default": {}
         },
         "name": {
           "description": "Human-readable operator name",
@@ -573,10 +571,10 @@
         },
         "outputs": {
           "description": "Output data identifiers",
-          "default": [],
           "type": "array",
+          "default": [],
           "items": {
-            "$ref": "#/definitions/DataId"
+            "$ref": "#/$defs/DataId"
           },
           "uniqueItems": true
         },
@@ -587,22 +585,46 @@
             "null"
           ]
         }
-      }
+      },
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "shared-library": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "shared-library"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "python": {
+              "$ref": "#/$defs/PythonSource"
+            }
+          },
+          "required": [
+            "python"
+          ]
+        }
+      ]
     },
     "UserInputMapping": {
       "type": "object",
-      "required": [
-        "output",
-        "source"
-      ],
       "properties": {
         "output": {
-          "$ref": "#/definitions/DataId"
+          "$ref": "#/$defs/DataId"
         },
         "source": {
-          "$ref": "#/definitions/NodeId"
+          "$ref": "#/$defs/NodeId"
         }
-      }
+      },
+      "required": [
+        "source",
+        "output"
+      ]
     }
   }
 }
