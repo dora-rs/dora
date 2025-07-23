@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "dora-rs specification",
-  "description": "The main configuration structure for defining a Dora dataflow. Dataflows are\nspecified through YAML files that describe the nodes, their connections, and\nexecution parameters.\n\n## Structure\n\nA dataflow consists of:\n- **Nodes**: The computational units that process data\n- **Communication**: Optional communication configuration\n- **Deployment**: Optional deployment configuration (unstable)\n- **Debug options**: Optional development and debugging settings (unstable)\n\n## Example\n\n```yaml\nnodes:\n - id: webcam\n    operator:\n      python: webcam.py\n      inputs:\n        tick: dora/timer/millis/100\n      outputs:\n        - image\n  - id: plot\n    operator:\n      python: plot.py\n      inputs:\n        image: webcam/image\n```",
+  "description": "main configuration structure for defining a Dora dataflow. Dataflows are\nspecified through YAML files that describe the nodes, their connections, and\nexecution parameters.\n\n## Structure\n\nA dataflow consists of:\n- **Nodes**: The computational units that process data\n- **Communication**: Optional communication configuration\n- **Deployment**: Optional deployment configuration (unstable)\n- **Debug options**: Optional development and debugging settings (unstable)\n\n## Example\n\n```yaml\nnodes:\n - id: webcam\n    operator:\n      python: webcam.py\n      inputs:\n        tick: dora/timer/millis/100\n      outputs:\n        - image\n  - id: plot\n    operator:\n      python: plot.py\n      inputs:\n        image: webcam/image\n```",
   "type": "object",
   "properties": {
     "nodes": {
