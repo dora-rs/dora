@@ -1018,7 +1018,7 @@ impl Daemon {
 
             let node_id = node.id.clone();
             let mut logger = self.logger.for_node_build(build_id, node_id.clone());
-            logger.log(LogLevel::Info, "building").await;
+            logger.log(LogLevel::Debug, "building").await;
             let git_source = git_sources.get(&node_id).cloned();
             let prev_git_source = prev_git_sources.get(&node_id).cloned();
             let prev_git = prev_git_source.map(|prev_source| PrevGitSource {
