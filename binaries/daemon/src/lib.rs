@@ -2193,15 +2193,12 @@ async fn read_last_n_lines(file: &mut File, mut tail: usize) -> io::Result<Vec<u
         let read_len = (pos - new_pos) as usize;
         pos = new_pos;
 
-        let read = file.read(&mut buffer[..read_len]).await?;
-        if read < read_len {
-            break;
-        }
+        file.read_exact(&mut buffer[..read_len]).await?;
         let read_buf = if at_end {
             at_end = false;
-            &buffer[..read].trim_ascii_end()
+            &buffer[..read_len].trim_ascii_end()
         } else {
-            &buffer[..read]
+            &buffer[..read_len]
         };
 
         let mut iter = memchr::memrchr_iter(b'\n', read_buf);
