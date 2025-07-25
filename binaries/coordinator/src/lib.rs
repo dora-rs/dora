@@ -625,7 +625,12 @@ async fn start_inner(
                                 let _ = reply_sender.send(Err(err));
                             }
                         },
-                        ControlRequest::Logs { uuid, name, node } => {
+                        ControlRequest::Logs {
+                            uuid,
+                            name,
+                            node,
+                            tail,
+                        } => {
                             let dataflow_uuid = if let Some(uuid) = uuid {
                                 Ok(uuid)
                             } else if let Some(name) = name {
@@ -643,9 +648,10 @@ async fn start_inner(
                                         node.into(),
                                         &mut daemon_connections,
                                         clock.new_timestamp(),
+                                        tail,
                                     )
                                     .await
-                                    .map(ControlRequestReply::Logs);
+                                    .map(|data| ControlRequestReply::Logs { uuid, data });
                                     let _ = reply_sender.send(reply);
                                 }
                                 Err(err) => {
@@ -1203,6 +1209,7 @@ async fn retrieve_logs(
     node_id: NodeId,
     daemon_connections: &mut DaemonConnections,
     timestamp: uhlc::Timestamp,
+    tail: usize,
 ) -> eyre::Result<Vec<u8>> {
     let nodes = if let Some(dataflow) = archived_dataflows.get(&dataflow_id) {
         dataflow.nodes.clone()
@@ -1216,6 +1223,7 @@ async fn retrieve_logs(
         inner: DaemonCoordinatorEvent::Logs {
             dataflow_id,
             node_id: node_id.clone(),
+            tail,
         },
         timestamp,
     })?;
