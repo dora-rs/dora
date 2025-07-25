@@ -174,7 +174,7 @@ fn visualize_inputs(
     for (input_id, input) in inputs {
         match &input.mapping {
             mapping @ InputMapping::Timer { .. } => {
-                writeln!(flowchart, "  {} -- {input_id} --> {target}", mapping).unwrap();
+                writeln!(flowchart, "  {mapping} -- {input_id} --> {target}").unwrap();
             }
             InputMapping::User(mapping) => {
                 visualize_user_mapping(mapping, target, nodes, input_id, flowchart)

@@ -76,7 +76,7 @@ fn metadata_to_exif(metadata: &MetadataParameters) -> Result<Vec<u8>> {
     }
 
     let vector = metadata_exif.as_u8_vec(little_exif::filetype::FileExtension::HEIF)?;
-    return Ok(vector);
+    Ok(vector)
 }
 
 fn bgr8_to_yuv420(bgr_data: Vec<u8>, width: usize, height: usize) -> (Vec<u8>, Vec<u8>, Vec<u8>) {

@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 pub use crate::id::{DataId, NodeId, OperatorId};
 
+/// Contains the input and output configuration of the node.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct NodeRunConfig {
     /// Inputs for the nodes as a map from input ID to `node_id/output_id`.
@@ -42,7 +43,7 @@ pub struct Input {
     pub queue_size: Option<usize>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum InputDef {
     MappingOnly(InputMapping),

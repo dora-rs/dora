@@ -1,3 +1,7 @@
+//! The `dora start` command is used to spawn a dataflow in a pre-existing _dora network_. To create a dora network, spawn a `dora coordinator` and one or multiple `dora daemon` instances.
+//!
+//! The `dora start` command does not run any build commands, nor update git dependencies or similar. Use `dora build` for that.
+
 use super::{default_tracing, Executable};
 use crate::{
     command::start::attach::attach_dataflow,

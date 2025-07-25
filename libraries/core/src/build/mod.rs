@@ -1,8 +1,6 @@
 pub use git::GitManager;
 pub use logger::{BuildLogger, LogLevelOrStdout};
 
-use url::Url;
-
 use std::{collections::BTreeMap, future::Future, path::PathBuf};
 
 use crate::descriptor::ResolvedNode;
@@ -114,7 +112,13 @@ async fn build_node(
     uv: bool,
 ) -> eyre::Result<()> {
     logger
-        .log_message(LogLevel::Info, format!("running build command: `{build}"))
+        .log_message(
+            LogLevel::Info,
+            format!(
+                "running build command: `{build}` in {}",
+                working_dir.display()
+            ),
+        )
         .await;
     let build = build.to_owned();
     let node_env = node_env.clone();
@@ -124,14 +128,16 @@ async fn build_node(
         run_build_command(&build, &working_dir, uv, &node_env, stdout_tx)
             .context("build command failed")
     });
-    tokio::spawn(async move {
+    let stdout_task = tokio::spawn(async move {
         while let Some(line) = stdout.recv().await {
             logger
                 .log_stdout(line.unwrap_or_else(|err| format!("io err: {}", err.kind())))
                 .await;
         }
     });
+    stdout_task.await?;
     task.await??;
+
     Ok(())
 }
 

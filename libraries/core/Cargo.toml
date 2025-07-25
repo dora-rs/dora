@@ -24,7 +24,7 @@ uuid = { version = "1.7", features = ["serde", "v7"] }
 tracing = "0.1"
 serde-with-expand-env = "1.1.0"
 tokio = { version = "1.24.1", features = ["fs", "process", "sync", "rt"] }
-schemars = "0.8.19"
+schemars = "1.0.4"
 serde_json = "1.0.117"
 log = { version = "0.4.21", features = ["serde"] }
 dunce = "1.0.5"

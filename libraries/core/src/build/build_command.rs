@@ -15,6 +15,8 @@ pub fn run_build_command(
     envs: &Option<BTreeMap<String, EnvValue>>,
     stdout_tx: tokio::sync::mpsc::Sender<std::io::Result<String>>,
 ) -> eyre::Result<()> {
+    std::fs::create_dir_all(working_dir).context("failed to create working directory")?;
+
     let lines = build.lines().collect::<Vec<_>>();
     for build_line in lines {
         let mut split = build_line.split_whitespace();
@@ -50,7 +52,7 @@ pub fn run_build_command(
 
         let mut child = cmd
             .spawn()
-            .wrap_err_with(|| format!("failed to spawn `{}`", build))?;
+            .wrap_err_with(|| format!("failed to spawn `{build}`"))?;
 
         let child_stdout = BufReader::new(child.stdout.take().expect("failed to take stdout"));
         let child_stderr = BufReader::new(child.stderr.take().expect("failed to take stderr"));
@@ -74,7 +76,7 @@ pub fn run_build_command(
 
         let exit_status = cmd
             .status()
-            .wrap_err_with(|| format!("failed to run `{}`", build))?;
+            .wrap_err_with(|| format!("failed to run `{build}`"))?;
         if !exit_status.success() {
             return Err(eyre!("build command `{build_line}` returned {exit_status}"));
         }

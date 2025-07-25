@@ -122,6 +122,8 @@ impl Spawner {
         node_config: NodeConfig,
         node_stderr_most_recent: Arc<ArrayQueue<String>>,
     ) -> eyre::Result<PreparedNode> {
+        std::fs::create_dir_all(&node_working_dir)
+            .context("failed to create node working directory")?;
         let (command, error_msg) = match &node.kind {
             dora_core::descriptor::CoreNodeKind::Custom(n) => {
                 let mut command =
@@ -634,7 +636,7 @@ async fn path_spawn_command(
                     .wrap_err("failed to download custom node")?
             } else {
                 resolve_path(source, working_dir)
-                    .wrap_err_with(|| format!("failed to resolve node source `{}`", source))?
+                    .wrap_err_with(|| format!("failed to resolve node source `{source}`"))?
             };
 
             // If extension is .py, use python to run the script

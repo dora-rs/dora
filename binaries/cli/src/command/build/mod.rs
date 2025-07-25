@@ -1,3 +1,52 @@
+//! Provides the `dora build` command.
+//!
+//! The `dora build` command works like this:
+//!
+//! - Dataflows can specify a `build` command for each node in their YAML definition
+//! - Dora will run the `build` command when `dora build` is invoked
+//! - If the dataflow is distributed across multiple machines, each `build` command will be run the target machine of the corresponding node.
+//!     - i.e. the machine specified under the `deploy` key
+//!     - this requires a connection to the dora coordinator, so you need to specify the coordinator IP/port for this
+//!     - to run the build commands of all nodes _locally_, you can use `dora build --local`
+//! - If the build command does not specify any `deploy` keys, all build commands will be run locally (i.e. `dora build` behaves like `dora build --local`)
+//!
+//! #### Git Source
+//!
+//! - Nodes can have a git repository as source
+//!     - set the `git` config key to the URL of the repository
+//!     - by default, the default branch is used
+//!     - you can also specify a specific `branch` name
+//!     - alternatively, you can specify a `tag` name or a `rev` key with the commit hash
+//!     - you can only specify one of `branch`, `tag`, and `rev`, otherwise an error will occur
+//! - Dora will automatically clone and checkout the requested branch/tag/commit on `dora build`
+//!     - the `build` command will be run after cloning
+//!     - for distributed dataflows, the clone/checkout will happen on the target machine
+//! - subsequent `dora build` command will automatically fetch the latest changes for nodes
+//!     - not when using `tag` or `rev`, because these are not expected to change
+//! - after fetching changes, the `build` command will be executed again
+//!     - _tip:_ use a build tool that supports incremental builds (e.g. `cargo`) to make this rebuild faster
+//!
+//! The **working directory** will be set to the git repository.
+//! This means that both the `build` and `path` keys will be run from this folder.
+//! This allows you to use relative paths.
+//!
+//! #### Example
+//!
+//! ```yml
+//! nodes:
+//!   - id: rust-node
+//!     # URL of your repository
+//!     git: https://github.com/dora-rs/dora.git
+//!     # the build command that should be invoked after cloning
+//!     build: cargo build -p rust-dataflow-example-node
+//!     # path to the executable that should be run on start
+//!     path: target/debug/rust-dataflow-example-node
+//!     inputs:
+//!       tick: dora/timer/millis/10
+//!     outputs:
+//!       - random
+//! ```
+
 use communication_layer_request_reply::TcpRequestReplyConnection;
 use dora_core::{
     descriptor::{CoreNodeKind, CustomNode, Descriptor, DescriptorExt},
