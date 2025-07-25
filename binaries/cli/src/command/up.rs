@@ -25,7 +25,7 @@ impl Executable for Up {
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 struct UpConfig {}
 
-pub(crate) fn up(config_path: Option<&Path>) -> eyre::Result<()> {
+pub fn up(config_path: Option<&Path>) -> eyre::Result<()> {
     let UpConfig {} = parse_dora_config(config_path)?;
     let coordinator_addr = (LOCALHOST, DORA_COORDINATOR_PORT_CONTROL_DEFAULT).into();
     let mut session = match connect_to_coordinator(coordinator_addr) {
@@ -66,7 +66,7 @@ pub(crate) fn up(config_path: Option<&Path>) -> eyre::Result<()> {
     Ok(())
 }
 
-pub(crate) fn destroy(
+pub fn destroy(
     config_path: Option<&Path>,
     coordinator_addr: SocketAddr,
 ) -> Result<(), eyre::ErrReport> {
