@@ -2,6 +2,12 @@ use super::{default_tracing, Executable};
 use clap::Subcommand;
 use eyre::{bail, Context};
 
+#[derive(Debug, clap::Args)]
+pub struct Self_ {
+    #[clap(subcommand)]
+    command: SelfSubCommand,
+}
+
 #[derive(Debug, Subcommand)]
 /// Dora CLI self-management commands
 pub enum SelfSubCommand {
@@ -19,11 +25,11 @@ pub enum SelfSubCommand {
     },
 }
 
-impl Executable for SelfSubCommand {
+impl Executable for Self_ {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
 
-        match self {
+        match self.command {
             SelfSubCommand::Update { check_only } => {
                 println!("Checking for updates...");
 

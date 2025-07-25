@@ -25,7 +25,7 @@ tracing = "0.1.36"
 tracing-opentelemetry = { version = "0.18.0", optional = true }
 futures-concurrency = "7.1.0"
 serde_json = "1.0.86"
-dora-core = { workspace = true, features = ["build"] }
+dora-core = { workspace = true, features = ["build", "zenoh"] }
 flume = "0.10.14"
 dora-download = { workspace = true }
 dora-tracing = { workspace = true, optional = true }
@@ -44,7 +44,7 @@ which = "5.0.0"
 sysinfo = "0.30.11"
 crossbeam = "0.8.4"
 crossbeam-skiplist = "0.1.3"
-zenoh = "1.1.1"
+zenoh = { workspace = true }
 url = "2.5.4"
 git2 = { workspace = true }
 dunce = "1.0.5"

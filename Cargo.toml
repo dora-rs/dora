@@ -95,6 +95,7 @@ pyo3 = { version = "0.23", features = [
 pythonize = "0.23"
 git2 = { version = "0.18.0", features = ["vendored-openssl"] }
 serde_yaml = "0.9.33"
+zenoh = "1.1.1"
 
 [package]
 name = "dora-examples"

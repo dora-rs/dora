@@ -2939,6 +2939,7 @@ dependencies = [
 name = "dora-cli"
 version = "0.3.12"
 dependencies = [
+ "arrow",
  "bat",
  "clap 4.5.32",
  "colored",
@@ -2955,6 +2956,7 @@ dependencies = [
  "dora-tracing",
  "dunce",
  "duration-str",
+ "enum_dispatch",
  "env_logger 0.11.6",
  "eyre",
  "futures",
@@ -2977,6 +2979,7 @@ dependencies = [
  "tracing-log 0.2.0",
  "uuid 1.16.0",
  "webbrowser 0.8.15",
+ "zenoh 1.3.0",
 ]
 
 [[package]]
@@ -3022,6 +3025,7 @@ dependencies = [
  "url",
  "uuid 1.16.0",
  "which",
+ "zenoh 1.3.0",
 ]
 
 [[package]]
@@ -3877,6 +3881,18 @@ version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f282cfdfe92516eb26c2af8589c274c7c17681f5ecc03c18255fe741c6aa64eb"
 dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.101",
+]
+
+[[package]]
+name = "enum_dispatch"
+version = "0.3.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aa18ce2bc66555b3218614519ac839ddb759a7d6720732f979ef8d13be147ecd"
+dependencies = [
+ "once_cell",
  "proc-macro2",
  "quote",
  "syn 2.0.101",
@@ -5138,9 +5154,9 @@ checksum = "fbf6a919d6cf397374f7dfeeea91d974c7c0a7221d0d0f4f20d859d329e53fcc"
 
 [[package]]
 name = "hermit-abi"
-version = "0.5.0"
+version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fbd780fe5cc30f81464441920d82ac8740e2e46b29a6fad543ddd075229ce37e"
+checksum = "fc0fef456e4baa96da950455cd02c081ca953b141298e41db3fc7e36b1da849c"
 
 [[package]]
 name = "hex"
@@ -5900,7 +5916,7 @@ version = "0.4.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e04d7f318608d35d4b61ddd75cbdaee86b023ebe2bd5a66ee0915f0bf93095a9"
 dependencies = [
- "hermit-abi 0.5.0",
+ "hermit-abi 0.5.2",
  "libc",
  "windows-sys 0.59.0",
 ]
@@ -7873,11 +7889,11 @@ checksum = "d75b0bedcc4fe52caa0e03d9f1151a323e4aa5e2d78ba3580400cd3c9e2bc4bc"
 
 [[package]]
 name = "onig"
-version = "6.4.0"
+version = "6.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8c4b31c8722ad9171c6d77d3557db078cab2bd50afcc9d09c8b315c59df8ca4f"
+checksum = "336b9c63443aceef14bea841b899035ae3abe89b7c486aaf4c5bd8aafedac3f0"
 dependencies = [
- "bitflags 1.3.2",
+ "bitflags 2.9.0",
  "libc",
  "once_cell",
  "onig_sys",
@@ -7885,9 +7901,9 @@ dependencies = [
 
 [[package]]
 name = "onig_sys"
-version = "69.8.1"
+version = "69.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b829e3d7e9cc74c7e315ee8edb185bf4190da5acde74afd7fc59c35b1f086e7"
+checksum = "c7f86c6eef3d6df15f23bcfb6af487cbd2fed4e5581d58d5bf1f5f8b7f6727dc"
 dependencies = [
  "cc",
  "pkg-config",
@@ -14413,9 +14429,9 @@ checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
 name = "value-bag"
-version = "1.10.0"
+version = "1.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3ef4c4aa54d5d05a279399bfa921ec387b7aba77caf7a682ae8d86785b8fdad2"
+checksum = "943ce29a8a743eb10d6082545d861b24f9d1b160b7d741e0f2cdf726bec909c5"
 
 [[package]]
 name = "variantly"
