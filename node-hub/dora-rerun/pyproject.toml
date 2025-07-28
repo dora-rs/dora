@@ -8,7 +8,7 @@ dynamic = ["version"]
 license = { text = "MIT" }
 requires-python = ">=3.10"
 
-dependencies = ["rerun-loader-urdf", 'rerun_sdk>=0.23.1', "robot-descriptions"]
+dependencies = ["rerun-loader-urdf", 'rerun_sdk>=0.24.0', "robot-descriptions"]
 
 scripts = { "dora-rerun" = "dora_rerun:py_main" }
 
