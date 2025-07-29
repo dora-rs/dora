@@ -6,6 +6,7 @@ import sys
 import time
 from pathlib import Path
 
+import numpy as np
 import pyarrow as pa
 import torch
 from dora import Node
@@ -125,6 +126,8 @@ BAD_SENTENCES = [
     "",
     " so",
     " so so",
+    "You",
+    "You ",
     "字幕",
     "字幕志愿",
     "中文字幕",
@@ -181,13 +184,14 @@ def cut_repetition(text, min_repeat_length=4, max_repeat_length=50):
 
 def main():
     """TODO: Add docstring."""
-    node = Node()
     text_noise = ""
-    noise_timestamp = time.time()
     # For macos use mlx:
     if sys.platform != "darwin":
         pipe = load_model()
 
+    node = Node()
+    noise_timestamp = time.time()
+    cache_audio = None
     for event in node:
         if event["type"] == "INPUT":
             if "text_noise" in event["id"]:
@@ -200,7 +204,12 @@ def main():
                 )
                 noise_timestamp = time.time()
             else:
-                audio = event["value"].to_numpy()
+                audio_input = event["value"].to_numpy()
+                if cache_audio is not None:
+                    audio = np.concatenate([cache_audio, audio_input])
+                else:
+                    audio = audio_input
+
                 confg = (
                     {"language": TARGET_LANGUAGE, "task": "translate"}
                     if TRANSLATE
@@ -215,6 +224,7 @@ def main():
                         audio,
                         path_or_hf_repo="mlx-community/whisper-large-v3-turbo",
                         append_punctuations=".",
+                        language=TARGET_LANGUAGE,
                     )
 
                 else:
@@ -235,6 +245,22 @@ def main():
 
                 if text.strip() == "" or text.strip() == ".":
                     continue
-                node.send_output(
-                    "text", pa.array([text]), {"language": TARGET_LANGUAGE},
-                )
+
+                if (
+                    (
+                        text.endswith(".")
+                        or text.endswith("!")
+                        or text.endswith("?")
+                        or text.endswith('."')
+                        or text.endswith('!"')
+                        or text.endswith('?"')
+                    )
+                    and not text.endswith("...")  # Avoid ending with ellipsis
+                ):
+                    node.send_output(
+                        "text",
+                        pa.array([text]),
+                    )
+                    cache_audio = None
+                else:
+                    cache_audio = audio
