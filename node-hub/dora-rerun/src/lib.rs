@@ -4,7 +4,7 @@ use std::{collections::HashMap, env::VarError, path::Path};
 
 use dora_node_api::{
     arrow::{
-        array::{Array, AsArray, Float64Array, StringArray, UInt16Array, UInt8Array},
+        array::{Array, AsArray, Float64Array, StringArray, UInt8Array},
         datatypes::Float32Type,
     },
     dora_core::config::DataId,
@@ -17,6 +17,7 @@ use rerun::{
     components::ImageBuffer, external::log::warn, ImageFormat, Points2D, Points3D, SpawnOptions,
 };
 pub mod boxes2d;
+pub mod boxes3d;
 pub mod series;
 pub mod urdf;
 use series::update_series;
@@ -27,12 +28,14 @@ static KEYS: &[&str] = &[
     "depth",
     "text",
     "boxes2d",
+    "boxes3d",
     "masks",
     "jointstate",
     "pose",
     "series",
     "points3d",
     "points2d",
+    "lines3d",
 ];
 
 pub fn lib_main() -> Result<()> {
@@ -109,10 +112,6 @@ pub fn lib_main() -> Result<()> {
         }
         Err(VarError::NotPresent) => (),
     };
-    let camera_pitch = std::env::var("CAMERA_PITCH")
-        .unwrap_or("0.0".to_string())
-        .parse::<f32>()
-        .unwrap();
 
     while let Some(event) = events.recv() {
         if let Event::Input { id, data, metadata } = event {
@@ -193,124 +192,119 @@ pub fn lib_main() -> Result<()> {
             } else if id.as_str().contains("depth") {
                 let width =
                     if let Some(Parameter::Integer(width)) = metadata.parameters.get("width") {
-                        width
+                        *width as usize
                     } else {
-                        &640
+                        640
                     };
-                let focal_length =
-                    if let Some(Parameter::ListInt(focals)) = metadata.parameters.get("focal") {
-                        focals.to_vec()
+                let height =
+                    if let Some(Parameter::Integer(height)) = metadata.parameters.get("height") {
+                        *height as usize
                     } else {
-                        vec![605, 605]
+                        480
                     };
-                let resolution = if let Some(Parameter::ListInt(resolution)) =
-                    metadata.parameters.get("resolution")
-                {
-                    resolution.to_vec()
+
+                // Check if we have camera metadata for pinhole camera setup
+                let has_camera_metadata = metadata.parameters.contains_key("camera_position")
+                    && metadata.parameters.contains_key("camera_orientation")
+                    && metadata.parameters.contains_key("focal");
+
+                if has_camera_metadata {
+                    // Extract camera parameters
+                    let focal_length = if let Some(Parameter::ListFloat(focals)) =
+                        metadata.parameters.get("focal")
+                    {
+                        (focals[0] as f32, focals[1] as f32)
+                    } else {
+                        (605.0, 605.0)
+                    };
+
+                    let principal_point = if let Some(Parameter::ListFloat(pp)) =
+                        metadata.parameters.get("principal_point")
+                    {
+                        (pp[0] as f32, pp[1] as f32)
+                    } else {
+                        (width as f32 / 2.0, height as f32 / 2.0)
+                    };
+
+                    let camera_position = if let Some(Parameter::ListFloat(pos)) =
+                        metadata.parameters.get("camera_position")
+                    {
+                        rerun::Vec3D::new(pos[0] as f32, pos[1] as f32, pos[2] as f32)
+                    } else {
+                        rerun::Vec3D::new(0.0, 0.0, 0.0)
+                    };
+
+                    let camera_orientation = if let Some(Parameter::ListFloat(quat)) =
+                        metadata.parameters.get("camera_orientation")
+                    {
+                        rerun::Quaternion::from_xyzw([
+                            quat[0] as f32,
+                            quat[1] as f32,
+                            quat[2] as f32,
+                            quat[3] as f32,
+                        ])
+                    } else {
+                        rerun::Quaternion::from_xyzw([0.0, 0.0, 0.0, 1.0])
+                    };
+
+                    // Create entity path for the camera
+                    let camera_entity = format!("{}/camera", id.as_str());
+
+                    // Log camera transform
+                    let camera_transform = rerun::Transform3D::from_translation_rotation(
+                        camera_position,
+                        camera_orientation,
+                    );
+                    rec.log(camera_entity.as_str(), &camera_transform)
+                        .context("could not log camera transform")?;
+
+                    // Log pinhole camera with RDF coordinates (matching original implementation)
+                    let pinhole = rerun::Pinhole::from_focal_length_and_resolution(
+                        focal_length,
+                        (width as f32, height as f32),
+                    )
+                    .with_camera_xyz(rerun::components::ViewCoordinates::RDF)
+                    .with_resolution((width as f32, height as f32))
+                    .with_principal_point(principal_point);
+
+                    rec.log(camera_entity.as_str(), &pinhole)
+                        .context("could not log pinhole camera")?;
+
+                    // Convert depth data to DepthImage
+                    match data.data_type() {
+                        dora_node_api::arrow::datatypes::DataType::Float64 => {
+                            let buffer: &Float64Array = data.as_any().downcast_ref().unwrap();
+                            let depth_values: Vec<f32> = buffer
+                                .iter()
+                                .map(|v| v.map(|d| d as f32).unwrap_or(0.0))
+                                .collect();
+
+                            let depth_image = rerun::external::ndarray::Array::from_shape_vec(
+                                (height, width),
+                                depth_values,
+                            )
+                            .context("Failed to create depth array")?;
+
+                            let depth_entity = format!("{}/depth_image", camera_entity);
+                            rec.log(
+                                depth_entity.as_str(),
+                                &rerun::DepthImage::try_from(depth_image)
+                                    .context("Failed to create depth image")?
+                                    .with_meter(1.0),
+                            )
+                            .context("could not log depth image")?;
+                        }
+                        _ => {
+                            return Err(eyre!(
+                                "Unsupported depth data type {} for pinhole camera",
+                                data.data_type()
+                            ));
+                        }
+                    }
                 } else {
-                    vec![640, 480]
-                };
-                let pitch = if let Some(Parameter::Float(pitch)) = metadata.parameters.get("pitch")
-                {
-                    *pitch as f32
-                } else {
-                    camera_pitch
-                };
-                let cos_theta = pitch.cos();
-                let sin_theta = pitch.sin();
-
-                let points = match data.data_type() {
-                    dora_node_api::arrow::datatypes::DataType::Float64 => {
-                        let buffer: &Float64Array = data.as_any().downcast_ref().unwrap();
-
-                        let mut points = vec![];
-                        buffer.iter().enumerate().for_each(|(i, z)| {
-                            let u = i as f32 % *width as f32; // Calculate x-coordinate (u)
-                            let v = i as f32 / *width as f32; // Calculate y-coordinate (v)
-
-                            if let Some(z) = z {
-                                let z = z as f32;
-                                // Skip points that have empty depth or is too far away
-                                if z == 0. || z > 8.0 {
-                                    points.push((0., 0., 0.));
-                                    return;
-                                }
-                                let y = (u - resolution[0] as f32) * z / focal_length[0] as f32;
-                                let x = (v - resolution[1] as f32) * z / focal_length[1] as f32;
-                                let new_x = sin_theta * z + cos_theta * x;
-                                let new_y = -y;
-                                let new_z = cos_theta * z - sin_theta * x;
-
-                                points.push((new_x, new_y, new_z));
-                            } else {
-                                points.push((0., 0., 0.));
-                            }
-                        });
-                        Points3D::new(points)
-                    }
-                    dora_node_api::arrow::datatypes::DataType::UInt16 => {
-                        let buffer: &UInt16Array = data.as_any().downcast_ref().unwrap();
-                        let mut points = vec![];
-                        buffer.iter().enumerate().for_each(|(i, z)| {
-                            let u = i as f32 % *width as f32; // Calculate x-coordinate (u)
-                            let v = i as f32 / *width as f32; // Calculate y-coordinate (v)
-
-                            if let Some(z) = z {
-                                let z = z as f32 / 1000.0; // Convert to meters
-                                                           // Skip points that have empty depth or is too far away
-                                if z == 0. || z > 8.0 {
-                                    points.push((0., 0., 0.));
-                                    return;
-                                }
-                                let y = (u - resolution[0] as f32) * z / focal_length[0] as f32;
-                                let x = (v - resolution[1] as f32) * z / focal_length[1] as f32;
-                                let new_x = sin_theta * z + cos_theta * x;
-                                let new_y = -y;
-                                let new_z = cos_theta * z - sin_theta * x;
-
-                                points.push((new_x, new_y, new_z));
-                            } else {
-                                points.push((0., 0., 0.));
-                            }
-                        });
-                        Points3D::new(points)
-                    }
-                    _ => {
-                        return Err(eyre!("Unsupported depth data type {}", data.data_type()));
-                    }
-                };
-                if let Some(color_buffer) = image_cache.get(&id.replace("depth", "image")) {
-                    let colors = if let Some(mask) = mask_cache.get(&id.replace("depth", "masks")) {
-                        let mask_length = color_buffer.len() / 3;
-                        let number_masks = mask.len() / mask_length;
-                        color_buffer
-                            .chunks(3)
-                            .enumerate()
-                            .map(|(e, x)| {
-                                for i in 0..number_masks {
-                                    if mask[i * mask_length + e] && (e % 3 == 0) {
-                                        if i == 0 {
-                                            return rerun::Color::from_rgb(255, x[1], x[2]);
-                                        } else if i == 1 {
-                                            return rerun::Color::from_rgb(x[0], 255, x[2]);
-                                        } else if i == 2 {
-                                            return rerun::Color::from_rgb(x[0], x[1], 255);
-                                        } else {
-                                            return rerun::Color::from_rgb(x[0], 255, x[2]);
-                                        }
-                                    }
-                                }
-                                rerun::Color::from_rgb(x[0], x[1], x[2])
-                            })
-                            .collect::<Vec<_>>()
-                    } else {
-                        color_buffer
-                            .chunks(3)
-                            .map(|x| rerun::Color::from_rgb(x[0], x[1], x[2]))
-                            .collect::<Vec<_>>()
-                    };
-                    rec.log(id.as_str(), &points.with_colors(colors))
-                        .context("could not log points")?;
+                    // No camera metadata - just log a warning and skip 3D reconstruction
+                    warn!("Depth data received without camera metadata (position, orientation, focal). Skipping 3D reconstruction.");
+                    warn!("To enable proper 3D reconstruction, ensure the depth data includes camera_position, camera_orientation, and focal metadata.");
                 }
             } else if id.as_str().contains("text") {
                 let buffer: StringArray = data.to_data().into();
@@ -341,6 +335,8 @@ pub fn lib_main() -> Result<()> {
                 })?;
             } else if id.as_str().contains("boxes2d") {
                 boxes2d::update_boxes2d(&rec, id, data, metadata).context("update boxes 2d")?;
+            } else if id.as_str().contains("boxes3d") {
+                boxes3d::update_boxes3d(&rec, id, data, metadata).context("update boxes 3d")?;
             } else if id.as_str().contains("masks") {
                 let masks = if let Some(data) = data.as_primitive_opt::<Float32Type>() {
                     let data = data
@@ -412,15 +408,38 @@ pub fn lib_main() -> Result<()> {
                 };
                 let dataid = id;
 
+                // Get radii from metadata
+                let radii = if let Some(Parameter::ListFloat(radii_list)) =
+                    metadata.parameters.get("radii")
+                {
+                    radii_list.iter().map(|&r| r as f32).collect::<Vec<f32>>()
+                } else if let Some(Parameter::Float(r)) = metadata.parameters.get("radius") {
+                    // Single radius for all points
+                    vec![*r as f32]
+                } else {
+                    vec![0.013] // Default radius
+                };
+
                 // get a random color
                 if let Ok(buffer) = into_vec::<f32>(&data) {
                     let mut points = vec![];
                     let mut colors = vec![];
+                    let num_points = buffer.len() / 3;
                     buffer.chunks(3).for_each(|chunk| {
                         points.push((chunk[0], chunk[1], chunk[2]));
                         colors.push(color);
                     });
-                    let points = Points3D::new(points).with_radii(vec![0.013; colors.len()]);
+
+                    // Handle radii vector
+                    let radii_vec = if radii.len() == num_points {
+                        radii
+                    } else if radii.len() == 1 {
+                        vec![radii[0]; num_points]
+                    } else {
+                        vec![0.013; num_points] // Fallback to default
+                    };
+
+                    let points = Points3D::new(points).with_radii(radii_vec);
 
                     rec.log(dataid.as_str(), &points.with_colors(colors))
                         .context("could not log points")?;
@@ -451,6 +470,47 @@ pub fn lib_main() -> Result<()> {
 
                     rec.log(dataid.as_str(), &points.with_colors(colors))
                         .context("could not log points")?;
+                }
+            } else if id.as_str().contains("lines3d") {
+                // Get color from metadata or use default
+                let color = if let Some(color_r) = metadata.parameters.get("color_r") {
+                    if let (
+                        Parameter::Integer(r),
+                        Some(Parameter::Integer(g)),
+                        Some(Parameter::Integer(b)),
+                    ) = (
+                        color_r,
+                        metadata.parameters.get("color_g"),
+                        metadata.parameters.get("color_b"),
+                    ) {
+                        rerun::Color::from_rgb(*r as u8, *g as u8, *b as u8)
+                    } else {
+                        rerun::Color::from_rgb(0, 255, 0) // Default green
+                    }
+                } else {
+                    rerun::Color::from_rgb(0, 255, 0) // Default green
+                };
+
+                let radius =
+                    if let Some(Parameter::Float(r)) = metadata.parameters.get("line_width") {
+                        *r as f32 / 100.0 // Convert from pixel-like width to world units
+                    } else {
+                        0.01 // Default radius
+                    };
+
+                if let Ok(buffer) = into_vec::<f32>(&data) {
+                    let mut line_points = vec![];
+                    buffer.chunks(3).for_each(|chunk| {
+                        line_points.push((chunk[0], chunk[1], chunk[2]));
+                    });
+
+                    rec.log(
+                        id.as_str(),
+                        &rerun::LineStrips3D::new([line_points])
+                            .with_colors([color])
+                            .with_radii([radius]),
+                    )
+                    .context("could not log line strips")?;
                 }
             } else {
                 println!("Could not find handler for {id}");
