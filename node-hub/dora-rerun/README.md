@@ -34,17 +34,18 @@ pip install dora-rerun
 
 - image: UInt8Array + metadata { "width": int, "height": int, "encoding": str }
 - boxes2D: StructArray + metadata { "format": str }
-- boxes3D: Float32Array/StructArray + metadata { "format": str, "solid": bool }
-  - Formats: "min_max" (default) [min_x, min_y, min_z, max_x, max_y, max_z], 
+- boxes3D: Float32Array/StructArray + metadata { "format": str, "solid": bool, "color": list[int] }
+  - Formats: "center_half_size" (default) [cx, cy, cz, hx, hy, hz],
             "center_size" [cx, cy, cz, sx, sy, sz], 
-            "center_half_size" [cx, cy, cz, hx, hy, hz]
+            "min_max" [min_x, min_y, min_z, max_x, max_y, max_z]
   - Default rendering: wireframe (set "solid": true for filled boxes)
+  - Color: RGB array [r, g, b] with values 0-255
 - text: StringArray
 - jointstate: Float32Array
-- points3d: Float32Array (xyz triplets) + metadata { "radius": float or "radii": list[float] }
+- points3d: Float32Array (xyz triplets) + metadata { "color": list[int] (RGB 0-255), "radii": list[float] }
 - points2d: Float32Array (xy pairs)
-- lines3d: Float32Array (xyz triplets) + metadata { "color_r": int, "color_g": int, "color_b": int, "line_width": float }
-- depth: Float64Array + metadata { "width": int, "height": int, "camera_position": list[float], "camera_orientation": list[float], "focal": list[float], "principal_point": list[float] }
+- lines3d: Float32Array (xyz triplets) + metadata { "color": list[int] (RGB 0-255), "radius": float }
+- depth: Float32Array + metadata { "width": int, "height": int, "camera_position": list[float], "camera_orientation": list[float], "focal": list[float], "principal_point": list[float] }
   - With camera metadata: creates pinhole camera view with depth image
   - Without camera metadata: skips 3D reconstruction
 

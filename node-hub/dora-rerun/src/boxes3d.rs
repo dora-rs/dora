@@ -20,7 +20,7 @@ pub fn update_boxes3d(
     let format = if let Some(Parameter::String(format)) = metadata.parameters.get("format") {
         format
     } else {
-        "min_max" // Default format: [min_x, min_y, min_z, max_x, max_y, max_z]
+        "center_half_size" // Default format
     };
 
     // Check if user wants solid fill mode (default is wireframe)
@@ -152,12 +152,20 @@ pub fn update_boxes3d(
                 .wrap_err("Could not log Boxes3D")?;
             return Ok(());
         } else {
-            let boxes = rerun::Boxes3D::from_centers_and_half_sizes(centers, half_sizes);
-            let boxes = if solid {
-                boxes.with_fill_mode(rerun::FillMode::Solid)
-            } else {
-                boxes
-            };
+            let mut boxes = rerun::Boxes3D::from_centers_and_half_sizes(centers, half_sizes);
+
+            if solid {
+                boxes = boxes.with_fill_mode(rerun::FillMode::Solid);
+            }
+
+            // Support single color from metadata
+            if let Some(Parameter::ListInt(rgb)) = metadata.parameters.get("color") {
+                if rgb.len() >= 3 {
+                    let color = rerun::Color::from_rgb(rgb[0] as u8, rgb[1] as u8, rgb[2] as u8);
+                    boxes = boxes.with_colors([color]);
+                }
+            }
+
             rec.log(id.as_str(), &boxes)
                 .wrap_err("Could not log Boxes3D")?;
         }
@@ -170,12 +178,20 @@ pub fn update_boxes3d(
                 .wrap_err("Could not log Boxes3D")?;
             return Ok(());
         } else {
-            let boxes = rerun::Boxes3D::from_centers_and_half_sizes(centers, half_sizes);
-            let boxes = if solid {
-                boxes.with_fill_mode(rerun::FillMode::Solid)
-            } else {
-                boxes
-            };
+            let mut boxes = rerun::Boxes3D::from_centers_and_half_sizes(centers, half_sizes);
+
+            if solid {
+                boxes = boxes.with_fill_mode(rerun::FillMode::Solid);
+            }
+
+            // Support single color from metadata
+            if let Some(Parameter::ListInt(rgb)) = metadata.parameters.get("color") {
+                if rgb.len() >= 3 {
+                    let color = rerun::Color::from_rgb(rgb[0] as u8, rgb[1] as u8, rgb[2] as u8);
+                    boxes = boxes.with_colors([color]);
+                }
+            }
+
             rec.log(id.as_str(), &boxes)
                 .wrap_err("Could not log Boxes3D")?;
         }
