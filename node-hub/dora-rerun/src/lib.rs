@@ -18,9 +18,7 @@ use rerun::{
 };
 pub mod boxes2d;
 pub mod boxes3d;
-pub mod series;
 pub mod urdf;
-use series::update_series;
 use urdf::{init_urdf, update_visualization};
 
 pub fn lib_main() -> Result<()> {
@@ -412,7 +410,14 @@ pub fn lib_main() -> Result<()> {
                     }
                 }
                 "series" => {
-                    update_series(&rec, id, data).context("could not plot series")?;
+                    let values = into_vec::<f32>(&data).context("could not cast series values")?;
+                    if !values.is_empty() {
+                        rec.log(
+                            id.as_str(),
+                            &rerun::Scalars::new([values[0] as f64]),
+                        )
+                        .context("could not log series")?;
+                    }
                 }
                 "points3d" => {
                     // Get color from metadata
