@@ -4,7 +4,7 @@ use std::{collections::HashMap, env::VarError, path::Path};
 
 use dora_node_api::{
     arrow::{
-        array::{Array, AsArray, Float64Array, StringArray, UInt8Array},
+        array::{Array, AsArray, Float32Array, Float64Array, StringArray, UInt8Array},
         datatypes::Float32Type,
     },
     dora_core::config::DataId,
@@ -272,12 +272,9 @@ pub fn lib_main() -> Result<()> {
 
                     // Convert depth data to DepthImage
                     match data.data_type() {
-                        dora_node_api::arrow::datatypes::DataType::Float64 => {
-                            let buffer: &Float64Array = data.as_any().downcast_ref().unwrap();
-                            let depth_values: Vec<f32> = buffer
-                                .iter()
-                                .map(|v| v.map(|d| d as f32).unwrap_or(0.0))
-                                .collect();
+                        dora_node_api::arrow::datatypes::DataType::Float32 => {
+                            let buffer: &Float32Array = data.as_any().downcast_ref().unwrap();
+                            let depth_values: Vec<f32> = buffer.values().to_vec();
 
                             let depth_image = rerun::external::ndarray::Array::from_shape_vec(
                                 (height, width),
@@ -296,7 +293,7 @@ pub fn lib_main() -> Result<()> {
                         }
                         _ => {
                             return Err(eyre!(
-                                "Unsupported depth data type {} for pinhole camera",
+                                "Depth data must be Float32Array, got {}. Please convert depth values to Float32 before sending.",
                                 data.data_type()
                             ));
                         }
@@ -395,32 +392,29 @@ pub fn lib_main() -> Result<()> {
             } else if id.as_str().contains("series") {
                 update_series(&rec, id, data).context("could not plot series")?;
             } else if id.as_str().contains("points3d") {
-                // Get color or assign random color in cache
-                let color = color_cache.get(&id);
-                let color = if let Some(color) = color {
-                    *color
+                // Get color from metadata
+                let color = if let Some(Parameter::ListInt(rgb)) = metadata.parameters.get("color")
+                {
+                    if rgb.len() >= 3 {
+                        rerun::Color::from_rgb(rgb[0] as u8, rgb[1] as u8, rgb[2] as u8)
+                    } else {
+                        rerun::Color::from_rgb(128, 128, 128) // Default gray
+                    }
                 } else {
-                    let color =
-                        rerun::Color::from_rgb(rand::random::<u8>(), 180, rand::random::<u8>());
-
-                    color_cache.insert(id.clone(), color);
-                    color
+                    rerun::Color::from_rgb(128, 128, 128) // Default gray
                 };
+
                 let dataid = id;
 
-                // Get radii from metadata
+                // Get radii from metadata as array
                 let radii = if let Some(Parameter::ListFloat(radii_list)) =
                     metadata.parameters.get("radii")
                 {
                     radii_list.iter().map(|&r| r as f32).collect::<Vec<f32>>()
-                } else if let Some(Parameter::Float(r)) = metadata.parameters.get("radius") {
-                    // Single radius for all points
-                    vec![*r as f32]
                 } else {
-                    vec![0.013] // Default radius
+                    vec![0.01] // Default 1cm radius
                 };
 
-                // get a random color
                 if let Ok(buffer) = into_vec::<f32>(&data) {
                     let mut points = vec![];
                     let mut colors = vec![];
@@ -430,13 +424,13 @@ pub fn lib_main() -> Result<()> {
                         colors.push(color);
                     });
 
-                    // Handle radii vector
+                    // Expand single radius to all points if needed
                     let radii_vec = if radii.len() == num_points {
                         radii
                     } else if radii.len() == 1 {
                         vec![radii[0]; num_points]
                     } else {
-                        vec![0.013; num_points] // Fallback to default
+                        vec![0.01; num_points] // Default 1cm radius
                     };
 
                     let points = Points3D::new(points).with_radii(radii_vec);
@@ -472,18 +466,11 @@ pub fn lib_main() -> Result<()> {
                         .context("could not log points")?;
                 }
             } else if id.as_str().contains("lines3d") {
-                // Get color from metadata or use default
-                let color = if let Some(color_r) = metadata.parameters.get("color_r") {
-                    if let (
-                        Parameter::Integer(r),
-                        Some(Parameter::Integer(g)),
-                        Some(Parameter::Integer(b)),
-                    ) = (
-                        color_r,
-                        metadata.parameters.get("color_g"),
-                        metadata.parameters.get("color_b"),
-                    ) {
-                        rerun::Color::from_rgb(*r as u8, *g as u8, *b as u8)
+                // Get color from metadata
+                let color = if let Some(Parameter::ListInt(rgb)) = metadata.parameters.get("color")
+                {
+                    if rgb.len() >= 3 {
+                        rerun::Color::from_rgb(rgb[0] as u8, rgb[1] as u8, rgb[2] as u8)
                     } else {
                         rerun::Color::from_rgb(0, 255, 0) // Default green
                     }
@@ -491,12 +478,12 @@ pub fn lib_main() -> Result<()> {
                     rerun::Color::from_rgb(0, 255, 0) // Default green
                 };
 
-                let radius =
-                    if let Some(Parameter::Float(r)) = metadata.parameters.get("line_width") {
-                        *r as f32 / 100.0 // Convert from pixel-like width to world units
-                    } else {
-                        0.01 // Default radius
-                    };
+                // Get radius for line thickness
+                let radius = if let Some(Parameter::Float(r)) = metadata.parameters.get("radius") {
+                    *r as f32
+                } else {
+                    0.01 // Default radius
+                };
 
                 if let Ok(buffer) = into_vec::<f32>(&data) {
                     let mut line_points = vec![];
