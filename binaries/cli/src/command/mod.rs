@@ -16,22 +16,22 @@ mod up;
 
 pub use run::run_func;
 
-use build::Build;
-use check::Check;
-use coordinator::Coordinator;
-use daemon::Daemon;
-use destroy::Destroy;
-use eyre::Context;
-use graph::Graph;
-use list::ListArgs;
-use logs::LogsArgs;
-use new::NewArgs;
-use run::Run;
-use runtime::Runtime;
-use self_::SelfSubCommand;
-use start::Start;
-use stop::Stop;
-use up::Up;
+pub use build::Build;
+pub use check::Check;
+pub use coordinator::Coordinator;
+pub use daemon::Daemon;
+pub use destroy::Destroy;
+pub use eyre::Context;
+pub use graph::Graph;
+pub use list::ListArgs;
+pub use logs::LogsArgs;
+pub use new::NewArgs;
+pub use run::Run;
+pub use runtime::Runtime;
+pub use self_::SelfSubCommand;
+pub use start::Start;
+pub use stop::Stop;
+pub use up::Up;
 
 /// dora-rs cli client
 #[derive(Debug, clap::Subcommand)]

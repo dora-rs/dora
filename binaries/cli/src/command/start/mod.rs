@@ -31,28 +31,28 @@ mod attach;
 pub struct Start {
     /// Path to the dataflow descriptor file
     #[clap(value_name = "PATH")]
-    dataflow: String,
+    pub dataflow: String,
     /// Assign a name to the dataflow
     #[clap(long)]
-    name: Option<String>,
+    pub name: Option<String>,
     /// Address of the dora coordinator
     #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
-    coordinator_addr: IpAddr,
+    pub coordinator_addr: IpAddr,
     /// Port number of the coordinator control server
     #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
-    coordinator_port: u16,
+    pub coordinator_port: u16,
     /// Attach to the dataflow and wait for its completion
     #[clap(long, action)]
-    attach: bool,
+    pub attach: bool,
     /// Run the dataflow in background
     #[clap(long, action)]
-    detach: bool,
+    pub detach: bool,
     /// Enable hot reloading (Python only)
     #[clap(long, action)]
-    hot_reload: bool,
+    pub hot_reload: bool,
     // Use UV to run nodes.
     #[clap(long, action)]
-    uv: bool,
+    pub uv: bool,
 }
 
 impl Executable for Start {
