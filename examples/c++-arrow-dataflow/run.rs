@@ -72,7 +72,7 @@ async fn main() -> eyre::Result<()> {
 
 fn find_arrow_config() -> eyre::Result<ArrowConfig> {
     let output = Command::new("pkg-config")
-        .args(&["--cflags", "arrow"])
+        .args(["--cflags", "arrow"])
         .output()
         .wrap_err("Failed to run pkg-config. Make sure Arrow C++ is installed")?;
 
@@ -85,7 +85,7 @@ fn find_arrow_config() -> eyre::Result<ArrowConfig> {
     let cflags = String::from_utf8(output.stdout)?.trim().to_string();
 
     let output = Command::new("pkg-config")
-        .args(&["--libs", "arrow"])
+        .args(["--libs", "arrow"])
         .output()
         .wrap_err("Failed to get Arrow library flags")?;
 
