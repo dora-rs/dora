@@ -1,4 +1,4 @@
-use anyhow::{ensure, Result};
+use anyhow::{Result, ensure};
 use nom::{
     bytes::complete::is_not,
     character::complete::{char, space0, space1},
@@ -8,7 +8,7 @@ use nom::{
 };
 
 use super::{error::RclMsgError, ident, literal, types};
-use crate::types::{primitives::PrimitiveType, Constant, ConstantType};
+use crate::types::{Constant, ConstantType, primitives::PrimitiveType};
 
 fn validate_value(r#type: ConstantType, value: &str) -> Result<Vec<String>> {
     match r#type {

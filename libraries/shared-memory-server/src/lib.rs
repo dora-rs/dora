@@ -1,7 +1,7 @@
 #![allow(clippy::missing_safety_doc)]
 
 use self::channel::ShmemChannel;
-use eyre::{eyre, Context};
+use eyre::{Context, eyre};
 use serde::{Deserialize, Serialize};
 pub use shared_memory_extended::{Shmem, ShmemConf};
 use std::marker::PhantomData;
@@ -18,9 +18,7 @@ pub struct ShmemServer<T, U> {
 impl<T, U> ShmemServer<T, U> {
     pub unsafe fn new(memory: Shmem) -> eyre::Result<Self> {
         Ok(Self {
-            channel: unsafe {
-                ShmemChannel::new_server(memory)?
-            },
+            channel: unsafe { ShmemChannel::new_server(memory)? },
             reply_expected: false,
             phantom: PhantomData,
         })
@@ -59,9 +57,7 @@ pub struct ShmemClient<T, U> {
 impl<T, U> ShmemClient<T, U> {
     pub unsafe fn new(memory: Shmem, timeout: Option<Duration>) -> eyre::Result<Self> {
         Ok(Self {
-            channel: unsafe {
-                ShmemChannel::new_client(memory)?
-            },
+            channel: unsafe { ShmemChannel::new_client(memory)? },
             timeout,
             phantom: PhantomData,
         })

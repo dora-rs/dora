@@ -1,5 +1,5 @@
 use proc_macro2::Span;
-use quote::{quote, ToTokens};
+use quote::{ToTokens, quote};
 use syn::Ident;
 
 use crate::types::{Action, Message, Service};

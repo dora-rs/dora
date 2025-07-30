@@ -4,7 +4,7 @@ use super::{CommunicationLayer, Publisher, Subscriber};
 use crate::{BoxError, ReceivedSample};
 use std::{borrow::Cow, sync::Arc, time::Duration};
 use zenoh::{
-    prelude::{sync::SyncResolve, Config, Priority, SessionDeclarations, SplitBuffer},
+    prelude::{Config, Priority, SessionDeclarations, SplitBuffer, sync::SyncResolve},
     publication::CongestionControl,
 };
 

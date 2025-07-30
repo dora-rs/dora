@@ -1,6 +1,7 @@
 use std::convert::TryFrom;
 
 use nom::{
+    IResult,
     branch::alt,
     bytes::complete::{is_not, tag, tag_no_case, take_while},
     character::complete::{anychar, char, digit1, hex_digit1, none_of, oct_digit1, one_of, space0},
@@ -8,7 +9,6 @@ use nom::{
     multi::{many0, separated_list1},
     number::complete::recognize_float,
     sequence::{delimited, pair, tuple},
-    IResult,
 };
 
 use crate::types::primitives::{BasicType, GenericString};

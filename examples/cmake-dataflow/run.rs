@@ -1,5 +1,5 @@
 use dora_tracing::set_up_tracing;
-use eyre::{bail, Context};
+use eyre::{Context, bail};
 use std::path::Path;
 
 #[tokio::main]

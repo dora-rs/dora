@@ -8,11 +8,11 @@ pub trait MessageT: Default + Send + Sync {
     type RawRef: FFIFromRust<From = Self>;
 
     unsafe fn from_raw(from: &Self::Raw) -> Self {
-        unsafe{ from.to_rust() }
+        unsafe { from.to_rust() }
     }
 
     unsafe fn to_raw_ref(&self) -> Self::RawRef {
-        unsafe {Self::RawRef::from_rust(self)}
+        unsafe { Self::RawRef::from_rust(self) }
     }
 }
 
@@ -84,9 +84,7 @@ where
 
     unsafe fn to_rust(&self) -> <Self as FFIToRust>::Target {
         self.iter()
-            .map(|v| unsafe {
-                v.to_rust()
-            })
+            .map(|v| unsafe { v.to_rust() })
             .collect::<Vec<_>>()
             .try_into()
             .unwrap()
