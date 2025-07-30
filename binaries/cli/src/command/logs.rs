@@ -1,11 +1,11 @@
-use super::{default_tracing, Executable};
+use super::{Executable, default_tracing};
 use crate::common::{connect_to_coordinator, query_running_dataflows};
 use bat::{Input, PrettyPrinter};
 use clap::Args;
 use communication_layer_request_reply::TcpRequestReplyConnection;
 use dora_core::topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST};
 use dora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply};
-use eyre::{bail, Context, Result};
+use eyre::{Context, Result, bail};
 use uuid::Uuid;
 
 #[derive(Debug, Args)]
@@ -80,9 +80,11 @@ pub fn logs(
         .grid(false)
         .line_numbers(false)
         .paging_mode(bat::PagingMode::QuitIfOneScreen)
-        .inputs(vec![Input::from_bytes(&logs)
-            .name("Logs")
-            .title(format!("Logs from {node}.").as_str())])
+        .inputs(vec![
+            Input::from_bytes(&logs)
+                .name("Logs")
+                .title(format!("Logs from {node}.").as_str()),
+        ])
         .print()
         .wrap_err("Something went wrong with viewing log file")?;
 

@@ -1,7 +1,7 @@
 use arrow::array::{
-    ArrayData, BooleanBuilder, Float32Builder, Float64Builder, Int16Builder, Int32Builder,
-    Int64Builder, Int8Builder, NullArray, UInt16Builder, UInt32Builder, UInt64Builder,
-    UInt8Builder,
+    ArrayData, BooleanBuilder, Float32Builder, Float64Builder, Int8Builder, Int16Builder,
+    Int32Builder, Int64Builder, NullArray, UInt8Builder, UInt16Builder, UInt32Builder,
+    UInt64Builder,
 };
 use core::fmt;
 use dora_ros2_bridge_msg_gen::types::primitives::BasicType;

@@ -1,9 +1,9 @@
 use std::io::Write;
 
-use super::{default_tracing, Executable};
+use super::{Executable, default_tracing};
 use crate::{
-    common::{connect_to_coordinator, query_running_dataflows},
     LOCALHOST,
+    common::{connect_to_coordinator, query_running_dataflows},
 };
 use clap::Args;
 use communication_layer_request_reply::TcpRequestReplyConnection;

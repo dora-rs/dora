@@ -1,11 +1,11 @@
 use core::f32;
 use dora_node_api::{
+    DoraNode, Event, IntoArrow, Parameter,
     arrow::{
-        array::{AsArray, UInt16Array, UInt8Array},
+        array::{AsArray, UInt8Array, UInt16Array},
         datatypes::{Float32Type, Int64Type},
     },
     dora_core::config::DataId,
-    DoraNode, Event, IntoArrow, Parameter,
 };
 use eyre::Result;
 use std::collections::HashMap;
@@ -88,7 +88,7 @@ pub fn lib_main() -> Result<()> {
         .unwrap();
     let cos_theta = camera_pitch.cos(); // np.cos(np.deg2rad(180-38))
     let sin_theta = camera_pitch.sin(); // np.sin(np.deg2rad(180-38))
-                                        // (0.32489833, -0.25068134, 0.4761387)
+    // (0.32489833, -0.25068134, 0.4761387)
 
     while let Some(event) = events.recv() {
         if let Event::Input { id, metadata, data } = event {
@@ -288,9 +288,9 @@ pub fn lib_main() -> Result<()> {
 
 #[cfg(feature = "python")]
 use pyo3::{
-    pyfunction, pymodule,
+    Bound, PyResult, Python, pyfunction, pymodule,
     types::{PyModule, PyModuleMethods},
-    wrap_pyfunction, Bound, PyResult, Python,
+    wrap_pyfunction,
 };
 
 #[cfg(feature = "python")]

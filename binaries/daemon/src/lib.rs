@@ -5,13 +5,14 @@ use dora_core::{
     build::{self, BuildInfo, GitManager, PrevGitSource},
     config::{DataId, Input, InputMapping, NodeId, NodeRunConfig, OperatorId},
     descriptor::{
-        read_as_descriptor, CoreNodeKind, Descriptor, DescriptorExt, ResolvedNode, RuntimeNode,
-        DYNAMIC_SOURCE,
+        CoreNodeKind, DYNAMIC_SOURCE, Descriptor, DescriptorExt, ResolvedNode, RuntimeNode,
+        read_as_descriptor,
     },
     topics::LOCALHOST,
     uhlc::{self, HLC},
 };
 use dora_message::{
+    BuildId, DataflowId, SessionId,
     common::{
         DaemonId, DataMessage, DropToken, GitSource, LogLevel, NodeError, NodeErrorCause,
         NodeExitStatus,
@@ -26,11 +27,10 @@ use dora_message::{
     descriptor::NodeSource,
     metadata::{self, ArrowTypeInfo},
     node_to_daemon::{DynamicNodeEvent, Timestamped},
-    BuildId, DataflowId, SessionId,
 };
-use dora_node_api::{arrow::datatypes::DataType, Parameter};
-use eyre::{bail, eyre, Context, ContextCompat, Result};
-use futures::{future, stream, FutureExt, TryFutureExt};
+use dora_node_api::{Parameter, arrow::datatypes::DataType};
+use eyre::{Context, ContextCompat, Result, bail, eyre};
+use futures::{FutureExt, TryFutureExt, future, stream};
 use futures_concurrency::stream::Merge;
 use local_listener::DynamicNodeEventWrapper;
 use log::{DaemonLogger, DataflowLogger, Logger};
@@ -59,7 +59,7 @@ use tokio::{
         oneshot::{self, Sender},
     },
 };
-use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
+use tokio_stream::{Stream, StreamExt, wrappers::ReceiverStream};
 use tracing::{error, warn};
 use uuid::{NoContext, Timestamp, Uuid};
 
@@ -168,7 +168,7 @@ impl Daemon {
             Some(coordinator_addr),
             daemon_id,
             None,
-            clock,
+            clock.clone(),
             Some(remote_daemon_events_tx),
             Default::default(),
             log_destination,
@@ -342,7 +342,9 @@ impl Daemon {
                         )
                         .unwrap();
                     if cfg!(target_os = "macos") {
-                        warn!("disabling multicast on macos systems. Enable it with the ZENOH_CONFIG env variable or file");
+                        warn!(
+                            "disabling multicast on macos systems. Enable it with the ZENOH_CONFIG env variable or file"
+                        );
                         zenoh_config
                             .insert_json5("scouting/multicast", r#"{ enabled: false }"#)
                             .unwrap();
@@ -374,7 +376,9 @@ impl Daemon {
                             )
                             .unwrap();
                         if cfg!(target_os = "macos") {
-                            warn!("disabling multicast on macos systems. Enable it with the ZENOH_CONFIG env variable or file");
+                            warn!(
+                                "disabling multicast on macos systems. Enable it with the ZENOH_CONFIG env variable or file"
+                            );
                             zenoh_config
                                 .insert_json5("scouting/multicast", r#"{ enabled: false }"#)
                                 .unwrap();
@@ -524,7 +528,9 @@ impl Daemon {
                         if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
                             dataflow.running_nodes.insert(node_id, running_node);
                         } else {
-                            tracing::error!("failed to handle SpawnNodeResult: no running dataflow with ID {dataflow_id}");
+                            tracing::error!(
+                                "failed to handle SpawnNodeResult: no running dataflow with ID {dataflow_id}"
+                            );
                         }
                     }
                     Err(error) => {
@@ -1000,7 +1006,7 @@ impl Daemon {
         dataflow_descriptor: Descriptor,
         local_nodes: BTreeSet<NodeId>,
         uv: bool,
-    ) -> eyre::Result<impl Future<Output = eyre::Result<BuildInfo>>> {
+    ) -> eyre::Result<impl Future<Output = eyre::Result<BuildInfo>> + use<>> {
         let builder = build::Builder {
             session_id,
             base_working_dir,
@@ -1095,7 +1101,7 @@ impl Daemon {
         dataflow_descriptor: Descriptor,
         spawn_nodes: BTreeSet<NodeId>,
         uv: bool,
-    ) -> eyre::Result<impl Future<Output = eyre::Result<()>>> {
+    ) -> eyre::Result<impl Future<Output = eyre::Result<()>> + use<>> {
         let mut logger = self
             .logger
             .for_dataflow(dataflow_id)
@@ -1270,18 +1276,20 @@ impl Daemon {
                             let finished_or_next =
                                 futures::future::select(finished, subscriber.recv_async());
                             match finished_or_next.await {
-                                future::Either::Left((finished, _)) => {
-                                    match finished {
-                                        Err(broadcast::error::RecvError::Closed) => {
-                                            tracing::debug!("dataflow finished, breaking from zenoh subscribe task");
-                                            break;
-                                        }
-                                        other => {
-                                            tracing::warn!("unexpected return value of dataflow finished_rx channel: {other:?}");
-                                            break;
-                                        }
+                                future::Either::Left((finished, _)) => match finished {
+                                    Err(broadcast::error::RecvError::Closed) => {
+                                        tracing::debug!(
+                                            "dataflow finished, breaking from zenoh subscribe task"
+                                        );
+                                        break;
                                     }
-                                }
+                                    other => {
+                                        tracing::warn!(
+                                            "unexpected return value of dataflow finished_rx channel: {other:?}"
+                                        );
+                                        break;
+                                    }
+                                },
                                 future::Either::Right((sample, f)) => {
                                     finished = f;
                                     let event = sample.map_err(|e| eyre!(e)).and_then(|s| {

@@ -1,4 +1,5 @@
 use dora_node_api::{
+    ArrowData, Metadata, Parameter,
     arrow::{
         array::AsArray,
         datatypes::{
@@ -6,7 +7,6 @@ use dora_node_api::{
         },
     },
     dora_core::config::DataId,
-    ArrowData, Metadata, Parameter,
 };
 use eyre::{Context, ContextCompat, Result};
 use rerun::{RecordingStream, Text};
@@ -75,7 +75,7 @@ pub fn update_boxes2d(
             _ => {
                 return Err(eyre::eyre!(
                     "Could not deserialize bbox as float32, float64, int32 or int64"
-                ))
+                ));
             }
         };
 

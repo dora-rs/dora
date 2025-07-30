@@ -1,4 +1,4 @@
-use dora_node_api::{self, dora_core::config::DataId, DoraNode, Event, IntoArrow};
+use dora_node_api::{self, DoraNode, Event, IntoArrow, dora_core::config::DataId};
 use eyre::Context;
 
 fn main() -> eyre::Result<()> {

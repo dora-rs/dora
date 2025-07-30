@@ -2,10 +2,10 @@ pub use crate::common::{
     DataMessage, DropToken, LogLevel, LogMessage, SharedMemoryId, Timestamped,
 };
 use crate::{
-    current_crate_version,
+    DataflowId, current_crate_version,
     id::{DataId, NodeId},
     metadata::Metadata,
-    versions_compatible, DataflowId,
+    versions_compatible,
 };
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]

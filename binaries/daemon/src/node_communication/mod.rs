@@ -5,13 +5,13 @@ use dora_core::{
     uhlc,
 };
 use dora_message::{
+    DataflowId,
     common::{DropToken, Timestamped},
     daemon_to_node::{DaemonCommunication, DaemonReply, NodeDropEvent, NodeEvent},
     node_to_daemon::DaemonRequest,
-    DataflowId,
 };
-use eyre::{eyre, Context};
-use futures::{future, task, Future};
+use eyre::{Context, eyre};
+use futures::{Future, future, task};
 use shared_memory_server::{ShmemConf, ShmemServer};
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -50,7 +50,7 @@ pub async fn spawn_listener_loop(
                 Err(err) => {
                     return Err(
                         eyre::Report::new(err).wrap_err("failed to create local TCP listener")
-                    )
+                    );
                 }
             };
             let socket_addr = socket
@@ -157,7 +157,7 @@ pub async fn spawn_listener_loop(
                 Ok(socket) => socket,
                 Err(err) => {
                     return Err(eyre::Report::new(err)
-                        .wrap_err("failed to create local Unix domain socket"))
+                        .wrap_err("failed to create local Unix domain socket"));
                 }
             };
 

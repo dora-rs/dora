@@ -37,10 +37,10 @@ impl RequestReplyLayer for TcpLayer {
                 Item = Result<
                     Box<
                         dyn crate::ListenConnection<
-                            RequestData = Self::RequestData,
-                            ReplyData = Self::ReplyData,
-                            Error = Self::Error,
-                        >,
+                                RequestData = Self::RequestData,
+                                ReplyData = Self::ReplyData,
+                                Error = Self::Error,
+                            >,
                     >,
                     Self::Error,
                 >,
@@ -56,10 +56,10 @@ impl RequestReplyLayer for TcpLayer {
                 r.map(|stream| {
                     let connection: Box<
                         dyn ListenConnection<
-                            RequestData = Self::RequestData,
-                            ReplyData = Self::ReplyData,
-                            Error = Self::Error,
-                        >,
+                                RequestData = Self::RequestData,
+                                ReplyData = Self::ReplyData,
+                                Error = Self::Error,
+                            >,
                     > = Box::new(TcpConnection { stream });
                     connection
                 })
@@ -74,20 +74,20 @@ impl RequestReplyLayer for TcpLayer {
     ) -> Result<
         Box<
             dyn crate::RequestReplyConnection<
-                RequestData = Self::RequestData,
-                ReplyData = Self::ReplyData,
-                Error = Self::Error,
-            >,
+                    RequestData = Self::RequestData,
+                    ReplyData = Self::ReplyData,
+                    Error = Self::Error,
+                >,
         >,
         Self::Error,
     > {
         TcpStream::connect(addr).map(|s| {
             let connection: Box<
                 dyn RequestReplyConnection<
-                    RequestData = Self::RequestData,
-                    ReplyData = Self::ReplyData,
-                    Error = Self::Error,
-                >,
+                        RequestData = Self::RequestData,
+                        ReplyData = Self::ReplyData,
+                        Error = Self::Error,
+                    >,
             > = Box::new(TcpConnection { stream: s });
             connection
         })

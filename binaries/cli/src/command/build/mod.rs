@@ -52,11 +52,11 @@ use dora_core::{
     descriptor::{CoreNodeKind, CustomNode, Descriptor, DescriptorExt},
     topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST},
 };
-use dora_message::{descriptor::NodeSource, BuildId};
+use dora_message::{BuildId, descriptor::NodeSource};
 use eyre::Context;
 use std::{collections::BTreeMap, net::IpAddr};
 
-use super::{default_tracing, Executable};
+use super::{Executable, default_tracing};
 use crate::{
     common::{connect_to_coordinator, local_working_dir, resolve_dataflow},
     session::DataflowSession,
