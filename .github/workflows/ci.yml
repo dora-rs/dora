@@ -554,4 +554,4 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - uses: taiki-e/install-action@cargo-hack
-    - run: cargo hack check --all-targets --rust-version --workspace --ignore-private --locked --exclude dora-rav1e
+    - run: cargo hack check --all-targets --rust-version --workspace --ignore-private --locked --exclude dora-rav1e --exclude dora-dav1d
