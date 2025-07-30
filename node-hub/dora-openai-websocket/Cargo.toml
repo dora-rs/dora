@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 dora-node-api = { workspace = true }
-dora-cli = { workspace = true }
+dora-cli = { workspace = true, default-features = false }
 tokio = { version = "1.25.0", features = ["full", "macros"] }
 tokio-rustls = "0.24.0"
 rustls-pemfile = "1.0"
