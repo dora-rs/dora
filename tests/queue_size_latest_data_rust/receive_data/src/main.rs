@@ -1,12 +1,11 @@
 use std::{thread::sleep, time::Duration};
 
 use dora_node_api::{
-    self,
+    self, DoraNode,
     arrow::{
         array::{AsArray, PrimitiveArray},
         datatypes::UInt64Type,
     },
-    DoraNode,
 };
 
 fn main() -> eyre::Result<()> {

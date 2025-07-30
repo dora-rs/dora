@@ -6,18 +6,18 @@ use std::{
 };
 
 use dora_message::{
+    DataflowId,
     daemon_to_node::{DaemonCommunication, DaemonReply, DataMessage, NodeEvent},
     id::DataId,
     node_to_daemon::{DaemonRequest, Timestamped},
-    DataflowId,
 };
 pub use event::{Event, StopCause};
 use futures::{
-    future::{select, Either},
     Stream, StreamExt,
+    future::{Either, select},
 };
 use futures_timer::Delay;
-use scheduler::{Scheduler, NON_INPUT_EVENT};
+use scheduler::{NON_INPUT_EVENT, Scheduler};
 
 use self::thread::{EventItem, EventStreamThreadHandle};
 use crate::{
@@ -28,7 +28,7 @@ use dora_core::{
     config::{Input, NodeId},
     uhlc,
 };
-use eyre::{eyre, Context};
+use eyre::{Context, eyre};
 
 pub use scheduler::Scheduler as EventScheduler;
 

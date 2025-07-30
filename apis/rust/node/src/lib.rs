@@ -84,13 +84,13 @@ pub use arrow;
 pub use dora_arrow_convert::*;
 pub use dora_core::{self, uhlc};
 pub use dora_message::{
-    metadata::{Metadata, MetadataParameters, Parameter},
     DataflowId,
+    metadata::{Metadata, MetadataParameters, Parameter},
 };
-pub use event_stream::{merged, Event, EventScheduler, EventStream, StopCause};
+pub use event_stream::{Event, EventScheduler, EventStream, StopCause, merged};
 pub use flume::Receiver;
 pub use futures;
-pub use node::{arrow_utils, DataSample, DoraNode, ZERO_COPY_THRESHOLD};
+pub use node::{DataSample, DoraNode, ZERO_COPY_THRESHOLD, arrow_utils};
 
 mod daemon_connection;
 mod event_stream;

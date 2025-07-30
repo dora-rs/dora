@@ -1,4 +1,4 @@
-use dora_node_api::{self, dora_core::config::DataId, DoraNode};
+use dora_node_api::{self, DoraNode, dora_core::config::DataId};
 use eyre::Context;
 use rand::RngCore;
 use std::time::Duration;

@@ -1,4 +1,4 @@
-use super::{default_tracing, up, Executable};
+use super::{Executable, default_tracing, up};
 use dora_core::topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST};
 use std::net::IpAddr;
 use std::path::PathBuf;

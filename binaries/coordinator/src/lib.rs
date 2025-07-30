@@ -9,6 +9,7 @@ use dora_core::{
     uhlc::{self, HLC},
 };
 use dora_message::{
+    BuildId, DataflowId, SessionId,
     cli_to_coordinator::ControlRequest,
     common::{DaemonId, GitSource},
     coordinator_to_cli::{
@@ -20,10 +21,9 @@ use dora_message::{
     },
     daemon_to_coordinator::{DaemonCoordinatorReply, DataflowDaemonResult},
     descriptor::{Descriptor, ResolvedNode},
-    BuildId, DataflowId, SessionId,
 };
-use eyre::{bail, eyre, ContextCompat, Result, WrapErr};
-use futures::{future::join_all, stream::FuturesUnordered, Future, Stream, StreamExt};
+use eyre::{ContextCompat, Result, WrapErr, bail, eyre};
+use futures::{Future, Stream, StreamExt, future::join_all, stream::FuturesUnordered};
 use futures_concurrency::stream::Merge;
 use itertools::Itertools;
 use log_subscriber::LogSubscriber;
@@ -122,7 +122,9 @@ fn resolve_name(
             Ok(*uuid)
         } else {
             // TODO: Index the archived dataflows in order to return logs based on the index.
-            bail!("multiple archived dataflows found with name `{name}`, Please provide the UUID instead.");
+            bail!(
+                "multiple archived dataflows found with name `{name}`, Please provide the UUID instead."
+            );
         }
     } else if let [uuid] = uuids.as_slice() {
         Ok(*uuid)
@@ -285,7 +287,9 @@ async fn start_inner(
                             );
                         }
                         Err(err) => {
-                            tracing::warn!("failed to register daemon connection for daemon `{daemon_id}`: {err}");
+                            tracing::warn!(
+                                "failed to register daemon connection for daemon `{daemon_id}`: {err}"
+                            );
                         }
                     }
                 }
@@ -341,7 +345,9 @@ async fn start_inner(
                     }
                 }
                 DataflowEvent::DataflowFinishedOnDaemon { daemon_id, result } => {
-                    tracing::debug!("coordinator received DataflowFinishedOnDaemon ({daemon_id:?}, result: {result:?})");
+                    tracing::debug!(
+                        "coordinator received DataflowFinishedOnDaemon ({daemon_id:?}, result: {result:?})"
+                    );
                     match running_dataflows.entry(uuid) {
                         std::collections::hash_map::Entry::Occupied(mut entry) => {
                             let dataflow = entry.get_mut();
@@ -474,7 +480,9 @@ async fn start_inner(
                                         .values()
                                         .any(|d: &RunningDataflow| d.name.as_deref() == Some(name))
                                     {
-                                        bail!("there is already a running dataflow with name `{name}`");
+                                        bail!(
+                                            "there is already a running dataflow with name `{name}`"
+                                        );
                                     }
                                 }
                                 let dataflow = start_dataflow(
@@ -875,7 +883,9 @@ async fn start_inner(
                     }
                 }
                 None => {
-                    tracing::warn!("received DataflowSpawnResult, but no matching dataflow in `running_dataflows` map");
+                    tracing::warn!(
+                        "received DataflowSpawnResult, but no matching dataflow in `running_dataflows` map"
+                    );
                 }
             },
             Event::DataflowSpawnResult {
@@ -901,7 +911,9 @@ async fn start_inner(
                     };
                 }
                 None => {
-                    tracing::warn!("received DataflowSpawnResult, but no matching dataflow in `running_dataflows` map");
+                    tracing::warn!(
+                        "received DataflowSpawnResult, but no matching dataflow in `running_dataflows` map"
+                    );
                 }
             },
         }

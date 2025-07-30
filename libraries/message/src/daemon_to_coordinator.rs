@@ -4,7 +4,7 @@ pub use crate::common::{
     DataMessage, LogLevel, LogMessage, NodeError, NodeErrorCause, NodeExitStatus, Timestamped,
 };
 use crate::{
-    common::DaemonId, current_crate_version, id::NodeId, versions_compatible, BuildId, DataflowId,
+    BuildId, DataflowId, common::DaemonId, current_crate_version, id::NodeId, versions_compatible,
 };
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]

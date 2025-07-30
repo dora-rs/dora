@@ -8,7 +8,7 @@ use std::path::Path;
 use eyre::Context as EyreContext;
 use tracing::metadata::LevelFilter;
 use tracing_subscriber::{
-    filter::FilterExt, prelude::__tracing_subscriber_SubscriberExt, EnvFilter, Layer,
+    EnvFilter, Layer, filter::FilterExt, prelude::__tracing_subscriber_SubscriberExt,
 };
 
 use tracing_subscriber::Registry;

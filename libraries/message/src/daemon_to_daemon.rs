@@ -1,9 +1,9 @@
 use aligned_vec::{AVec, ConstAlign};
 
 use crate::{
+    DataflowId,
     id::{DataId, NodeId},
     metadata::Metadata,
-    DataflowId,
 };
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]

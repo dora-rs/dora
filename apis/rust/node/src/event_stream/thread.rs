@@ -6,7 +6,7 @@ use dora_message::{
     daemon_to_node::{DaemonReply, NodeEvent},
     node_to_daemon::{DaemonRequest, DropToken, Timestamped},
 };
-use eyre::{eyre, Context};
+use eyre::{Context, eyre};
 use flume::RecvTimeoutError;
 use std::{
     sync::Arc,

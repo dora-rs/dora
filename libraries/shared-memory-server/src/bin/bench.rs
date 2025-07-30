@@ -3,7 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use eyre::{eyre, Context, ContextCompat};
+use eyre::{Context, ContextCompat, eyre};
 use shared_memory_server::{ShmemClient, ShmemConf, ShmemServer};
 
 fn main() -> eyre::Result<()> {

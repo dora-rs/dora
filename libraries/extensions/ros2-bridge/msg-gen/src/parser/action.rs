@@ -61,7 +61,7 @@ mod test {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::types::{primitives::*, sequences::*, MemberType};
+    use crate::types::{MemberType, primitives::*, sequences::*};
 
     fn parse_action_def(srv_name: &str) -> Result<Action> {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

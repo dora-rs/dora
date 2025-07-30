@@ -180,7 +180,7 @@ impl<'de> Deserialize<'de> for InputMapping {
                         other => {
                             return Err(serde::de::Error::custom(format!(
                                 "timer unit must be either secs or millis (got `{other}`"
-                            )))
+                            )));
                         }
                     };
                     Self::Timer { interval }
@@ -188,7 +188,7 @@ impl<'de> Deserialize<'de> for InputMapping {
                 Some((other, _)) => {
                     return Err(serde::de::Error::custom(format!(
                         "unknown dora input `{other}`"
-                    )))
+                    )));
                 }
                 None => return Err(serde::de::Error::custom("dora input has invalid format")),
             },

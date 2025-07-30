@@ -9,7 +9,7 @@ mod json_data;
 
 use std::{env, io::Write, time::Duration};
 
-use dora_node_api::{arrow::array::Float64Array, DoraNode, Event};
+use dora_node_api::{DoraNode, Event, arrow::array::Float64Array};
 use error::Error;
 use eyre::Context;
 use serial::SerialPort;
@@ -73,9 +73,9 @@ pub fn lib_main() -> eyre::Result<()> {
 
 #[cfg(feature = "python")]
 use pyo3::{
-    pyfunction, pymodule,
+    Bound, PyResult, Python, pyfunction, pymodule,
     types::{PyModule, PyModuleMethods},
-    wrap_pyfunction, Bound, PyResult, Python,
+    wrap_pyfunction,
 };
 
 #[cfg(feature = "python")]

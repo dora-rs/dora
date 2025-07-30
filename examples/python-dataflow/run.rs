@@ -1,6 +1,6 @@
 use dora_core::{get_uv_path, run};
 use dora_tracing::set_up_tracing;
-use eyre::{bail, WrapErr};
+use eyre::{WrapErr, bail};
 use std::path::Path;
 
 #[tokio::main]

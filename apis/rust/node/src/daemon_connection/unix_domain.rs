@@ -2,7 +2,7 @@ use dora_message::{
     daemon_to_node::DaemonReply,
     node_to_daemon::{DaemonRequest, Timestamped},
 };
-use eyre::{eyre, Context};
+use eyre::{Context, eyre};
 use std::{
     io::{Read, Write},
     os::unix::net::UnixStream,
@@ -42,21 +42,20 @@ fn receive_reply(
     connection: &mut UnixStream,
     serializer: Serializer,
 ) -> eyre::Result<Option<DaemonReply>> {
-    let raw = match stream_receive(connection) {
-        Ok(raw) => raw,
-        Err(err) => match err.kind() {
-            std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::ConnectionAborted => {
-                return Ok(None)
-            }
-            other => {
-                return Err(err).with_context(|| {
+    let raw =
+        match stream_receive(connection) {
+            Ok(raw) => raw,
+            Err(err) => match err.kind() {
+                std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::ConnectionAborted => {
+                    return Ok(None);
+                }
+                other => return Err(err).with_context(|| {
                     format!(
                         "unexpected I/O error (kind {other:?}) while trying to receive DaemonReply"
                     )
-                })
-            }
-        },
-    };
+                }),
+            },
+        };
     match serializer {
         Serializer::Bincode => bincode::deserialize(&raw)
             .wrap_err("failed to deserialize DaemonReply")

@@ -4,7 +4,7 @@ use std::{
 };
 
 use dora_core::build::BuildInfo;
-use dora_message::{common::GitSource, id::NodeId, BuildId, SessionId};
+use dora_message::{BuildId, SessionId, common::GitSource, id::NodeId};
 use eyre::{Context, ContextCompat};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -33,7 +33,9 @@ impl DataflowSession {
             if let Ok(parsed) = deserialize(&session_file) {
                 return Ok(parsed);
             } else {
-                tracing::warn!("failed to read dataflow session file, regenerating (you might need to run `dora build` again)");
+                tracing::warn!(
+                    "failed to read dataflow session file, regenerating (you might need to run `dora build` again)"
+                );
             }
         }
 
