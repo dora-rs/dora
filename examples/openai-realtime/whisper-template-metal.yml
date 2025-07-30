@@ -11,7 +11,9 @@ nodes:
     build: pip install -e ../../node-hub/dora-vad
     path: dora-vad
     inputs:
-      audio: NODE_ID/audio
+      audio:
+        source: NODE_ID/audio
+        queue_size: 1000000
     outputs:
       - audio
     env:
@@ -23,9 +25,7 @@ nodes:
     build: pip install -e ../../node-hub/dora-distil-whisper
     path: dora-distil-whisper
     inputs:
-      audio:
-        source: dora-vad/audio
-        queue_size: 1000000
+      audio: dora-vad/audio
     outputs:
       - text
       - word
