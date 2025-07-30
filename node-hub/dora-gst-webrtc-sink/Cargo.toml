@@ -2,6 +2,7 @@
 name = "dora-gst-webrtc-sink"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 authors = ["dieu.detruit@gmail.com"]
 license.workspace = true
 description = "WebRTC sink node for dora-rs with multi-camera support"
