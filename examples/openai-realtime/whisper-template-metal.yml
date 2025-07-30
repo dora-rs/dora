@@ -1,0 +1,49 @@
+nodes:
+  - id: NODE_ID
+    path: dynamic
+    inputs:
+      audio: tts/audio
+      text: stt/text
+    outputs:
+      - audio
+
+  - id: dora-vad
+    build: pip install -e ../../node-hub/dora-vad
+    path: dora-vad
+    inputs:
+      audio: NODE_ID/audio
+    outputs:
+      - audio
+    env:
+      MIN_SPEECH_DURATION_MS: 2000
+      MIN_SILENCE_DURATION_MS: 1200
+      THRESHOLD: 1.0
+
+  - id: stt
+    build: pip install -e ../../node-hub/dora-distil-whisper
+    path: dora-distil-whisper
+    inputs:
+      audio:
+        source: dora-vad/audio
+        queue_size: 1000000
+    outputs:
+      - text
+      - word
+
+  - id: llm
+    build: pip install -e ../../node-hub/dora-qwen
+    path: dora-qwen
+    inputs:
+      text: stt/text
+    outputs:
+      - text
+    env:
+      MODEL_NAME_OR_PATH: Qwen/Qwen2.5-0.5B-Instruct-GGUF
+
+  - id: tts
+    build: pip install -e ../../node-hub/dora-kokoro-tts
+    path: dora-kokoro-tts
+    inputs:
+      text: llm/text
+    outputs:
+      - audio
