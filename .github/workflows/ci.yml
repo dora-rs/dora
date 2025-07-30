@@ -546,3 +546,11 @@ jobs:
           use-cross: true
           command: check
           args: --target  ${{ matrix.platform.target }} --all --exclude dora-dav1d --exclude dora-rav1e --exclude dora-node-api-python --exclude dora-operator-api-python --exclude dora-ros2-bridge-python
+
+  # copied from https://github.com/rust-lang/cargo/blob/6833aa715d724437dc1247d0166afe314ab6854e/.github/workflows/main.yml#L291
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: taiki-e/install-action@cargo-hack
+    - run: cargo hack check --all-targets --rust-version --workspace --ignore-private --locked
