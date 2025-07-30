@@ -125,9 +125,11 @@ def load_model():
 BAD_SENTENCES = [
     "",
     " so",
+    " So.",
     " so so",
     "You",
     "You ",
+    " You",
     "字幕",
     "字幕志愿",
     "中文字幕",
@@ -188,6 +190,15 @@ def main():
     # For macos use mlx:
     if sys.platform != "darwin":
         pipe = load_model()
+    else:
+        import mlx_whisper
+
+        result = mlx_whisper.transcribe(
+            np.array([]),
+            path_or_hf_repo="mlx-community/whisper-large-v3-turbo",
+            append_punctuations=".",
+            language=TARGET_LANGUAGE,
+        )
 
     node = Node()
     noise_timestamp = time.time()
