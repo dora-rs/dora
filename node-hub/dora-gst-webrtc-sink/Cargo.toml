@@ -1,18 +1,18 @@
 [package]
 name = "dora-gst-webrtc-sink"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 authors = ["dieu.detruit@gmail.com"]
-license = "MIT"
+license.workspace = true
 description = "WebRTC sink node for dora-rs with multi-camera support"
 repository = "https://github.com/dieu-detruit/dora-gst-webrtc-sink"
 keywords = ["dora", "webrtc", "gstreamer", "video", "streaming"]
 categories = ["multimedia::video", "network-programming"]
 
 [dependencies]
-dora-node-api = "0.3"
+dora-node-api = { workspace = true, features = ["tracing"] }
 eyre = "0.6"
-arrow = "54"
+arrow = { workspace = true }
 gstreamer = "0.23"
 gstreamer-webrtc = "0.23"
 gstreamer-sdp = "0.23"
