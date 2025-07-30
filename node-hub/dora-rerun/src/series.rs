@@ -1,4 +1,4 @@
-use dora_node_api::{dora_core::config::DataId, into_vec, ArrowData};
+use dora_node_api::{ArrowData, dora_core::config::DataId, into_vec};
 use eyre::{Context, Result};
 use rerun::RecordingStream;
 

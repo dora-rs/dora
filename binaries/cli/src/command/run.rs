@@ -11,7 +11,7 @@ use crate::{
     output::print_log_message,
     session::DataflowSession,
 };
-use dora_daemon::{flume, Daemon, LogDestination};
+use dora_daemon::{Daemon, LogDestination, flume};
 use dora_tracing::TracingBuilder;
 use eyre::Context;
 use tokio::runtime::Builder;

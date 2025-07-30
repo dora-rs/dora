@@ -1,6 +1,6 @@
 use crate::build::{BuildLogger, PrevGitSource};
-use dora_message::{common::LogLevel, DataflowId, SessionId};
-use eyre::{bail, ContextCompat, WrapErr};
+use dora_message::{DataflowId, SessionId, common::LogLevel};
+use eyre::{ContextCompat, WrapErr, bail};
 use git2::FetchOptions;
 use itertools::Itertools;
 use std::{

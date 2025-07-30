@@ -1,5 +1,5 @@
 use dora_node_api::dora_core::config::DataId;
-use dora_node_api::{into_vec, DoraNode, Event, IntoArrow, Parameter};
+use dora_node_api::{DoraNode, Event, IntoArrow, Parameter, into_vec};
 use eyre::{Context, Result};
 use rustypot::servo::feetech::sts3215::Sts3215Controller;
 use std::collections::BTreeMap;
@@ -80,9 +80,9 @@ pub fn lib_main() -> Result<()> {
 
 #[cfg(feature = "python")]
 use pyo3::{
-    pyfunction, pymodule,
+    Bound, PyResult, Python, pyfunction, pymodule,
     types::{PyModule, PyModuleMethods},
-    wrap_pyfunction, Bound, PyResult, Python,
+    wrap_pyfunction,
 };
 
 #[cfg(feature = "python")]

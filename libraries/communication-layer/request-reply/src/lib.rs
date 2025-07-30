@@ -28,10 +28,10 @@ pub trait RequestReplyLayer: Send + Sync {
                 Item = Result<
                     Box<
                         dyn ListenConnection<
-                            RequestData = Self::RequestData,
-                            ReplyData = Self::ReplyData,
-                            Error = Self::Error,
-                        >,
+                                RequestData = Self::RequestData,
+                                ReplyData = Self::ReplyData,
+                                Error = Self::Error,
+                            >,
                     >,
                     Self::Error,
                 >,
@@ -47,10 +47,10 @@ pub trait RequestReplyLayer: Send + Sync {
     ) -> Result<
         Box<
             dyn RequestReplyConnection<
-                RequestData = Self::RequestData,
-                ReplyData = Self::ReplyData,
-                Error = Self::Error,
-            >,
+                    RequestData = Self::RequestData,
+                    ReplyData = Self::ReplyData,
+                    Error = Self::Error,
+                >,
         >,
         Self::Error,
     >;

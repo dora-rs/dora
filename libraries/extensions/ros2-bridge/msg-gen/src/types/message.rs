@@ -1,7 +1,7 @@
-use quote::{format_ident, quote, ToTokens};
+use quote::{ToTokens, format_ident, quote};
 use syn::Ident;
 
-use super::{primitives::*, sequences::Array, ConstantType, MemberType};
+use super::{ConstantType, MemberType, primitives::*, sequences::Array};
 
 /// A member of a structure
 #[derive(Debug, Clone)]

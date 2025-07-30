@@ -5,13 +5,13 @@ use arrow::{
     error,
 };
 use dora_ros2_bridge_msg_gen::types::{
-    primitives::{GenericString, NestableType},
     MemberType,
+    primitives::{GenericString, NestableType},
 };
 use eyre::Context;
 use serde::ser::SerializeTupleStruct;
 
-use super::{TypeInfo, DUMMY_STRUCT_NAME};
+use super::{DUMMY_STRUCT_NAME, TypeInfo};
 
 mod array;
 mod defaults;

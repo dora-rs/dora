@@ -1,12 +1,12 @@
 use crate::formatting::FormatDataflowError;
 use communication_layer_request_reply::{RequestReplyLayer, TcpLayer, TcpRequestReplyConnection};
-use dora_core::descriptor::{source_is_url, Descriptor};
+use dora_core::descriptor::{Descriptor, source_is_url};
 use dora_download::download_file;
 use dora_message::{
     cli_to_coordinator::ControlRequest,
     coordinator_to_cli::{ControlRequestReply, DataflowList, DataflowResult},
 };
-use eyre::{bail, Context, ContextCompat};
+use eyre::{Context, ContextCompat, bail};
 use std::{
     env::current_dir,
     net::SocketAddr,

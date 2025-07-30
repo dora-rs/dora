@@ -1,22 +1,21 @@
 use dora_node_api::{
-    self,
+    self, DoraNode, Event,
     arrow::array::{AsArray, StringArray},
     dora_core::config::DataId,
     merged::MergeExternalSend,
-    DoraNode, Event,
 };
 
 use eyre::{Context, ContextCompat};
 use futures::{
-    channel::oneshot::{self, Canceled},
     TryStreamExt,
+    channel::oneshot::{self, Canceled},
 };
 use hyper::{
-    body::{to_bytes, Body, HttpBody},
+    Request, Response, Server, StatusCode,
+    body::{Body, HttpBody, to_bytes},
     header,
     server::conn::AddrStream,
     service::{make_service_fn, service_fn},
-    Request, Response, Server, StatusCode,
 };
 use message::{
     ChatCompletionObject, ChatCompletionObjectChoice, ChatCompletionObjectMessage,
@@ -142,7 +141,9 @@ async fn main() -> eyre::Result<()> {
                             };
 
                             if reply_channel.send(Ok(data)).is_err() {
-                                tracing::warn!("failed to send chat completion reply because channel closed early");
+                                tracing::warn!(
+                                    "failed to send chat completion reply because channel closed early"
+                                );
                             }
                         }
                         _ => eyre::bail!("unexpected input id: {}", id),

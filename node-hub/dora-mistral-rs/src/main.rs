@@ -1,4 +1,4 @@
-use dora_node_api::{dora_core::config::DataId, DoraNode, Event, IntoArrow};
+use dora_node_api::{DoraNode, Event, IntoArrow, dora_core::config::DataId};
 use eyre::{Context, Report};
 use mistralrs::{TextMessageRole, TextMessages, TextModelBuilder};
 

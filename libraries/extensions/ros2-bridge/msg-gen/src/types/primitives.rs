@@ -1,7 +1,7 @@
 use std::fmt;
 
 use proc_macro2::{Ident, Literal, Span};
-use quote::{format_ident, quote, ToTokens};
+use quote::{ToTokens, format_ident, quote};
 
 macro_rules! define_enum_from {
     ($into_t:ty, $from_t:ty, $path:path) => {

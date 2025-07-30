@@ -23,8 +23,8 @@ pub use dora_operator_api_macros::register_operator;
 pub use dora_operator_api_types as types;
 pub use types::DoraStatus;
 use types::{
-    arrow::{self, array::Array},
     Metadata, Output, SendOutput,
+    arrow::{self, array::Array},
 };
 
 pub mod raw;

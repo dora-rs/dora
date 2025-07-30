@@ -10,9 +10,9 @@ use dora_core::{
     uhlc,
 };
 use dora_message::{
+    BuildId,
     common::{DaemonId, LogLevel, LogMessage, Timestamped},
     daemon_to_coordinator::{CoordinatorRequest, DaemonEvent},
-    BuildId,
 };
 use eyre::Context;
 use flume::Sender;

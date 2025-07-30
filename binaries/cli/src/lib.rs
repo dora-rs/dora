@@ -65,9 +65,9 @@ pub fn lib_main(args: Args) {
 use clap::Parser;
 #[cfg(feature = "python")]
 use pyo3::{
-    pyfunction, pymodule,
+    Bound, PyResult, Python, pyfunction, pymodule,
     types::{PyModule, PyModuleMethods},
-    wrap_pyfunction, Bound, PyResult, Python,
+    wrap_pyfunction,
 };
 
 #[cfg(feature = "python")]

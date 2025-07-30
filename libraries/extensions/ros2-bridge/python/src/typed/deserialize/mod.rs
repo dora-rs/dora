@@ -1,6 +1,6 @@
-use super::{TypeInfo, DUMMY_STRUCT_NAME};
+use super::{DUMMY_STRUCT_NAME, TypeInfo};
 use arrow::{
-    array::{make_array, ArrayData, StructArray},
+    array::{ArrayData, StructArray, make_array},
     datatypes::Field,
 };
 use core::fmt;
