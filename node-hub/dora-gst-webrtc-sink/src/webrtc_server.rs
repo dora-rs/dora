@@ -1,6 +1,6 @@
 use anyhow::Context;
-use futures::stream::StreamExt;
 use futures::SinkExt;
+use futures::stream::StreamExt;
 use gstreamer::prelude::*;
 use gstreamer_app::AppSrc;
 use gstreamer_webrtc::{WebRTCICEConnectionState, WebRTCSessionDescription};
