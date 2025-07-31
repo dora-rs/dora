@@ -1,0 +1,46 @@
+nodes:
+  # Camera 1 - Ball pattern
+  - id: camera1
+    build: cargo install --git 
+      https://github.com/dieu-detruit/dora-gst-test-source dora-gst-test-source
+    path: dora-gst-test-source
+    inputs:
+      tick: dora/timer/millis/30
+    outputs:
+      - frame
+    env:
+      MOTION: '0'
+      IS_LIVE: 'true'
+      PATTERN: '18'  # Ball pattern
+      FOREGROUND_COLOR: '0xffb28354'
+      IMAGE_COLS: '640'
+      IMAGE_ROWS: '480'
+      SOURCE_FPS: '30.0'
+
+  # Camera 2 - SMPTE pattern
+  - id: camera2
+    build: cargo install --git 
+      https://github.com/dieu-detruit/dora-gst-test-source dora-gst-test-source
+    path: dora-gst-test-source
+    inputs:
+      tick: dora/timer/millis/30
+    outputs:
+      - frame
+    env:
+      MOTION: '0'
+      IS_LIVE: 'true'
+      PATTERN: '0'  # SMPTE pattern
+      IMAGE_COLS: '640'
+      IMAGE_ROWS: '480'
+      SOURCE_FPS: '30.0'
+
+  # WebRTC sink that handles multiple sources
+  - id: webrtc-sink
+    build: cargo install --path ../ 
+    path: dora-gst-webrtc-sink
+    inputs:
+      camera1/frame: camera1/frame
+      camera2/frame: camera2/frame
+    env:
+      SIGNALING_PORT: "8080"
+      RUST_LOG: "info"
