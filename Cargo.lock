@@ -4333,6 +4333,8 @@ dependencies = [
  "dora-cli",
  "dora-node-api",
  "fastwebsockets",
+ "futures-concurrency",
+ "futures-util",
  "http-body-util",
  "hyper 1.7.0",
  "hyper-util",
