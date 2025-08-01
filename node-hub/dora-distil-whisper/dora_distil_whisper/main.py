@@ -48,35 +48,6 @@ def remove_text_noise(text: str, text_noise="") -> str:
     text_words = normalized_text.split()
     noise_words = normalized_noise.split()
 
-    # Function to find and remove noise sequence flexibly
-    def remove_flexible(text_list, noise_list):
-        i = 0
-        while i <= len(text_list) - len(noise_list):
-            match = True
-            extra_words = 0
-            for j, noise_word in enumerate(noise_list):
-                if i + j + extra_words >= len(text_list):
-                    match = False
-                    break
-                # Allow skipping extra words in text_list
-                while (
-                    i + j + extra_words < len(text_list)
-                    and text_list[i + j + extra_words] != noise_word
-                ):
-                    extra_words += 1
-                    if i + j + extra_words >= len(text_list):
-                        match = False
-                        break
-                if not match:
-                    break
-            if match:
-                # Remove matched part
-                del text_list[i : i + len(noise_list) + extra_words]
-                i = max(0, i - len(noise_list))  # Adjust index after removal
-            else:
-                i += 1
-        return text_list
-
     # Only remove parts of text_noise that are found in text
     cleaned_words = text_words[:]
     for noise_word in noise_words:
@@ -126,7 +97,26 @@ BAD_SENTENCES = [
     "",
     " so",
     " So.",
+    " So, let's go.",
     " so so",
+    " What?",
+    " We'll see you next time.",
+    " I'll see you next time.",
+    " We're going to come back.",
+    " let's move on.",
+    " Here we go.",
+    " my",
+    " All right. Thank you.",
+    " That's what we're doing.",
+    " That's what I wanted to do.",
+    " I'll be back.",
+    " Hold this. Hold this.",
+    " Hold this one. Hold this one.",
+    " And we'll see you next time.",
+    " strength.",
+    " Length.",
+    " Let's go.",
+    " Let's do it.",
     "You",
     "You ",
     " You",
@@ -199,6 +189,12 @@ def main():
             append_punctuations=".",
             language=TARGET_LANGUAGE,
         )
+        result = mlx_whisper.transcribe(
+            np.array([]),
+            path_or_hf_repo="mlx-community/whisper-large-v3-turbo",
+            append_punctuations=".",
+            language=TARGET_LANGUAGE,
+        )
 
     node = Node()
     noise_timestamp = time.time()
@@ -244,6 +240,8 @@ def main():
                         generate_kwargs=confg,
                     )
                 if result["text"] in BAD_SENTENCES:
+                    print("Discarded text: ", result["text"])
+                    # cache_audio = None
                     continue
                 text = cut_repetition(result["text"])
 
@@ -258,20 +256,27 @@ def main():
                     continue
 
                 if (
-                    (
-                        text.endswith(".")
-                        or text.endswith("!")
-                        or text.endswith("?")
-                        or text.endswith('."')
-                        or text.endswith('!"')
-                        or text.endswith('?"')
-                    )
-                    and not text.endswith("...")  # Avoid ending with ellipsis
-                ):
+                    text.endswith(".")
+                    or text.endswith("!")
+                    or text.endswith("?")
+                    or text.endswith('."')
+                    or text.endswith('!"')
+                    or text.endswith('?"')
+                ) and not text.endswith("..."):
                     node.send_output(
                         "text",
                         pa.array([text]),
                     )
+                    node.send_output(
+                        "stop",
+                        pa.array([text]),
+                    )
                     cache_audio = None
-                else:
+                    audio = None
+                    print("Text:", text)
+                elif text.endswith("..."):
+                    print(
+                        "Keeping audio in cache for next text output with punctuation"
+                    )
+                    print("Discarded text", text)
                     cache_audio = audio
