@@ -14,6 +14,7 @@ use std::{
     path::PathBuf,
 };
 use tokio::runtime::Builder;
+#[cfg(feature = "tracing")]
 use tracing::level_filters::LevelFilter;
 
 #[derive(Debug, clap::Args)]
