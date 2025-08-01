@@ -23,7 +23,7 @@ def main():
             if event is not None and isinstance(event, Events.Press):
                 if hasattr(event.key, "char"):
                     if event.key.char is not None:
-                        node.send_output("char", pa.array([event.key.char]))
+                        node.send_output("char", pa.array([event.key.char]), {"primitive": "text"})
 
 
 if __name__ == "__main__":

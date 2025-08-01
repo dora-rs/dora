@@ -1,6 +1,6 @@
 nodes:
   - id: camera
-    build: pip install ../../node-hub/opencv-video-capture
+    build: pip install -e ../../node-hub/opencv-video-capture
     path: opencv-video-capture
     _unstable_deploy:
       machine: encoder
