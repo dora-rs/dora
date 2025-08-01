@@ -98,20 +98,25 @@ pub fn lib_main() -> Result<()> {
 
     while let Some(event) = events.recv() {
         if let Event::Input { id, data, metadata } = event {
-            let primitive = if let Some(Parameter::String(primitive)) = metadata.parameters.get("primitive") {
-                primitive.clone()
-            } else {
-                bail!("No visualization primitive specified in metadata for input {}", id);
-            };
+            let primitive =
+                if let Some(Parameter::String(primitive)) = metadata.parameters.get("primitive") {
+                    primitive.clone()
+                } else {
+                    bail!(
+                        "No visualization primitive specified in metadata for input {}",
+                        id
+                    );
+                };
 
             match primitive.as_str() {
                 "image" => {
-                    let height =
-                        if let Some(Parameter::Integer(height)) = metadata.parameters.get("height") {
-                            height
-                        } else {
-                            &480
-                        };
+                    let height = if let Some(Parameter::Integer(height)) =
+                        metadata.parameters.get("height")
+                    {
+                        height
+                    } else {
+                        &480
+                    };
                     let width =
                         if let Some(Parameter::Integer(width)) = metadata.parameters.get("width") {
                             width
@@ -171,12 +176,13 @@ pub fn lib_main() -> Result<()> {
                         } else {
                             640
                         };
-                    let height =
-                        if let Some(Parameter::Integer(height)) = metadata.parameters.get("height") {
-                            *height as usize
-                        } else {
-                            480
-                        };
+                    let height = if let Some(Parameter::Integer(height)) =
+                        metadata.parameters.get("height")
+                    {
+                        *height as usize
+                    } else {
+                        480
+                    };
 
                     // Check if we have camera metadata for pinhole camera setup
                     let has_camera_metadata = metadata.parameters.contains_key("camera_position")
@@ -412,25 +418,22 @@ pub fn lib_main() -> Result<()> {
                 "series" => {
                     let values = into_vec::<f32>(&data).context("could not cast series values")?;
                     if !values.is_empty() {
-                        rec.log(
-                            id.as_str(),
-                            &rerun::Scalars::new([values[0] as f64]),
-                        )
-                        .context("could not log series")?;
+                        rec.log(id.as_str(), &rerun::Scalars::new([values[0] as f64]))
+                            .context("could not log series")?;
                     }
                 }
                 "points3d" => {
                     // Get color from metadata
-                    let color = if let Some(Parameter::ListInt(rgb)) = metadata.parameters.get("color")
-                    {
-                        if rgb.len() >= 3 {
-                            rerun::Color::from_rgb(rgb[0] as u8, rgb[1] as u8, rgb[2] as u8)
+                    let color =
+                        if let Some(Parameter::ListInt(rgb)) = metadata.parameters.get("color") {
+                            if rgb.len() >= 3 {
+                                rerun::Color::from_rgb(rgb[0] as u8, rgb[1] as u8, rgb[2] as u8)
+                            } else {
+                                rerun::Color::from_rgb(128, 128, 128) // Default gray
+                            }
                         } else {
                             rerun::Color::from_rgb(128, 128, 128) // Default gray
-                        }
-                    } else {
-                        rerun::Color::from_rgb(128, 128, 128) // Default gray
-                    };
+                        };
 
                     let dataid = id;
 
@@ -497,23 +500,24 @@ pub fn lib_main() -> Result<()> {
                 }
                 "lines3d" => {
                     // Get color from metadata
-                    let color = if let Some(Parameter::ListInt(rgb)) = metadata.parameters.get("color")
-                    {
-                        if rgb.len() >= 3 {
-                            rerun::Color::from_rgb(rgb[0] as u8, rgb[1] as u8, rgb[2] as u8)
+                    let color =
+                        if let Some(Parameter::ListInt(rgb)) = metadata.parameters.get("color") {
+                            if rgb.len() >= 3 {
+                                rerun::Color::from_rgb(rgb[0] as u8, rgb[1] as u8, rgb[2] as u8)
+                            } else {
+                                rerun::Color::from_rgb(0, 255, 0) // Default green
+                            }
                         } else {
                             rerun::Color::from_rgb(0, 255, 0) // Default green
-                        }
-                    } else {
-                        rerun::Color::from_rgb(0, 255, 0) // Default green
-                    };
+                        };
 
                     // Get radius for line thickness
-                    let radius = if let Some(Parameter::Float(r)) = metadata.parameters.get("radius") {
-                        *r as f32
-                    } else {
-                        0.01 // Default radius
-                    };
+                    let radius =
+                        if let Some(Parameter::Float(r)) = metadata.parameters.get("radius") {
+                            *r as f32
+                        } else {
+                            0.01 // Default radius
+                        };
 
                     if let Ok(buffer) = into_vec::<f32>(&data) {
                         let mut line_points = vec![];
