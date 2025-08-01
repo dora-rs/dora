@@ -12,6 +12,7 @@ use crate::{
     session::DataflowSession,
 };
 use dora_daemon::{flume, Daemon, LogDestination};
+#[cfg(feature = "tracing")]
 use dora_tracing::TracingBuilder;
 use eyre::Context;
 use tokio::runtime::Builder;
