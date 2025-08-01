@@ -6,7 +6,68 @@ This nodes is still experimental and format for passing Images, Bounding boxes, 
 
 ## Changes in v0.24.0
 
-This version introduces significant breaking changes to align with Rerun SDK v0.24.0 and improve the visualization primitive system:
+This version introduces significant breaking changes to align with Rerun SDK v0.24.0 and improve the visualization primitive system.
+
+### Design Rationale
+
+The move from input-name-based visualization to explicit primitive metadata was driven by real-world requirements from complex robotics applications, specifically a quad drone system with hierarchical sensor configurations. The previous system had limitations:
+
+- Input names were tightly coupled to visualization types (e.g., input named "image" → image visualization)
+- Complex hierarchies weren't properly preserved in Rerun's scene graph
+- Multiple inputs of the same type required awkward naming conventions
+- Adding new visualization types required careful naming coordination
+
+**Pros of the new primitive-based system:**
+- ✅ **Explicit intent**: Clear specification of visualization type via metadata
+- ✅ **Flexible naming**: Input names can be descriptive (e.g., `front_camera`, `rear_camera`) rather than generic
+- ✅ **Proper hierarchies**: Entity paths and relationships are correctly maintained in Rerun
+- ✅ **Extensibility**: New primitives can be added without affecting existing inputs
+- ✅ **Multiple same-type inputs**: Easy to have multiple cameras, depth sensors, etc.
+- ✅ **Better error messages**: System can report exactly what primitive was expected vs received
+
+**Cons to consider:**
+- ❌ **Breaking change**: All nodes sending to dora-rerun must be updated
+- ❌ **More verbose**: Requires metadata on every input
+- ❌ **Migration effort**: Existing systems need code changes
+- ❌ **Coordination required**: Senders and receivers must agree on primitive types
+
+**Maintainer considerations:**
+- This change prioritizes explicit configuration over convention
+- The migration path is straightforward but requires touching many files
+- Future primitive additions won't break existing code
+- The system is more robust for complex, real-world robotics applications
+
+### Real-World Application: Peng Quadrotor Framework
+
+The primitive-based system was battle-tested by porting [Peng](https://github.com/makeecat/Peng), a Rust-based minimal quadrotor autonomy framework, to work with dora. The dora-integrated version is available at [dora_quad](https://github.com/VertexStudio/dora_quad). The integration demonstrates:
+
+![Peng Quadrotor in Dora-Rerun](./docs/peng-dora.jpg)
+
+The visualization shows:
+- **3D Scene (left)**: Real-time quadrotor position, orientation, and trajectory with proper hierarchical entity paths
+- **Depth Camera (top right)**: Simulated depth sensor data for obstacle avoidance
+- **Telemetry (bottom)**: Time-series data including position, velocity, and orientation streams
+- **Control Signals**: Real-time visualization of motor commands and control loops
+
+This integration required the new primitive system to handle:
+- Multiple coordinate frames (world, body, camera)
+- Hierarchical sensor configurations
+- High-frequency telemetry data
+- Complex 3D visualizations with proper entity relationships
+
+Without the explicit primitive system, maintaining proper hierarchies and multiple sensor streams would have been challenging with the previous naming-convention-based approach.
+
+**Citation:**
+```bibtex
+@software{peng_quad,
+  author       = {Yang Zhou},
+  title        = {Peng: A Minimal Quadrotor Autonomy Framework in Rust},
+  year         = {2024},
+  publisher    = {GitHub},
+  journal      = {GitHub repository},
+  howpublished = {\url{https://github.com/makeecat/peng}},
+}
+```
 
 ### Major Breaking Changes
 
