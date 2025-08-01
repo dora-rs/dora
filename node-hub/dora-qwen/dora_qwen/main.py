@@ -1,7 +1,6 @@
 """TODO: Add docstring."""
 
 import os
-import sys
 
 import pyarrow as pa
 from dora import Node
@@ -12,14 +11,24 @@ SYSTEM_PROMPT = os.getenv(
     "You're a very succinct AI assistant with short answers.",
 )
 
+MODEL_NAME_OR_PATH = os.getenv("MODEL_NAME_OR_PATH", "Qwen/Qwen2.5-0.5B-Instruct-GGUF")
+MODEL_FILE_PATTERN = os.getenv("MODEL_FILE_PATTERN", "*fp16.gguf")
+MAX_TOKENS = int(os.getenv("MAX_TOKENS", "512"))
+N_GPU_LAYERS = int(os.getenv("N_GPU_LAYERS", "0"))
+N_THREADS = int(os.getenv("N_THREADS", "4"))
+CONTEXT_SIZE = int(os.getenv("CONTEXT_SIZE", "4096"))
+
 
 def get_model_gguf():
     """TODO: Add docstring."""
     from llama_cpp import Llama
 
     return Llama.from_pretrained(
-        repo_id="Qwen/Qwen2.5-0.5B-Instruct-GGUF",
-        filename="*fp16.gguf",
+        repo_id=MODEL_NAME_OR_PATH,
+        filename=MODEL_FILE_PATTERN,
+        n_gpu_layers=N_GPU_LAYERS,
+        n_ctx=CONTEXT_SIZE,
+        n_threads=N_THREADS,
         verbose=False,
     )
 
@@ -71,12 +80,7 @@ def main():
     """TODO: Add docstring."""
     history = []
     # If OS is not Darwin, use Huggingface model
-    if sys.platform == "darwin":
-        model = get_model_gguf()
-    elif sys.platform == "linux":
-        model, tokenizer = get_model_huggingface()
-    else:
-        model, tokenizer = get_model_darwin()
+    model = get_model_gguf()
 
     node = Node()
 
@@ -90,23 +94,10 @@ def main():
                 word in ACTIVATION_WORDS for word in words
             ):
                 # On linux, Windows
-                if sys.platform == "darwin":
-                    response = model.create_chat_completion(
-                        messages=[{"role": "user", "content": text}],  # Prompt
-                        max_tokens=24,
-                    )["choices"][0]["message"]["content"]
-                elif sys.platform == "linux":
-                    response, history = generate_hf(model, tokenizer, text, history)
-                else:
-                    from mlx_lm import generate
-
-                    response = generate(
-                        model,
-                        tokenizer,
-                        prompt=text,
-                        verbose=False,
-                        max_tokens=50,
-                    )
+                response = model.create_chat_completion(
+                    messages=[{"role": "user", "content": text}],  # Prompt
+                    max_tokens=24,
+                )["choices"][0]["message"]["content"]
 
                 node.send_output(
                     output_id="text",
