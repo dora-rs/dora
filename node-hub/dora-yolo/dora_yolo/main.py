@@ -95,6 +95,7 @@ def main():
 
                 metadata = event["metadata"]
                 metadata["format"] = bbox_format
+                metadata["primitive"] = "boxes2d"
 
                 node.send_output(
                     "bbox",

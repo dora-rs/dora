@@ -4,6 +4,99 @@ dora visualization using `rerun`
 
 This nodes is still experimental and format for passing Images, Bounding boxes, and text are probably going to change in the future.
 
+## Changes in v0.24.0
+
+This version introduces significant breaking changes to align with Rerun SDK v0.24.0 and improve the visualization primitive system:
+
+### Major Breaking Changes
+
+1. **Primitive-based Visualization System**
+   - **BREAKING**: All inputs now require a `primitive` metadata field to specify the visualization type
+   - Previously, visualization type was inferred from the input ID (e.g., "image", "depth", "boxes2d")
+   - Now you must explicitly specify: `metadata: { "primitive": "image" }` (or "depth", "boxes2d", etc.)
+   - This change allows more flexible naming of inputs and clearer intent
+
+2. **Rerun SDK Upgrade**
+   - Updated from Rerun v0.23.3 to v0.24.0
+   - Updated Python dependency from `rerun_sdk>=0.23.1` to `rerun_sdk>=0.24.0`
+
+3. **New 3D Boxes Support**
+   - Added comprehensive 3D bounding box visualization with multiple format support
+   - Supports three formats: "center_half_size" (default), "center_size", and "min_max"
+   - Configurable rendering: wireframe (default) or solid fill
+   - Support for per-box colors and labels
+
+4. **Enhanced Depth Visualization**
+   - Depth data now supports pinhole camera setup for proper 3D reconstruction
+   - Requires Float32Array format (previously supported Float64 and UInt16)
+   - New metadata fields for camera configuration:
+     - `camera_position`: [x, y, z] position
+     - `camera_orientation`: [x, y, z, w] quaternion
+     - `focal`: [fx, fy] focal lengths
+     - `principal_point`: [cx, cy] principal point (optional)
+   - Without camera metadata, depth is logged but 3D reconstruction is skipped
+
+5. **Removed Features**
+   - Removed series/time-series visualization support
+   - Removed legacy camera pitch configuration via CAMERA_PITCH environment variable
+   - Removed automatic depth-to-3D point cloud conversion without proper camera parameters
+
+### Migration Guide
+
+#### Before (old system):
+```yaml
+nodes:
+  - id: rerun
+    inputs:
+      image: camera/image         # Type inferred from "image" in ID
+      depth: sensor/depth         # Type inferred from "depth" in ID
+      boxes2d: detector/boxes2d   # Type inferred from "boxes2d" in ID
+```
+
+#### After (new system):
+```yaml
+nodes:
+  - id: rerun
+    inputs:
+      camera_feed: camera/image
+      depth_sensor: sensor/depth
+      detections: detector/boxes2d
+    # Visualization types must be specified in the sender's metadata:
+    # camera/image must send: metadata { "primitive": "image" }
+    # sensor/depth must send: metadata { "primitive": "depth" }
+    # detector/boxes2d must send: metadata { "primitive": "boxes2d" }
+```
+
+### Migration Status
+
+**Successfully tested examples:**
+- ✅ examples/rerun-viewer/dataflow.yml - Basic camera visualization
+- ✅ examples/camera/dataflow_rerun.yml - Camera with rerun
+- ✅ examples/python-dataflow/dataflow.yml - Camera + YOLO object detection
+- ✅ examples/python-multi-env/dataflow.yml - Multi-environment setup
+
+**Updated but NOT tested examples:**
+- 🔧 examples/keyboard/dataflow.yml - Updated dora-keyboard to send primitive metadata (requires Linux/X11 for testing)
+- 🔧 examples/translation/* - Updated dora-distil-whisper and dora-argotranslate to send primitive metadata
+- 🔧 examples/reachy2-remote/dataflow_reachy.yml - Updated multiple nodes (dora-reachy2, dora-qwen2-5-vl, dora-sam2, parse_bbox.py, parse_whisper.py)
+- 🔧 examples/lebai/graphs/dataflow_full.yml - Updated dora-qwenvl, llama-factory-recorder, key_interpolation.py
+- 🔧 examples/av1-encoding/* - Updated dora-dav1d and dora-rav1e to send primitive metadata
+
+Key changes made:
+1. Added `-e` flag to local package installs in dataflows for development
+2. Updated node packages to include `"primitive"` metadata:
+   - opencv-video-capture: adds `"primitive": "image"`
+   - dora-yolo: adds `"primitive": "boxes2d"`
+   - dora-keyboard: adds `"primitive": "text"`
+   - dora-distil-whisper: adds `"primitive": "text"`
+   - dora-argotranslate: adds `"primitive": "text"`
+   - dora-sam2: adds `"primitive": "masks"`
+   - dora-qwen2-5-vl: adds `"primitive": "text"`
+   - dora-qwenvl: adds `"primitive": "text"`
+   - dora-reachy2/camera.py: adds appropriate primitives
+   - dora-dav1d: adds `"primitive": "image"`
+   - dora-rav1e: adds `"primitive": "image"`
+
 ## Getting Started
 
 ```bash
@@ -30,24 +123,76 @@ pip install dora-rerun
     RERUN_MEMORY_LIMIT: 25%
 ```
 
-## Input definition
+## Supported Visualization Primitives
 
-- image: UInt8Array + metadata { "width": int, "height": int, "encoding": str }
-- boxes2D: StructArray + metadata { "format": str }
-- boxes3D: Float32Array/StructArray + metadata { "format": str, "solid": bool, "color": list[int] }
-  - Formats: "center_half_size" (default) [cx, cy, cz, hx, hy, hz],
-            "center_size" [cx, cy, cz, sx, sy, sz], 
-            "min_max" [min_x, min_y, min_z, max_x, max_y, max_z]
-  - Default rendering: wireframe (set "solid": true for filled boxes)
-  - Color: RGB array [r, g, b] with values 0-255
-- text: StringArray
-- jointstate: Float32Array
-- points3d: Float32Array (xyz triplets) + metadata { "color": list[int] (RGB 0-255), "radii": list[float] }
-- points2d: Float32Array (xy pairs)
-- lines3d: Float32Array (xyz triplets) + metadata { "color": list[int] (RGB 0-255), "radius": float }
-- depth: Float32Array + metadata { "width": int, "height": int, "camera_position": list[float], "camera_orientation": list[float], "focal": list[float], "principal_point": list[float] }
-  - With camera metadata: creates pinhole camera view with depth image
-  - Without camera metadata: skips 3D reconstruction
+All inputs require a `"primitive"` field in the metadata to specify the visualization type:
+
+### 1. image
+- **Data**: UInt8Array
+- **Required metadata**: `{ "primitive": "image", "width": int, "height": int, "encoding": str }`
+- **Supported encodings**: "bgr8", "rgb8", "jpeg", "png", "avif"
+
+### 2. depth  
+- **Data**: Float32Array
+- **Required metadata**: `{ "primitive": "depth", "width": int, "height": int }`
+- **Optional metadata for 3D reconstruction**:
+  - `"camera_position"`: [x, y, z] position
+  - `"camera_orientation"`: [x, y, z, w] quaternion
+  - `"focal"`: [fx, fy] focal lengths
+  - `"principal_point"`: [cx, cy] principal point
+
+### 3. text
+- **Data**: StringArray
+- **Required metadata**: `{ "primitive": "text" }`
+
+### 4. boxes2d
+- **Data**: StructArray or Float32Array
+- **Required metadata**: `{ "primitive": "boxes2d", "format": str }`
+- **Formats**: "xyxy" (default), "xywh"
+
+### 5. boxes3d
+- **Data**: Float32Array or StructArray
+- **Required metadata**: `{ "primitive": "boxes3d" }`
+- **Optional metadata**:
+  - `"format"`: "center_half_size" (default), "center_size", "min_max"
+  - `"solid"`: bool (default false for wireframe)
+  - `"color"`: [r, g, b] RGB values 0-255
+
+### 6. masks
+- **Data**: UInt8Array
+- **Required metadata**: `{ "primitive": "masks", "width": int, "height": int }`
+
+### 7. jointstate
+- **Data**: Float32Array
+- **Required metadata**: `{ "primitive": "jointstate" }`
+- **Note**: Requires URDF configuration (see below)
+
+### 8. pose
+- **Data**: Float32Array (7 values: [x, y, z, qx, qy, qz, qw])
+- **Required metadata**: `{ "primitive": "pose" }`
+
+### 9. series
+- **Data**: Float32Array
+- **Required metadata**: `{ "primitive": "series" }`
+- **Note**: Currently logs only the first value as a scalar
+
+### 10. points3d
+- **Data**: Float32Array (xyz triplets)
+- **Required metadata**: `{ "primitive": "points3d" }`
+- **Optional metadata**:
+  - `"color"`: [r, g, b] RGB values 0-255
+  - `"radii"`: list of float radius values
+
+### 11. points2d
+- **Data**: Float32Array (xy pairs)
+- **Required metadata**: `{ "primitive": "points2d" }`
+
+### 12. lines3d
+- **Data**: Float32Array (xyz triplets defining line segments)
+- **Required metadata**: `{ "primitive": "lines3d" }`
+- **Optional metadata**:
+  - `"color"`: [r, g, b] RGB values 0-255
+  - `"radius"`: float line thickness
 
 ## (Experimental) For plotting 3D URDF
 

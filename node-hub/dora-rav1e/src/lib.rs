@@ -231,6 +231,10 @@ fn send_yuv(
                     );
 
                 let arrow = data.into_arrow();
+                metadata.parameters.insert(
+                    "primitive".to_string(),
+                    Parameter::String("image".to_string()),
+                );
                 node.send_output(id, metadata.parameters.clone(), arrow)
                     .context("could not send output")
                     .unwrap();
@@ -248,6 +252,9 @@ fn send_yuv(
 
                 let data = pkt.data;
                 let arrow = data.into_arrow();
+                metadata
+                    .parameters
+                    .insert("primitive".to_string(), Parameter::String("image".to_string()));
                 node.send_output(id, metadata.parameters.clone(), arrow)
                     .context("could not send output")
                     .unwrap();
@@ -428,6 +435,10 @@ pub fn lib_main() -> Result<()> {
                                         );
 
                                         let arrow = data.into_arrow();
+                                        metadata.parameters.insert(
+                                            "primitive".to_string(),
+                                            Parameter::String("image".to_string()),
+                                        );
 
                                         node.send_output(id, metadata.parameters.clone(), arrow)
                                             .context("could not send output")
@@ -439,6 +450,10 @@ pub fn lib_main() -> Result<()> {
                                             Parameter::String("av1".to_string()),
                                         );
                                         let arrow = data.into_arrow();
+                                        metadata.parameters.insert(
+                                            "primitive".to_string(),
+                                            Parameter::String("image".to_string()),
+                                        );
                                         node.send_output(id, metadata.parameters, arrow)
                                             .context("could not send output")
                                             .unwrap();

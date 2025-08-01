@@ -217,6 +217,7 @@ def main():
                     jsonl_file=default_record_json_path,
                     messages=messages,
                 )
+                metadata["primitive"] = "text"
                 node.send_output(
                     "text",
                     pa.array([ground_truth]),
