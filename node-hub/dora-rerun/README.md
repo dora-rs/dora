@@ -98,7 +98,6 @@ Without the explicit primitive system, maintaining proper hierarchies and multip
    - Without camera metadata, depth is logged but 3D reconstruction is skipped
 
 5. **Removed Features**
-   - Removed series/time-series visualization support
    - Removed legacy camera pitch configuration via CAMERA_PITCH environment variable
    - Removed automatic depth-to-3D point cloud conversion without proper camera parameters
 
