@@ -1,4 +1,4 @@
-use eyre::{bail, eyre, Context};
+use eyre::{Context, bail, eyre};
 use std::{
     env::consts::{DLL_PREFIX, DLL_SUFFIX},
     ffi::OsStr,

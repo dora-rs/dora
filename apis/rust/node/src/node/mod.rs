@@ -1,4 +1,4 @@
-use crate::{daemon_connection::DaemonChannel, EventStream};
+use crate::{EventStream, daemon_connection::DaemonChannel};
 
 use self::{
     arrow_utils::{copy_array_into_sample, required_data_size},
@@ -16,12 +16,12 @@ use dora_core::{
 };
 
 use dora_message::{
+    DataflowId,
     daemon_to_node::{DaemonReply, NodeConfig},
     metadata::{ArrowTypeInfo, Metadata, MetadataParameters},
     node_to_daemon::{DaemonRequest, DataMessage, DropToken, Timestamped},
-    DataflowId,
 };
-use eyre::{bail, WrapErr};
+use eyre::{WrapErr, bail};
 use shared_memory_extended::{Shmem, ShmemConf};
 use std::{
     collections::{BTreeSet, HashMap, VecDeque},
@@ -157,7 +157,9 @@ impl DoraNode {
     /// [`init_from_node_id`][Self::init_from_node_id].
     pub fn init_flexible(node_id: NodeId) -> eyre::Result<(Self, EventStream)> {
         if std::env::var("DORA_NODE_CONFIG").is_ok() {
-            info!("Skipping {node_id} specified within the node initialization in favor of `DORA_NODE_CONFIG` specified by `dora start`");
+            info!(
+                "Skipping {node_id} specified within the node initialization in favor of `DORA_NODE_CONFIG` specified by `dora start`"
+            );
             Self::init_from_env()
         } else {
             Self::init_from_node_id(node_id)

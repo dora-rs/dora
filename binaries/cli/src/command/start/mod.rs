@@ -2,7 +2,7 @@
 //!
 //! The `dora start` command does not run any build commands, nor update git dependencies or similar. Use `dora build` for that.
 
-use super::{default_tracing, Executable};
+use super::{Executable, default_tracing};
 use crate::{
     command::start::attach::attach_dataflow,
     common::{connect_to_coordinator, local_working_dir, resolve_dataflow},
@@ -17,7 +17,7 @@ use dora_core::{
 use dora_message::{
     cli_to_coordinator::ControlRequest, common::LogMessage, coordinator_to_cli::ControlRequestReply,
 };
-use eyre::{bail, Context};
+use eyre::{Context, bail};
 use std::{
     net::{IpAddr, SocketAddr, TcpStream},
     path::PathBuf,

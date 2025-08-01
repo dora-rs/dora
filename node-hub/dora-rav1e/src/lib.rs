@@ -11,7 +11,7 @@ use std::env::var;
 use std::vec;
 
 use dora_node_api::arrow::array::AsArray;
-use dora_node_api::arrow::datatypes::{UInt16Type, UInt8Type};
+use dora_node_api::arrow::datatypes::{UInt8Type, UInt16Type};
 use dora_node_api::dora_core::config::DataId;
 use dora_node_api::{DoraNode, Event, IntoArrow, Metadata, MetadataParameters, Parameter};
 use eyre::{Context as EyreContext, Result};
@@ -252,9 +252,10 @@ fn send_yuv(
 
                 let data = pkt.data;
                 let arrow = data.into_arrow();
-                metadata
-                    .parameters
-                    .insert("primitive".to_string(), Parameter::String("image".to_string()));
+                metadata.parameters.insert(
+                    "primitive".to_string(),
+                    Parameter::String("image".to_string()),
+                );
                 node.send_output(id, metadata.parameters.clone(), arrow)
                     .context("could not send output")
                     .unwrap();
@@ -505,9 +506,9 @@ pub fn lib_main() -> Result<()> {
 
 #[cfg(feature = "python")]
 use pyo3::{
-    pyfunction, pymodule,
+    Bound, PyResult, Python, pyfunction, pymodule,
     types::{PyModule, PyModuleMethods},
-    wrap_pyfunction, Bound, PyResult, Python,
+    wrap_pyfunction,
 };
 
 #[cfg(feature = "python")]

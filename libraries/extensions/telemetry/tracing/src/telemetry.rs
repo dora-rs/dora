@@ -1,7 +1,7 @@
 use opentelemetry::propagation::Extractor;
 use opentelemetry::sdk::{propagation::TraceContextPropagator, trace as sdktrace};
 use opentelemetry::trace::TraceError;
-use opentelemetry::{global, Context};
+use opentelemetry::{Context, global};
 use std::collections::HashMap;
 
 struct MetadataMap<'a>(HashMap<&'a str, &'a str>);

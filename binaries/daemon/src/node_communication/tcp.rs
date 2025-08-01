@@ -2,8 +2,8 @@ use std::{collections::BTreeMap, io::ErrorKind, sync::Arc};
 
 use super::{Connection, Listener};
 use crate::{
-    socket_stream_utils::{socket_stream_receive, socket_stream_send},
     Event,
+    socket_stream_utils::{socket_stream_receive, socket_stream_send},
 };
 use dora_core::{config::DataId, uhlc::HLC};
 use dora_message::{
@@ -70,7 +70,7 @@ impl Connection for TcpConnection {
                 | ErrorKind::ConnectionReset => return Ok(None),
                 _other => {
                     return Err(err)
-                        .context("unexpected I/O error while trying to receive DaemonRequest")
+                        .context("unexpected I/O error while trying to receive DaemonRequest");
                 }
             },
         };

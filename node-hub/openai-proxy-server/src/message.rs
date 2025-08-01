@@ -3,8 +3,8 @@ use std::collections::HashMap;
 
 use indexmap::IndexMap;
 use serde::{
-    de::{self, MapAccess, Visitor},
     Deserialize, Deserializer, Serialize,
+    de::{self, MapAccess, Visitor},
 };
 use serde_json::Value;
 

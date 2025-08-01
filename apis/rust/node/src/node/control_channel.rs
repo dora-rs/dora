@@ -6,12 +6,12 @@ use dora_core::{
     uhlc::HLC,
 };
 use dora_message::{
+    DataflowId,
     daemon_to_node::{DaemonCommunication, DaemonReply},
     metadata::Metadata,
     node_to_daemon::{DaemonRequest, DataMessage, Timestamped},
-    DataflowId,
 };
-use eyre::{bail, eyre, Context};
+use eyre::{Context, bail, eyre};
 
 pub(crate) struct ControlChannel {
     channel: DaemonChannel,

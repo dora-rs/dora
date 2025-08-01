@@ -1,7 +1,7 @@
 use std::env::var;
 
 use dav1d::Settings;
-use dora_node_api::{arrow::array::UInt8Array, DoraNode, Event, IntoArrow};
+use dora_node_api::{DoraNode, Event, IntoArrow, arrow::array::UInt8Array};
 use eyre::{Context, Result};
 use log::warn;
 
@@ -222,9 +222,9 @@ pub fn lib_main() -> Result<()> {
 
 #[cfg(feature = "python")]
 use pyo3::{
-    pyfunction, pymodule,
+    Bound, PyResult, Python, pyfunction, pymodule,
     types::{PyModule, PyModuleMethods},
-    wrap_pyfunction, Bound, PyResult, Python,
+    wrap_pyfunction,
 };
 
 #[cfg(feature = "python")]

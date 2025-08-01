@@ -2,7 +2,7 @@
 #![warn(unsafe_op_in_unsafe_fn)]
 
 use dora_operator_api::{
-    self, register_operator, DoraOperator, DoraOutputSender, DoraStatus, Event, IntoArrow,
+    self, DoraOperator, DoraOutputSender, DoraStatus, Event, IntoArrow, register_operator,
 };
 use ffi::DoraSendOutputResult;
 

@@ -3,18 +3,19 @@
 use std::{collections::HashMap, env::VarError, path::Path};
 
 use dora_node_api::{
+    DoraNode, Event, Parameter,
     arrow::{
-        array::{Array, AsArray, Float32Array, StringArray, UInt8Array},
+        array::{Array, AsArray, Float32Array, Float64Array, StringArray, UInt8Array, UInt16Array},
         datatypes::Float32Type,
     },
     dora_core::config::DataId,
-    into_vec, DoraNode, Event, Parameter,
+    into_vec,
 };
-use eyre::{bail, eyre, Context, Result};
+use eyre::{Context, Result, bail, eyre};
 
 use pinyin::ToPinyin;
 use rerun::{
-    components::ImageBuffer, external::log::warn, ImageFormat, Points2D, Points3D, SpawnOptions,
+    ImageFormat, Points2D, Points3D, SpawnOptions, components::ImageBuffer, external::log::warn,
 };
 pub mod boxes2d;
 pub mod boxes3d;
@@ -273,17 +274,64 @@ pub fn lib_main() -> Result<()> {
                                 )
                                 .context("could not log depth image")?;
                             }
+                            dora_node_api::arrow::datatypes::DataType::Float64 => {
+                                let buffer: &Float64Array = data.as_any().downcast_ref().unwrap();
+                                let depth_values: Vec<f32> =
+                                    buffer.values().iter().map(|&v| v as f32).collect();
+
+                                let depth_image = rerun::external::ndarray::Array::from_shape_vec(
+                                    (height, width),
+                                    depth_values,
+                                )
+                                .context("Failed to create depth array")?;
+
+                                // Log depth image as a child entity
+                                let depth_entity = format!("{}/raw", camera_entity);
+                                rec.log(
+                                    depth_entity.as_str(),
+                                    &rerun::DepthImage::try_from(depth_image)
+                                        .context("Failed to create depth image")?
+                                        .with_meter(1.0),
+                                )
+                                .context("could not log depth image")?;
+                            }
+                            dora_node_api::arrow::datatypes::DataType::UInt16 => {
+                                let buffer: &UInt16Array = data.as_any().downcast_ref().unwrap();
+                                // Convert from millimeters to meters
+                                let depth_values: Vec<f32> =
+                                    buffer.values().iter().map(|&v| v as f32 / 1000.0).collect();
+
+                                let depth_image = rerun::external::ndarray::Array::from_shape_vec(
+                                    (height, width),
+                                    depth_values,
+                                )
+                                .context("Failed to create depth array")?;
+
+                                // Log depth image as a child entity
+                                let depth_entity = format!("{}/raw", camera_entity);
+                                rec.log(
+                                    depth_entity.as_str(),
+                                    &rerun::DepthImage::try_from(depth_image)
+                                        .context("Failed to create depth image")?
+                                        .with_meter(1.0),
+                                )
+                                .context("could not log depth image")?;
+                            }
                             _ => {
                                 return Err(eyre!(
-                                    "Depth data must be Float32Array, got {}. Please convert depth values to Float32 before sending.",
+                                    "Depth data must be Float32Array, Float64Array, or UInt16Array, got {}.",
                                     data.data_type()
                                 ));
                             }
                         }
                     } else {
                         // No camera metadata - just log a warning and skip 3D reconstruction
-                        warn!("Depth data received without camera metadata (position, orientation, focal). Skipping 3D reconstruction.");
-                        warn!("To enable proper 3D reconstruction, ensure the depth data includes camera_position, camera_orientation, and focal metadata.");
+                        warn!(
+                            "Depth data received without camera metadata (position, orientation, focal). Skipping 3D reconstruction."
+                        );
+                        warn!(
+                            "To enable proper 3D reconstruction, ensure the depth data includes camera_position, camera_orientation, and focal metadata."
+                        );
                     }
                 }
                 "text" => {
@@ -544,9 +592,9 @@ pub fn lib_main() -> Result<()> {
 
 #[cfg(feature = "python")]
 use pyo3::{
-    pyfunction, pymodule,
+    Bound, PyResult, Python, pyfunction, pymodule,
     types::{PyModule, PyModuleMethods},
-    wrap_pyfunction, Bound, PyResult, Python,
+    wrap_pyfunction,
 };
 
 #[cfg(feature = "python")]
