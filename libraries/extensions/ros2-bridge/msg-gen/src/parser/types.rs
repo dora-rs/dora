@@ -1,11 +1,11 @@
 use anyhow::anyhow;
 use nom::{
+    IResult,
     branch::alt,
     bytes::complete::tag,
     character::complete::{char, space1},
     combinator::{eof, map, map_res, opt, peek},
     sequence::{delimited, pair, preceded, tuple},
-    IResult,
 };
 
 use super::{
@@ -13,9 +13,9 @@ use super::{
     literal::usize_literal,
 };
 use crate::types::{
+    ConstantType, MemberType,
     primitives::*,
     sequences::{Array, BoundedSequence, PrimitiveArray, Sequence},
-    ConstantType, MemberType,
 };
 
 pub fn parse_member_type(s: &str) -> IResult<&str, MemberType> {

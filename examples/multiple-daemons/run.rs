@@ -1,7 +1,7 @@
 use dora_cli::session::DataflowSession;
 use dora_coordinator::{ControlEvent, Event};
 use dora_core::{
-    descriptor::{read_as_descriptor, DescriptorExt},
+    descriptor::{DescriptorExt, read_as_descriptor},
     topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, DORA_COORDINATOR_PORT_DEFAULT},
 };
 use dora_message::{
@@ -10,7 +10,7 @@ use dora_message::{
     coordinator_to_cli::{ControlRequestReply, DataflowIdAndName},
 };
 use dora_tracing::TracingBuilder;
-use eyre::{bail, Context};
+use eyre::{Context, bail};
 
 use std::{
     collections::BTreeSet,

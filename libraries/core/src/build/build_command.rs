@@ -6,7 +6,7 @@ use std::{
 };
 
 use dora_message::descriptor::EnvValue;
-use eyre::{eyre, Context};
+use eyre::{Context, eyre};
 
 pub fn run_build_command(
     build: &str,

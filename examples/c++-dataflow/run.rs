@@ -1,5 +1,5 @@
 use dora_tracing::set_up_tracing;
-use eyre::{bail, Context};
+use eyre::{Context, bail};
 use std::{
     env::consts::{DLL_PREFIX, DLL_SUFFIX, EXE_SUFFIX},
     path::Path,

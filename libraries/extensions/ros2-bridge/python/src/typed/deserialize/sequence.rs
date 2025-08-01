@@ -12,7 +12,7 @@ use std::{borrow::Cow, ops::Deref, sync::Arc};
 
 use crate::typed::TypeInfo;
 
-use super::{error, StructDeserializer};
+use super::{StructDeserializer, error};
 
 pub struct SequenceDeserializer<'a> {
     pub item_type: &'a NestableType,

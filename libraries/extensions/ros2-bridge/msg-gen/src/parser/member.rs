@@ -1,4 +1,4 @@
-use anyhow::{ensure, Result};
+use anyhow::{Result, ensure};
 use nom::{
     bytes::complete::is_not,
     character::complete::{space0, space1},
@@ -8,7 +8,7 @@ use nom::{
 };
 
 use super::{error::RclMsgError, ident, literal, types};
-use crate::types::{primitives::NestableType, Member, MemberType};
+use crate::types::{Member, MemberType, primitives::NestableType};
 
 fn nestable_type_default(nestable_type: NestableType, default: &str) -> Result<Vec<String>> {
     match nestable_type {

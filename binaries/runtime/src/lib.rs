@@ -8,10 +8,10 @@ use dora_message::daemon_to_node::{NodeConfig, RuntimeConfig};
 use dora_metrics::run_metrics_monitor;
 use dora_node_api::{DoraNode, Event};
 use dora_tracing::TracingBuilder;
-use eyre::{bail, Context, Result};
+use eyre::{Context, Result, bail};
 use futures::{Stream, StreamExt};
 use futures_concurrency::stream::Merge;
-use operator::{run_operator, OperatorEvent, StopReason};
+use operator::{OperatorEvent, StopReason, run_operator};
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -211,7 +211,9 @@ async fn run(
                     OperatorEvent::AllocateOutputSample { len, sample: tx } => {
                         let sample = node.allocate_data_sample(len);
                         if tx.send(sample).is_err() {
-                            tracing::warn!("output sample requested, but operator {operator_id} exited already");
+                            tracing::warn!(
+                                "output sample requested, but operator {operator_id} exited already"
+                            );
                         }
                     }
                     OperatorEvent::Output {
@@ -309,7 +311,10 @@ async fn run(
                     open_inputs.remove(&input_id);
                     if open_inputs.is_empty() {
                         // all inputs of the node were closed -> close its event channel
-                        tracing::trace!("all inputs of operator {}/{operator_id} were closed -> closing event channel", node.id());
+                        tracing::trace!(
+                            "all inputs of operator {}/{operator_id} were closed -> closing event channel",
+                            node.id()
+                        );
                         open_operator_inputs.remove(&operator_id);
                         operator_channels.remove(&operator_id);
                     }

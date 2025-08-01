@@ -137,7 +137,7 @@ async fn receive_message(
             | ErrorKind::ConnectionReset => return Ok(None),
             _other => {
                 return Err(err)
-                    .context("unexpected I/O error while trying to receive DaemonRequest")
+                    .context("unexpected I/O error while trying to receive DaemonRequest");
             }
         },
     };

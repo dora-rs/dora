@@ -1,6 +1,6 @@
 use clap::Args;
 
-use super::{default_tracing, Executable};
+use super::{Executable, default_tracing};
 
 #[derive(Debug, Args)]
 /// Generate a new project or node. Choose the language between Rust, Python, C or C++.

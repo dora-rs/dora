@@ -1,5 +1,5 @@
 use dora_node_api::{self, DoraNode, Event};
-use eyre::{bail, Context};
+use eyre::{Context, bail};
 
 fn main() -> eyre::Result<()> {
     let (_node, mut events) = DoraNode::init_from_env()?;
@@ -16,7 +16,9 @@ fn main() -> eyre::Result<()> {
                         TryFrom::try_from(&data).context("expected string message")?;
                     println!("sink received message: {received_string}");
                     if !received_string.starts_with("operator received random value ") {
-                        bail!("unexpected message format (should start with 'operator received random value')")
+                        bail!(
+                            "unexpected message format (should start with 'operator received random value')"
+                        )
                     }
                     if !received_string.ends_with(" ticks") {
                         bail!("unexpected message format (should end with 'ticks')")

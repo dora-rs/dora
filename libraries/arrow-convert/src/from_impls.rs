@@ -274,7 +274,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use arrow::array::{make_array, PrimitiveArray};
+    use arrow::array::{PrimitiveArray, make_array};
 
     use crate::ArrowData;
 

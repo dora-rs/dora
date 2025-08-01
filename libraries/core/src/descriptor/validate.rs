@@ -6,14 +6,14 @@ use crate::{
 
 use dora_message::{
     config::{Input, InputMapping, UserInputMapping},
-    descriptor::{CoreNodeKind, OperatorSource, ResolvedNode, DYNAMIC_SOURCE, SHELL_SOURCE},
+    descriptor::{CoreNodeKind, DYNAMIC_SOURCE, OperatorSource, ResolvedNode, SHELL_SOURCE},
     id::{DataId, NodeId, OperatorId},
 };
-use eyre::{bail, eyre, Context};
+use eyre::{Context, bail, eyre};
 use std::{collections::BTreeMap, path::Path, process::Command};
 use tracing::info;
 
-use super::{resolve_path, Descriptor, DescriptorExt};
+use super::{Descriptor, DescriptorExt, resolve_path};
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub fn check_dataflow(
@@ -145,9 +145,13 @@ impl ResolvedNodeExt for ResolvedNode {
                     .filter(|op| op.config.send_stdout_as.is_some())
                     .count();
                 if count == 1 && n.operators.len() > 1 {
-                    tracing::warn!("All stdout from all operators of a runtime are going to be sent in the selected `send_stdout_as` operator.")
+                    tracing::warn!(
+                        "All stdout from all operators of a runtime are going to be sent in the selected `send_stdout_as` operator."
+                    )
                 } else if count > 1 {
-                    return Err(eyre!("More than one `send_stdout_as` entries for a runtime node. Please only use one `send_stdout_as` per runtime."));
+                    return Err(eyre!(
+                        "More than one `send_stdout_as` entries for a runtime node. Please only use one `send_stdout_as` per runtime."
+                    ));
                 }
                 Ok(n.operators.iter().find_map(|op| {
                     op.config

@@ -11,7 +11,7 @@
 //! [`opentelemetry-rust`]: https://github.com/open-telemetry/opentelemetry-rust
 
 use eyre::Result;
-use opentelemetry::{global, InstrumentationScope};
+use opentelemetry::{InstrumentationScope, global};
 use opentelemetry_otlp::MetricExporter;
 use opentelemetry_sdk::metrics::SdkMeterProvider;
 use opentelemetry_system_metrics::init_process_observer;

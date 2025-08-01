@@ -1,11 +1,11 @@
 use std::{net::SocketAddr, path::PathBuf};
 
 use crate::{
+    DataflowId,
     config::NodeRunConfig,
     descriptor::OperatorDefinition,
     id::{DataId, NodeId, OperatorId},
     metadata::Metadata,
-    DataflowId,
 };
 
 pub use crate::common::{DataMessage, DropToken, SharedMemoryId, Timestamped};
