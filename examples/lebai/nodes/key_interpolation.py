@@ -16,40 +16,40 @@ for event in node:
             char = event["value"][0].as_py()
 
             if char == "w":
-                node.send_output("text", pa.array(["forward"]))
+                node.send_output("text", pa.array(["forward"]), {"primitive": "text"})
             elif char == "s":
-                node.send_output("text", pa.array(["back"]))
+                node.send_output("text", pa.array(["back"]), {"primitive": "text"})
             elif char == "c":
-                node.send_output("text", pa.array([" go home"]))
+                node.send_output("text", pa.array([" go home"]), {"primitive": "text"})
             elif char == "d":
-                node.send_output("text", pa.array(["right"]))
+                node.send_output("text", pa.array(["right"]), {"primitive": "text"})
             elif char == "a":
-                node.send_output("text", pa.array(["left"]))
+                node.send_output("text", pa.array(["left"]), {"primitive": "text"})
             elif char == "e":
-                node.send_output("text", pa.array(["up"]))
+                node.send_output("text", pa.array(["up"]), {"primitive": "text"})
             elif char == "q":
-                node.send_output("text", pa.array(["down"]))
+                node.send_output("text", pa.array(["down"]), {"primitive": "text"})
             elif char == "t":
-                node.send_output("text", pa.array(["close"]))
+                node.send_output("text", pa.array(["close"]), {"primitive": "text"})
             elif char == "r":
-                node.send_output("text", pa.array(["open"]))
+                node.send_output("text", pa.array(["open"]), {"primitive": "text"})
             elif char == "6":
-                node.send_output("text", pa.array(["yaw right"]))
+                node.send_output("text", pa.array(["yaw right"]), {"primitive": "text"})
             elif char == "4":
-                node.send_output("text", pa.array(["yaw left"]))
+                node.send_output("text", pa.array(["yaw left"]), {"primitive": "text"})
             elif char == "3":
-                node.send_output("text", pa.array(["yaw shoulder right"]))
+                node.send_output("text", pa.array(["yaw shoulder right"]), {"primitive": "text"})
             elif char == "1":
-                node.send_output("text", pa.array(["yaw shoulder left"]))
+                node.send_output("text", pa.array(["yaw shoulder left"]), {"primitive": "text"})
             elif char == "8":
-                node.send_output("text", pa.array(["pitch up"]))
+                node.send_output("text", pa.array(["pitch up"]), {"primitive": "text"})
             elif char == "2":
-                node.send_output("text", pa.array(["pitch down"]))
+                node.send_output("text", pa.array(["pitch down"]), {"primitive": "text"})
             elif char == "7":
-                node.send_output("text", pa.array(["roll left"]))
+                node.send_output("text", pa.array(["roll left"]), {"primitive": "text"})
             elif char == "9":
-                node.send_output("text", pa.array(["roll right"]))
+                node.send_output("text", pa.array(["roll right"]), {"primitive": "text"})
             elif char == "x":
-                node.send_output("text", pa.array(["stop"]))
+                node.send_output("text", pa.array(["stop"]), {"primitive": "text"})
             elif char == "j":
-                node.send_output("text", pa.array([""]))
+                node.send_output("text", pa.array([""]), {"primitive": "text"})

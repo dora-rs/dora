@@ -316,6 +316,7 @@ def main():
                 )
                 metadata = event["metadata"]
                 metadata["image_id"] = image_id if image_id is not None else "all"
+                metadata["primitive"] = "text"
                 node.send_output(
                     "text",
                     pa.array([response]),

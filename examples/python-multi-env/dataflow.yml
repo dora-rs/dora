@@ -23,7 +23,7 @@ nodes:
       VIRTUAL_ENV: env_2
 
   - id: plot
-    build: pip install dora-rerun
+    build: pip install -e ../../node-hub/dora-rerun
     path: dora-rerun
     inputs:
       image: camera/image

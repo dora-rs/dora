@@ -134,7 +134,7 @@ def main():
 
             if "boxes2d" in event_id:
                 if len(event["value"]) == 0:
-                    node.send_output("masks", pa.array([]))
+                    node.send_output("masks", pa.array([]), {"primitive": "masks"})
                     continue
                 if isinstance(event["value"], pa.StructArray):
                     boxes2d = event["value"][0].get("bbox").values.to_numpy()
@@ -183,8 +183,10 @@ def main():
                     ## Mask to 3 channel image
                     match return_type:
                         case pa.Array:
+                            metadata["primitive"] = "masks"
                             node.send_output("masks", pa.array(masks.ravel()), metadata)
                         case pa.StructArray:
+                            metadata["primitive"] = "masks"
                             node.send_output(
                                 "masks",
                                 pa.array(

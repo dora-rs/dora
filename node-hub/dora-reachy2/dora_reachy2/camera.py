@@ -47,6 +47,7 @@ def main():
                         "encoding": "bgr8",
                         "width": image_left.shape[1],
                         "height": image_left.shape[0],
+                        "primitive": "image",
                     },
                 )
 
@@ -64,6 +65,7 @@ def main():
                         "encoding": "bgr8",
                         "width": image_right.shape[1],
                         "height": image_right.shape[0],
+                        "primitive": "image",
                     },
                 )
 
@@ -76,6 +78,7 @@ def main():
                         "encoding": "bgr8",
                         "width": depth_image.shape[1],
                         "height": depth_image.shape[0],
+                        "primitive": "image",
                     },
                 )
 
@@ -92,6 +95,7 @@ def main():
                             "height": height,
                             "focal": [int(k[0, 0]), int(k[1, 1])],
                             "resolution": [int(k[0, 2]), int(k[1, 2])],
+                            "primitive": "depth",
                         },
                     )
 
