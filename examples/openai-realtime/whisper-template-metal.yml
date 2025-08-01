@@ -4,8 +4,10 @@ nodes:
     inputs:
       audio: tts/audio
       text: stt/text
+      stop: stt/stop
     outputs:
       - audio
+      - text
 
   - id: dora-vad
     build: pip install -e ../../node-hub/dora-vad
@@ -17,9 +19,9 @@ nodes:
     outputs:
       - audio
     env:
-      MIN_SPEECH_DURATION_MS: 2000
-      MIN_SILENCE_DURATION_MS: 1200
-      THRESHOLD: 1.0
+      MIN_SPEECH_DURATION_MS: 1000
+      MIN_SILENCE_DURATION_MS: 1000
+      THRESHOLD: 0.5
 
   - id: stt
     build: pip install -e ../../node-hub/dora-distil-whisper
@@ -29,12 +31,14 @@ nodes:
     outputs:
       - text
       - word
+      - stop
 
   - id: llm
     build: pip install -e ../../node-hub/dora-qwen
     path: dora-qwen
     inputs:
       text: stt/text
+      text_to_audio: NODE_ID/text
     outputs:
       - text
     env:
