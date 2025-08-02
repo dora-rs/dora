@@ -23,6 +23,8 @@ cargo run -r
 
 ```bash
 uv venv --seed -p 3.11
+source .venv/bin/activate
+uv pip install dora-rs-cli dora-rs
 dora build whisper-template-metal.yml --uv ## very long process
 ```
 
