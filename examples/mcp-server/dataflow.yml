@@ -1,0 +1,17 @@
+nodes:
+  - id: mcp-server
+    build: cargo build -p dora-mcp-server --release
+    path: ../../target/release/dora-mcp-server
+    outputs:
+      - counter
+    inputs:
+      counter_reply: counter/reply
+    env:
+      CONFIG: config.toml
+
+  - id: counter
+    path: nodes/counter.py
+    inputs:
+      text: mcp-server/counter
+    outputs:
+      - reply
