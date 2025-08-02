@@ -42,7 +42,7 @@ nodes:
     outputs:
       - text
     env:
-      MODEL_NAME_OR_PATH: Qwen/Qwen2.5-0.5B-Instruct-GGUF
+      MODEL_NAME_OR_PATH: LLM_ID
       MODEL_FILE_PATTERN: "*[qQ]6_[kK].[gG][gG][uU][fF]"
 
   - id: tts

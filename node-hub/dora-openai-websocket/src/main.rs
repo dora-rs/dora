@@ -45,6 +45,7 @@ use rand::random;
 use serde;
 use serde::Deserialize;
 use serde::Serialize;
+use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Write};
 use std::net::IpAddr;
@@ -89,6 +90,7 @@ pub struct SessionConfig {
     pub modalities: Vec<String>,
     pub instructions: String,
     pub voice: String,
+    pub model: String,
     pub input_audio_format: String,
     pub output_audio_format: String,
     pub input_audio_transcription: Option<TranscriptionConfig>,
@@ -249,19 +251,22 @@ fn convert_f32_to_pcm16(samples: &[f32]) -> Vec<u8> {
 /// * `output_path` - Path to write the modified content.
 fn replace_placeholder_in_file(
     input_path: &str,
-    placeholder: &str,
-    replacement: &str,
+    replacement: &HashMap<String, String>,
     output_path: &str,
 ) -> io::Result<()> {
     // Read the file content into a string
-    let content = fs::read_to_string(input_path)?;
+    let mut content = fs::read_to_string(input_path)?;
 
     // Replace the placeholder
-    let modified_content = content.replace(placeholder, replacement);
+    for (placeholder, replacement) in replacement {
+        // Ensure the placeholder is wrapped in curly braces
+        // Replace the placeholder with the replacement text
+        content = content.replace(placeholder, replacement);
+    }
 
     // Write the modified content to the output file
     let mut file = fs::File::create(output_path)?;
-    file.write_all(modified_content.as_bytes())?;
+    file.write_all(content.as_bytes())?;
 
     Ok(())
 }
@@ -281,12 +286,16 @@ async fn handle_client(fut: upgrade::UpgradeFut) -> Result<(), WebSocketError> {
     let input_audio_transcription = session
         .input_audio_transcription
         .map_or("moyoyo-whisper".to_string(), |t| t.model);
+    let llm = session.model.clone();
     let id = random::<u16>();
     let node_id = format!("server-{id}");
     let dataflow = format!("{input_audio_transcription}-{}.yml", id);
     let template = format!("{input_audio_transcription}-template-metal.yml");
+    let mut replacements = HashMap::new();
+    replacements.insert("NODE_ID".to_string(), node_id.clone());
+    replacements.insert("LLM_ID".to_string(), llm);
     println!("Filling template: {}", template);
-    replace_placeholder_in_file(&template, "NODE_ID", &node_id, &dataflow).unwrap();
+    replace_placeholder_in_file(&template, &replacements, &dataflow).unwrap();
     // Copy configuration file but replace the node ID with "server-id"
     // Read the configuration file and replace the node ID with "server-id"
     dora_cli::command::Command::Start(Start {
