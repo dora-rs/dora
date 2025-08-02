@@ -1,0 +1,42 @@
+nodes:
+  - id: dora-isaacsim
+    build: pip install -e ../../node-hub/dora-isaacsim
+    path: ../../node-hub/dora-isaacsim/dora_isaacsim/main.py
+    env:
+      # substitute to your own "<path of isaacsim>/python.sh"
+      ISAAC_PYTHON_PATH: "/home/lv/isaacsim/python.sh"
+      CONFIG_NAME: "stack_cube_act"
+    inputs:
+      request_camera: dora-act/request_camera
+      request_joint_pos: dora-act/request_joint_pos
+      action: dora-act/action
+    outputs:
+      - camera
+      - joint_pos
+  
+  - id: dora-act
+    build: pip install -e ../../node-hub/dora-act
+    path: ../../node-hub/dora-act/dora_act/main.py
+    args: 
+      --task_name stack_cube
+      --ckpt_dir ../../dora-act/dora_act/assets/ckpt/
+      --policy_class ACT
+      --kl_weight 10
+      --chunk_size 20
+      --hidden_dim 512
+      --batch_size 8
+      --dim_feedforward 3200
+      --num_epochs 2000
+      --lr 1e-5
+      --seed 0
+      --temporal_agg
+      # --eval
+    inputs: 
+      camera: dora-isaacsim/camera
+      joint_pos: dora-isaacsim/joint_pos
+    outputs:
+      - request_camera
+      - request_joint_pos
+      - action
+    env:
+      SCENARIO: sim
