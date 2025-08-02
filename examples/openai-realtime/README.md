@@ -5,16 +5,16 @@
 ### Build Client
 
 ```bash
-git clone https://github.com/haixuantao/makepad-realtime
-cd makepad-realtime
+git clone git@github.com:haixuanTao/moly.git --branch dora-backend-support
+cd moly
 cargo build --release
 ```
 
 ### Run Client
 
 ```bash
-cd makepad-realtime
-OPENAI_API_KEY=1 cargo run -r
+cd moly
+cargo run -r
 ```
 
 ## Server
@@ -42,25 +42,23 @@ dora destroy
 
 ## GUI
 
-### Connect Client and Server ( English Version )
+- Go to MolyServer Tab
+- Add a custom Provider
+- In API Host, use:
 
-- Click on Connect to Whisper
-- When the session is ready
-- Click on Start Conversation
-- Start talking
-- When finished click on Stop Conversation
+  - Name: dora-websocket
+  - API Host: ws://127.0.0.1:8123
+  - Type: OpenAI Realtime
 
-### For chinese realtime server version
-
-- Click on Connect to FunASR ( not working superwell for now )
-- When the session is ready
-- Click on Start Conversation
-- Start talking
-- When finished click on Stop Conversation
-
-## Video tutorial
-
-https://github.com/user-attachments/assets/594ae453-4983-410d-8ba7-a11778322cfa
+- Then go to Chat Tab
+- New Chat
+- ( Make sure the servver is running with: `cargo run --release -p dora-openai-websocket`)
+- On bottom right, click on 🎧 icon.
+  > If nothing happen is that the server is not found.
+- Click on start
+- Wait for the first AI greeting
+- Start speaking!
+- You should get AI response!
 
 ### WIP: Moyoyo
 
