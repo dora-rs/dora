@@ -43,6 +43,7 @@ nodes:
       - text
     env:
       MODEL_NAME_OR_PATH: Qwen/Qwen2.5-0.5B-Instruct-GGUF
+      MODEL_FILE_PATTERN: "*[qQ]6_[kK].[gG][gG][uU][fF]"
 
   - id: tts
     build: pip install -e ../../node-hub/dora-kokoro-tts
