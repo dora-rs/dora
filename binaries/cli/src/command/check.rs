@@ -1,10 +1,10 @@
-use super::{default_tracing, Executable};
-use crate::{common::connect_to_coordinator, LOCALHOST};
+use super::{Executable, default_tracing};
+use crate::{LOCALHOST, common::connect_to_coordinator};
 use communication_layer_request_reply::TcpRequestReplyConnection;
 use dora_core::descriptor::DescriptorExt;
 use dora_core::{descriptor::Descriptor, topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT};
 use dora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply};
-use eyre::{bail, Context};
+use eyre::{Context, bail};
 use std::{
     io::{IsTerminal, Write},
     net::SocketAddr,

@@ -7,19 +7,19 @@ use std::{
 
 use ::dora_ros2_bridge::{ros2_client, rustdds};
 use arrow::{
-    array::{make_array, ArrayData},
+    array::{ArrayData, make_array},
     pyarrow::{FromPyArrow, ToPyArrow},
 };
 use dora_ros2_bridge_msg_gen::types::Message;
-use eyre::{eyre, Context, ContextCompat, Result};
+use eyre::{Context, ContextCompat, Result, eyre};
 use futures::{Stream, StreamExt};
 use pyo3::{
+    Bound, PyAny, PyObject, PyResult, Python,
     prelude::{pyclass, pymethods},
     types::{PyAnyMethods, PyDict, PyList, PyModule, PyModuleMethods},
-    Bound, PyAny, PyObject, PyResult, Python,
 };
 use pyo3_special_method_derive::{Dict, Dir, Repr, Str};
-use typed::{deserialize::StructDeserializer, TypeInfo, TypedValue};
+use typed::{TypeInfo, TypedValue, deserialize::StructDeserializer};
 
 pub mod qos;
 pub mod typed;
@@ -176,12 +176,17 @@ impl Ros2Node {
         message_type: String,
         qos: qos::Ros2QosPolicies,
     ) -> eyre::Result<Ros2Topic> {
-        let (namespace_name, message_name) =
-            match (message_type.split_once('/'), message_type.split_once("::")) {
-                (Some(msg), None) => msg,
-                (None, Some(msg)) => msg,
-                _ => eyre::bail!("Expected message type in the format `namespace/message` or `namespace::message`, such as `std_msgs/UInt8` but got: {}", message_type),
-            };
+        let (namespace_name, message_name) = match (
+            message_type.split_once('/'),
+            message_type.split_once("::"),
+        ) {
+            (Some(msg), None) => msg,
+            (None, Some(msg)) => msg,
+            _ => eyre::bail!(
+                "Expected message type in the format `namespace/message` or `namespace::message`, such as `std_msgs/UInt8` but got: {}",
+                message_type
+            ),
+        };
 
         let message_type_name = ros2_client::MessageTypeName::new(namespace_name, message_name);
         let topic_name = ros2_client::Name::parse(name)

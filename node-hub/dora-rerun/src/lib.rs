@@ -3,18 +3,19 @@
 use std::{collections::HashMap, env::VarError, path::Path};
 
 use dora_node_api::{
+    DoraNode, Event, Parameter,
     arrow::{
-        array::{Array, AsArray, Float64Array, StringArray, UInt16Array, UInt8Array},
+        array::{Array, AsArray, Float64Array, StringArray, UInt8Array, UInt16Array},
         datatypes::Float32Type,
     },
     dora_core::config::DataId,
-    into_vec, DoraNode, Event, Parameter,
+    into_vec,
 };
-use eyre::{bail, eyre, Context, Result};
+use eyre::{Context, Result, bail, eyre};
 
 use pinyin::ToPinyin;
 use rerun::{
-    components::ImageBuffer, external::log::warn, ImageFormat, Points2D, Points3D, SpawnOptions,
+    ImageFormat, Points2D, Points3D, SpawnOptions, components::ImageBuffer, external::log::warn,
 };
 pub mod boxes2d;
 pub mod series;
@@ -257,7 +258,7 @@ pub fn lib_main() -> Result<()> {
 
                             if let Some(z) = z {
                                 let z = z as f32 / 1000.0; // Convert to meters
-                                                           // Skip points that have empty depth or is too far away
+                                // Skip points that have empty depth or is too far away
                                 if z == 0. || z > 8.0 {
                                     points.push((0., 0., 0.));
                                     return;
@@ -463,9 +464,9 @@ pub fn lib_main() -> Result<()> {
 
 #[cfg(feature = "python")]
 use pyo3::{
-    pyfunction, pymodule,
+    Bound, PyResult, Python, pyfunction, pymodule,
     types::{PyModule, PyModuleMethods},
-    wrap_pyfunction, Bound, PyResult, Python,
+    wrap_pyfunction,
 };
 
 #[cfg(feature = "python")]

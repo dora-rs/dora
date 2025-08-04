@@ -1,3 +1,5 @@
+#![warn(missing_docs)]
+
 use crate::{
     config::{CommunicationConfig, Input, InputMapping, NodeRunConfig},
     id::{DataId, NodeId, OperatorId},
@@ -12,6 +14,8 @@ use std::{
 };
 
 pub const SHELL_SOURCE: &str = "shell";
+/// Set the [`Node::path`] field to this value to treat the node as a
+/// [_dynamic node_](https://docs.rs/dora-node-api/latest/dora_node_api/).
 pub const DYNAMIC_SOURCE: &str = "dynamic";
 
 /// # Dataflow Specification
@@ -478,6 +482,15 @@ pub struct ResolvedNode {
     pub kind: CoreNodeKind,
 }
 
+impl ResolvedNode {
+    pub fn has_git_source(&self) -> bool {
+        self.kind
+            .as_custom()
+            .map(|n| n.source.is_git())
+            .unwrap_or_default()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 #[allow(clippy::large_enum_variant)]
@@ -486,6 +499,15 @@ pub enum CoreNodeKind {
     #[serde(rename = "operators")]
     Runtime(RuntimeNode),
     Custom(CustomNode),
+}
+
+impl CoreNodeKind {
+    pub fn as_custom(&self) -> Option<&CustomNode> {
+        match self {
+            CoreNodeKind::Runtime(_) => None,
+            CoreNodeKind::Custom(custom_node) => Some(custom_node),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -634,6 +656,12 @@ pub enum NodeSource {
         repo: String,
         rev: Option<GitRepoRev>,
     },
+}
+
+impl NodeSource {
+    pub fn is_git(&self) -> bool {
+        matches!(self, Self::GitBranch { .. })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

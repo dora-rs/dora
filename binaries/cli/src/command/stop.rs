@@ -1,11 +1,11 @@
-use super::{default_tracing, Executable};
+use super::{Executable, default_tracing};
 use crate::common::{connect_to_coordinator, handle_dataflow_result, query_running_dataflows};
 use communication_layer_request_reply::TcpRequestReplyConnection;
 use dora_core::topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST};
 use dora_message::cli_to_coordinator::ControlRequest;
 use dora_message::coordinator_to_cli::ControlRequestReply;
 use duration_str::parse;
-use eyre::{bail, Context};
+use eyre::{Context, bail};
 use std::net::IpAddr;
 use std::time::Duration;
 use uuid::Uuid;

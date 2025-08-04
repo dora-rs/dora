@@ -1,15 +1,14 @@
 use chrono::{DateTime, Utc};
 use dora_node_api::{
-    self,
+    self, DoraNode, Event, Metadata,
     arrow::{
         array::{
-            make_array, Array, ListArray, StringArray, TimestampMillisecondArray, UInt64Array,
+            Array, ListArray, StringArray, TimestampMillisecondArray, UInt64Array, make_array,
         },
         buffer::{OffsetBuffer, ScalarBuffer},
         datatypes::{DataType, Field, Schema},
         record_batch::RecordBatch,
     },
-    DoraNode, Event, Metadata,
 };
 use dora_tracing::telemetry::deserialize_to_hashmap;
 use eyre::{Context, ContextCompat};

@@ -1,8 +1,8 @@
 use dora_core::config::DataId;
 use dora_node_api::Event;
 use futures::{
-    future::{self, FusedFuture},
     FutureExt,
+    future::{self, FusedFuture},
 };
 use std::collections::{BTreeMap, VecDeque};
 

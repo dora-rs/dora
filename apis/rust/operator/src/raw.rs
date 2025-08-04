@@ -1,6 +1,6 @@
 use crate::{DoraOperator, DoraOutputSender, DoraStatus, Event};
 use dora_operator_api_types::{
-    arrow, DoraInitResult, DoraResult, OnEventResult, RawEvent, SendOutput,
+    DoraInitResult, DoraResult, OnEventResult, RawEvent, SendOutput, arrow,
 };
 use std::ffi::c_void;
 
