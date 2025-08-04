@@ -19,12 +19,25 @@ pub fn run_build_command(
 
     let lines = build.lines().collect::<Vec<_>>();
     for build_line in lines {
-        let mut split = build_line.split_whitespace();
+        let quote: Vec<&str> = build_line.split('"').collect();
+        if quote.len() % 2 == 0 {
+            return Err(eyre!("build command `{build_line}`. quote(s) are not in pair"));
+        }
+        let mut split_vec: Vec<&str> = vec![];
+        quote.iter().enumerate().for_each(|(i, part)| {
+            if i % 2 == 0 {
+                let mut split_with_white: Vec<&str> = part.split_whitespace().collect();
+                split_vec.append(&mut split_with_white);
+            } else {
+                split_vec.push(part);
+            }
+        });
+        let mut split = split_vec.iter();
 
         let program = split
             .next()
             .ok_or_else(|| eyre!("build command is empty"))?;
-        let mut cmd = if uv && (program == "pip" || program == "pip3") {
+        let mut cmd = if uv && (*program == "pip" || *program == "pip3") {
             let mut cmd = Command::new("uv");
             cmd.arg("pip");
             cmd

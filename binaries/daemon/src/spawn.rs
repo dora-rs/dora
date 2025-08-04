@@ -22,6 +22,7 @@ use dora_message::{
     daemon_to_node::{NodeConfig, RuntimeConfig},
     id::NodeId,
     DataflowId,
+    descriptor::EnvValue
 };
 use dora_node_api::{
     arrow::array::ArrayData,
@@ -34,6 +35,7 @@ use std::{
     path::{Path, PathBuf},
     process::Stdio,
     sync::Arc,
+    collections::BTreeMap
 };
 use tokio::{
     fs::File,
@@ -126,7 +128,7 @@ impl Spawner {
         let (command, error_msg) = match &node.kind {
             dora_core::descriptor::CoreNodeKind::Custom(n) => {
                 let mut command =
-                    path_spawn_command(&node_working_dir, self.uv, logger, n, true).await?;
+                    path_spawn_command(&node_working_dir, self.uv, logger, n, &node.env, true).await?;
 
                 if let Some(command) = &mut command {
                     command.current_dir(&node_working_dir);
@@ -608,6 +610,7 @@ async fn path_spawn_command(
     uv: bool,
     logger: &mut NodeLogger<'_>,
     node: &dora_core::descriptor::CustomNode,
+    env: &Option<BTreeMap<String, EnvValue>>,
     permit_url: bool,
 ) -> eyre::Result<Option<tokio::process::Command>> {
     let cmd = match node.path.as_str() {
@@ -634,7 +637,32 @@ async fn path_spawn_command(
                     .await
                     .wrap_err("failed to download custom node")?
             } else {
-                resolve_path(source, working_dir)
+                let replacements: Vec<eyre::Result<(String, String)>> = source.find('$').map(|start| {
+                    let end = source[start..].find('/').unwrap_or(source.len());
+                    let var = &source[start + 1..start + end];
+                    if let Some(envs) = env {
+                        if let Some(val) = envs.get(var) {
+                            Ok((var.to_string(), val.to_string()))
+                        } else {
+                            eyre::bail!("environment variable `{}` for node `{}` not found", var, source)
+                        }
+                    } else {
+                        eyre::bail!("environment variable `{}` for node `{}` not found", var, source)
+                    }
+                }).into_iter().collect();
+                let mut source = String::from(source);
+                for kv in replacements.into_iter() {
+                    match kv {
+                        Ok((var, value)) => {
+                            source = source.replace(&format!("${}", var), &value);
+                        }
+                        Err(err) => {
+                            return Err(err);
+                        }
+                    }
+                }
+
+                resolve_path(&source, working_dir)
                     .wrap_err_with(|| format!("failed to resolve node source `{source}`"))?
             };
 
