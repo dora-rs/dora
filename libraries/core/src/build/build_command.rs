@@ -21,7 +21,9 @@ pub fn run_build_command(
     for build_line in lines {
         let quote: Vec<&str> = build_line.split('"').collect();
         if quote.len() % 2 == 0 {
-            return Err(eyre!("build command `{build_line}`. quote(s) are not in pair"));
+            return Err(eyre!(
+                "build command `{build_line}`. quote(s) are not in pair"
+            ));
         }
         let mut split_vec: Vec<&str> = vec![];
         quote.iter().enumerate().for_each(|(i, part)| {

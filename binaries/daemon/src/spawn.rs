@@ -22,8 +22,8 @@ use dora_message::{
     common::{LogLevel, LogMessage},
     daemon_to_coordinator::{DataMessage, NodeExitStatus, Timestamped},
     daemon_to_node::{NodeConfig, RuntimeConfig},
+    descriptor::EnvValue,
     id::NodeId,
-    descriptor::EnvValue
 };
 use dora_node_api::{
     Metadata,
@@ -32,11 +32,11 @@ use dora_node_api::{
 };
 use eyre::{ContextCompat, WrapErr, bail};
 use std::{
+    collections::BTreeMap,
     future::Future,
     path::{Path, PathBuf},
     process::Stdio,
     sync::Arc,
-    collections::BTreeMap
 };
 use tokio::{
     fs::File,
@@ -129,7 +129,8 @@ impl Spawner {
         let (command, error_msg) = match &node.kind {
             dora_core::descriptor::CoreNodeKind::Custom(n) => {
                 let mut command =
-                    path_spawn_command(&node_working_dir, self.uv, logger, n, &node.env, true).await?;
+                    path_spawn_command(&node_working_dir, self.uv, logger, n, &node.env, true)
+                        .await?;
 
                 if let Some(command) = &mut command {
                     command.current_dir(&node_working_dir);
@@ -655,19 +656,31 @@ async fn path_spawn_command(
                     .await
                     .wrap_err("failed to download custom node")?
             } else {
-                let replacements: Vec<eyre::Result<(String, String)>> = source.find('$').map(|start| {
-                    let end = source[start..].find('/').unwrap_or(source.len());
-                    let var = &source[start + 1..start + end];
-                    if let Some(envs) = env {
-                        if let Some(val) = envs.get(var) {
-                            Ok((var.to_string(), val.to_string()))
+                let replacements: Vec<eyre::Result<(String, String)>> = source
+                    .find('$')
+                    .map(|start| {
+                        let end = source[start..].find('/').unwrap_or(source.len());
+                        let var = &source[start + 1..start + end];
+                        if let Some(envs) = env {
+                            if let Some(val) = envs.get(var) {
+                                Ok((var.to_string(), val.to_string()))
+                            } else {
+                                eyre::bail!(
+                                    "environment variable `{}` for node `{}` not found",
+                                    var,
+                                    source
+                                )
+                            }
                         } else {
-                            eyre::bail!("environment variable `{}` for node `{}` not found", var, source)
+                            eyre::bail!(
+                                "environment variable `{}` for node `{}` not found",
+                                var,
+                                source
+                            )
                         }
-                    } else {
-                        eyre::bail!("environment variable `{}` for node `{}` not found", var, source)
-                    }
-                }).into_iter().collect();
+                    })
+                    .into_iter()
+                    .collect();
                 let mut source = String::from(source);
                 for kv in replacements.into_iter() {
                     match kv {
