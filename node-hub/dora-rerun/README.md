@@ -8,6 +8,29 @@ This nodes is still experimental and format for passing Images, Bounding boxes, 
 
 This version introduces significant breaking changes to align with Rerun SDK v0.24.0 and improve the visualization primitive system.
 
+### Backward Compatibility
+
+**✅ Soft Breaking Change**: While the new version prefers explicit `primitive` metadata, it includes automatic fallback detection from topic names for backward compatibility:
+
+- If no `primitive` metadata is provided, the system silently infers it from the input ID/topic name
+- No warnings are generated to avoid log spam
+- Existing code continues to work without any changes
+- This allows gradual migration at your own pace
+
+Example migration:
+```yaml
+# Old way (still works silently):
+inputs:
+  image: camera/image  # Primitive inferred from "image" in name
+
+# New way (recommended):
+inputs:
+  front_camera:
+    source: camera/image
+    metadata:
+      primitive: "image"  # Explicit primitive specification
+```
+
 ### Design Rationale
 
 The move from input-name-based visualization to explicit primitive metadata was driven by real-world requirements from complex robotics applications, specifically a quad drone system with hierarchical sensor configurations. The previous system had limitations:
