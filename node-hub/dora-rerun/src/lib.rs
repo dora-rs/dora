@@ -19,7 +19,9 @@ use rerun::{
 };
 pub mod boxes2d;
 pub mod boxes3d;
+pub mod series;
 pub mod urdf;
+use series::update_series;
 use urdf::{init_urdf, update_visualization};
 
 pub fn lib_main() -> Result<()> {
@@ -99,15 +101,81 @@ pub fn lib_main() -> Result<()> {
 
     while let Some(event) = events.recv() {
         if let Event::Input { id, data, metadata } = event {
-            let primitive =
-                if let Some(Parameter::String(primitive)) = metadata.parameters.get("primitive") {
-                    primitive.clone()
+            // Try to get primitive from metadata first (new way)
+            let primitive = if let Some(Parameter::String(primitive)) =
+                metadata.parameters.get("primitive")
+            {
+                primitive.clone()
+            } else {
+                // Fallback: infer primitive from topic name (old way for backward compatibility)
+                let id_str = id.as_str();
+
+                // Check if multiple visualization keywords are present (original behavior)
+                let keywords = [
+                    "image",
+                    "depth",
+                    "text",
+                    "boxes2d",
+                    "boxes3d",
+                    "masks",
+                    "jointstate",
+                    "pose",
+                    "series",
+                    "points3d",
+                    "points2d",
+                ];
+                let matches: Vec<&str> = keywords
+                    .iter()
+                    .filter(|&&key| id_str.contains(key))
+                    .copied()
+                    .collect();
+
+                if matches.len() > 1 {
+                    bail!(
+                        "Event id `{}` contains more than one visualization keyword: {:?}, please only use one of them.",
+                        id,
+                        matches
+                    );
+                }
+
+                let inferred = if id_str.contains("image") {
+                    Some("image")
+                } else if id_str.contains("depth") {
+                    Some("depth")
+                } else if id_str.contains("text") {
+                    Some("text")
+                } else if id_str.contains("boxes2d") {
+                    Some("boxes2d")
+                } else if id_str.contains("boxes3d") {
+                    Some("boxes3d")
+                } else if id_str.contains("masks") {
+                    Some("masks")
+                } else if id_str.contains("jointstate") {
+                    Some("jointstate")
+                } else if id_str.contains("pose") {
+                    Some("pose")
+                } else if id_str.contains("series") {
+                    Some("series")
+                } else if id_str.contains("points3d") {
+                    Some("points3d")
+                } else if id_str.contains("points2d") {
+                    Some("points2d")
+                } else {
+                    None
+                };
+
+                if let Some(primitive) = inferred {
+                    // Silently use the inferred primitive for backward compatibility
+                    primitive.to_string()
                 } else {
                     bail!(
-                        "No visualization primitive specified in metadata for input {}",
+                        "No visualization primitive specified in metadata for input '{}'. \
+                        Please add 'primitive: <type>' to metadata, where <type> is one of: \
+                        image, depth, text, boxes2d, boxes3d, masks, jointstate, pose, series, points3d, points2d",
                         id
                     );
-                };
+                }
+            };
 
             match primitive.as_str() {
                 "image" => {
@@ -464,11 +532,7 @@ pub fn lib_main() -> Result<()> {
                     }
                 }
                 "series" => {
-                    let values = into_vec::<f32>(&data).context("could not cast series values")?;
-                    if !values.is_empty() {
-                        rec.log(id.as_str(), &rerun::Scalars::new([values[0] as f64]))
-                            .context("could not log series")?;
-                    }
+                    update_series(&rec, id, data).context("update series")?;
                 }
                 "points3d" => {
                     // Get color from metadata
