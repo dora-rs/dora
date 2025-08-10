@@ -93,11 +93,14 @@ def main():
             if len(ACTIVATION_WORDS) == 0 or any(
                 word in ACTIVATION_WORDS for word in words
             ):
-                # On linux, Windows
+                history += [{"role": "user", "content": text}]
+
                 response = model.create_chat_completion(
-                    messages=[{"role": "user", "content": text}],  # Prompt
+                    messages=history,  # Prompt
                     max_tokens=24,
                 )["choices"][0]["message"]["content"]
+
+                history += [{"role": "assistant", "content": response}]
 
                 node.send_output(
                     output_id="text",
