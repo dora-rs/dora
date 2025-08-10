@@ -5,13 +5,14 @@ authors = [{ name = "Your Name", email = "email@email.com" }]
 description = "dora-kokoro-tts"
 license = { text = "MIT" }
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 
 dependencies = [
   "dora-rs >= 0.3.9",
   "kokoro>=0.2.2",
   "soundfile>=0.13.1",
   "misaki[zh]",
+  "en-core-web-sm",
 ]
 
 [dependency-groups]
@@ -31,3 +32,6 @@ extend-select = [
   "N",    # Ruff's N rule
   "I",    # Ruff's I rule
 ]
+
+[tool.uv.sources]
+en-core-web-sm = { url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl" }
