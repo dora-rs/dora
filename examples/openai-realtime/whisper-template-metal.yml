@@ -4,7 +4,7 @@ nodes:
     inputs:
       audio: tts/audio
       text: stt/text
-      stop: stt/stop
+      speech_started: stt/speech_started
     outputs:
       - audio
       - text
@@ -31,7 +31,7 @@ nodes:
     outputs:
       - text
       - word
-      - stop
+      - speech_started
 
   - id: llm
     build: pip install -e ../../node-hub/dora-qwen

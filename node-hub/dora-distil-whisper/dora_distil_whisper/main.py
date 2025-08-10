@@ -268,7 +268,7 @@ def main():
                         pa.array([text]),
                     )
                     node.send_output(
-                        "stop",
+                        "speech_started",
                         pa.array([text]),
                     )
                     cache_audio = None

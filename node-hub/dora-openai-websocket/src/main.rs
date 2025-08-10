@@ -367,10 +367,10 @@ async fn handle_client(fut: upgrade::UpgradeFut) -> Result<(), WebSocketError> {
                                     .into(),
                             ));
                             frame
-                        } else if id.contains("stop") {
+                        } else if id.contains("") {
                             let serialized_data =
-                                OpenAIRealtimeResponse::InputAudioBufferSpeechStopped {
-                                    audio_end_ms: 123,
+                                OpenAIRealtimeResponse::InputAudioBufferSpeechStarted {
+                                    audio_start_ms: 123,
                                     item_id: "123".to_string(),
                                 };
                             finished = true;
