@@ -8,6 +8,7 @@ mod list;
 mod logs;
 mod new;
 mod run;
+mod run_node;
 mod runtime;
 mod self_;
 mod start;
@@ -27,6 +28,7 @@ use list::ListArgs;
 use logs::LogsArgs;
 use new::NewArgs;
 use run::Run;
+use run_node::RunNode;
 use runtime::Runtime;
 use self_::SelfSubCommand;
 use start::Start;
@@ -41,6 +43,8 @@ pub enum Command {
     Build(Build),
     New(NewArgs),
     Run(Run),
+    #[command(name = "run-node")]
+    RunNode(RunNode),
     Up(Up),
     Destroy(Destroy),
     Start(Start),
@@ -90,6 +94,7 @@ impl Executable for Command {
             Command::Build(args) => args.execute(),
             Command::New(args) => args.execute(),
             Command::Run(args) => args.execute(),
+            Command::RunNode(args) => args.execute(),
             Command::Up(args) => args.execute(),
             Command::Destroy(args) => args.execute(),
             Command::Start(args) => args.execute(),

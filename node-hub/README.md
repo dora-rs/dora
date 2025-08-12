@@ -197,6 +197,95 @@ node-hub/
 
 The README.md file should explicit all inputs/outputs of the node and how to configure it in the YAML file.
 
+# Node Testing
+
+The `run-node` command allows you to test individual dora nodes without creating a full dataflow.
+
+## Usage
+
+```bash
+dora run-node [OPTIONS] <NODE_PATH>
+```
+
+### Arguments
+
+- `<NODE_PATH>` - Path to the node file to run
+
+### Options
+
+- `--input <INPUT_FILE>` - Path to input data file (YAML)
+- `--uv` - Use UV to run nodes
+- `-h, --help` - Print help
+
+## Examples
+
+### Run a node without inputs
+
+```bash
+dora run-node path/to/your/node.py
+```
+
+### Run a node with custom inputs
+
+```bash
+dora run-node path/to/your/node.py --input inputs.yml
+```
+
+### Run a node with UV
+
+```bash
+dora run-node path/to/your/node.py --uv
+```
+
+## Input File Formats
+
+The `run-node` command supports two input file formats:
+
+### 1. Standard Dora Dataflow Schema (Recommended)
+
+Use the same format as regular Dora dataflow files:
+
+```yaml
+nodes:
+  - id: test-node
+    inputs:
+      test_message: "Hello, Dora!"
+      image_data: 
+        width: 640
+        height: 480
+        format: "rgb8"
+    outputs:
+      - processed_image
+    env:
+      DEBUG: "true"
+```
+
+### 2. Simple Array Format (Backward Compatible)
+
+A simpler format for basic testing:
+
+```yaml
+- type: INPUT
+  id: input_id
+  value: "Input value"
+  metadata: {}
+```
+
+## Node Development
+
+When developing nodes, you can check for the `DORA_TEST_MODE` environment variable to determine if the node is being run in test mode:
+
+```python
+import os
+
+if os.environ.get("DORA_TEST_MODE") == "true":
+    # Node is running in test mode
+    # You can modify behavior for testing
+    pass
+```
+
+Inputs provided through the `--input` option are available in the `DORA_TEST_INPUTS` environment variable as a YAML string.
+
 ## License
 
 This project is licensed under Apache-2.0. Check out [NOTICE.md](../NOTICE.md) for more information.
