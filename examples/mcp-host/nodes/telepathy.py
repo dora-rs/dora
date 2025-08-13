@@ -1,9 +1,5 @@
 """
-<<<<<<< HEAD
 This is just a simple demonstration of MCP server.
-=======
-This is just a simple demonstration of an MCP server.
->>>>>>> 6dad2bdc (Add mcp-host node and mcp-server node)
 
 This MCP server has the ability of telepathy and can know who the current 
 user's favorite star is and what their favorite movie is.
@@ -29,10 +25,6 @@ star_movie_pairs = [
     {"star": "Jennifer Lawrence", "movie": "The Hunger Games"},
     {"star": "Morgan Freeman", "movie": "The Shawshank Redemption"},
     {"star": "Denzel Washington", "movie": "Training Day"},
-<<<<<<< HEAD
-=======
-    {"star": "Matt Damon", "movie": "The Martian"},
->>>>>>> 6dad2bdc (Add mcp-host node and mcp-server node)
 ]
 
 node = Node()
