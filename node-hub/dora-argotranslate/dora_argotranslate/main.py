@@ -42,5 +42,5 @@ def main():
             node.send_output(
                 "text",
                 pa.array([translated_text]),
-                {"language": to_code},
+                {"language": to_code, "primitive": "text"},
             )
