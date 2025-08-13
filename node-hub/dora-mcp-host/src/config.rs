@@ -6,14 +6,14 @@ use std::{
 };
 use tokio::sync::mpsc;
 
-use figment::providers::{Env, Format, Json, Toml, Yaml};
 use figment::Figment;
+use figment::providers::{Env, Format, Json, Toml, Yaml};
 use outfox_openai::spec::ChatCompletionRequestMessage;
-use rmcp::{service::RunningService, transport::ConfigureCommandExt, RoleClient, ServiceExt};
+use rmcp::{RoleClient, ServiceExt, service::RunningService, transport::ConfigureCommandExt};
 use serde::{Deserialize, Serialize};
 
 use crate::client::{ChatClient, DeepseekClient, DoraClient, GeminiClient, OpenaiClient};
-use crate::{tool::ToolSet, ChatSession, ServerEvent};
+use crate::{ChatSession, ServerEvent, tool::ToolSet};
 
 pub static CONFIG: OnceLock<Config> = OnceLock::new();
 

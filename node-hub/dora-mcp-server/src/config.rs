@@ -1,8 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use figment::providers::{Env, Format, Json, Toml, Yaml};
 use figment::Figment;
+use figment::providers::{Env, Format, Json, Toml, Yaml};
 use rmcp::model::{JsonObject, ToolAnnotations};
 use serde::{Deserialize, Serialize};
 

@@ -2,9 +2,9 @@ use std::{collections::HashMap, sync::Arc};
 
 use eyre::Result;
 use rmcp::{
+    RoleClient,
     model::{CallToolRequestParam, CallToolResult, Tool as McpTool},
     service::{RunningService, ServerSink},
-    RoleClient,
 };
 use salvo::async_trait;
 use serde_json::Value;
