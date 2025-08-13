@@ -236,5 +236,5 @@ def main():
                 if text.strip() == "" or text.strip() == ".":
                     continue
                 node.send_output(
-                    "text", pa.array([text]), {"language": TARGET_LANGUAGE},
+                    "text", pa.array([text]), {"language": TARGET_LANGUAGE, "primitive": "text"},
                 )

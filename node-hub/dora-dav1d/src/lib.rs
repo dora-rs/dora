@@ -112,6 +112,12 @@ pub fn lib_main() -> Result<()> {
                                                         p.height() as i64
                                                     ),
                                                 );
+                                                metadata.parameters.insert(
+                                                    "primitive".to_string(),
+                                                    dora_node_api::Parameter::String(
+                                                        "image".to_string(),
+                                                    ),
+                                                );
 
                                                 node.send_output(id, metadata.parameters, arrow)
                                                     .unwrap();
@@ -129,6 +135,12 @@ pub fn lib_main() -> Result<()> {
                                                     "encoding".to_string(),
                                                     dora_node_api::Parameter::String(
                                                         "bgr8".to_string(),
+                                                    ),
+                                                );
+                                                metadata.parameters.insert(
+                                                    "primitive".to_string(),
+                                                    dora_node_api::Parameter::String(
+                                                        "image".to_string(),
                                                     ),
                                                 );
                                                 node.send_output(id, metadata.parameters, arrow)
@@ -154,6 +166,12 @@ pub fn lib_main() -> Result<()> {
                                                         "mono8".to_string(),
                                                     ),
                                                 );
+                                                metadata.parameters.insert(
+                                                    "primitive".to_string(),
+                                                    dora_node_api::Parameter::String(
+                                                        "image".to_string(),
+                                                    ),
+                                                );
                                                 node.send_output(id, metadata.parameters, arrow)
                                                     .unwrap();
                                             }
@@ -165,6 +183,12 @@ pub fn lib_main() -> Result<()> {
                                                     "encoding".to_string(),
                                                     dora_node_api::Parameter::String(
                                                         "mono16".to_string(),
+                                                    ),
+                                                );
+                                                metadata.parameters.insert(
+                                                    "primitive".to_string(),
+                                                    dora_node_api::Parameter::String(
+                                                        "image".to_string(),
                                                     ),
                                                 );
                                                 node.send_output(id, metadata.parameters, arrow)

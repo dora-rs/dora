@@ -50,7 +50,7 @@ def extract_bboxes(json_text):
 for event in node:
     if event["type"] == "INPUT":
         if len(event["value"]) == 0:
-            node.send_output("bbox_track", pa.array([]))
+            node.send_output("bbox_track", pa.array([]), {"primitive": "boxes2d"})
             continue
 
         text = event["value"][0].as_py()
@@ -62,6 +62,7 @@ for event in node:
             bboxes = bboxes * int(1 / IMAGE_RESIZE_RATIO)
             metadata["image_id"] = image_id
             metadata["encoding"] = "xyxy"
+            metadata["primitive"] = "boxes2d"
             if image_id == "image_left":
                 node.send_output(
                     "bbox_track",

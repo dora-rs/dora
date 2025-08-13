@@ -5,7 +5,7 @@ use std::{collections::HashMap, env::VarError, path::Path};
 use dora_node_api::{
     DoraNode, Event, Parameter,
     arrow::{
-        array::{Array, AsArray, Float64Array, StringArray, UInt8Array, UInt16Array},
+        array::{Array, AsArray, Float32Array, Float64Array, StringArray, UInt8Array, UInt16Array},
         datatypes::Float32Type,
     },
     dora_core::config::DataId,
@@ -18,23 +18,11 @@ use rerun::{
     ImageFormat, Points2D, Points3D, SpawnOptions, components::ImageBuffer, external::log::warn,
 };
 pub mod boxes2d;
+pub mod boxes3d;
 pub mod series;
 pub mod urdf;
 use series::update_series;
 use urdf::{init_urdf, update_visualization};
-
-static KEYS: &[&str] = &[
-    "image",
-    "depth",
-    "text",
-    "boxes2d",
-    "masks",
-    "jointstate",
-    "pose",
-    "series",
-    "points3d",
-    "points2d",
-];
 
 pub fn lib_main() -> Result<()> {
     // rerun `serve()` requires to have a running Tokio runtime in the current context.
@@ -110,351 +98,555 @@ pub fn lib_main() -> Result<()> {
         }
         Err(VarError::NotPresent) => (),
     };
-    let camera_pitch = std::env::var("CAMERA_PITCH")
-        .unwrap_or("0.0".to_string())
-        .parse::<f32>()
-        .unwrap();
 
     while let Some(event) = events.recv() {
         if let Event::Input { id, data, metadata } = event {
-            // Check if the id contains more than one key
-            if KEYS
-                .iter()
-                .filter(|&&key| id.as_str().contains(key))
-                .count()
-                > 1
+            // Try to get primitive from metadata first (new way)
+            let primitive = if let Some(Parameter::String(primitive)) =
+                metadata.parameters.get("primitive")
             {
-                bail!(
-                    "Event id `{}` contains more than one visualization keyword: {:?}, please only use one of them.",
-                    id,
-                    KEYS.iter()
-                        .filter(|&&key| id.as_str().contains(key))
-                        .collect::<Vec<_>>()
-                );
-            }
+                primitive.clone()
+            } else {
+                // Fallback: infer primitive from topic name (old way for backward compatibility)
+                let id_str = id.as_str();
 
-            if id.as_str().contains("image") {
-                let height =
-                    if let Some(Parameter::Integer(height)) = metadata.parameters.get("height") {
+                // Check if multiple visualization keywords are present (original behavior)
+                let keywords = [
+                    "image",
+                    "depth",
+                    "text",
+                    "boxes2d",
+                    "boxes3d",
+                    "masks",
+                    "jointstate",
+                    "pose",
+                    "series",
+                    "points3d",
+                    "points2d",
+                ];
+                let matches: Vec<&str> = keywords
+                    .iter()
+                    .filter(|&&key| id_str.contains(key))
+                    .copied()
+                    .collect();
+
+                if matches.len() > 1 {
+                    bail!(
+                        "Event id `{}` contains more than one visualization keyword: {:?}, please only use one of them.",
+                        id,
+                        matches
+                    );
+                }
+
+                let inferred = if id_str.contains("image") {
+                    Some("image")
+                } else if id_str.contains("depth") {
+                    Some("depth")
+                } else if id_str.contains("text") {
+                    Some("text")
+                } else if id_str.contains("boxes2d") {
+                    Some("boxes2d")
+                } else if id_str.contains("boxes3d") {
+                    Some("boxes3d")
+                } else if id_str.contains("masks") {
+                    Some("masks")
+                } else if id_str.contains("jointstate") {
+                    Some("jointstate")
+                } else if id_str.contains("pose") {
+                    Some("pose")
+                } else if id_str.contains("series") {
+                    Some("series")
+                } else if id_str.contains("points3d") {
+                    Some("points3d")
+                } else if id_str.contains("points2d") {
+                    Some("points2d")
+                } else {
+                    None
+                };
+
+                if let Some(primitive) = inferred {
+                    // Silently use the inferred primitive for backward compatibility
+                    primitive.to_string()
+                } else {
+                    bail!(
+                        "No visualization primitive specified in metadata for input '{}'. \
+                        Please add 'primitive: <type>' to metadata, where <type> is one of: \
+                        image, depth, text, boxes2d, boxes3d, masks, jointstate, pose, series, points3d, points2d",
+                        id
+                    );
+                }
+            };
+
+            match primitive.as_str() {
+                "image" => {
+                    let height = if let Some(Parameter::Integer(height)) =
+                        metadata.parameters.get("height")
+                    {
                         height
                     } else {
                         &480
                     };
-                let width =
-                    if let Some(Parameter::Integer(width)) = metadata.parameters.get("width") {
-                        width
+                    let width =
+                        if let Some(Parameter::Integer(width)) = metadata.parameters.get("width") {
+                            width
+                        } else {
+                            &640
+                        };
+                    let encoding = if let Some(Parameter::String(encoding)) =
+                        metadata.parameters.get("encoding")
+                    {
+                        encoding
                     } else {
-                        &640
+                        "bgr8"
                     };
-                let encoding = if let Some(Parameter::String(encoding)) =
-                    metadata.parameters.get("encoding")
-                {
-                    encoding
-                } else {
-                    "bgr8"
-                };
 
-                if encoding == "bgr8" {
-                    let buffer: &UInt8Array = data.as_any().downcast_ref().unwrap();
-                    let buffer: &[u8] = buffer.values();
+                    if encoding == "bgr8" {
+                        let buffer: &UInt8Array = data.as_any().downcast_ref().unwrap();
+                        let buffer: &[u8] = buffer.values();
 
-                    // Transpose values from BGR to RGB
-                    let buffer: Vec<u8> =
-                        buffer.chunks(3).flat_map(|x| [x[2], x[1], x[0]]).collect();
-                    image_cache.insert(id.clone(), buffer.clone());
-                    let image_buffer = ImageBuffer::from(buffer);
-                    // let tensordata = ImageBuffer(buffer);
+                        // Transpose values from BGR to RGB
+                        let buffer: Vec<u8> =
+                            buffer.chunks(3).flat_map(|x| [x[2], x[1], x[0]]).collect();
+                        image_cache.insert(id.clone(), buffer.clone());
+                        let image_buffer = ImageBuffer::from(buffer);
+                        // let tensordata = ImageBuffer(buffer);
 
-                    let image = rerun::Image::new(
-                        image_buffer,
-                        ImageFormat::rgb8([*width as u32, *height as u32]),
-                    );
-                    rec.log(id.as_str(), &image)
-                        .context("could not log image")?;
-                } else if encoding == "rgb8" {
-                    let buffer: &UInt8Array = data.as_any().downcast_ref().unwrap();
-                    image_cache.insert(id.clone(), buffer.values().to_vec());
-                    let buffer: &[u8] = buffer.values();
-                    let image_buffer = ImageBuffer::from(buffer);
+                        let image = rerun::Image::new(
+                            image_buffer,
+                            ImageFormat::rgb8([*width as u32, *height as u32]),
+                        );
+                        rec.log(id.as_str(), &image)
+                            .context("could not log image")?;
+                    } else if encoding == "rgb8" {
+                        let buffer: &UInt8Array = data.as_any().downcast_ref().unwrap();
+                        image_cache.insert(id.clone(), buffer.values().to_vec());
+                        let buffer: &[u8] = buffer.values();
+                        let image_buffer = ImageBuffer::from(buffer);
 
-                    let image = rerun::Image::new(
-                        image_buffer,
-                        ImageFormat::rgb8([*width as u32, *height as u32]),
-                    );
-                    rec.log(id.as_str(), &image)
-                        .context("could not log image")?;
-                } else if ["jpeg", "png", "avif"].contains(&encoding) {
-                    let buffer: &UInt8Array = data.as_any().downcast_ref().unwrap();
-                    let buffer: &[u8] = buffer.values();
+                        let image = rerun::Image::new(
+                            image_buffer,
+                            ImageFormat::rgb8([*width as u32, *height as u32]),
+                        );
+                        rec.log(id.as_str(), &image)
+                            .context("could not log image")?;
+                    } else if ["jpeg", "png", "avif"].contains(&encoding) {
+                        let buffer: &UInt8Array = data.as_any().downcast_ref().unwrap();
+                        let buffer: &[u8] = buffer.values();
 
-                    let image = rerun::EncodedImage::from_file_contents(buffer.to_vec());
-                    rec.log(id.as_str(), &image)
-                        .context("could not log image")?;
-                };
-            } else if id.as_str().contains("depth") {
-                let width =
-                    if let Some(Parameter::Integer(width)) = metadata.parameters.get("width") {
-                        width
-                    } else {
-                        &640
+                        let image = rerun::EncodedImage::from_file_contents(buffer.to_vec());
+                        rec.log(id.as_str(), &image)
+                            .context("could not log image")?;
                     };
-                let focal_length =
-                    if let Some(Parameter::ListInt(focals)) = metadata.parameters.get("focal") {
-                        focals.to_vec()
-                    } else {
-                        vec![605, 605]
-                    };
-                let resolution = if let Some(Parameter::ListInt(resolution)) =
-                    metadata.parameters.get("resolution")
-                {
-                    resolution.to_vec()
-                } else {
-                    vec![640, 480]
-                };
-                let pitch = if let Some(Parameter::Float(pitch)) = metadata.parameters.get("pitch")
-                {
-                    *pitch as f32
-                } else {
-                    camera_pitch
-                };
-                let cos_theta = pitch.cos();
-                let sin_theta = pitch.sin();
-
-                let points = match data.data_type() {
-                    dora_node_api::arrow::datatypes::DataType::Float64 => {
-                        let buffer: &Float64Array = data.as_any().downcast_ref().unwrap();
-
-                        let mut points = vec![];
-                        buffer.iter().enumerate().for_each(|(i, z)| {
-                            let u = i as f32 % *width as f32; // Calculate x-coordinate (u)
-                            let v = i as f32 / *width as f32; // Calculate y-coordinate (v)
-
-                            if let Some(z) = z {
-                                let z = z as f32;
-                                // Skip points that have empty depth or is too far away
-                                if z == 0. || z > 8.0 {
-                                    points.push((0., 0., 0.));
-                                    return;
-                                }
-                                let y = (u - resolution[0] as f32) * z / focal_length[0] as f32;
-                                let x = (v - resolution[1] as f32) * z / focal_length[1] as f32;
-                                let new_x = sin_theta * z + cos_theta * x;
-                                let new_y = -y;
-                                let new_z = cos_theta * z - sin_theta * x;
-
-                                points.push((new_x, new_y, new_z));
-                            } else {
-                                points.push((0., 0., 0.));
-                            }
-                        });
-                        Points3D::new(points)
-                    }
-                    dora_node_api::arrow::datatypes::DataType::UInt16 => {
-                        let buffer: &UInt16Array = data.as_any().downcast_ref().unwrap();
-                        let mut points = vec![];
-                        buffer.iter().enumerate().for_each(|(i, z)| {
-                            let u = i as f32 % *width as f32; // Calculate x-coordinate (u)
-                            let v = i as f32 / *width as f32; // Calculate y-coordinate (v)
-
-                            if let Some(z) = z {
-                                let z = z as f32 / 1000.0; // Convert to meters
-                                // Skip points that have empty depth or is too far away
-                                if z == 0. || z > 8.0 {
-                                    points.push((0., 0., 0.));
-                                    return;
-                                }
-                                let y = (u - resolution[0] as f32) * z / focal_length[0] as f32;
-                                let x = (v - resolution[1] as f32) * z / focal_length[1] as f32;
-                                let new_x = sin_theta * z + cos_theta * x;
-                                let new_y = -y;
-                                let new_z = cos_theta * z - sin_theta * x;
-
-                                points.push((new_x, new_y, new_z));
-                            } else {
-                                points.push((0., 0., 0.));
-                            }
-                        });
-                        Points3D::new(points)
-                    }
-                    _ => {
-                        return Err(eyre!("Unsupported depth data type {}", data.data_type()));
-                    }
-                };
-                if let Some(color_buffer) = image_cache.get(&id.replace("depth", "image")) {
-                    let colors = if let Some(mask) = mask_cache.get(&id.replace("depth", "masks")) {
-                        let mask_length = color_buffer.len() / 3;
-                        let number_masks = mask.len() / mask_length;
-                        color_buffer
-                            .chunks(3)
-                            .enumerate()
-                            .map(|(e, x)| {
-                                for i in 0..number_masks {
-                                    if mask[i * mask_length + e] && (e % 3 == 0) {
-                                        if i == 0 {
-                                            return rerun::Color::from_rgb(255, x[1], x[2]);
-                                        } else if i == 1 {
-                                            return rerun::Color::from_rgb(x[0], 255, x[2]);
-                                        } else if i == 2 {
-                                            return rerun::Color::from_rgb(x[0], x[1], 255);
-                                        } else {
-                                            return rerun::Color::from_rgb(x[0], 255, x[2]);
-                                        }
-                                    }
-                                }
-                                rerun::Color::from_rgb(x[0], x[1], x[2])
-                            })
-                            .collect::<Vec<_>>()
-                    } else {
-                        color_buffer
-                            .chunks(3)
-                            .map(|x| rerun::Color::from_rgb(x[0], x[1], x[2]))
-                            .collect::<Vec<_>>()
-                    };
-                    rec.log(id.as_str(), &points.with_colors(colors))
-                        .context("could not log points")?;
                 }
-            } else if id.as_str().contains("text") {
-                let buffer: StringArray = data.to_data().into();
-                buffer.iter().try_for_each(|string| -> Result<()> {
-                    if let Some(str) = string {
-                        let chars = str.chars().collect::<Vec<_>>();
-                        let mut new_string = vec![];
-                        for char in chars {
-                            // Check if the character is a Chinese character
-                            if char.is_ascii() || char.is_control() {
-                                new_string.push(char);
-                                continue;
+                "depth" => {
+                    let width =
+                        if let Some(Parameter::Integer(width)) = metadata.parameters.get("width") {
+                            *width as usize
+                        } else {
+                            640
+                        };
+                    let height = if let Some(Parameter::Integer(height)) =
+                        metadata.parameters.get("height")
+                    {
+                        *height as usize
+                    } else {
+                        480
+                    };
+
+                    // Check if we have camera metadata for pinhole camera setup
+                    let has_camera_metadata = metadata.parameters.contains_key("camera_position")
+                        && metadata.parameters.contains_key("camera_orientation")
+                        && metadata.parameters.contains_key("focal");
+
+                    if has_camera_metadata {
+                        // Extract camera parameters
+                        let focal_length = if let Some(Parameter::ListFloat(focals)) =
+                            metadata.parameters.get("focal")
+                        {
+                            (focals[0] as f32, focals[1] as f32)
+                        } else {
+                            (605.0, 605.0)
+                        };
+
+                        let principal_point = if let Some(Parameter::ListFloat(pp)) =
+                            metadata.parameters.get("principal_point")
+                        {
+                            (pp[0] as f32, pp[1] as f32)
+                        } else {
+                            (width as f32 / 2.0, height as f32 / 2.0)
+                        };
+
+                        let camera_position = if let Some(Parameter::ListFloat(pos)) =
+                            metadata.parameters.get("camera_position")
+                        {
+                            rerun::Vec3D::new(pos[0] as f32, pos[1] as f32, pos[2] as f32)
+                        } else {
+                            rerun::Vec3D::new(0.0, 0.0, 0.0)
+                        };
+
+                        let camera_orientation = if let Some(Parameter::ListFloat(quat)) =
+                            metadata.parameters.get("camera_orientation")
+                        {
+                            rerun::Quaternion::from_xyzw([
+                                quat[0] as f32,
+                                quat[1] as f32,
+                                quat[2] as f32,
+                                quat[3] as f32,
+                            ])
+                        } else {
+                            rerun::Quaternion::from_xyzw([0.0, 0.0, 0.0, 1.0])
+                        };
+
+                        // Use the depth ID as parent entity for camera components
+                        let camera_entity = id.as_str();
+
+                        // Log camera transform
+                        let camera_transform = rerun::Transform3D::from_translation_rotation(
+                            camera_position,
+                            camera_orientation,
+                        );
+                        rec.log(camera_entity, &camera_transform)
+                            .context("could not log camera transform")?;
+
+                        // Log pinhole camera
+                        let pinhole = rerun::Pinhole::from_focal_length_and_resolution(
+                            focal_length,
+                            (width as f32, height as f32),
+                        )
+                        .with_camera_xyz(rerun::components::ViewCoordinates::RDF)
+                        .with_resolution((width as f32, height as f32))
+                        .with_principal_point(principal_point);
+
+                        rec.log(camera_entity, &pinhole)
+                            .context("could not log pinhole camera")?;
+
+                        // Convert depth data to DepthImage
+                        match data.data_type() {
+                            dora_node_api::arrow::datatypes::DataType::Float32 => {
+                                let buffer: &Float32Array = data.as_any().downcast_ref().unwrap();
+                                let depth_values: Vec<f32> = buffer.values().to_vec();
+
+                                let depth_image = rerun::external::ndarray::Array::from_shape_vec(
+                                    (height, width),
+                                    depth_values,
+                                )
+                                .context("Failed to create depth array")?;
+
+                                // Log depth image as a child entity
+                                let depth_entity = format!("{}/raw", camera_entity);
+                                rec.log(
+                                    depth_entity.as_str(),
+                                    &rerun::DepthImage::try_from(depth_image)
+                                        .context("Failed to create depth image")?
+                                        .with_meter(1.0),
+                                )
+                                .context("could not log depth image")?;
                             }
-                            // If it is a Chinese character, replace it with its pinyin
-                            if let Some(pinyin) = char.to_pinyin() {
-                                for char in pinyin.with_tone().chars() {
+                            dora_node_api::arrow::datatypes::DataType::Float64 => {
+                                let buffer: &Float64Array = data.as_any().downcast_ref().unwrap();
+                                let depth_values: Vec<f32> =
+                                    buffer.values().iter().map(|&v| v as f32).collect();
+
+                                let depth_image = rerun::external::ndarray::Array::from_shape_vec(
+                                    (height, width),
+                                    depth_values,
+                                )
+                                .context("Failed to create depth array")?;
+
+                                // Log depth image as a child entity
+                                let depth_entity = format!("{}/raw", camera_entity);
+                                rec.log(
+                                    depth_entity.as_str(),
+                                    &rerun::DepthImage::try_from(depth_image)
+                                        .context("Failed to create depth image")?
+                                        .with_meter(1.0),
+                                )
+                                .context("could not log depth image")?;
+                            }
+                            dora_node_api::arrow::datatypes::DataType::UInt16 => {
+                                let buffer: &UInt16Array = data.as_any().downcast_ref().unwrap();
+                                // Convert from millimeters to meters
+                                let depth_values: Vec<f32> =
+                                    buffer.values().iter().map(|&v| v as f32 / 1000.0).collect();
+
+                                let depth_image = rerun::external::ndarray::Array::from_shape_vec(
+                                    (height, width),
+                                    depth_values,
+                                )
+                                .context("Failed to create depth array")?;
+
+                                // Log depth image as a child entity
+                                let depth_entity = format!("{}/raw", camera_entity);
+                                rec.log(
+                                    depth_entity.as_str(),
+                                    &rerun::DepthImage::try_from(depth_image)
+                                        .context("Failed to create depth image")?
+                                        .with_meter(1.0),
+                                )
+                                .context("could not log depth image")?;
+                            }
+                            _ => {
+                                return Err(eyre!(
+                                    "Depth data must be Float32Array, Float64Array, or UInt16Array, got {}.",
+                                    data.data_type()
+                                ));
+                            }
+                        }
+                    } else {
+                        // No camera metadata - just log a warning and skip 3D reconstruction
+                        warn!(
+                            "Depth data received without camera metadata (position, orientation, focal). Skipping 3D reconstruction."
+                        );
+                        warn!(
+                            "To enable proper 3D reconstruction, ensure the depth data includes camera_position, camera_orientation, and focal metadata."
+                        );
+                    }
+                }
+                "text" => {
+                    let buffer: StringArray = data.to_data().into();
+                    buffer.iter().try_for_each(|string| -> Result<()> {
+                        if let Some(str) = string {
+                            let chars = str.chars().collect::<Vec<_>>();
+                            let mut new_string = vec![];
+                            for char in chars {
+                                // Check if the character is a Chinese character
+                                if char.is_ascii() || char.is_control() {
                                     new_string.push(char);
+                                    continue;
                                 }
-                                new_string.push(' ');
+                                // If it is a Chinese character, replace it with its pinyin
+                                if let Some(pinyin) = char.to_pinyin() {
+                                    for char in pinyin.with_tone().chars() {
+                                        new_string.push(char);
+                                    }
+                                    new_string.push(' ');
+                                }
+                            }
+                            let pinyined_str = new_string.iter().collect::<String>();
+                            rec.log(id.as_str(), &rerun::TextLog::new(pinyined_str))
+                                .wrap_err("Could not log text")
+                        } else {
+                            Ok(())
+                        }
+                    })?;
+                }
+                "boxes2d" => {
+                    boxes2d::update_boxes2d(&rec, id, data, metadata).context("update boxes 2d")?;
+                }
+                "boxes3d" => {
+                    boxes3d::update_boxes3d(&rec, id, data, metadata).context("update boxes 3d")?;
+                }
+                "masks" => {
+                    let masks = if let Some(data) = data.as_primitive_opt::<Float32Type>() {
+                        let data = data
+                            .iter()
+                            .map(|x| if let Some(x) = x { x > 0. } else { false })
+                            .collect::<Vec<_>>();
+                        data
+                    } else if let Some(data) = data.as_boolean_opt() {
+                        let data = data
+                            .iter()
+                            .map(|x| x.unwrap_or_default())
+                            .collect::<Vec<_>>();
+                        data
+                    } else {
+                        println!("Got unexpected data type: {}", data.data_type());
+                        continue;
+                    };
+                    mask_cache.insert(id.clone(), masks.clone());
+                }
+                "jointstate" => {
+                    let encoding = if let Some(Parameter::String(encoding)) =
+                        metadata.parameters.get("encoding")
+                    {
+                        encoding
+                    } else {
+                        "jointstate"
+                    };
+                    if encoding != "jointstate" {
+                        warn!("Got unexpected encoding: {encoding} on position pose");
+                        continue;
+                    }
+                    // Convert to Vec<f32>
+                    let mut positions: Vec<f32> =
+                        into_vec(&data).context("Could not parse jointstate as vec32")?;
+
+                    // Match file name
+                    let mut urdf_id = id.as_str().replace("jointstate_", "");
+                    urdf_id.push_str(".urdf");
+
+                    if let Some(chain) = chains.get(&urdf_id) {
+                        let dof = chain.dof();
+
+                        // Truncate or pad positions to match the chain's dof
+                        if dof < positions.len() {
+                            positions.truncate(dof);
+                        } else {
+                            #[allow(clippy::same_item_push)]
+                            for _ in 0..(dof - positions.len()) {
+                                positions.push(0.);
                             }
                         }
-                        let pinyined_str = new_string.iter().collect::<String>();
-                        rec.log(id.as_str(), &rerun::TextLog::new(pinyined_str))
-                            .wrap_err("Could not log text")
+
+                        update_visualization(&rec, chain, &urdf_id, &positions)?;
                     } else {
-                        Ok(())
+                        println!("Could not find chain for {urdf_id}. You may not have set its");
                     }
-                })?;
-            } else if id.as_str().contains("boxes2d") {
-                boxes2d::update_boxes2d(&rec, id, data, metadata).context("update boxes 2d")?;
-            } else if id.as_str().contains("masks") {
-                let masks = if let Some(data) = data.as_primitive_opt::<Float32Type>() {
-                    let data = data
-                        .iter()
-                        .map(|x| if let Some(x) = x { x > 0. } else { false })
-                        .collect::<Vec<_>>();
-                    data
-                } else if let Some(data) = data.as_boolean_opt() {
-                    let data = data
-                        .iter()
-                        .map(|x| x.unwrap_or_default())
-                        .collect::<Vec<_>>();
-                    data
-                } else {
-                    println!("Got unexpected data type: {}", data.data_type());
-                    continue;
-                };
-                mask_cache.insert(id.clone(), masks.clone());
-            } else if id.as_str().contains("jointstate") || id.as_str().contains("pose") {
-                let encoding = if let Some(Parameter::String(encoding)) =
-                    metadata.parameters.get("encoding")
-                {
-                    encoding
-                } else {
-                    "jointstate"
-                };
-                if encoding != "jointstate" {
-                    warn!("Got unexpected encoding: {encoding} on position pose");
-                    continue;
                 }
-                // Convert to Vec<f32>
-                let mut positions: Vec<f32> =
-                    into_vec(&data).context("Could not parse jointstate as vec32")?;
-
-                // Match file name
-                let mut id = id.as_str().replace("jointstate_", "");
-                id.push_str(".urdf");
-
-                if let Some(chain) = chains.get(&id) {
-                    let dof = chain.dof();
-
-                    // Truncate or pad positions to match the chain's dof
-                    if dof < positions.len() {
-                        positions.truncate(dof);
+                "pose" => {
+                    let encoding = if let Some(Parameter::String(encoding)) =
+                        metadata.parameters.get("encoding")
+                    {
+                        encoding
                     } else {
-                        #[allow(clippy::same_item_push)]
-                        for _ in 0..(dof - positions.len()) {
-                            positions.push(0.);
+                        "jointstate"
+                    };
+                    if encoding != "jointstate" {
+                        warn!("Got unexpected encoding: {encoding} on position pose");
+                        continue;
+                    }
+                    // Convert to Vec<f32>
+                    let mut positions: Vec<f32> =
+                        into_vec(&data).context("Could not parse jointstate as vec32")?;
+
+                    // Match file name
+                    let mut urdf_id = id.as_str().replace("pose_", "");
+                    urdf_id.push_str(".urdf");
+
+                    if let Some(chain) = chains.get(&urdf_id) {
+                        let dof = chain.dof();
+
+                        // Truncate or pad positions to match the chain's dof
+                        if dof < positions.len() {
+                            positions.truncate(dof);
+                        } else {
+                            #[allow(clippy::same_item_push)]
+                            for _ in 0..(dof - positions.len()) {
+                                positions.push(0.);
+                            }
                         }
+
+                        update_visualization(&rec, chain, &urdf_id, &positions)?;
+                    } else {
+                        println!("Could not find chain for {urdf_id}. You may not have set its");
                     }
-
-                    update_visualization(&rec, chain, &id, &positions)?;
-                } else {
-                    println!("Could not find chain for {id}. You may not have set its");
                 }
-            } else if id.as_str().contains("series") {
-                update_series(&rec, id, data).context("could not plot series")?;
-            } else if id.as_str().contains("points3d") {
-                // Get color or assign random color in cache
-                let color = color_cache.get(&id);
-                let color = if let Some(color) = color {
-                    *color
-                } else {
+                "series" => {
+                    update_series(&rec, id, data).context("update series")?;
+                }
+                "points3d" => {
+                    // Get color from metadata
                     let color =
-                        rerun::Color::from_rgb(rand::random::<u8>(), 180, rand::random::<u8>());
+                        if let Some(Parameter::ListInt(rgb)) = metadata.parameters.get("color") {
+                            if rgb.len() >= 3 {
+                                rerun::Color::from_rgb(rgb[0] as u8, rgb[1] as u8, rgb[2] as u8)
+                            } else {
+                                rerun::Color::from_rgb(128, 128, 128) // Default gray
+                            }
+                        } else {
+                            rerun::Color::from_rgb(128, 128, 128) // Default gray
+                        };
 
-                    color_cache.insert(id.clone(), color);
-                    color
-                };
-                let dataid = id;
+                    let dataid = id;
 
-                // get a random color
-                if let Ok(buffer) = into_vec::<f32>(&data) {
-                    let mut points = vec![];
-                    let mut colors = vec![];
-                    buffer.chunks(3).for_each(|chunk| {
-                        points.push((chunk[0], chunk[1], chunk[2]));
-                        colors.push(color);
-                    });
-                    let points = Points3D::new(points).with_radii(vec![0.013; colors.len()]);
+                    // Get radii from metadata as array
+                    let radii = if let Some(Parameter::ListFloat(radii_list)) =
+                        metadata.parameters.get("radii")
+                    {
+                        radii_list.iter().map(|&r| r as f32).collect::<Vec<f32>>()
+                    } else {
+                        vec![0.01] // Default 1cm radius
+                    };
 
-                    rec.log(dataid.as_str(), &points.with_colors(colors))
-                        .context("could not log points")?;
+                    if let Ok(buffer) = into_vec::<f32>(&data) {
+                        let mut points = vec![];
+                        let mut colors = vec![];
+                        let num_points = buffer.len() / 3;
+                        buffer.chunks(3).for_each(|chunk| {
+                            points.push((chunk[0], chunk[1], chunk[2]));
+                            colors.push(color);
+                        });
+
+                        // Expand single radius to all points if needed
+                        let radii_vec = if radii.len() == num_points {
+                            radii
+                        } else if radii.len() == 1 {
+                            vec![radii[0]; num_points]
+                        } else {
+                            vec![0.01; num_points] // Default 1cm radius
+                        };
+
+                        let points = Points3D::new(points).with_radii(radii_vec);
+
+                        rec.log(dataid.as_str(), &points.with_colors(colors))
+                            .context("could not log points")?;
+                    }
                 }
-            } else if id.as_str().contains("points2d") {
-                // Get color or assign random color in cache
-                let color = color_cache.get(&id);
-                let color = if let Some(color) = color {
-                    *color
-                } else {
+                "points2d" => {
+                    // Get color or assign random color in cache
+                    let color = color_cache.get(&id);
+                    let color = if let Some(color) = color {
+                        *color
+                    } else {
+                        let color =
+                            rerun::Color::from_rgb(rand::random::<u8>(), 180, rand::random::<u8>());
+
+                        color_cache.insert(id.clone(), color);
+                        color
+                    };
+                    let dataid = id;
+
+                    // get a random color
+                    if let Ok(buffer) = into_vec::<f32>(&data) {
+                        let mut points = vec![];
+                        let mut colors = vec![];
+                        buffer.chunks(2).for_each(|chunk| {
+                            points.push((chunk[0], chunk[1]));
+                            colors.push(color);
+                        });
+                        let points = Points2D::new(points);
+
+                        rec.log(dataid.as_str(), &points.with_colors(colors))
+                            .context("could not log points")?;
+                    }
+                }
+                "lines3d" => {
+                    // Get color from metadata
                     let color =
-                        rerun::Color::from_rgb(rand::random::<u8>(), 180, rand::random::<u8>());
+                        if let Some(Parameter::ListInt(rgb)) = metadata.parameters.get("color") {
+                            if rgb.len() >= 3 {
+                                rerun::Color::from_rgb(rgb[0] as u8, rgb[1] as u8, rgb[2] as u8)
+                            } else {
+                                rerun::Color::from_rgb(0, 255, 0) // Default green
+                            }
+                        } else {
+                            rerun::Color::from_rgb(0, 255, 0) // Default green
+                        };
 
-                    color_cache.insert(id.clone(), color);
-                    color
-                };
-                let dataid = id;
+                    // Get radius for line thickness
+                    let radius =
+                        if let Some(Parameter::Float(r)) = metadata.parameters.get("radius") {
+                            *r as f32
+                        } else {
+                            0.01 // Default radius
+                        };
 
-                // get a random color
-                if let Ok(buffer) = into_vec::<f32>(&data) {
-                    let mut points = vec![];
-                    let mut colors = vec![];
-                    buffer.chunks(2).for_each(|chunk| {
-                        points.push((chunk[0], chunk[1]));
-                        colors.push(color);
-                    });
-                    let points = Points2D::new(points);
+                    if let Ok(buffer) = into_vec::<f32>(&data) {
+                        let mut line_points = vec![];
+                        buffer.chunks(3).for_each(|chunk| {
+                            line_points.push((chunk[0], chunk[1], chunk[2]));
+                        });
 
-                    rec.log(dataid.as_str(), &points.with_colors(colors))
-                        .context("could not log points")?;
+                        rec.log(
+                            id.as_str(),
+                            &rerun::LineStrips3D::new([line_points])
+                                .with_colors([color])
+                                .with_radii([radius]),
+                        )
+                        .context("could not log line strips")?;
+                    }
                 }
-            } else {
-                println!("Could not find handler for {id}");
+                _ => bail!("Unknown visualization primitive: {}", primitive),
             }
         }
     }
