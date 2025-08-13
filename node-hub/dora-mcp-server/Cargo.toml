@@ -1,0 +1,30 @@
+[package]
+name = "dora-mcp-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+documentation.workspace = true
+description.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+chrono = "0.4.31"
+dora-node-api = { workspace = true, features = ["tracing"] }
+eyre = "0.6.8"
+futures = "0.3.31"
+indexmap = { version = "2.6.0", features = ["serde"] }
+mime_guess = "2.0.4"
+rmcp = { version = "0.2.1", features = ["server"] }
+salvo = { version = "0.80.0", default-features = false, features = ["affix-state", "cors", "server", "http1", "http2"] }
+serde = { version = "1.0.130", features = ["derive"] }
+serde_json = "1.0.68"
+thiserror = "2.0.12"
+tokio = { version = "1.46.1", features = ["full"] }
+tokio-stream = "0.1.11"
+tracing = "0.1.27"
+url = "2.2.2"
+uuid = { version = "1.10", features = ["v4"] }
+figment = { version = "0.10.0", features = ["env", "json", "toml", "yaml"] }

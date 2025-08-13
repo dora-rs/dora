@@ -30,6 +30,8 @@ members = [
     "libraries/shared-memory-server",
     "libraries/extensions/download",
     "libraries/extensions/telemetry/*",
+    "node-hub/dora-mcp-host",
+    "node-hub/dora-mcp-server",
     "node-hub/dora-record",
     "node-hub/dora-rerun",
     "node-hub/terminal-print",

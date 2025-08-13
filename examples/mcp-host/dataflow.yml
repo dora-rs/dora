@@ -1,0 +1,44 @@
+nodes:
+  - id: mcp-server
+    build: cargo build -p dora-mcp-server --release
+    path: ../../target/release/dora-mcp-server
+    outputs:
+      - local
+      - telepathy
+    inputs:
+      local_reply: local/reply
+      telepathy_reply: telepathy/reply
+    env:
+      CONFIG: mcp_server.toml
+
+  - id: local
+    path: nodes/local.py
+    inputs:
+      text: mcp-server/local
+    outputs:
+      - reply
+
+  - id: telepathy
+    path: nodes/telepathy.py
+    inputs:
+      text: mcp-server/telepathy
+    outputs:
+      - reply
+
+  - id: dora-echo
+    build: pip install -e ../../node-hub/dora-echo
+    path: dora-echo
+    inputs:
+      echo: dora-mcp-host/text
+    outputs:
+      - echo
+
+  - id: dora-mcp-host
+    build: cargo build -p dora-mcp-host --release
+    path: ../../target/release/dora-mcp-host
+    outputs:
+      - text
+    inputs:
+      text: dora-echo/echo
+    env:
+      CONFIG: mcp_host.toml
