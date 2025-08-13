@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # Dora MCP Host Example
 
 This is a comprehensive example demonstrating how to use the Dora Model Context Protocol (MCP) Host to create a multi-node dataflow system that integrates with various AI providers and local services.
@@ -144,23 +143,3 @@ uv run test_client.py
 4. **Virtual Environment**: Activate the correct Python environment
 
 This example demonstrates the power and flexibility of Dora's MCP integration for building sophisticated AI-powered applications with multiple providers and local processing capabilities.
-=======
-# Dora Openai MCP Host Example
-
-This is a quick example to showcase how use the `dora-openai-server` to receive and send back data.
-
-Dora Openai Server is still experimental and may change in the future.
-
-Make sure to have, dora, uv and cargo installed.
-
-```bash
-uv venv -p 3.11 --seed
-uv pip install -e ../../apis/python/node --reinstall
-dora build dataflow.yml --uv
-dora run dataflow.yml --uv
-
-# In a separate terminal
-uv run test_client.py
-dora stop
-```
->>>>>>> 6dad2bdc (Add mcp-host node and mcp-server node)
