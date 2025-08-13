@@ -1,13 +1,13 @@
 use tokio::sync::mpsc;
 
-use eyre::{eyre, Result};
+use eyre::{Result, eyre};
 use futures::channel::oneshot;
 use outfox_openai::spec::{CreateChatCompletionRequest, CreateChatCompletionResponse};
 use reqwest::Client as HttpClient;
 use salvo::async_trait;
 
 use crate::config::{DeepseekConfig, DoraConfig, GeminiConfig, OpenaiConfig};
-use crate::{utils::get_env_or_value, ServerEvent};
+use crate::{ServerEvent, utils::get_env_or_value};
 
 #[async_trait]
 pub trait ChatClient: Send + Sync {

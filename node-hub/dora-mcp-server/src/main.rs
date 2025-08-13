@@ -2,10 +2,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use dora_node_api::{
+    DoraNode, Event, MetadataParameters, Parameter,
     arrow::array::{AsArray, StringArray},
     dora_core::config::DataId,
     merged::{MergeExternalSend, MergedEvent},
-    DoraNode, Event, MetadataParameters, Parameter,
 };
 
 use eyre::{Context, ContextCompat};
@@ -118,9 +118,9 @@ async fn main() -> eyre::Result<()> {
                                 node.send_output(
                                     DataId::from("response".to_owned()),
                                     metadata.parameters,
-                                    StringArray::from(
-                                        vec![serde_json::to_string(&result).unwrap()],
-                                    ),
+                                    StringArray::from(vec![
+                                        serde_json::to_string(&result).unwrap(),
+                                    ]),
                                 )
                                 .context("failed to send dora output")?;
                             }

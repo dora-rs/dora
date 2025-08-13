@@ -3,8 +3,8 @@ use std::sync::Arc;
 use outfox_openai::spec::{CreateChatCompletionRequest, Model};
 use salvo::prelude::*;
 
-use crate::session::ChatSession;
 use crate::AppResult;
+use crate::session::ChatSession;
 
 pub fn root(endpoint: Option<String>, chat_session: Arc<ChatSession>) -> Router {
     Router::with_hoop(affix_state::inject(chat_session))
