@@ -1,0 +1,28 @@
+name = "MCP Server Example"
+version = "0.1.0"
+
+# You can set your custom listen address and endpoint here.
+# Default listen address is "0.0.0.0:8008" and endpoint is "mcp".
+listen_addr = "0.0.0.0:8228"
+endpoint = "mcp"
+
+[[mcp_tools]]
+name = "signature_dish"
+description = "Tell you the name of the most signature dish in a certain restaurant."
+args = []
+input_schema = "restaurant_object.json"
+output = "local"
+
+[[mcp_tools]]
+name = "happiest_kindergarten"
+description = "Tell you the happiest kindergarten in this location and how many children are in this kindergarten."
+args = []
+input_schema = "local_object.json"
+output = "local"
+
+[[mcp_tools]]
+name = "telepathy"
+description = "Know who the current user's favorite star is and what their favorite movie is."
+args = []
+input_schema = "empty_object.json"
+output = "telepathy"
