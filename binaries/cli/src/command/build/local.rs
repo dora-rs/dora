@@ -4,11 +4,10 @@ use colored::Colorize;
 use dora_core::{
     build::{BuildInfo, BuildLogger, Builder, GitManager, LogLevelOrStdout, PrevGitSource},
     descriptor::{Descriptor, DescriptorExt},
+    session::DataflowSession,
 };
 use dora_message::{common::GitSource, id::NodeId};
 use eyre::Context;
-
-use crate::session::DataflowSession;
 
 pub fn build_dataflow_locally(
     dataflow: Descriptor,

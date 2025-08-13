@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 pub use crate::common::{
     DataMessage, DropToken, LogLevel, LogMessage, SharedMemoryId, Timestamped,
 };
@@ -33,6 +35,11 @@ pub enum DaemonRequest {
     NodeConfig {
         node_id: NodeId,
     },
+    StartDataflow {
+        dataflow: String,
+        name: Option<String>,
+        uv: bool,
+    },
 }
 
 impl DaemonRequest {
@@ -41,7 +48,8 @@ impl DaemonRequest {
         match self {
             DaemonRequest::SendMessage { .. }
             | DaemonRequest::NodeConfig { .. }
-            | DaemonRequest::ReportDropTokens { .. } => false,
+            | DaemonRequest::ReportDropTokens { .. }
+            | DaemonRequest::StartDataflow { .. } => false,
             DaemonRequest::Register(NodeRegisterRequest { .. })
             | DaemonRequest::Subscribe
             | DaemonRequest::CloseOutputs(_)
@@ -56,7 +64,7 @@ impl DaemonRequest {
     pub fn expects_tcp_json_reply(&self) -> bool {
         #[allow(clippy::match_like_matches_macro)]
         match self {
-            DaemonRequest::NodeConfig { .. } => true,
+            DaemonRequest::NodeConfig { .. } | Self::StartDataflow { .. } => true,
             DaemonRequest::Register(NodeRegisterRequest { .. })
             | DaemonRequest::Subscribe
             | DaemonRequest::CloseOutputs(_)

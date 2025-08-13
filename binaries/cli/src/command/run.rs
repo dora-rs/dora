@@ -6,11 +6,8 @@
 //! Use `dora build --local` or manual build commands to build your nodes.
 
 use super::Executable;
-use crate::{
-    common::{handle_dataflow_result, resolve_dataflow},
-    output::print_log_message,
-    session::DataflowSession,
-};
+use crate::{common::handle_dataflow_result, output::print_log_message};
+use dora_core::{resolve_dataflow, session::DataflowSession};
 use dora_daemon::{flume, Daemon, LogDestination};
 #[cfg(feature = "tracing")]
 use dora_tracing::TracingBuilder;
