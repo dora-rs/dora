@@ -1,7 +1,7 @@
-use dora_cli::session::DataflowSession;
 use dora_coordinator::{ControlEvent, Event};
 use dora_core::{
     descriptor::{read_as_descriptor, DescriptorExt},
+    session::DataflowSession,
     topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, DORA_COORDINATOR_PORT_DEFAULT},
 };
 use dora_message::{
