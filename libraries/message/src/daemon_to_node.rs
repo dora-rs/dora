@@ -54,6 +54,7 @@ pub enum DaemonReply {
     NextDropEvents(Vec<Timestamped<NodeDropEvent>>),
     NodeConfig { result: Result<NodeConfig, String> },
     Empty,
+    StartDataflowResult(Result<DataflowId, String>),
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

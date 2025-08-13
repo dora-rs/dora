@@ -50,6 +50,8 @@
 use communication_layer_request_reply::TcpRequestReplyConnection;
 use dora_core::{
     descriptor::{CoreNodeKind, CustomNode, Descriptor, DescriptorExt},
+    resolve_dataflow,
+    session::DataflowSession,
     topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST},
 };
 use dora_message::{descriptor::NodeSource, BuildId};
@@ -57,10 +59,7 @@ use eyre::Context;
 use std::{collections::BTreeMap, net::IpAddr};
 
 use super::{default_tracing, Executable};
-use crate::{
-    common::{connect_to_coordinator, local_working_dir, resolve_dataflow},
-    session::DataflowSession,
-};
+use crate::common::{connect_to_coordinator, local_working_dir};
 
 use distributed::{build_distributed_dataflow, wait_until_dataflow_built};
 use local::build_dataflow_locally;

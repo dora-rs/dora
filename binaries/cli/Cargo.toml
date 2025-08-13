@@ -26,7 +26,6 @@ dora-core = { workspace = true }
 dora-message = { workspace = true }
 dora-node-api-c = { workspace = true }
 dora-operator-api-c = { workspace = true }
-dora-download = { workspace = true }
 serde = { version = "1.0.136", features = ["derive"] }
 serde_yaml = { workspace = true }
 webbrowser = "0.8.3"

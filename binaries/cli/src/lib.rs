@@ -5,11 +5,11 @@ use std::{
     path::PathBuf,
 };
 
-pub mod command;
+mod command;
 mod common;
 mod formatting;
 pub mod output;
-pub mod session;
+
 mod template;
 
 pub use command::run_func;

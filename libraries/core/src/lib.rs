@@ -1,16 +1,24 @@
+use dora_download::download_file;
 use eyre::{bail, eyre, Context};
 use std::{
-    env::consts::{DLL_PREFIX, DLL_SUFFIX},
+    env::{
+        consts::{DLL_PREFIX, DLL_SUFFIX},
+        current_dir,
+    },
     ffi::OsStr,
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 pub use dora_message::{config, uhlc};
+
+use crate::descriptor::source_is_url;
 
 #[cfg(feature = "build")]
 pub mod build;
 pub mod descriptor;
 pub mod metadata;
+#[cfg(feature = "build")]
+pub mod session;
 pub mod topics;
 
 pub fn adjust_shared_library_path(path: &Path) -> Result<std::path::PathBuf, eyre::ErrReport> {
@@ -79,4 +87,20 @@ where
         eyre::bail!("failed to run {args:?}");
     };
     Ok(())
+}
+
+pub fn resolve_dataflow(dataflow: String) -> eyre::Result<PathBuf> {
+    let dataflow = if source_is_url(&dataflow) {
+        // try to download the shared library
+        let target_path = current_dir().context("Could not access the current dir")?;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("tokio runtime failed")?;
+        rt.block_on(async { download_file(&dataflow, &target_path).await })
+            .wrap_err("failed to download dataflow yaml file")?
+    } else {
+        PathBuf::from(dataflow)
+    };
+    Ok(dataflow)
 }

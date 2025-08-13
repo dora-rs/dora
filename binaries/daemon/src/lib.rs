@@ -8,15 +8,18 @@ use dora_core::{
         read_as_descriptor, CoreNodeKind, Descriptor, DescriptorExt, ResolvedNode, RuntimeNode,
         DYNAMIC_SOURCE,
     },
+    resolve_dataflow,
+    session::DataflowSession,
     topics::LOCALHOST,
     uhlc::{self, HLC},
 };
 use dora_message::{
+    cli_to_coordinator::StartRequest,
     common::{
         DaemonId, DataMessage, DropToken, GitSource, LogLevel, NodeError, NodeErrorCause,
         NodeExitStatus,
     },
-    coordinator_to_cli::DataflowResult,
+    coordinator_to_cli::{ControlRequestReply, DataflowResult},
     coordinator_to_daemon::{BuildDataflowNodes, DaemonCoordinatorEvent, SpawnDataflowNodes},
     daemon_to_coordinator::{
         CoordinatorRequest, DaemonCoordinatorReply, DaemonEvent, DataflowDaemonResult,
@@ -79,7 +82,7 @@ use dora_tracing::telemetry::serialize_context;
 #[cfg(feature = "telemetry")]
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
-use crate::pending::DataflowStatus;
+use crate::{pending::DataflowStatus, socket_stream_utils::socket_stream_receive};
 
 const STDERR_LOG_LINES: usize = 10;
 
@@ -1611,8 +1614,8 @@ impl Daemon {
                                         dataflow.check_drop_token(token, &self.clock).await?;
                                     } else {
                                         tracing::warn!(
-                                            "node `{node_id}` is not pending for drop token `{token:?}`"
-                                        );
+                                                    "node `{node_id}` is not pending for drop token `{token:?}`"
+                                                );
                                     }
                                 }
                                 None => tracing::warn!("unknown drop token `{token:?}`"),
@@ -1634,6 +1637,51 @@ impl Daemon {
 
                 let reply = inner.await.map_err(|err| format!("{err:?}"));
                 let _ = reply_sender.send(DaemonReply::Result(reply));
+            }
+            DaemonNodeEvent::StartDataflow {
+                dataflow,
+                name,
+                uv,
+                reply_sender,
+            } => {
+                let inner = async {
+                    let Some(connection) = &mut self.coordinator_connection else {
+                        bail!("no coordinator connection to send StartDataflow");
+                    };
+                    let dataflow =
+                        resolve_dataflow(dataflow).context("could not resolve dataflow")?;
+                    let dataflow_descriptor = Descriptor::blocking_read(&dataflow)
+                        .wrap_err("Failed to read yaml dataflow")?;
+                    let dataflow_session = DataflowSession::read_session(&dataflow)
+                        .context("failed to read DataflowSession")?;
+
+                    let msg = serde_json::to_vec(&Timestamped {
+                        inner: CoordinatorRequest::StartDataflow(StartRequest {
+                            build_id: dataflow_session.build_id,
+                            session_id: dataflow_session.session_id,
+                            dataflow: dataflow_descriptor,
+                            name,
+                            local_working_dir: None,
+                            uv,
+                        }),
+                        timestamp: self.clock.new_timestamp(),
+                    })?;
+                    socket_stream_send(connection, &msg)
+                        .await
+                        .wrap_err("failed to send StartDataflow message to dora-coordinator")?;
+                    let reply_raw = socket_stream_receive(connection)
+                        .await
+                        .wrap_err("failed to receive StartDataflow reply")?;
+                    let result: Timestamped<Result<ControlRequestReply, String>> =
+                        serde_json::from_slice(&reply_raw)
+                            .wrap_err("failed to deserialize StartDataflow reply")?;
+                    match result.inner.map_err(|e| eyre::eyre!(e))? {
+                        ControlRequestReply::DataflowStartTriggered { uuid } => Ok(uuid),
+                        other => bail!("unexpected StartDataflow reply: {other:?}"),
+                    }
+                };
+                let reply = inner.await.map_err(|err| format!("{err:?}"));
+                let _ = reply_sender.send(DaemonReply::StartDataflowResult(reply));
             }
         }
         Ok(())
@@ -2721,6 +2769,12 @@ pub enum DaemonNodeEvent {
         tokens: Vec<DropToken>,
     },
     EventStreamDropped {
+        reply_sender: oneshot::Sender<DaemonReply>,
+    },
+    StartDataflow {
+        dataflow: String,
+        name: Option<String>,
+        uv: bool,
         reply_sender: oneshot::Sender<DaemonReply>,
     },
 }

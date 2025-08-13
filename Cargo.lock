@@ -3111,7 +3111,6 @@ dependencies = [
  "dora-coordinator",
  "dora-core",
  "dora-daemon",
- "dora-download",
  "dora-message",
  "dora-node-api-c",
  "dora-operator-api-c",
@@ -3168,6 +3167,7 @@ dependencies = [
 name = "dora-core"
 version = "0.3.12"
 dependencies = [
+ "dora-download",
  "dora-message",
  "dunce",
  "eyre",
@@ -3441,7 +3441,6 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "criterion",
- "dora-cli",
  "dora-node-api",
  "fastwebsockets",
  "futures-concurrency",

@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use dora_core::build::BuildInfo;
+use crate::build::BuildInfo;
 use dora_message::{common::GitSource, id::NodeId, BuildId, SessionId};
 use eyre::{Context, ContextCompat};
 

@@ -4,7 +4,8 @@ pub use crate::common::{
     DataMessage, LogLevel, LogMessage, NodeError, NodeErrorCause, NodeExitStatus, Timestamped,
 };
 use crate::{
-    common::DaemonId, current_crate_version, id::NodeId, versions_compatible, BuildId, DataflowId,
+    cli_to_coordinator::StartRequest, common::DaemonId, current_crate_version, id::NodeId,
+    versions_compatible, BuildId, DataflowId,
 };
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -14,6 +15,7 @@ pub enum CoordinatorRequest {
         daemon_id: DaemonId,
         event: DaemonEvent,
     },
+    StartDataflow(StartRequest),
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]

@@ -9,7 +9,7 @@ use dora_core::{
     uhlc::{self, HLC},
 };
 use dora_message::{
-    cli_to_coordinator::ControlRequest,
+    cli_to_coordinator::{ControlRequest, StartRequest},
     common::{DaemonId, GitSource},
     coordinator_to_cli::{
         ControlRequestReply, DataflowIdAndName, DataflowList, DataflowListEntry, DataflowResult,
@@ -457,51 +457,15 @@ async fn start_inner(
                                     reply_sender.send(Err(eyre!("unknown build id {build_id}")));
                             }
                         }
-                        ControlRequest::Start {
-                            build_id,
-                            session_id,
-                            dataflow,
-                            name,
-                            local_working_dir,
-                            uv,
-                        } => {
-                            let name = name.or_else(|| names::Generator::default().next());
-
-                            let inner = async {
-                                if let Some(name) = name.as_deref() {
-                                    // check that name is unique
-                                    if running_dataflows
-                                        .values()
-                                        .any(|d: &RunningDataflow| d.name.as_deref() == Some(name))
-                                    {
-                                        bail!("there is already a running dataflow with name `{name}`");
-                                    }
-                                }
-                                let dataflow = start_dataflow(
-                                    build_id,
-                                    session_id,
-                                    dataflow,
-                                    local_working_dir,
-                                    name,
-                                    &mut daemon_connections,
-                                    &clock,
-                                    uv,
-                                )
-                                .await?;
-                                Ok(dataflow)
-                            };
-                            match inner.await {
-                                Ok(dataflow) => {
-                                    let uuid = dataflow.uuid;
-                                    running_dataflows.insert(uuid, dataflow);
-                                    let _ = reply_sender.send(Ok(
-                                        ControlRequestReply::DataflowStartTriggered { uuid },
-                                    ));
-                                }
-                                Err(err) => {
-                                    let _ = reply_sender.send(Err(err));
-                                }
-                            }
+                        ControlRequest::Start(start_request) => {
+                            handle_start_request(
+                                start_request,
+                                &mut running_dataflows,
+                                &mut daemon_connections,
+                                &clock,
+                                reply_sender,
+                            )
+                            .await
                         }
                         ControlRequest::WaitForSpawn { dataflow_id } => {
                             if let Some(dataflow) = running_dataflows.get_mut(&dataflow_id) {
@@ -919,6 +883,58 @@ async fn start_inner(
     tracing::info!("stopped");
 
     Ok(())
+}
+
+async fn handle_start_request(
+    start_request: StartRequest,
+    running_dataflows: &mut HashMap<Uuid, RunningDataflow>,
+    daemon_connections: &mut DaemonConnections,
+    clock: &HLC,
+    reply_sender: oneshot::Sender<eyre::Result<ControlRequestReply>>,
+) {
+    let StartRequest {
+        build_id,
+        session_id,
+        dataflow,
+        name,
+        local_working_dir,
+        uv,
+    } = start_request;
+
+    let name = name.or_else(|| names::Generator::default().next());
+    let inner = async {
+        if let Some(name) = name.as_deref() {
+            // check that name is unique
+            if running_dataflows
+                .values()
+                .any(|d: &RunningDataflow| d.name.as_deref() == Some(name))
+            {
+                bail!("there is already a running dataflow with name `{name}`");
+            }
+        }
+        let dataflow = start_dataflow(
+            build_id,
+            session_id,
+            dataflow,
+            local_working_dir,
+            name,
+            daemon_connections,
+            clock,
+            uv,
+        )
+        .await?;
+        Ok(dataflow)
+    };
+    match inner.await {
+        Ok(dataflow) => {
+            let uuid = dataflow.uuid;
+            running_dataflows.insert(uuid, dataflow);
+            let _ = reply_sender.send(Ok(ControlRequestReply::DataflowStartTriggered { uuid }));
+        }
+        Err(err) => {
+            let _ = reply_sender.send(Err(err));
+        }
+    }
 }
 
 async fn send_log_message(log_subscribers: &mut Vec<LogSubscriber>, message: &LogMessage) {

@@ -5,17 +5,20 @@
 use super::{default_tracing, Executable};
 use crate::{
     command::start::attach::attach_dataflow,
-    common::{connect_to_coordinator, local_working_dir, resolve_dataflow},
+    common::{connect_to_coordinator, local_working_dir},
     output::print_log_message,
-    session::DataflowSession,
 };
 use communication_layer_request_reply::{TcpConnection, TcpRequestReplyConnection};
 use dora_core::{
     descriptor::{Descriptor, DescriptorExt},
+    resolve_dataflow,
+    session::DataflowSession,
     topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST},
 };
 use dora_message::{
-    cli_to_coordinator::ControlRequest, common::LogMessage, coordinator_to_cli::ControlRequestReply,
+    cli_to_coordinator::{ControlRequest, StartRequest},
+    common::LogMessage,
+    coordinator_to_cli::ControlRequestReply,
 };
 use eyre::{bail, Context};
 use std::{
@@ -125,14 +128,14 @@ fn start_dataflow(
         let session: &mut TcpRequestReplyConnection = &mut *session;
         let reply_raw = session
             .request(
-                &serde_json::to_vec(&ControlRequest::Start {
+                &serde_json::to_vec(&ControlRequest::Start(StartRequest {
                     build_id: dataflow_session.build_id,
                     session_id: dataflow_session.session_id,
                     dataflow,
                     name,
                     local_working_dir,
                     uv,
-                })
+                }))
                 .unwrap(),
             )
             .wrap_err("failed to send start dataflow message")?;

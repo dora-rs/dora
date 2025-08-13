@@ -457,6 +457,20 @@ impl Listener {
                 )
                 .await?;
             }
+            DaemonRequest::StartDataflow { dataflow, name, uv } => {
+                let (reply_sender, reply) = oneshot::channel();
+                self.process_daemon_event(
+                    DaemonNodeEvent::StartDataflow {
+                        dataflow,
+                        name,
+                        uv,
+                        reply_sender,
+                    },
+                    Some(reply),
+                    connection,
+                )
+                .await?
+            }
         }
         Ok(())
     }

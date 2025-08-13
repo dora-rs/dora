@@ -1,5 +1,5 @@
 use communication_layer_request_reply::{TcpConnection, TcpRequestReplyConnection};
-use dora_core::descriptor::Descriptor;
+use dora_core::{descriptor::Descriptor, session::DataflowSession};
 use dora_message::{
     cli_to_coordinator::ControlRequest,
     common::{GitSource, LogMessage},
@@ -13,7 +13,7 @@ use std::{
     net::{SocketAddr, TcpStream},
 };
 
-use crate::{output::print_log_message, session::DataflowSession};
+use crate::output::print_log_message;
 
 pub fn build_distributed_dataflow(
     session: &mut TcpRequestReplyConnection,

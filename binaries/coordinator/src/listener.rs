@@ -1,11 +1,17 @@
-use crate::{tcp_utils::tcp_receive, DaemonRequest, DataflowEvent, Event};
+use crate::{
+    tcp_utils::{tcp_receive, tcp_send},
+    ControlEvent, DaemonRequest, DataflowEvent, Event,
+};
 use dora_core::uhlc::HLC;
-use dora_message::daemon_to_coordinator::{CoordinatorRequest, DaemonEvent, Timestamped};
+use dora_message::{
+    cli_to_coordinator::ControlRequest,
+    daemon_to_coordinator::{CoordinatorRequest, DaemonEvent, Timestamped},
+};
 use eyre::Context;
 use std::{io::ErrorKind, net::SocketAddr, sync::Arc};
 use tokio::{
     net::{TcpListener, TcpStream},
-    sync::mpsc,
+    sync::{mpsc, oneshot},
 };
 
 pub async fn create_listener(bind: SocketAddr) -> eyre::Result<TcpListener> {
@@ -136,6 +142,21 @@ pub async fn handle_connection(
                     }
                 }
             },
+            CoordinatorRequest::StartDataflow(start_request) => {
+                let (reply_sender, reply_rx) = oneshot::channel();
+                let event = Event::Control(ControlEvent::IncomingRequest {
+                    request: ControlRequest::Start(start_request),
+                    reply_sender,
+                });
+                if events_tx.send(event).await.is_err() {
+                    break;
+                }
+                let Ok(reply) = reply_rx.await else { break };
+                let message = serde_json::to_vec(&reply.map_err(|e| format!("{e:?}"))).unwrap();
+                if let Err(err) = tcp_send(&mut connection, &message).await {
+                    tracing::warn!("failed to send StartDataflow reply to node: {}", err.kind());
+                }
+            }
         };
     }
 }
