@@ -367,13 +367,24 @@ async fn handle_client(fut: upgrade::UpgradeFut) -> Result<(), WebSocketError> {
                                     .into(),
                             ));
                             frame
-                        } else if id.contains("") {
+                        } else if id.contains("speech_started") {
                             let serialized_data =
                                 OpenAIRealtimeResponse::InputAudioBufferSpeechStarted {
                                     audio_start_ms: 123,
                                     item_id: "123".to_string(),
                                 };
-                            finished = true;
+
+                            let frame = Frame::text(Payload::Bytes(
+                                Bytes::from(serde_json::to_string(&serialized_data).unwrap())
+                                    .into(),
+                            ));
+                            frame
+                        } else if id.contains("speech_stopped") {
+                            let serialized_data =
+                                OpenAIRealtimeResponse::InputAudioBufferSpeechStopped {
+                                    audio_end_ms: 123,
+                                    item_id: "123".to_string(),
+                                };
 
                             let frame = Frame::text(Payload::Bytes(
                                 Bytes::from(serde_json::to_string(&serialized_data).unwrap())
