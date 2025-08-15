@@ -4,7 +4,8 @@ nodes:
     inputs:
       audio: tts/audio
       text: stt/text
-      speech_started: stt/speech_started
+      speech_started: dora-vad/timestamp_start
+      speech_stopped: dora-vad/timestamp_end
     outputs:
       - audio
       - text
@@ -18,6 +19,8 @@ nodes:
         queue_size: 1000000
     outputs:
       - audio
+      - timestamp_start
+      - timestamp_end
     env:
       MIN_SPEECH_DURATION_MS: 1000
       MIN_SILENCE_DURATION_MS: 1000
@@ -28,10 +31,13 @@ nodes:
     path: dora-distil-whisper
     inputs:
       audio: dora-vad/audio
+      text_noise: llm/text
     outputs:
       - text
       - word
       - speech_started
+    env:
+      TARGET_LANGUAGE: english
 
   - id: llm
     build: pip install -e ../../node-hub/dora-qwen
@@ -44,6 +50,8 @@ nodes:
     env:
       MODEL_NAME_OR_PATH: LLM_ID
       MODEL_FILE_PATTERN: "*[qQ]6_[kK].[gG][gG][uU][fF]"
+      MAX_TOKENS: 10_000
+      CONTEXT_SIZE: 10_000
 
   - id: tts
     build: pip install -e ../../node-hub/dora-kokoro-tts
