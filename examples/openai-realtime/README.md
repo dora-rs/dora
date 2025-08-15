@@ -5,7 +5,7 @@
 ### Build Client
 
 ```bash
-git clone git@github.com:haixuanTao/moly.git --branch dora-backend-support
+git clone git@github.com:moxin-org/moly.git
 cd moly
 cargo build --release
 ```
