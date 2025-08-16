@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 description = "C API implementation for Dora Operator"
 documentation.workspace = true
+readme.workspace = true
 license.workspace = true
 repository.workspace = true
 
