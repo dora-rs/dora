@@ -27,7 +27,7 @@ ros2-bridge = [
 ]
 
 [dependencies]
-cxx = "1.0.73"
+cxx = "1.0.168"
 dora-node-api = { workspace = true }
 eyre = "0.6.8"
 dora-ros2-bridge = { workspace = true, optional = true }

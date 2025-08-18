@@ -1,0 +1,19 @@
+[package]
+name = "dora-qwen-omni"
+version = "0.0.1"
+edition = "2021"
+
+[dependencies]
+llama-cpp-2 = { git = "https://github.com/haixuantao/llama-cpp-rs", branch = "dennis/feat/multi-modal", features = [
+    "mtmd",
+] }
+clap = { version = "4.0.3", features = ["derive"] }
+dora-node-api.workspace = true
+text_on_image = "0.1.0"
+base64 = "0.22.1"
+
+[features]
+cuda = ["llama-cpp-2/cuda"]
+metal = ["llama-cpp-2/metal"]
+native = ["llama-cpp-2/native"]
+vulkan = ["llama-cpp-2/vulkan"]
