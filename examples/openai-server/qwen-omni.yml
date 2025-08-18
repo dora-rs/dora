@@ -1,0 +1,17 @@
+nodes:
+  - id: dora-openai-server
+    build: cargo build -p dora-openai-proxy-server --release
+    path: ../../target/release/dora-openai-proxy-server
+    outputs:
+      - text
+    inputs:
+      text: dora-qwen-omni/image
+
+  - id: dora-qwen-omni
+    build: cargo build -p dora-qwen-omni -r --features metal
+    path: ../../target/release/dora-qwen-omni
+    args: --model /Users/xaviertao/Downloads/Qwen2.5-Omni-7B-q4_k_m.gguf --mmproj /Users/xaviertao/Downloads/Qwen2.5-Omni-7B-q8_0.mmproj --prompt "Output:"
+    inputs:
+      text: dora-openai-server/text
+    outputs:
+      - image

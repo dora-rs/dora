@@ -35,6 +35,7 @@ members = [
     "node-hub/terminal-print",
     "node-hub/openai-proxy-server",
     "node-hub/dora-openai-websocket",
+    "node-hub/dora-qwen-omni",
     "node-hub/dora-kit-car",
     "node-hub/dora-object-to-pose",
     "node-hub/dora-mistral-rs",
