@@ -1,107 +1,151 @@
-"""Gamepad controller node for Dora.
+"""Gamepad controller node for Dora."""
 
-This module provides a Dora node that reads input from a controller and publishes velocity commands for robot control.
-It handles controller mapping, deadzone filtering, and velocity scaling.
-"""
+import json
 
-from dora import Node
-import pygame
 import pyarrow as pa
+import pygame
+from dora import Node
+import os
+
+MAX_LINEAR_SPEED = float(os.getenv("MAX_LINEAR_SPEED", "0.05"))
+MAX_ANGULAR_SPEED = float(os.getenv("MAX_ANGULAR_SPEED", "0.8"))
+JOYSTICK_DEADZONE = float(os.getenv("JOYSTICK_DEADZONE", "0.2"))    
 
 class Controller:
-    """controller mapping."""
+    """Controller mapping."""
 
     def __init__(self):
         """Change this according to your controller mapping. Currently Logitech F710."""
         self.axisNames = {
-            'LEFT-X': 0,
-            'LEFT-Y': 1,
-            'LT': 2,        
-            'RIGHT-X': 3,
-            'RIGHT-Y': 4,
-            'RT': 5,        
-            'DPAD-X': 6,    
-            'DPAD-Y': 7     
+            "LEFT-X": 0,
+            "LEFT-Y": 1,
+            "RIGHT-X": 2,
+            "RIGHT-Y": 3,
         }
         self.buttonNames = {
-            'A': 0,
-            'B': 1,
-            'X': 2,
-            'Y': 3,
-            'LB': 4,
-            'RB': 5,
-            'BACK': 6,
-            'START': 7,
-            'LOGITECH': 8,
-            'LEFT-STICK': 9,
-            'RIGHT-STICK': 10
+            "X": 0,
+            "A": 1,
+            "B": 2,
+            "Y": 3,
+            "LB": 4,
+            "RB": 5,
+            "LT": 6,
+            "RT": 7,
+            "BACK": 8,
+            "START": 9,
+            "LEFT-STICK": 10,
+            "RIGHT-STICK": 11,
         }
+        self.hatIndex = 0  # Index of the D-pad hat
+
 
 def main():
     node = Node("gamepad")
-    
+
     pygame.init()
     pygame.joystick.init()
-    
-    if pygame.joystick.get_count() == 0:
-        print("No gamepad found! Please connect your controller.")
-        return
-        
+
+    assert pygame.joystick.get_count(), (
+        "No gamepad found! Please connect your controller."
+    )
+
     joystick = pygame.joystick.Joystick(0)
     joystick.init()
 
     controller = Controller()
-    
-    max_linear_speed = 1.0  # Maximum speed in m/s
-    max_angular_speed = 1.5  # Maximum angular speed in rad/s
-    
-    print("Gamepad Controls:")
-    print("Left Stick Y-Axis: Forward/Backward")
-    print("Left Stick X-Axis: Left/Right Turn")
-    print("Mode switch should be in 'D' position")
+
+
+    print(f"Detected controller: {joystick.get_name()}")
+    print(f"Number of axes: {joystick.get_numaxes()}")
+    print(f"Number of buttons: {joystick.get_numbuttons()}")
     print("Press Ctrl+C to exit")
 
-    try:
-        for event in node:
-            pygame.event.pump()
+    for event in node:
+        pygame.event.pump()
 
-            forward = -joystick.get_axis(controller.axisNames['LEFT-Y'])
-            turn = -joystick.get_axis(controller.axisNames['LEFT-X'])
-            
-            deadzone = 0.05
-            forward = 0.0 if abs(forward) < deadzone else forward
-            turn = 0.0 if abs(turn) < deadzone else turn
-            
-            forward_speed = forward * max_linear_speed
-            turn_speed = turn * max_angular_speed
-        
-            cmd_vel = [
-                forward_speed,
-                0.0,           
-                0.0,           
-                0.0,           
-                0.0,           
-                turn_speed     
-            ]
-            
+        # Get all controller states
+        axes = [joystick.get_axis(i) for i in range(joystick.get_numaxes())]
+        buttons = [joystick.get_button(i) for i in range(joystick.get_numbuttons())]
+
+        # Get hat state (D-pad)
+        dpad_x, dpad_y = 0, 0
+        if joystick.get_numhats() > 0:
+            dpad_x, dpad_y = joystick.get_hat(controller.hatIndex)
+
+        # Create raw control state
+        raw_control = {
+            "axes": axes,
+            "buttons": buttons,
+            "hats": [[dpad_x, dpad_y]],
+            "mapping": {
+                "axes": controller.axisNames,
+                "buttons": controller.buttonNames,
+            },
+        }
+
+        # cmd_vel processing:
+        # 1. D-pad vertical for X axis
+        # 2. D-pad horizontal for Y axis
+        # 3. Right stick vertical for Z axis
+        # 4. Right stick horizontal for rotation around Z
+        # 5. Left stick vertical for rotation around X
+        # 6. Left stick horizontal for rotation around Y
+
+        deadzone = JOYSTICK_DEADZONE
+
+        # Linear X velocity from D-pad vertical
+        linear_x = 0.0
+        if dpad_y != 0:
+            linear_x = dpad_y * MAX_LINEAR_SPEED
+
+        # Linear Y velocity from D-pad horizontal
+        linear_y = 0.0
+        if dpad_x != 0:
+            linear_y = dpad_x * MAX_LINEAR_SPEED
+
+        # Linear Z velocity from right stick vertical
+        right_y = -joystick.get_axis(controller.axisNames["RIGHT-Y"])
+        right_y = 0.0 if abs(right_y) < deadzone else right_y
+        linear_z = right_y * MAX_LINEAR_SPEED
+
+        # Angular Z velocity (rotation) from right stick horizontal
+        right_x = -joystick.get_axis(controller.axisNames["RIGHT-X"])
+        right_x = 0.0 if abs(right_x) < deadzone else right_x
+        angular_z = (
+            right_x * MAX_ANGULAR_SPEED
+        )  # TODO: Make z non zero, but on my gamepad the value is never zero
+
+        # Angular X velocity from left stick vertical
+        left_y = -joystick.get_axis(controller.axisNames["LEFT-Y"])
+        left_y = 0.0 if abs(left_y) < deadzone else left_y
+        angular_x = left_y * MAX_ANGULAR_SPEED
+
+        # Angular Y velocity from left stick horizontal
+        left_x = -joystick.get_axis(controller.axisNames["LEFT-X"])
+        left_x = 0.0 if abs(left_x) < deadzone else left_x
+        angular_y = left_x * MAX_ANGULAR_SPEED
+
+        cmd_vel = [linear_x, linear_y, linear_z, angular_x, angular_y, angular_z]
+        if any(cmd_vel):
             node.send_output(
                 output_id="cmd_vel",
                 data=pa.array(cmd_vel, type=pa.float64()),
-                metadata={"type": "cmd_vel"}
+                metadata={"type": "cmd_vel"},
             )
 
-                
-    except KeyboardInterrupt:
-        print("\nExiting...")
-    finally:
-        pygame.quit()
-        # Send zero velocity at cleanup
-        zero_cmd = [0.0] * 6
-        node.send_output(
-            output_id="cmd_vel",
-            data=pa.array(zero_cmd, type=pa.float64()),
-            metadata={"type": "cmd_vel"}
-        )
+            node.send_output(
+                output_id="raw_control",
+                data=pa.array([json.dumps(raw_control)], type=pa.string()),
+                metadata={"type": "raw_control"},
+            )
+
+    pygame.quit()
+    zero_cmd = [0.0] * 6
+    node.send_output(
+        output_id="cmd_vel",
+        data=pa.array(zero_cmd, type=pa.float64()),
+        metadata={"type": "cmd_vel"},
+    )
 
 
 if __name__ == "__main__":

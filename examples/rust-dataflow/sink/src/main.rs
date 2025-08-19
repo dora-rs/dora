@@ -1,5 +1,5 @@
 use dora_node_api::{self, DoraNode, Event};
-use eyre::{bail, Context};
+use eyre::{Context, bail};
 
 fn main() -> eyre::Result<()> {
     let (_node, mut events) = DoraNode::init_from_env()?;
@@ -14,9 +14,11 @@ fn main() -> eyre::Result<()> {
                 "message" => {
                     let received_string: &str =
                         TryFrom::try_from(&data).context("expected string message")?;
-                    println!("sink received message: {}", received_string);
+                    println!("sink received message: {received_string}");
                     if !received_string.starts_with("operator received random value ") {
-                        bail!("unexpected message format (should start with 'operator received random value')")
+                        bail!(
+                            "unexpected message format (should start with 'operator received random value')"
+                        )
                     }
                     if !received_string.ends_with(" ticks") {
                         bail!("unexpected message format (should end with 'ticks')")
@@ -24,8 +26,8 @@ fn main() -> eyre::Result<()> {
                 }
                 other => eprintln!("Ignoring unexpected input `{other}`"),
             },
-            Event::Stop => {
-                println!("Received manual stop");
+            Event::Stop(_) => {
+                println!("Received stop");
             }
             Event::InputClosed { id } => {
                 println!("Input `{id}` was closed");

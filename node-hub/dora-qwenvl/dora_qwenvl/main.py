@@ -162,7 +162,7 @@ def main():
                 node.send_output(
                     "tick",
                     pa.array([response]),
-                    {},
+                    {"primitive": "text"},
                 )
 
             elif event_id == "text":
@@ -176,7 +176,7 @@ def main():
                 node.send_output(
                     "text",
                     pa.array([response]),
-                    {},
+                    {"primitive": "text"},
                 )
 
         elif event_type == "ERROR":

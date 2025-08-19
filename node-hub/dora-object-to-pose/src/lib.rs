@@ -1,11 +1,11 @@
 use core::f32;
 use dora_node_api::{
+    DoraNode, Event, IntoArrow, Parameter,
     arrow::{
-        array::{AsArray, UInt16Array, UInt8Array},
+        array::{AsArray, UInt8Array, UInt16Array},
         datatypes::{Float32Type, Int64Type},
     },
     dora_core::config::DataId,
-    DoraNode, Event, IntoArrow, Parameter,
 };
 use eyre::Result;
 use std::collections::HashMap;
@@ -14,7 +14,7 @@ fn points_to_pose(points: &[(f32, f32, f32)]) -> Vec<f32> {
     let (
         _sum_x,
         _sum_y,
-        _sum_z,
+        sum_z,
         sum_xy,
         sum_x2,
         sum_y2,
@@ -23,8 +23,8 @@ fn points_to_pose(points: &[(f32, f32, f32)]) -> Vec<f32> {
         x_max,
         y_min,
         y_max,
-        z_min,
-        z_max,
+        _z_min,
+        _z_max,
     ) = points.iter().fold(
         (
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 10.0, -10.0, 10.0, -10.0, 10., -10.0,
@@ -62,11 +62,7 @@ fn points_to_pose(points: &[(f32, f32, f32)]) -> Vec<f32> {
             )
         },
     );
-    let (mean_x, mean_y, mean_z) = (
-        (x_max + x_min) / 2.,
-        (y_max + y_min) / 2.,
-        (z_max + z_min) / 2.,
-    );
+    let (mean_x, mean_y, mean_z) = ((x_max + x_min) / 2., (y_max + y_min) / 2., sum_z / n);
 
     // Compute covariance and standard deviations
     let cov = sum_xy / n - mean_x * mean_y;
@@ -92,7 +88,7 @@ pub fn lib_main() -> Result<()> {
         .unwrap();
     let cos_theta = camera_pitch.cos(); // np.cos(np.deg2rad(180-38))
     let sin_theta = camera_pitch.sin(); // np.sin(np.deg2rad(180-38))
-                                        // (0.32489833, -0.25068134, 0.4761387)
+    // (0.32489833, -0.25068134, 0.4761387)
 
     while let Some(event) = events.recv() {
         if let Event::Input { id, metadata, data } = event {
@@ -292,9 +288,9 @@ pub fn lib_main() -> Result<()> {
 
 #[cfg(feature = "python")]
 use pyo3::{
-    pyfunction, pymodule,
+    Bound, PyResult, Python, pyfunction, pymodule,
     types::{PyModule, PyModuleMethods},
-    wrap_pyfunction, Bound, PyResult, Python,
+    wrap_pyfunction,
 };
 
 #[cfg(feature = "python")]

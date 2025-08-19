@@ -20,6 +20,7 @@ def main():
     node = Node()
 
     always_none = node.next(timeout=0.001) is None
+    always_none = node.next(timeout=0.001) is None
     finished = False
 
     def callback(indata, frames, time, status):

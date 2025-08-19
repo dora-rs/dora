@@ -1,0 +1,59 @@
+nodes:
+  - id: plot
+    build: pip install -e ../../../node-hub/dora-rerun
+    path: dora-rerun
+    inputs:
+      jointstate_z1: pytorch_kinematics/cmd_vel
+      camera/image: dora-vggt/image
+      camera/depth: dora-vggt/depth
+    env:
+      z1_urdf: z1_description
+      z1_transform: .5 -0.2 -0.11 1. 0. 0. 0.
+      CAMERA_PITCH: 1.5708
+
+  - id: gamepad
+    build: pip install -e ../../../node-hub/gamepad
+    path: gamepad
+    outputs:
+      - cmd_vel
+      - raw_control
+    inputs:
+      tick: dora/timer/millis/10
+    env:
+      MAX_LINEAR_SPEED: 0.01
+      MAX_ANGULAR_SPEED: 0.05
+
+  - id: pytorch_kinematics
+    build: pip install -e ../../../node-hub/dora-pytorch-kinematics
+    path: dora-pytorch-kinematics
+    inputs:
+      cmd_vel: gamepad/cmd_vel
+    outputs:
+      - cmd_vel
+    env:
+      MODEL_NAME: "z1_description"
+      END_EFFECTOR_LINK: "link06"
+      TRANSFORM: .5 -0.2 -0.11 1. 0. 0. 0.
+      POSITION_TOLERANCE: 0.001
+      ROTATION_TOLERANCE: 0.001
+
+  - id: camera
+    build: pip install -e ../../../node-hub/opencv-video-capture
+    path: opencv-video-capture
+    inputs:
+      tick: dora/timer/millis/100
+    outputs:
+      - image
+    env:
+      CAPTURE_PATH: 4
+
+  - id: dora-vggt
+    build: pip install -e ../../../node-hub/dora-vggt
+    path: dora-vggt
+    inputs:
+      image: camera/image
+    outputs:
+      - depth
+      - image
+    env:
+      SCALE_FACTOR: 0.88

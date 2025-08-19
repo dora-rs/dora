@@ -1,16 +1,15 @@
 use std::{any::Any, vec};
 
 use dora_node_api::{
-    self,
+    self, Event, EventStream,
     arrow::array::{AsArray, UInt8Array},
     merged::{MergeExternal, MergedEvent},
-    Event, EventStream,
 };
 use eyre::bail;
 
 #[cfg(feature = "ros2-bridge")]
 use dora_ros2_bridge::{_core, ros2_client};
-use futures_lite::{stream, Stream, StreamExt};
+use futures_lite::{Stream, StreamExt, stream};
 
 #[cxx::bridge]
 #[allow(clippy::needless_lifetimes)]
@@ -87,10 +86,6 @@ mod ffi {
     }
 }
 
-mod arrow_ffi {
-    pub use arrow::ffi::{FFI_ArrowArray, FFI_ArrowSchema};
-}
-
 #[cfg(feature = "ros2-bridge")]
 pub mod ros2 {
     pub use dora_ros2_bridge::*;
@@ -144,7 +139,7 @@ pub struct DoraEvent(Option<Event>);
 fn event_type(event: &DoraEvent) -> ffi::DoraEventType {
     match &event.0 {
         Some(event) => match event {
-            Event::Stop => ffi::DoraEventType::Stop,
+            Event::Stop(_) => ffi::DoraEventType::Stop,
             Event::Input { .. } => ffi::DoraEventType::Input,
             Event::InputClosed { .. } => ffi::DoraEventType::InputClosed,
             Event::Error(_) => ffi::DoraEventType::Error,
@@ -215,7 +210,7 @@ unsafe fn event_as_arrow_input(
             }
         }
         Err(e) => ffi::DoraResult {
-            error: format!("Error exporting Arrow array to C++: {:?}", e),
+            error: format!("Error exporting Arrow array to C++: {e:?}"),
         },
     }
 }
@@ -276,7 +271,7 @@ unsafe fn send_arrow_output(
             }
         }
         Err(e) => ffi::DoraResult {
-            error: format!("Error importing array from C++: {:?}", e),
+            error: format!("Error importing array from C++: {e:?}"),
         },
     }
 }

@@ -1,6 +1,7 @@
 [package]
 name = "dora-kit-car"
 edition.workspace = true
+rust-version.workspace = true
 version.workspace = true
 description.workspace = true
 documentation.workspace = true

@@ -1,13 +1,15 @@
 use crate::{
-    tcp_utils::{tcp_receive, tcp_send},
     Event,
+    tcp_utils::{tcp_receive, tcp_send},
 };
-use dora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply};
-use eyre::{eyre, Context};
+use dora_message::{
+    BuildId, cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply,
+};
+use eyre::{Context, eyre};
 use futures::{
+    FutureExt, Stream, StreamExt,
     future::{self, Either},
     stream::FuturesUnordered,
-    FutureExt, Stream, StreamExt,
 };
 use futures_concurrency::future::Race;
 use std::{io::ErrorKind, net::SocketAddr};
@@ -22,7 +24,7 @@ use uuid::Uuid;
 pub(crate) async fn control_events(
     control_listen_addr: SocketAddr,
     tasks: &FuturesUnordered<JoinHandle<()>>,
-) -> eyre::Result<impl Stream<Item = Event>> {
+) -> eyre::Result<impl Stream<Item = Event> + use<>> {
     let (tx, rx) = mpsc::channel(10);
 
     let (finish_tx, mut finish_rx) = mpsc::channel(1);
@@ -79,6 +81,7 @@ async fn handle_requests(
     tx: mpsc::Sender<ControlEvent>,
     _finish_tx: mpsc::Sender<()>,
 ) {
+    let peer_addr = connection.peer_addr().ok();
     loop {
         let next_request = tcp_receive(&mut connection).map(Either::Left);
         let coordinator_stopped = tx.closed().map(Either::Right);
@@ -114,10 +117,28 @@ async fn handle_requests(
             break;
         }
 
-        let result = match request {
+        if let Ok(ControlRequest::BuildLogSubscribe { build_id, level }) = request {
+            let _ = tx
+                .send(ControlEvent::BuildLogSubscribe {
+                    build_id,
+                    level,
+                    connection,
+                })
+                .await;
+            break;
+        }
+
+        let mut result = match request {
             Ok(request) => handle_request(request, &tx).await,
             Err(err) => Err(err),
         };
+
+        if let Ok(ControlRequestReply::CliAndDefaultDaemonIps { cli, .. }) = &mut result {
+            if cli.is_none() {
+                // fill cli IP address in reply
+                *cli = peer_addr.map(|s| s.ip());
+            }
+        }
 
         let reply = result.unwrap_or_else(|err| ControlRequestReply::Error(format!("{err:?}")));
         let serialized: Vec<u8> =
@@ -155,7 +176,7 @@ async fn handle_request(
 ) -> eyre::Result<ControlRequestReply> {
     let (reply_tx, reply_rx) = oneshot::channel();
     let event = ControlEvent::IncomingRequest {
-        request,
+        request: request.clone(),
         reply_sender: reply_tx,
     };
 
@@ -165,7 +186,7 @@ async fn handle_request(
 
     reply_rx
         .await
-        .unwrap_or(Ok(ControlRequestReply::CoordinatorStopped))
+        .wrap_err_with(|| format!("no coordinator reply to {request:?}"))?
 }
 
 #[derive(Debug)]
@@ -176,6 +197,11 @@ pub enum ControlEvent {
     },
     LogSubscribe {
         dataflow_id: Uuid,
+        level: log::LevelFilter,
+        connection: TcpStream,
+    },
+    BuildLogSubscribe {
+        build_id: BuildId,
         level: log::LevelFilter,
         connection: TcpStream,
     },

@@ -29,6 +29,9 @@
   <a href="https://pypi.org/project/dora-rs/">
     <img src="https://img.shields.io/pypi/v/dora-rs.svg" alt="PyPi Latest Release"/>
   </a>
+    <a href="https://github.com/dora-rs/dora/blob/main/LICENSE">
+    <img src="https://img.shields.io/github/license/dora-rs/dora" alt="PyPi Latest Release"/>
+  </a>      
 </div>
 <div align="center">
 <a href="https://trendshift.io/repositories/9190" target="_blank"><img src="https://trendshift.io/api/badge/repositories/9190" alt="dora-rs%2Fdora | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
@@ -59,28 +62,30 @@
 <details open>
 <summary><b>2025</b></summary>
 
-\[04/05\] Add support for dora-cotracker to track any point on a frame, dora-rav1e AV1 encoding up to 12bit and dora-dav1d AV1 decoding,
-
-- \[03/05\] Add support for dora async Python.
-- \[03/05\] Add support for Microsoft Phi4, Microsoft Magma.
-- \[03/05\] dora-rs has been accepted to [**GSoC 2025 🎉**](https://summerofcode.withgoogle.com/programs/2025/organizations/dora-rs-tb), with the following [**idea list**](https://github.com/dora-rs/dora/wiki/GSoC_2025).
-- \[03/04\] Add support for Zenoh for distributed dataflow.
-- \[03/04\] Add support for Meta SAM2, Kokoro(TTS), Improved Qwen2.5 Performance using `llama.cpp`.
+- \[07/25\] Added Kornia rust nodes in the hub for V4L / Gstreamer cameras and Sobel image processing.
+- \[06/25\] Add support for git based node, dora-vggt for multi-camera depth estimation, and adding robot_descriptions_py as a default way to get urdfs within dora.
+- \[05/25\] Add support for dora-pytorch-kinematics for fk and ik, dora-mediapipe for pose estimation, dora-rustypot for rust serialport read/write, points2d and points3d visualization in rerun.
+- \[04/25\] Add support for dora-cotracker to track any point on a frame, dora-rav1e AV1 encoding up to 12bit and dora-dav1d AV1 decoding,
+- \[03/25\] Add support for dora async Python.
+- \[03/25\] Add support for Microsoft Phi4, Microsoft Magma.
+- \[03/25\] dora-rs has been accepted to [**GSoC 2025 🎉**](https://summerofcode.withgoogle.com/programs/2025/organizations/dora-rs-tb), with the following [**idea list**](https://github.com/dora-rs/dora/wiki/GSoC_2025).
+- \[03/25\] Add support for Zenoh for distributed dataflow.
+- \[03/25\] Add support for Meta SAM2, Kokoro(TTS), Improved Qwen2.5 Performance using `llama.cpp`.
 - \[02/25\] Add support for Qwen2.5(LLM), Qwen2.5-VL(VLM), outetts(TTS)
 </details>
 
 ## Support Matrix
 
-|                                   | dora-rs                                                                                                                                                                                          |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **APIs**                          | Python >= 3.7 including sync ⭐✅ <br> Rust ✅<br> C/C++ 🆗 <br>ROS2 >= Foxy 🆗                                                                                                                  |
-| **OS**                            | Linux: Arm 32 ⭐✅ Arm 64 ⭐✅ x64_86 ⭐✅ <br>MacOS: Arm 64 ⭐✅ x64_86 ✅<br>Windows: x64_86 🆗<br> Android: 🛠️ (Blocked by: https://github.com/elast0ny/shared_memory/issues/32) <br> IOS: 🛠️ |
-| **Message Format**                | Arrow ✅ <br> Standard Specification 🛠️                                                                                                                                                          |
-| **Local Communication**           | Shared Memory ✅ <br> [Cuda IPC](https://arrow.apache.org/docs/python/api/cuda.html) 📐                                                                                                          |
-| **Remote Communication**          | [Zenoh](https://zenoh.io/) 📐                                                                                                                                                                    |
-| **Metrics, Tracing, and Logging** | Opentelemetry 📐                                                                                                                                                                                 |
-| **Configuration**                 | YAML ✅                                                                                                                                                                                          |
-| **Package Manager**               | [pip](https://pypi.org/): Python Node ✅ Rust Node ✅ C/C++ Node 🛠️ <br>[cargo](https://crates.io/): Rust Node ✅                                                                                |
+|                                   | dora-rs                                                                                                                                                                                                     |
+| --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **APIs**                          | Python >= 3.7 including sync ⭐✅ <br> Rust ✅<br> C/C++ 🆗 <br>ROS2 >= Foxy 🆗                                                                                                                             |
+| **OS**                            | Linux: Arm 32 ⭐✅ Arm 64 ⭐✅ x64_86 ⭐✅ <br>MacOS: Arm 64 ⭐✅ <br>Windows: x64_86 🆗 <br>WSL: x64_86 🆗 <br> Android: 🛠️ (Blocked by: https://github.com/elast0ny/shared_memory/issues/32) <br> IOS: 🛠️ |
+| **Message Format**                | Arrow ✅ <br> Standard Specification 🛠️                                                                                                                                                                     |
+| **Local Communication**           | Shared Memory ✅ <br> [Cuda IPC](https://arrow.apache.org/docs/python/api/cuda.html) 📐                                                                                                                     |
+| **Remote Communication**          | [Zenoh](https://zenoh.io/) 📐                                                                                                                                                                               |
+| **Metrics, Tracing, and Logging** | Opentelemetry 📐                                                                                                                                                                                            |
+| **Configuration**                 | YAML ✅                                                                                                                                                                                                     |
+| **Package Manager**               | [pip](https://pypi.org/): Python Node ✅ Rust Node ✅ C/C++ Node 🛠️ <br>[cargo](https://crates.io/): Rust Node ✅                                                                                           |
 
 > - ⭐ = Recommended
 > - ✅ = First Class Support
@@ -99,6 +104,8 @@
 | Camera                        | [PyOrbbeckSDK](https://github.com/dora-rs/dora/blob/main/node-hub/dora-pyorbbecksdk)                | 📐                  | Image and depth from Orbbeck Camera              | ![Downloads](https://img.shields.io/pypi/dm/dora-pyorbbecksdk?label=%20)      | ![License](https://img.shields.io/pypi/l/dora-pyorbbecksdk?label=%20)      |
 | Camera                        | [PyRealsense](https://github.com/dora-rs/dora/blob/main/node-hub/dora-pyrealsense)                  | Linux🆗 <br> Mac🛠️  | Image and depth from Realsense                   | ![Downloads](https://img.shields.io/pypi/dm/dora-pyrealsense?label=%20)       | ![License](https://img.shields.io/pypi/l/dora-pyrealsense?label=%20)       |
 | Camera                        | [OpenCV Video Capture](https://github.com/dora-rs/dora/blob/main/node-hub/opencv-video-capture)     | ✅                  | Image stream from OpenCV Camera                  | ![Downloads](https://img.shields.io/pypi/dm/opencv-video-capture?label=%20)   | ![License](https://img.shields.io/pypi/l/opencv-video-capture?label=%20)   |
+| Camera                        | [Kornia V4L Capture](https://github.com/kornia/dora-nodes-hub/tree/main/kornia-v4l-capture)         | ✅                  | Video stream for Linux Camera (rust)             |                                                                               | ![License](https://img.shields.io/badge/license-Apache%202-blue)           |
+| Camera                        | [Kornia GST Capture](https://github.com/kornia/dora-nodes-hub/tree/main/kornia-gst-capture)         | ✅                  | Video Capture using Gstreamer (rust)             |                                                                               | ![License](https://img.shields.io/badge/license-Apache%202-blue)           |
 | Peripheral                    | [Keyboard](https://github.com/dora-rs/dora/blob/main/node-hub/dora-keyboard)                        | ✅                  | Keyboard char listener                           | ![Downloads](https://img.shields.io/pypi/dm/dora-keyboard?label=%20)          | ![License](https://img.shields.io/pypi/l/dora-keyboard?label=%20)          |
 | Peripheral                    | [Microphone](https://github.com/dora-rs/dora/blob/main/node-hub/dora-microphone)                    | ✅                  | Audio from microphone                            | ![Downloads](https://img.shields.io/pypi/dm/dora-microphone?label=%20)        | ![License](https://img.shields.io/pypi/l/dora-microphone?label=%20)        |
 | Peripheral                    | [PyAudio(Speaker)](https://github.com/dora-rs/dora/blob/main/node-hub/dora-pyaudio)                 | ✅                  | Output audio from speaker                        | ![Downloads](https://img.shields.io/pypi/dm/dora-pyaudio?label=%20)           | ![License](https://img.shields.io/pypi/l/dora-pyaudio?label=%20)           |
@@ -131,6 +138,7 @@
 | Simulator                     | [Mujoco](https://github.com/dora-rs/dora-lerobot/blob/main/node-hub/mujoco-client)                  | 📐                  | Mujoco Simulator                                 |                                                                               |                                                                            |
 | Simulator                     | [Carla](https://github.com/dora-rs/dora-drives)                                                     | 📐                  | Carla Simulator                                  |                                                                               |                                                                            |
 | Simulator                     | [Gymnasium](https://github.com/dora-rs/dora-lerobot/blob/main/gym_dora)                             | 📐                  | Experimental OpenAI Gymnasium bridge             |                                                                               |                                                                            |
+| Image Processing              | [Kornia Sobel Operator](https://github.com/kornia/dora-nodes-hub/tree/main/kornia-imgproc-sobel)    | ✅                  | Kornia image processing Sobel operator (rust)    |                                                                               | ![License](https://img.shields.io/badge/license-Apache%202-blue)           |
 
 ## Examples
 
@@ -141,6 +149,7 @@
 | Vision         | [Vision Language Model(VLM)](https://github.com/dora-rs/dora/blob/main/examples/vlm)                         | Use a VLM to understand images.                     | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fvlm&label=%20)                   |
 | Vision         | [YOLO](https://github.com/dora-rs/dora/blob/main/examples/python-dataflow)                                   | Use YOLO to detect object within image.             | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fpython-dataflow&label=%20)       |
 | Vision         | [Camera](https://github.com/dora-rs/dora/blob/main/examples/camera)                                          | Simple webcam plot example                          | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fcamera&label=%20)                |
+| Vision         | [Image Processing](https://github.com/kornia/kornia-rs/tree/main/examples/dora)                              | Multi camera image processing                       |                                                                                                                    |
 | Model Training | [Piper RDT](https://github.com/dora-rs/dora/blob/main/examples/piper)                                        | Piper RDT Pipeline                                  | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fpiper&label=%20)                 |
 | Model Training | [LeRobot - Alexander Koch](https://raw.githubusercontent.com/dora-rs/dora-lerobot/refs/heads/main/README.md) | Training Alexander Koch Low Cost Robot with LeRobot | ![License](https://img.shields.io/github/last-commit/dora-rs/dora-lerobot?path=robots&label=%20)                   |
 | ROS2           | [C++ ROS2 Example](https://github.com/dora-rs/dora/blob/main/examples/c++-ros2-dataflow)                     | Example using C++ ROS2                              | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fc%2b%2b-ros2-dataflow&label=%20) |
@@ -316,109 +325,6 @@ turtle_twist_writer.publish(message)
 
 > You might want to use ChatGPT to write the Arrow Formatting: https://chat.openai.com/share/4eec1c6d-dbd2-46dc-b6cd-310d2895ba15
 
-## Zenoh Integration for Distributed Dataflow (Experimental)
-
-Zenoh is a high-performance pub/sub and query protocol that unifies data in motion and at rest. In **dora-rs**, Zenoh is used for remote communication between nodes running on different machines, enabling distributed dataflow across networks.
-
-### What is Zenoh?
-
-- **Definition:**  
-  [Zenoh](https://zenoh.io) is an open-source communication middleware offering pub/sub and query capabilities.
-- **Benefits in DORA:**
-  - Simplifies communication between distributed nodes.
-  - Handles NAT traversal and inter-network communication.
-  - Integrates with DORA to manage remote data exchange while local communication still uses efficient shared memory.
-
-### Enabling Zenoh Support
-
-1. **Run a Zenoh Router (`zenohd`):**  
-   Launch a Zenoh daemon to mediate communication. For example, using Docker:
-
-   ```bash
-   docker run -p 7447:7447 -p 8000:8000 --name zenoh-router eclipse/zenohd:latest
-   ```
-
-````markdown
-## Create a Zenoh Configuration File 🎛️
-
-Create a file (e.g., `zenoh.json5`) with the router endpoint details:
-
-```json5
-{
-  connect: {
-    endpoints: ["tcp/203.0.113.10:7447"],
-  },
-}
-```
-````
-
----
-
-## Launch DORA Daemons with Zenoh Enabled 🚀
-
-On each machine, export the configuration and start the daemon:
-
-```bash
-export ZENOH_CONFIG=/path/to/zenoh.json5
-dora daemon --coordinator-addr <COORD_IP> --machine-id <MACHINE_NAME>
-```
-
----
-
-## Deploy Distributed Nodes via YAML 📄
-
-Mark nodes for remote deployment using the `_unstable_deploy` key:
-
-```yaml
-nodes:
-  - id: camera_node
-    outputs: [image]
-
-  - id: processing_node
-    _unstable_deploy:
-      machine: robot1
-      path: /home/robot/dora-nodes/processing_node
-    inputs:
-      image: camera_node/image
-    outputs: [result]
-```
-
----
-
-## Start the Coordinator and Dataflow 🏁
-
-Run the coordinator on a designated machine and start the dataflow:
-
-```bash
-dora coordinator
-dora start dataflow.yml
-```
-
----
-
-## YAML Example for Distributed Dataflow 📘
-
-```yaml
-communication:
-  zenoh: {}
-
-nodes:
-  - id: camera_node
-    custom:
-      run: ./camera_driver.py
-    outputs:
-      - image
-
-  - id: processing_node
-    _unstable_deploy:
-      machine: robot1
-      path: /home/robot/dora-nodes/processing_node
-    inputs:
-      image: camera_node/image
-    outputs:
-      - result
-```
-
 ## Contributing
 
 We are passionate about supporting contributors of all levels of experience and would love to see
@@ -444,7 +350,7 @@ This project is licensed under Apache-2.0. Check out [NOTICE.md](NOTICE.md) for 
 
 ## Further Resources 📚
 
-- [Zenoh Documentation](https://zenoh.io/docs/)
+- [Zenoh Documentation](https://zenoh.io/docs/getting-started/first-app/)
 - [DORA Zenoh Discussion (GitHub Issue #512)](https://github.com/dora-rs/dora/issues/512)
 - [Dora Autoware Localization Demo](https://github.com/dora-rs/dora-autoware-localization-demo)
 

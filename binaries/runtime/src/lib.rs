@@ -5,15 +5,14 @@ use dora_core::{
     descriptor::OperatorConfig,
 };
 use dora_message::daemon_to_node::{NodeConfig, RuntimeConfig};
-use dora_metrics::init_meter_provider;
+use dora_metrics::run_metrics_monitor;
 use dora_node_api::{DoraNode, Event};
-use eyre::{bail, Context, Result};
+use dora_tracing::TracingBuilder;
+use eyre::{Context, Result, bail};
 use futures::{Stream, StreamExt};
 use futures_concurrency::stream::Merge;
-use operator::{run_operator, OperatorEvent, StopReason};
+use operator::{OperatorEvent, StopReason, run_operator};
 
-#[cfg(feature = "tracing")]
-use dora_tracing::set_up_tracing;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     mem,
@@ -37,9 +36,15 @@ pub fn main() -> eyre::Result<()> {
     } = config;
     let node_id = config.node_id.clone();
     #[cfg(feature = "tracing")]
-    set_up_tracing(node_id.as_ref()).context("failed to set up tracing subscriber")?;
+    {
+        TracingBuilder::new(node_id.as_ref())
+            .with_stdout("warn")
+            .build()
+            .wrap_err("failed to set up tracing subscriber")?;
+    }
 
-    let dataflow_descriptor = config.dataflow_descriptor.clone();
+    let dataflow_descriptor = serde_yaml::from_value(config.dataflow_descriptor.clone())
+        .context("failed to parse dataflow descriptor")?;
 
     let operator_definition = if operators.is_empty() {
         bail!("no operators");
@@ -123,7 +128,7 @@ async fn run(
     init_done: oneshot::Receiver<Result<()>>,
 ) -> eyre::Result<()> {
     #[cfg(feature = "metrics")]
-    let _meter_provider = init_meter_provider(config.node_id.to_string());
+    let _meter_provider = run_metrics_monitor(config.node_id.to_string());
     init_done
         .await
         .wrap_err("the `init_done` channel was closed unexpectedly")?
@@ -206,7 +211,9 @@ async fn run(
                     OperatorEvent::AllocateOutputSample { len, sample: tx } => {
                         let sample = node.allocate_data_sample(len);
                         if tx.send(sample).is_err() {
-                            tracing::warn!("output sample requested, but operator {operator_id} exited already");
+                            tracing::warn!(
+                                "output sample requested, but operator {operator_id} exited already"
+                            );
                         }
                     }
                     OperatorEvent::Output {
@@ -228,10 +235,10 @@ async fn run(
                     }
                 }
             }
-            RuntimeEvent::Event(Event::Stop) => {
+            RuntimeEvent::Event(Event::Stop(cause)) => {
                 // forward stop event to all operators and close the event channels
                 for (_, channel) in operator_channels.drain() {
-                    let _ = channel.send_async(Event::Stop).await;
+                    let _ = channel.send_async(Event::Stop(cause.clone())).await;
                 }
             }
             RuntimeEvent::Event(Event::Reload {
@@ -304,7 +311,10 @@ async fn run(
                     open_inputs.remove(&input_id);
                     if open_inputs.is_empty() {
                         // all inputs of the node were closed -> close its event channel
-                        tracing::trace!("all inputs of operator {}/{operator_id} were closed -> closing event channel", node.id());
+                        tracing::trace!(
+                            "all inputs of operator {}/{operator_id} were closed -> closing event channel",
+                            node.id()
+                        );
                         open_operator_inputs.remove(&operator_id);
                         operator_channels.remove(&operator_id);
                     }

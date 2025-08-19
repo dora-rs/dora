@@ -2,8 +2,9 @@
 name = "dora-operator-api-python"
 version.workspace = true
 edition.workspace = true
-
+rust-version.workspace = true
 documentation.workspace = true
+readme.workspace = true
 description.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -14,7 +15,7 @@ repository.workspace = true
 dora-node-api = { workspace = true }
 pyo3 = { workspace = true, features = ["eyre", "abi3-py37"] }
 eyre = "0.6"
-serde_yaml = "0.8.23"
+serde_yaml = { workspace = true }
 flume = "0.10.14"
 arrow = { workspace = true, features = ["pyarrow"] }
 arrow-schema = { workspace = true }

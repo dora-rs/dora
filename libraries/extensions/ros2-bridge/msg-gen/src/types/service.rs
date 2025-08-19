@@ -1,5 +1,5 @@
 use heck::SnakeCase;
-use quote::{format_ident, quote, ToTokens};
+use quote::{ToTokens, format_ident, quote};
 use syn::Ident;
 
 use super::Message;
@@ -228,7 +228,7 @@ impl Service {
         (def, imp)
     }
 
-    pub fn token_stream_with_mod(&self) -> impl ToTokens {
+    pub fn token_stream_with_mod(&self) -> impl ToTokens + use<> {
         let mod_name = format_ident!("_{}", self.name.to_snake_case());
         let inner = self.token_stream();
         quote! {
@@ -239,7 +239,7 @@ impl Service {
         }
     }
 
-    pub fn token_stream(&self) -> impl ToTokens {
+    pub fn token_stream(&self) -> impl ToTokens + use<> {
         let srv_type = format_ident!("{}", self.name);
         let req_type = format_ident!("{}_Request", self.name);
         let res_type = format_ident!("{}_Response", self.name);

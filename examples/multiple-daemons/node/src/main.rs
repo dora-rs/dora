@@ -1,4 +1,4 @@
-use dora_node_api::{self, dora_core::config::DataId, DoraNode, Event, IntoArrow};
+use dora_node_api::{self, DoraNode, Event, IntoArrow, dora_core::config::DataId};
 
 fn main() -> eyre::Result<()> {
     println!("hello");
@@ -26,7 +26,7 @@ fn main() -> eyre::Result<()> {
                 }
                 other => eprintln!("Ignoring unexpected input `{other}`"),
             },
-            Event::Stop => println!("Received manual stop"),
+            Event::Stop(_) => println!("Received stop"),
             other => eprintln!("Received unexpected input: {other:?}"),
         }
     }

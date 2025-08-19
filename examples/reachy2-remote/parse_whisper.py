@@ -57,16 +57,16 @@ for event in node:
                 node.send_output("points", pa.array([], type=pa.float64()))
             elif "follow" in text:
                 text = f"Given the prompt: {text}. Output the bounding boxes for the given followed object"
-                node.send_output("text", pa.array([text]), {"image_id": "image_left"})
+                node.send_output("text", pa.array([text]), {"image_id": "image_left", "primitive": "text"})
             elif "grab " in text:
                 text = f"Given the prompt: {text}. Output the bounding boxes for the given grabbed object"
                 node.send_output(
-                    "text", pa.array([text]), {"image_id": "image_depth", "action": "grab"}
+                    "text", pa.array([text]), {"image_id": "image_depth", "action": "grab", "primitive": "text"}
                 )
             elif "get " in text:
                 text = f"Given the prompt: {text}. Output the bounding boxes for the object"
                 node.send_output(
-                    "text", pa.array([text]), {"image_id": "image_left", "action": "grab"}
+                    "text", pa.array([text]), {"image_id": "image_left", "action": "grab", "primitive": "text"}
                 )
                 last_prompt = text
             elif "put " in text:
@@ -74,7 +74,7 @@ for event in node:
                 node.send_output(
                     "text",
                     pa.array([text]),
-                    {"image_id": "image_left", "action": "release"},
+                    {"image_id": "image_left", "action": "release", "primitive": "text"},
                 )
                 last_prompt = text
             elif "drop " in text:
@@ -82,7 +82,7 @@ for event in node:
                 node.send_output(
                     "text",
                     pa.array([text]),
-                    {"image_id": "image_depth", "action": "release"},
+                    {"image_id": "image_depth", "action": "release", "primitive": "text"},
                 )
             elif "release left" in text:
                 node.send_output("action_release_left", pa.array([1.0]))
@@ -123,13 +123,13 @@ for event in node:
                 node.send_output(
                     "text",
                     pa.array([text]),
-                    {"image_id": "image_depth", "action": "grab"},
+                    {"image_id": "image_depth", "action": "grab", "primitive": "text"},
                 )
             elif "put " in text:
                 text = f"Given the prompt: {text}. Output the bounding boxes for the place to put the object"
                 node.send_output(
                     "text",
                     pa.array([text]),
-                    {"image_id": "image_depth", "action": "release"},
+                    {"image_id": "image_depth", "action": "release", "primitive": "text"},
                 )
                 

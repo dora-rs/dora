@@ -1,20 +1,25 @@
-use dora_node_api::{self, dora_core::config::DataId, merged::MergeExternalSend, DoraNode, Event};
+use dora_node_api::{
+    self, DoraNode, Event,
+    arrow::array::{AsArray, StringArray},
+    dora_core::config::DataId,
+    merged::MergeExternalSend,
+};
 
 use eyre::{Context, ContextCompat};
 use futures::{
-    channel::oneshot::{self, Canceled},
     TryStreamExt,
+    channel::oneshot::{self, Canceled},
 };
 use hyper::{
-    body::{to_bytes, Body, HttpBody},
+    Request, Response, Server, StatusCode,
+    body::{Body, HttpBody, to_bytes},
     header,
     server::conn::AddrStream,
     service::{make_service_fn, service_fn},
-    Request, Response, Server, StatusCode,
 };
 use message::{
     ChatCompletionObject, ChatCompletionObjectChoice, ChatCompletionObjectMessage,
-    ChatCompletionRequest, ChatCompletionRequestMessage, Usage,
+    ChatCompletionRequest, Usage,
 };
 use std::{
     collections::VecDeque,
@@ -71,7 +76,7 @@ async fn main() -> eyre::Result<()> {
     let merged = events.merge_external_send(server_events);
     let events = futures::executor::block_on_stream(merged);
 
-    let output_id = DataId::from("chat_completion_request".to_owned());
+    let output_id = DataId::from("text".to_owned());
     let mut reply_channels = VecDeque::new();
 
     for event in events {
@@ -82,45 +87,15 @@ async fn main() -> eyre::Result<()> {
                     break;
                 }
                 ServerEvent::ChatCompletionRequest { request, reply } => {
-                    let message = request
-                        .messages
-                        .into_iter()
-                        .find_map(|m| match m {
-                            ChatCompletionRequestMessage::User(message) => Some(message),
-                            _ => None,
-                        })
-                        .context("no user message found");
-                    match message {
-                        Ok(message) => match message.content() {
-                            message::ChatCompletionUserMessageContent::Text(content) => {
-                                node.send_output_bytes(
-                                    output_id.clone(),
-                                    Default::default(),
-                                    content.len(),
-                                    content.as_bytes(),
-                                )
-                                .context("failed to send dora output")?;
-                                reply_channels.push_back((
-                                    reply,
-                                    content.as_bytes().len() as u64,
-                                    request.model,
-                                ));
-                            }
-                            message::ChatCompletionUserMessageContent::Parts(_) => {
-                                if reply
-                                    .send(Err(eyre::eyre!("unsupported message content")))
-                                    .is_err()
-                                {
-                                    tracing::warn!("failed to send chat completion reply because channel closed early");
-                                };
-                            }
-                        },
-                        Err(err) => {
-                            if reply.send(Err(err)).is_err() {
-                                tracing::warn!("failed to send chat completion reply error because channel closed early");
-                            }
-                        }
-                    }
+                    let texts = request.to_texts();
+                    node.send_output(
+                        output_id.clone(),
+                        Default::default(),
+                        StringArray::from(texts),
+                    )
+                    .context("failed to send dora output")?;
+
+                    reply_channels.push_back((reply, 0_u64, request.model));
                 }
             },
             dora_node_api::merged::MergedEvent::Dora(event) => match event {
@@ -130,46 +105,58 @@ async fn main() -> eyre::Result<()> {
                     metadata: _,
                 } => {
                     match id.as_str() {
-                        "completion_reply" => {
+                        "text" => {
                             let (reply_channel, prompt_tokens, model) =
                                 reply_channels.pop_front().context("no reply channel")?;
-                            let data = TryFrom::try_from(&data)
-                                .with_context(|| format!("invalid reply data: {data:?}"))
-                                .map(|s: &[u8]| ChatCompletionObject {
-                                    id: format!("completion-{}", uuid::Uuid::new_v4()),
-                                    object: "chat.completion".to_string(),
-                                    created: chrono::Utc::now().timestamp() as u64,
-                                    model: model.unwrap_or_default(),
-                                    choices: vec![ChatCompletionObjectChoice {
-                                        index: 0,
-                                        message: ChatCompletionObjectMessage {
-                                            role: message::ChatCompletionRole::Assistant,
-                                            content: Some(String::from_utf8_lossy(s).to_string()),
-                                            tool_calls: Vec::new(),
-                                            function_call: None,
-                                        },
-                                        finish_reason: message::FinishReason::stop,
-                                        logprobs: None,
-                                    }],
-                                    usage: Usage {
-                                        prompt_tokens,
-                                        completion_tokens: s.len() as u64,
-                                        total_tokens: prompt_tokens + s.len() as u64,
-                                    },
-                                });
+                            let data = data.as_string::<i32>();
+                            let string = data.iter().fold("".to_string(), |mut acc, s| {
+                                if let Some(s) = s {
+                                    acc.push('\n');
+                                    acc.push_str(s);
+                                }
+                                acc
+                            });
 
-                            if reply_channel.send(data).is_err() {
-                                tracing::warn!("failed to send chat completion reply because channel closed early");
+                            let data = ChatCompletionObject {
+                                id: format!("completion-{}", uuid::Uuid::new_v4()),
+                                object: "chat.completion".to_string(),
+                                created: chrono::Utc::now().timestamp() as u64,
+                                model: model.unwrap_or_default(),
+                                choices: vec![ChatCompletionObjectChoice {
+                                    index: 0,
+                                    message: ChatCompletionObjectMessage {
+                                        role: message::ChatCompletionRole::Assistant,
+                                        content: Some(string.to_string()),
+                                        tool_calls: Vec::new(),
+                                        function_call: None,
+                                    },
+                                    finish_reason: message::FinishReason::stop,
+                                    logprobs: None,
+                                }],
+                                usage: Usage {
+                                    prompt_tokens,
+                                    completion_tokens: string.len() as u64,
+                                    total_tokens: prompt_tokens + string.len() as u64,
+                                },
+                            };
+
+                            if reply_channel.send(Ok(data)).is_err() {
+                                tracing::warn!(
+                                    "failed to send chat completion reply because channel closed early"
+                                );
                             }
                         }
                         _ => eyre::bail!("unexpected input id: {}", id),
                     };
                 }
-                Event::Stop => {
+                Event::Stop(_) => {
                     break;
                 }
+                Event::InputClosed { id, .. } => {
+                    info!("Input channel closed for id: {}", id);
+                }
                 event => {
-                    println!("Event: {event:#?}")
+                    eyre::bail!("unexpected event: {:#?}", event)
                 }
             },
         }
@@ -178,6 +165,7 @@ async fn main() -> eyre::Result<()> {
     Ok(())
 }
 
+#[allow(clippy::large_enum_variant)]
 enum ServerEvent {
     Result(eyre::Result<()>),
     ChatCompletionRequest {
@@ -333,7 +321,7 @@ async fn chat_completions_handler(
     let body_bytes = match to_bytes(req.body_mut()).await {
         Ok(body_bytes) => body_bytes,
         Err(e) => {
-            let err_msg = format!("Fail to read buffer from request body. {}", e);
+            let err_msg = format!("Fail to read buffer from request body. {e}");
 
             // log
             error!(target: "stdout", "{}", &err_msg);
@@ -344,10 +332,10 @@ async fn chat_completions_handler(
     let mut chat_request: ChatCompletionRequest = match serde_json::from_slice(&body_bytes) {
         Ok(chat_request) => chat_request,
         Err(e) => {
-            let mut err_msg = format!("Fail to deserialize chat completion request: {}.", e);
+            let mut err_msg = format!("Fail to deserialize chat completion request: {e}.");
 
             if let Ok(json_value) = serde_json::from_slice::<serde_json::Value>(&body_bytes) {
-                err_msg = format!("{}\njson_value: {}", err_msg, json_value);
+                err_msg = format!("{err_msg}\njson_value: {json_value}");
             }
 
             // log
@@ -406,7 +394,7 @@ async fn chat_completions_handler(
                 response
             }
             Err(e) => {
-                let err_msg = format!("Failed chat completions in stream mode. Reason: {}", e);
+                let err_msg = format!("Failed chat completions in stream mode. Reason: {e}");
 
                 // log
                 error!(target: "stdout", "{}", &err_msg);
@@ -424,7 +412,7 @@ async fn chat_completions_handler(
                 let s = match serde_json::to_string(&chat_completion_object) {
                     Ok(s) => s,
                     Err(e) => {
-                        let err_msg = format!("Failed to serialize chat completion object. {}", e);
+                        let err_msg = format!("Failed to serialize chat completion object. {e}");
 
                         // log
                         error!(target: "stdout", "{}", &err_msg);
@@ -451,7 +439,7 @@ async fn chat_completions_handler(
                     }
                     Err(e) => {
                         let err_msg =
-                            format!("Failed chat completions in non-stream mode. Reason: {}", e);
+                            format!("Failed chat completions in non-stream mode. Reason: {e}");
 
                         // log
                         error!(target: "stdout", "{}", &err_msg);
@@ -461,7 +449,7 @@ async fn chat_completions_handler(
                 }
             }
             Err(e) => {
-                let err_msg = format!("Failed to get chat completions. Reason: {}", e);
+                let err_msg = format!("Failed to get chat completions. Reason: {e}");
 
                 // log
                 error!(target: "stdout", "{}", &err_msg);

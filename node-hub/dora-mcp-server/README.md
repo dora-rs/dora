@@ -1,0 +1,66 @@
+# Dora MCP Server
+
+This node can provide an MCP Server, which will proxy the request to one or more other nodes in the dora application.
+
+Dora MCP Server is still experimental and may change in the future.
+
+
+## How to use
+
+```yaml
+nodes:
+  - id: mcp-server
+    build: cargo build -p dora-mcp-server --release
+    path: ../../target/release/dora-mcp-server
+    outputs:
+      - counter
+    inputs:
+      counter_reply: counter/reply
+    env:
+      CONFIG: config.toml
+```
+
+use `CONFIG` set config file, it supports toml, json or yaml format.
+
+An example config file:
+
+```toml
+name = "MCP Server Example"
+version = "0.1.0"
+
+# You can set your custom listen address and endpoint here.
+# Default listen address is "0.0.0.0:8008" and endpoint is "mcp".
+# In this example, the final service url is: http://0.0.0.0:8181/mcp
+listen_addr = "0.0.0.0:8181"
+endpoint = "mcp"
+
+[[mcp_tools]]
+name = "counter_decrement" # (Required) type: String, Unique identifier for the tool
+title = "Decrement Counter" # (Optional) type: String, Human-readable name of the tool for display purposes
+input_schema = "empty_object.json" # (Required) JSON Schema defining expected parameters
+output = "counter" # (Required) type: String, Set the output name
+[mcp_tools.annotations] # (Optional) Additional properties describing a Tool to clients
+title = "decrement current value of the counter" # type: String, A human-readable title for the tool
+
+[[mcp_tools]]
+name = "counter_increment"
+title = "Increment Counter"
+input_schema = "empty_object.json"
+output = "counter"
+[mcp_tools.annotations]
+title = "Increment current value of the counter"
+
+[[mcp_tools]]
+name = "counter_get_value"
+title = "Get Counter Value"
+input_schema = "empty_object.json"
+output = "counter"
+[mcp_tools.annotations]
+title = "Get the current value of the counter"
+```
+
+You can use mpc inspector to test:
+
+```bash
+npx @modelcontextprotocol/inspector
+```

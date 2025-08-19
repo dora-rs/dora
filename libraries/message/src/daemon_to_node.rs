@@ -1,11 +1,11 @@
 use std::{net::SocketAddr, path::PathBuf};
 
 use crate::{
+    DataflowId,
     config::NodeRunConfig,
-    descriptor::{Descriptor, OperatorDefinition},
+    descriptor::OperatorDefinition,
     id::{DataId, NodeId, OperatorId},
     metadata::Metadata,
-    DataflowId,
 };
 
 pub use crate::common::{DataMessage, DropToken, SharedMemoryId, Timestamped};
@@ -23,7 +23,7 @@ pub struct NodeConfig {
     pub node_id: NodeId,
     pub run_config: NodeRunConfig,
     pub daemon_communication: DaemonCommunication,
-    pub dataflow_descriptor: Descriptor,
+    pub dataflow_descriptor: serde_yaml::Value,
     pub dynamic: bool,
 }
 
@@ -46,6 +46,7 @@ pub enum DaemonCommunication {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[must_use]
+#[allow(clippy::large_enum_variant)]
 pub enum DaemonReply {
     Result(Result<(), String>),
     PreparedMessage { shared_memory_id: SharedMemoryId },
@@ -56,6 +57,7 @@ pub enum DaemonReply {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[allow(clippy::large_enum_variant)]
 pub enum NodeEvent {
     Stop,
     Reload {

@@ -1,0 +1,30 @@
+[project]
+name = "dora-vggt"
+version = "0.0.0"
+authors = [{ name = "Your Name", email = "email@email.com" }]
+description = "dora-vggt"
+license = { text = "MIT" }
+readme = "README.md"
+requires-python = ">=3.10"
+
+dependencies = [
+    "dora-rs >= 0.3.9",
+    "torch>=2.7.0",
+    "torchvision>=0.22.0",
+    "vggt",
+]
+
+[dependency-groups]
+dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
+
+[project.scripts]
+dora-vggt = "dora_vggt.main:main"
+
+[tool.ruff.lint]
+extend-select = [
+  "D",  # pydocstyle
+  "UP",
+]
+
+[tool.uv.sources]
+vggt = { git = "https://github.com/facebookresearch/vggt" }

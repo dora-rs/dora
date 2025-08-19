@@ -2,7 +2,9 @@
 version.workspace = true
 name = "dora-node-api-python"
 edition.workspace = true
+rust-version.workspace = true
 documentation.workspace = true
+readme = "README.md"
 description.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -21,17 +23,20 @@ dora-node-api = { workspace = true }
 dora-operator-api-python = { workspace = true }
 pyo3.workspace = true
 eyre = "0.6"
-serde_yaml = "0.8.23"
+serde_yaml = { workspace = true }
 flume = "0.10.14"
 dora-runtime = { workspace = true, features = ["tracing", "metrics", "python"] }
-dora-daemon = { workspace = true }
+dora-cli = { workspace = true }
 dora-download = { workspace = true }
 arrow = { workspace = true, features = ["pyarrow"] }
 pythonize = { workspace = true }
 futures = "0.3.28"
 dora-ros2-bridge-python = { workspace = true }
-# pyo3_special_method_derive = "0.4.2"
+pyo3_special_method_derive = "0.4.3"
 tokio = { version = "1.24.2", features = ["rt"] }
+
+[build-dependencies]
+pyo3-build-config = "0.23"
 
 [lib]
 name = "dora"

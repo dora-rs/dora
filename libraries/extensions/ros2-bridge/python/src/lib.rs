@@ -7,19 +7,19 @@ use std::{
 
 use ::dora_ros2_bridge::{ros2_client, rustdds};
 use arrow::{
-    array::{make_array, ArrayData},
+    array::{ArrayData, make_array},
     pyarrow::{FromPyArrow, ToPyArrow},
 };
 use dora_ros2_bridge_msg_gen::types::Message;
-use eyre::{eyre, Context, ContextCompat, Result};
+use eyre::{Context, ContextCompat, Result, eyre};
 use futures::{Stream, StreamExt};
 use pyo3::{
+    Bound, PyAny, PyObject, PyResult, Python,
     prelude::{pyclass, pymethods},
     types::{PyAnyMethods, PyDict, PyList, PyModule, PyModuleMethods},
-    Bound, PyAny, PyObject, PyResult, Python,
 };
-/// use pyo3_special_method_derive::{Dict, Dir, Repr, Str};
-use typed::{deserialize::StructDeserializer, TypeInfo, TypedValue};
+use pyo3_special_method_derive::{Dict, Dir, Repr, Str};
+use typed::{TypeInfo, TypedValue, deserialize::StructDeserializer};
 
 pub mod qos;
 pub mod typed;
@@ -46,7 +46,7 @@ pub mod typed;
 /// :type ros_paths: typing.List[str], optional
 ///
 #[pyclass]
-/// #[derive(Str, Repr, Dir, Dict)]
+#[derive(Str, Repr, Dir, Dict)]
 pub struct Ros2Context {
     context: ros2_client::Context,
     messages: Arc<HashMap<String, HashMap<String, Message>>>,
@@ -150,7 +150,7 @@ impl Ros2Context {
 ///   See: https://github.com/jhelovuo/ros2-client/issues/4
 ///
 #[pyclass]
-/// #[derive(Str, Repr, Dir, Dict)]
+#[derive(Str, Repr, Dir, Dict)]
 pub struct Ros2Node {
     node: ros2_client::Node,
     messages: Arc<HashMap<String, HashMap<String, Message>>>,
@@ -176,12 +176,17 @@ impl Ros2Node {
         message_type: String,
         qos: qos::Ros2QosPolicies,
     ) -> eyre::Result<Ros2Topic> {
-        let (namespace_name, message_name) =
-            match (message_type.split_once('/'), message_type.split_once("::")) {
-                (Some(msg), None) => msg,
-                (None, Some(msg)) => msg,
-                _ => eyre::bail!("Expected message type in the format `namespace/message` or `namespace::message`, such as `std_msgs/UInt8` but got: {}", message_type),
-            };
+        let (namespace_name, message_name) = match (
+            message_type.split_once('/'),
+            message_type.split_once("::"),
+        ) {
+            (Some(msg), None) => msg,
+            (None, Some(msg)) => msg,
+            _ => eyre::bail!(
+                "Expected message type in the format `namespace/message` or `namespace::message`, such as `std_msgs/UInt8` but got: {}",
+                message_type
+            ),
+        };
 
         let message_type_name = ros2_client::MessageTypeName::new(namespace_name, message_name);
         let topic_name = ros2_client::Name::parse(name)
@@ -257,8 +262,7 @@ impl Ros2Node {
 /// ROS2 Node Options
 /// :type rosout: bool, optional
 ///
-#[derive(Clone, Default)]
-/// , Str, Repr, Dir, Dict)]
+#[derive(Clone, Default, Str, Repr, Dir, Dict)]
 #[pyclass]
 #[non_exhaustive]
 pub struct Ros2NodeOptions {
@@ -289,7 +293,7 @@ impl From<Ros2NodeOptions> for ros2_client::NodeOptions {
 /// - dora Ros2 bridge functionality is considered **unstable**. It may be changed
 ///   at any point without it being considered a breaking change.
 #[pyclass]
-/// #[derive(Str, Repr, Dir, Dict)]
+#[derive(Str, Repr, Dir, Dict)]
 #[non_exhaustive]
 pub struct Ros2Topic {
     topic: rustdds::Topic,
@@ -302,7 +306,7 @@ pub struct Ros2Topic {
 /// - dora Ros2 bridge functionality is considered **unstable**. It may be changed
 ///   at any point without it being considered a breaking change.
 #[pyclass]
-/// #[derive(Str, Repr, Dir, Dict)]
+#[derive(Str, Repr, Dir, Dict)]
 #[non_exhaustive]
 pub struct Ros2Publisher {
     publisher: ros2_client::Publisher<TypedValue<'static>>,
@@ -373,7 +377,7 @@ impl Ros2Publisher {
 /// - dora Ros2 bridge functionality is considered **unstable**. It may be changed
 ///   at any point without it being considered a breaking change.
 #[pyclass]
-/// #[derive(Str, Repr, Dir, Dict)]
+#[derive(Str, Repr, Dir, Dict)]
 #[non_exhaustive]
 pub struct Ros2Subscription {
     deserializer: StructDeserializer<'static>,

@@ -1,5 +1,59 @@
 # Changelog
 
+## v0.3.12 (2025-06-30)
+
+## What's Changed
+
+- Implemented dora-cotracker node by @ShashwatPatil in https://github.com/dora-rs/dora/pull/931
+- Minor fix and add boxes2d example to facebook/cotracker by @haixuanTao in https://github.com/dora-rs/dora/pull/950
+- Update Rust crate tokio to v1.44.2 [SECURITY] by @renovate in https://github.com/dora-rs/dora/pull/951
+- Post 3.11 release fix by @haixuanTao in https://github.com/dora-rs/dora/pull/954
+- Bump crossbeam-channel from 0.5.14 to 0.5.15 by @dependabot in https://github.com/dora-rs/dora/pull/959
+- Added E ruff flag for pydocstyle by @7SOMAY in https://github.com/dora-rs/dora/pull/958
+- Revert "Added E ruff flag for better code quality [skip ci]" by @haixuanTao in https://github.com/dora-rs/dora/pull/968
+- Ease of use changes in benches for issue #957 by @Ignavar in https://github.com/dora-rs/dora/pull/969
+- Reachy cotracker by @haixuanTao in https://github.com/dora-rs/dora/pull/972
+- Improve rav1e by @haixuanTao in https://github.com/dora-rs/dora/pull/974
+- Fix pyrealsense by @haixuanTao in https://github.com/dora-rs/dora/pull/973
+- Added Self Uninstall Command by @Shar-jeel-Sajid in https://github.com/dora-rs/dora/pull/944
+- Improve benchmark implementation & Add warning for discarding events by @Mivik in https://github.com/dora-rs/dora/pull/971
+- docs: Updated README: Added comprehensive usage documentation with vi… by @LeonRust in https://github.com/dora-rs/dora/pull/983
+- Fix rerun-viewer example. by @francocipollone in https://github.com/dora-rs/dora/pull/989
+- docs: add license badge by @Radovenchyk in https://github.com/dora-rs/dora/pull/996
+- Disable sccache for `musllinux` jobs by @haixuanTao in https://github.com/dora-rs/dora/pull/1000
+- Remove unused sysinfo monitor by @Mivik in https://github.com/dora-rs/dora/pull/1007
+- Refactor Python CUDA IPC API by @Mivik in https://github.com/dora-rs/dora/pull/1002
+- fix terminal not printing stdout on nvml warning by @haixuanTao in https://github.com/dora-rs/dora/pull/1008
+- Fix issue #1006: [Brief description of the fix] by @sohamukute in https://github.com/dora-rs/dora/pull/1013
+- Improving so100 usability by @haixuanTao in https://github.com/dora-rs/dora/pull/988
+- Add dora-mediapipe node for quick human pose estimation by @haixuanTao in https://github.com/dora-rs/dora/pull/986
+- Bump torch to 2.7 by @haixuanTao in https://github.com/dora-rs/dora/pull/1015
+- refactor(tracing): use builder style by @sjfhsjfh in https://github.com/dora-rs/dora/pull/1009
+- Fix spawning runtime through python when it is installed with pip by @haixuanTao in https://github.com/dora-rs/dora/pull/1011
+- chore(deps): update dependency numpy to v2 by @renovate in https://github.com/dora-rs/dora/pull/1014
+- Fix error when multiple visualization key is active and when urdf_transform env variable is not present by @haixuanTao in https://github.com/dora-rs/dora/pull/1016
+- Update pyrealsense2 Dependencies for L515 Support and Fix README wget Link by @kingchou007 in https://github.com/dora-rs/dora/pull/1021
+- Minor fix for mujoco sim by @haixuanTao in https://github.com/dora-rs/dora/pull/1023
+- dora-mujoco simulation node with example for controlling any arm by @ShashwatPatil in https://github.com/dora-rs/dora/pull/1012
+- fix ros CI/CD by @haixuanTao in https://github.com/dora-rs/dora/pull/1027
+- dora-vggt by @haixuanTao in https://github.com/dora-rs/dora/pull/1024
+- Adding vision to openai server by @haixuanTao in https://github.com/dora-rs/dora/pull/1025
+- Revert "Adding vision to openai server" by @haixuanTao in https://github.com/dora-rs/dora/pull/1031
+- Expose AllInputClosed message as a Stop message by @haixuanTao in https://github.com/dora-rs/dora/pull/1026
+- Add support for git repository sources for nodes by @phil-opp in https://github.com/dora-rs/dora/pull/901
+- Adding vision to rust openai proxy server by @haixuanTao in https://github.com/dora-rs/dora/pull/1033
+- Add automatic robot descriptions URDF retrieval from https://github.com/robot-descriptions/robot_descriptions.py by @haixuanTao in https://github.com/dora-rs/dora/pull/1032
+
+## New Contributors
+
+- @Mivik made their first contribution in https://github.com/dora-rs/dora/pull/971
+- @francocipollone made their first contribution in https://github.com/dora-rs/dora/pull/989
+- @sohamukute made their first contribution in https://github.com/dora-rs/dora/pull/1013
+- @sjfhsjfh made their first contribution in https://github.com/dora-rs/dora/pull/1009
+- @kingchou007 made their first contribution in https://github.com/dora-rs/dora/pull/1021
+
+**Full Changelog**: https://github.com/dora-rs/dora/compare/v0.3.11...v0.3.12
+
 ## v0.3.11 (2025-04-07)
 
 ## What's Changed

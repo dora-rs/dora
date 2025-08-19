@@ -6,7 +6,7 @@ use dora_message::{
     daemon_to_node::{DaemonReply, NodeEvent},
     node_to_daemon::{DaemonRequest, DropToken, Timestamped},
 };
-use eyre::{eyre, Context};
+use eyre::{Context, eyre};
 use flume::RecvTimeoutError;
 use std::{
     sync::Arc,
@@ -27,6 +27,7 @@ pub fn init(
 }
 
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum EventItem {
     NodeEvent {
         event: NodeEvent,
@@ -92,6 +93,7 @@ fn event_stream_loop(
     clock: Arc<uhlc::HLC>,
 ) {
     let mut tx = Some(tx);
+    let mut close_tx = false;
     let mut pending_drop_tokens: Vec<(DropToken, flume::Receiver<()>, Instant, u64)> = Vec::new();
     let mut drop_tokens = Vec::new();
 
@@ -135,10 +137,8 @@ fn event_stream_loop(
                     data: Some(data), ..
                 } => data.drop_token(),
                 NodeEvent::AllInputsClosed => {
-                    // close the event stream
-                    tx = None;
-                    // skip this internal event
-                    continue;
+                    close_tx = true;
+                    None
                 }
                 _ => None,
             };
@@ -166,6 +166,10 @@ fn event_stream_loop(
             } else {
                 tracing::warn!("dropping event because event `tx` was already closed: `{inner:?}`");
             }
+
+            if close_tx {
+                tx = None;
+            };
         }
     };
     if let Err(err) = result {

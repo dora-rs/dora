@@ -9,7 +9,7 @@ mod json_data;
 
 use std::{env, io::Write, time::Duration};
 
-use dora_node_api::{arrow::array::Float64Array, DoraNode, Event};
+use dora_node_api::{DoraNode, Event, arrow::array::Float64Array};
 use error::Error;
 use eyre::Context;
 use serial::SerialPort;
@@ -32,7 +32,7 @@ pub fn lib_main() -> eyre::Result<()> {
 
     let mut com = serial::open(&serial_port).wrap_err(Error::Connect(serial_port))?;
     com.configure(&COM_SETTINGS)
-        .wrap_err(Error::SettingsSet(format!("{:?}", COM_SETTINGS)))?;
+        .wrap_err(Error::SettingsSet(format!("{COM_SETTINGS:?}")))?;
     com.set_timeout(Duration::from_millis(1000))
         .wrap_err(Error::SetTimeout("1000ms".to_string()))?;
 
@@ -73,9 +73,9 @@ pub fn lib_main() -> eyre::Result<()> {
 
 #[cfg(feature = "python")]
 use pyo3::{
-    pyfunction, pymodule,
+    Bound, PyResult, Python, pyfunction, pymodule,
     types::{PyModule, PyModuleMethods},
-    wrap_pyfunction, Bound, PyResult, Python,
+    wrap_pyfunction,
 };
 
 #[cfg(feature = "python")]

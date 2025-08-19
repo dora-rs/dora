@@ -1,7 +1,7 @@
 use arrow::array::{
-    ArrayData, BooleanBuilder, Float32Builder, Float64Builder, Int16Builder, Int32Builder,
-    Int64Builder, Int8Builder, NullArray, UInt16Builder, UInt32Builder, UInt64Builder,
-    UInt8Builder,
+    ArrayData, BooleanBuilder, Float32Builder, Float64Builder, Int8Builder, Int16Builder,
+    Int32Builder, Int64Builder, NullArray, UInt8Builder, UInt16Builder, UInt32Builder,
+    UInt64Builder,
 };
 use core::fmt;
 use dora_ros2_bridge_msg_gen::types::primitives::BasicType;
@@ -36,7 +36,7 @@ impl<'de> serde::de::DeserializeSeed<'de> for PrimitiveDeserializer<'_> {
 /// Based on https://docs.rs/serde_yaml/0.9.22/src/serde_yaml/value/de.rs.html#14-121
 struct PrimitiveValueVisitor;
 
-impl<'de> serde::de::Visitor<'de> for PrimitiveValueVisitor {
+impl serde::de::Visitor<'_> for PrimitiveValueVisitor {
     type Value = ArrayData;
 
     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {

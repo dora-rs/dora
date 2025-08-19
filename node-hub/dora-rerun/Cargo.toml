@@ -2,6 +2,7 @@
 name = "dora-rerun"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 documentation.workspace = true
 description.workspace = true
 license.workspace = true
@@ -17,9 +18,8 @@ python = ["pyo3"]
 dora-node-api = { workspace = true, features = ["tracing"] }
 eyre = "0.6.8"
 tokio = { version = "1.24.2", features = ["rt"] }
-rerun = { version = "0.22.0", features = ["web_viewer", "image"] }
+rerun = { version = "0.24.0", features = ["web_viewer", "image"] }
 ndarray = "0.15.6"
-chrono = "=0.4.39"
 k = "0.32"
 pyo3 = { workspace = true, features = [
     "extension-module",
@@ -28,6 +28,8 @@ pyo3 = { workspace = true, features = [
     "generate-import-lib",
 ], optional = true }
 bytemuck = "1.20.0"
+rand = "0.9.1"
+pinyin = "0.10.0"
 
 
 [lib]

@@ -125,6 +125,7 @@ def main():
                 metadata["encoding"] = encoding
                 metadata["width"] = int(frame.shape[1])
                 metadata["height"] = int(frame.shape[0])
+                metadata["primitive"] = "image"
 
                 # Get the right encoding
                 if encoding == "rgb8":

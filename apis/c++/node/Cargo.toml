@@ -2,7 +2,9 @@
 name = "dora-node-api-cxx"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 documentation.workspace = true
+readme = "README.md"
 description.workspace = true
 license.workspace = true
 repository.workspace = true

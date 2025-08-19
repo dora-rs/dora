@@ -28,7 +28,7 @@ nodes:
       # USE_MODELSCOPE_HUB: true
 
   - id: dora-rerun
-    build: cargo build -p dora-rerun --release
+    build: pip install -e ../../node-hub/dora-rerun
     path: dora-rerun
     inputs:
       original_text: dora-distil-whisper/text

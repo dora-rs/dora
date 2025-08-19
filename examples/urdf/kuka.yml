@@ -1,0 +1,33 @@
+nodes:
+  - id: plot
+    build: pip install -e ../../node-hub/dora-rerun
+    path: dora-rerun
+    inputs:
+      jointstate_iiwa14_primitive_collision: pytorch_kinematics/cmd_vel
+    env:
+      iiwa14_primitive_collision_urdf: "iiwa14_description"
+      iiwa14_primitive_collision_transform: "0. 0. 0. 1. 0. 0. 0."
+
+  - id: gamepad
+    build: pip install -e ../../node-hub/gamepad
+    path: gamepad
+    outputs:
+      - cmd_vel
+      - raw_control
+    inputs:
+      tick: dora/timer/millis/10
+    env:
+      MAX_LINEAR_SPEED: 0.02
+      MAX_ANGULAR_SPEED: 0.10
+
+  - id: pytorch_kinematics
+    build: pip install -e ../../node-hub/dora-pytorch-kinematics
+    path: dora-pytorch-kinematics
+    inputs:
+      cmd_vel: gamepad/cmd_vel
+    outputs:
+      - cmd_vel
+    env:
+      MODEL_NAME: "iiwa14_description"
+      END_EFFECTOR_LINK: "iiwa_link_7"
+      TRANSFORM: "0. 0. 0. 1. 0. 0. 0."

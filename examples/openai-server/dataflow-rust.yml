@@ -3,14 +3,14 @@ nodes:
     build: cargo build -p dora-openai-proxy-server --release
     path: ../../target/release/dora-openai-proxy-server
     outputs:
-      - chat_completion_request
+      - text
     inputs:
-      completion_reply: dora-echo/echo
+      text: dora-echo/echo
 
   - id: dora-echo
     build: pip install -e ../../node-hub/dora-echo
     path: dora-echo
     inputs:
-      echo: dora-openai-server/chat_completion_request
+      echo: dora-openai-server/text
     outputs:
       - echo

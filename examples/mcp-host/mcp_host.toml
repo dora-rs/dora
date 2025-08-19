@@ -1,0 +1,51 @@
+listen_addr = "0.0.0.0:8118"
+endpoint = "v1"
+
+[[providers]]
+id = "moonshot"
+kind ="openai"
+api_key = "env:MOONSHOT_API_KEY"
+api_url = "https://api.moonshot.cn/v1"
+
+[[providers]]
+id = "gemini"
+kind ="gemini"
+# api_key = "env:GEMINI_API_KEY"
+api_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+
+# [[providers]]
+# id = "deepseek"
+# kind ="deepseek"
+# # api_key = "env:DEEPSEEK_API_KEY"
+# api_url = "https://api.deepseek.com"
+
+# [[providers]]
+# id = "openai"
+# # api_key = "env:OPENAI_API_KEY"
+# api_url = "https://api.openai.com/v1"
+
+[[providers]]
+id = "dora"
+kind ="dora"
+output = "output"
+
+[[models]]
+id = "kimi-latest"
+# default = true
+route = { provider = "moonshot", model = "kimi-latest" }
+
+[[models]]
+id = "gemini-2.0-flash"
+route = { provider = "gemini", model = "gemini-2.0-flash" }
+
+[[mcp.servers]]
+name = "amap-maps"
+protocol = "stdio"
+command = "npx"
+args = ["-y", "@amap/amap-maps-mcp-server"]
+envs = {AMAP_MAPS_API_KEY = "your_amap_maps_api_key_here"}
+
+[[mcp.servers]]
+name = "local"
+protocol = "streamable"
+url = "http://127.0.0.1:8228/mcp"

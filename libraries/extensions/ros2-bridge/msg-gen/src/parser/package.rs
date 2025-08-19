@@ -51,9 +51,9 @@ fn get_ros_msgs_each_package<P: AsRef<Path>>(root_dir: P) -> Result<Vec<Package>
                 continue;
             } else if visited_files.contains(&(package.clone(), file_name.clone())) {
                 warn!(
-                        "found two versions of package: {:?}, message: {:?}. will skip the one in: {:#?}",
-                        package, file_name, path
-                    );
+                    "found two versions of package: {:?}, message: {:?}. will skip the one in: {:#?}",
+                    package, file_name, path
+                );
                 continue;
             } else {
                 visited_files.push((package.clone(), file_name.clone()));

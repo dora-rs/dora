@@ -6,14 +6,14 @@ use crate::{
 
 use dora_message::{
     config::{Input, InputMapping, UserInputMapping},
-    descriptor::{CoreNodeKind, OperatorSource, ResolvedNode, DYNAMIC_SOURCE, SHELL_SOURCE},
+    descriptor::{CoreNodeKind, DYNAMIC_SOURCE, OperatorSource, ResolvedNode, SHELL_SOURCE},
     id::{DataId, NodeId, OperatorId},
 };
-use eyre::{bail, eyre, Context};
+use eyre::{Context, bail, eyre};
 use std::{collections::BTreeMap, path::Path, process::Command};
 use tracing::info;
 
-use super::{resolve_path, Descriptor, DescriptorExt};
+use super::{Descriptor, DescriptorExt, resolve_path};
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub fn check_dataflow(
@@ -28,23 +28,34 @@ pub fn check_dataflow(
     // check that nodes and operators exist
     for node in nodes.values() {
         match &node.kind {
-            descriptor::CoreNodeKind::Custom(custom) => match custom.source.as_str() {
-                SHELL_SOURCE => (),
-                DYNAMIC_SOURCE => (),
-                source => {
-                    if source_is_url(source) {
-                        info!("{source} is a URL."); // TODO: Implement url check.
-                    } else if let Some(remote_daemon_id) = remote_daemon_id {
-                        if let Some(machine) = &node.deploy.machine {
-                            if remote_daemon_id.contains(&machine.as_str()) || coordinator_is_remote
-                            {
-                                info!("skipping path check for remote node `{}`", node.id);
+            descriptor::CoreNodeKind::Custom(custom) => match &custom.source {
+                dora_message::descriptor::NodeSource::Local => match custom.path.as_str() {
+                    SHELL_SOURCE => (),
+                    DYNAMIC_SOURCE => (),
+                    source => {
+                        if source_is_url(source) {
+                            info!("{source} is a URL."); // TODO: Implement url check.
+                        } else if let Some(remote_daemon_id) = remote_daemon_id {
+                            if let Some(deploy) = &node.deploy {
+                                if let Some(machine) = &deploy.machine {
+                                    if remote_daemon_id.contains(&machine.as_str())
+                                        || coordinator_is_remote
+                                    {
+                                        info!("skipping path check for remote node `{}`", node.id);
+                                    }
+                                }
                             }
-                        }
-                    } else {
-                        resolve_path(source, working_dir)
-                            .wrap_err_with(|| format!("Could not find source path `{}`", source))?;
-                    };
+                        } else if custom.build.is_some() {
+                            info!("skipping path check for node with build command");
+                        } else {
+                            resolve_path(source, working_dir).wrap_err_with(|| {
+                                format!("Could not find source path `{source}`")
+                            })?;
+                        };
+                    }
+                },
+                dora_message::descriptor::NodeSource::GitBranch { .. } => {
+                    info!("skipping check for node with git source");
                 }
             },
             descriptor::CoreNodeKind::Runtime(node) => {
@@ -53,6 +64,8 @@ pub fn check_dataflow(
                         OperatorSource::SharedLibrary(path) => {
                             if source_is_url(path) {
                                 info!("{path} is a URL."); // TODO: Implement url check.
+                            } else if operator_definition.config.build.is_some() {
+                                info!("skipping path check for operator with build command");
                             } else {
                                 let path = adjust_shared_library_path(Path::new(&path))?;
                                 if !working_dir.join(&path).exists() {
@@ -132,9 +145,13 @@ impl ResolvedNodeExt for ResolvedNode {
                     .filter(|op| op.config.send_stdout_as.is_some())
                     .count();
                 if count == 1 && n.operators.len() > 1 {
-                    tracing::warn!("All stdout from all operators of a runtime are going to be sent in the selected `send_stdout_as` operator.")
+                    tracing::warn!(
+                        "All stdout from all operators of a runtime are going to be sent in the selected `send_stdout_as` operator."
+                    )
                 } else if count > 1 {
-                    return Err(eyre!("More than one `send_stdout_as` entries for a runtime node. Please only use one `send_stdout_as` per runtime."));
+                    return Err(eyre!(
+                        "More than one `send_stdout_as` entries for a runtime node. Please only use one `send_stdout_as` per runtime."
+                    ));
                 }
                 Ok(n.operators.iter().find_map(|op| {
                     op.config

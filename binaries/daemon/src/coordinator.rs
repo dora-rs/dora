@@ -1,6 +1,6 @@
 use crate::{
-    socket_stream_utils::{socket_stream_receive, socket_stream_send},
     DaemonCoordinatorEvent,
+    socket_stream_utils::{socket_stream_receive, socket_stream_send},
 };
 use dora_core::uhlc::HLC;
 use dora_message::{
@@ -8,14 +8,14 @@ use dora_message::{
     coordinator_to_daemon::RegisterResult,
     daemon_to_coordinator::{CoordinatorRequest, DaemonCoordinatorReply, DaemonRegisterRequest},
 };
-use eyre::{eyre, Context};
+use eyre::{Context, eyre};
 use std::{io::ErrorKind, net::SocketAddr, time::Duration};
 use tokio::{
     net::TcpStream,
     sync::{mpsc, oneshot},
     time::sleep,
 };
-use tokio_stream::{wrappers::ReceiverStream, Stream};
+use tokio_stream::{Stream, wrappers::ReceiverStream};
 use tracing::warn;
 
 const DAEMON_COORDINATOR_RETRY_INTERVAL: std::time::Duration = Duration::from_secs(1);
@@ -37,7 +37,9 @@ pub async fn register(
             .wrap_err("failed to connect to dora-coordinator")
         {
             Err(err) => {
-                warn!("Could not connect to: {addr}, with error: {err}. Retring in {DAEMON_COORDINATOR_RETRY_INTERVAL:#?}..");
+                warn!(
+                    "Could not connect to: {addr}, with error: {err}. Retring in {DAEMON_COORDINATOR_RETRY_INTERVAL:#?}.."
+                );
                 sleep(DAEMON_COORDINATOR_RETRY_INTERVAL).await;
             }
             Ok(stream) => {

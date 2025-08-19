@@ -1,15 +1,14 @@
 use chrono::{DateTime, Utc};
 use dora_node_api::{
-    self,
+    self, DoraNode, Event, Metadata,
     arrow::{
         array::{
-            make_array, Array, ListArray, StringArray, TimestampMillisecondArray, UInt64Array,
+            Array, ListArray, StringArray, TimestampMillisecondArray, UInt64Array, make_array,
         },
         buffer::{OffsetBuffer, ScalarBuffer},
         datatypes::{DataType, Field, Schema},
         record_batch::RecordBatch,
     },
-    DoraNode, Event, Metadata,
 };
 use dora_tracing::telemetry::deserialize_to_hashmap;
 use eyre::{Context, ContextCompat};
@@ -79,7 +78,7 @@ async fn main() -> eyre::Result<()> {
                                 if let Err(e) =
                                     write_event(&mut writer, data, &metadata, schema.clone()).await
                                 {
-                                    println!("Error writing event data into parquet file: {:?}", e)
+                                    println!("Error writing event data into parquet file: {e:?}")
                                 };
                             }
                             writer.close().await
@@ -101,7 +100,7 @@ async fn main() -> eyre::Result<()> {
                 Some(tx) => drop(tx),
             },
             Event::Error(err) => {
-                println!("Error: {}", err);
+                println!("Error: {err}");
             }
             event => {
                 println!("Event: {event:#?}")

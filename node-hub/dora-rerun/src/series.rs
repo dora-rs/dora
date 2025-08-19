@@ -1,4 +1,4 @@
-use dora_node_api::{dora_core::config::DataId, into_vec, ArrowData};
+use dora_node_api::{ArrowData, dora_core::config::DataId, into_vec};
 use eyre::{Context, Result};
 use rerun::RecordingStream;
 
@@ -7,7 +7,7 @@ pub fn update_series(rec: &RecordingStream, id: DataId, data: ArrowData) -> Resu
     for (i, value) in series.iter().enumerate() {
         rec.log(
             format!("{}_{}", id.as_str(), i),
-            &rerun::Scalar::new(*value as f64),
+            &rerun::Scalars::new([*value]),
         )
         .wrap_err("could not log series")?;
     }

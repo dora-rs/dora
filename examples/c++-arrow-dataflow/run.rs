@@ -1,5 +1,5 @@
 use dora_tracing::set_up_tracing;
-use eyre::{bail, Context};
+use eyre::{Context, bail};
 use std::{env::consts::EXE_SUFFIX, path::Path, process::Command};
 
 struct ArrowConfig {
@@ -72,18 +72,20 @@ async fn main() -> eyre::Result<()> {
 
 fn find_arrow_config() -> eyre::Result<ArrowConfig> {
     let output = Command::new("pkg-config")
-        .args(&["--cflags", "arrow"])
+        .args(["--cflags", "arrow"])
         .output()
         .wrap_err("Failed to run pkg-config. Make sure Arrow C++ is installed")?;
 
     if !output.status.success() {
-        bail!("Arrow C++ not found via pkg-config. Make sure it's installed and in your PKG_CONFIG_PATH");
+        bail!(
+            "Arrow C++ not found via pkg-config. Make sure it's installed and in your PKG_CONFIG_PATH"
+        );
     }
 
     let cflags = String::from_utf8(output.stdout)?.trim().to_string();
 
     let output = Command::new("pkg-config")
-        .args(&["--libs", "arrow"])
+        .args(["--libs", "arrow"])
         .output()
         .wrap_err("Failed to get Arrow library flags")?;
 
@@ -112,6 +114,7 @@ async fn run_dataflow(dataflow: &Path) -> eyre::Result<()> {
     let mut cmd = tokio::process::Command::new(&cargo);
     cmd.arg("run");
     cmd.arg("--package").arg("dora-cli");
+    cmd.arg("--release");
     cmd.arg("--")
         .arg("daemon")
         .arg("--run-dataflow")
@@ -136,6 +139,7 @@ async fn build_cxx_node(
         clang.arg("-l").arg("m");
         clang.arg("-l").arg("rt");
         clang.arg("-l").arg("dl");
+        clang.arg("-l").arg("z");
         clang.arg("-pthread");
     }
     #[cfg(target_os = "windows")]

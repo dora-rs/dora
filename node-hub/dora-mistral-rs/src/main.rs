@@ -1,4 +1,4 @@
-use dora_node_api::{dora_core::config::DataId, DoraNode, Event, IntoArrow};
+use dora_node_api::{DoraNode, Event, IntoArrow, dora_core::config::DataId};
 use eyre::{Context, Report};
 use mistralrs::{TextMessageRole, TextMessages, TextModelBuilder};
 
@@ -13,7 +13,7 @@ async fn main() -> eyre::Result<()> {
         .with_logging()
         .build()
         .await
-        .map_err(|e| Report::msg(format!("Model Build error: {}", e))) // Convert error
+        .map_err(|e| Report::msg(format!("Model Build error: {e}"))) // Convert error
         .expect("Failed to build model");
 
     while let Some(event) = events.recv_async().await {
@@ -33,7 +33,7 @@ async fn main() -> eyre::Result<()> {
                     let response = model
                         .send_chat_request(messages)
                         .await
-                        .map_err(|e| Report::msg(format!("Model Response error: {}", e))) // Convert error
+                        .map_err(|e| Report::msg(format!("Model Response error: {e}"))) // Convert error
                         .expect("Failed to get response from model");
 
                     let output = response.choices[0].message.content.as_ref().unwrap();
@@ -41,13 +41,13 @@ async fn main() -> eyre::Result<()> {
                     node.send_output(
                         mistral_output.clone(),
                         metadata.parameters,
-                        output.into_arrow(),
+                        output.as_str().into_arrow(),
                     )?;
                 }
                 other => eprintln!("Received input `{other}`"),
             },
-            Event::Stop => {
-                println!("Received manual stop")
+            Event::Stop(_) => {
+                println!("Received command");
             }
             Event::InputClosed { id } => {
                 println!("input `{id}` was closed");

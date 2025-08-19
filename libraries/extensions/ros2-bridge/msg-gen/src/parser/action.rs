@@ -40,17 +40,17 @@ fn parse_action_string(pkg_name: &str, action_name: &str, action_string: &str) -
         name: action_name.into(),
         goal: parse_message_string(
             pkg_name,
-            &format!("{}{}", action_name, ACTION_GOAL_SUFFIX),
+            &format!("{action_name}{ACTION_GOAL_SUFFIX}"),
             action_blocks[0],
         )?,
         result: parse_message_string(
             pkg_name,
-            &format!("{}{}", action_name, ACTION_RESULT_SUFFIX),
+            &format!("{action_name}{ACTION_RESULT_SUFFIX}"),
             action_blocks[1],
         )?,
         feedback: parse_message_string(
             pkg_name,
-            &format!("{}{}", action_name, ACTION_FEEDBACK_SUFFIX),
+            &format!("{action_name}{ACTION_FEEDBACK_SUFFIX}"),
             action_blocks[2],
         )?,
     })
@@ -61,7 +61,7 @@ mod test {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::types::{primitives::*, sequences::*, MemberType};
+    use crate::types::{MemberType, primitives::*, sequences::*};
 
     fn parse_action_def(srv_name: &str) -> Result<Action> {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

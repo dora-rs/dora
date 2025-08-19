@@ -1,5 +1,5 @@
 use dora_tracing::set_up_tracing;
-use eyre::{bail, Context};
+use eyre::{Context, bail};
 use std::path::Path;
 
 #[tokio::main]
@@ -61,6 +61,7 @@ async fn run_dataflow(dataflow: &Path) -> eyre::Result<()> {
     let mut cmd = tokio::process::Command::new(&cargo);
     cmd.arg("run");
     cmd.arg("--package").arg("dora-cli");
+    cmd.arg("--release");
     cmd.arg("--")
         .arg("daemon")
         .arg("--run-dataflow")

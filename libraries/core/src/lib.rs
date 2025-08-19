@@ -1,4 +1,4 @@
-use eyre::{bail, eyre, Context};
+use eyre::{Context, bail, eyre};
 use std::{
     env::consts::{DLL_PREFIX, DLL_SUFFIX},
     ffi::OsStr,
@@ -7,6 +7,8 @@ use std::{
 
 pub use dora_message::{config, uhlc};
 
+#[cfg(feature = "build")]
+pub mod build;
 pub mod descriptor;
 pub mod metadata;
 pub mod topics;

@@ -54,7 +54,7 @@ jobs:
         run: |
           sudo apt update
           sudo apt-get install portaudio19-dev
-          sudo apt-get install libdav1d-dev nasm
+          sudo apt-get install libdav1d-dev nasm libudev-dev
           mkdir -p $HOME/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib
           ln -s /lib/x86_64-linux-gnu/libdav1d.so $HOME/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libdav1d.so
 

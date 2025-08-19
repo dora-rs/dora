@@ -1,5 +1,9 @@
 ## FeetechClient for SCS/STS motors
 
+> [!WARNING]  
+> As of 02.05.2025, this node is no more supported and is replaced in favor of dora-rustypot for higher performance
+> with the possibility of being able to handle more servomotors.
+
 This node is a client for the Feetech motors. It is based on the Dynamixel SDK and is used to control the motors. It
 is a Python node that communicates with the motors via the USB port.
 
