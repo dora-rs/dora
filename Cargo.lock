@@ -4335,7 +4335,12 @@ dependencies = [
  "base64 0.22.1",
  "clap 4.5.46",
  "dora-node-api",
+ "image 0.24.9",
  "llama-cpp-2",
+ "regex",
+ "rusttype",
+ "serde",
+ "serde_json",
  "text_on_image",
 ]
 

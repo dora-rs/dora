@@ -1,7 +1,7 @@
 //! Based on the mtmd cli example from llama.cpp.
 
 use std::ffi::CString;
-use std::io::{self, Write};
+use std::io::Cursor;
 use std::num::NonZeroU32;
 use std::path::Path;
 
@@ -10,7 +10,8 @@ use clap::Parser;
 
 use dora_node_api::arrow::array::AsArray;
 use dora_node_api::dora_core::config::DataId;
-use dora_node_api::{into_vec, DoraNode, Event, IntoArrow};
+use dora_node_api::{DoraNode, Event, IntoArrow};
+use image::{io::Reader, Rgba};
 use llama_cpp_2::context::params::LlamaContextParams;
 use llama_cpp_2::context::LlamaContext;
 use llama_cpp_2::llama_batch::LlamaBatch;
@@ -22,6 +23,12 @@ use llama_cpp_2::mtmd::{
 use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::model::{LlamaChatMessage, LlamaChatTemplate, LlamaModel, Special};
 use llama_cpp_2::sampling::LlamaSampler;
+use regex::Regex;
+use rusttype::{Font, Scale};
+use serde::{Deserialize, Serialize};
+use text_on_image::{text_on_image, FontBundle};
+
+const FONT: &[u8] = include_bytes!("./NotoSansSC-Light.ttf");
 
 /// Command line parameters for the MTMD CLI application
 #[derive(clap::Parser, Debug)]
@@ -207,15 +214,12 @@ impl MtmdCliContext {
 
             // Check for end of generation
             if model.is_eog_token(token) {
-                println!();
                 break;
             }
 
             // Print token
             let piece = model.token_to_str(token, Special::Tokenize)?;
             text.push_str(&piece);
-            print!("{piece}");
-            io::stdout().flush()?;
 
             // Prepare next batch
             self.batch.clear();
@@ -248,17 +252,23 @@ fn run_single_turn(
                 mut metadata,
             }) => {
                 // Create context
-                // let context_params = LlamaContextParams::default()
-                // .with_n_threads(params.n_threads)
-                // .with_n_batch(1)
-                // .with_n_ctx(Some(params.n_tokens));
-                // let mut context = model.new_context(&backend, context_params)?;
+                let context_params = LlamaContextParams::default()
+                    .with_n_threads(params.n_threads)
+                    .with_n_batch(1)
+                    .with_n_ctx(Some(params.n_tokens));
+                ctx.bitmaps = vec![];
+                ctx.n_past = 0;
+                ctx.chat = vec![];
+                ctx.batch = LlamaBatch::new(params.n_tokens.get() as usize, 1);
+
+                let mut context = model.new_context(&backend, context_params)?;
                 let instant = std::time::Instant::now();
                 let default_marker = llama_cpp_2::mtmd::mtmd_default_marker().to_string();
                 //let media_marker = params.media_marker.as_ref().unwrap_or(&default_marker);
                 let texts = data.as_string::<i32>();
                 let mut prompt = "".to_string();
-
+                let mut image_base64 = "".to_string();
+                let mut img = None;
                 for text in texts {
                     match text {
                         Some(text) => {
@@ -266,11 +276,17 @@ fn run_single_turn(
                                 prompt.push_str(&text.replace("<|user|>\n<|im_start|>\n", ""));
                             } else if text.starts_with("<|user|>\n<|vision_start|>\n") {
                                 let string = text.replace("<|user|>\n<|vision_start|>\n", "");
+                                image_base64 = string.clone();
                                 let mut string = string.split(",");
                                 let _encoding = string.next().unwrap();
                                 let data = string.next().unwrap();
                                 let engine = base64::engine::general_purpose::STANDARD;
                                 let decoded_data = engine.decode(data)?;
+                                img = Some(
+                                    Reader::new(Cursor::new(decoded_data.clone()))
+                                        .with_guessed_format()?
+                                        .decode()?,
+                                );
                                 ctx.load_base64_image(&decoded_data)?;
                                 prompt.push_str(&default_marker);
                             } else if text.starts_with("<|system|>\n") {
@@ -301,19 +317,93 @@ fn run_single_turn(
                 println!("Evaluating message: {msg:?}");
 
                 // Evaluate the message (prefill)
-                ctx.eval_message(model, context, msg, true)?;
+                ctx.eval_message(model, &mut context, msg, true)?;
+                let text = ctx.generate_response(model, &mut context, sampler, params.n_predict)?;
+                ctx.bitmaps = vec![];
+                ctx.n_past = 0;
+                ctx.chat = vec![];
+                ctx.batch = LlamaBatch::new(params.n_tokens.get() as usize, 1);
+                let context_params = LlamaContextParams::default()
+                    .with_n_threads(params.n_threads)
+                    .with_n_batch(1)
+                    .with_n_ctx(Some(params.n_tokens));
+                let mut context = model.new_context(&backend, context_params)?;
+                let mut translation_prompt = "Translate this into Chinese: ".to_string();
+                translation_prompt.push_str(&text);
+                println!("test: {}", translation_prompt);
+                let msg = LlamaChatMessage::new("user".to_string(), translation_prompt)?;
+                ctx.eval_message(model, &mut context, msg, true)?;
 
-                let elapsed = instant.elapsed();
-                println!("First token in {:.2?}", elapsed);
                 // Generate response (decode)
-                let text = ctx.generate_response(model, context, sampler, params.n_predict)?;
+                let text = ctx.generate_response(model, &mut context, sampler, params.n_predict)?;
                 let elapsed = instant.elapsed();
                 println!("\nResponse generated in {:.2?}", elapsed);
+
+                println!("translated: {}", text);
                 node.send_output(
-                    DataId::from("image".to_string()),
+                    DataId::from("text".to_string()),
                     Default::default(),
-                    text.into_arrow(),
+                    text.clone().into_arrow(),
                 )?;
+
+                if let Some(mut img) = img {
+                    let font = Vec::from(FONT);
+                    let font = Font::try_from_vec(font).unwrap();
+
+                    match parse_bounding_boxes(&text) {
+                        Ok(boxes) => {
+                            for bbox in boxes.iter() {
+                                let text = bbox
+                                    .text_content
+                                    .clone()
+                                    .unwrap_or_else(|| bbox.label.clone().unwrap_or_default());
+                                let n_letter = text.len();
+                                let y_scale = bbox.bbox_2d[3] - bbox.bbox_2d[1];
+                                let x_scale =
+                                    (bbox.bbox_2d[2] - bbox.bbox_2d[0]) as f32 / n_letter as f32;
+
+                                let font_bundle = FontBundle::new(
+                                    &font,
+                                    Scale {
+                                        x: 5. / 2. * x_scale as f32,
+                                        y: 5. / 2. * y_scale as f32,
+                                    },
+                                    Rgba([20, 20, 20, 0]),
+                                );
+                                text_on_image(
+                                    &mut img,
+                                    text,
+                                    &font_bundle,
+                                    5 * bbox.bbox_2d[0] / 2,
+                                    (5. / 2. * y_scale as f32) as i32 + 5 * bbox.bbox_2d[1] / 2,
+                                    text_on_image::TextJustify::Left,
+                                    text_on_image::VerticalAnchor::Top,
+                                    text_on_image::WrapBehavior::Wrap(1000),
+                                );
+                            }
+                        }
+
+                        Err(e) => eprintln!("Failed to parse JSON: {}, text: {:#?}", e, text),
+                    }
+
+                    let mut bytes: Vec<u8> = Vec::new();
+                    img.write_to(
+                        &mut Cursor::new(&mut bytes),
+                        image::ImageOutputFormat::Jpeg(80),
+                    )?;
+                    img.save("test.jpeg")?;
+                    let engine = base64::engine::general_purpose::STANDARD;
+                    let base64_encoded = engine.encode(bytes);
+                    let mut string = "data:image/png;base64,".to_string();
+
+                    string.push_str(&base64_encoded);
+                    node.send_output(
+                        DataId::from("image".to_string()),
+                        Default::default(),
+                        string.into_arrow(),
+                    )?;
+                    println!("sent Image")
+                }
             }
             _ => break,
         }
@@ -372,4 +462,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n");
 
     Ok(())
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct BoundingBox {
+    bbox_2d: [i32; 4],
+    text_content: Option<String>,
+    label: Option<String>,
+}
+
+fn parse_bounding_boxes(json_str: &str) -> Result<Vec<BoundingBox>, serde_json::Error> {
+    // Strip the markdown code block markers
+    let mut cleaned = json_str
+        .strip_prefix("```json")
+        .unwrap_or(json_str)
+        .strip_suffix("```")
+        .unwrap_or(json_str)
+        .trim()
+        .to_string();
+
+    // Check if the JSON array is incomplete and try to fix it
+    if cleaned.starts_with('[') && !cleaned.trim_end().ends_with(']') {
+        // Add missing closing bracket
+        cleaned.push_str("\n]");
+    }
+
+    // Remove trailing commas (simple regex approach)
+    let re = Regex::new(r",(\s*[}\]])").unwrap();
+    let no_trailing_commas = re.replace_all(&cleaned, "$1");
+
+    serde_json::from_str(&no_trailing_commas)
 }
