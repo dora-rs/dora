@@ -29,21 +29,7 @@ pub enum ControlRequest {
     WaitForBuild {
         build_id: BuildId,
     },
-    Start {
-        build_id: Option<BuildId>,
-        session_id: SessionId,
-        dataflow: Descriptor,
-        name: Option<String>,
-        /// Allows overwriting the base working dir when CLI and daemon are
-        /// running on the same machine.
-        ///
-        /// Must not be used for multi-machine dataflows.
-        ///
-        /// Note that nodes with git sources still use a subdirectory of
-        /// the base working dir.
-        local_working_dir: Option<PathBuf>,
-        uv: bool,
-    },
+    Start(StartRequest),
     WaitForSpawn {
         dataflow_id: Uuid,
     },
@@ -81,4 +67,21 @@ pub enum ControlRequest {
         level: log::LevelFilter,
     },
     CliAndDefaultDaemonOnSameMachine,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct StartRequest {
+    pub build_id: Option<BuildId>,
+    pub session_id: SessionId,
+    pub dataflow: Descriptor,
+    pub name: Option<String>,
+    /// Allows overwriting the base working dir when CLI and daemon are
+    /// running on the same machine.
+    ///
+    /// Must not be used for multi-machine dataflows.
+    ///
+    /// Note that nodes with git sources still use a subdirectory of
+    /// the base working dir.
+    pub local_working_dir: Option<PathBuf>,
+    pub uv: bool,
 }
