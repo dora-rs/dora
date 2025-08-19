@@ -10,7 +10,7 @@ nodes:
   - id: dora-qwen-omni
     build: cargo build -p dora-qwen-omni -r --features metal
     path: ../../target/release/dora-qwen-omni
-    args: --model /Users/xaviertao/Downloads/Qwen2.5-Omni-7B-q4_k_m.gguf --mmproj /Users/xaviertao/Downloads/Qwen2.5-Omni-7B-q8_0.mmproj --prompt "Output:"
+    args: --model /Users/xaviertao/Downloads/Qwen2.5-Omni-7B-q4_k_m.gguf --mmproj /Users/xaviertao/Downloads/Qwen2.5-Omni-7B-f16.mmproj --prompt "Output:"
     inputs:
       text: dora-openai-server/text
     outputs:
