@@ -13,7 +13,11 @@ async fn main() -> eyre::Result<()> {
 
     let uv = get_uv_path().context("Could not get uv binary")?;
 
-    run(&uv, &["venv", "-p", "3.10", "--seed"], None)
+    run(&uv, &["venv", "-p", "3.11", "--seed", "-n", "env_1"], None)
+        .await
+        .context("failed to create venv")?;
+
+    run(&uv, &["venv", "-p", "3.11", "--seed", "-n", "env_2"], None)
         .await
         .context("failed to create venv")?;
 
