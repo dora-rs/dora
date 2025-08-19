@@ -56,6 +56,7 @@ rust-version = "1.85.0"
 version = "0.3.12"
 description = "`dora` goal is to be a low latency, composable, and distributed data flow."
 documentation = "https://dora-rs.ai"
+readme = "./README.md"
 license = "Apache-2.0"
 repository = "https://github.com/dora-rs/dora/"
 
