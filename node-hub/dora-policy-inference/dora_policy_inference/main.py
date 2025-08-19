@@ -25,6 +25,8 @@ class DoraPolicyInference:
 
         self.data_buffer = {}
         self.cameras = self._parse_cameras()
+        self.cameras_copy = self.cameras.copy()
+        self.all_cam_check = False
         self.task_description = os.getenv("TASK_DESCRIPTION", "")
 
         self.policy = None
@@ -68,10 +70,18 @@ class DoraPolicyInference:
         """Determine if inference should be triggered based on the input received."""
         current_time = time.time()
         # Assign lead camera as trigger for inference
+        if len(self.cameras_copy) == 0 and not self.all_cam_check:
+            self.all_cam_check = True
+            print("All cameras have sent data, ready for inference.")
+        if not (self.all_cam_check):
+            if input_id in self.cameras_copy:
+                self.cameras_copy.remove(input_id)
+                print(
+                    f"Camera {input_id} data received, remaining cameras: {self.cameras_copy}"
+                )
+                return False
         if input_id != self.cameras[0]:
             return False
-
-        # don't run inference too frequently, in case camera fps is too high
         if current_time - self.last_inference_time < self.min_inference_interval:
             return False
 
@@ -89,27 +99,27 @@ class DoraPolicyInference:
                     self.data_buffer[camera_name]["metadata"],
                 )
                 observation[f"observation.images.{camera_name}"] = image
-
-        state = self._convert_robot_data(self.data_buffer["robot_state"]["data"])
-        observation["observation.state"] = state
-
-        action = (
-            predict_action(
-                observation=observation,
-                policy=self.policy,
-                device=self.device,
-                use_amp=self.policy.config.use_amp,
-                task=self.task_description,
+        if "robot_state" in self.data_buffer:
+            # dont run inference if robot state is not available
+            observation["observation.state"] = self._convert_robot_data(
+                self.data_buffer["robot_state"]["data"]
             )
-            .cpu()
-            .numpy()
-        )
 
-        # Convert from degrees to radians
-        action = np.deg2rad(action)
-        self._send_action(action)
+            action = (
+                predict_action(
+                    observation=observation,
+                    policy=self.policy,
+                    device=self.device,
+                    use_amp=self.policy.config.use_amp,
+                    task=self.task_description,
+                )
+                .cpu()
+                .numpy()
+            )
 
-        self.last_inference_time = current_time
+            self._send_action(np.deg2rad(action))
+
+            self.last_inference_time = current_time
 
     def _convert_camera_data(self, dora_data, metadata) -> np.ndarray:
         """Convert camera data from Dora format to numpy."""

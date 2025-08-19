@@ -82,6 +82,11 @@ In the rerun window you can see the the info regarding Start of episodes, start 
 
 3. **Repeat** until all episodes are complete
 
+> Control the data recording flow using keyboard shortcuts:
+> Press 'n' (next episode): Early stop the current episode or reset time and move to the next.
+> Press 'r' (re-record): Cancel the current episode and re-record it.
+> Press 'q' (quit): Immediately stop the session, encode videos
+
 **Recording Tips**
 
 - **Practice First**: Move the leader robot around to get comfortable before recording

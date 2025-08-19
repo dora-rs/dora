@@ -55,6 +55,11 @@ class DoraLeRobotRecorder:
         self.save_avif_frames = os.getenv("SAVE_AVIF_FRAMES", "false").lower() == "true"
         self.avif_data_buffer = {}
 
+        # Keyboard control
+        self.next = False
+        self.rerecord = False
+        self.quit = False
+
         self._setup_dataset()
         self._start_frame_timer()
 
@@ -182,8 +187,35 @@ class DoraLeRobotRecorder:
                 with open(save_path, "wb") as f:
                     f.write(avif_data.to_numpy())
 
+    def _handle_keyboard_commands(self):
+        """Handle keyboard commands."""
+        if self.quit:
+            self._output("Quit requested - ending recording early")
+            return True
+
+        if self.rerecord and self.episode_active:
+            self._output("Re-record requested - discarding current episode")
+            self._discard_episode()
+            self._start_episode()
+            self.rerecord = False
+
+        if self.next and self.episode_active:
+            self._output("Next episode requested - ending current episode")
+            self._end_episode()
+            if self.episode_index < self.total_episodes:
+                self._start_reset_phase()
+            else:
+                self.last_episode = True
+            self.next = False
+
+        return False
+
     def _check_episode_timing(self):
         """Check if we need to start/end Episodes."""
+        should_stop = self._handle_keyboard_commands()
+        if should_stop:
+            return True
+
         current_time = time.time()
 
         if not self.recording_started:  # Start the first episode
@@ -232,6 +264,13 @@ class DoraLeRobotRecorder:
         else:
             self._output(f"Episode {self.episode_index} had no frames, skipping save")
 
+    def _discard_episode(self):
+        """Discard current episode without saving."""
+        self.episode_active = False
+        self.frame_count = 0
+        self.dataset.clear_episode_buffer()
+        self._output(f"Discarded episode {self.episode_index}")
+
     def _start_reset_phase(self):
         """Start the reset phase between episodes."""
         self.in_reset_phase = True
@@ -273,6 +312,17 @@ class DoraLeRobotRecorder:
 
     def handle_input(self, input_id: str, data: Any, metadata: Any):
         """Handle incoming data - Store the latest data."""
+        # Handle keyboard input
+        if input_id == "char":
+            char = data[0].as_py()
+            if char == "n":
+                self.next = True
+            elif char == "r":
+                self.rerecord = True
+            elif char == "q":
+                self.quit = True
+            return False
+
         # Only store data if not in reset phase
         if not self.in_reset_phase:
             with self.buffer_lock:
@@ -415,6 +465,7 @@ def main():
     print(f"Total episodes: {recorder.total_episodes}")
     print(f"Episode duration: {recorder.episode_duration}s")
     print(f"Reset duration: {recorder.reset_duration}s")
+    print("Controls: 'n' = next episode, 'r' = re-record, 'q' = quit")
 
     for event in node:
         pending_messages = recorder.get_pending_messages()
@@ -426,7 +477,7 @@ def main():
                 event["id"], event["value"], event.get("metadata", {})
             )
             if should_stop:
-                print("All episodes completed, stopping recording...")
+                print("Recording stopped...")
                 break
 
     recorder._shutdown()
