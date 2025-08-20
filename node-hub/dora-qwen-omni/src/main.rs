@@ -62,7 +62,7 @@ pub struct MtmdCliParams {
     #[arg(short = 't', long = "threads", value_name = "N", default_value = "12")]
     pub n_threads: i32,
     /// Maximum number of tokens in context
-    #[arg(long = "n-tokens", value_name = "N", default_value = "8192")]
+    #[arg(long = "n-tokens", value_name = "N", default_value = "16384")]
     pub n_tokens: NonZeroU32,
     /// Chat template to use, default template if not provided
     #[arg(long = "chat-template", value_name = "TEMPLATE")]
@@ -218,7 +218,9 @@ impl MtmdCliContext {
             }
 
             // Print token
-            let piece = model.token_to_str(token, Special::Tokenize)?;
+            let piece = model
+                .token_to_str(token, Special::Plaintext)
+                .unwrap_or_default();
             text.push_str(&piece);
 
             // Prepare next batch
@@ -236,7 +238,7 @@ impl MtmdCliContext {
 
 fn run_single_turn(
     model: &LlamaModel,
-    context: &mut LlamaContext,
+    _context: &mut LlamaContext,
     sampler: &mut LlamaSampler,
     params: &MtmdCliParams,
     backend: &LlamaBackend,
@@ -247,9 +249,9 @@ fn run_single_turn(
     loop {
         match events.recv() {
             Some(Event::Input {
-                id,
+                id: _,
                 data,
-                mut metadata,
+                metadata: _,
             }) => {
                 // Create context
                 let context_params = LlamaContextParams::default()
@@ -267,7 +269,6 @@ fn run_single_turn(
                 //let media_marker = params.media_marker.as_ref().unwrap_or(&default_marker);
                 let texts = data.as_string::<i32>();
                 let mut prompt = "".to_string();
-                let mut image_base64 = "".to_string();
                 let mut img = None;
                 for text in texts {
                     match text {
@@ -276,7 +277,6 @@ fn run_single_turn(
                                 prompt.push_str(&text.replace("<|user|>\n<|im_start|>\n", ""));
                             } else if text.starts_with("<|user|>\n<|vision_start|>\n") {
                                 let string = text.replace("<|user|>\n<|vision_start|>\n", "");
-                                image_base64 = string.clone();
                                 let mut string = string.split(",");
                                 let _encoding = string.next().unwrap();
                                 let data = string.next().unwrap();
