@@ -1,6 +1,5 @@
 //! Based on the mtmd cli example from llama.cpp.
 
-use std::cmp::min;
 use std::ffi::CString;
 use std::io::Cursor;
 use std::num::NonZeroU32;
@@ -56,7 +55,7 @@ pub struct MtmdCliParams {
         short = 'n',
         long = "n-predict",
         value_name = "N",
-        default_value = "-1"
+        default_value = "4096"
     )]
     pub n_predict: i32,
     /// Number of threads
@@ -359,16 +358,14 @@ fn run_single_turn(
                                     .clone()
                                     .unwrap_or_else(|| bbox.label.clone().unwrap_or_default());
                                 let n_letter = text.len();
-                                let y_scale = bbox.bbox_2d[3] - bbox.bbox_2d[1];
-                                let x_scale = min(
-                                    y_scale,
-                                    (bbox.bbox_2d[2] - bbox.bbox_2d[0]) / n_letter as i32,
-                                );
+                                let y_scale = (bbox.bbox_2d[3] - bbox.bbox_2d[1]) as f32;
+                                let x_scale =
+                                    (bbox.bbox_2d[2] - bbox.bbox_2d[0]) as f32 / n_letter as f32;
 
                                 let font_bundle = FontBundle::new(
                                     &font,
                                     Scale {
-                                        x: 8. * x_scale as f32,
+                                        x: 4. * y_scale as f32,
                                         y: 4. * y_scale as f32,
                                     },
                                     Rgba([20, 20, 20, 0]),
@@ -382,7 +379,7 @@ fn run_single_turn(
                                     text_on_image::TextJustify::Left,
                                     text_on_image::VerticalAnchor::Top,
                                     text_on_image::WrapBehavior::NoWrap,
-                                    Rgba([220, 220, 220, 50]),
+                                    Rgba([235, 235, 235, 50]),
                                 );
                             }
                         }
@@ -393,7 +390,7 @@ fn run_single_turn(
                     let mut bytes: Vec<u8> = Vec::new();
                     img.write_to(
                         &mut Cursor::new(&mut bytes),
-                        image::ImageOutputFormat::Jpeg(80),
+                        image::ImageOutputFormat::Jpeg(100),
                     )?;
                     img.save("test.jpeg")?;
                     let engine = base64::engine::general_purpose::STANDARD;
