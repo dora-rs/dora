@@ -12,6 +12,7 @@ fn main() -> eyre::Result<()> {
             Some(input) => input,
             None => break,
         };
+        dbg!(&event);
 
         match event {
             Event::Input {

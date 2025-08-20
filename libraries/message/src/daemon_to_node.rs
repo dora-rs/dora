@@ -42,6 +42,7 @@ pub enum DaemonCommunication {
     UnixDomain {
         socket_file: PathBuf,
     },
+    Interactive,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

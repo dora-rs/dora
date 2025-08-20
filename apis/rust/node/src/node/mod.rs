@@ -17,7 +17,7 @@ use dora_core::{
 
 use dora_message::{
     DataflowId,
-    daemon_to_node::{DaemonReply, NodeConfig},
+    daemon_to_node::{DaemonCommunication, DaemonReply, NodeConfig},
     metadata::{ArrowTypeInfo, Metadata, MetadataParameters},
     node_to_daemon::{DaemonRequest, DataMessage, DropToken, Timestamped},
 };
@@ -99,9 +99,11 @@ impl DoraNode {
     ///
     pub fn init_from_env() -> eyre::Result<(Self, EventStream)> {
         let node_config: NodeConfig = {
-            let raw = std::env::var("DORA_NODE_CONFIG").wrap_err(
+            let Ok(raw) = std::env::var("DORA_NODE_CONFIG").wrap_err(
                 "env variable DORA_NODE_CONFIG must be set. Are you sure your using `dora start`?",
-            )?;
+            ) else {
+                return Self::init_interactive();
+            };
             serde_yaml::from_str(&raw).context("failed to deserialize node config")?
         };
         #[cfg(feature = "tracing")]
@@ -164,6 +166,21 @@ impl DoraNode {
         } else {
             Self::init_from_node_id(node_id)
         }
+    }
+
+    pub fn init_interactive() -> eyre::Result<(Self, EventStream)> {
+        let node_config = NodeConfig {
+            dataflow_id: DataflowId::new_v4(),
+            node_id: "".parse()?,
+            run_config: NodeRunConfig {
+                inputs: Default::default(),
+                outputs: Default::default(),
+            },
+            daemon_communication: DaemonCommunication::Interactive,
+            dataflow_descriptor: serde_yaml::Value::Null,
+            dynamic: false,
+        };
+        Self::init(node_config)
     }
 
     /// Internal initialization routine that should not be used outside of Dora.

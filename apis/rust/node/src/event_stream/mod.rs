@@ -90,6 +90,7 @@ impl EventStream {
                     format!("failed to connect event stream for node `{node_id}`")
                 })?
             }
+            DaemonCommunication::Interactive => DaemonChannel::Interactive(Default::default()),
         };
 
         let close_channel = match daemon_communication {
@@ -109,6 +110,7 @@ impl EventStream {
                     format!("failed to connect event close channel for node `{node_id}`")
                 })?
             }
+            DaemonCommunication::Interactive => DaemonChannel::Interactive(Default::default()),
         };
 
         let mut queue_size_limit: HashMap<DataId, (usize, VecDeque<EventItem>)> = input_config
