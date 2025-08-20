@@ -361,11 +361,13 @@ fn run_single_turn(
                                 let y_scale = (bbox.bbox_2d[3] - bbox.bbox_2d[1]) as f32;
                                 let x_scale =
                                     (bbox.bbox_2d[2] - bbox.bbox_2d[0]) as f32 / n_letter as f32;
-
+                                if x_scale <= 0. || y_scale <= 0. {
+                                    continue;
+                                }
                                 let font_bundle = FontBundle::new(
                                     &font,
                                     Scale {
-                                        x: 4. * y_scale as f32,
+                                        x: 8. * x_scale as f32,
                                         y: 4. * y_scale as f32,
                                     },
                                     Rgba([20, 20, 20, 0]),
