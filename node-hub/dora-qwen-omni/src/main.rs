@@ -26,7 +26,7 @@ use llama_cpp_2::sampling::LlamaSampler;
 use regex::Regex;
 use rusttype::{Font, Scale};
 use serde::{Deserialize, Serialize};
-use text_on_image::{text_on_image, FontBundle};
+use text_on_image::{text_on_image_with_background, FontBundle};
 
 const FONT: &[u8] = include_bytes!("./NotoSansSC-Light.ttf");
 
@@ -365,20 +365,21 @@ fn run_single_turn(
                                 let font_bundle = FontBundle::new(
                                     &font,
                                     Scale {
-                                        x: 5. / 2. * x_scale as f32,
+                                        x: 5. * x_scale as f32,
                                         y: 5. / 2. * y_scale as f32,
                                     },
                                     Rgba([20, 20, 20, 0]),
                                 );
-                                text_on_image(
+                                text_on_image_with_background(
                                     &mut img,
                                     text,
                                     &font_bundle,
                                     5 * bbox.bbox_2d[0] / 2,
-                                    (5. / 2. * y_scale as f32) as i32 + 5 * bbox.bbox_2d[1] / 2,
+                                    5 * bbox.bbox_2d[1] / 2,
                                     text_on_image::TextJustify::Left,
                                     text_on_image::VerticalAnchor::Top,
-                                    text_on_image::WrapBehavior::Wrap(1000),
+                                    text_on_image::WrapBehavior::NoWrap,
+                                    Rgba([255, 255, 255, 50]),
                                 );
                             }
                         }

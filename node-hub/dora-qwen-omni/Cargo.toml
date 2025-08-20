@@ -9,7 +9,7 @@ llama-cpp-2 = { git = "https://github.com/haixuantao/llama-cpp-rs", branch = "de
 ] }
 clap = { version = "4.0.3", features = ["derive"] }
 dora-node-api.workspace = true
-text_on_image = "0.1.0"
+text_on_image = { git = "https://github.com/haixuanTao/text_on_image.git" }
 base64 = "0.22.1"
 image = "0.24.6"
 rusttype = "0.9.3"

@@ -15534,8 +15534,7 @@ dependencies = [
 [[package]]
 name = "text_on_image"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2bd13f6ae9fe9af59d06ec243af87c275e857ab2e2314e2dbc7621b7db0f25dc"
+source = "git+https://github.com/haixuanTao/text_on_image.git#d1e62dc5988822116f31bf0baccb7e1ef1ae224c"
 dependencies = [
  "image 0.24.9",
  "imageproc",
