@@ -1,5 +1,6 @@
 //! Based on the mtmd cli example from llama.cpp.
 
+use std::cmp::min;
 use std::ffi::CString;
 use std::io::Cursor;
 use std::num::NonZeroU32;
@@ -359,14 +360,16 @@ fn run_single_turn(
                                     .unwrap_or_else(|| bbox.label.clone().unwrap_or_default());
                                 let n_letter = text.len();
                                 let y_scale = bbox.bbox_2d[3] - bbox.bbox_2d[1];
-                                let x_scale =
-                                    (bbox.bbox_2d[2] - bbox.bbox_2d[0]) as f32 / n_letter as f32;
+                                let x_scale = min(
+                                    y_scale,
+                                    (bbox.bbox_2d[2] - bbox.bbox_2d[0]) / n_letter as i32,
+                                );
 
                                 let font_bundle = FontBundle::new(
                                     &font,
                                     Scale {
-                                        x: 5. * x_scale as f32,
-                                        y: 5. / 2. * y_scale as f32,
+                                        x: 8. * x_scale as f32,
+                                        y: 4. * y_scale as f32,
                                     },
                                     Rgba([20, 20, 20, 0]),
                                 );
@@ -374,12 +377,12 @@ fn run_single_turn(
                                     &mut img,
                                     text,
                                     &font_bundle,
-                                    4 * bbox.bbox_2d[0],
-                                    4 * bbox.bbox_2d[1],
+                                    10 * bbox.bbox_2d[0] / 3,
+                                    10 * bbox.bbox_2d[1] / 3,
                                     text_on_image::TextJustify::Left,
                                     text_on_image::VerticalAnchor::Top,
                                     text_on_image::WrapBehavior::NoWrap,
-                                    Rgba([255, 255, 255, 50]),
+                                    Rgba([220, 220, 220, 50]),
                                 );
                             }
                         }
