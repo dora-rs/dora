@@ -40,6 +40,7 @@ impl DropStream {
                     format!("failed to connect drop stream for node `{node_id}`")
                 })?
             }
+            DaemonCommunication::Interactive => DaemonChannel::Interactive(Default::default()),
         };
 
         Self::init_on_channel(dataflow_id, node_id, channel, hlc)
