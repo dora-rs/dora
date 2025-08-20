@@ -13,6 +13,9 @@ use std::{
     time::Duration,
 };
 
+use crate::daemon_connection::interactive::InteractiveEvents;
+
+mod interactive;
 mod tcp;
 #[cfg(unix)]
 mod unix_domain;
@@ -22,6 +25,7 @@ pub enum DaemonChannel {
     Tcp(TcpStream),
     #[cfg(unix)]
     UnixDomain(UnixStream),
+    Interactive(InteractiveEvents),
 }
 
 impl DaemonChannel {
@@ -81,6 +85,7 @@ impl DaemonChannel {
             DaemonChannel::Tcp(stream) => tcp::request(stream, request),
             #[cfg(unix)]
             DaemonChannel::UnixDomain(stream) => unix_domain::request(stream, request),
+            DaemonChannel::Interactive(events) => events.request(request),
         }
     }
 }
