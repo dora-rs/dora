@@ -90,6 +90,7 @@ impl EventStream {
                     format!("failed to connect event stream for node `{node_id}`")
                 })?
             }
+            DaemonCommunication::Interactive => DaemonChannel::Interactive(Default::default()),
         };
 
         let close_channel = match daemon_communication {
@@ -109,6 +110,7 @@ impl EventStream {
                     format!("failed to connect event close channel for node `{node_id}`")
                 })?
             }
+            DaemonCommunication::Interactive => DaemonChannel::Interactive(Default::default()),
         };
 
         let mut queue_size_limit: HashMap<DataId, (usize, VecDeque<EventItem>)> = input_config
@@ -285,28 +287,7 @@ impl EventStream {
                 NodeEvent::Reload { operator_id } => Event::Reload { operator_id },
                 NodeEvent::InputClosed { id } => Event::InputClosed { id },
                 NodeEvent::Input { id, metadata, data } => {
-                    let data = match data {
-                        None => Ok(None),
-                        Some(DataMessage::Vec(v)) => Ok(Some(RawData::Vec(v))),
-                        Some(DataMessage::SharedMemory {
-                            shared_memory_id,
-                            len,
-                            drop_token: _, // handled in `event_stream_loop`
-                        }) => unsafe {
-                            MappedInputData::map(&shared_memory_id, len).map(|data| {
-                                Some(RawData::SharedMemory(SharedMemoryData {
-                                    data,
-                                    _drop: ack_channel,
-                                }))
-                            })
-                        },
-                    };
-                    let data = data.and_then(|data| {
-                        let raw_data = data.unwrap_or(RawData::Empty);
-                        raw_data
-                            .into_arrow_array(&metadata.type_info)
-                            .map(arrow::array::make_array)
-                    });
+                    let data = data_to_arrow_array(data, &metadata, ack_channel);
                     match data {
                         Ok(data) => Event::Input {
                             id,
@@ -327,6 +308,36 @@ impl EventStream {
             }
         }
     }
+}
+
+pub fn data_to_arrow_array(
+    data: Option<DataMessage>,
+    metadata: &dora_message::metadata::Metadata,
+    drop_channel: flume::Sender<()>,
+) -> eyre::Result<Arc<dyn arrow::array::Array>> {
+    let data = match data {
+        None => Ok(None),
+        Some(DataMessage::Vec(v)) => Ok(Some(RawData::Vec(v))),
+        Some(DataMessage::SharedMemory {
+            shared_memory_id,
+            len,
+            drop_token: _, // handled in `event_stream_loop`
+        }) => unsafe {
+            MappedInputData::map(&shared_memory_id, len).map(|data| {
+                Some(RawData::SharedMemory(SharedMemoryData {
+                    data,
+                    _drop: drop_channel,
+                }))
+            })
+        },
+    };
+    let data = data.and_then(|data| {
+        let raw_data = data.unwrap_or(RawData::Empty);
+        raw_data
+            .into_arrow_array(&metadata.type_info)
+            .map(arrow::array::make_array)
+    });
+    data
 }
 
 impl Stream for EventStream {

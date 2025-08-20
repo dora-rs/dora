@@ -7,6 +7,7 @@ use self::{
 };
 use aligned_vec::{AVec, ConstAlign};
 use arrow::array::Array;
+use colored::Colorize;
 use dora_core::{
     config::{DataId, NodeId, NodeRunConfig},
     descriptor::Descriptor,
@@ -14,10 +15,9 @@ use dora_core::{
     topics::{DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, LOCALHOST},
     uhlc,
 };
-
 use dora_message::{
     DataflowId,
-    daemon_to_node::{DaemonReply, NodeConfig},
+    daemon_to_node::{DaemonCommunication, DaemonReply, NodeConfig},
     metadata::{ArrowTypeInfo, Metadata, MetadataParameters},
     node_to_daemon::{DaemonRequest, DataMessage, DropToken, Timestamped},
 };
@@ -29,14 +29,13 @@ use std::{
     sync::Arc,
     time::Duration,
 };
+use tokio::runtime::{Handle, Runtime};
 use tracing::{info, warn};
 
 #[cfg(feature = "metrics")]
 use dora_metrics::run_metrics_monitor;
 #[cfg(feature = "tracing")]
 use dora_tracing::TracingBuilder;
-
-use tokio::runtime::{Handle, Runtime};
 
 pub mod arrow_utils;
 mod control_channel;
@@ -82,6 +81,8 @@ pub struct DoraNode {
     dataflow_descriptor: serde_yaml::Result<Descriptor>,
     warned_unknown_output: BTreeSet<DataId>,
     _rt: TokioRuntime,
+
+    interactive: bool,
 }
 
 impl DoraNode {
@@ -99,9 +100,16 @@ impl DoraNode {
     ///
     pub fn init_from_env() -> eyre::Result<(Self, EventStream)> {
         let node_config: NodeConfig = {
-            let raw = std::env::var("DORA_NODE_CONFIG").wrap_err(
+            let Ok(raw) = std::env::var("DORA_NODE_CONFIG").wrap_err(
                 "env variable DORA_NODE_CONFIG must be set. Are you sure your using `dora start`?",
-            )?;
+            ) else {
+                println!(
+                    "{}",
+                    "Starting node in interactive mode as DORA_NODE_CONFIG env variable is not set"
+                        .green()
+                );
+                return Self::init_interactive();
+            };
             serde_yaml::from_str(&raw).context("failed to deserialize node config")?
         };
         #[cfg(feature = "tracing")]
@@ -164,6 +172,31 @@ impl DoraNode {
         } else {
             Self::init_from_node_id(node_id)
         }
+    }
+
+    fn init_interactive() -> eyre::Result<(Self, EventStream)> {
+        #[cfg(feature = "tracing")]
+        {
+            TracingBuilder::new("node")
+                .with_stdout("debug")
+                .build()
+                .wrap_err("failed to set up tracing subscriber")?;
+        }
+
+        let node_config = NodeConfig {
+            dataflow_id: DataflowId::new_v4(),
+            node_id: "".parse()?,
+            run_config: NodeRunConfig {
+                inputs: Default::default(),
+                outputs: Default::default(),
+            },
+            daemon_communication: DaemonCommunication::Interactive,
+            dataflow_descriptor: serde_yaml::Value::Null,
+            dynamic: false,
+        };
+        let (mut node, events) = Self::init(node_config)?;
+        node.interactive = true;
+        Ok((node, events))
     }
 
     /// Internal initialization routine that should not be used outside of Dora.
@@ -236,12 +269,13 @@ impl DoraNode {
             dataflow_descriptor: serde_yaml::from_value(dataflow_descriptor),
             warned_unknown_output: BTreeSet::new(),
             _rt: rt,
+            interactive: false,
         };
         Ok((node, event_stream))
     }
 
     fn validate_output(&mut self, output_id: &DataId) -> bool {
-        if !self.node_config.outputs.contains(output_id) {
+        if !self.node_config.outputs.contains(output_id) && !self.interactive {
             if !self.warned_unknown_output.contains(output_id) {
                 warn!("Ignoring output `{output_id}` not in node's output list.");
                 self.warned_unknown_output.insert(output_id.clone());
@@ -391,7 +425,9 @@ impl DoraNode {
         parameters: MetadataParameters,
         sample: Option<DataSample>,
     ) -> eyre::Result<()> {
-        self.handle_finished_drop_tokens()?;
+        if !self.interactive {
+            self.handle_finished_drop_tokens()?;
+        }
 
         let metadata = Metadata::from_parameters(self.clock.new_timestamp(), type_info, parameters);
 
@@ -453,7 +489,7 @@ impl DoraNode {
     /// The data sample will use shared memory when suitable to enable efficient data transfer
     /// when sending an output message.
     pub fn allocate_data_sample(&mut self, data_len: usize) -> eyre::Result<DataSample> {
-        let data = if data_len >= ZERO_COPY_THRESHOLD {
+        let data = if data_len >= ZERO_COPY_THRESHOLD && !self.interactive {
             // create shared memory region
             let shared_memory = self.allocate_shared_memory(data_len)?;
 
