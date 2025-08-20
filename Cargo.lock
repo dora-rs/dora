@@ -3871,6 +3871,7 @@ dependencies = [
  "serde_json",
  "serde_yaml 0.9.34+deprecated",
  "shared-memory-server",
+ "shellexpand 3.1.1",
  "sysinfo 0.30.13",
  "tokio",
  "tokio-stream",
@@ -14281,9 +14282,9 @@ dependencies = [
 
 [[package]]
 name = "shellexpand"
-version = "3.1.0"
+version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da03fa3b94cc19e3ebfc88c4229c49d8f08cdbd1228870a45f0ffdf84988e14b"
+checksum = "8b1fdf65dd6331831494dd616b30351c38e96e45921a27745cf98490458b90bb"
 dependencies = [
  "dirs 5.0.1",
 ]
@@ -18739,7 +18740,7 @@ dependencies = [
  "log",
  "pnet",
  "pnet_datalink 0.31.0",
- "shellexpand 3.1.0",
+ "shellexpand 3.1.1",
  "winapi 0.3.9",
  "zenoh-cfg-properties",
  "zenoh-collections 0.7.0-rc",
@@ -18765,7 +18766,7 @@ dependencies = [
  "pnet_datalink 0.35.0",
  "serde",
  "serde_json",
- "shellexpand 3.1.0",
+ "shellexpand 3.1.1",
  "tokio",
  "tracing",
  "tracing-subscriber",

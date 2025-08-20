@@ -652,7 +652,8 @@ async fn path_spawn_command(
                     .await
                     .wrap_err("failed to download custom node")?
             } else {
-                resolve_path(source, working_dir)
+                let source = shellexpand::env(source)?;
+                resolve_path(source.as_ref(), working_dir)
                     .wrap_err_with(|| format!("failed to resolve node source `{source}`"))?
             };
 
