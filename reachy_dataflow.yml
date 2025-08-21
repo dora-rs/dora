@@ -1,0 +1,138 @@
+nodes:
+- build: pip install -e ../../node-hub/dora-microphone
+  id: dora-microphone
+  inputs:
+    tick: dora/timer/millis/2000
+  outputs:
+  - audio
+  path: dora-microphone
+- build: pip install -e ../../node-hub/dora-vad
+  id: dora-vad
+  inputs:
+    audio: dora-microphone/audio
+  outputs:
+  - audio
+  path: dora-vad
+- build: pip install -e ../../node-hub/dora-distil-whisper
+  env:
+    TARGET_LANGUAGE: english
+    TRANSLATE: true
+  id: dora-distil-whisper
+  inputs:
+    input: dora-vad/audio
+  outputs:
+  - text
+  path: dora-distil-whisper
+- build: pip install -e ../../node-hub/dora-reachy2
+  env:
+    ROBOT_IP: 172.17.134.85
+  id: reachy-mobile-base
+  inputs:
+    action_base: state_machine/action_base
+  outputs:
+  - response_base
+  path: dora-reachy2-mobile-base
+- build: pip install -e ../../node-hub/dora-reachy2
+  env:
+    ROBOT_IP: 172.17.134.85
+  id: reachy-left-arm
+  inputs:
+    pose: state_machine/action_l_arm
+  outputs:
+  - response_l_arm
+  path: dora-reachy2-left-arm
+- build: pip install -e ../../node-hub/dora-reachy2
+  env:
+    ROBOT_IP: 172.17.134.85
+  id: reachy-right-arm
+  inputs:
+    pose: state_machine/action_r_arm
+  outputs:
+  - response_r_arm
+  path: dora-reachy2-right-arm
+- build: pip install -e ../../node-hub/dora-reachy2
+  env:
+    ROBOT_IP: 172.17.134.85
+  id: reachy-camera
+  inputs:
+    tick: dora/timer/millis/50
+  outputs:
+  - image_right
+  - image_depth
+  - image_left
+  - depth
+  path: dora-reachy2-camera
+- build: pip install -e ../../node-hub/dora-reachy2
+  env:
+    ROBOT_IP: 172.17.134.85
+  id: reachy-head
+  inputs:
+    boxes2d: parse_bbox/bbox_face
+    look: state_machine/look
+  path: dora-reachy2-head
+- build: pip install -e ../../node-hub/dora-rerun
+  env:
+    RERUN_MEMORY_LIMIT: 5%
+  id: plot
+  inputs:
+    camera_left/boxes2d_face: parse_bbox/bbox_face
+    camera_left/image_right: reachy-camera/image_right
+    camera_torso/boxes2d: parse_bbox/bbox
+    camera_torso/image: reachy-camera/image_depth
+    text_response: dora-qwenvl/text
+    text_whisper: dora-distil-whisper/text
+  path: dora-rerun
+- build: pip install -e ../../node-hub/dora-qwen2-5-vl
+  env:
+    DEFAULT_QUESTION: grab human.
+    IMAGE_RESIZE_RATIO: '0.5'
+  id: dora-qwenvl
+  inputs:
+    image_depth: reachy-camera/image_depth
+    image_left: reachy-camera/image_left
+    text_1: dora/timer/millis/500
+    text_2:
+      queue_size: 10
+      source: state_machine/text_vlm
+  outputs:
+  - text
+  path: dora-qwen2-5-vl
+- env:
+    IMAGE_RESIZE_RATIO: '0.5'
+  id: parse_bbox
+  inputs:
+    text: dora-qwenvl/text
+  outputs:
+  - bbox_face
+  - bbox
+  path: parse_bbox.py
+- build: pip install -e ../../node-hub/dora-object-to-pose
+  id: box_coordinates
+  inputs:
+    boxes2d: parse_bbox/bbox
+    depth: reachy-camera/depth
+  outputs:
+  - pose
+  path: dora-object-to-pose
+- build: pip install -e ../../node-hub/dora-keyboard
+  id: keyboard
+  inputs:
+    tick: dora/timer/millis/1000
+  path: dora-keyboard
+- env:
+    ACTIVATION_WORDS: grab pick give output take catch grabs picks gives output takes
+      catches have
+  id: state_machine
+  inputs:
+    pose: box_coordinates/pose
+    response_base: reachy-mobile-base/response_base
+    response_l_arm: reachy-left-arm/response_l_arm
+    response_r_arm: reachy-right-arm/response_r_arm
+    text: dora-distil-whisper/text
+  outputs:
+  - action_base
+  - action_l_arm
+  - action_r_arm
+  - look
+  - text_vlm
+  path: state_machine.py
