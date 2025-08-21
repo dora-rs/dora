@@ -4338,6 +4338,7 @@ dependencies = [
  "image 0.24.9",
  "llama-cpp-2",
  "regex",
+ "repair_json",
  "rusttype",
  "serde",
  "serde_json",
@@ -13008,6 +13009,15 @@ name = "renderdoc-sys"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
+
+[[package]]
+name = "repair_json"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5ee191e184125fe72cb59b74160e25584e3908f2aaa84cbda1e161347102aa15"
+dependencies = [
+ "thiserror 1.0.69",
+]
 
 [[package]]
 name = "reqwest"

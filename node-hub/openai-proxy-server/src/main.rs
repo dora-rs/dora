@@ -36,7 +36,7 @@ pub mod message;
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
     let web_ui = Path::new("chatbot-ui");
-    let port = 8000;
+    let port = 8080;
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
 
     let (server_events_tx, server_events_rx) = mpsc::channel(3);
@@ -261,6 +261,7 @@ fn static_response(path_str: &str, root: String) -> Response<Body> {
             .unwrap(),
         Err(_) => {
             let body = Body::from(std::fs::read(format!("{root}/404.html")).unwrap_or_default());
+            eprintln!("No file found for: {root}/{path}");
             Response::builder()
                 .status(StatusCode::NOT_FOUND)
                 .header(header::CONTENT_TYPE, "text/html")
