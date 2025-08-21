@@ -77,19 +77,31 @@ class Dataflow:
 
     def run(self):
         """Generates the YAML file and runs the dataflow in the foreground."""
-        with tempfile.NamedTemporaryFile(mode="w", delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".yaml") as f:
             self.to_yaml(f.name)
-            subprocess.run(["dora", "start", f.name], check=True)
+            print(f"Building dataflow from {f.name}")
+            subprocess.run(["dora", "build", f.name], check=True)
+            print(f"Running dataflow from {f.name}")
+            subprocess.run(["dora", "run", f.name], check=True)
 
     def start(self):
         """Generates the YAML file and starts the dataflow in the background."""
-        with tempfile.NamedTemporaryFile(mode="w", delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".yaml") as f:
             self.to_yaml(f.name)
-            subprocess.run(["dora", "start", f.name, "--detach"], check=True)
+            print("Ensuring dora daemon is running...")
+            subprocess.run(["dora", "up"], check=True)
+            print(f"Building dataflow from {f.name}")
+            subprocess.run(["dora", "build", f.name], check=True)
+            print(f"Starting dataflow {self.name} from {f.name}")
+            subprocess.run(
+                ["dora", "start", "--name", self.name, "--detach", f.name],
+                check=True,
+            )
 
     def stop(self):
         """Stops a dataflow that was started in the background."""
-        subprocess.run(["dora", "stop", "--all"], check=True)
+        print(f"Stopping dataflow {self.name}")
+        subprocess.run(["dora", "stop", "--name", self.name], check=True)
 
     def visualize(self, format: str = "png", view: bool = True):
         """Generates a visual representation of the dataflow graph."""
