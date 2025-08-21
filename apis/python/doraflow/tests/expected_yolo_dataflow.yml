@@ -1,0 +1,25 @@
+nodes:
+- id: camera
+  path: ../../node-hub/opencv-video-capture/opencv_video_capture/main.py
+  build: pip install opencv-python
+  env:
+    CAPTURE_PATH: 0
+    IMAGE_WIDTH: 640
+    IMAGE_HEIGHT: 480
+  inputs:
+    tick: dora/timer/millis/20
+  outputs:
+  - image
+- id: object-detection
+  path: ../../node-hub/dora-yolo/dora_yolo/main.py
+  build: pip install ultralytics
+  inputs:
+    image: camera/image
+  outputs:
+  - bbox
+- id: plot
+  path: ../../node-hub/dora-rerun/dora_rerun/main.py
+  build: pip install rerun
+  inputs:
+    image: camera/image
+    boxes2d: object-detection/bbox
