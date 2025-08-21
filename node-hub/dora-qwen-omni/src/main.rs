@@ -24,11 +24,12 @@ use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::model::{LlamaChatMessage, LlamaChatTemplate, LlamaModel, Special};
 use llama_cpp_2::sampling::LlamaSampler;
 use regex::Regex;
+use repair_json::repair;
 use rusttype::{Font, Scale};
 use serde::{Deserialize, Serialize};
 use text_on_image::{text_on_image_with_background, FontBundle};
 
-const FONT: &[u8] = include_bytes!("./NotoSansSC-Light.ttf");
+const FONT: &[u8] = include_bytes!("NotoSansCJKsc-Bold.otf");
 
 /// Command line parameters for the MTMD CLI application
 #[derive(clap::Parser, Debug)]
@@ -55,11 +56,11 @@ pub struct MtmdCliParams {
         short = 'n',
         long = "n-predict",
         value_name = "N",
-        default_value = "4096"
+        default_value = "2048"
     )]
     pub n_predict: i32,
     /// Number of threads
-    #[arg(short = 't', long = "threads", value_name = "N", default_value = "12")]
+    #[arg(short = 't', long = "threads", value_name = "N", default_value = "24")]
     pub n_threads: i32,
     /// Maximum number of tokens in context
     #[arg(long = "n-tokens", value_name = "N", default_value = "16384")]
@@ -173,11 +174,13 @@ impl MtmdCliContext {
 
         let bitmap_refs: Vec<&MtmdBitmap> = self.bitmaps.iter().collect();
 
-        if bitmap_refs.is_empty() {
+        let batch = if bitmap_refs.is_empty() {
             println!("No bitmaps provided, only tokenizing text");
+            1
         } else {
             println!("Tokenizing with {} bitmaps", bitmap_refs.len());
-        }
+            10
+        };
 
         // Tokenize the input
         let chunks = self.mtmd_ctx.tokenize(input_text, &bitmap_refs)?;
@@ -187,8 +190,7 @@ impl MtmdCliContext {
         // Clear bitmaps after tokenization
         self.bitmaps.clear();
 
-        self.n_past = chunks.eval_chunks(&self.mtmd_ctx, context, self.n_past, 0, 1, true)?;
-        println!("----------------------");
+        self.n_past = chunks.eval_chunks(&self.mtmd_ctx, context, self.n_past, 0, batch, true)?;
         Ok(())
     }
 
@@ -314,11 +316,12 @@ fn run_single_turn(
                 // Create user message
                 let msg = LlamaChatMessage::new("user".to_string(), prompt)?;
 
-                println!("Evaluating message: {msg:?}");
-
                 // Evaluate the message (prefill)
                 ctx.eval_message(model, &mut context, msg, true)?;
+                let instant2 = std::time::Instant::now();
                 let text = ctx.generate_response(model, &mut context, sampler, params.n_predict)?;
+                let elapsed = instant2.elapsed();
+                println!("got token in {:.2?}", elapsed);
                 ctx.bitmaps = vec![];
                 ctx.n_past = 0;
                 ctx.chat = vec![];
@@ -328,14 +331,17 @@ fn run_single_turn(
                     .with_n_batch(1)
                     .with_n_ctx(Some(params.n_tokens));
                 let mut context = model.new_context(&backend, context_params)?;
-                let mut translation_prompt = "Translate this into Chinese: ".to_string();
+                let mut translation_prompt = "Translate Chinese into English: ".to_string();
                 translation_prompt.push_str(&text);
                 println!("test: {}", translation_prompt);
                 let msg = LlamaChatMessage::new("user".to_string(), translation_prompt)?;
+                let instant3 = std::time::Instant::now();
                 ctx.eval_message(model, &mut context, msg, true)?;
 
                 // Generate response (decode)
                 let text = ctx.generate_response(model, &mut context, sampler, params.n_predict)?;
+                let elapsed = instant3.elapsed();
+                println!("got translation in {:.2?}", elapsed);
                 let elapsed = instant.elapsed();
                 println!("\nResponse generated in {:.2?}", elapsed);
 
@@ -350,38 +356,51 @@ fn run_single_turn(
                     let font = Vec::from(FONT);
                     let font = Font::try_from_vec(font).unwrap();
 
-                    match parse_bounding_boxes(&text) {
+                    match parse_bounding_boxes(&repair(text.clone()).unwrap_or_default()) {
                         Ok(boxes) => {
                             for bbox in boxes.iter() {
                                 let text = bbox
                                     .text_content
                                     .clone()
                                     .unwrap_or_else(|| bbox.label.clone().unwrap_or_default());
-                                let n_letter = text.len();
+
+                                let resize = f32::max(
+                                    img.height() as f32 / 1000.,
+                                    img.width() as f32 / 1000.,
+                                );
+
                                 let y_scale = (bbox.bbox_2d[3] - bbox.bbox_2d[1]) as f32;
-                                let x_scale =
-                                    (bbox.bbox_2d[2] - bbox.bbox_2d[0]) as f32 / n_letter as f32;
-                                if x_scale <= 0. || y_scale <= 0. {
+
+                                if y_scale <= 0. {
                                     continue;
                                 }
+
                                 let font_bundle = FontBundle::new(
                                     &font,
                                     Scale {
-                                        x: 8. * x_scale as f32,
-                                        y: 4. * y_scale as f32,
+                                        x: 1.2 * resize * (y_scale as f32),
+                                        y: 1.2 * resize * (y_scale as f32),
                                     },
                                     Rgba([20, 20, 20, 0]),
                                 );
+                                let width = bbox.bbox_2d[2] - bbox.bbox_2d[0];
+                                let wrap = if width as f32 * resize < 3. * y_scale * resize {
+                                    text_on_image::WrapBehavior::NoWrap
+                                } else {
+                                    text_on_image::WrapBehavior::Wrap(
+                                        (width as f32 * resize) as u32,
+                                    )
+                                };
                                 text_on_image_with_background(
                                     &mut img,
                                     text,
                                     &font_bundle,
-                                    10 * bbox.bbox_2d[0] / 3,
-                                    10 * bbox.bbox_2d[1] / 3,
+                                    (resize * (bbox.bbox_2d[0] as f32)) as i32,
+                                    (resize * (bbox.bbox_2d[1] as f32)) as i32,
                                     text_on_image::TextJustify::Left,
                                     text_on_image::VerticalAnchor::Top,
-                                    text_on_image::WrapBehavior::NoWrap,
-                                    Rgba([235, 235, 235, 50]),
+                                    wrap,
+                                    Rgba([248, 252, 235, 50]),
                                 );
                             }
                         }
@@ -476,9 +495,11 @@ struct BoundingBox {
 
 fn parse_bounding_boxes(json_str: &str) -> Result<Vec<BoundingBox>, serde_json::Error> {
     // Strip the markdown code block markers
+    let mut cleaned = json_str.split("```json");
+    cleaned.next().unwrap_or_default();
+    let json_str = cleaned.next().unwrap_or_default();
+
     let mut cleaned = json_str
-        .strip_prefix("```json")
-        .unwrap_or(json_str)
         .strip_suffix("```")
         .unwrap_or(json_str)
         .trim()

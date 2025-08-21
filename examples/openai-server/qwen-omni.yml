@@ -10,8 +10,8 @@ nodes:
   - id: dora-qwen-omni
     build: |
       wget -nc https://huggingface.co/Mungert/Qwen2.5-Omni-7B-GGUF/resolve/main/Qwen2.5-Omni-7B-q4_k_m.gguf
-      wget -nc https://huggingface.co/Mungert/Qwen2.5-Omni-3B-GGUF/resolve/main/Qwen2.5-Omni-3B-fp16.mmproj
-      cargo build -p dora-qwen-omni -r --features metal
+      wget -nc https://huggingface.co/Mungert/Qwen2.5-Omni-7B-GGUF/resolve/main/Qwen2.5-Omni-7B-f16.mmproj
+      cargo build -p dora-qwen-omni -r --features cuda
     path: ../../target/release/dora-qwen-omni
     args: --model Qwen2.5-Omni-7B-q4_k_m.gguf --mmproj Qwen2.5-Omni-7B-f16.mmproj --prompt "Output:"
     inputs:
