@@ -7,7 +7,7 @@
 <h2 align="center">
   <a href="https://www.dora-rs.ai">Website</a>
   |
-  <a href="https://dora-rs.ai/docs/guides/getting-started/conversation_py/">Python API</a>
+  <a href="https://dora-rs.ai/docs/DORAFLOW_PYTHON_API.md">Python API</a>
   |
   <a href="https://docs.rs/dora-node-api/latest/dora_node_api/">Rust API</a>
   |
@@ -62,6 +62,7 @@
 <details open>
 <summary><b>2025</b></summary>
 
+- \[08/25\] Introduced `doraflow`, a new Pythonic API for imperatively defining `dora` dataflows.
 - \[07/25\] Added Kornia rust nodes in the hub for V4L / Gstreamer cameras and Sobel image processing.
 - \[06/25\] Add support for git based node, dora-vggt for multi-camera depth estimation, and adding robot_descriptions_py as a default way to get urdfs within dora.
 - \[05/25\] Add support for dora-pytorch-kinematics for fk and ik, dora-mediapipe for pose estimation, dora-rustypot for rust serialport read/write, points2d and points3d visualization in rerun.
@@ -76,16 +77,16 @@
 
 ## Support Matrix
 
-|                                   | dora-rs                                                                                                                                                                                         |
-| --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **APIs**                          | Python >= 3.7 including sync ⭐✅ <br> Rust ✅<br> C/C++ 🆗 <br>ROS2 >= Foxy 🆗                                                                                                                      |
+|                                   | dora-rs                                                                                                                                                                                                     |
+| --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **APIs**                          | Python >= 3.7 including sync ⭐✅ <br> Rust ✅<br> C/C++ 🆗 <br>ROS2 >= Foxy 🆗                                                                                                                             |
 | **OS**                            | Linux: Arm 32 ⭐✅ Arm 64 ⭐✅ x64_86 ⭐✅ <br>MacOS: Arm 64 ⭐✅ <br>Windows: x64_86 🆗 <br>WSL: x64_86 🆗 <br> Android: 🛠️ (Blocked by: https://github.com/elast0ny/shared_memory/issues/32) <br> IOS: 🛠️ |
-| **Message Format**                | Arrow ✅ <br> Standard Specification 🛠️                                                                                                                                                           |
-| **Local Communication**           | Shared Memory ✅ <br> [Cuda IPC](https://arrow.apache.org/docs/python/api/cuda.html) 📐                                                                                                           |
-| **Remote Communication**          | [Zenoh](https://zenoh.io/) 📐                                                                                                                                                                    |
-| **Metrics, Tracing, and Logging** | Opentelemetry 📐                                                                                                                                                                                 |
-| **Configuration**                 | YAML ✅                                                                                                                                                                                          |
-| **Package Manager**               | [pip](https://pypi.org/): Python Node ✅ Rust Node ✅ C/C++ Node 🛠️ <br>[cargo](https://crates.io/): Rust Node ✅                                                                                   |
+| **Message Format**                | Arrow ✅ <br> Standard Specification 🛠️                                                                                                                                                                     |
+| **Local Communication**           | Shared Memory ✅ <br> [Cuda IPC](https://arrow.apache.org/docs/python/api/cuda.html) 📐                                                                                                                     |
+| **Remote Communication**          | [Zenoh](https://zenoh.io/) 📐                                                                                                                                                                               |
+| **Metrics, Tracing, and Logging** | Opentelemetry 📐                                                                                                                                                                                            |
+| **Configuration**                 | YAML ✅                                                                                                                                                                                                     |
+| **Package Manager**               | [pip](https://pypi.org/): Python Node ✅ Rust Node ✅ C/C++ Node 🛠️ <br>[cargo](https://crates.io/): Rust Node ✅                                                                                           |
 
 > - ⭐ = Recommended
 > - ✅ = First Class Support
@@ -115,6 +116,7 @@ The node hub is available in the [**`dora-rs/node-hub`**](https://github.com/dor
 | Tutorial  | [C Example](https://github.com/dora-rs/dora/blob/main/examples/c-dataflow)                     | Example with C node                     | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fc-dataflow&label=%20)            |
 | Tutorial  | [CUDA Example](https://github.com/dora-rs/dora/blob/main/examples/cuda-benchmark)              | Example using CUDA Zero Copy            | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fcuda-benchmark&label=%20)        |
 | Tutorial  | [C++ Example](https://github.com/dora-rs/dora/blob/main/examples/c++-dataflow)                 | Example with C++ node                   | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fc%2b%2b-dataflow&label=%20)      |
+| Tutorial  | [doraflow Examples](https://github.com/dora-rs/dora/blob/main/examples/doraflow)               | Examples using the new Pythonic API.    | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fdoraflow&label=%20)              |
 
 ## Getting Started
 
