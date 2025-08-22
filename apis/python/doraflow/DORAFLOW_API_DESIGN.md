@@ -33,9 +33,6 @@ class Dataflow:
                              destinations: dict[str, str | 'Node']):
         ...
 
-    def set_entry_point(self, node: str | 'Node'):
-        ...
-
     # Execution and Output
     def to_yaml(self, path: str = None) -> str | None:
         ...
