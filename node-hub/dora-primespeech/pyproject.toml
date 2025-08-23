@@ -1,0 +1,52 @@
+[project]
+name = "dora-primespeech"
+version = "0.1.0"
+description = "Dora node for GPT-SoVITS text-to-speech synthesis"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "dora-rs>=0.3.7",
+    "numpy>=1.21.0",
+    "pyarrow>=10.0.0",
+    "torch>=2.0.0",
+    "torchaudio>=2.0.0",
+    "scipy>=1.7.0",
+    "librosa>=0.10.0",
+    "soundfile>=0.12.0",
+    "pypinyin>=0.50.0",
+    "jieba>=0.42.1",
+    "cn2an>=0.5.22",
+    "pypinyin-dict>=0.8.0",
+    "transformers>=4.35.0",
+    "huggingface-hub>=0.19.0",
+    "pydantic>=2.0.0",
+    # Additional dependencies for MoYoYo TTS
+    "ffmpeg-python>=0.2.0",
+    "pyyaml>=6.0",
+    "tqdm>=4.65.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+]
+
+[project.scripts]
+dora-primespeech = "dora_primespeech.main:main"
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["dora_primespeech*"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py38"
+
+[tool.black]
+line-length = 120
+target-version = ["py38"]

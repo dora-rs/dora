@@ -1,0 +1,29 @@
+[project]
+name = "dora-asr"
+version = "0.1.0"
+authors = [
+    {name = "Dora Contributors"},
+]
+description = "Multi-engine ASR node for Dora with Whisper and FunASR support"
+readme = "README.md"
+
+dependencies = [
+    "dora-rs",
+    "numpy",
+    "pyarrow",
+    "pywhispercpp @ git+https://github.com/absadiki/pywhispercpp.git",
+    "funasr-onnx",
+    "librosa",
+]
+
+[project.optional-dependencies]
+gpu = [
+    "torch",
+    "torchaudio",
+]
+
+[project.scripts]
+dora-asr = "dora_asr.main:main"
+
+[project.entry-points."dora.nodes"]
+dora-asr = "dora_asr.main:main"

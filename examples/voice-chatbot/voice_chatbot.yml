@@ -1,0 +1,208 @@
+nodes:
+  # ===== INPUT PIPELINE (from realtime-interpreter) =====
+  
+  # Dynamic microphone input
+  - id: microphone
+    path: dynamic
+    outputs:
+      - audio
+
+  # Speech detection and segmentation with pause/resume capability
+  - id: speech-monitor
+    build: pip install -e ../../node-hub/dora-speechmonitor
+    path: dora-speechmonitor
+    inputs:
+      audio:
+        source: microphone/audio
+        queue_size: 1000000
+      control: chat-controller/speech_control  # Pause/resume control
+    outputs:
+      - speech_started
+      - speech_ended
+      - question_ended
+      - is_speaking
+      - audio_segment
+      - speech_probability
+      - log
+    env:
+      MIN_AUDIO_AMPLITUDE: 0.01
+      ACTIVE_FRAME_THRESHOLD_MS: 100
+      USER_SILENCE_THRESHOLD_MS: 1500  # 1.5s of silence = question complete
+      SILENCE_THRESHOLD_MS: 500  # Internal silence threshold
+      QUESTION_END_SILENCE_MS: 3000  # 3s silence after speech = definitive question end
+      AUDIO_FRAMES_THRESHOLD_MS: 10000
+      VAD_THRESHOLD: 0.6
+      VAD_ENABLED: true
+      SAMPLE_RATE: 16000
+      LOG_LEVEL: INFO
+
+  # ASR transcription with language detection
+  - id: asr
+    build: pip install -e ../../node-hub/dora-asr
+    path: dora-asr
+    inputs:
+      audio:
+        source: speech-monitor/audio_segment
+        queue_size: 10
+    outputs:
+      - transcription
+      - language_detected
+      - processing_time
+      - confidence
+      - log
+    env:
+      # Force specific languages for better performance
+      ASR_ENGINE: auto  # auto, whisper, or funasr (auto will fallback to whisper if funasr fails)
+      LANGUAGE: zh      # Will detect zh or en
+      
+      # Model settings
+      WHISPER_MODEL: small  # tiny, base, small, medium, large
+      
+      # Features
+      ENABLE_PUNCTUATION: true
+      ENABLE_LANGUAGE_DETECTION: true
+      ENABLE_CONFIDENCE_SCORE: false
+      
+      # Logging
+      LOG_LEVEL: INFO
+
+  # ===== CHAT CONTROLLER (Static Node - Central Orchestrator) =====
+  
+  - id: chat-controller
+    build: pip install -e ../../node-hub/dora-chat-controller
+    path: dora-chat-controller
+    inputs:
+      # From speech pipeline
+      speech_started: speech-monitor/speech_started
+      speech_ended: speech-monitor/speech_ended
+      question_ended: speech-monitor/question_ended  # Definitive question end signal
+      transcription: asr/transcription  # For accumulating transcriptions
+      
+      # From audio player for completion detection
+      buffer_status: audio-player/buffer_status
+      
+      # External control
+      control: external/control  # Optional external control
+    outputs:
+      - question_to_llm    # Complete questions to LLM
+      - speech_control     # Control for speech monitor (pause/resume)
+      - transcription_display  # For monitoring/display
+      - status            # Conversation state and statistics
+      - log               # Logging output
+    env:
+      MIN_QUESTION_LENGTH: 5  # Minimum characters for valid question
+      MAX_CONVERSATION_HISTORY: 10  # Number of Q&A pairs to remember
+      ANSWER_COMPLETE_BUFFER_THRESHOLD: 1.0  # Buffer % to consider answer complete (1% = nearly empty)
+
+  # ===== LLM (from realtime-interpreter with MLX) =====
+  
+  - id: qwen3-llm
+    build: pip install -e ../../node-hub/dora-qwen3
+    path: dora-qwen3
+    inputs:
+      text: chat-controller/question_to_llm  # Questions from chat controller
+    outputs:
+      - text
+      - status
+      - log
+    env:
+      # Model Configuration
+      USE_MLX: auto  # auto, true, or false (auto detects Apple Silicon)
+      
+      # GGUF model settings (for non-Apple Silicon)
+      GGUF_MODEL: "Qwen/Qwen3-8B-GGUF"
+      GGUF_MODEL_FILE: "*[qQ]4_[kK]_[mM].[gG][gG][uU][fF]"  # Q4_K_M quantization
+      N_GPU_LAYERS: 0
+      N_THREADS: 8
+      CONTEXT_SIZE: 4096
+      
+      # MLX model settings (for Apple Silicon)
+      MLX_MODEL: "Qwen/Qwen3-8B-MLX-4bit"
+      MLX_MAX_TOKENS: 256  # Reasonable length for voice responses
+      MLX_TEMPERATURE: 0.7  # Balanced for conversation
+      
+      # Generation settings
+      MAX_TOKENS: 256  # Keep responses concise for voice
+      TEMPERATURE: 0.7  # Natural conversation temperature
+      ENABLE_THINKING: false  # Disable for faster response
+      SYSTEM_PROMPT: "你的回答第一句话必须少于十个字。每段回答控制在二到三句话，既不要过短也不要过长，以适应对话语境。回答应准确、精炼且有依据。你是AI助手。请以自然流畅的中文口语化表达直接回答问题，避免冗余的思考过程。"
+
+      # Logging
+      LOG_LEVEL: INFO
+
+  # ===== OUTPUT PIPELINE (from primespeech-streaming-test) =====
+  
+  # Text segmenter receives answers directly from LLM
+  - id: text-segmenter
+    build: pip install -e ../../node-hub/dora-text-segmenter
+    path: dora-text-segmenter
+    inputs:
+      text: qwen3-llm/text  # Answers directly from LLM
+      control_signal: conversation-controller/segment_control
+      control: external/control  # Optional external control
+      tts_complete: primespeech/segment_complete
+    outputs:
+      - text_segment
+      - status
+    env:
+      USE_TEST_TEXT: "false"
+      MAX_SEGMENT_LENGTH: "50"
+      MIN_SEGMENT_LENGTH: "10"
+      USE_BACKPRESSURE_CONTROL: "true"
+
+  # Conversation controller for backpressure
+  - id: conversation-controller
+    build: pip install -e ../../node-hub/dora-conversation-controller
+    path: dora-conversation-controller
+    inputs:
+      buffer_status: audio-player/buffer_status
+    outputs:
+      - segment_control
+      - status
+    env:
+      PAUSE_THRESHOLD: "70"  # Pause when buffer exceeds this percentage
+      RESUME_THRESHOLD: "50"  # Resume when buffer drops below this percentage
+      MIN_CONTROL_INTERVAL: "1.0"  # Minimum seconds between control changes
+      STATUS_INTERVAL: "5.0"  # Seconds between status reports
+      LOG_LEVEL: "INFO"
+
+  # PrimeSpeech TTS
+  - id: primespeech
+    build: pip install -e ../../node-hub/dora-primespeech
+    path: dora-primespeech
+    inputs:
+      text: text-segmenter/text_segment
+      control: external/control  # Optional external control
+    outputs:
+      - audio
+      - status
+      - segment_complete
+    env:
+      VOICE_NAME: "Zhiyu"  # Chinese voice
+      DEVICE: "cpu"
+      RETURN_FRAGMENT: "false"
+      LOG_LEVEL: "INFO"
+
+  # Audio player with buffer status output
+  - id: audio-player
+    path: dynamic
+    inputs:
+      audio: primespeech/audio
+      control: external/control  # Optional external control
+    outputs:
+      - buffer_status
+      - status
+    env:
+      NODE_TIMEOUT_MS: 1000  # Main event loop timeout in milliseconds (controls actual reporting frequency)
+
+  # ===== LOG DISPLAY NODE =====
+  
+  # Dynamic log display that collects and formats logs from all nodes
+  - id: log-display
+    path: dynamic
+    inputs:
+      speech_monitor_log: speech-monitor/log
+      asr_log: asr/log
+      chat_controller_log: chat-controller/log
+      llm_log: qwen3-llm/log
+      # Note: Add other node log outputs as they become available

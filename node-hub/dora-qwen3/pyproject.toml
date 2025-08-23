@@ -1,0 +1,59 @@
+[project]
+name = "dora-qwen3"
+version = "0.1.0"
+authors = [{ name = "Dora Team", email = "dora@example.com" }]
+description = "Qwen3-8B LLM node for Dora dataflows with MLX support"
+license = { text = "MIT" }
+readme = "README.md"
+requires-python = ">=3.9"
+
+dependencies = [
+  "dora-rs >= 0.3.9",
+  "pyarrow >= 10.0.0",
+  "huggingface-hub >= 0.20.0",
+  "llama-cpp-python",
+  "mlx>=0.5.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
+  "mlx-lm>=0.10.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
+]
+
+[tool.uv.sources]
+llama-cpp-python = [
+  { index = "llama_cpp_python_metal", marker = "sys_platform == 'darwin'" },
+  { index = "llama_cpp_python_cu121", marker = "sys_platform == 'linux'" },
+]
+
+[dependency-groups]
+dev = ["pytest >=8.1.1", "ruff >=0.9.1"]
+
+[[tool.uv.index]]
+name = "llama_cpp_python_cu121"
+url = "https://abetlen.github.io/llama-cpp-python/whl/cu121"
+explicit = true
+
+[[tool.uv.index]]
+name = "llama_cpp_python_metal"
+url = "https://abetlen.github.io/llama-cpp-python/whl/metal"
+explicit = true
+
+[project.scripts]
+dora-qwen3 = "dora_qwen3.main:main"
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["dora_qwen3*"]
+
+[tool.ruff.lint]
+extend-select = [
+  "D",    # pydocstyle
+  "UP",   # Ruff's UP rule
+  "PERF", # Ruff's PERF rule
+  "RET",  # Ruff's RET rule
+  "RSE",  # Ruff's RSE rule
+  "NPY",  # Ruff's NPY rule
+  "N",    # Ruff's N rule
+  "I",    # Ruff's I rule
+]

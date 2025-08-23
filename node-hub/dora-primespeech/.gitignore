@@ -1,0 +1,33 @@
+# Large model files
+*.pth
+*.ckpt
+*.onnx
+*.pt
+*.bin
+*.safetensors
+
+# Pretrained models directory
+dora_primespeech/tts_models/moyoyo_tts/pretrained_models/
+dora_primespeech/tts_models/moyoyo_tts/text/G2PWModel/*.onnx
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
