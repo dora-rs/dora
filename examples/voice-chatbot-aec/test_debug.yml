@@ -1,0 +1,49 @@
+nodes:
+  # AEC Node - exactly as in working minimal_test.yml
+  - id: aec
+    build: pip install -e ../../node-hub/dora-aec
+    path: dora-aec
+    outputs:
+      - audio
+      - log
+    env:
+      SAMPLE_RATE: 16000
+      AEC_ENABLED: true
+      VAD_ENABLED: false
+      AUTO_START: true
+
+  # Speech Monitor - exactly as in working minimal_test.yml
+  - id: monitor
+    build: pip install -e ../../node-hub/dora-speechmonitor
+    path: dora-speechmonitor
+    inputs:
+      audio: aec/audio
+    outputs:
+      - log
+      - audio_segment
+    env:
+      LOG_LEVEL: INFO
+      VAD_ENABLED: false
+      
+  # ASR - but NOT connected to audio_segment yet
+  - id: asr
+    build: pip install -e ../../node-hub/dora-asr
+    path: dora-asr
+    outputs:
+      - text
+      - log
+    env:
+      ASR_ENGINE: funasr
+      LANGUAGE: zh
+      SAMPLE_RATE: 16000
+      LOG_LEVEL: INFO
+      MODEL_PATH: /Users/yuechen/.dora/models/asr/funasr
+      
+  # Logger
+  - id: logger
+    path: dynamic
+    inputs:
+      aec_log: aec/log
+      monitor_log: monitor/log
+      audio_segment: monitor/audio_segment
+      asr_log: asr/log

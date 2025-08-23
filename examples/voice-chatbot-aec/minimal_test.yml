@@ -1,0 +1,65 @@
+nodes:
+  # AEC Node - captures audio directly from hardware
+  - id: aec
+    build: pip install -e ../../node-hub/dora-aec
+    path: dora-aec
+    outputs:
+      - audio
+      - log
+    env:
+      SAMPLE_RATE: 16000
+      AEC_ENABLED: true
+      VAD_ENABLED: false
+      AUTO_START: true
+
+  # Speech Monitor
+  - id: monitor
+    build: pip install -e ../../node-hub/dora-speechmonitor
+    path: dora-speechmonitor
+    inputs:
+      audio: aec/audio
+    outputs:
+      - log
+      - audio_segment
+    env:
+      LOG_LEVEL: INFO
+      VAD_ENABLED: false
+      
+  # Simple logger to see all outputs
+  - id: logger
+    path: dynamic
+    inputs:
+      aec_log: aec/log
+      monitor_log: monitor/log
+      audio_segment: monitor/audio_segment
+
+
+# ASR transcription with language detection
+  - id: asr
+    build: pip install -e ../../node-hub/dora-asr
+    path: dora-asr
+    inputs:
+      audio:
+        source: monitor/audio_segment
+        queue_size: 10
+    outputs:
+      - transcription
+      - language_detected
+      - processing_time
+      - confidence
+      - log
+    env:
+      # Force specific languages for better performance
+      ASR_ENGINE: funasr  # auto, whisper, or funasr (auto will fallback to whisper if funasr fails)
+      LANGUAGE: zh      # Will detect zh or en
+      
+      # Model settings
+      WHISPER_MODEL: small  # tiny, base, small, medium, large
+      
+      # Features
+      ENABLE_PUNCTUATION: true
+      ENABLE_LANGUAGE_DETECTION: true
+      ENABLE_CONFIDENCE_SCORE: false
+      
+      # Logging
+      LOG_LEVEL: DEBUG            

@@ -1,0 +1,138 @@
+nodes:
+  # AEC Node - captures audio directly from hardware with echo cancellation
+  # No separate microphone needed - AEC wrapper IS the microphone
+  - id: aec-processor
+    build: pip install -e ../../node-hub/dora-aec
+    path: dora-aec
+    inputs:
+      reference_audio: primespeech/audio  # TTS output as reference for echo cancellation
+    outputs:
+      - audio
+      - vad_status
+      - log
+    env:
+      SAMPLE_RATE: 16000
+      AEC_ENABLED: true
+      VAD_ENABLED: true
+      AUTO_START: true
+
+  # Speech Monitor - no pause/resume needed with AEC
+  - id: speech-monitor
+    build: pip install -e ../../node-hub/dora-speechmonitor
+    path: dora-speechmonitor
+    inputs:
+      audio: aec-processor/audio  # Echo-cancelled audio
+    outputs:
+      - speech_started
+      - speech_ended
+      - is_speaking
+      - audio_segment
+      - speech_probability
+      - question_ended
+      - log
+    env:
+      ACTIVE_DURATION_MS: 100
+      SILENCE_DURATION_MS: 300
+      QUESTION_END_SILENCE_THRESHOLD: 3000
+
+  # ASR - Automatic Speech Recognition
+  - id: asr
+    build: pip install -e ../../node-hub/dora-asr
+    path: dora-asr
+    inputs:
+      audio: speech-monitor/audio_segment
+    outputs:
+      - text
+      - log
+    env:
+      MODEL_PATH: /Users/yuechen/.dora/models/asr/funasr
+
+  # Text Segmenter
+  - id: text-segmenter
+    build: pip install -e ../../node-hub/dora-text-segmenter
+    path: dora-text-segmenter
+    inputs:
+      text: qwen3/text
+    outputs:
+      - segments
+      - log
+
+  # Chat Controller - simplified without pause/resume logic
+  - id: chat-controller
+    build: pip install -e ../../node-hub/dora-chat-controller-aec
+    path: dora-chat-controller-aec
+    inputs:
+      transcription: asr/text
+      question_ended: speech-monitor/question_ended
+      segments: text-segmenter/segments
+    outputs:
+      - question
+      - log
+    env:
+      # No pause/resume configuration needed
+      NODE_TIMEOUT_MS: 1000
+
+  # Qwen3 LLM
+  - id: qwen3
+    build: pip install -e ../../node-hub/dora-qwen3
+    path: dora-qwen3
+    inputs:
+      text: chat-controller/question
+    outputs:
+      - text
+      - log
+    env:
+      SYSTEM_PROMPT: |
+        You are a helpful voice assistant. Provide concise, conversational responses.
+        Keep your answers brief and natural for spoken conversation.
+      MODEL_ID: mlx-community/Qwen3-7B-4bit-mlx
+      MAX_LENGTH: 150
+
+  # Conversation Controller
+  - id: conversation-controller
+    build: pip install -e ../../node-hub/dora-conversation-controller
+    path: dora-conversation-controller
+    inputs:
+      user_audio: speech-monitor/audio_segment
+      llm_text: text-segmenter/segments
+    outputs:
+      - synthesis_text
+      - reset_buffer
+      - log
+
+  # PrimeSpeech TTS
+  - id: primespeech
+    build: pip install -e ../../node-hub/dora-primespeech
+    path: dora-primespeech
+    inputs:
+      text: conversation-controller/synthesis_text
+      reset: conversation-controller/reset_buffer
+    outputs:
+      - audio
+      - log
+    env:
+      MODEL_ID: primeline-engineering/mlx-PITS-ch_zh-base
+      VOICE_PRESET: default
+      SAMPLE_RATE: 22050
+
+  # Audio Player - no buffer status feedback needed
+  - id: audio-player
+    path: dynamic
+    inputs:
+      audio: primespeech/audio
+    outputs:
+      - log
+
+  # Log Display
+  - id: log-display
+    path: dynamic
+    inputs:
+      speech_monitor_log: speech-monitor/log
+      aec_log: aec-processor/log
+      asr_log: asr/log
+      chat_controller_log: chat-controller/log
+      qwen3_log: qwen3/log
+      text_segmenter_log: text-segmenter/log
+      conversation_controller_log: conversation-controller/log
+      primespeech_log: primespeech/log
+      audio_player_log: audio-player/log
