@@ -35,7 +35,8 @@ if USE_MLX and IS_APPLE_SILICON:
     try:
         import mlx
         import mlx.core as mx
-        from mlx_lm import load, generate
+        from mlx_lm import load, generate, stream_generate
+        from mlx_lm.models.cache import make_prompt_cache
         MLX_AVAILABLE = True
         # MLX imported successfully - will log after node is ready
     except ImportError as e:
@@ -117,6 +118,17 @@ class Qwen3LLMNode:
             self.load_model()
             send_log(self.node, "INFO", "Ready for chat!")
             send_log(self.node, "INFO", f"Log level: {self.config['log_level']}")
+            
+            # Log history management strategy
+            strategy = self.config["history_strategy"]
+            if strategy == "fixed":
+                send_log(self.node, "INFO", 
+                        f"History: Fixed strategy - keeping last {self.config['max_history_exchanges']} exchanges")
+            elif strategy == "token_based":
+                send_log(self.node, "INFO", 
+                        f"History: Token-based strategy - max {self.config['max_history_tokens']} tokens")
+            else:
+                send_log(self.node, "INFO", f"History: {strategy} strategy")
             self.model_loaded = True
 
     def load_config(self) -> Dict:
@@ -136,6 +148,11 @@ class Qwen3LLMNode:
 
             # System prompt
             "system_prompt": os.getenv("SYSTEM_PROMPT", "You are a helpful AI assistant."),
+            
+            # Chat history settings
+            "max_history_exchanges": int(os.getenv("MAX_HISTORY_EXCHANGES", "10")),
+            "history_strategy": os.getenv("HISTORY_STRATEGY", "fixed"),  # fixed, token_based, or sliding_window
+            "max_history_tokens": int(os.getenv("MAX_HISTORY_TOKENS", "2000")),
             
             # Logging
             "log_level": os.getenv("LOG_LEVEL", "INFO").upper(),
@@ -161,9 +178,24 @@ class Qwen3LLMNode:
         try:
             model_id = self.config["mlx_model"]
             send_log(self.node, "INFO", f"Loading MLX model: {model_id}")
-            send_log(self.node, "INFO", "This may take a minute on first run...")
+            
+            # Check if model needs downloading
+            from huggingface_hub import snapshot_download
+            import os
+            cache_dir = os.path.expanduser("~/.cache/huggingface/hub")
+            model_cache = os.path.join(cache_dir, f"models--{model_id.replace('/', '--')}")
+            
+            if not os.path.exists(model_cache):
+                send_log(self.node, "INFO", f"Model not cached, downloading {model_id}...")
+                send_log(self.node, "INFO", "This will take several minutes for first download")
+                # Download with progress
+                snapshot_download(model_id, cache_dir=cache_dir)
+                send_log(self.node, "INFO", "Download complete!")
+            else:
+                send_log(self.node, "INFO", f"Using cached model from {model_cache}")
 
             # Load model and tokenizer
+            send_log(self.node, "INFO", "Loading model into memory...")
             self.model, self.tokenizer = load(model_id)
             send_log(self.node, "INFO", f"MLX model loaded: {model_id}")
             send_log(self.node, "INFO", "Using Metal GPU acceleration")
@@ -220,6 +252,69 @@ class Qwen3LLMNode:
                 send_log(self.node, "ERROR", f"Failed to load fallback: {e2}")
                 sys.exit(1)
 
+    def estimate_tokens(self, text: str) -> int:
+        """Estimate token count for text using actual tokenizer."""
+        if self.tokenizer:
+            try:
+                tokens = self.tokenizer.encode(text)
+                return len(tokens)
+            except:
+                pass
+        # Fallback to rough estimation
+        return int(len(text.split()) * 1.3)
+
+    def manage_history(self, history: List[Dict], new_user_msg: str = None) -> List[Dict]:
+        """
+        Intelligently manage conversation history based on configured strategy.
+        
+        Args:
+            history: Current conversation history
+            new_user_msg: Optional new user message to estimate tokens for
+            
+        Returns:
+            Managed history list that fits within constraints
+        """
+        strategy = self.config["history_strategy"]
+        max_exchanges = self.config["max_history_exchanges"]
+        
+        if strategy == "fixed":
+            # Simple fixed-length history (current behavior)
+            if len(history) > max_exchanges * 2:  # *2 because each exchange has user + assistant
+                return history[-(max_exchanges * 2):]
+                
+        elif strategy == "token_based":
+            # Estimate tokens and trim oldest messages if needed
+            max_tokens = self.config["max_history_tokens"]
+            estimated_tokens = 0
+            kept_history = []
+            
+            # Estimate tokens for new message if provided
+            if new_user_msg:
+                estimated_tokens += self.estimate_tokens(new_user_msg)
+            
+            # Keep messages from newest to oldest until token limit
+            for msg in reversed(history):
+                msg_tokens = self.estimate_tokens(msg["content"])
+                if estimated_tokens + msg_tokens < max_tokens:
+                    kept_history.insert(0, msg)
+                    estimated_tokens += msg_tokens
+                else:
+                    break
+                    
+            # Ensure we keep at least one exchange for context
+            if len(kept_history) < 2 and len(history) >= 2:
+                kept_history = history[-2:]
+                
+            return kept_history
+            
+        elif strategy == "sliding_window":
+            # Keep recent exchanges but summarize older ones (future enhancement)
+            # For now, fall back to fixed strategy
+            if len(history) > max_exchanges * 2:
+                return history[-(max_exchanges * 2):]
+                
+        return history
+
     def generate_response(self, text: str, session_id: str) -> str:
         """Generate a response using MLX or GGUF."""
         if self.use_mlx:
@@ -234,7 +329,8 @@ class Qwen3LLMNode:
             if session_id not in self.chat_sessions:
                 self.chat_sessions[session_id] = []
 
-            history = self.chat_sessions[session_id]
+            # Manage history BEFORE using it to ensure we stay within limits
+            history = self.manage_history(self.chat_sessions[session_id], text)
 
             # Prepare prompt with thinking control
             system_prompt = self.config["system_prompt"]
@@ -242,7 +338,7 @@ class Qwen3LLMNode:
                 system_prompt += " Provide direct answers without showing your thinking process."
                 text = text + " /no_think"
 
-            # Format messages for MLX
+            # Format messages for MLX with managed history
             messages = [{"role": "system", "content": system_prompt}]
             messages.extend(history)
             messages.append({"role": "user", "content": text})
@@ -255,15 +351,28 @@ class Qwen3LLMNode:
             )
 
             send_log(self.node, "DEBUG", "Generating with MLX...")
+            
+            # Create KV cache for faster generation
+            prompt_cache = None
+            if len(history) > 0:  # Use cache if there's conversation history
+                try:
+                    prompt_cache = make_prompt_cache(self.model)
+                    send_log(self.node, "DEBUG", f"Using KV cache (history: {len(history)} messages)")
+                except Exception as e:
+                    send_log(self.node, "DEBUG", f"KV cache not available: {e}")
 
-            # Generate response
-            response = generate(
-                self.model,
-                self.tokenizer,
-                prompt,
-                max_tokens=self.config["mlx_max_tokens"],
-                verbose=False
-            )
+            # Generate response with optional KV cache
+            generate_params = {
+                "model": self.model,
+                "tokenizer": self.tokenizer,
+                "prompt": prompt,
+                "max_tokens": self.config["mlx_max_tokens"],
+                "verbose": False
+            }
+            if prompt_cache is not None:
+                generate_params["prompt_cache"] = prompt_cache
+                
+            response = generate(**generate_params)
 
             # Clean response
             if prompt in response:
@@ -281,15 +390,157 @@ class Qwen3LLMNode:
             history.append({"role": "user", "content": text})
             history.append({"role": "assistant", "content": response})
 
-            # Keep history manageable
-            if len(history) > 10:
-                history = history[-10:]
-                self.chat_sessions[session_id] = history
+            # Manage history based on configured strategy
+            history = self.manage_history(history)
+            self.chat_sessions[session_id] = history
 
             return response
 
         except Exception as e:
             send_log(self.node, "ERROR", f"Error with MLX generation: {e}")
+            return f"Error: {str(e)}"
+    
+    def generate_response_mlx_streaming(self, text: str, session_id: str, metadata: dict):
+        """Generate response using MLX with streaming."""
+        try:
+            # Get or create session
+            if session_id not in self.chat_sessions:
+                self.chat_sessions[session_id] = []
+
+            # Manage history BEFORE using it to ensure we stay within limits
+            history = self.manage_history(self.chat_sessions[session_id], text)
+
+            # Prepare prompt with thinking control
+            system_prompt = self.config["system_prompt"]
+            if not self.config["enable_thinking"]:
+                system_prompt += " Provide direct answers without showing your thinking process."
+                text = text + " /no_think"
+
+            # Format messages for MLX with managed history
+            messages = [{"role": "system", "content": system_prompt}]
+            messages.extend(history)
+            messages.append({"role": "user", "content": text})
+
+            # Apply chat template
+            prompt = self.tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True
+            )
+
+            send_log(self.node, "DEBUG", "Generating with MLX (streaming)...")
+            
+            # Create KV cache for faster generation
+            prompt_cache = None
+            if len(history) > 0:  # Use cache if there's conversation history
+                try:
+                    prompt_cache = make_prompt_cache(self.model)
+                    send_log(self.node, "DEBUG", f"Using KV cache (history: {len(history)} messages)")
+                except Exception as e:
+                    send_log(self.node, "DEBUG", f"KV cache not available: {e}")
+
+            # Stream response
+            accumulated_response = ""
+            chunk_buffer = ""
+            chunk_size = 20  # Send smaller chunks for faster first response
+            segment_index = 0
+            first_chunk_sent = False
+            
+            # Add prompt_cache to stream_generate for KV caching
+            stream_params = {
+                "model": self.model,
+                "tokenizer": self.tokenizer,
+                "prompt": prompt,
+                "max_tokens": self.config["mlx_max_tokens"]
+            }
+            if prompt_cache is not None:
+                stream_params["prompt_cache"] = prompt_cache
+            
+            for token_response in stream_generate(**stream_params):
+                # Extract token text (stream_generate returns GenerationResponse objects)
+                token_text = token_response.text if hasattr(token_response, 'text') else str(token_response)
+                accumulated_response += token_text
+                chunk_buffer += token_text
+                
+                # Check if we should send a chunk (on punctuation or size)
+                should_send = False
+                if len(chunk_buffer) >= chunk_size:
+                    should_send = True
+                elif any(p in chunk_buffer for p in ['。', '！', '？', '.', '!', '?', '，', ',']):
+                    # Send on punctuation for more natural breaks
+                    should_send = True
+                
+                if should_send and chunk_buffer.strip():
+                    # Clean chunk before sending
+                    clean_chunk = chunk_buffer.strip()
+                    
+                    # Skip if it's part of thinking tags
+                    if not self.config["enable_thinking"]:
+                        if '<think>' in clean_chunk or '</think>' in clean_chunk:
+                            chunk_buffer = ""
+                            continue
+                    
+                    # Send chunk to TTS
+                    self.node.send_output(
+                        output_id="text",
+                        data=pa.array([clean_chunk]),
+                        metadata={
+                            **metadata,
+                            "segment_index": segment_index,
+                            "is_streaming": True,
+                            "is_final": False
+                        }
+                    )
+                    
+                    segment_index += 1
+                    chunk_buffer = ""
+            
+            # Send any remaining buffer
+            if chunk_buffer.strip():
+                self.node.send_output(
+                    output_id="text",
+                    data=pa.array([chunk_buffer.strip()]),
+                    metadata={
+                        **metadata,
+                        "segment_index": segment_index,
+                        "is_streaming": True,
+                        "is_final": True
+                    }
+                )
+            
+            # Clean final response
+            if prompt in accumulated_response:
+                accumulated_response = accumulated_response.replace(prompt, "").strip()
+            
+            # Handle thinking tags if disabled
+            if not self.config["enable_thinking"]:
+                accumulated_response = re.sub(r'<think>.*?</think>', '', accumulated_response, flags=re.DOTALL).strip()
+                if accumulated_response.startswith('<think>'):
+                    accumulated_response = accumulated_response[7:].strip()
+
+            # Add current exchange to session history
+            self.chat_sessions[session_id].append({"role": "user", "content": text})
+            self.chat_sessions[session_id].append({"role": "assistant", "content": accumulated_response})
+
+            # Manage history after adding new exchange to keep within limits
+            self.chat_sessions[session_id] = self.manage_history(self.chat_sessions[session_id])
+
+            return accumulated_response
+
+        except Exception as e:
+            send_log(self.node, "ERROR", f"Error with MLX streaming generation: {e}")
+            # Send error as final message
+            self.node.send_output(
+                output_id="text",
+                data=pa.array([f"Error: {str(e)}"]),
+                metadata={
+                    **metadata,
+                    "segment_index": 0,
+                    "is_streaming": True,
+                    "is_final": True,
+                    "error": str(e)
+                }
+            )
             return f"Error: {str(e)}"
 
     def generate_response_gguf(self, text: str, session_id: str) -> str:
@@ -309,10 +560,9 @@ class Qwen3LLMNode:
             # Add user message
             history.append({"role": "user", "content": text})
 
-            # Keep history manageable
-            if len(history) > 10:
-                history = history[-10:]
-                self.chat_sessions[session_id] = history
+            # Manage history based on configured strategy before generating
+            history = self.manage_history(history, text)
+            self.chat_sessions[session_id] = history
 
             # Format prompt manually using Qwen3 template
             prompt = f"{self.SYSTEM_START}{system_prompt}{self.SYSTEM_END}"
@@ -384,16 +634,25 @@ class Qwen3LLMNode:
                             user_text = event["value"][0].as_py()
                             send_log(self.node, "DEBUG", f"Input: {user_text[:100]}...")
 
-                            response = self.generate_response(user_text, session_id)
-
-                            # Send response
-                            self.node.send_output(
-                                output_id="text",
-                                data=pa.array([response]),
-                                metadata={"session_id": session_id}
-                            )
-
-                            send_log(self.node, "INFO", f"Response Generated ({len(response)} chars)")
+                            # Check if streaming is enabled
+                            enable_streaming = os.getenv("LLM_ENABLE_STREAMING", "true").lower() == "true"
+                            
+                            if enable_streaming and self.use_mlx:
+                                # Use streaming for MLX
+                                response = self.generate_response_mlx_streaming(user_text, session_id, metadata)
+                                send_log(self.node, "INFO", f"Response streamed ({len(response)} chars)")
+                            else:
+                                # Use regular generation
+                                response = self.generate_response(user_text, session_id)
+                                
+                                # Send response
+                                self.node.send_output(
+                                    output_id="text",
+                                    data=pa.array([response]),
+                                    metadata={"session_id": session_id}
+                                )
+                                
+                                send_log(self.node, "INFO", f"Response Generated ({len(response)} chars)")
 
                         except Exception as e:
                             send_log(self.node, "ERROR", f"Error processing text: {e}")
@@ -410,16 +669,25 @@ class Qwen3LLMNode:
                             user_text = event["value"][0].as_py()
                             send_log(self.node, "DEBUG", f"Text-to-audio input: {user_text[:100]}...")
 
-                            response = self.generate_response(user_text, session_id)
-
-                            # Send response as text output (will be converted to audio by TTS)
-                            self.node.send_output(
-                                output_id="text",
-                                data=pa.array([response]),
-                                metadata={"session_id": session_id}
-                            )
-
-                            send_log(self.node, "INFO", f"Text-to-audio response sent ({len(response)} chars)")
+                            # Check if streaming is enabled
+                            enable_streaming = os.getenv("LLM_ENABLE_STREAMING", "true").lower() == "true"
+                            
+                            if enable_streaming and self.use_mlx:
+                                # Use streaming for MLX
+                                response = self.generate_response_mlx_streaming(user_text, session_id, metadata)
+                                send_log(self.node, "INFO", f"Text-to-audio response streamed ({len(response)} chars)")
+                            else:
+                                # Use regular generation
+                                response = self.generate_response(user_text, session_id)
+                                
+                                # Send response as text output (will be converted to audio by TTS)
+                                self.node.send_output(
+                                    output_id="text",
+                                    data=pa.array([response]),
+                                    metadata={"session_id": session_id}
+                                )
+                                
+                                send_log(self.node, "INFO", f"Text-to-audio response sent ({len(response)} chars)")
 
                         except Exception as e:
                             send_log(self.node, "ERROR", f"Error processing text_to_audio: {e}")

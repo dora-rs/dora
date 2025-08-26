@@ -1,0 +1,154 @@
+nodes:
+  # MAC-AEC with VAD-based segmentation
+  - id: mac-aec
+    path: dynamic
+    outputs:
+      - audio
+      - is_speaking
+      - speech_started
+      - speech_ended
+      - audio_segment
+
+  # ASR transcription
+  - id: asr
+    build: pip install -e ../../node-hub/dora-asr
+    path: dora-asr
+    inputs:
+      audio:
+        source: mac-aec/audio_segment
+        queue_size: 10
+    outputs:
+      - transcription
+      - language_detected
+      - processing_time
+      - confidence
+      - log
+    env:
+      ASR_ENGINE: funasr
+      LANGUAGE: zh
+      WHISPER_MODEL: large
+      ENABLE_PUNCTUATION: true
+      ENABLE_LANGUAGE_DETECTION: true
+      ENABLE_CONFIDENCE_SCORE: false
+      # ASR_MODELS_DIR: ./models/asr  # Relative path (recommended)
+      # ASR_MODELS_DIR: ~/.cache/modelscope/hub/models/iic  # Modelscope cache location
+      # If not set, defaults to ~/.dora/models/asr (which has the models)
+      LOG_LEVEL: INFO
+
+  # Direct connection: ASR -> LLM (with streaming for fast response)
+  - id: qwen3-llm
+    build: pip install -e ../../node-hub/dora-qwen3
+    path: dora-qwen3
+    inputs:
+      text: asr/transcription  # Direct from ASR
+    outputs:
+      - text
+      - status
+      - log
+    env:
+      # Model Configuration
+      USE_MLX: auto
+      
+      # MLX model settings (for Apple Silicon)
+      MLX_MODEL: "Qwen/Qwen3-8B-MLX-4bit"
+      MLX_MAX_TOKENS: 256
+      MLX_TEMPERATURE: 0.7
+      
+      # Generation settings
+      MAX_TOKENS: 256
+      TEMPERATURE: 0.7
+      ENABLE_THINKING: false
+      
+      # Enable streaming for faster TTS
+      LLM_ENABLE_STREAMING: "true"
+      
+      # History management - choose ONE strategy:
+      HISTORY_STRATEGY: "token_based"  # Options: "fixed", "token_based", or "sliding_window"
+      
+      # For "fixed" strategy (currently active):
+      MAX_HISTORY_EXCHANGES: "5"  # Keep last 5 Q&A pairs (10 messages total)
+      
+      # For "token_based" strategy (not active unless you change HISTORY_STRATEGY):
+      MAX_HISTORY_TOKENS: "3000"  # Max tokens for history (only used when HISTORY_STRATEGY="token_based")
+      
+      # System prompt
+      SYSTEM_PROMPT: "你的回答第一句话必须少于十个字。每段回答控制在二到三句话，既不要过短也不要过长，以适应对话语境。回答应准确、精炼且有依据。你是AI助手。请以自然流畅的中文口语化表达直接回答问题，避免冗余的思考过程。"
+      
+      LOG_LEVEL: INFO
+
+  # Text Segmenter - buffers LLM output and sends to TTS one segment at a time
+  - id: text-segmenter
+    build: pip install -e ../../node-hub/dora-text-segmenter
+    path: dora-text-segmenter
+    inputs:
+      text: qwen3-llm/text  # From LLM
+      tts_complete: primespeech/segment_complete  # TTS completion signal
+    outputs:
+      - text_segment
+      - status
+      - metrics
+    env:
+      ENABLE_BACKPRESSURE: "false"  # Don't wait initially - send first segment immediately
+      SEGMENT_MODE: "sentence"  # sentence, punctuation, or fixed
+      MIN_SEGMENT_LENGTH: "5"
+      MAX_SEGMENT_LENGTH: "20"
+      PUNCTUATION_MARKS: "。！？.!?"
+      LOG_LEVEL: "INFO"
+
+  # PrimeSpeech TTS
+  - id: primespeech
+    build: pip install -e ../../node-hub/dora-primespeech
+    path: dora-primespeech
+    inputs:
+      text: text-segmenter/text_segment  # From text segmenter (not directly from LLM)
+    outputs:
+      - audio
+      - status
+      - segment_complete
+
+    env:
+      # Voice selection
+      VOICE_NAME: Doubao  # Available: Doubao, Luo Xiang, Yang Mi, Zhou Jielun, Ma Yun, Maple, Cove
+      
+      # Language settings
+      TEXT_LANG: zh  # zh for Chinese, en for English, auto for detection
+      PROMPT_LANG: zh  # Language of the reference prompt
+      
+      # Inference parameters
+      TOP_K: 5
+      TOP_P: 1.0
+      TEMPERATURE: 1.0
+      SPEED_FACTOR: 1.0  # Speech speed multiplier
+      
+      # Performance
+      USE_GPU: false
+      NUM_THREADS: 4
+      
+      RETURN_FRAGMENT: "false"  # Disable streaming TTS for now
+      LOG_LEVEL: "INFO"
+      # Internal text segmentation for faster TTS
+      ENABLE_INTERNAL_SEGMENTATION: "true"  # Split long text internally
+      TTS_MAX_SEGMENT_LENGTH: "100"  # Max chars per TTS segment
+      TTS_MIN_SEGMENT_LENGTH: "20"   # Min chars per TTS segment
+      
+      # Logging
+      LOG_LEVEL: INFO  # DEBUG, INFO, WARNING, ERROR
+  
+  # Audio player
+  - id: audio-player
+    path: dynamic
+    inputs:
+      audio: primespeech/audio
+    outputs:
+      - buffer_status
+      - status
+
+  # Simple viewer to see the flow
+  - id: viewer
+    path: dynamic
+    inputs:
+      transcription: asr/transcription
+      llm_output: qwen3-llm/text
+      segment: text-segmenter/text_segment
+      speech_started: mac-aec/speech_started
+      speech_ended: mac-aec/speech_ended
