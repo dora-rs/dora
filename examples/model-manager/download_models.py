@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Optional, Dict, List
 import json
 import fnmatch
-import shutil
 
 # Progress bar imports
 try:
@@ -57,30 +56,47 @@ def list_downloaded_models():
     models_found = []
     
     if hf_cache_dir.exists():
+        print(f"\n📁 HuggingFace Cache: {hf_cache_dir}")
+        print("-" * 60)
+        
+        # Try using scan_cache_dir first
         try:
             cache_info = scan_cache_dir(hf_cache_dir)
-            
-            print(f"\n📁 HuggingFace Cache: {hf_cache_dir}")
-            print("-" * 60)
             
             if cache_info.repos:
                 for repo in sorted(cache_info.repos, key=lambda x: x.repo_id):
                     size_gb = repo.size_on_disk / (1024**3)
-                    # Get last modified time
-                    last_modified = "unknown"
-                    if hasattr(repo, 'last_modified') and repo.last_modified:
-                        try:
-                            last_modified = repo.last_modified.strftime("%Y-%m-%d %H:%M")
-                        except:
-                            last_modified = str(repo.last_modified)
-                    
                     print(f"  📦 {repo.repo_id:40} {size_gb:8.2f} GB")
                     models_found.append(repo.repo_id)
-            else:
-                print("  No models found in HuggingFace cache")
                 
         except Exception as e:
-            print(f"  Error scanning HuggingFace cache: {e}")
+            print(f"  Note: HF scan failed ({e}), using directory scan...")
+        
+        # Also do a direct directory scan for models not detected by scan_cache_dir
+        for item in hf_cache_dir.iterdir():
+            if item.is_dir() and not item.name.startswith('.'):
+                # Determine the repo ID from directory name
+                if item.name.startswith("models--"):
+                    # Old format: models--org--model
+                    repo_id = item.name[8:].replace("--", "/")  # Remove "models--" prefix
+                else:
+                    # New format: org--model
+                    repo_id = item.name.replace("--", "/")
+                
+                # Skip if already found by scan_cache_dir
+                if repo_id not in models_found and not any(repo_id in found for found in models_found):
+                    # Calculate size
+                    try:
+                        size = sum(f.stat().st_size for f in item.rglob("*") if f.is_file())
+                        size_gb = size / (1024**3)
+                        if size_gb > 0.001:  # Only show if it has meaningful content (>1MB)
+                            print(f"  📦 {repo_id:40} {size_gb:8.2f} GB")
+                            models_found.append(repo_id)
+                    except:
+                        pass
+        
+        if not models_found:
+            print("  No models found in HuggingFace cache")
     else:
         print(f"  HuggingFace cache not found at {hf_cache_dir}")
     
@@ -119,131 +135,28 @@ def list_downloaded_models():
             else:
                 print(f"  No model files found")
     
+    # Count total unique models across all locations
+    all_model_count = len(set(models_found))  # HuggingFace models
+    
+    # Add count from other directories (approximation based on subdirs with model files)
+    for model_dir in other_dirs:
+        if model_dir.exists():
+            model_subdirs = set()
+            for f in model_dir.glob("**/*.bin"):
+                model_subdirs.add(f.parent)
+            for f in model_dir.glob("**/*.safetensors"):
+                model_subdirs.add(f.parent)
+            for f in model_dir.glob("**/*.gguf"):
+                model_subdirs.add(f.parent)
+            for f in model_dir.glob("**/*.pth"):
+                model_subdirs.add(f.parent)
+            for f in model_dir.glob("**/*.ckpt"):
+                model_subdirs.add(f.parent)
+            all_model_count += len(model_subdirs)
+    
     print("\n" + "=" * 60)
-    print(f"Total models found: {len(models_found)}")
+    print(f"Total unique models/voices: {all_model_count}")
     return models_found
-
-
-def remove_model(model_identifier: str, force: bool = False) -> bool:
-    """Remove a cached model from HuggingFace cache or local directories.
-    
-    Args:
-        model_identifier: Repository ID or path to remove
-        force: Skip confirmation prompt
-        
-    Returns:
-        True if successfully removed, False otherwise
-    """
-    print(f"\n🗑️  Preparing to remove: {model_identifier}")
-    
-    removed = False
-    models_found = []
-    
-    # Check HuggingFace cache
-    hf_cache_dir = Path.home() / ".cache" / "huggingface" / "hub"
-    if hf_cache_dir.exists():
-        # Look for exact match or similar
-        model_dir_name = model_identifier.replace("/", "--")
-        
-        for item in hf_cache_dir.iterdir():
-            if item.is_dir():
-                # Check for exact match or contains
-                if item.name == model_dir_name or model_dir_name in item.name or item.name == f"models--{model_dir_name}":
-                    models_found.append(("huggingface", item))
-                # Also check if the identifier matches part of the name
-                elif model_identifier.replace("/", "--") in item.name:
-                    models_found.append(("huggingface", item))
-    
-    # Check local Dora models directory
-    dora_models_dir = Path.home() / ".dora" / "models"
-    if dora_models_dir.exists():
-        # Search for matching directories
-        for item in dora_models_dir.rglob("*"):
-            if item.is_dir() and model_identifier.replace("/", "--") in str(item):
-                models_found.append(("local", item))
-    
-    if not models_found:
-        print(f"❌ Model not found: {model_identifier}")
-        print("\n💡 Tip: Use --list to see all downloaded models")
-        return False
-    
-    # Show found models
-    print(f"\nFound {len(models_found)} matching model(s):")
-    total_size = 0
-    for source, path in models_found:
-        size = sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
-        size_gb = size / (1024**3)
-        total_size += size
-        print(f"  📦 [{source}] {path.name:40} {size_gb:8.2f} GB")
-        print(f"     Path: {path}")
-    
-    total_gb = total_size / (1024**3)
-    print(f"\n  Total size: {total_gb:.2f} GB")
-    
-    # Confirm deletion
-    if not force:
-        response = input(f"\n⚠️  Are you sure you want to delete these {len(models_found)} model(s)? (y/N): ")
-        if response.lower() != 'y':
-            print("❌ Deletion cancelled")
-            return False
-    
-    # Delete the models
-    success_count = 0
-    for source, path in models_found:
-        try:
-            print(f"🗑️  Deleting {path.name}...")
-            shutil.rmtree(path)
-            success_count += 1
-            print(f"  ✅ Removed {path.name}")
-        except Exception as e:
-            print(f"  ❌ Error removing {path.name}: {e}")
-    
-    if success_count > 0:
-        print(f"\n✅ Successfully removed {success_count} model(s) ({total_gb:.2f} GB freed)")
-        removed = True
-    else:
-        print(f"\n❌ Failed to remove any models")
-    
-    return removed
-
-
-def clean_incomplete_downloads():
-    """Clean incomplete or corrupted downloads."""
-    print("\n🧹 Cleaning incomplete downloads...")
-    
-    incomplete_count = 0
-    patterns = ["*.incomplete", "*.downloading", "*.tmp", "*.part"]
-    
-    # Clean HuggingFace cache
-    hf_cache_dir = Path.home() / ".cache" / "huggingface" / "hub"
-    if hf_cache_dir.exists():
-        for pattern in patterns:
-            for incomplete in hf_cache_dir.rglob(pattern):
-                print(f"   Removing: {incomplete.name}")
-                try:
-                    incomplete.unlink()
-                    incomplete_count += 1
-                except Exception as e:
-                    print(f"   Error: {e}")
-    
-    # Clean Dora models directory
-    dora_models_dir = Path.home() / ".dora" / "models"
-    if dora_models_dir.exists():
-        for pattern in patterns:
-            for incomplete in dora_models_dir.rglob(pattern):
-                print(f"   Removing: {incomplete.name}")
-                try:
-                    incomplete.unlink()
-                    incomplete_count += 1
-                except Exception as e:
-                    print(f"   Error: {e}")
-    
-    if incomplete_count > 0:
-        print(f"✅ Removed {incomplete_count} incomplete files")
-    else:
-        print("✅ No incomplete downloads found")
-    
-    return incomplete_count
 
 
 def download_huggingface_model(repo_id: str, local_dir: Optional[Path] = None, 
@@ -469,35 +382,7 @@ def main():
         help="List available PrimeSpeech voices"
     )
     
-    parser.add_argument(
-        "--remove",
-        type=str,
-        help="Remove a downloaded model (use repo ID or partial name)"
-    )
-    
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Skip confirmation prompts (use with --remove)"
-    )
-    
-    parser.add_argument(
-        "--clean",
-        action="store_true",
-        help="Clean incomplete downloads"
-    )
-    
     args = parser.parse_args()
-    
-    # Handle --clean (clean incomplete downloads)
-    if args.clean:
-        clean_incomplete_downloads()
-        return
-    
-    # Handle --remove (remove a model)
-    if args.remove:
-        success = remove_model(args.remove, force=args.force)
-        sys.exit(0 if success else 1)
     
     # Handle --list (show all downloaded models)
     if args.list:
@@ -580,13 +465,6 @@ def main():
         print("")
         print("  # List downloaded models:")
         print("  python download_models.py --list")
-        print("")
-        print("  # Remove a model:")
-        print("  python download_models.py --remove mlx-community/gemma-3-12b-it-4bit")
-        print("  python download_models.py --remove gemma --force  # Skip confirmation")
-        print("")
-        print("  # Clean incomplete downloads:")
-        print("  python download_models.py --clean")
         
         if PRIMESPEECH_AVAILABLE:
             print("\n  # PrimeSpeech models:")
