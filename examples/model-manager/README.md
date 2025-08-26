@@ -6,6 +6,8 @@ Universal model downloader and manager for HuggingFace models and PrimeSpeech TT
 
 - Download ANY model from HuggingFace Hub
 - List all downloaded models across different locations
+- Remove downloaded models with confirmation
+- Clean incomplete downloads
 - Manage PrimeSpeech TTS voice models
 - Support for custom download directories
 - File pattern filtering for selective downloads
@@ -31,6 +33,31 @@ This scans:
 - `~/.cache/huggingface/hub/` - HuggingFace cache
 - `~/.dora/models/` - Dora models directory
 - Shows model sizes and file counts
+
+### Remove Models
+
+Remove downloaded models to free up space:
+
+```bash
+# Remove a specific model (with confirmation)
+./download_models.py --remove mlx-community/gemma-3-12b-it-4bit
+
+# Remove by partial name (matches all containing the pattern)
+./download_models.py --remove gemma
+
+# Skip confirmation prompt
+./download_models.py --remove mlx-community/gemma-3-12b-it-4bit --force
+```
+
+### Clean Incomplete Downloads
+
+Clean up failed or incomplete downloads:
+
+```bash
+./download_models.py --clean
+```
+
+This removes files with extensions: `.incomplete`, `.downloading`, `.tmp`, `.part`
 
 ### Download HuggingFace Models
 

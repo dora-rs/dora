@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Optional, Dict, List
 import json
 import fnmatch
+import shutil
 
 # Progress bar imports
 try:
@@ -121,6 +122,128 @@ def list_downloaded_models():
     print("\n" + "=" * 60)
     print(f"Total models found: {len(models_found)}")
     return models_found
+
+
+def remove_model(model_identifier: str, force: bool = False) -> bool:
+    """Remove a cached model from HuggingFace cache or local directories.
+    
+    Args:
+        model_identifier: Repository ID or path to remove
+        force: Skip confirmation prompt
+        
+    Returns:
+        True if successfully removed, False otherwise
+    """
+    print(f"\n🗑️  Preparing to remove: {model_identifier}")
+    
+    removed = False
+    models_found = []
+    
+    # Check HuggingFace cache
+    hf_cache_dir = Path.home() / ".cache" / "huggingface" / "hub"
+    if hf_cache_dir.exists():
+        # Look for exact match or similar
+        model_dir_name = model_identifier.replace("/", "--")
+        
+        for item in hf_cache_dir.iterdir():
+            if item.is_dir():
+                # Check for exact match or contains
+                if item.name == model_dir_name or model_dir_name in item.name or item.name == f"models--{model_dir_name}":
+                    models_found.append(("huggingface", item))
+                # Also check if the identifier matches part of the name
+                elif model_identifier.replace("/", "--") in item.name:
+                    models_found.append(("huggingface", item))
+    
+    # Check local Dora models directory
+    dora_models_dir = Path.home() / ".dora" / "models"
+    if dora_models_dir.exists():
+        # Search for matching directories
+        for item in dora_models_dir.rglob("*"):
+            if item.is_dir() and model_identifier.replace("/", "--") in str(item):
+                models_found.append(("local", item))
+    
+    if not models_found:
+        print(f"❌ Model not found: {model_identifier}")
+        print("\n💡 Tip: Use --list to see all downloaded models")
+        return False
+    
+    # Show found models
+    print(f"\nFound {len(models_found)} matching model(s):")
+    total_size = 0
+    for source, path in models_found:
+        size = sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+        size_gb = size / (1024**3)
+        total_size += size
+        print(f"  📦 [{source}] {path.name:40} {size_gb:8.2f} GB")
+        print(f"     Path: {path}")
+    
+    total_gb = total_size / (1024**3)
+    print(f"\n  Total size: {total_gb:.2f} GB")
+    
+    # Confirm deletion
+    if not force:
+        response = input(f"\n⚠️  Are you sure you want to delete these {len(models_found)} model(s)? (y/N): ")
+        if response.lower() != 'y':
+            print("❌ Deletion cancelled")
+            return False
+    
+    # Delete the models
+    success_count = 0
+    for source, path in models_found:
+        try:
+            print(f"🗑️  Deleting {path.name}...")
+            shutil.rmtree(path)
+            success_count += 1
+            print(f"  ✅ Removed {path.name}")
+        except Exception as e:
+            print(f"  ❌ Error removing {path.name}: {e}")
+    
+    if success_count > 0:
+        print(f"\n✅ Successfully removed {success_count} model(s) ({total_gb:.2f} GB freed)")
+        removed = True
+    else:
+        print(f"\n❌ Failed to remove any models")
+    
+    return removed
+
+
+def clean_incomplete_downloads():
+    """Clean incomplete or corrupted downloads."""
+    print("\n🧹 Cleaning incomplete downloads...")
+    
+    incomplete_count = 0
+    patterns = ["*.incomplete", "*.downloading", "*.tmp", "*.part"]
+    
+    # Clean HuggingFace cache
+    hf_cache_dir = Path.home() / ".cache" / "huggingface" / "hub"
+    if hf_cache_dir.exists():
+        for pattern in patterns:
+            for incomplete in hf_cache_dir.rglob(pattern):
+                print(f"   Removing: {incomplete.name}")
+                try:
+                    incomplete.unlink()
+                    incomplete_count += 1
+                except Exception as e:
+                    print(f"   Error: {e}")
+    
+    # Clean Dora models directory
+    dora_models_dir = Path.home() / ".dora" / "models"
+    if dora_models_dir.exists():
+        for pattern in patterns:
+            for incomplete in dora_models_dir.rglob(pattern):
+                print(f"   Removing: {incomplete.name}")
+                try:
+                    incomplete.unlink()
+                    incomplete_count += 1
+                except Exception as e:
+                    print(f"   Error: {e}")
+    
+    if incomplete_count > 0:
+        print(f"✅ Removed {incomplete_count} incomplete files")
+    else:
+        print("✅ No incomplete downloads found")
+    
+    return incomplete_count
 
 
 def download_huggingface_model(repo_id: str, local_dir: Optional[Path] = None, 
@@ -346,7 +469,35 @@ def main():
         help="List available PrimeSpeech voices"
     )
     
+    parser.add_argument(
+        "--remove",
+        type=str,
+        help="Remove a downloaded model (use repo ID or partial name)"
+    )
+    
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Skip confirmation prompts (use with --remove)"
+    )
+    
+    parser.add_argument(
+        "--clean",
+        action="store_true",
+        help="Clean incomplete downloads"
+    )
+    
     args = parser.parse_args()
+    
+    # Handle --clean (clean incomplete downloads)
+    if args.clean:
+        clean_incomplete_downloads()
+        return
+    
+    # Handle --remove (remove a model)
+    if args.remove:
+        success = remove_model(args.remove, force=args.force)
+        sys.exit(0 if success else 1)
     
     # Handle --list (show all downloaded models)
     if args.list:
@@ -429,6 +580,13 @@ def main():
         print("")
         print("  # List downloaded models:")
         print("  python download_models.py --list")
+        print("")
+        print("  # Remove a model:")
+        print("  python download_models.py --remove mlx-community/gemma-3-12b-it-4bit")
+        print("  python download_models.py --remove gemma --force  # Skip confirmation")
+        print("")
+        print("  # Clean incomplete downloads:")
+        print("  python download_models.py --clean")
         
         if PRIMESPEECH_AVAILABLE:
             print("\n  # PrimeSpeech models:")
