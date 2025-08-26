@@ -37,6 +37,7 @@ if USE_MLX and IS_APPLE_SILICON:
         import mlx.core as mx
         from mlx_lm import load, generate, stream_generate
         from mlx_lm.models.cache import make_prompt_cache
+        from mlx_lm.sample_utils import make_sampler, make_logits_processors
         MLX_AVAILABLE = True
         # MLX imported successfully - will log after node is ready
     except ImportError as e:
@@ -114,7 +115,11 @@ class Qwen3LLMNode:
     def initialize_model(self):
         """Initialize model after node is available."""
         if not self.model_loaded:
-            send_log(self.node, "INFO", f"Initializing Qwen3-8B ({'MLX' if self.use_mlx else 'GGUF'})...")
+            if self.use_mlx:
+                model_name = self.config.get("mlx_model", "Unknown MLX model")
+            else:
+                model_name = self.config.get("gguf_model", "Unknown GGUF model")
+            send_log(self.node, "INFO", f"Initializing {model_name} ({'MLX' if self.use_mlx else 'GGUF'})...")
             self.load_model()
             send_log(self.node, "INFO", "Ready for chat!")
             send_log(self.node, "INFO", f"Log level: {self.config['log_level']}")
@@ -130,6 +135,32 @@ class Qwen3LLMNode:
             else:
                 send_log(self.node, "INFO", f"History: {strategy} strategy")
             self.model_loaded = True
+
+    def format_gemma_prompt(self, messages: List[Dict]) -> str:
+        """Format messages using Gemma's chat template.
+        
+        Gemma uses:
+        <bos><start_of_turn>user\n{user_message}<end_of_turn>
+        <start_of_turn>model\n{model_message}<end_of_turn>
+        """
+        prompt = "<bos>"
+        
+        for msg in messages:
+            role = msg["role"]
+            content = msg["content"]
+            
+            if role == "system":
+                # Gemma doesn't have explicit system role, include as first user message
+                prompt += f"<start_of_turn>user\nSystem: {content}<end_of_turn>\n"
+            elif role == "user":
+                prompt += f"<start_of_turn>user\n{content}<end_of_turn>\n"
+            elif role == "assistant":
+                prompt += f"<start_of_turn>model\n{content}<end_of_turn>\n"
+        
+        # Add the model turn start for generation
+        prompt += "<start_of_turn>model\n"
+        
+        return prompt
 
     def load_config(self) -> Dict:
         """Load configuration from environment variables."""
@@ -160,9 +191,23 @@ class Qwen3LLMNode:
 
         # MLX-specific config
         if self.use_mlx:
-            config["mlx_model"] = os.getenv("MLX_MODEL", "Qwen/Qwen3-8B-MLX-4bit")
+            # Support both Qwen3 and Gemma models
+            mlx_model = os.getenv("MLX_MODEL", "Qwen/Qwen3-8B-MLX-4bit")
+            config["mlx_model"] = mlx_model
             config["mlx_max_tokens"] = int(os.getenv("MLX_MAX_TOKENS", "2048"))
             config["mlx_temp"] = float(os.getenv("MLX_TEMPERATURE", "0.7"))
+            
+            # These parameters work for all MLX models
+            config["top_p"] = float(os.getenv("TOP_P", "0.0"))  # 0 means disabled
+            config["repetition_penalty"] = float(os.getenv("REPETITION_PENALTY", "1.0"))  # 1.0 means disabled
+            
+            # Detect model type from model ID
+            if "gemma" in mlx_model.lower():
+                config["model_type"] = "gemma"
+            elif "glm" in mlx_model.lower():
+                config["model_type"] = "glm"
+            else:
+                config["model_type"] = "qwen"
 
         return config
 
@@ -334,21 +379,59 @@ class Qwen3LLMNode:
 
             # Prepare prompt with thinking control
             system_prompt = self.config["system_prompt"]
+            model_type = self.config.get("model_type", "qwen")
+            
+            # Handle thinking mode for different models
             if not self.config["enable_thinking"]:
-                system_prompt += " Provide direct answers without showing your thinking process."
-                text = text + " /no_think"
+                if model_type == "glm":
+                    # GLM uses /nothink suffix in user message
+                    text = text + "/nothink"
+                elif model_type == "gemma":
+                    # Gemma uses system prompt instruction
+                    system_prompt += " Provide direct answers without showing your thinking process."
+                else:
+                    # Qwen uses /no_think suffix
+                    text = text + " /no_think"
+                    system_prompt += " Provide direct answers without showing your thinking process."
 
             # Format messages for MLX with managed history
             messages = [{"role": "system", "content": system_prompt}]
             messages.extend(history)
             messages.append({"role": "user", "content": text})
 
-            # Apply chat template
-            prompt = self.tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True
-            )
+            # Apply chat template based on model type
+            if self.config.get("model_type") == "gemma":
+                # Use Gemma's specific chat format
+                prompt = self.format_gemma_prompt(messages)
+            elif self.config.get("model_type") == "glm":
+                # GLM models have their own chat template
+                try:
+                    prompt = self.tokenizer.apply_chat_template(
+                        messages,
+                        tokenize=False,
+                        add_generation_prompt=True,
+                        enable_thinking=self.config["enable_thinking"]
+                    )
+                    send_log(self.node, "DEBUG", f"GLM chat template applied (thinking={'enabled' if self.config['enable_thinking'] else 'disabled'})")
+                except Exception as e:
+                    send_log(self.node, "DEBUG", f"GLM chat template error: {e}, using fallback")
+                    # Fallback format for GLM
+                    prompt = "[gMASK]<sop>"
+                    for msg in messages:
+                        if msg["role"] == "system":
+                            prompt += f"<|system|>\n{msg['content']}"
+                        elif msg["role"] == "user":
+                            prompt += f"<|user|>\n{msg['content']}"
+                        elif msg["role"] == "assistant":
+                            prompt += f"<|assistant|>\n{msg['content']}"
+                    prompt += "<|assistant|>\n"
+            else:
+                # Use tokenizer's default chat template (for Qwen)
+                prompt = self.tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True
+                )
 
             send_log(self.node, "DEBUG", "Generating with MLX...")
             
@@ -369,6 +452,42 @@ class Qwen3LLMNode:
                 "max_tokens": self.config["mlx_max_tokens"],
                 "verbose": False
             }
+            
+            # Add sampling parameters using proper MLX sampler/logits_processors
+            # Only apply custom sampler for Gemma or when explicitly configured
+            if self.config.get("model_type") == "gemma":
+                # Gemma models benefit from custom sampling
+                temp = self.config.get("mlx_temp", 0.7)
+                top_p = self.config.get("top_p", 0.9)
+                
+                # Create sampler for Gemma
+                if temp > 0 or top_p > 0:
+                    sampler = make_sampler(temp=temp, top_p=top_p)
+                    generate_params["sampler"] = sampler
+                
+                # Create logits_processors for repetition penalty
+                rep_penalty = self.config.get("repetition_penalty", 1.1)
+                if rep_penalty != 1.0:
+                    logits_processors = make_logits_processors(repetition_penalty=rep_penalty)
+                    generate_params["logits_processors"] = logits_processors
+            else:
+                # For Qwen and other models, only use sampler if explicitly set
+                # Check if user explicitly set these (not using defaults)
+                if "MLX_TEMPERATURE" in os.environ or "TOP_P" in os.environ:
+                    temp = self.config.get("mlx_temp", 0.0)
+                    top_p = self.config.get("top_p", 0.0)
+                    
+                    if temp > 0 or top_p > 0:
+                        sampler = make_sampler(temp=temp, top_p=top_p)
+                        generate_params["sampler"] = sampler
+                
+                # Only apply repetition penalty if explicitly set
+                if "REPETITION_PENALTY" in os.environ:
+                    rep_penalty = self.config.get("repetition_penalty", 1.0)
+                    if rep_penalty != 1.0:
+                        logits_processors = make_logits_processors(repetition_penalty=rep_penalty)
+                        generate_params["logits_processors"] = logits_processors
+                
             if prompt_cache is not None:
                 generate_params["prompt_cache"] = prompt_cache
                 
@@ -377,6 +496,21 @@ class Qwen3LLMNode:
             # Clean response
             if prompt in response:
                 response = response.replace(prompt, "").strip()
+            
+            # Clean model-specific end tokens
+            if self.config.get("model_type") == "gemma":
+                # Remove Gemma's end tokens
+                response = response.replace("<end_of_turn>", "").strip()
+                response = response.replace("<eos>", "").strip()
+            elif self.config.get("model_type") == "glm":
+                # Remove GLM's end tokens if any
+                response = response.replace("<|endoftext|>", "").strip()
+                response = response.replace("<|user|>", "").strip()
+                response = response.replace("<|assistant|>", "").strip()
+            else:
+                # Remove Qwen's end tokens (if any remain)
+                response = response.replace("<|im_end|>", "").strip()
+                response = response.replace("<|im_start|>", "").strip()
 
             # Handle thinking tags if disabled
             if not self.config["enable_thinking"]:
@@ -412,21 +546,59 @@ class Qwen3LLMNode:
 
             # Prepare prompt with thinking control
             system_prompt = self.config["system_prompt"]
+            model_type = self.config.get("model_type", "qwen")
+            
+            # Handle thinking mode for different models
             if not self.config["enable_thinking"]:
-                system_prompt += " Provide direct answers without showing your thinking process."
-                text = text + " /no_think"
+                if model_type == "glm":
+                    # GLM uses /nothink suffix in user message
+                    text = text + "/nothink"
+                elif model_type == "gemma":
+                    # Gemma uses system prompt instruction
+                    system_prompt += " Provide direct answers without showing your thinking process."
+                else:
+                    # Qwen uses /no_think suffix
+                    text = text + " /no_think"
+                    system_prompt += " Provide direct answers without showing your thinking process."
 
             # Format messages for MLX with managed history
             messages = [{"role": "system", "content": system_prompt}]
             messages.extend(history)
             messages.append({"role": "user", "content": text})
 
-            # Apply chat template
-            prompt = self.tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True
-            )
+            # Apply chat template based on model type
+            if self.config.get("model_type") == "gemma":
+                # Use Gemma's specific chat format
+                prompt = self.format_gemma_prompt(messages)
+            elif self.config.get("model_type") == "glm":
+                # GLM models have their own chat template
+                try:
+                    prompt = self.tokenizer.apply_chat_template(
+                        messages,
+                        tokenize=False,
+                        add_generation_prompt=True,
+                        enable_thinking=self.config["enable_thinking"]
+                    )
+                    send_log(self.node, "DEBUG", f"GLM chat template applied (thinking={'enabled' if self.config['enable_thinking'] else 'disabled'})")
+                except Exception as e:
+                    send_log(self.node, "DEBUG", f"GLM chat template error: {e}, using fallback")
+                    # Fallback format for GLM
+                    prompt = "[gMASK]<sop>"
+                    for msg in messages:
+                        if msg["role"] == "system":
+                            prompt += f"<|system|>\n{msg['content']}"
+                        elif msg["role"] == "user":
+                            prompt += f"<|user|>\n{msg['content']}"
+                        elif msg["role"] == "assistant":
+                            prompt += f"<|assistant|>\n{msg['content']}"
+                    prompt += "<|assistant|>\n"
+            else:
+                # Use tokenizer's default chat template (for Qwen)
+                prompt = self.tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True
+                )
 
             send_log(self.node, "DEBUG", "Generating with MLX (streaming)...")
             
@@ -453,6 +625,42 @@ class Qwen3LLMNode:
                 "prompt": prompt,
                 "max_tokens": self.config["mlx_max_tokens"]
             }
+            
+            # Add sampling parameters using proper MLX sampler/logits_processors for streaming
+            # Only apply custom sampler for Gemma or when explicitly configured
+            if self.config.get("model_type") == "gemma":
+                # Gemma models benefit from custom sampling
+                temp = self.config.get("mlx_temp", 0.7)
+                top_p = self.config.get("top_p", 0.9)
+                
+                # Create sampler for Gemma
+                if temp > 0 or top_p > 0:
+                    sampler = make_sampler(temp=temp, top_p=top_p)
+                    stream_params["sampler"] = sampler
+                
+                # Create logits_processors for repetition penalty
+                rep_penalty = self.config.get("repetition_penalty", 1.1)
+                if rep_penalty != 1.0:
+                    logits_processors = make_logits_processors(repetition_penalty=rep_penalty)
+                    stream_params["logits_processors"] = logits_processors
+            else:
+                # For Qwen and other models, only use sampler if explicitly set
+                # Check if user explicitly set these (not using defaults)
+                if "MLX_TEMPERATURE" in os.environ or "TOP_P" in os.environ:
+                    temp = self.config.get("mlx_temp", 0.0)
+                    top_p = self.config.get("top_p", 0.0)
+                    
+                    if temp > 0 or top_p > 0:
+                        sampler = make_sampler(temp=temp, top_p=top_p)
+                        stream_params["sampler"] = sampler
+                
+                # Only apply repetition penalty if explicitly set
+                if "REPETITION_PENALTY" in os.environ:
+                    rep_penalty = self.config.get("repetition_penalty", 1.0)
+                    if rep_penalty != 1.0:
+                        logits_processors = make_logits_processors(repetition_penalty=rep_penalty)
+                        stream_params["logits_processors"] = logits_processors
+                
             if prompt_cache is not None:
                 stream_params["prompt_cache"] = prompt_cache
             
