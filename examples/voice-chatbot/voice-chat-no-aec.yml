@@ -133,6 +133,10 @@ nodes:
       - segment_complete
 
     env:
+      # Model path configuration
+      # VOICEDIALOGUE_PATH: ~/VoiceDialogue  # Path to VoiceDialogue installation
+      # If not set, will try ~/VoiceDialogue or /Users/yuechen/home/VoiceDialogue
+      
       # Voice selection
       VOICE_NAME: Doubao  # Available: Doubao, Luo Xiang, Yang Mi, Zhou Jielun, Ma Yun, Maple, Cove
       

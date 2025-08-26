@@ -14,7 +14,15 @@ import re
 logger = logging.getLogger(__name__)
 
 # Setup paths for VoiceDialogue MoYoYo TTS
-VOICEDIALOGUE_PATH = Path("/Users/yuechen/home/VoiceDialogue")
+# Try environment variable first, then fallback to default
+VOICEDIALOGUE_PATH = Path(os.environ.get("VOICEDIALOGUE_PATH", 
+                                         os.path.expanduser("~/VoiceDialogue")))
+# Also check common installation locations
+if not VOICEDIALOGUE_PATH.exists():
+    # Try the original hardcoded path as last resort
+    if Path("/Users/yuechen/home/VoiceDialogue").exists():
+        VOICEDIALOGUE_PATH = Path("/Users/yuechen/home/VoiceDialogue")
+        
 THIRD_PARTY_PATH = VOICEDIALOGUE_PATH / "third_party"
 MOYOYO_TTS_PATH = THIRD_PARTY_PATH / "moyoyo_tts"
 
