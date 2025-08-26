@@ -15,6 +15,7 @@ class PrimeSpeechConfig:
     # Model selection
     VOICE_NAME = os.getenv("VOICE_NAME", "Doubao")  # Voice character name
     REPOSITORY = os.getenv("REPOSITORY", "MoYoYoTech/tone-models")  # HuggingFace repo
+    USE_HUGGINGFACE_MODELS = os.getenv("USE_HUGGINGFACE_MODELS", "false").lower() == "true"
     
     # Model paths
     MODEL_DIR = os.getenv("PRIMESPEECH_MODEL_DIR", "")  # Override model directory
@@ -131,12 +132,72 @@ VOICE_CONFIGS = {
     },
     "Cove": {
         "repository": "MoYoYoTech/tone-models",
-        "gpt_weights": "GPT_weights/maple_best_gpt.ckpt",
+        "gpt_weights": "GPT_weights/cove_best_gpt.ckpt",
         "sovits_weights": "SoVITS_weights/cove_best_sovits.pth",
         "reference_audio": "ref_audios/cove_ref.wav",
         "prompt_text": "and he has a long career in the Senate representing Delaware. So both have had significant impacts on American politics and policies.",
         "text_lang": "en",
         "prompt_lang": "en",
         "speed_factor": 1.0,
+    },
+    "BYS": {
+        "repository": "MoYoYoTech/tone-models",
+        "gpt_weights": "GPT_weights/bys_best_gpt.ckpt",
+        "sovits_weights": "SoVITS_weights/bys_best_sovits.pth",
+        "reference_audio": "ref_audios/bys_ref.wav",
+        "prompt_text": "今天天气不错，适合出去走走。",
+        "text_lang": "zh",
+        "prompt_lang": "zh",
+        "speed_factor": 1.1,
+    },
+    "Ellen": {
+        "repository": "MoYoYoTech/tone-models",
+        "gpt_weights": "GPT_weights/ellen_best_gpt.ckpt",
+        "sovits_weights": "SoVITS_weights/ellen_best_sovits.pth",
+        "reference_audio": "ref_audios/ellen_ref.wav",
+        "prompt_text": "Welcome to the show! Today we have some amazing guests.",
+        "text_lang": "en",
+        "prompt_lang": "en",
+        "speed_factor": 1.1,
+    },
+    "Juniper": {
+        "repository": "MoYoYoTech/tone-models",
+        "gpt_weights": "GPT_weights/juniper_best_gpt.ckpt",
+        "sovits_weights": "SoVITS_weights/juniper_best_sovits.pth",
+        "reference_audio": "ref_audios/juniper_ref.wav",
+        "prompt_text": "The forest was quiet, with only the sound of leaves rustling in the wind.",
+        "text_lang": "en",
+        "prompt_lang": "en",
+        "speed_factor": 1.1,
+    },
+    "Ma Baoguo": {
+        "repository": "MoYoYoTech/tone-models",
+        "gpt_weights": "GPT_weights/mabaoguo_best_gpt.ckpt",
+        "sovits_weights": "SoVITS_weights/mabaoguo_best_sovits.pth",
+        "reference_audio": "ref_audios/mabaoguo_ref.wav",
+        "prompt_text": "年轻人不讲武德，偷袭我这个六十九岁的老同志。",
+        "text_lang": "zh",
+        "prompt_lang": "zh",
+        "speed_factor": 1.1,
+    },
+    "Shen Yi": {
+        "repository": "MoYoYoTech/tone-models",
+        "gpt_weights": "GPT_weights/shenyi_best_gpt.ckpt",
+        "sovits_weights": "SoVITS_weights/shenyi_best_sovits.pth",
+        "reference_audio": "ref_audios/shenyi_ref.wav",
+        "prompt_text": "今天我们来分析一下这个案例的关键点。",
+        "text_lang": "zh",
+        "prompt_lang": "zh",
+        "speed_factor": 1.1,
+    },
+    "Trump": {
+        "repository": "MoYoYoTech/tone-models",
+        "gpt_weights": "GPT_weights/trump_best_gpt.ckpt",
+        "sovits_weights": "SoVITS_weights/trump_best_sovits.pth",
+        "reference_audio": "ref_audios/trump_ref.wav",
+        "prompt_text": "We're going to make America great again, and it's going to be tremendous.",
+        "text_lang": "en",
+        "prompt_lang": "en",
+        "speed_factor": 1.1,
     },
 }

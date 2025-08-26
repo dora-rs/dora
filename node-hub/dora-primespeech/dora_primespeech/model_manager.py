@@ -212,21 +212,51 @@ class ModelManager:
         
         print(f"Created placeholder models for {voice_name}")
     
-    def list_available_voices(self) -> List[str]:
+    def get_model_size(self, voice_name: str, voice_config: Dict) -> float:
+        """Get the total size of downloaded model files for a voice.
+        
+        Args:
+            voice_name: Name of the voice
+            voice_config: Voice configuration dictionary
+            
+        Returns:
+            Total size in MB
+        """
+        total_size = 0
+        
+        # Check voice-specific files
+        files_to_check = [
+            self.moyoyo_dir / voice_config.get("gpt_weights", ""),
+            self.moyoyo_dir / voice_config.get("sovits_weights", ""),
+            self.moyoyo_dir / voice_config.get("reference_audio", "")
+        ]
+        
+        for file_path in files_to_check:
+            if file_path and file_path.exists():
+                total_size += file_path.stat().st_size
+        
+        # Convert to MB
+        return total_size / (1024 * 1024)
+    
+    def list_available_voices(self) -> Dict[str, Dict]:
         """List all downloaded voice models.
         
         Returns:
-            List of voice names that have been downloaded
+            Dictionary mapping voice names to their metadata
         """
-        voices = []
+        voices = {}
         
-        # Check GPT_weights directory for downloaded voices
-        gpt_dir = self.moyoyo_dir / "GPT_weights"
-        if gpt_dir.exists():
-            for gpt_file in gpt_dir.glob("*_best_gpt.ckpt"):
-                # Extract voice name from filename
-                voice_name = gpt_file.stem.replace("_best_gpt", "")
-                voices.append(voice_name)
+        # Import VOICE_CONFIGS to check against
+        from .config import VOICE_CONFIGS
+        
+        # Check which voices have all required files downloaded
+        for voice_name, voice_config in VOICE_CONFIGS.items():
+            if self.check_models_exist(voice_name, voice_config):
+                voices[voice_name] = {
+                    "repository": voice_config.get("repository", self.repository),
+                    "language": voice_config.get("text_lang", "unknown"),
+                    "size_mb": self.get_model_size(voice_name, voice_config)
+                }
         
         return voices
     

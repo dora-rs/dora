@@ -119,42 +119,67 @@ def main():
                 if not model_loaded:
                     send_log(node, "INFO", "Loading models for the first time...")
                     
-                    if not model_manager.check_models_exist(voice_name, voice_config):
-                        send_log(node, "INFO", f"Downloading models for {voice_name}...")
-                        try:
+                    # Check if we should use HuggingFace models
+                    if config.USE_HUGGINGFACE_MODELS:
+                        send_log(node, "INFO", "Using HuggingFace models (downloading if needed)...")
+                        if not model_manager.check_models_exist(voice_name, voice_config):
+                            send_log(node, "INFO", f"Downloading models for {voice_name}...")
+                            try:
+                                model_paths = model_manager.get_voice_model_paths(voice_name, voice_config)
+                                send_log(node, "INFO", "Models downloaded successfully")
+                            except Exception as e:
+                                send_log(node, "ERROR", f"Failed to download models: {e}")
+                                continue
+                        else:
+                            send_log(node, "INFO", f"Models already downloaded for {voice_name}")
                             model_paths = model_manager.get_voice_model_paths(voice_name, voice_config)
-                            send_log(node, "INFO", "Models downloaded successfully")
-                        except Exception as e:
-                            send_log(node, "ERROR", f"Failed to download models: {e}")
-                            continue
                     else:
-                        repository = voice_config["repository"]
-                        voice_dir = config.get_models_dir() / repository.replace("/", "_") / voice_name
-                        model_paths = {
-                            "gpt_model": voice_dir / voice_config["gpt_weights"],
-                            "sovits_model": voice_dir / voice_config["sovits_weights"],
-                            "reference_audio": voice_dir / voice_config["reference_audio"],
-                        }
+                        # Use local VoiceDialogue models
+                        send_log(node, "INFO", "Using local VoiceDialogue models...")
                     
                     # Initialize TTS engine
-                    voice_map = {
-                        "Doubao": "doubao",
-                        "Luoxiang": "luoxiang",
-                        "Yangmi": "yangmi",
-                        "Yaoyao": "yaoyao",
-                        "Xiaoyi": "xiaoyi"
-                    }
-                    moyoyo_voice = voice_map.get(voice_name, "doubao")
+                    # Convert voice name to lowercase and remove spaces for MoYoYo compatibility
+                    moyoyo_voice = voice_name.lower().replace(" ", "")
                     device = "cuda" if config.USE_GPU and config.DEVICE.startswith("cuda") else "cpu"
                     
                     enable_streaming = config.RETURN_FRAGMENT if hasattr(config, 'RETURN_FRAGMENT') else False
                     
-                    tts_engine = MoYoYoTTSWrapper(
-                        voice=moyoyo_voice, 
-                        device=device,
-                        enable_streaming=enable_streaming,
-                        chunk_duration=0.3
-                    )
+                    # Initialize TTS wrapper based on model source
+                    if config.USE_HUGGINGFACE_MODELS:
+                        # Use downloaded HuggingFace models
+                        models_base_path = config.get_models_dir()
+                        moyoyo_models_path = models_base_path / "moyoyo"
+                        
+                        if moyoyo_models_path.exists():
+                            send_log(node, "INFO", f"Using HuggingFace models from {moyoyo_models_path}")
+                            tts_engine = MoYoYoTTSWrapper(
+                                voice=moyoyo_voice, 
+                                device=device,
+                                enable_streaming=enable_streaming,
+                                chunk_duration=0.3,
+                                models_path=moyoyo_models_path,
+                                voice_config=voice_config
+                            )
+                        else:
+                            send_log(node, "ERROR", f"HuggingFace models not found at {moyoyo_models_path}")
+                            send_log(node, "INFO", "Falling back to VoiceDialogue path")
+                            tts_engine = MoYoYoTTSWrapper(
+                                voice=moyoyo_voice, 
+                                device=device,
+                                enable_streaming=enable_streaming,
+                                chunk_duration=0.3,
+                                voice_config=voice_config
+                            )
+                    else:
+                        # Use local VoiceDialogue models (default)
+                        send_log(node, "INFO", "Using local VoiceDialogue models")
+                        tts_engine = MoYoYoTTSWrapper(
+                            voice=moyoyo_voice, 
+                            device=device,
+                            enable_streaming=enable_streaming,
+                            chunk_duration=0.3,
+                            voice_config=voice_config
+                        )
                     
                     model_loaded = True
                     send_log(node, "INFO", "TTS engine ready")

@@ -57,7 +57,7 @@ if MOYOYO_TTS_PATH.exists():
 class StreamingMoYoYoTTSWrapper:
     """Fixed wrapper for MoYoYo TTS with real streaming via audio chunking."""
     
-    def __init__(self, voice="doubao", device="cpu", enable_streaming=True, chunk_duration=0.5):
+    def __init__(self, voice="doubao", device="cpu", enable_streaming=True, chunk_duration=0.5, models_path=None, voice_config=None):
         """Initialize streaming MoYoYo TTS wrapper.
         
         Args:
@@ -65,13 +65,21 @@ class StreamingMoYoYoTTSWrapper:
             device: Device to use (cpu or cuda)
             enable_streaming: Enable streaming output
             chunk_duration: Duration of each audio chunk in seconds for streaming
+            models_path: Optional path to models directory (defaults to VoiceDialogue path)
+            voice_config: Optional voice configuration dict from config.py
         """
         self.voice = voice
         self.device = device
         self.enable_streaming = enable_streaming
         self.chunk_duration = chunk_duration  # Duration of each streamed chunk
         self.tts = None
-        self.models_path = VOICEDIALOGUE_PATH / "assets/models/tts/moyoyo"
+        self.voice_config = voice_config  # Store the config from config.py
+        
+        # Use provided models path or default to VoiceDialogue
+        if models_path:
+            self.models_path = Path(models_path)
+        else:
+            self.models_path = VOICEDIALOGUE_PATH / "assets/models/tts/moyoyo"
         
         # Abort flag for interrupting synthesis
         self._abort_synthesis = False
@@ -100,29 +108,39 @@ class StreamingMoYoYoTTSWrapper:
             logger.warning("MoYoYo TTS not available")
             return
         
-        # Configuration based on voice
-        voice_configs = {
-            "doubao": {
-                "t2s_weights": "GPT_weights/doubao_best_gpt.ckpt",
-                "vits_weights": "SoVITS_weights/doubao_best_sovits.pth",
-                "ref_audio": "ref_audios/doubao_ref.wav",
-                "prompt_text": "我叫豆包呀，能陪你聊天解闷，不管是聊生活趣事，知识科普还是帮你出主意，我都在行哦。",
-            },
-            "luoxiang": {
-                "t2s_weights": "GPT_weights/luoxiang_best_gpt.ckpt",
-                "vits_weights": "SoVITS_weights/luoxiang_best_sovits.pth",
-                "ref_audio": "ref_audios/luoxiang_ref.wav",
-                "prompt_text": "我觉得你的逻辑非常混乱，这已经涉及法外狂徒了。希望大家提高法律意识，培养法制观念，千万不要有侥幸的心理。",
-            },
-            "yangmi": {
-                "t2s_weights": "GPT_weights/yangmi_best_gpt.ckpt",
-                "vits_weights": "SoVITS_weights/yangmi_best_sovits.pth",
-                "ref_audio": "ref_audios/yangmi_ref.wav",
-                "prompt_text": "让梦想，照进现实。不管在什么情况下，只要是坚定的，永远相信美好的事情，即将发生。",
-            },
-        }
-        
-        voice_config = voice_configs.get(self.voice, voice_configs["doubao"])
+        # Use provided voice_config or fall back to hardcoded defaults
+        if self.voice_config:
+            # Use configuration from config.py
+            voice_config = {
+                "t2s_weights": self.voice_config.get("gpt_weights", f"GPT_weights/{self.voice}_best_gpt.ckpt"),
+                "vits_weights": self.voice_config.get("sovits_weights", f"SoVITS_weights/{self.voice}_best_sovits.pth"),
+                "ref_audio": self.voice_config.get("reference_audio", f"ref_audios/{self.voice}_ref.wav"),
+                "prompt_text": self.voice_config.get("prompt_text", "你好，很高兴见到你。"),
+            }
+        else:
+            # Fall back to hardcoded configurations for backward compatibility
+            voice_configs = {
+                "doubao": {
+                    "t2s_weights": "GPT_weights/doubao_best_gpt.ckpt",
+                    "vits_weights": "SoVITS_weights/doubao_best_sovits.pth",
+                    "ref_audio": "ref_audios/doubao_ref.wav",
+                    "prompt_text": "我叫豆包呀，能陪你聊天解闷，不管是聊生活趣事，知识科普还是帮你出主意，我都在行哦。",
+                },
+                "luoxiang": {
+                    "t2s_weights": "GPT_weights/luoxiang_best_gpt.ckpt",
+                    "vits_weights": "SoVITS_weights/luoxiang_best_sovits.pth",
+                    "ref_audio": "ref_audios/luoxiang_ref.wav",
+                    "prompt_text": "我觉得你的逻辑非常混乱，这已经涉及法外狂徒了。希望大家提高法律意识，培养法制观念，千万不要有侥幸的心理。",
+                },
+                "yangmi": {
+                    "t2s_weights": "GPT_weights/yangmi_best_gpt.ckpt",
+                    "vits_weights": "SoVITS_weights/yangmi_best_sovits.pth",
+                    "ref_audio": "ref_audios/yangmi_ref.wav",
+                    "prompt_text": "让梦想，照进现实。不管在什么情况下，只要是坚定的，永远相信美好的事情，即将发生。",
+                },
+            }
+            
+            voice_config = voice_configs.get(self.voice, voice_configs["doubao"])
         
         # Create TTS configuration
         custom_config = {
