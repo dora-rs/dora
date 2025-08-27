@@ -23,7 +23,7 @@ eyre = "0.6.8"
 tokio = { version = "1.20.1", features = ["full"] }
 tokio-stream = { version = "0.1.11", features = ["net"] }
 tracing = "0.1.36"
-tracing-opentelemetry = { version = "0.18.0", optional = true }
+tracing-opentelemetry = { version = "0.24.0", optional = true }
 futures-concurrency = "7.1.0"
 serde_json = "1.0.86"
 dora-core = { workspace = true, features = ["build"] }
