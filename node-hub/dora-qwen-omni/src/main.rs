@@ -7,7 +7,7 @@ use std::ffi::CString;
 use std::io::Cursor;
 use std::num::NonZeroU32;
 use std::path::Path;
-
+u
 use base64::Engine;
 use clap::Parser;
 
@@ -194,8 +194,6 @@ impl MtmdCliContext {
         // Tokenize the input
         let chunks = self.mtmd_ctx.tokenize(input_text, &bitmap_refs)?;
 
-        println!("Tokenization complete, {} chunks created", chunks.len());
-
         // Clear bitmaps after tokenization
         self.bitmaps.clear();
 
@@ -302,20 +300,6 @@ fn run_single_turn(
                         None => {}
                     }
                 }
-
-                println!("Start inference");
-                // Load media files
-
-                // for image_path in &params.images {
-                // println!("Loading image: {image_path}");
-                // ctx.load_media(image_path)?;
-                // prompt.push_str(media_marker);
-                // }
-                // for audio_path in &params.audio {
-                // ctx.load_media(audio_path)?;
-                // prompt.push_str(media_marker);
-                // }
-
                 // Create user message
                 let msg = LlamaChatMessage::new("user".to_string(), prompt)?;
 
@@ -479,8 +463,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("Multimodal projection file not found".into());
     }
 
-    println!("Loading model: {}", params.model_path);
-
     // Initialize backend
     let backend = LlamaBackend::init()?;
 
@@ -498,18 +480,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_n_threads(params.n_threads)
         .with_n_batch(64)
         .with_n_ctx(Some(params.n_tokens));
-    let mut context = model.new_context(&backend, context_params)?;
 
+    let mut context = model.new_context(&backend, context_params)?;
     // Create sampler
     let mut sampler = LlamaSampler::chain_simple([LlamaSampler::greedy()]);
 
-    println!("Model loaded successfully");
-    println!("Loading mtmd projection: {}", params.mmproj_path);
-
     // Create the MTMD context
     run_single_turn(&model, &mut context, &mut sampler, &params, &backend)?;
-
-    println!("\n");
 
     Ok(())
 }
