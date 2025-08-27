@@ -7,12 +7,28 @@
   "rangeStrategy": "in-range-only",
   "packageRules": [
     {
-      "matchUpdateTypes": [
-        "lockFileMaintenance",
-        "patch",
-        "minor"
+      "matchManagers": [
+        "cargo"
       ],
-      "groupName": "dependencies"
+      "separateMultipleMajor": true,
+      "groupName": "Rust dependencies"
+    },
+    {
+      "matchManagers": [
+        "pip_requirements",
+        "pip_setup",
+        "pipenv",
+        "poetry",
+        "uv"
+      ],
+      "separateMultipleMajor": true,
+      "matchFiles": [
+        "**/requirements.txt",
+        "**/pyproject.toml",
+        "**/Pipfile",
+        "**/uv.lock"
+      ],
+      "groupName": "Python dependencies"
     }
   ],
   "schedule": [
