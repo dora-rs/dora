@@ -84,17 +84,25 @@ class MacAECSegmentation:
         # Initialize MAC-AEC
         # Note: dora-aec doesn't use AECLogger, just print directly
         
-        # Find the native library - prefer dora-aec's version
-        lib_path = Path(__file__).parent / "../../node-hub/dora-aec/dora_aec/lib/libAudioCapture.dylib"
+        # Find the native library - check multiple locations
+        # 1. First check local lib directory (for standalone distribution)
+        lib_path = Path(__file__).parent / "lib/libAudioCapture.dylib"
+        
         if not lib_path.exists():
-            # Try absolute path
-            lib_path = Path("/Users/yuechen/home/conversation/dora/node-hub/dora-aec/dora_aec/lib/libAudioCapture.dylib")
-        if not lib_path.exists():
-            # Fallback to dora-mac-aec
+            # 2. Try dora-mac-aec node location
             lib_path = Path(__file__).parent / "../../node-hub/dora-mac-aec/dora_mac_aec/lib/libAudioCapture.dylib"
         
         if not lib_path.exists():
-            raise FileNotFoundError(f"MAC-AEC native library not found. Expected at: {lib_path}")
+            # 3. Try dora-aec node location
+            lib_path = Path(__file__).parent / "../../node-hub/dora-aec/dora_aec/lib/libAudioCapture.dylib"
+        
+        if not lib_path.exists():
+            raise FileNotFoundError(
+                f"MAC-AEC native library not found. Please ensure libAudioCapture.dylib is in one of:\n"
+                f"  1. {Path(__file__).parent / 'lib/'}\n"
+                f"  2. {Path(__file__).parent / '../../node-hub/dora-mac-aec/dora_mac_aec/lib/'}\n"
+                f"  3. {Path(__file__).parent / '../../node-hub/dora-aec/dora_aec/lib/'}"
+            )
         
         self.aec = AECWrapper(
             library_path=str(lib_path),
