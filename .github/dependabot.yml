@@ -1,0 +1,15 @@
+version: 2
+updates:
+  # Rust dependencies: Cargo
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      rust-minor:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+    # Major updates will be in separate PRs by default
