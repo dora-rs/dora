@@ -87,7 +87,7 @@ dora-ros2-bridge-python = { path = "libraries/extensions/ros2-bridge/python" }
 dora-message = { version = "0.5.0", path = "libraries/message" }
 arrow = { version = "54.2.1" }
 arrow-schema = { version = "54.2.1" }
-arrow-data = { version = "54.2.1" }
+arrow-data = { version = "55.2.0" }
 arrow-array = { version = "54.2.1" }
 parquet = { version = "54.2.1" }
 pyo3 = { version = "0.23", features = [
