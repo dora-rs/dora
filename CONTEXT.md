@@ -187,13 +187,91 @@ export LOG_LEVEL=DEBUG
 3. **Model Manager**: `/Users/yuechen/home/arios/dora/node-hub/dora-primespeech/dora_primespeech/model_manager.py`
 4. **Pipeline Config**: `/Users/yuechen/home/arios/dora/examples/voice-chatbot/voice-chat-no-aec.yml`
 
+## Root Cause Analysis: Tone Generation
+
+### When Tones Are Generated
+
+The 440Hz sine wave tone is generated in `moyoyo_tts_wrapper_streaming_fix.py` under these conditions:
+
+```python
+def synthesize_streaming(self, text, language="zh", speed=1.0):
+    if not MOYOYO_AVAILABLE or self.tts is None:
+        # GENERATES TONE!
+        audio = np.sin(2 * np.pi * 440 * t) * 0.3
+```
+
+**Triggers:**
+1. `MOYOYO_AVAILABLE = False` - MoYoYo module import failed
+2. `self.tts = None` - TTS initialization failed
+3. Any exception during synthesis
+
+### Common Causes
+
+1. **Placeholder Model Files**
+   - Files < 1MB containing text like "placeholder" or "download required"
+   - Solution: Download real models with model-manager
+
+2. **Wrong Path Configuration**
+   - Using hardcoded VoiceDialogue path instead of downloaded models
+   - Solution: Set `USE_HUGGINGFACE_MODELS: "true"`
+
+3. **Missing Base Models**
+   - chinese-hubert-base or chinese-roberta-wwm-ext-large not found
+   - Solution: Run `download_models.py --download primespeech-base`
+
+4. **Import Failures**
+   - MoYoYo dependencies not installed
+   - Solution: Install dora-primespeech package
+
+## Diagnostic Tools
+
+### 1. Diagnose Issues
+```bash
+python examples/voice-chatbot/diagnose_tts.py
+```
+This script checks:
+- Model file sizes and validity
+- Environment configuration
+- Python module imports
+- Provides specific fixes
+
+### 2. Test TTS
+```bash
+python examples/voice-chatbot/test_primespeech.py
+```
+This script:
+- Tests actual TTS synthesis
+- Detects if output is tone vs real voice
+- Saves test audio for verification
+
 ## Next Steps
 
-1. **Verify models are real** (not placeholders)
-2. **Enable HuggingFace models** in configuration
-3. **Test TTS independently** with test script
-4. **Check debug logs** for model loading errors
-5. **Ensure base models** (Hubert, Roberta) are downloaded
+1. **Run diagnostics** to identify specific issues:
+   ```bash
+   python examples/voice-chatbot/diagnose_tts.py
+   ```
+
+2. **Fix identified issues** (usually downloading models):
+   ```bash
+   cd examples/model-manager
+   python download_models.py --download primespeech-base
+   python download_models.py --voice Doubao
+   ```
+
+3. **Enable HuggingFace models** in configuration:
+   ```yaml
+   USE_HUGGINGFACE_MODELS: "true"
+   ```
+
+4. **Test TTS** to verify fix:
+   ```bash
+   python examples/voice-chatbot/test_primespeech.py
+   ```
+
+5. **Run pipeline** with working TTS:
+   ```bash
+   dora start examples/voice-chatbot/voice-chat-no-aec.yml
+   ```
 
 ## Contact Points
 
