@@ -78,9 +78,9 @@ nodes:
       # MLX model settings (for Apple Silicon)
       
       # Choose your model (uncomment one):
-      MLX_MODEL: "mlx-community/GLM-4.5-Air-3bit"  # GLM-4.5 Air - Very efficient 3-bit Chinese model
+      #MLX_MODEL: "mlx-community/GLM-4.5-Air-3bit"  # GLM-4.5 Air - Very efficient 3-bit Chinese model
       #MLX_MODEL: "Qwen/Qwen3-32B-MLX-6bit"  # Qwen3 32B - Large model
-      #MLX_MODEL: "Qwen/Qwen3-8B-MLX-4bit"  # Qwen3 8B - Balanced
+      MLX_MODEL: "Qwen/Qwen3-8B-MLX-4bit"  # Qwen3 8B - Balanced
       #MLX_MODEL: "mlx-community/gemma-2-9b-it-4bit"  # Gemma 2 - For English/mixed
       
       MLX_MAX_TOKENS: 256
