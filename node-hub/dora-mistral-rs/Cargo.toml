@@ -17,10 +17,14 @@ tokio = { version = "1.36.0", features = ["full"] }
 eyre = "0.6.8"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-mistralrs = { git = "https://github.com/EricLBuehler/mistral.rs.git", features = [
+mistralrs = { git = "https://github.com/EricLBuehler/mistral.rs.git", tag = "v0.5.0", features = [
     "metal",
     "accelerate",
 ] }
+# pin tokenizers version because of https://github.com/huggingface/tokenizers/issues/1855
+tokenizers = "=0.21.1"
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
-mistralrs = { git = "https://github.com/EricLBuehler/mistral.rs.git" }
+mistralrs = { git = "https://github.com/EricLBuehler/mistral.rs.git", tag = "v0.5.0" }
+# pin tokenizers version because of https://github.com/huggingface/tokenizers/issues/1855
+tokenizers = "=0.21.1"
