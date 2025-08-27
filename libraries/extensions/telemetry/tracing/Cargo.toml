@@ -15,8 +15,8 @@ repository.workspace = true
 
 [dependencies]
 tracing-subscriber = { version = "0.3.15", features = ["env-filter"] }
-tracing-opentelemetry = { version = "0.18.0" }
+tracing-opentelemetry = { version = "0.31.0" }
 eyre = "0.6.8"
 tracing = "0.1.36"
 opentelemetry = { version = "0.18.0", features = ["rt-tokio", "metrics"] }
-opentelemetry-jaeger = { version = "0.17.0", features = ["rt-tokio"] }
+opentelemetry-jaeger = { version = "0.22.0", features = ["rt-tokio"] }

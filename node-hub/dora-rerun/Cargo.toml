@@ -18,8 +18,8 @@ python = ["pyo3"]
 dora-node-api = { workspace = true, features = ["tracing"] }
 eyre = "0.6.8"
 tokio = { version = "1.24.2", features = ["rt"] }
-rerun = { version = "0.24.0", features = ["web_viewer", "image"] }
-ndarray = "0.15.6"
+rerun = { version = "0.24.1", features = ["web_viewer", "image"] }
+ndarray = "0.16.1"
 k = "0.32"
 pyo3 = { workspace = true, features = [
     "extension-module",
@@ -27,7 +27,7 @@ pyo3 = { workspace = true, features = [
     "eyre",
     "generate-import-lib",
 ], optional = true }
-bytemuck = "1.20.0"
+bytemuck = "1.23.2"
 rand = "0.9.1"
 pinyin = "0.10.0"
 

@@ -9,8 +9,8 @@ rust-version.workspace = true
 [dependencies]
 dora-node-api = { workspace = true }
 eyre = "0.6.12"
-rustypot = { version = "1.0" }
-serialport = { version = "4.7.1", default-features = false }
+rustypot = { version = "1.2" }
+serialport = { version = "4.7.3", default-features = false }
 pyo3 = { workspace = true, features = [
     "extension-module",
     "abi3",

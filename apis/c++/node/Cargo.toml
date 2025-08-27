@@ -27,19 +27,19 @@ ros2-bridge = [
 ]
 
 [dependencies]
-cxx = "1.0.73"
+cxx = "1.0.170"
 dora-node-api = { workspace = true }
 eyre = "0.6.8"
 dora-ros2-bridge = { workspace = true, optional = true }
-futures-lite = { version = "2.2" }
+futures-lite = { version = "2.6" }
 serde = { version = "1.0.164", features = ["derive"], optional = true }
 serde-big-array = { version = "0.5.1", optional = true }
 arrow = { workspace = true, features = ["ffi"] }
 
 [build-dependencies]
-cxx-build = "1.0.73"
+cxx-build = "1.0.170"
 dora-ros2-bridge-msg-gen = { workspace = true, optional = true }
 rust-format = { version = "0.3.4", features = [
     "pretty_please",
 ], optional = true }
-prettyplease = { version = "0.1", features = ["verbatim"], optional = true }
+prettyplease = { version = "0.2", features = ["verbatim"], optional = true }

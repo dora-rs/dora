@@ -21,7 +21,7 @@ tracing = ["dep:dora-tracing"]
 python = ["pyo3"]
 
 [dependencies]
-clap = { version = "4.0.3", features = ["derive"] }
+clap = { version = "4.5.46", features = ["derive"] }
 eyre = "0.6.8"
 dora-core = { workspace = true }
 dora-message = { workspace = true }
@@ -31,13 +31,13 @@ dora-download = { workspace = true }
 serde = { version = "1.0.136", features = ["derive"] }
 serde_yaml = { workspace = true }
 webbrowser = "0.8.3"
-serde_json = "1.0.86"
+serde_json = "1.0.143"
 termcolor = "1.1.3"
-uuid = { version = "1.7", features = ["v7", "serde"] }
-inquire = "0.5.2"
+uuid = { version = "1.18", features = ["v7", "serde"] }
+inquire = "0.7.5"
 communication-layer-request-reply = { workspace = true }
 notify = "5.1.0"
-ctrlc = "3.2.5"
+ctrlc = "3.4.7"
 tracing = "0.1.36"
 tracing-log = "0.2.0"
 dora-tracing = { workspace = true, optional = true }
@@ -48,11 +48,11 @@ dora-runtime = { workspace = true }
 tokio = { version = "1.20.1", features = ["full"] }
 tokio-stream = { version = "0.1.8", features = ["io-util", "net"] }
 futures = "0.3.21"
-duration-str = "0.5"
+duration-str = "0.17"
 tabwriter = "1.4.0"
 log = { version = "0.4.21", features = ["serde"] }
 colored = "2.1.0"
-env_logger = "0.11.3"
+env_logger = "0.11.8"
 self_update = { version = "0.42.0", features = [
     "rustls",
     "archive-zip",
@@ -68,7 +68,7 @@ dunce = "1.0.5"
 git2 = { workspace = true }
 
 [build-dependencies]
-pyo3-build-config = "0.23"
+pyo3-build-config = "0.25"
 
 [lib]
 name = "dora_cli"

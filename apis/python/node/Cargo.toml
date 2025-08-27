@@ -24,7 +24,7 @@ dora-operator-api-python = { workspace = true }
 pyo3.workspace = true
 eyre = "0.6"
 serde_yaml = { workspace = true }
-flume = "0.10.14"
+flume = "0.11.1"
 dora-runtime = { workspace = true, features = ["tracing", "metrics", "python"] }
 dora-cli = { workspace = true }
 dora-download = { workspace = true }
@@ -36,7 +36,7 @@ pyo3_special_method_derive = "0.4.3"
 tokio = { version = "1.24.2", features = ["rt"] }
 
 [build-dependencies]
-pyo3-build-config = "0.23"
+pyo3-build-config = "0.25"
 
 [lib]
 name = "dora"

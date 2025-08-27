@@ -13,8 +13,8 @@ repository.workspace = true
 crate-type = ["staticlib"]
 
 [dependencies]
-cxx = "1.0.73"
+cxx = "1.0.170"
 dora-operator-api = { workspace = true }
 
 [build-dependencies]
-cxx-build = "1.0.73"
+cxx-build = "1.0.170"

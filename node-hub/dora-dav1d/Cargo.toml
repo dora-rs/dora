@@ -12,13 +12,13 @@ default = []
 python = ["pyo3"]
 
 [dependencies]
-dav1d = "0.10"
+dav1d = "0.11"
 bitstream-io = "2.0"
 log = "0.4"
 structopt = "0.3"
 dora-node-api = { workspace = true, features = ["tracing"] }
 eyre = "0.6.8"
-bytemuck = "1.7.0"
+bytemuck = "1.23.2"
 pyo3 = { workspace = true, features = [
     "extension-module",
     "abi3",
