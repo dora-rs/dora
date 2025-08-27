@@ -7,57 +7,34 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 import importlib.util
-import logging
 from typing import Generator, Tuple, Optional
 import re
 
-logger = logging.getLogger(__name__)
-
-# Setup paths for VoiceDialogue MoYoYo TTS
-# Try environment variable first, then fallback to default
-VOICEDIALOGUE_PATH = Path(os.environ.get("VOICEDIALOGUE_PATH", 
-                                         os.path.expanduser("~/VoiceDialogue")))
-# Also check common installation locations
-if not VOICEDIALOGUE_PATH.exists():
-    # Try the original hardcoded path as last resort
-    if Path("/Users/yuechen/home/VoiceDialogue").exists():
-        VOICEDIALOGUE_PATH = Path("/Users/yuechen/home/VoiceDialogue")
-        
-THIRD_PARTY_PATH = VOICEDIALOGUE_PATH / "third_party"
-MOYOYO_TTS_PATH = THIRD_PARTY_PATH / "moyoyo_tts"
-
 # Check if MoYoYo TTS is available
 MOYOYO_AVAILABLE = False
-if MOYOYO_TTS_PATH.exists():
-    # Add to Python path
-    sys.path.insert(0, str(THIRD_PARTY_PATH))
-    sys.path.insert(0, str(VOICEDIALOGUE_PATH / "src"))
+
+# Try to import MoYoYo TTS
+try:
+    # Add local moyoyo_tts to path
+    local_moyoyo_path = Path(__file__).parent
+    if local_moyoyo_path.exists() and str(local_moyoyo_path) not in sys.path:
+        sys.path.insert(0, str(local_moyoyo_path))
+        print(f"[PrimeSpeech] Using local moyoyo_tts from: {local_moyoyo_path}")
     
-    # Monkey-patch LangSegment before any imports
-    try:
-        spec = importlib.util.spec_from_file_location(
-            "LangSegment.LangSegment",
-            str(MOYOYO_TTS_PATH / "LangSegment_fix.py")
-        )
-        langseg_module = importlib.util.module_from_spec(spec)
-        sys.modules['LangSegment'] = langseg_module
-        sys.modules['LangSegment.LangSegment'] = langseg_module
-        spec.loader.exec_module(langseg_module)
-        
-        # Now import MoYoYo TTS
-        from moyoyo_tts.TTS_infer_pack.TTS import TTS_Config, TTS
-        from moyoyo_tts.TTS_infer_pack.text_segmentation_method import get_method as get_seg_method
-        MOYOYO_AVAILABLE = True
-        logger.info("MoYoYo TTS successfully imported")
-    except ImportError as e:
-        logger.warning(f"Failed to import MoYoYo TTS: {e}")
-        MOYOYO_AVAILABLE = False
+    # Import MoYoYo TTS
+    from moyoyo_tts.TTS_infer_pack.TTS import TTS_Config, TTS
+    from moyoyo_tts.TTS_infer_pack.text_segmentation_method import get_method as get_seg_method
+    MOYOYO_AVAILABLE = True
+    print("[PrimeSpeech] MoYoYo TTS successfully imported")
+except ImportError as e:
+    print(f"[PrimeSpeech] ERROR: Failed to import MoYoYo TTS: {e}")
+    MOYOYO_AVAILABLE = False
 
 
 class StreamingMoYoYoTTSWrapper:
     """Fixed wrapper for MoYoYo TTS with real streaming via audio chunking."""
     
-    def __init__(self, voice="doubao", device="cpu", enable_streaming=True, chunk_duration=0.5, models_path=None, voice_config=None):
+    def __init__(self, voice="doubao", device="cpu", enable_streaming=True, chunk_duration=0.5, models_path=None, voice_config=None, logger_func=None):
         """Initialize streaming MoYoYo TTS wrapper.
         
         Args:
@@ -65,8 +42,9 @@ class StreamingMoYoYoTTSWrapper:
             device: Device to use (cpu or cuda)
             enable_streaming: Enable streaming output
             chunk_duration: Duration of each audio chunk in seconds for streaming
-            models_path: Optional path to models directory (defaults to VoiceDialogue path)
+            models_path: Optional path to models directory
             voice_config: Optional voice configuration dict from config.py
+            logger_func: Optional logging function (e.g., send_log)
         """
         self.voice = voice
         self.device = device
@@ -74,12 +52,15 @@ class StreamingMoYoYoTTSWrapper:
         self.chunk_duration = chunk_duration  # Duration of each streamed chunk
         self.tts = None
         self.voice_config = voice_config  # Store the config from config.py
+        self.logger_func = logger_func  # Logging function
         
-        # Use provided models path or default to VoiceDialogue
-        if models_path:
-            self.models_path = Path(models_path)
+        # Use PRIMESPEECH_MODEL_DIR for all model paths
+        if os.environ.get("PRIMESPEECH_MODEL_DIR"):
+            # Use environment variable path with moyoyo subdirectory
+            self.models_path = Path(os.path.expanduser(os.environ.get("PRIMESPEECH_MODEL_DIR"))) / "moyoyo"
         else:
-            self.models_path = VOICEDIALOGUE_PATH / "assets/models/tts/moyoyo"
+            # No models path available
+            raise RuntimeError("No models path available. Please set PRIMESPEECH_MODEL_DIR environment variable.")
         
         # Abort flag for interrupting synthesis
         self._abort_synthesis = False
@@ -102,10 +83,19 @@ class StreamingMoYoYoTTSWrapper:
         if MOYOYO_AVAILABLE:
             self._init_tts()
     
+    def log(self, level, message):
+        """Log a message using the provided logger function or print."""
+        if self.logger_func:
+            self.logger_func(level, message)
+        else:
+            print(f"[{level}] {message}")
+    
     def _init_tts(self):
         """Initialize the TTS engine."""
         if not MOYOYO_AVAILABLE:
-            logger.warning("MoYoYo TTS not available")
+            self.log("ERROR", "MoYoYo TTS not available - cannot initialize TTS engine")
+            self.log("ERROR", f"MOYOYO_AVAILABLE: {MOYOYO_AVAILABLE}")
+            self.log("ERROR", f"models_path: {self.models_path}")
             return
         
         # Use provided voice_config or fall back to hardcoded defaults
@@ -159,19 +149,36 @@ class StreamingMoYoYoTTSWrapper:
         }
         
         try:
-            logger.info(f"Initializing MoYoYo TTS with voice: {self.voice}")
+            self.log("INFO", f"Initializing MoYoYo TTS with voice: {self.voice}")
+            self.log("INFO", f"Model paths:")
+            self.log("INFO", f"  t2s_weights: {custom_config['t2s_weights_path']}")
+            self.log("INFO", f"  vits_weights: {custom_config['vits_weights_path']}")
+            self.log("INFO", f"  cnhuhbert_base: {custom_config['cnhuhbert_base_path']}")
+            self.log("INFO", f"  bert_base: {custom_config['bert_base_path']}")
+            
+            # Check if model files exist
+            for key, path in custom_config.items():
+                if 'path' in key and not Path(path).exists():
+                    self.log("ERROR", f"Model file does not exist: {path}")
+            
             self.tts = TTS(config_dict)
             
             # Store reference audio info
             self.ref_audio_path = str(self.models_path / voice_config["ref_audio"])
             self.prompt_text = voice_config["prompt_text"]
             
+            self.log("INFO", f"Reference audio: {self.ref_audio_path}")
+            if not Path(self.ref_audio_path).exists():
+                self.log("ERROR", f"Reference audio does not exist: {self.ref_audio_path}")
+            
             # Pre-cache reference audio
             self.tts.set_ref_audio(self.ref_audio_path)
             
-            logger.info("MoYoYo TTS initialized successfully")
+            self.log("INFO", "MoYoYo TTS initialized successfully")
         except Exception as e:
-            logger.error(f"Failed to initialize MoYoYo TTS: {e}")
+            self.log("ERROR", f"Failed to initialize MoYoYo TTS: {e}")
+            import traceback
+            self.log("ERROR", traceback.format_exc())
             self.tts = None
     
     def _split_text_smartly(self, text, max_chunk_chars=50):
@@ -268,7 +275,7 @@ class StreamingMoYoYoTTSWrapper:
     def abort_synthesis(self):
         """Abort any ongoing synthesis."""
         self._abort_synthesis = True
-        logger.info("Synthesis abort requested")
+        self.log("INFO", "Synthesis abort requested")
     
     def synthesize_streaming(self, text, language="zh", speed=1.0) -> Generator[Tuple[int, np.ndarray], None, None]:
         """Synthesize speech with real streaming output.
@@ -282,24 +289,24 @@ class StreamingMoYoYoTTSWrapper:
             tuple: (sample_rate, audio_fragment) for each fragment
         """
         if not MOYOYO_AVAILABLE or self.tts is None:
-            logger.warning("MoYoYo TTS not available")
-            # Return placeholder
-            sample_rate = 16000
-            duration = min(len(text) * 0.15, 10.0)
-            t = np.linspace(0, duration, int(sample_rate * duration))
-            audio = np.sin(2 * np.pi * 440 * t) * 0.3
-            yield sample_rate, audio.astype(np.float32)
+            self.log("ERROR", "MoYoYo TTS not available - cannot synthesize")
+            if not MOYOYO_AVAILABLE:
+                self.log("ERROR", "MOYOYO_AVAILABLE is False - TTS libraries not imported")
+            if self.tts is None:
+                self.log("ERROR", "self.tts is None - TTS engine not initialized")
+                self.log("ERROR", f"models_path: {self.models_path}")
+            raise RuntimeError("TTS engine not available. Check model paths and configuration.")
             return
         
         # Reset abort flag at start of new synthesis (safe timing)
         self._abort_synthesis = False
         
         try:
-            logger.info(f"Starting streaming synthesis for {len(text)} chars")
+            self.log("INFO", f"Starting streaming synthesis for {len(text)} chars")
             
             # Split text into smaller chunks for progressive synthesis
             text_chunks = self._split_text_smartly(text, max_chunk_chars=40)
-            logger.info(f"Split into {len(text_chunks)} text chunks")
+            self.log("INFO", f"Split into {len(text_chunks)} text chunks")
             
             fragment_count = 0
             
@@ -307,12 +314,12 @@ class StreamingMoYoYoTTSWrapper:
             for chunk_idx, text_chunk in enumerate(text_chunks):
                 # Check abort flag
                 if self._abort_synthesis:
-                    logger.info(f"Synthesis aborted at text chunk {chunk_idx + 1}/{len(text_chunks)}")
+                    self.log("INFO", f"Synthesis aborted at text chunk {chunk_idx + 1}/{len(text_chunks)}")
                     break
                 if not text_chunk.strip():
                     continue
                 
-                logger.debug(f"Processing chunk {chunk_idx + 1}: {text_chunk[:30]}...")
+                self.log("DEBUG", f"Processing chunk {chunk_idx + 1}: {text_chunk[:30]}...")
                 
                 # Prepare inputs without MoYoYo's broken streaming
                 inputs = {
@@ -339,23 +346,18 @@ class StreamingMoYoYoTTSWrapper:
                 for audio_fragment in self._chunk_audio(chunk_audio, sample_rate):
                     # Check abort flag before yielding each fragment
                     if self._abort_synthesis:
-                        logger.info(f"Synthesis aborted at audio fragment {fragment_count + 1}")
+                        self.log("INFO", f"Synthesis aborted at audio fragment {fragment_count + 1}")
                         return  # Exit generator completely
                     
                     fragment_count += 1
-                    logger.debug(f"Yielding fragment {fragment_count}: {len(audio_fragment)/sample_rate:.3f}s")
+                    self.log("DEBUG", f"Yielding fragment {fragment_count}: {len(audio_fragment)/sample_rate:.3f}s")
                     yield sample_rate, audio_fragment
             
-            logger.info(f"Streaming complete: {fragment_count} fragments")
+            self.log("INFO", f"Streaming complete: {fragment_count} fragments")
             
         except Exception as e:
-            logger.error(f"Streaming synthesis failed: {e}")
-            # Yield placeholder on error
-            sample_rate = 16000
-            duration = min(len(text) * 0.15, 10.0)
-            t = np.linspace(0, duration, int(sample_rate * duration))
-            audio = np.sin(2 * np.pi * 440 * t) * 0.3
-            yield sample_rate, audio.astype(np.float32)
+            self.log("ERROR", f"Streaming synthesis failed: {e}")
+            raise
     
     def synthesize(self, text, language="zh", speed=1.0):
         """Synthesize speech from text (non-streaming).
@@ -372,13 +374,13 @@ class StreamingMoYoYoTTSWrapper:
         self._abort_synthesis = False
         
         if not MOYOYO_AVAILABLE or self.tts is None:
-            logger.warning("MoYoYo TTS not available")
-            # Return placeholder
-            sample_rate = 16000
-            duration = min(len(text) * 0.15, 10.0)
-            t = np.linspace(0, duration, int(sample_rate * duration))
-            audio = np.sin(2 * np.pi * 440 * t) * 0.3
-            return sample_rate, audio.astype(np.float32)
+            self.log("ERROR", "MoYoYo TTS not available - cannot synthesize")
+            if not MOYOYO_AVAILABLE:
+                self.log("ERROR", "MOYOYO_AVAILABLE is False - TTS libraries not imported")
+            if self.tts is None:
+                self.log("ERROR", "self.tts is None - TTS engine not initialized")
+                self.log("ERROR", f"models_path: {self.models_path}")
+            raise RuntimeError("TTS engine not available. Check model paths and configuration.")
         
         try:
             # Prepare inputs
@@ -393,7 +395,7 @@ class StreamingMoYoYoTTSWrapper:
                 **self.optimization_config
             }
             
-            logger.info(f"Synthesizing {len(text)} chars")
+            self.log("INFO", f"Synthesizing {len(text)} chars")
             
             # Generate audio
             for result in self.tts.run(inputs):
@@ -404,17 +406,12 @@ class StreamingMoYoYoTTSWrapper:
             if audio_data.dtype == np.int16:
                 audio_data = audio_data.astype(np.float32) / 32768.0
             
-            logger.info(f"Synthesized {len(audio_data)/sample_rate:.2f}s audio")
+            self.log("INFO", f"Synthesized {len(audio_data)/sample_rate:.2f}s audio")
             return sample_rate, audio_data
             
         except Exception as e:
-            logger.error(f"TTS synthesis failed: {e}")
-            # Return placeholder
-            sample_rate = 16000
-            duration = min(len(text) * 0.15, 10.0)
-            t = np.linspace(0, duration, int(sample_rate * duration))
-            audio = np.sin(2 * np.pi * 440 * t) * 0.3
-            return sample_rate, audio.astype(np.float32)
+            self.log("ERROR", f"TTS synthesis failed: {e}")
+            raise
 
 
 # Test function

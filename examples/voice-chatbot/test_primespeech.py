@@ -26,7 +26,7 @@ def test_tts():
     
     try:
         from dora_primespeech.config import VOICE_CONFIGS
-        from dora_primespeech.moyoyo_tts_wrapper_streaming_fix import MoYoYoTTSWrapper
+        from dora_primespeech.moyoyo_tts_wrapper_streaming_fix import StreamingMoYoYoTTSWrapper
         
         # Check if MoYoYo is available
         from dora_primespeech import moyoyo_tts_wrapper_streaming_fix
@@ -45,7 +45,7 @@ def test_tts():
         
         # Create TTS wrapper
         print("\n🔧 Initializing TTS wrapper...")
-        tts = MoYoYoTTSWrapper(
+        tts = StreamingMoYoYoTTSWrapper(
             voice="doubao",
             device="cpu",
             models_path=models_path,

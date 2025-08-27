@@ -15,7 +15,6 @@ class PrimeSpeechConfig:
     # Model selection
     VOICE_NAME = os.getenv("VOICE_NAME", "Doubao")  # Voice character name
     REPOSITORY = os.getenv("REPOSITORY", "MoYoYoTech/tone-models")  # HuggingFace repo
-    USE_HUGGINGFACE_MODELS = os.getenv("USE_HUGGINGFACE_MODELS", "false").lower() == "true"
     
     # Model paths
     MODEL_DIR = os.getenv("PRIMESPEECH_MODEL_DIR", "")  # Override model directory

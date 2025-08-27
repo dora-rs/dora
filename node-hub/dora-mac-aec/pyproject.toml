@@ -1,0 +1,71 @@
+[project]
+name = "dora-mac-aec"
+version = "0.1.0"
+authors = [
+    {name = "Dora Contributors"},
+]
+description = "macOS Acoustic Echo Cancellation node for Dora - Hardware-accelerated audio capture with echo cancellation"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+keywords = ["dora", "audio", "aec", "echo-cancellation", "macos", "voice", "vad"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Multimedia :: Sound/Audio :: Capture/Recording",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "numpy>=1.20.0",
+    "pyarrow>=10.0.0",
+    "dora-rs>=0.3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "black>=22.0.0",
+    "pylint>=2.15.0",
+]
+
+test = [
+    "pytest>=7.0.0",
+    "pytest-cov>=3.0.0",
+    "pyaudio>=0.2.11",
+]
+
+[project.scripts]
+dora-mac-aec = "dora_mac_aec.main:main"
+
+[project.entry-points."dora.nodes"]
+mac-aec = "dora_mac_aec.main:main"
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["dora_mac_aec", "dora_mac_aec.utils"]
+
+[tool.setuptools.package-data]
+dora_mac_aec = ["lib/*.dylib"]
+
+[tool.black]
+line-length = 100
+target-version = ['py38', 'py39', 'py310', 'py311']
+
+[tool.pylint]
+max-line-length = 100
+disable = [
+    "C0111",  # missing-docstring
+    "C0103",  # invalid-name
+    "R0903",  # too-few-public-methods
+]

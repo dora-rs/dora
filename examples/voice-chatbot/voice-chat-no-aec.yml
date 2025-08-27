@@ -14,7 +14,7 @@ nodes:
       audio:
         source: microphone/audio
         queue_size: 1000000
-      control: chat-controller/speech_control  # Pause/resume control
+      # control: chat-controller/speech_control  # Commented out - no chat-controller in this config
     outputs:
       - speech_started
       - speech_ended
@@ -76,11 +76,17 @@ nodes:
       USE_MLX: auto
       
       # MLX model settings (for Apple Silicon)
-      MLX_MODEL: "Qwen/Qwen3-8B-MLX-4bit"
-      MLX_MAX_TOKENS: 256
-      MLX_TEMPERATURE: 0.7
       
-      # Generation settings
+      # Choose your model (uncomment one):
+      MLX_MODEL: "mlx-community/GLM-4.5-Air-3bit"  # GLM-4.5 Air - Very efficient 3-bit Chinese model
+      #MLX_MODEL: "Qwen/Qwen3-32B-MLX-6bit"  # Qwen3 32B - Large model
+      #MLX_MODEL: "Qwen/Qwen3-8B-MLX-4bit"  # Qwen3 8B - Balanced
+      #MLX_MODEL: "mlx-community/gemma-2-9b-it-4bit"  # Gemma 2 - For English/mixed
+      
+      MLX_MAX_TOKENS: 256
+      # Note: GLM and Qwen models work best without explicit temperature settings
+      
+      # Generation settings (these are for GGUF backend, not MLX)
       MAX_TOKENS: 256
       TEMPERATURE: 0.7
       ENABLE_THINKING: false
@@ -98,7 +104,7 @@ nodes:
       MAX_HISTORY_TOKENS: "3000"  # Max tokens for history (only used when HISTORY_STRATEGY="token_based")
       
       # System prompt
-      SYSTEM_PROMPT: "你的回答第一句话必须少于十个字。每段回答控制在二到三句话，既不要过短也不要过长，以适应对话语境。回答应准确、精炼且有依据。你是AI助手。请以自然流畅的中文口语化表达直接回答问题，避免冗余的思考过程。"
+      SYSTEM_PROMPT: "你的回答第一句话必须少于十个字。每段回答控制在二到三句话，既不要过短也不要过长，以适应对话语境。回答应准确、精炼且有依据。你是AI助手。请以自然流畅的中文口语化表达直接回答问题，避免冗余的思考过程。mode=non-thinking"
       
       LOG_LEVEL: INFO
 
@@ -133,12 +139,19 @@ nodes:
       - segment_complete
 
     env:
-      # Model path configuration
-      # VOICEDIALOGUE_PATH: ~/VoiceDialogue  # Path to VoiceDialogue installation
-      # If not set, will try ~/VoiceDialogue or /Users/yuechen/home/VoiceDialogue
+      # Model path configuration (REQUIRED)
+      PRIMESPEECH_MODEL_DIR: ~/.dora/models/primespeech  # Path to your models directory
+      # Note: Models should be in PRIMESPEECH_MODEL_DIR/moyoyo/ with this structure:
+      #   - GPT_weights/doubao_best_gpt.ckpt
+      #   - SoVITS_weights/doubao_best_sovits.pth
+      #   - ref_audios/doubao_ref.wav
+      #   - chinese-hubert-base/
+      #   - chinese-roberta-wwm-ext-large/
       
       # Voice selection
-      VOICE_NAME: Doubao  # Available: Doubao, Luo Xiang, Yang Mi, Zhou Jielun, Ma Yun, Maple, Cove
+      # Available voices: Doubao, Luo Xiang, Yang Mi, Zhou Jielun, Ma Yun, 
+      # Maple, Cove, BYS, Ellen, Juniper, Ma Baoguo, Shen Yi, Trump
+      VOICE_NAME: Doubao
       
       # Language settings
       TEXT_LANG: zh  # zh for Chinese, en for English, auto for detection
