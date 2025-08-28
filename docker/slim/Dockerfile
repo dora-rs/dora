@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM pytorch/pytorch:2.8.0-cuda12.8-cudnn9-runtime
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
