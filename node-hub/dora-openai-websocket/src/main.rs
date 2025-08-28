@@ -505,8 +505,11 @@ fn main() -> Result<(), WebSocketError> {
         .unwrap();
 
     rt.block_on(async move {
-        let listener = TcpListener::bind("127.0.0.1:8123").await?;
-        println!("Server started, listening on {}", "127.0.0.1:8123");
+        let port = std::env::var("PORT").unwrap_or_else(|_| "8123".to_string());
+        let host = std::env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
+        let addr = format!("{}:{}", host, port);
+        let listener = TcpListener::bind(&addr).await?;
+        println!("Server started, listening on {}", addr);
         loop {
             let (stream, _) = listener.accept().await?;
             println!("Client connected");
