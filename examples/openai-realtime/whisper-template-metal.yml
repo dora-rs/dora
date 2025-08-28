@@ -1,5 +1,6 @@
 nodes:
   - id: NODE_ID
+    build: cargo build --release -p dora-openai-websocket
     path: dynamic
     inputs:
       audio: tts/audio
