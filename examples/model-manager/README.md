@@ -1,13 +1,13 @@
 # Model Manager
 
-Universal model downloader and manager for HuggingFace models and PrimeSpeech TTS voices.
+Universal model downloader and manager for HuggingFace models, PrimeSpeech TTS voices, and FunASR models.
 
 ## Features
 
 - Download ANY model from HuggingFace Hub
+- Download FunASR models from ModelScope for Chinese ASR
 - List all downloaded models across different locations
 - Remove downloaded models with confirmation
-- Clean incomplete downloads
 - Manage PrimeSpeech TTS voice models
 - Support for custom download directories
 - File pattern filtering for selective downloads
@@ -39,25 +39,23 @@ This scans:
 Remove downloaded models to free up space:
 
 ```bash
-# Remove a specific model (with confirmation)
+# Remove a HuggingFace model (with confirmation)
 ./download_models.py --remove mlx-community/gemma-3-12b-it-4bit
 
-# Remove by partial name (matches all containing the pattern)
-./download_models.py --remove gemma
+# Remove FunASR models
+./download_models.py --remove funasr
 
-# Skip confirmation prompt
-./download_models.py --remove mlx-community/gemma-3-12b-it-4bit --force
+# Remove a specific PrimeSpeech voice
+./download_models.py --remove "Luo Xiang"
+
+# Remove all PrimeSpeech voices
+./download_models.py --remove all-voices
+
+# Remove PrimeSpeech base models
+./download_models.py --remove primespeech-base
 ```
 
-### Clean Incomplete Downloads
-
-Clean up failed or incomplete downloads:
-
-```bash
-./download_models.py --clean
-```
-
-This removes files with extensions: `.incomplete`, `.downloading`, `.tmp`, `.part`
+All removals require confirmation to prevent accidental deletion.
 
 ### Download HuggingFace Models
 
@@ -77,6 +75,20 @@ Download any model from HuggingFace Hub:
 ./download_models.py --download mlx-community/gemma-3-12b-it-4bit --revision main
 ```
 
+### FunASR Models
+
+Download FunASR models for Chinese ASR:
+
+```bash
+# Download FunASR models (Paraformer + Punctuation)
+./download_models.py --download funasr
+
+# Remove FunASR models
+./download_models.py --remove funasr
+```
+
+FunASR models are stored in `~/.dora/models/asr/funasr/` by default.
+
 ### PrimeSpeech TTS Models
 
 List available voices:
@@ -93,12 +105,27 @@ Download PrimeSpeech models:
 
 # Download specific voice
 ./download_models.py --voice Doubao
+# Or using --download
+./download_models.py --download "Luo Xiang"
 
 # Download all voices
 ./download_models.py --voice all
 
 # Custom models directory
 ./download_models.py --voice Doubao --models-dir ~/my-tts-models
+```
+
+Remove PrimeSpeech models:
+
+```bash
+# Remove specific voice
+./download_models.py --remove "Luo Xiang"
+
+# Remove all voices
+./download_models.py --remove all-voices
+
+# Remove base models
+./download_models.py --remove primespeech-base
 ```
 
 ## Available PrimeSpeech Voices
@@ -124,6 +151,7 @@ Download PrimeSpeech models:
 
 - **HuggingFace models**: `~/.cache/huggingface/hub/`
 - **PrimeSpeech models**: `~/.dora/models/primespeech/`
+- **FunASR models**: `~/.dora/models/asr/funasr/`
 - **Other Dora models**: `~/.dora/models/`
 
 ## Examples
@@ -144,8 +172,20 @@ Download PrimeSpeech models:
 # Download only model weights (skip tokenizer files)
 ./download_models.py --download mlx-community/gemma-3-12b-it-4bit --patterns "*.safetensors" "*.bin"
 
+# Download FunASR models for Chinese ASR
+./download_models.py --download funasr
+
 # Download PrimeSpeech voice
 ./download_models.py --voice "Luo Xiang"
+
+# Remove a HuggingFace model
+./download_models.py --remove mlx-community/gemma-3-12b-it-4bit
+
+# Remove FunASR models
+./download_models.py --remove funasr
+
+# Remove a specific voice
+./download_models.py --remove "Luo Xiang"
 ```
 
 ## Troubleshooting

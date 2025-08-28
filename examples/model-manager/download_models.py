@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Optional, Dict, List
 import json
 import fnmatch
+import subprocess
+import shutil
 
 # Progress bar imports
 try:
@@ -111,7 +113,22 @@ def list_downloaded_models():
             print(f"\n📁 {model_dir}")
             print("-" * 60)
             
-            # Look for model files
+            # Special handling for FunASR models
+            funasr_dir = model_dir / "asr" / "funasr"
+            if funasr_dir.exists():
+                funasr_models = []
+                for model_path in funasr_dir.iterdir():
+                    if model_path.is_dir() and not model_path.name.startswith('.'):
+                        size = sum(f.stat().st_size for f in model_path.rglob("*") if f.is_file())
+                        if size > 0:
+                            size_gb = size / (1024**3)
+                            funasr_models.append((model_path.name, size_gb))
+                
+                if funasr_models:
+                    for model_name, size_gb in funasr_models:
+                        print(f"  📦 {'asr/funasr/' + model_name:40} {size_gb:8.2f} GB   (FunASR)")
+            
+            # Look for other model files
             model_files = list(model_dir.glob("**/*.safetensors")) + \
                          list(model_dir.glob("**/*.gguf")) + \
                          list(model_dir.glob("**/*.bin")) + \
@@ -124,6 +141,9 @@ def list_downloaded_models():
                 model_dirs = {}
                 for f in model_files:
                     parent = f.parent
+                    # Skip FunASR directories as we handle them separately
+                    if "funasr" in str(parent):
+                        continue
                     if parent not in model_dirs:
                         model_dirs[parent] = []
                     model_dirs[parent].append(f)
@@ -132,7 +152,7 @@ def list_downloaded_models():
                     total_size = sum(f.stat().st_size for f in files) / (1024**3)
                     rel_path = dir_path.relative_to(model_dir)
                     print(f"  📦 {str(rel_path):40} {total_size:8.2f} GB   ({len(files)} files)")
-            else:
+            elif not funasr_models:  # Only show "no files" if we didn't find FunASR either
                 print(f"  No model files found")
     
     # Count total unique models across all locations
@@ -245,6 +265,93 @@ def download_huggingface_model(repo_id: str, local_dir: Optional[Path] = None,
         return False
 
 
+def download_funasr_models(models_dir: Optional[Path] = None):
+    """Download FunASR models from ModelScope for Chinese ASR."""
+    print("\n📥 Downloading FunASR models for Chinese ASR")
+    print("   Type: FunASR (Paraformer + Punctuation)")
+    print("   Source: ModelScope")
+    
+    # Default ASR models directory
+    if models_dir is None:
+        asr_models_dir = os.getenv("ASR_MODELS_DIR")
+        if asr_models_dir:
+            models_dir = Path(asr_models_dir)
+        else:
+            models_dir = Path.home() / ".dora" / "models" / "asr"
+    
+    funasr_dir = models_dir / "funasr"
+    funasr_dir.mkdir(parents=True, exist_ok=True)
+    
+    print(f"   Destination: {funasr_dir}")
+    
+    # FunASR models to download
+    funasr_models = [
+        {
+            "name": "ASR Model (Paraformer)",
+            "repo_id": "damo/speech_seaco_paraformer_large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
+            "local_name": "speech_seaco_paraformer_large_asr_nat-zh-cn-16k-common-vocab8404-pytorch"
+        },
+        {
+            "name": "Punctuation Model",  
+            "repo_id": "damo/punc_ct-transformer_cn-en-common-vocab471067-large",
+            "local_name": "punc_ct-transformer_cn-en-common-vocab471067-large"
+        }
+    ]
+    
+    downloaded = 0
+    for model in funasr_models:
+        model_path = funasr_dir / model["local_name"]
+        
+        if model_path.exists():
+            print(f"   ✓ {model['name']} already exists")
+            downloaded += 1
+            continue
+        
+        print(f"   ⏳ Downloading {model['name']}...")
+        
+        # Try using git clone (ModelScope)
+        try:
+            import subprocess
+            cmd = [
+                "git", "clone", 
+                f"https://modelscope.cn/models/{model['repo_id']}.git",
+                str(model_path)
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            
+            if result.returncode == 0:
+                print(f"   ✅ Downloaded {model['name']}")
+                downloaded += 1
+            else:
+                print(f"   ❌ Failed to download {model['name']}: {result.stderr}")
+                
+        except subprocess.TimeoutExpired:
+            print(f"   ❌ Download timeout for {model['name']}")
+        except FileNotFoundError:
+            print("   ❌ Git not installed. Please install git first.")
+            print("      macOS: brew install git")
+            print("      Linux: sudo apt-get install git")
+        except Exception as e:
+            print(f"   ❌ Error downloading {model['name']}: {e}")
+    
+    if downloaded == len(funasr_models):
+        print("✅ All FunASR models downloaded successfully!")
+        print(f"   Location: {funasr_dir}")
+        print("\n   To use FunASR in ASR node:")
+        print("     env:")
+        print("       ASR_ENGINE: funasr")
+        print(f"       ASR_MODELS_DIR: {models_dir}")
+        return True
+    else:
+        print(f"⚠️  Downloaded {downloaded}/{len(funasr_models)} FunASR models")
+        if downloaded == 0:
+            print("\n   Manual download instructions:")
+            print("   1. Visit https://modelscope.cn/models")
+            print("   2. Search for the models above")
+            print(f"   3. Download and extract to: {funasr_dir}")
+        return downloaded > 0
+
+
 def download_primespeech_base(models_dir: Path):
     """Download PrimeSpeech base models (Chinese Hubert and Roberta) from HuggingFace."""
     print("\n📥 Downloading PrimeSpeech base models")
@@ -325,14 +432,270 @@ def download_voice_models(voice_name: str, models_dir: Path):
     return True
 
 
+def remove_huggingface_model(repo_id: str) -> bool:
+    """Remove a HuggingFace model from cache.
+    
+    Args:
+        repo_id: Repository ID to remove (e.g., 'mlx-community/gemma-3-12b-it-4bit')
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    print(f"\n🗑️  Removing HuggingFace model: {repo_id}")
+    
+    # Check multiple possible cache locations
+    repo_name = repo_id.replace("/", "--")
+    possible_locations = [
+        Path.home() / ".cache" / "huggingface" / "hub" / repo_name,
+        Path.home() / ".cache" / "huggingface" / "hub" / f"models--{repo_name}",
+    ]
+    
+    found = False
+    for cache_path in possible_locations:
+        if cache_path.exists():
+            print(f"   Found at: {cache_path}")
+            
+            # Calculate size before deletion
+            total_size = sum(f.stat().st_size for f in cache_path.rglob("*") if f.is_file())
+            size_gb = total_size / (1024**3)
+            print(f"   Size: {size_gb:.2f} GB")
+            
+            # Ask for confirmation
+            response = input(f"   Are you sure you want to remove this model? (yes/no): ").lower().strip()
+            if response in ['yes', 'y']:
+                try:
+                    shutil.rmtree(cache_path)
+                    print(f"✅ Successfully removed {repo_id}")
+                    found = True
+                    break
+                except Exception as e:
+                    print(f"❌ Error removing model: {e}")
+                    return False
+            else:
+                print("   Cancelled.")
+                return False
+    
+    if not found:
+        print(f"❌ Model not found in cache: {repo_id}")
+        print("   Use --list to see downloaded models")
+        return False
+    
+    return True
+
+
+def remove_funasr_models() -> bool:
+    """Remove FunASR models."""
+    print("\n🗑️  Removing FunASR models")
+    
+    # Check for ASR models directory
+    asr_models_dir = os.getenv("ASR_MODELS_DIR")
+    if asr_models_dir:
+        funasr_dir = Path(asr_models_dir) / "funasr"
+    else:
+        funasr_dir = Path.home() / ".dora" / "models" / "asr" / "funasr"
+    
+    if not funasr_dir.exists():
+        print(f"❌ FunASR models not found at: {funasr_dir}")
+        return False
+    
+    print(f"   Location: {funasr_dir}")
+    
+    # List models
+    models = []
+    for model_dir in funasr_dir.iterdir():
+        if model_dir.is_dir() and not model_dir.name.startswith('.'):
+            size = sum(f.stat().st_size for f in model_dir.rglob("*") if f.is_file())
+            size_mb = size / (1024**2)
+            models.append((model_dir.name, model_dir, size_mb))
+            print(f"   - {model_dir.name} ({size_mb:.1f} MB)")
+    
+    if not models:
+        print("   No FunASR models found")
+        return False
+    
+    # Ask for confirmation
+    response = input(f"\n   Remove all FunASR models? (yes/no): ").lower().strip()
+    if response in ['yes', 'y']:
+        try:
+            shutil.rmtree(funasr_dir)
+            print(f"✅ Successfully removed all FunASR models")
+            return True
+        except Exception as e:
+            print(f"❌ Error removing FunASR models: {e}")
+            return False
+    else:
+        print("   Cancelled.")
+        return False
+
+
+def remove_voice_models(voice_name: str, models_dir: Path) -> bool:
+    """Remove voice-specific models.
+    
+    Args:
+        voice_name: Name of voice to remove or 'all' for all voices
+        models_dir: Models directory
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    if not PRIMESPEECH_AVAILABLE:
+        print("❌ PrimeSpeech not available")
+        return False
+    
+    manager = ModelManager(models_dir)
+    moyoyo_dir = models_dir / "moyoyo"
+    
+    if voice_name == "all":
+        print("\n🗑️  Removing ALL PrimeSpeech voice models")
+        
+        # List all downloaded voices
+        available = manager.list_available_voices()
+        if not available:
+            print("   No voices found to remove")
+            return False
+        
+        print(f"   Found {len(available)} voices:")
+        total_size = 0
+        for name, metadata in available.items():
+            size_mb = metadata.get("size_mb", 0)
+            total_size += size_mb
+            print(f"   - {name} ({size_mb:.1f} MB)")
+        
+        print(f"\n   Total size: {total_size:.1f} MB")
+        
+        # Ask for confirmation
+        response = input(f"   Remove ALL voice models? (yes/no): ").lower().strip()
+        if response in ['yes', 'y']:
+            try:
+                if moyoyo_dir.exists():
+                    shutil.rmtree(moyoyo_dir)
+                print(f"✅ Successfully removed all voice models")
+                return True
+            except Exception as e:
+                print(f"❌ Error removing voice models: {e}")
+                return False
+        else:
+            print("   Cancelled.")
+            return False
+            
+    else:
+        # Remove specific voice
+        print(f"\n🗑️  Removing voice model: {voice_name}")
+        
+        if voice_name not in VOICE_CONFIGS:
+            print(f"❌ Unknown voice: {voice_name}")
+            print(f"   Available voices: {', '.join(VOICE_CONFIGS.keys())}")
+            return False
+        
+        voice_config = VOICE_CONFIGS[voice_name]
+        
+        # Check if voice is downloaded
+        if not manager.check_models_exist(voice_name, voice_config):
+            print(f"❌ Voice '{voice_name}' is not downloaded")
+            return False
+        
+        # Get size
+        size_mb = manager.get_model_size(voice_name, voice_config)
+        print(f"   Size: {size_mb:.1f} MB")
+        
+        # Files to remove
+        files_to_remove = [
+            moyoyo_dir / voice_config.get("gpt_weights", ""),
+            moyoyo_dir / voice_config.get("sovits_weights", ""),
+            moyoyo_dir / voice_config.get("reference_audio", "")
+        ]
+        
+        # Ask for confirmation
+        response = input(f"   Remove '{voice_name}' voice model? (yes/no): ").lower().strip()
+        if response in ['yes', 'y']:
+            removed_count = 0
+            for file_path in files_to_remove:
+                if file_path and file_path.exists():
+                    try:
+                        file_path.unlink()
+                        removed_count += 1
+                    except Exception as e:
+                        print(f"   Warning: Could not remove {file_path.name}: {e}")
+            
+            if removed_count > 0:
+                print(f"✅ Successfully removed {voice_name} ({removed_count} files)")
+                
+                # Check if we should also remove base models
+                remaining_voices = manager.list_available_voices()
+                if not remaining_voices:
+                    response = input("\n   No voices remaining. Remove base models too? (yes/no): ").lower().strip()
+                    if response in ['yes', 'y']:
+                        remove_primespeech_base_models(models_dir)
+                
+                return True
+            else:
+                print(f"❌ No files removed for {voice_name}")
+                return False
+        else:
+            print("   Cancelled.")
+            return False
+
+
+def remove_primespeech_base_models(models_dir: Path) -> bool:
+    """Remove PrimeSpeech base models (Chinese Hubert and Roberta).
+    
+    Args:
+        models_dir: Models directory
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    print("\n🗑️  Removing PrimeSpeech base models")
+    
+    moyoyo_dir = models_dir / "moyoyo"
+    base_dirs = [
+        moyoyo_dir / "chinese-hubert-base",
+        moyoyo_dir / "chinese-roberta-wwm-ext-large"
+    ]
+    
+    total_size = 0
+    for base_dir in base_dirs:
+        if base_dir.exists():
+            size = sum(f.stat().st_size for f in base_dir.rglob("*") if f.is_file())
+            total_size += size
+            size_mb = size / (1024**2)
+            print(f"   - {base_dir.name} ({size_mb:.1f} MB)")
+    
+    if total_size == 0:
+        print("   No base models found")
+        return False
+    
+    total_mb = total_size / (1024**2)
+    print(f"   Total size: {total_mb:.1f} MB")
+    
+    # Don't ask for confirmation if called from remove_voice_models
+    # The user already confirmed
+    try:
+        for base_dir in base_dirs:
+            if base_dir.exists():
+                shutil.rmtree(base_dir)
+        print(f"✅ Successfully removed base models")
+        return True
+    except Exception as e:
+        print(f"❌ Error removing base models: {e}")
+        return False
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Universal Model Downloader - Download models from HuggingFace Hub")
+    parser = argparse.ArgumentParser(description="Universal Model Downloader - Download and manage models")
     
     # Add --download argument for compatibility
     parser.add_argument(
         "--download",
         type=str,
-        help="Model to download (HuggingFace repo ID like 'mlx-community/gemma-3-12b-it-4bit' or 'primespeech-base')"
+        help="Model to download: 'funasr' for FunASR models, 'primespeech-base' for base models, or HuggingFace repo ID"
+    )
+    
+    # Add --remove argument
+    parser.add_argument(
+        "--remove",
+        type=str,
+        help="Model to remove: 'funasr' for FunASR models, voice name, 'all-voices', or HuggingFace repo ID"
     )
     
     # HuggingFace-specific arguments
@@ -427,6 +790,11 @@ def main():
             )
             if not success:
                 sys.exit(1)
+        elif args.download == "funasr":
+            # Download FunASR models
+            success = download_funasr_models()
+            if not success:
+                sys.exit(1)
         elif args.download == "primespeech-base" and PRIMESPEECH_AVAILABLE:
             success = download_primespeech_base(models_dir)
             if not success:
@@ -438,6 +806,52 @@ def main():
                 sys.exit(1)
         else:
             print(f"❌ Unknown model or PrimeSpeech not available: {args.download}")
+            sys.exit(1)
+    
+    # Handle --remove argument
+    elif args.remove:
+        # Ensure models_dir is set for PrimeSpeech operations
+        if PRIMESPEECH_AVAILABLE:
+            if args.models_dir:
+                models_dir = Path(args.models_dir)
+            else:
+                models_dir = PrimeSpeechConfig.get_models_dir()
+        
+        # Check if it's a HuggingFace repo (contains '/')
+        if '/' in args.remove:
+            # It's a HuggingFace repo ID
+            success = remove_huggingface_model(args.remove)
+            if not success:
+                sys.exit(1)
+        elif args.remove == "funasr":
+            # Remove FunASR models
+            success = remove_funasr_models()
+            if not success:
+                sys.exit(1)
+        elif args.remove == "all-voices" and PRIMESPEECH_AVAILABLE:
+            # Remove all voice models
+            success = remove_voice_models("all", models_dir)
+            if not success:
+                sys.exit(1)
+        elif args.remove == "primespeech-base" and PRIMESPEECH_AVAILABLE:
+            # Remove base models
+            success = remove_primespeech_base_models(models_dir)
+            if not success:
+                sys.exit(1)
+        elif PRIMESPEECH_AVAILABLE and args.remove in VOICE_CONFIGS:
+            # Remove specific voice
+            success = remove_voice_models(args.remove, models_dir)
+            if not success:
+                sys.exit(1)
+        else:
+            print(f"❌ Unknown model to remove: {args.remove}")
+            print("   Valid options:")
+            print("   - HuggingFace repo ID (e.g., 'mlx-community/gemma-3-12b-it-4bit')")
+            print("   - 'funasr' to remove FunASR models")
+            if PRIMESPEECH_AVAILABLE:
+                print("   - 'all-voices' to remove all PrimeSpeech voices")
+                print("   - 'primespeech-base' to remove base models")
+                print(f"   - Voice name: {', '.join(VOICE_CONFIGS.keys())}")
             sys.exit(1)
     
     # Handle --voice argument
@@ -463,6 +877,9 @@ def main():
         print("  # Download only specific files:")
         print("  python download_models.py --download mlx-community/gemma-3-12b-it-4bit --patterns '*.safetensors' '*.json'")
         print("")
+        print("  # Download FunASR models (Chinese ASR):")
+        print("  python download_models.py --download funasr")
+        print("")
         print("  # List downloaded models:")
         print("  python download_models.py --list")
         
@@ -472,6 +889,14 @@ def main():
             print("  python download_models.py --voice Doubao")
             print("  python download_models.py --voice all")
             print("  python download_models.py --list-voices")
+        
+        print("\n  # Remove models:")
+        print("  python download_models.py --remove mlx-community/gemma-3-12b-it-4bit")
+        print("  python download_models.py --remove funasr")
+        if PRIMESPEECH_AVAILABLE:
+            print("  python download_models.py --remove \"Luo Xiang\"")
+            print("  python download_models.py --remove all-voices")
+            print("  python download_models.py --remove primespeech-base")
         return
     
     # Only show available voices if we downloaded something

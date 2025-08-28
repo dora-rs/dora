@@ -47,12 +47,13 @@ class ModelManager:
         # Model repository on HuggingFace
         self.repository = "MoYoYoTech/tone-models"
         
-    def check_models_exist(self, voice_name: str, voice_config: Dict) -> bool:
+    def check_models_exist(self, voice_name: str, voice_config: Dict, verbose: bool = True) -> bool:
         """Check if model files exist locally.
         
         Args:
             voice_name: Name of the voice
             voice_config: Voice configuration dictionary
+            verbose: Whether to print missing files
             
         Returns:
             True if all required model files exist
@@ -68,14 +69,16 @@ class ModelManager:
             if file_name:
                 file_path = self.moyoyo_dir / file_name
                 if not file_path.exists():
-                    print(f"Missing: {file_path}")
+                    if verbose:
+                        print(f"Missing: {file_path}")
                     return False
         
         # Check base pretrained models
         for file_path in BASE_PRETRAINED_FILES.keys():
             full_path = self.moyoyo_dir / file_path
             if not full_path.exists():
-                print(f"Missing base model: {full_path}")
+                if verbose:
+                    print(f"Missing base model: {full_path}")
                 return False
                 
         return True
@@ -251,7 +254,7 @@ class ModelManager:
         
         # Check which voices have all required files downloaded
         for voice_name, voice_config in VOICE_CONFIGS.items():
-            if self.check_models_exist(voice_name, voice_config):
+            if self.check_models_exist(voice_name, voice_config, verbose=False):
                 voices[voice_name] = {
                     "repository": voice_config.get("repository", self.repository),
                     "language": voice_config.get("text_lang", "unknown"),
