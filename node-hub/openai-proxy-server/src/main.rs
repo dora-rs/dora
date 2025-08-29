@@ -253,7 +253,7 @@ fn static_response(path_str: &str, root: String) -> Response<Body> {
 
     let mime = mime_guess::from_path(path);
 
-    match std::fs::read(format!("{root}/{path}")) {
+    match std::fs::read(format!("{root}{path}")) {
         Ok(content) => Response::builder()
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, mime.first_or_text_plain().to_string())
@@ -261,7 +261,7 @@ fn static_response(path_str: &str, root: String) -> Response<Body> {
             .unwrap(),
         Err(_) => {
             let body = Body::from(std::fs::read(format!("{root}/404.html")).unwrap_or_default());
-            eprintln!("No file found for: {root}/{path}");
+            eprintln!("No file found for: {root}{path}");
             Response::builder()
                 .status(StatusCode::NOT_FOUND)
                 .header(header::CONTENT_TYPE, "text/html")

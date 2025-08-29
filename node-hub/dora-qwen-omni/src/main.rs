@@ -1,5 +1,6 @@
 //! Based on the mtmd cli example from llama.cpp.
 
+use dora_qwen_omni::parse_bounding_boxes;
 use std::ffi::CString;
 use std::io::Cursor;
 use std::num::NonZeroU32;
@@ -23,8 +24,7 @@ use llama_cpp_2::mtmd::{
 use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::model::{LlamaChatMessage, LlamaChatTemplate, LlamaModel, Special};
 use llama_cpp_2::sampling::LlamaSampler;
-use regex::Regex;
-use repair_json::repair;
+use llm_json::{repair_json, RepairOptions};
 use rusttype::{Font, Scale};
 use serde::{Deserialize, Serialize};
 use text_on_image::{text_on_image_with_background, FontBundle};
@@ -60,7 +60,7 @@ pub struct MtmdCliParams {
     )]
     pub n_predict: i32,
     /// Number of threads
-    #[arg(short = 't', long = "threads", value_name = "N", default_value = "24")]
+    #[arg(short = 't', long = "threads", value_name = "N", default_value = "128")]
     pub n_threads: i32,
     /// Maximum number of tokens in context
     #[arg(long = "n-tokens", value_name = "N", default_value = "16384")]
@@ -356,7 +356,7 @@ fn run_single_turn(
                     let font = Vec::from(FONT);
                     let font = Font::try_from_vec(font).unwrap();
 
-                    match parse_bounding_boxes(&repair(text.clone()).unwrap_or_default()) {
+                    match parse_bounding_boxes(&text.clone()) {
                         Ok(boxes) => {
                             for bbox in boxes.iter() {
                                 let text = bbox
@@ -484,36 +484,4 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n");
 
     Ok(())
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct BoundingBox {
-    bbox_2d: [i32; 4],
-    text_content: Option<String>,
-    label: Option<String>,
-}
-
-fn parse_bounding_boxes(json_str: &str) -> Result<Vec<BoundingBox>, serde_json::Error> {
-    // Strip the markdown code block markers
-    let mut cleaned = json_str.split("```json");
-    cleaned.next().unwrap_or_default();
-    let json_str = cleaned.next().unwrap_or_default();
-
-    let mut cleaned = json_str
-        .strip_suffix("```")
-        .unwrap_or(json_str)
-        .trim()
-        .to_string();
-
-    // Check if the JSON array is incomplete and try to fix it
-    if cleaned.starts_with('[') && !cleaned.trim_end().ends_with(']') {
-        // Add missing closing bracket
-        cleaned.push_str("\n]");
-    }
-
-    // Remove trailing commas (simple regex approach)
-    let re = Regex::new(r",(\s*[}\]])").unwrap();
-    let no_trailing_commas = re.replace_all(&cleaned, "$1");
-
-    serde_json::from_str(&no_trailing_commas)
 }
