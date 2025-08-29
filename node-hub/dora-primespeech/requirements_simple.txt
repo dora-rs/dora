@@ -14,7 +14,9 @@ huggingface-hub>=0.19.0
 # Essential for MoYoYo TTS
 pypinyin>=0.50.0
 jieba>=0.42.1
+jieba-fast>=0.53
 cn2an>=0.5.22
+einops>=0.7.0
 ffmpeg-python>=0.2.0
 pyyaml>=6.0
 tqdm>=4.65.0

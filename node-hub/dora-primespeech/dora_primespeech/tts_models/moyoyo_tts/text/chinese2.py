@@ -29,9 +29,52 @@ if is_g2pw:
 
     parent_directory = os.path.dirname(current_file_path)
     model_source = os.environ.get("bert_path", "moyoyo_tts/pretrained_models/chinese-roberta-wwm-ext-large")
-    here = Path(__file__).parent
-    model_dir = here / 'G2PWModel'
-    g2pw = G2PWPinyin(model_dir=model_dir.as_posix(),
+    
+    # Load G2PW from models directory
+    primespeech_model_dir = os.environ.get("PRIMESPEECH_MODEL_DIR")
+    if primespeech_model_dir:
+        model_dir_path = Path(primespeech_model_dir) / 'G2PWModel'
+        print(f"[G2PW] Looking for G2PW model in PRIMESPEECH_MODEL_DIR: {model_dir_path}")
+    else:
+        model_dir_path = Path.home() / ".dora" / "models" / "primespeech" / "G2PWModel"
+        print(f"[G2PW] Looking for G2PW model in default location: {model_dir_path}")
+    
+    # Check if G2PW model exists
+    if not model_dir_path.exists():
+        error_msg = f"""
+[ERROR] G2PW model not found at: {model_dir_path}
+
+Please download the G2PW model using one of these methods:
+
+1. Using the download script:
+   cd /path/to/dora/examples/model-manager
+   python download_models.py --download g2pw
+
+2. Manual download:
+   - Download: https://storage.googleapis.com/esun-ai/g2pW/G2PWModel-v2-onnx.zip
+   - Extract to: {model_dir_path}
+
+3. Set PRIMESPEECH_MODEL_DIR environment variable to point to your models directory:
+   export PRIMESPEECH_MODEL_DIR=/path/to/your/models
+"""
+        print(error_msg)
+        raise FileNotFoundError(f"G2PW model not found at {model_dir_path}")
+    
+    # Check if the model file exists
+    model_file = model_dir_path / 'g2pW.onnx'
+    if not model_file.exists():
+        error_msg = f"""
+[ERROR] G2PW model file not found: {model_file}
+
+The directory exists but is missing the model file.
+Please re-download the G2PW model or check if the extraction was successful.
+"""
+        print(error_msg)
+        raise FileNotFoundError(f"G2PW model file not found: {model_file}")
+    
+    print(f"[G2PW] ✓ Found G2PW model at: {model_dir_path}")
+    model_dir = model_dir_path.as_posix()
+    g2pw = G2PWPinyin(model_dir=model_dir,
                       model_source=model_source,
                       v_to_u=False, neutral_tone_with_five=True)
 

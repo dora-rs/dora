@@ -15,6 +15,13 @@ default = []
 python = ["pyo3"]
 
 [dependencies]
+
+pyo3 = { workspace = true, features = [
+    "extension-module",
+    "abi3",
+    "eyre",
+    "generate-import-lib",
+], optional = true }
 dora-node-api = { workspace = true }
 dora-cli = { path = "../../binaries/cli", default-features = false }
 tokio = { version = "1.25.0", features = ["full", "macros"] }
@@ -38,12 +45,6 @@ base64 = "0.22.1"
 rand = "0.9.2"
 futures-util = "0.3.31"
 futures-concurrency = "7.6.3"
-pyo3 = { workspace = true, features = [
-    "extension-module",
-    "abi3",
-    "eyre",
-    "generate-import-lib",
-], optional = true }
 
 
 [[bin]]
@@ -51,6 +52,8 @@ name = "dora-openai-websocket"
 path = "src/main.rs"
 
 [lib]
+
 name = "dora_openai_websocket"
 path = "src/lib.rs"
 crate-type = ["lib", "cdylib"]
+rubato = "0.14"

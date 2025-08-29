@@ -15,6 +15,7 @@ dependencies = [
     "soundfile>=0.12.0",
     "pypinyin>=0.50.0",
     "jieba>=0.42.1",
+    "jieba-fast>=0.53",  # Fast version of jieba for better performance
     "cn2an>=0.5.22",
     "pypinyin-dict>=0.8.0",
     "transformers>=4.35.0",
@@ -24,6 +25,12 @@ dependencies = [
     "ffmpeg-python>=0.2.0",
     "pyyaml>=6.0",
     "tqdm>=4.65.0",
+    # Additional missing dependencies
+    "pytorch-lightning>=2.0.0",  # For model training and inference utilities
+    "einops>=0.7.0",  # For tensor operations
+    "opencc-python-reimplemented>=0.1.0",  # For Traditional/Simplified Chinese conversion
+    "onnxruntime>=1.16.0",  # For ONNX model inference (G2PW)
+    "LangSegment>=0.2.0",  # For language segmentation
 ]
 
 [project.optional-dependencies]
