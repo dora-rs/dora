@@ -12,35 +12,35 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use base64::engine::general_purpose;
 use base64::Engine;
+use base64::engine::general_purpose;
 use dora_cli::command::Executable;
 use dora_cli::command::Start;
+use dora_node_api::DoraNode;
+use dora_node_api::IntoArrow;
+use dora_node_api::MetadataParameters;
 use dora_node_api::arrow::array::AsArray;
 use dora_node_api::arrow::datatypes::DataType;
 use dora_node_api::dora_core::config::DataId;
 use dora_node_api::dora_core::config::NodeId;
 use dora_node_api::dora_core::topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT;
 use dora_node_api::into_vec;
-use dora_node_api::DoraNode;
-use dora_node_api::IntoArrow;
-use dora_node_api::MetadataParameters;
-use fastwebsockets::upgrade;
 use fastwebsockets::Frame;
 use fastwebsockets::OpCode;
 use fastwebsockets::Payload;
 use fastwebsockets::WebSocketError;
+use fastwebsockets::upgrade;
 use futures_concurrency::future::Race;
+use futures_util::FutureExt;
 use futures_util::future;
 use futures_util::future::Either;
-use futures_util::FutureExt;
 use http_body_util::Empty;
+use hyper::Request;
+use hyper::Response;
 use hyper::body::Bytes;
 use hyper::body::Incoming;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
-use hyper::Request;
-use hyper::Response;
 use rand::random;
 use serde;
 use serde::Deserialize;
@@ -303,7 +303,7 @@ async fn handle_client(fut: upgrade::UpgradeFut) -> Result<(), WebSocketError> {
         return Err(WebSocketError::InvalidConnectionHeader);
     };
 
-    let tools = serde_json::to_string(&session.tools).unwrap();
+    let _tools = serde_json::to_string(&session.tools).unwrap();
     let input_audio_transcription = session
         .input_audio_transcription
         .map_or("moyoyo-whisper".to_string(), |t| t.model);
@@ -550,9 +550,9 @@ pub fn lib_main() -> Result<(), WebSocketError> {
 
 #[cfg(feature = "python")]
 use pyo3::{
-    pyfunction, pymodule,
+    Bound, PyResult, Python, pyfunction, pymodule,
     types::{PyModule, PyModuleMethods},
-    wrap_pyfunction, Bound, PyResult, Python,
+    wrap_pyfunction,
 };
 
 #[cfg(feature = "python")]
