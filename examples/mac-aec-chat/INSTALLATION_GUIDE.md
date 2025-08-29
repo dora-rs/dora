@@ -17,11 +17,7 @@ cd ~/path/to/dora
 # Install ASR node (with FunASR for Chinese)
 pip install -e node-hub/dora-asr
 
-# For Whisper support (optional, choose one):
-# Option A: C++ Whisper (faster, might have build issues)
-pip install -e "node-hub/dora-asr[whisper]"
-# Option B: OpenAI Whisper (more stable)
-pip install -e "node-hub/dora-asr[whisper-openai]"
+
 
 # Install PrimeSpeech TTS node
 pip install -e node-hub/dora-primespeech
@@ -29,7 +25,6 @@ pip install -e node-hub/dora-primespeech
 # Install other required nodes
 pip install -e node-hub/dora-qwen3              # LLM
 pip install -e node-hub/dora-text-segmenter     # Text segmentation
-pip install -e node-hub/dora-conversation-controller  # Conversation management
 ```
 
 ## Step 2: Download Models
@@ -46,19 +41,44 @@ python download_models.py --voice Doubao           # Voice model (or other voice
 # List downloaded models to verify
 python download_models.py --list
 ```
+You should see something like this depending on how many LLM models you have downloaded. But the primespeech and asr models must be downloaded and shown the correct size.
 
-## Step 3: Set Environment Variables (Optional)
+📦 Scanning for downloaded models...
+============================================================
 
-```bash
+📁 HuggingFace Cache: /Users/yuechen/.cache/huggingface/hub
+------------------------------------------------------------
+  📦 Qwen/Qwen2.5-0.5B-Instruct                   0.01 GB
+  📦 Qwen/Qwen3-14B-MLX-4bit                      7.32 GB
+  📦 Qwen/Qwen3-32B-MLX-6bit                     23.85 GB
+  📦 Qwen/Qwen3-8B-MLX-4bit                       4.07 GB
+  📦 Qwen/Qwen3-8B-MLX-8bit                       7.88 GB
+  📦 mlx-community/GLM-4.5-Air-3bit              43.59 GB
+📁 /Users/yuechen/.dora/models
+------------------------------------------------------------
+  📦 asr/funasr/speech_seaco_paraformer_large_asr_nat-zh-cn-16k-common-vocab8404-pytorch     1.85 GB   (FunASR)
+  📦 asr/funasr/punc_ct-transformer_cn-en-common-vocab471067-large     2.17 GB   (FunASR)
+  📦 asr/whisper                                  0.82 GB   (3 files)
+  📦 llm/mlx-community--gemma-2-9b-it-4bit        4.84 GB   (1 files)
+  📦 primespeech/G2PWModel                        0.59 GB   (1 files)
+  📦 primespeech/moyoyo/GPT_weights               0.29 GB   (2 files)
+  📦 primespeech/moyoyo/SoVITS_weights            0.16 GB   (2 files)
+  📦 primespeech/moyoyo/chinese-hubert-base       0.18 GB   (1 files)
+  📦 primespeech/moyoyo/chinese-roberta-wwm-ext-large     0.61 GB   (1 files)
+
+## Step 3: Set Environment Variables in YAML
+
+
 # Set models directory (optional, defaults to ~/.dora/models)
-export PRIMESPEECH_MODEL_DIR=~/.dora/models/primespeech
-export ASR_MODELS_DIR=~/.dora/models/asr
-```
+PRIMESPEECH_MODEL_DIR=~/.dora/models/primespeech
+ASR_MODELS_DIR=~/.dora/models/asr
+
 
 ## Step 4: Run Voice Chat
 
 ```bash
 cd examples/mac-aec-chat  # or your example directory
+dora stop. #stop existing instance one by one
 dora up
 dora start voice-chat-with-aec.yml
 ```
