@@ -1,0 +1,63 @@
+nodes:
+  - id: NODE_ID
+    build: cargo build --release -p dora-openai-websocket
+    path: dynamic
+    inputs:
+      audio: tts/audio
+      text: stt/text
+      speech_started: dora-vad/timestamp_start
+      speech_stopped: dora-vad/timestamp_end
+    outputs:
+      - audio
+      - text
+
+  - id: dora-vad
+    build: pip install -e ../../node-hub/dora-vad
+    path: dora-vad
+    inputs:
+      audio:
+        source: NODE_ID/audio
+        queue_size: 1000000
+    outputs:
+      - audio
+      - timestamp_start
+      - timestamp_end
+    env:
+      MIN_SPEECH_DURATION_MS: 200
+      MIN_SILENCE_DURATION_MS: 200
+      THRESHOLD: 0.1
+
+  - id: stt
+    build: pip install -e ../../node-hub/dora-distil-whisper
+    path: dora-distil-whisper
+    inputs:
+      audio: dora-vad/audio
+      text_noise: llm/text
+    outputs:
+      - text
+      - word
+      - speech_started
+    env:
+      TARGET_LANGUAGE: english
+
+  - id: llm
+    build: pip install -e ../../node-hub/dora-qwen
+    path: dora-qwen
+    inputs:
+      text: stt/text
+      text_to_audio: NODE_ID/text
+    outputs:
+      - text
+    env:
+      MODEL_NAME_OR_PATH: LLM_ID
+      MODEL_FILE_PATTERN: "*[qQ]6_[kK].[gG][gG][uU][fF]"
+      MAX_TOKENS: 10_000
+      CONTEXT_SIZE: 10_000
+
+  - id: tts
+    build: pip install -e ../../node-hub/dora-kokoro-tts
+    path: dora-kokoro-tts
+    inputs:
+      text: llm/text
+    outputs:
+      - audio
