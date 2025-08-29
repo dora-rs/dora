@@ -8,6 +8,38 @@ pub struct BoundingBox {
     pub label: Option<String>,
 }
 
+/// Parses bounding box JSON from model output, handling malformed JSON and markdown wrappers.
+/// 
+/// This function handles various edge cases including:
+/// - JSON wrapped in markdown code blocks (```json ... ```)
+/// - Missing commas between objects
+/// - Trailing commas (fixed in this version)
+/// - Incomplete/truncated JSON
+/// 
+/// # Example
+/// ```
+/// use dora_qwen_omni::parse_bounding_boxes;
+/// 
+/// // Standard case with markdown wrapper
+/// let json = r#"```json
+/// [
+///   {"bbox_2d": [100, 100, 200, 200], "text_content": "Hello"}
+/// ]
+/// ```"#;
+/// 
+/// let result = parse_bounding_boxes(json).unwrap();
+/// assert_eq!(result.len(), 1);
+/// 
+/// // Handles trailing commas (previously caused errors)
+/// let json_with_trailing_comma = r#"```json
+/// [
+///   {"bbox_2d": [100, 100, 200, 200], "text_content": "Hello"},
+/// ]
+/// ```"#;
+/// 
+/// let result = parse_bounding_boxes(json_with_trailing_comma).unwrap();
+/// assert_eq!(result.len(), 1);
+/// ```
 pub fn parse_bounding_boxes(json_str: &str) -> Result<Vec<BoundingBox>, serde_json::Error> {
     // Strip the markdown code block markers more carefully
     let mut cleaned = json_str.trim();
@@ -143,13 +175,16 @@ fn attempt_completion(mut json: String) -> String {
     
     // Handle case where JSON is completely truncated mid-object or mid-array
     if !trimmed.is_empty() {
+        // First, handle trailing commas before doing completion
+        json = remove_trailing_commas(json);
+        
         // If it looks like we're in the middle of parsing an object/array, try to close it
         let mut brace_count = 0i32;
         let mut bracket_count = 0i32;
         let mut in_string = false;
         let mut escape_next = false;
         
-        for ch in trimmed.chars() {
+        for ch in json.chars() {
             if escape_next {
                 escape_next = false;
                 continue;
@@ -181,31 +216,62 @@ fn attempt_completion(mut json: String) -> String {
             json.push(']');
         }
         
-        // Handle trailing commas by removing them before closing
-        let mut chars: Vec<char> = json.chars().collect();
-        let mut i = chars.len();
-        
-        // Walk backwards to find the last non-whitespace character
-        while i > 0 {
-            i -= 1;
-            match chars[i] {
-                ' ' | '\t' | '\n' | '\r' => continue,
-                ',' => {
-                    // Check if this comma is followed only by whitespace and closing brackets/braces
-                    let remaining: String = chars[i+1..].iter().collect();
-                    if remaining.trim().chars().all(|c| c == ']' || c == '}' || c.is_whitespace()) {
-                        chars.remove(i); // Remove the trailing comma
-                    }
-                    break;
-                }
-                _ => break,
-            }
-        }
-        
-        json = chars.into_iter().collect();
+        // Final cleanup for any remaining trailing commas
+        json = remove_trailing_commas(json);
     }
     
     json
+}
+
+fn remove_trailing_commas(json: String) -> String {
+    let mut chars: Vec<char> = json.chars().collect();
+    let mut i = 0;
+    let mut in_string = false;
+    let mut escape_next = false;
+    
+    while i < chars.len() {
+        if escape_next {
+            escape_next = false;
+            i += 1;
+            continue;
+        }
+        
+        match chars[i] {
+            '"' if !escape_next => in_string = !in_string,
+            '\\' if in_string => escape_next = true,
+            ',' if !in_string => {
+                // Found a comma outside of a string, check if it's a trailing comma
+                let mut j = i + 1;
+                let mut found_closing = false;
+                
+                // Look ahead to see what comes after this comma
+                while j < chars.len() {
+                    match chars[j] {
+                        ' ' | '\t' | '\n' | '\r' => {
+                            j += 1;
+                            continue;
+                        }
+                        ']' | '}' => {
+                            found_closing = true;
+                            break;
+                        }
+                        _ => break,
+                    }
+                }
+                
+                // If we found a closing bracket/brace after only whitespace, remove the comma
+                if found_closing {
+                    chars.remove(i);
+                    continue; // Don't increment i since we removed a character
+                }
+            }
+            _ => {}
+        }
+        
+        i += 1;
+    }
+    
+    chars.into_iter().collect()
 }
 
 #[cfg(test)]
@@ -581,6 +647,45 @@ mod tests {
         assert_eq!(result[1].text_content, Some("Internships are also available.".to_string()));
         assert_eq!(result[2].bbox_2d, [10, 184, 109, 202]);
         assert_eq!(result[2].text_content, Some("10,000 people are interested.".to_string()));
+    }
+
+    #[test]
+    fn test_parse_user_specific_trailing_comma_example() {
+        // This is the exact JSON that was causing the error in the user's issue
+        let json = r#"```json
+[
+	{"bbox_2d": [103, 128, 246, 158], "text_content": "This small puddle"},
+	{"bbox_2d": [103, 158, 355, 188], "text_content": "is actually the source of the Yellow River?!"},
+	{"bbox_2d": [516, 137, 596, 160], "text_content": "Documentary"},
+	{"bbox_2d": [480, 278, 590, 298], "text_content": "21.345 million"},
+	{"bbox_2d": [479, 358, 603, 382], "text_content": "Guarding Liberation West"},
+	{"bbox_2d": [506, 434, 660, 454], "text_content": "Bilibili Documentary"},
+	{"bbox_2d": [103, 358, 357, 384], "text_content": "I came to the 'Three Rivers Source' in textbooks"},
+	{"bbox_2d": [103, 384, 285, 404], "text_content": "Tiger Tooth Youth Plus · 10 hours ago"},
+	{"bbox_2d": [103, 614, 326, 636], "text_content": "Top bloggers say it's good"},
+	{"bbox_2d": [103, 644, 316, 658], "text_content": "One table to track and analyze data across all platforms in real time"},
+	{"bbox_2d": [103, 726, 172, 740], "text_content": "3,400,000"},
+	{"bbox_2d": [202, 726, 236, 740], "text_content": "30,300,000"},
+	{"bbox_2d": [272, 726, 318, 740], "text_content": "7,500,000"},
+	{"bbox_2d": [360, 748, 405, 766], "text_content": "Advertisement"},
+	{"bbox_2d": [10, 798, 383, 828], "text_content": "Workaholic productivity tool AI helps you work"},
+	{"bbox_2d": [10, 834, 246, 858], "text_content": "Fishing time +1+1+1..."},
+	{"bbox_2d": [10, 876, 168, 896], "text_content": "3,000+ people interested"},
+	{"bbox_2d": [479, 800, 648, 828], "text_content": "Tower of God | No matter what you want, "},
+	{"bbox_2d": [479, 844, 675, 864], "text_content": "Tower of God can achieve it."},
+	{"bbox_2d": [479, 879, 675, 898], "text_content": "Fantasy · Updated to the third season"},
+	{"bbox_2d": [776, 791, 889, 811], "text_content": "Refresh content"},
+]
+```"#;
+
+        let result = parse_bounding_boxes(json);
+        assert!(result.is_ok(), "Should successfully parse JSON with trailing comma: {:?}", result);
+        
+        let boxes = result.unwrap();
+        assert_eq!(boxes.len(), 21);
+        assert_eq!(boxes[0].text_content, Some("This small puddle".to_string()));
+        assert_eq!(boxes[7].text_content, Some("Tiger Tooth Youth Plus · 10 hours ago".to_string()));
+        assert_eq!(boxes[20].text_content, Some("Refresh content".to_string()));
     }
 
     #[test]
