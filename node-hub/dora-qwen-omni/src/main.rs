@@ -369,21 +369,30 @@ fn run_single_turn(
                                     img.width() as f32 / 1000.,
                                 );
 
-                                let y_scale = (bbox.bbox_2d[3] - bbox.bbox_2d[1]) as f32;
+                                // Ensure coordinates are in the correct order (min, min, max, max)
+                                let x1 = bbox.bbox_2d[0].min(bbox.bbox_2d[2]);
+                                let y1 = bbox.bbox_2d[1].min(bbox.bbox_2d[3]);
+                                let x2 = bbox.bbox_2d[0].max(bbox.bbox_2d[2]);
+                                let y2 = bbox.bbox_2d[1].max(bbox.bbox_2d[3]);
 
-                                if y_scale <= 0. {
+                                // Calculate width and height - guaranteed to be positive
+                                let width = x2 - x1;
+                                let y_scale = (y2 - y1) as f32;
+
+                                // Skip if the bounding box has no area
+                                if y_scale <= 0. || width <= 0 {
                                     continue;
                                 }
 
                                 let font_bundle = FontBundle::new(
                                     &font,
                                     Scale {
-                                        x: 1.2 * resize * (y_scale as f32),
-                                        y: 1.2 * resize * (y_scale as f32),
+                                        x: 1.2 * resize * y_scale,
+                                        y: 1.2 * resize * y_scale,
                                     },
                                     Rgba([20, 20, 20, 0]),
                                 );
-                                let width = bbox.bbox_2d[2] - bbox.bbox_2d[0];
+
                                 let wrap = if width as f32 * resize < 3. * y_scale * resize {
                                     text_on_image::WrapBehavior::NoWrap
                                 } else {
@@ -395,36 +404,35 @@ fn run_single_turn(
                                     &mut img,
                                     text,
                                     &font_bundle,
-                                    (resize * (bbox.bbox_2d[0] as f32)) as i32,
-                                    (resize * (bbox.bbox_2d[1] as f32)) as i32,
+                                    (resize * (x1 as f32)) as i32,
+                                    (resize * (y1 as f32)) as i32,
                                     text_on_image::TextJustify::Left,
                                     text_on_image::VerticalAnchor::Top,
                                     wrap,
                                     Rgba([248, 252, 235, 50]),
                                 );
                             }
+                            let mut bytes: Vec<u8> = Vec::new();
+                            img.write_to(
+                                &mut Cursor::new(&mut bytes),
+                                image::ImageOutputFormat::Jpeg(100),
+                            )?;
+                            img.save("test.jpeg")?;
+                            let engine = base64::engine::general_purpose::STANDARD;
+                            let base64_encoded = engine.encode(bytes);
+                            let mut string = "data:image/png;base64,".to_string();
+
+                            string.push_str(&base64_encoded);
+                            node.send_output(
+                                DataId::from("image".to_string()),
+                                Default::default(),
+                                string.into_arrow(),
+                            )?;
+                            println!("sent Image")
                         }
 
                         Err(e) => eprintln!("Failed to parse JSON: {}, text: {:#?}", e, text),
                     }
-
-                    let mut bytes: Vec<u8> = Vec::new();
-                    img.write_to(
-                        &mut Cursor::new(&mut bytes),
-                        image::ImageOutputFormat::Jpeg(100),
-                    )?;
-                    img.save("test.jpeg")?;
-                    let engine = base64::engine::general_purpose::STANDARD;
-                    let base64_encoded = engine.encode(bytes);
-                    let mut string = "data:image/png;base64,".to_string();
-
-                    string.push_str(&base64_encoded);
-                    node.send_output(
-                        DataId::from("image".to_string()),
-                        Default::default(),
-                        string.into_arrow(),
-                    )?;
-                    println!("sent Image")
                 }
             }
             _ => break,
