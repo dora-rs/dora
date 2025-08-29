@@ -30,7 +30,7 @@ nodes:
       ENABLE_PUNCTUATION: true
       ENABLE_LANGUAGE_DETECTION: true
       ENABLE_CONFIDENCE_SCORE: false
-      # ASR_MODELS_DIR: ./models/asr  # Relative path (recommended)
+      ASR_MODELS_DIR: ~/.dora/models/asr # Relative path (recommended)
       # ASR_MODELS_DIR: ~/.cache/modelscope/hub/models/iic  # Modelscope cache location
       # If not set, defaults to ~/.dora/models/asr (which has the models)
       LOG_LEVEL: INFO

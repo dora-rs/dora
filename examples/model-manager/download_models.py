@@ -352,6 +352,84 @@ def download_funasr_models(models_dir: Optional[Path] = None):
         return downloaded > 0
 
 
+def download_g2pw_model(models_dir: Path = None):
+    """Download G2PW model for Chinese text-to-phoneme conversion."""
+    print("\n📥 Downloading G2PW model for Chinese TTS")
+    print("   Type: G2PW (Grapheme-to-Phoneme for Chinese)")
+    print("   Source: PaddleSpeech")
+    
+    # Determine target directory in models folder
+    if models_dir is None:
+        # Use PRIMESPEECH_MODEL_DIR if set, otherwise default
+        primespeech_model_dir = os.getenv("PRIMESPEECH_MODEL_DIR")
+        if primespeech_model_dir:
+            models_dir = Path(primespeech_model_dir)
+        else:
+            models_dir = Path.home() / ".dora" / "models" / "primespeech"
+    
+    # G2PW goes in models directory
+    g2pw_dir = models_dir / "G2PWModel"
+    
+    print(f"   Destination: {g2pw_dir}")
+    
+    # Check if already exists
+    if g2pw_dir.exists() and (g2pw_dir / "g2pW.onnx").exists():
+        size_mb = (g2pw_dir / "g2pW.onnx").stat().st_size / (1024**2)
+        print(f"   ✓ G2PW model already exists ({size_mb:.1f} MB)")
+        return True
+    
+    # Create directory
+    g2pw_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Download from PaddleSpeech
+    import requests
+    import zipfile
+    import io
+    
+    url = "https://storage.googleapis.com/esun-ai/g2pW/G2PWModel-v2-onnx.zip"
+    
+    try:
+        print("   ⏳ Downloading G2PWModel-v2-onnx.zip (~600MB)...")
+        response = requests.get(url, stream=True)
+        response.raise_for_status()
+        
+        total_size = int(response.headers.get('content-length', 0))
+        
+        # Download with progress bar
+        from tqdm import tqdm
+        content = b""
+        with tqdm(total=total_size, unit='B', unit_scale=True, desc="   Downloading") as pbar:
+            for chunk in response.iter_content(chunk_size=8192):
+                content += chunk
+                pbar.update(len(chunk))
+        
+        print("   📦 Extracting G2PW model...")
+        with zipfile.ZipFile(io.BytesIO(content)) as zip_file:
+            # Extract directly to target directory
+            zip_file.extractall(g2pw_dir.parent)
+            
+            # Check if files were extracted to G2PWModel-v2-onnx and move them
+            temp_dir = g2pw_dir.parent / "G2PWModel-v2-onnx"
+            if temp_dir.exists():
+                import shutil
+                if g2pw_dir.exists():
+                    shutil.rmtree(g2pw_dir)
+                shutil.move(str(temp_dir), str(g2pw_dir))
+        
+        print(f"   ✅ G2PW model downloaded successfully!")
+        print(f"   Location: {g2pw_dir}")
+        return True
+        
+    except Exception as e:
+        print(f"   ❌ Error downloading G2PW model: {e}")
+        print("\n   Manual download instructions:")
+        print(f"   1. Download: {url}")
+        print(f"   2. Extract the zip file")
+        print(f"   3. Rename 'G2PWModel_1.1' to 'G2PWModel'")
+        print(f"   4. Move to: {g2pw_dir}")
+        return False
+
+
 def download_primespeech_base(models_dir: Path):
     """Download PrimeSpeech base models (Chinese Hubert and Roberta) from HuggingFace."""
     print("\n📥 Downloading PrimeSpeech base models")
@@ -636,6 +714,56 @@ def remove_voice_models(voice_name: str, models_dir: Path) -> bool:
             return False
 
 
+def remove_g2pw_model(models_dir: Path = None) -> bool:
+    """Remove G2PW model.
+    
+    Args:
+        models_dir: Models directory (default: ~/.dora/models/primespeech)
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    print("\n🗑️  Removing G2PW model")
+    
+    # Determine models directory
+    if models_dir is None:
+        primespeech_model_dir = os.getenv("PRIMESPEECH_MODEL_DIR")
+        if primespeech_model_dir:
+            models_dir = Path(primespeech_model_dir)
+        else:
+            models_dir = Path.home() / ".dora" / "models" / "primespeech"
+    
+    g2pw_dir = models_dir / "G2PWModel"
+    
+    if not g2pw_dir.exists():
+        print(f"❌ G2PW model not found at: {g2pw_dir}")
+        return False
+    
+    # Calculate size
+    total_size = 0
+    for file in g2pw_dir.rglob("*"):
+        if file.is_file():
+            total_size += file.stat().st_size
+    
+    size_mb = total_size / (1024**2)
+    print(f"   Location: {g2pw_dir}")
+    print(f"   Size: {size_mb:.1f} MB")
+    
+    # Ask for confirmation
+    response = input(f"   Remove G2PW model? (yes/no): ").lower().strip()
+    if response in ['yes', 'y']:
+        try:
+            shutil.rmtree(g2pw_dir)
+            print(f"✅ Successfully removed G2PW model")
+            return True
+        except Exception as e:
+            print(f"❌ Error removing G2PW model: {e}")
+            return False
+    else:
+        print("   Cancelled.")
+        return False
+
+
 def remove_primespeech_base_models(models_dir: Path) -> bool:
     """Remove PrimeSpeech base models (Chinese Hubert and Roberta).
     
@@ -799,6 +927,11 @@ def main():
             success = download_primespeech_base(models_dir)
             if not success:
                 sys.exit(1)
+        elif args.download == "g2pw":
+            # Download G2PW model
+            success = download_g2pw_model()
+            if not success:
+                sys.exit(1)
         elif PRIMESPEECH_AVAILABLE:
             # Treat as voice name
             success = download_voice_models(args.download, models_dir)
@@ -833,6 +966,11 @@ def main():
             success = remove_voice_models("all", models_dir)
             if not success:
                 sys.exit(1)
+        elif args.remove == "g2pw":
+            # Remove G2PW model
+            success = remove_g2pw_model()
+            if not success:
+                sys.exit(1)
         elif args.remove == "primespeech-base" and PRIMESPEECH_AVAILABLE:
             # Remove base models
             success = remove_primespeech_base_models(models_dir)
@@ -848,6 +986,7 @@ def main():
             print("   Valid options:")
             print("   - HuggingFace repo ID (e.g., 'mlx-community/gemma-3-12b-it-4bit')")
             print("   - 'funasr' to remove FunASR models")
+            print("   - 'g2pw' to remove G2PW model")
             if PRIMESPEECH_AVAILABLE:
                 print("   - 'all-voices' to remove all PrimeSpeech voices")
                 print("   - 'primespeech-base' to remove base models")
@@ -879,6 +1018,9 @@ def main():
         print("")
         print("  # Download FunASR models (Chinese ASR):")
         print("  python download_models.py --download funasr")
+        print("")
+        print("  # Download G2PW model (Chinese text-to-phoneme for TTS):")
+        print("  python download_models.py --download g2pw")
         print("")
         print("  # List downloaded models:")
         print("  python download_models.py --list")
