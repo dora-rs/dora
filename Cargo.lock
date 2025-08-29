@@ -4321,7 +4321,7 @@ dependencies = [
 
 [[package]]
 name = "dora-openai-websocket"
-version = "0.1.0"
+version = "0.3.12"
 dependencies = [
  "anyhow",
  "assert2",
@@ -4338,6 +4338,7 @@ dependencies = [
  "http-body-util",
  "hyper 1.7.0",
  "hyper-util",
+ "pyo3",
  "rand 0.9.2",
  "rustls-pemfile 1.0.4",
  "serde",
