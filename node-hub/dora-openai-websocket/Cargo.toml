@@ -1,9 +1,18 @@
 [package]
 name = "dora-openai-websocket"
-version = "0.1.0"
-edition = "2021"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+description.workspace = true
+documentation.workspace = true
+license = "Apache-2.0"
+repository.workspace = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[features]
+default = []
+python = ["pyo3"]
 
 [dependencies]
 dora-node-api = { workspace = true }
@@ -29,3 +38,19 @@ base64 = "0.22.1"
 rand = "0.9.2"
 futures-util = "0.3.31"
 futures-concurrency = "7.6.3"
+pyo3 = { workspace = true, features = [
+    "extension-module",
+    "abi3",
+    "eyre",
+    "generate-import-lib",
+], optional = true }
+
+
+[[bin]]
+name = "dora-openai-websocket"
+path = "src/main.rs"
+
+[lib]
+name = "dora_openai_websocket"
+path = "src/lib.rs"
+crate-type = ["lib", "cdylib"]
