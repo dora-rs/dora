@@ -52,8 +52,18 @@ We use [`rustfmt`](https://github.com/rust-lang/rustfmt) with its default settin
 Please run `cargo fmt --all` on your code before submitting a pull request.
 Our CI will run an automatic formatting check of your code.
 
+
+
 ## Publishing new Versions
 
 The maintainers are responsible for publishing new versions of the `dora` crates.
 Please don't open unsolicited pull requests to create new releases.
 Instead, request a new version by opening an issue or by leaving a comment on a merged PR.
+
+The maintainers are responsible for publishing new versions of the `dora` crates.
+Please don't open unsolicited pull requests to create new releases.
+Instead, request a new version by opening an issue or by leaving a comment on a merged PR.😊
+
+
+
+
