@@ -5,7 +5,7 @@ set -euo
 CI=${GITHUB_ACTIONS:-false}
 
 # List of ignored modules 
-ignored_folders=("dora-parler" "dora-opus" "dora-internvl" "dora-magma")
+ignored_folders=("dora-parler" "dora-opus" "dora-internvl" "dora-magma", "dora-mlx-lm")
 
 # Skip test
 skip_test_folders=("dora-internvl" "dora-parler" "dora-keyboard" "dora-microphone" "terminal-input" "dora-magma")
