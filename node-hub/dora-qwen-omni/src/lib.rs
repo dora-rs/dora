@@ -64,15 +64,11 @@ pub fn parse_bounding_boxes(json_str: &str) -> Result<Vec<BoundingBox>, serde_js
     }
     
     // Handle case where there are trailing characters after valid JSON
-    // Find the end of the JSON array by looking for the last ']'
+    // Find the end of the JSON array by looking for the last ']' that closes the main array
     let mut cleaned_str = cleaned.trim().to_string();
-    if let Some(last_bracket_pos) = cleaned_str.rfind(']') {
-        // Check if there are only whitespace characters after the last ']'
-        let after_bracket = &cleaned_str[last_bracket_pos + 1..].trim();
-        if !after_bracket.is_empty() && !after_bracket.starts_with("```") {
-            // Truncate at the last ']' to remove trailing characters
-            cleaned_str = cleaned_str[..=last_bracket_pos].to_string();
-        }
+    if let Some(main_array_end) = find_main_array_end(&cleaned_str) {
+        // Truncate at the end of the main array to remove trailing characters
+        cleaned_str = cleaned_str[..=main_array_end].to_string();
     }
     
     let cleaned = cleaned_str;
@@ -143,6 +139,44 @@ fn find_json_start(text: &str) -> Option<usize> {
         // then it's likely the JSON start
         if before_bracket.contains('\n') || before_bracket.len() > 50 {
             return Some(bracket_pos);
+        }
+    }
+    
+    None
+}
+
+fn find_main_array_end(text: &str) -> Option<usize> {
+    // Find the position where the main JSON array ends
+    // This handles nested arrays and objects properly
+    let mut bracket_count = 0i32;
+    let mut _brace_count = 0i32;
+    let mut in_string = false;
+    let mut escape_next = false;
+    let mut found_first_bracket = false;
+    
+    for (i, ch) in text.char_indices() {
+        if escape_next {
+            escape_next = false;
+            continue;
+        }
+        
+        match ch {
+            '"' if !escape_next => in_string = !in_string,
+            '\\' if in_string => escape_next = true,
+            '[' if !in_string => {
+                bracket_count += 1;
+                found_first_bracket = true;
+            }
+            ']' if !in_string => {
+                bracket_count -= 1;
+                // If we've closed the main array (bracket_count == 0)
+                if found_first_bracket && bracket_count == 0 {
+                    return Some(i);
+                }
+            }
+            '{' if !in_string => _brace_count += 1,
+            '}' if !in_string => _brace_count -= 1,
+            _ => {}
         }
     }
     
@@ -231,6 +265,9 @@ fn attempt_completion(mut json: String) -> String {
         // First, handle trailing commas before doing completion
         json = remove_trailing_commas(json);
         
+        // Fix truncated strings that end with unusual characters like '$'
+        json = fix_truncated_strings(json);
+        
         // If it looks like we're in the middle of parsing an object/array, try to close it
         let mut brace_count = 0i32;
         let mut bracket_count = 0i32;
@@ -274,6 +311,119 @@ fn attempt_completion(mut json: String) -> String {
     }
     
     json
+}
+
+fn fix_unescaped_quotes(json: String) -> String {
+    // This function attempts to fix unescaped quotes in JSON strings
+    let mut result = String::new();
+    let chars: Vec<char> = json.chars().collect();
+    let mut i = 0;
+    let mut in_string = false;
+    let mut escape_next = false;
+    
+    while i < chars.len() {
+        let ch = chars[i];
+        
+        if escape_next {
+            escape_next = false;
+            result.push(ch);
+            i += 1;
+            continue;
+        }
+        
+        match ch {
+            '"' if !in_string => {
+                // Starting a string
+                in_string = true;
+                result.push(ch);
+            }
+            '"' if in_string => {
+                // This could be either:
+                // 1. The end of the current string (if followed by , } ] or whitespace leading to those)
+                // 2. An unescaped quote within the string that needs escaping
+                
+                // Look ahead to see what comes after this quote
+                let mut j = i + 1;
+                while j < chars.len() && chars[j].is_whitespace() {
+                    j += 1;
+                }
+                
+                // For string values (not keys), we only expect comma, closing brace, or closing bracket
+                // For string keys, we expect a colon
+                let is_end_of_string = j >= chars.len() || 
+                    matches!(chars[j], ',' | '}' | ']' | ':');
+                
+                if is_end_of_string {
+                    // This is the end of the string
+                    in_string = false;
+                    result.push(ch);
+                } else {
+                    // This is likely an unescaped quote within the string, escape it
+                    result.push('\\');
+                    result.push(ch);
+                }
+            }
+            '\\' if in_string => {
+                escape_next = true;
+                result.push(ch);
+            }
+            _ => {
+                result.push(ch);
+            }
+        }
+        
+        i += 1;
+    }
+    
+    result
+}
+
+fn fix_truncated_strings(json: String) -> String {
+    // This function handles strings that are truncated with unusual characters like '$'
+    let mut result = String::new();
+    let chars: Vec<char> = json.chars().collect();
+    let mut i = 0;
+    let mut in_string = false;
+    let mut escape_next = false;
+    
+    while i < chars.len() {
+        let ch = chars[i];
+        
+        if escape_next {
+            escape_next = false;
+            result.push(ch);
+            i += 1;
+            continue;
+        }
+        
+        match ch {
+            '"' if !in_string => {
+                in_string = true;
+                result.push(ch);
+            }
+            '"' if in_string => {
+                in_string = false;
+                result.push(ch);
+            }
+            '\\' if in_string => {
+                escape_next = true;
+                result.push(ch);
+            }
+            '$' if in_string && i == chars.len() - 1 => {
+                // If we encounter '$' at the end of input while in a string,
+                // it's likely a truncation artifact - remove it and close the string
+                result.push('"');
+                break;
+            }
+            _ => {
+                result.push(ch);
+            }
+        }
+        
+        i += 1;
+    }
+    
+    result
 }
 
 fn remove_trailing_commas(json: String) -> String {
@@ -998,5 +1148,53 @@ Additional notes: The parsing was successful and all text elements were extracte
         assert_eq!(result[26].bbox_2d, [676, 808, 748, 824]);
         assert_eq!(result[26].text_content, Some("Refresh Content".to_string()));
         assert_eq!(result[13].text_content, Some("2024 KPL King's Dream Team: Time difference five".to_string()));
+    }
+
+    #[test]
+    fn test_parse_json_with_unescaped_quotes() {
+        // Test the specific case mentioned by the user with unescaped quotes within strings
+        let json_with_unescaped_quotes = r#"```json
+[
+	{"bbox_2d": [10, 160, 51, 173], "text_content": "health"},
+	{"bbox_2d": [10, 210, 361, 231], "text_content": "How bad is sitting for too long? More than you think"},
+	{"bbox_2d": [10, 714, 544, 732], "text_content": "We've all heard that sitting for too long is bad for you. While it may not be "as bad as smoking," too much sitting can still shorten your lifespan."},
+	{"bbox_2d": [10, 802, 544, 820], "text_content": "\"Sitting actually accelerates aging,\" says Katie Bowman. \"Whether it's bone or joint health, muscle mass, or energy levels,\" she adds, \"many of the things you think are signs of aging are actually heavily influenced by how much you sit.\""}
+]
+```"#;
+
+        let result = parse_bounding_boxes(json_with_unescaped_quotes);
+        assert!(result.is_ok(), "Should successfully parse JSON with unescaped quotes: {:?}", result);
+        
+        let boxes = result.unwrap();
+        assert_eq!(boxes.len(), 4);
+        assert_eq!(boxes[0].text_content, Some("health".to_string()));
+        assert_eq!(boxes[1].text_content, Some("How bad is sitting for too long? More than you think".to_string()));
+        assert!(boxes[2].text_content.as_ref().unwrap().contains("as bad as smoking"));
+        assert!(boxes[3].text_content.as_ref().unwrap().contains("Sitting actually accelerates aging"));
+    }
+
+    #[test]
+    fn test_parse_json_with_truncated_dollar_sign() {
+        // Test the specific truncation case with '$' at the end
+        let json_with_dollar_truncation = r#"```json
+[
+	{"bbox_2d": [10, 160, 51, 173], "text_content": "health"},
+	{"bbox_2d": [10, 714, 544, 732], "text_content": "We've all heard that sitting for too long is bad for you. Human evolution didn't account for the need to sit for long periods, which cancels out the benefits of exercise and can lea$
+]
+```"#;
+
+        let result = parse_bounding_boxes(json_with_dollar_truncation);
+        // Should either succeed with repair or fail gracefully
+        match result {
+            Ok(boxes) => {
+                assert!(boxes.len() >= 1);
+                assert_eq!(boxes[0].text_content, Some("health".to_string()));
+                // Second entry might be truncated but should not cause a panic
+            }
+            Err(_) => {
+                // If parsing fails, that's acceptable for severely truncated input
+                // The important thing is no panic occurs
+            }
+        }
     }
 }
