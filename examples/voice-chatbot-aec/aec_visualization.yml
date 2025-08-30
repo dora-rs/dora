@@ -1,0 +1,23 @@
+nodes:
+  # AEC Node - captures audio directly from hardware with echo cancellation
+  - id: aec-processor
+    build: pip install -e ../../node-hub/dora-aec
+    path: dora-aec
+    outputs:
+      - audio
+      - vad_status
+      - log
+    env:
+      SAMPLE_RATE: 16000
+      AEC_ENABLED: true
+      VAD_ENABLED: true
+      AUTO_START: true
+
+  # Sound Visualizer - displays real-time audio levels and spectrum
+  - id: sound-visualizer
+    path: dynamic
+    inputs:
+      audio: aec-processor/audio
+      vad_status: aec-processor/vad_status
+    outputs:
+      - status

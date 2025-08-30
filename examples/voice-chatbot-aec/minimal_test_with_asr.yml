@@ -1,0 +1,68 @@
+nodes:
+  # AEC Node - captures audio directly from hardware with echo cancellation
+  - id: aec
+    build: pip install -e ../../node-hub/dora-aec
+    path: dora-aec
+    outputs:
+      - audio
+      - vad_status
+      - log
+    env:
+      SAMPLE_RATE: 16000
+      AEC_ENABLED: true
+      VAD_ENABLED: false
+      AUTO_START: true
+
+  # Speech Monitor - detects speech and creates segments
+  - id: monitor
+    build: pip install -e ../../node-hub/dora-speechmonitor
+    path: dora-speechmonitor
+    inputs:
+      audio: aec/audio
+    outputs:
+      - log
+      - audio_segment
+      - speech_started
+      - speech_ended
+      - is_speaking
+      - speech_probability
+    env:
+      LOG_LEVEL: DEBUG  # Changed to DEBUG to see audio reception
+      VAD_ENABLED: false
+      VAD_THRESHOLD: 0.6
+      SAMPLE_RATE: 16000
+      SILENCE_THRESHOLD_MS: 500
+      ACTIVE_DURATION_MS: 100
+      AUDIO_FRAMES_THRESHOLD_MS: 10000
+      
+  # ASR - Automatic Speech Recognition
+  - id: asr
+    build: pip install -e ../../node-hub/dora-asr
+    path: dora-asr
+    inputs:
+      audio:
+        source: monitor/audio_segment
+        queue_size: 10
+    outputs:
+      - text
+      - log
+    env:
+      # Use FunASR for better Chinese support
+      ASR_ENGINE: funasr
+      LANGUAGE: zh
+      SAMPLE_RATE: 16000
+      LOG_LEVEL: INFO
+      # Model will be auto-downloaded to ~/.dora/models/asr/funasr
+      MODEL_PATH: /Users/yuechen/.dora/models/asr/funasr
+      
+  # Logger to see all outputs
+  - id: logger
+    path: dynamic
+    inputs:
+      aec_log: aec/log
+      monitor_log: monitor/log
+      asr_log: asr/log
+      asr_text: asr/text
+      speech_started: monitor/speech_started
+      speech_ended: monitor/speech_ended
+      audio_segment: monitor/audio_segment

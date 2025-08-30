@@ -1,0 +1,18 @@
+nodes:
+  # Simple microphone input
+  - id: microphone
+    path: dynamic
+    outputs:
+      - audio
+  
+  # Speech Monitor 
+  - id: speech-monitor
+    build: pip install -e ../../node-hub/dora-speechmonitor
+    path: dora-speechmonitor
+    inputs:
+      audio: microphone/audio
+    outputs:
+      - audio_segment
+      - log
+    env:
+      LOG_LEVEL: DEBUG

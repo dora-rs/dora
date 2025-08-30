@@ -1,0 +1,11 @@
+[project]
+name = "dora-text-segmenter"
+version = "0.1.0"
+dependencies = [
+    "dora-rs",
+    "pyarrow",
+    "numpy",
+]
+
+[project.scripts]
+dora-text-segmenter = "dora_text_segmenter.main:main"
