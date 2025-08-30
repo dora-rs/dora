@@ -1,0 +1,924 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Screenshot Translator</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 20px;
+            padding: 30px;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+            backdrop-filter: blur(10px);
+            max-width: 1200px;
+            width: 100%;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .header h1 {
+            color: #333;
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .header p {
+            color: #666;
+            font-size: 1.1rem;
+        }
+
+        .config-section {
+            background: #f8f9fa;
+            border-radius: 15px;
+            padding: 25px;
+            margin-bottom: 30px;
+            border: 1px solid #e9ecef;
+        }
+
+        .config-section h3 {
+            color: #333;
+            margin-bottom: 20px;
+            font-size: 1.3rem;
+        }
+
+        .config-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+
+        .input-group {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .input-group label {
+            color: #555;
+            margin-bottom: 8px;
+            font-weight: 500;
+        }
+
+        .input-group input,
+        .input-group textarea {
+            padding: 12px;
+            border: 2px solid #e9ecef;
+            border-radius: 8px;
+            font-size: 1rem;
+            transition: border-color 0.3s;
+        }
+
+        .input-group input:focus,
+        .input-group textarea:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 15px;
+            justify-content: center;
+            margin-bottom: 20px;
+        }
+
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            min-width: 120px;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 20px rgba(102, 126, 234, 0.3);
+        }
+
+        .btn-danger {
+            background: linear-gradient(135deg, #ff6b6b, #ee5a24);
+            color: white;
+        }
+
+        .btn-danger:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 20px rgba(255, 107, 107, 0.3);
+        }
+
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .status {
+            text-align: center;
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            font-weight: 500;
+            transition: all 0.3s;
+        }
+
+        .status.idle {
+            background: #e3f2fd;
+            color: #1976d2;
+        }
+
+        .status.active {
+            background: #e8f5e8;
+            color: #388e3c;
+        }
+
+        .status.error {
+            background: #ffebee;
+            color: #d32f2f;
+        }
+
+        .status.processing {
+            background: #fff3e0;
+            color: #f57c00;
+        }
+
+        .preview-section {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+            margin-top: 30px;
+        }
+
+        .preview-container {
+            background: #f8f9fa;
+            border-radius: 15px;
+            padding: 20px;
+            text-align: center;
+            min-height: 400px;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .preview-container h3 {
+            margin-bottom: 15px;
+            color: #333;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .fullscreen-btn {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            border: none;
+            border-radius: 6px;
+            padding: 8px 12px;
+            font-size: 0.9rem;
+            cursor: pointer;
+            transition: all 0.3s;
+            opacity: 0;
+            transform: translateX(10px);
+        }
+
+        .preview-container:hover .fullscreen-btn {
+            opacity: 1;
+            transform: translateX(0);
+        }
+
+        .fullscreen-btn:hover {
+            transform: translateY(-1px) scale(1.05);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+        }
+
+        .fullscreen-btn:disabled {
+            opacity: 0.3;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .preview-container img,
+        .preview-container video {
+            max-width: 100%;
+            max-height: 350px;
+            border-radius: 10px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+            object-fit: contain;
+        }
+
+        .preview-placeholder {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #999;
+            font-style: italic;
+            border: 2px dashed #ddd;
+            border-radius: 10px;
+            min-height: 300px;
+        }
+
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-left: 10px;
+        }
+
+        @keyframes spin {
+            0% {
+                transform: rotate(0deg);
+            }
+
+            100% {
+                transform: rotate(360deg);
+            }
+        }
+
+        .fullscreen-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            background: rgba(0, 0, 0, 0.95);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 10000;
+            backdrop-filter: blur(5px);
+        }
+
+        .fullscreen-overlay.active {
+            display: flex;
+            animation: fadeIn 0.3s ease-out;
+        }
+
+        .fullscreen-content {
+            width: 100vw;
+            height: 100vh;
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .fullscreen-content img,
+        .fullscreen-content>div:not(.fullscreen-close) {
+            width: 100vw;
+            height: 100vh;
+            object-fit: contain;
+            border-radius: 0;
+            box-shadow: none;
+        }
+
+        .fullscreen-close {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            border: 2px solid rgba(255, 255, 255, 0.5);
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            font-size: 1.5rem;
+            font-weight: bold;
+            transition: all 0.3s;
+            z-index: 10001;
+        }
+
+        .fullscreen-close:hover {
+            background: rgba(0, 0, 0, 0.9);
+            transform: scale(1.1);
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: scale(0.9);
+            }
+
+            to {
+                opacity: 1;
+                transform: scale(1);
+            }
+        }
+
+        @media (max-width: 768px) {
+            .preview-section {
+                grid-template-columns: 1fr;
+            }
+
+            .config-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .button-group {
+                flex-direction: column;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📸 Screenshot Translator</h1>
+            <p>Automatically capture, translate, and display images using ChatGPT</p>
+        </div>
+
+        <div class="config-section">
+            <h3>⚙️ Configuration</h3>
+            <div class="config-grid">
+                <div class="input-group">
+                    <label for="apiKey">OpenAI API Key:</label>
+                    <input type="password" id="apiKey" placeholder="sk-..." required>
+                </div>
+                <div class="input-group">
+                    <label for="customDomain">OpenAI API URL:</label>
+                    <input type="text" id="customDomain" placeholder="https://api.openai.com"
+                        value="https://api.openai.com">
+                </div>
+            </div>
+        </div>
+
+        <div class="button-group">
+            <button class="btn btn-primary" id="startBtn">▶️ Start Translation</button>
+            <button class="btn btn-danger" id="stopBtn" disabled>⏹️ Stop Translation</button>
+            <button class="btn btn-primary" id="testBtn"
+                style="background: linear-gradient(135deg, #28a745, #20c997);">🔧 Test Connection</button>
+        </div>
+
+        <div class="status idle" id="status">
+            🔄 Ready to start - Click "Start Translation" to begin
+        </div>
+
+        <div class="preview-section">
+            <div class="preview-container">
+                <h3>
+                    📷 Original Screenshot
+                    <button class="fullscreen-btn" id="originalFullscreenBtn" disabled>🔍 Full Screen</button>
+                </h3>
+                <div class="preview-placeholder" id="originalPreview">
+                    No screenshot captured yet
+                </div>
+            </div>
+            <div class="preview-container">
+                <h3>
+                    🌐 Translated Image
+                    <button class="fullscreen-btn" id="translatedFullscreenBtn" disabled>🔍 Full Screen</button>
+                </h3>
+                <div class="preview-placeholder" id="translatedPreview">
+                    No translation generated yet
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Fullscreen Overlay -->
+    <div class="fullscreen-overlay" id="fullscreenOverlay">
+        <div class="fullscreen-content" id="fullscreenContent">
+            <button class="fullscreen-close" id="fullscreenClose">×</button>
+        </div>
+    </div>
+
+    <script>
+        // Configuration - Edit these values as needed
+        const CONFIG = {
+            RETRY_INTERVAL: 3000, // milliseconds
+            TRANSLATION_PROMPT: 'Output the bounding box of all texts',
+            PROCESSING_DELAY: 100 // Small delay between captures to prevent stack overflow
+        };
+
+        class ScreenshotTranslator {
+            constructor() {
+                this.isRunning = false;
+                this.intervalId = null;
+                this.stream = null;
+                this.currentFullscreenType = null;
+
+                this.initializeElements();
+                this.setupEventListeners();
+            }
+
+            initializeElements() {
+                this.apiKeyInput = document.getElementById('apiKey');
+                this.customDomainInput = document.getElementById('customDomain');
+                this.startBtn = document.getElementById('startBtn');
+                this.stopBtn = document.getElementById('stopBtn');
+                this.testBtn = document.getElementById('testBtn');
+                this.statusDiv = document.getElementById('status');
+                this.originalPreview = document.getElementById('originalPreview');
+                this.translatedPreview = document.getElementById('translatedPreview');
+                this.originalFullscreenBtn = document.getElementById('originalFullscreenBtn');
+                this.translatedFullscreenBtn = document.getElementById('translatedFullscreenBtn');
+                this.fullscreenOverlay = document.getElementById('fullscreenOverlay');
+                this.fullscreenContent = document.getElementById('fullscreenContent');
+                this.fullscreenClose = document.getElementById('fullscreenClose');
+            }
+
+            setupEventListeners() {
+                this.startBtn.addEventListener('click', () => this.startTranslation());
+                this.stopBtn.addEventListener('click', () => this.stopTranslation());
+                this.testBtn.addEventListener('click', () => this.testConnection());
+                this.originalFullscreenBtn.addEventListener('click', () => this.openFullscreen('original'));
+                this.translatedFullscreenBtn.addEventListener('click', () => this.openFullscreen('translated'));
+                this.fullscreenClose.addEventListener('click', () => this.closeFullscreen());
+                this.fullscreenOverlay.addEventListener('click', (e) => {
+                    if (e.target === this.fullscreenOverlay) {
+                        this.closeFullscreen();
+                    }
+                });
+
+                document.addEventListener('keydown', (e) => {
+                    if (e.key === 'Escape' && this.fullscreenOverlay.classList.contains('active')) {
+                        this.closeFullscreen();
+                    }
+                });
+            }
+
+            updateStatus(message, type = 'idle') {
+                const messageStr = typeof message === 'string' ? message : String(message);
+                this.statusDiv.textContent = messageStr;
+                this.statusDiv.className = `status ${type}`;
+            }
+
+            async requestScreenCapture() {
+                try {
+                    this.stream = await navigator.mediaDevices.getDisplayMedia({
+                        video: { mediaSource: 'screen' }
+                    });
+                    return true;
+                } catch (error) {
+                    console.error('Error requesting screen capture:', error);
+                    this.updateStatus('❌ Screen capture permission denied', 'error');
+                    return false;
+                }
+            }
+
+            captureScreenshot() {
+                return new Promise((resolve, reject) => {
+                    if (!this.stream) {
+                        reject(new Error('No screen capture stream available'));
+                        return;
+                    }
+
+                    const video = document.createElement('video');
+                    video.srcObject = this.stream;
+                    video.play();
+
+                    video.onloadedmetadata = () => {
+                        const canvas = document.createElement('canvas');
+                        canvas.width = video.videoWidth;
+                        canvas.height = video.videoHeight;
+
+                        const ctx = canvas.getContext('2d');
+                        ctx.drawImage(video, 0, 0);
+
+                        canvas.toBlob((blob) => {
+                            if (blob) {
+                                resolve(blob);
+                            } else {
+                                reject(new Error('Failed to create screenshot blob'));
+                            }
+                        }, 'image/png');
+                    };
+
+                    video.onerror = () => {
+                        reject(new Error('Video loading error'));
+                    };
+                });
+            }
+
+            async sendToOpenAI(imageBlob) {
+                const apiKey = this.apiKeyInput.value.trim();
+                const customDomain = this.customDomainInput.value.trim() || 'https://api.openai.com';
+
+                if (!apiKey) {
+                    throw new Error('API Key is required');
+                }
+
+                try {
+                    const base64Image = await new Promise((resolve, reject) => {
+                        const reader = new FileReader();
+                        reader.onload = () => {
+                            const base64 = reader.result.split(',')[1];
+                            resolve(base64);
+                        };
+                        reader.onerror = () => reject(new Error('Failed to convert image to base64'));
+                        reader.readAsDataURL(imageBlob);
+                    });
+
+                    const requestBody = {
+                        model: 'gpt-4-vision-preview',
+                        messages: [
+                            {
+                                role: 'user',
+                                content: [
+                                    {
+                                        type: 'text',
+                                        text: CONFIG.TRANSLATION_PROMPT,
+                                    },
+                                    {
+                                        type: 'image_url',
+                                        image_url: {
+                                            url: `data:image/png;base64,${base64Image}`
+                                        }
+                                    }
+                                ]
+                            }
+                        ],
+                        max_tokens: 4000
+                    };
+
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), 600000);
+
+                    try {
+                        const response = await fetch(`${customDomain}/v1/chat/completions`, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'Authorization': `Bearer ${apiKey}`
+                            },
+                            body: JSON.stringify(requestBody),
+                            signal: controller.signal
+                        });
+
+                        clearTimeout(timeoutId);
+
+                        if (!response.ok) {
+                            const errorText = await response.text();
+                            let errorMessage;
+                            try {
+                                const errorData = JSON.parse(errorText);
+                                errorMessage = errorData.error?.message || `HTTP ${response.status}: ${response.statusText}`;
+                            } catch {
+                                errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+                            }
+                            throw new Error(errorMessage);
+                        }
+
+                        const data = await response.json();
+                        const content = data.choices[0]?.message?.content || 'No response from API';
+
+                        if (content.includes('data:image/jpeg;base64,') || content.includes('data:image/png;base64,')) {
+                            return { type: 'image', data: content };
+                        } else if (content.match(/^[A-Za-z0-9+/=]+$/) && content.length > 100) {
+                            return { type: 'image', data: `data:image/jpeg;base64,${content}` };
+                        } else {
+                            return { type: 'text', data: content };
+                        }
+
+                    } catch (fetchError) {
+                        clearTimeout(timeoutId);
+                        if (fetchError.name === 'AbortError') {
+                            throw new Error('Request timed out after 30 seconds');
+                        }
+                        throw fetchError;
+                    }
+
+                } catch (error) {
+                    if (error.message.includes('Failed to fetch') || error.message.includes('load failed')) {
+                        throw new Error('Connection failed: Unable to reach the OpenAI API');
+                    }
+                    throw error;
+                }
+            }
+
+            displayOriginalImage(imageBlob) {
+                const img = document.createElement('img');
+                img.src = URL.createObjectURL(imageBlob);
+                img.alt = 'Original Screenshot';
+
+                this.originalPreview.innerHTML = '';
+                this.originalPreview.appendChild(img);
+                this.originalFullscreenBtn.disabled = false;
+
+                if (this.currentFullscreenType === 'original' && this.fullscreenOverlay.classList.contains('active')) {
+                    this.updateFullscreenContent('original');
+                }
+            }
+
+            displayTranslatedResult(result) {
+                if (result.type === 'image') {
+                    const img = document.createElement('img');
+                    img.src = result.data;
+                    img.alt = 'Translated Image';
+                    img.style.maxWidth = '100%';
+                    img.style.maxHeight = '350px';
+                    img.style.borderRadius = '10px';
+                    img.style.boxShadow = '0 4px 15px rgba(0, 0, 0, 0.1)';
+                    img.style.objectFit = 'contain';
+
+                    img.onerror = () => {
+                        this.displayTranslatedResultFallback(result.data);
+                    };
+
+                    this.translatedPreview.innerHTML = '';
+                    this.translatedPreview.appendChild(img);
+                } else {
+                    this.displayTranslatedResultFallback(result.data);
+                }
+
+                this.translatedFullscreenBtn.disabled = false;
+
+                if (this.currentFullscreenType === 'translated' && this.fullscreenOverlay.classList.contains('active')) {
+                    this.updateFullscreenContent('translated');
+                }
+            }
+
+            displayTranslatedResultFallback(data) {
+                const resultDiv = document.createElement('div');
+                resultDiv.style.padding = '20px';
+                resultDiv.style.textAlign = 'left';
+                resultDiv.style.backgroundColor = '#fff';
+                resultDiv.style.borderRadius = '10px';
+                resultDiv.style.border = '1px solid #ddd';
+                resultDiv.style.maxHeight = '350px';
+                resultDiv.style.overflowY = 'auto';
+
+                const dataStr = typeof data === 'string' ? data : String(data);
+
+                if (dataStr.includes('data:image/') || (dataStr.match(/^[A-Za-z0-9+/=]+$/) && dataStr.length > 100)) {
+                    const img = document.createElement('img');
+                    const imgSrc = dataStr.includes('data:image/') ? dataStr : `data:image/jpeg;base64,${dataStr}`;
+
+                    img.src = imgSrc;
+                    img.alt = 'Translated Result';
+                    img.style.maxWidth = '100%';
+                    img.style.maxHeight = '300px';
+                    img.style.borderRadius = '10px';
+                    img.style.objectFit = 'contain';
+
+                    img.onload = () => {
+                        resultDiv.innerHTML = '';
+                        resultDiv.appendChild(img);
+                    };
+
+                    img.onerror = () => {
+                        resultDiv.innerHTML = `<strong>Translation Result:</strong><br><br><div style="background: #f8f9fa; padding: 10px; border-radius: 5px; white-space: pre-wrap; font-family: monospace; font-size: 0.9rem;">${dataStr}</div>`;
+                    };
+
+                    resultDiv.innerHTML = '<div style="text-align: center; padding: 20px;">Loading image...</div>';
+
+                } else {
+                    resultDiv.innerHTML = `<strong>Translation Result:</strong><br><br><div style="background: #f8f9fa; padding: 15px; border-radius: 5px; white-space: pre-wrap; line-height: 1.5;">${dataStr}</div>`;
+                }
+
+                this.translatedPreview.innerHTML = '';
+                this.translatedPreview.appendChild(resultDiv);
+            }
+
+            updateFullscreenContent(type) {
+                const content = type === 'original' ? this.originalPreview : this.translatedPreview;
+                const element = content.querySelector('img, div:not(.preview-placeholder)');
+
+                if (!element) return;
+
+                const existingContent = this.fullscreenContent.querySelector('img, div:not(.fullscreen-close)');
+                if (existingContent) {
+                    existingContent.remove();
+                }
+
+                const clonedElement = element.cloneNode(true);
+                clonedElement.style.opacity = '0';
+                clonedElement.style.transition = 'opacity 0.3s ease-in-out';
+
+                this.fullscreenContent.appendChild(clonedElement);
+
+                requestAnimationFrame(() => {
+                    clonedElement.style.opacity = '1';
+                });
+            }
+
+            openFullscreen(type) {
+                const content = type === 'original' ? this.originalPreview : this.translatedPreview;
+                const element = content.querySelector('img, div:not(.preview-placeholder)');
+
+                if (!element) return;
+
+                this.currentFullscreenType = type;
+
+                const existingContent = this.fullscreenContent.querySelector('img, div:not(.fullscreen-close)');
+                if (existingContent) {
+                    existingContent.remove();
+                }
+
+                const clonedElement = element.cloneNode(true);
+                this.fullscreenContent.appendChild(clonedElement);
+
+                this.fullscreenOverlay.classList.add('active');
+                document.body.style.overflow = 'hidden';
+            }
+
+            closeFullscreen() {
+                this.fullscreenOverlay.classList.remove('active');
+                this.currentFullscreenType = null;
+                document.body.style.overflow = 'auto';
+
+                setTimeout(() => {
+                    const content = this.fullscreenContent.querySelector('img, div:not(.fullscreen-close)');
+                    if (content) {
+                        content.remove();
+                    }
+                }, 300);
+            }
+
+            async processScreenshot() {
+                if (!this.isRunning) return;
+
+                try {
+                    this.updateStatus('📸 Capturing screenshot...', 'processing');
+
+                    const screenshot = await this.captureScreenshot();
+                    this.displayOriginalImage(screenshot);
+
+                    this.updateStatus('🤖 Processing with OpenAI...', 'processing');
+
+                    const result = await this.sendToOpenAI(screenshot);
+                    this.displayTranslatedResult(result);
+
+                    this.updateStatus('✅ Translation complete - Capturing next...', 'active');
+
+                    // Immediately capture next screenshot after processing is complete (no delay)
+                    if (this.isRunning) {
+                        // Use a very small timeout to prevent stack overflow from recursive calls
+                        setTimeout(() => {
+                            this.processScreenshot();
+                        }, 100); // Just 100ms to allow UI to update
+                    }
+
+                } catch (error) {
+                    console.error('Error processing screenshot:', error);
+
+                    const errorMessage = error && typeof error.message === 'string'
+                        ? error.message
+                        : String(error || 'Unknown error occurred');
+
+                    this.updateStatus(`❌ Error: ${errorMessage}`, 'error');
+
+                    // Retry after error with the configured interval
+                    if (this.isRunning) {
+                        setTimeout(() => {
+                            this.processScreenshot();
+                        }, parseInt(this.intervalInput.value) * 10000);
+                    }
+                }
+            }
+
+            async testConnection() {
+                const apiKey = this.apiKeyInput.value.trim();
+                const customDomain = this.customDomainInput.value.trim() || 'https://api.openai.com';
+
+                if (!apiKey) {
+                    this.updateStatus('❌ Please enter your OpenAI API key first', 'error');
+                    return;
+                }
+
+                this.updateStatus('🔧 Testing connection to OpenAI...', 'processing');
+                this.testBtn.disabled = true;
+
+                try {
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), 100000);
+
+                    const response = await fetch(`${customDomain}/v1/models`, {
+                        method: 'GET',
+                        headers: {
+                            'Authorization': `Bearer ${apiKey}`
+                        },
+                        signal: controller.signal
+                    });
+
+                    clearTimeout(timeoutId);
+
+                    if (response.ok) {
+                        const data = await response.json();
+                        const hasVisionModel = data.data.some(model =>
+                            model.id.includes('gpt-4') &&
+                            (model.id.includes('vision') || model.id.includes('gpt-4o'))
+                        );
+
+                        if (hasVisionModel) {
+                            this.updateStatus('✅ Connection successful! Vision models available.', 'active');
+                        } else {
+                            this.updateStatus('⚠️ Connected, but no vision models found. Check your API access.', 'processing');
+                        }
+                    } else {
+                        const errorData = await response.json().catch(() => ({}));
+                        this.updateStatus(`❌ API Error: ${response.status} - ${errorData.error?.message || 'Unknown error'}`, 'error');
+                    }
+
+                } catch (error) {
+                    if (error.name === 'AbortError') {
+                        this.updateStatus('❌ Connection test timed out. Check your internet connection.', 'error');
+                    } else if (error.message.includes('Failed to fetch') || error.message.includes('load failed')) {
+                        this.updateStatus('❌ Connection failed. Check internet connection and OpenAI API URL.', 'error');
+                    } else {
+                        this.updateStatus(`❌ Connection test failed: ${error.message}`, 'error');
+                    }
+                } finally {
+                    this.testBtn.disabled = false;
+                }
+            }
+
+            async startTranslation() {
+                if (this.isRunning) return;
+
+                const apiKey = this.apiKeyInput.value.trim();
+                if (!apiKey) {
+                    this.updateStatus('❌ Please enter your OpenAI API key', 'error');
+                    return;
+                }
+
+                this.updateStatus('🔐 Requesting screen capture permission...', 'processing');
+
+                const permitted = await this.requestScreenCapture();
+                if (!permitted) return;
+
+                this.isRunning = true;
+                this.startBtn.disabled = true;
+                this.stopBtn.disabled = false;
+
+                // Start the first screenshot processing
+                this.processScreenshot();
+
+                this.updateStatus('🟢 Translation running - Continuous processing', 'active');
+            }
+
+            stopTranslation() {
+                if (!this.isRunning) return;
+
+                this.isRunning = false;
+                this.startBtn.disabled = false;
+                this.stopBtn.disabled = true;
+
+                // Clear any existing intervals (though we're not using setInterval anymore)
+                if (this.intervalId) {
+                    clearInterval(this.intervalId);
+                    this.intervalId = null;
+                }
+
+                if (this.stream) {
+                    this.stream.getTracks().forEach(track => track.stop());
+                    this.stream = null;
+                }
+
+                this.originalFullscreenBtn.disabled = true;
+                this.translatedFullscreenBtn.disabled = true;
+
+                if (this.fullscreenOverlay.classList.contains('active')) {
+                    this.closeFullscreen();
+                }
+
+                this.updateStatus('⏹️ Translation stopped', 'idle');
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            new ScreenshotTranslator();
+        });
+    </script>
+</body>
+
+</html>

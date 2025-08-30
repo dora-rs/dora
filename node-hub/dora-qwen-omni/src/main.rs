@@ -152,6 +152,13 @@ impl MtmdCliContext {
         Ok(())
     }
 
+    pub fn clear_chat(&mut self) -> Result<(), MtmdBitmapError> {
+        self.chat.clear();
+        self.bitmaps.clear();
+        self.n_past = 0;
+        Ok(())
+    }
+
     /// Evaluates a chat message, tokenizing and processing it through the model
     /// # Errors
     pub fn eval_message(
@@ -240,7 +247,7 @@ impl MtmdCliContext {
 
 fn run_single_turn(
     model: &LlamaModel,
-    _context: &mut LlamaContext,
+    context: &mut LlamaContext,
     sampler: &mut LlamaSampler,
     params: &MtmdCliParams,
     backend: &LlamaBackend,
@@ -248,6 +255,7 @@ fn run_single_turn(
     // Add media marker if not present
     let (mut node, mut events) = DoraNode::init_from_env().unwrap();
     let mut ctx = MtmdCliContext::new(&params, &model)?;
+    let mut last_image = None;
     loop {
         match events.recv() {
             Some(Event::Input {
@@ -255,17 +263,8 @@ fn run_single_turn(
                 data,
                 metadata: _,
             }) => {
-                // Create context
-                let context_params = LlamaContextParams::default()
-                    .with_n_threads(params.n_threads)
-                    .with_n_batch(1)
-                    .with_n_ctx(Some(params.n_tokens));
-                ctx.bitmaps = vec![];
-                ctx.n_past = 0;
-                ctx.chat = vec![];
-                ctx.batch = LlamaBatch::new(params.n_tokens.get() as usize, 1);
-
-                let mut context = model.new_context(&backend, context_params)?;
+                ctx.clear_chat().unwrap();
+                context.clear_kv_cache();
                 let instant = std::time::Instant::now();
                 let default_marker = llama_cpp_2::mtmd::mtmd_default_marker().to_string();
                 //let media_marker = params.media_marker.as_ref().unwrap_or(&default_marker);
@@ -317,35 +316,14 @@ fn run_single_turn(
                 let msg = LlamaChatMessage::new("user".to_string(), prompt)?;
 
                 // Evaluate the message (prefill)
-                ctx.eval_message(model, &mut context, msg, true)?;
+                ctx.eval_message(model, context, msg, true)?;
                 let instant2 = std::time::Instant::now();
-                let text = ctx.generate_response(model, &mut context, sampler, params.n_predict)?;
+                let text = ctx.generate_response(model, context, sampler, params.n_predict)?;
                 let elapsed = instant2.elapsed();
                 println!("got token in {:.2?}", elapsed);
-                ctx.bitmaps = vec![];
-                ctx.n_past = 0;
-                ctx.chat = vec![];
-                ctx.batch = LlamaBatch::new(params.n_tokens.get() as usize, 1);
-                let context_params = LlamaContextParams::default()
-                    .with_n_threads(params.n_threads)
-                    .with_n_batch(1)
-                    .with_n_ctx(Some(params.n_tokens));
-                let mut context = model.new_context(&backend, context_params)?;
-                let mut translation_prompt = "Translate Chinese into English: ".to_string();
-                translation_prompt.push_str(&text);
-                println!("test: {}", translation_prompt);
-                let msg = LlamaChatMessage::new("user".to_string(), translation_prompt)?;
-                let instant3 = std::time::Instant::now();
-                ctx.eval_message(model, &mut context, msg, true)?;
+                ctx.clear_chat().unwrap();
+                context.clear_kv_cache();
 
-                // Generate response (decode)
-                let text = ctx.generate_response(model, &mut context, sampler, params.n_predict)?;
-                let elapsed = instant3.elapsed();
-                println!("got translation in {:.2?}", elapsed);
-                let elapsed = instant.elapsed();
-                println!("\nResponse generated in {:.2?}", elapsed);
-
-                println!("translated: {}", text);
                 node.send_output(
                     DataId::from("text".to_string()),
                     Default::default(),
@@ -358,48 +336,82 @@ fn run_single_turn(
 
                     match parse_bounding_boxes(&text.clone()) {
                         Ok(boxes) => {
-                            for bbox in boxes.iter() {
-                                let text = bbox
-                                    .text_content
-                                    .clone()
-                                    .unwrap_or_else(|| bbox.label.clone().unwrap_or_default());
+                            let need_translation = boxes
+                                .iter()
+                                .map(|bbox| {
+                                    bbox.text_content
+                                        .clone()
+                                        .unwrap_or_else(|| bbox.label.clone().unwrap_or_default())
+                                })
+                                .reduce(|mut x, y| {
+                                    x.push_str("\n- ");
+                                    x.push_str(&y);
+                                    x
+                                })
+                                .unwrap_or_default();
 
+                            let mut translation_prompt =
+                                "Translate Chinese into English as a list: \n- ".to_string();
+                            translation_prompt.push_str(&need_translation);
+                            println!("test: {}", translation_prompt);
+                            let msg =
+                                LlamaChatMessage::new("user".to_string(), translation_prompt)?;
+                            let instant3 = std::time::Instant::now();
+                            ctx.eval_message(model, context, msg, true)?;
+
+                            // Generate response (decode)
+                            let translated_text =
+                                ctx.generate_response(model, context, sampler, params.n_predict)?;
+                            let translated_texts: Vec<&str> = translated_text.split("\n").collect();
+                            println!("translated texts: {:#?}", translated_texts);
+                            let elapsed = instant3.elapsed();
+                            println!("got translation in {:.2?}", elapsed);
+                            let elapsed = instant.elapsed();
+                            println!("\nResponse generated in {:.2?}", elapsed);
+                            for (i, bbox) in boxes.iter().enumerate() {
+                                let text = translated_texts.get(i + 2).unwrap_or(&"");
+                                let text = text.strip_prefix("- ").unwrap_or_default();
+                                if text == "" {
+                                    continue;
+                                }
                                 let resize = f32::max(
                                     img.height() as f32 / 1000.,
                                     img.width() as f32 / 1000.,
                                 );
 
                                 // Ensure coordinates are in the correct order (min, min, max, max)
-                                let x1 = bbox.bbox_2d[0].min(bbox.bbox_2d[2]);
-                                let y1 = bbox.bbox_2d[1].min(bbox.bbox_2d[3]);
-                                let x2 = bbox.bbox_2d[0].max(bbox.bbox_2d[2]);
-                                let y2 = bbox.bbox_2d[1].max(bbox.bbox_2d[3]);
+                                let x1 = bbox.bbox_2d[0];
+                                let y1 = bbox.bbox_2d[1];
+                                let x2 = bbox.bbox_2d[2];
+                                let y2 = bbox.bbox_2d[3];
 
                                 // Calculate width and height - guaranteed to be positive
-                                let width = x2 - x1;
-                                let y_scale = (y2 - y1) as f32;
+                                let width = f32::clamp(
+                                    (x2 - x1) as f32,
+                                    10.,
+                                    img.width() as f32 * resize * 1.2,
+                                );
+                                let y_scale = f32::clamp(resize * (y2 - y1) as f32, 10., 32.);
 
                                 // Skip if the bounding box has no area
-                                if y_scale <= 0. || width <= 0 {
+                                if y_scale <= 0. || width <= 0. {
                                     continue;
                                 }
 
                                 let font_bundle = FontBundle::new(
                                     &font,
                                     Scale {
-                                        x: 1.2 * resize * y_scale,
-                                        y: 1.2 * resize * y_scale,
+                                        x: y_scale,
+                                        y: y_scale,
                                     },
                                     Rgba([20, 20, 20, 0]),
                                 );
 
-                                let wrap = if width as f32 * resize < 3. * y_scale * resize {
-                                    text_on_image::WrapBehavior::NoWrap
-                                } else {
-                                    text_on_image::WrapBehavior::Wrap(
-                                        (width as f32 * resize) as u32,
-                                    )
-                                };
+                                let wrap = text_on_image::WrapBehavior::Wrap(
+                                    (img.width() as f32 * resize * 0.8 - resize * (x1 as f32))
+                                        .max(32.) as u32,
+                                );
+
                                 text_on_image_with_background(
                                     &mut img,
                                     text,
@@ -409,30 +421,34 @@ fn run_single_turn(
                                     text_on_image::TextJustify::Left,
                                     text_on_image::VerticalAnchor::Top,
                                     wrap,
-                                    Rgba([248, 252, 235, 50]),
+                                    Rgba([248, 252, 255, 0]),
                                 );
                             }
-                            let mut bytes: Vec<u8> = Vec::new();
-                            img.write_to(
-                                &mut Cursor::new(&mut bytes),
-                                image::ImageOutputFormat::Jpeg(100),
-                            )?;
-                            img.save("test.jpeg")?;
-                            let engine = base64::engine::general_purpose::STANDARD;
-                            let base64_encoded = engine.encode(bytes);
-                            let mut string = "data:image/png;base64,".to_string();
-
-                            string.push_str(&base64_encoded);
-                            node.send_output(
-                                DataId::from("image".to_string()),
-                                Default::default(),
-                                string.into_arrow(),
-                            )?;
-                            println!("sent Image")
                         }
 
-                        Err(e) => eprintln!("Failed to parse JSON: {}, text: {:#?}", e, text),
+                        Err(e) => {
+                            img = last_image.unwrap_or(img);
+                            eprintln!("Failed to parse JSON: {}, text: {:#?}", e, text)
+                        }
                     }
+                    let mut bytes: Vec<u8> = Vec::new();
+                    img.write_to(
+                        &mut Cursor::new(&mut bytes),
+                        image::ImageOutputFormat::Jpeg(100),
+                    )?;
+                    img.save("test.jpeg")?;
+                    last_image = Some(img);
+                    let engine = base64::engine::general_purpose::STANDARD;
+                    let base64_encoded = engine.encode(bytes);
+                    let mut string = "data:image/png;base64,".to_string();
+
+                    string.push_str(&base64_encoded);
+                    node.send_output(
+                        DataId::from("image".to_string()),
+                        Default::default(),
+                        string.into_arrow(),
+                    )?;
+                    println!("sent Image")
                 }
             }
             _ => break,
