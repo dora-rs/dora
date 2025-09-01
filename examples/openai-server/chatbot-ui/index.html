@@ -301,7 +301,7 @@
         .fullscreen-content>div:not(.fullscreen-close) {
             width: 100vw;
             height: 100vh;
-            object-fit: contain;
+            object-fit: cover;
             border-radius: 0;
             box-shadow: none;
         }
@@ -370,13 +370,8 @@
             <h3>⚙️ Configuration</h3>
             <div class="config-grid">
                 <div class="input-group">
-                    <label for="apiKey">OpenAI API Key:</label>
-                    <input type="password" id="apiKey" placeholder="sk-..." required>
-                </div>
-                <div class="input-group">
-                    <label for="customDomain">OpenAI API URL:</label>
-                    <input type="text" id="customDomain" placeholder="https://api.openai.com"
-                        value="https://api.openai.com">
+                    <label for="passwordInput">Access Code:</label>
+                    <input type="password" id="passwordInput" placeholder="Enter access code" required>
                 </div>
             </div>
         </div>
@@ -426,7 +421,10 @@
         const CONFIG = {
             RETRY_INTERVAL: 3000, // milliseconds
             TRANSLATION_PROMPT: 'Output the bounding box of all texts',
-            PROCESSING_DELAY: 100 // Small delay between captures to prevent stack overflow
+            PROCESSING_DELAY: 100, // Small delay between captures to prevent stack overflow
+            MAX_CAPTURE_RETRIES: 3, // Maximum retries for blank/failed captures
+            CAPTURE_RETRY_DELAY: 1000, // Delay between capture retries (ms)
+            VIDEO_FRAME_DELAY: 200 // Delay to let video frame stabilize (ms)
         };
 
         class ScreenshotTranslator {
@@ -441,8 +439,7 @@
             }
 
             initializeElements() {
-                this.apiKeyInput = document.getElementById('apiKey');
-                this.customDomainInput = document.getElementById('customDomain');
+                this.passwordInput = document.getElementById('passwordInput');
                 this.startBtn = document.getElementById('startBtn');
                 this.stopBtn = document.getElementById('stopBtn');
                 this.testBtn = document.getElementById('testBtn');
@@ -454,6 +451,8 @@
                 this.fullscreenOverlay = document.getElementById('fullscreenOverlay');
                 this.fullscreenContent = document.getElementById('fullscreenContent');
                 this.fullscreenClose = document.getElementById('fullscreenClose');
+
+                this.loadCachedAccessCode();
             }
 
             setupEventListeners() {
@@ -469,11 +468,39 @@
                     }
                 });
 
+                // Cache access code when it changes
+                this.passwordInput.addEventListener('input', () => this.cacheAccessCode());
+                this.passwordInput.addEventListener('change', () => this.cacheAccessCode());
+
                 document.addEventListener('keydown', (e) => {
                     if (e.key === 'Escape' && this.fullscreenOverlay.classList.contains('active')) {
                         this.closeFullscreen();
                     }
                 });
+            }
+
+            loadCachedAccessCode() {
+                try {
+                    const cachedCode = sessionStorage.getItem('dora-access-code');
+                    if (cachedCode) {
+                        this.passwordInput.value = cachedCode;
+                    }
+                } catch (error) {
+                    console.warn('Failed to load cached access code:', error);
+                }
+            }
+
+            cacheAccessCode() {
+                try {
+                    const accessCode = this.passwordInput.value.trim();
+                    if (accessCode) {
+                        sessionStorage.setItem('dora-access-code', accessCode);
+                    } else {
+                        sessionStorage.removeItem('dora-access-code');
+                    }
+                } catch (error) {
+                    console.warn('Failed to cache access code:', error);
+                }
             }
 
             updateStatus(message, type = 'idle') {
@@ -529,12 +556,13 @@
                 });
             }
 
-            async sendToOpenAI(imageBlob) {
-                const apiKey = this.apiKeyInput.value.trim();
-                const customDomain = this.customDomainInput.value.trim() || 'https://api.openai.com';
 
-                if (!apiKey) {
-                    throw new Error('API Key is required');
+            async sendToOpenAI(imageBlob) {
+                const password = this.passwordInput.value.trim();
+                const baseUrl = window.location.origin;
+
+                if (password !== 'dora-rs') {
+                    throw new Error('Invalid access code');
                 }
 
                 try {
@@ -574,11 +602,10 @@
                     const timeoutId = setTimeout(() => controller.abort(), 600000);
 
                     try {
-                        const response = await fetch(`${customDomain}/v1/chat/completions`, {
+                        const response = await fetch(`${baseUrl}/v1/chat/completions`, {
                             method: 'POST',
                             headers: {
-                                'Content-Type': 'application/json',
-                                'Authorization': `Bearer ${apiKey}`
+                                'Content-Type': 'application/json'
                             },
                             body: JSON.stringify(requestBody),
                             signal: controller.signal
@@ -619,7 +646,7 @@
 
                 } catch (error) {
                     if (error.message.includes('Failed to fetch') || error.message.includes('load failed')) {
-                        throw new Error('Connection failed: Unable to reach the OpenAI API');
+                        throw new Error('Connection failed: Unable to reach the API');
                     }
                     throw error;
                 }
@@ -724,6 +751,15 @@
                 clonedElement.style.opacity = '0';
                 clonedElement.style.transition = 'opacity 0.3s ease-in-out';
 
+                // Reset inline styles that prevent fullscreen stretching
+                clonedElement.style.maxWidth = 'none';
+                clonedElement.style.maxHeight = 'none';
+                clonedElement.style.width = '100vw';
+                clonedElement.style.height = '100vh';
+                clonedElement.style.objectFit = 'cover';
+                clonedElement.style.borderRadius = '0';
+                clonedElement.style.boxShadow = 'none';
+
                 this.fullscreenContent.appendChild(clonedElement);
 
                 requestAnimationFrame(() => {
@@ -745,6 +781,16 @@
                 }
 
                 const clonedElement = element.cloneNode(true);
+
+                // Reset inline styles that prevent fullscreen stretching
+                clonedElement.style.maxWidth = 'none';
+                clonedElement.style.maxHeight = 'none';
+                clonedElement.style.width = '100vw';
+                clonedElement.style.height = '100vh';
+                clonedElement.style.objectFit = 'cover';
+                clonedElement.style.borderRadius = '0';
+                clonedElement.style.boxShadow = 'none';
+
                 this.fullscreenContent.appendChild(clonedElement);
 
                 this.fullscreenOverlay.classList.add('active');
@@ -764,6 +810,68 @@
                 }, 300);
             }
 
+            isImageMostlyMonochrome(imageData) {
+                const data = imageData.data;
+                const pixelCount = data.length / 4;
+                let whiteCount = 0;
+                let blackCount = 0;
+                let totalBrightness = 0;
+
+                for (let i = 0; i < data.length; i += 4) {
+                    const r = data[i];
+                    const g = data[i + 1];
+                    const b = data[i + 2];
+
+                    const brightness = (r + g + b) / 3;
+                    totalBrightness += brightness;
+
+                    if (brightness > 240) {
+                        whiteCount++;
+                    } else if (brightness < 15) {
+                        blackCount++;
+                    }
+                }
+
+                const avgBrightness = totalBrightness / pixelCount;
+                const whitePercentage = (whiteCount / pixelCount) * 100;
+                const blackPercentage = (blackCount / pixelCount) * 100;
+
+                return {
+                    isMonochrome: whitePercentage > 95 || blackPercentage > 95,
+                    whitePercentage,
+                    blackPercentage,
+                    avgBrightness
+                };
+            }
+
+            async analyzeImage(imageBlob) {
+                return new Promise((resolve, reject) => {
+                    const img = new Image();
+                    const canvas = document.createElement('canvas');
+                    const ctx = canvas.getContext('2d');
+
+                    img.onload = () => {
+                        canvas.width = img.width;
+                        canvas.height = img.height;
+                        ctx.drawImage(img, 0, 0);
+
+                        try {
+                            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                            const analysis = this.isImageMostlyMonochrome(imageData);
+                            resolve(analysis);
+                        } catch (error) {
+                            resolve({ isMonochrome: false, whitePercentage: 0, blackPercentage: 0, avgBrightness: 128 });
+                        }
+                    };
+
+                    img.onerror = () => {
+                        resolve({ isMonochrome: false, whitePercentage: 0, blackPercentage: 0, avgBrightness: 128 });
+                    };
+
+                    img.src = URL.createObjectURL(imageBlob);
+                });
+            }
+
             async processScreenshot() {
                 if (!this.isRunning) return;
 
@@ -771,6 +879,22 @@
                     this.updateStatus('📸 Capturing screenshot...', 'processing');
 
                     const screenshot = await this.captureScreenshot();
+
+                    this.updateStatus('🔍 Analyzing image quality...', 'processing');
+                    const analysis = await this.analyzeImage(screenshot);
+
+                    if (analysis.isMonochrome) {
+                        const colorType = analysis.whitePercentage > analysis.blackPercentage ? 'white' : 'black';
+                        this.updateStatus(`⏭️ Skipping mostly ${colorType} image (${Math.round(analysis.whitePercentage + analysis.blackPercentage)}% monochrome) - Capturing next...`, 'processing');
+
+                        if (this.isRunning) {
+                            setTimeout(() => {
+                                this.processScreenshot();
+                            }, 500);
+                        }
+                        return;
+                    }
+
                     this.displayOriginalImage(screenshot);
 
                     this.updateStatus('🤖 Processing with OpenAI...', 'processing');
@@ -801,32 +925,30 @@
                     if (this.isRunning) {
                         setTimeout(() => {
                             this.processScreenshot();
-                        }, parseInt(this.intervalInput.value) * 10000);
+                        }, CONFIG.RETRY_INTERVAL);
                     }
                 }
             }
 
             async testConnection() {
-                const apiKey = this.apiKeyInput.value.trim();
-                const customDomain = this.customDomainInput.value.trim() || 'https://api.openai.com';
+                const password = this.passwordInput.value.trim();
+                const baseUrl = window.location.origin;
 
-                if (!apiKey) {
-                    this.updateStatus('❌ Please enter your OpenAI API key first', 'error');
+                if (password !== 'dora-rs') {
+                    this.updateStatus('❌ Invalid access code', 'error');
                     return;
                 }
 
-                this.updateStatus('🔧 Testing connection to OpenAI...', 'processing');
+                this.updateStatus('🔧 Testing connection...', 'processing');
                 this.testBtn.disabled = true;
 
                 try {
                     const controller = new AbortController();
                     const timeoutId = setTimeout(() => controller.abort(), 100000);
 
-                    const response = await fetch(`${customDomain}/v1/models`, {
+                    const response = await fetch(`${baseUrl}/v1/models`, {
                         method: 'GET',
-                        headers: {
-                            'Authorization': `Bearer ${apiKey}`
-                        },
+                        headers: {},
                         signal: controller.signal
                     });
 
@@ -853,7 +975,7 @@
                     if (error.name === 'AbortError') {
                         this.updateStatus('❌ Connection test timed out. Check your internet connection.', 'error');
                     } else if (error.message.includes('Failed to fetch') || error.message.includes('load failed')) {
-                        this.updateStatus('❌ Connection failed. Check internet connection and OpenAI API URL.', 'error');
+                        this.updateStatus('❌ Connection failed. Check internet connection and API URL.', 'error');
                     } else {
                         this.updateStatus(`❌ Connection test failed: ${error.message}`, 'error');
                     }
@@ -865,9 +987,9 @@
             async startTranslation() {
                 if (this.isRunning) return;
 
-                const apiKey = this.apiKeyInput.value.trim();
-                if (!apiKey) {
-                    this.updateStatus('❌ Please enter your OpenAI API key', 'error');
+                const password = this.passwordInput.value.trim();
+                if (password !== 'dora-rs') {
+                    this.updateStatus('❌ Invalid access code', 'error');
                     return;
                 }
 

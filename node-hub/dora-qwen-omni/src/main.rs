@@ -1,6 +1,8 @@
 //! Based on the mtmd cli example from llama.cpp.
 
 use dora_qwen_omni::parse_bounding_boxes;
+use image::DynamicImage;
+use img_hash::{HashBytes, HasherConfig, ImageHash};
 use std::ffi::CString;
 use std::io::Cursor;
 use std::num::NonZeroU32;
@@ -56,7 +58,7 @@ pub struct MtmdCliParams {
         short = 'n',
         long = "n-predict",
         value_name = "N",
-        default_value = "2048"
+        default_value = "4096"
     )]
     pub n_predict: i32,
     /// Number of threads
@@ -256,6 +258,7 @@ fn run_single_turn(
     let (mut node, mut events) = DoraNode::init_from_env().unwrap();
     let mut ctx = MtmdCliContext::new(&params, &model)?;
     let mut last_image = None;
+    let mut never_debounced = true;
     loop {
         match events.recv() {
             Some(Event::Input {
@@ -299,6 +302,7 @@ fn run_single_turn(
                         None => {}
                     }
                 }
+
                 println!("Start inference");
                 // Load media files
 
@@ -316,8 +320,8 @@ fn run_single_turn(
                 let msg = LlamaChatMessage::new("user".to_string(), prompt)?;
 
                 // Evaluate the message (prefill)
-                ctx.eval_message(model, context, msg, true)?;
                 let instant2 = std::time::Instant::now();
+                ctx.eval_message(model, context, msg, true)?;
                 let text = ctx.generate_response(model, context, sampler, params.n_predict)?;
                 let elapsed = instant2.elapsed();
                 println!("got token in {:.2?}", elapsed);
@@ -349,7 +353,6 @@ fn run_single_turn(
                                     x
                                 })
                                 .unwrap_or_default();
-
                             let mut translation_prompt =
                                 "Translate Chinese into English as a list: \n- ".to_string();
                             translation_prompt.push_str(&need_translation);
@@ -408,8 +411,9 @@ fn run_single_turn(
                                 );
 
                                 let wrap = text_on_image::WrapBehavior::Wrap(
-                                    (img.width() as f32 * resize * 0.8 - resize * (x1 as f32))
-                                        .max(32.) as u32,
+                                    (width as f32 * resize)
+                                        .min(img.width() as f32 * resize - resize * (x1 as f32))
+                                        as u32,
                                 );
 
                                 text_on_image_with_background(
@@ -417,7 +421,7 @@ fn run_single_turn(
                                     text,
                                     &font_bundle,
                                     (resize * (x1 as f32)) as i32,
-                                    (resize * (y1 as f32)) as i32,
+                                    (resize * (y1 as f32) * 1.1) as i32,
                                     text_on_image::TextJustify::Left,
                                     text_on_image::VerticalAnchor::Top,
                                     wrap,
@@ -427,7 +431,7 @@ fn run_single_turn(
                         }
 
                         Err(e) => {
-                            img = last_image.unwrap_or(img);
+                            img = last_image.unwrap_or(img).clone();
                             eprintln!("Failed to parse JSON: {}, text: {:#?}", e, text)
                         }
                     }
