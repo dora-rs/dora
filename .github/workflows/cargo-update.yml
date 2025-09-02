@@ -29,9 +29,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install GitHub CLI
-        uses: cli/gh-action@v2
-
       - name: Open pull request using gh CLI
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
