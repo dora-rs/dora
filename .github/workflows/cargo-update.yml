@@ -1,0 +1,44 @@
+name: Update Cargo.lock
+
+on:
+  schedule:
+    - cron: '0 8 * * 2' # Every Tuesday at 08:00 UTC
+  workflow_dispatch:
+
+jobs:
+  cargo-update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run cargo update
+        run: cargo update
+
+      - name: Configure git
+        run: |
+          git config user.name "Dora Bot"
+          git config user.email "dora-bot@phil-opp.com"
+
+      - name: Create a branch for the update
+        run: |
+          git switch --force-create update-cargo-lock
+          git add Cargo.lock
+          git commit -m "chore: Update Cargo.lock"
+          git push origin update-cargo-lock --force
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install GitHub CLI
+        uses: cli/gh-action@v2
+
+      - name: Open pull request using gh CLI
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr create \
+            --title "chore: Update Cargo.lock" \
+            --body "Automated weekly update of Cargo.lock via \`cargo update\`." \
+            --base ${{ github.ref_name }} \
+            --head update-cargo-lock \
+            --label "dependencies"
