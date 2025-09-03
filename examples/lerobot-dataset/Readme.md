@@ -1,6 +1,6 @@
 # Dataset Recording with SO101 Robot Arm
 
-Guide for recording imitation learning datasets with the SO101 arm using Dora and train policies with LeRobot.
+Guide for recording imitation learning datasets with the SO101 arm using Dora and train policies with LeRobot. You can find a video guide [Here](https://www.youtube.com/watch?v=jFP8UAtz4sg)
 
 ## Overview
 
