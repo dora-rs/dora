@@ -15,7 +15,7 @@ repository.workspace = true
 default = ["tracing", "telemetry"]
 tracing = ["dep:dora-tracing"]
 # telemetry flag enables to trace dora-daemon as well as send ticks with opentelemetry context
-# for distributed tracing. 
+# for distributed tracing.
 telemetry = ["dep:tracing-opentelemetry"]
 
 [dependencies]
@@ -50,3 +50,5 @@ url = "2.5.4"
 git2 = { workspace = true }
 dunce = "1.0.5"
 itertools = "0.14"
+
+shellexpand = "3.1.1"
