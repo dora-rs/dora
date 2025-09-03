@@ -1,0 +1,23 @@
+[project]
+name = "dora-speechmonitor"
+version = "0.1.0"
+authors = [
+    {name = "Dora Contributors"},
+]
+description = "Real-time speech monitoring node with Silero VAD for Dora"
+readme = "README.md"
+
+dependencies = [
+    "dora-rs",
+    "numpy",
+    "pyarrow",
+    "torch",
+    "torchaudio",
+    "silero-vad",
+]
+
+[project.scripts]
+dora-speechmonitor = "dora_speechmonitor.main:main"
+
+[project.entry-points."dora.nodes"]
+dora-speechmonitor = "dora_speechmonitor.main:main"

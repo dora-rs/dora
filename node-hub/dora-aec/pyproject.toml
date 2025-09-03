@@ -1,0 +1,35 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dora-aec"
+version = "0.1.0"
+description = "Dora node for Acoustic Echo Cancellation using macOS VoiceProcessingIO"
+readme = "README.md"
+requires-python = ">=3.8"
+license = "Apache-2.0"
+authors = [
+    { name = "Dora Contributors" },
+]
+dependencies = [
+    "dora-rs",
+    "pyarrow",
+    "numpy",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "black",
+    "ruff",
+]
+
+[project.scripts]
+dora-aec = "dora_aec.main:main"
+
+[project.entry-points."dora.nodes"]
+dora-aec = "dora_aec.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["dora_aec"]
