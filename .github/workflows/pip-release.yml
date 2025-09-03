@@ -27,6 +27,10 @@ on:
       - "binaries/cli/**"
       - "Cargo.toml"
 
+concurrency:
+    group: ${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: ${{ github.event_name != 'release' }}
+
 permissions:
   contents: write
 
