@@ -17,6 +17,11 @@ on:
     branches:
       - main
   pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
     paths:
       - "apis/python/node/**"
       - "binaries/cli/**"
