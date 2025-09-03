@@ -42,5 +42,5 @@ jobs:
             --body "Automated weekly update of Cargo.lock via \`cargo update\`. \ncc @phil-opp" \
             --base ${{ github.ref_name }} \
             --head update-cargo-lock \
-            --label "dependencies"
+            --label "dependencies" \
             --draft
