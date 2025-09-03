@@ -1,0 +1,18 @@
+[project]
+name = "doraflow"
+version = "0.1.0"
+description = "A Pythonic API for the Dora framework."
+authors = [{ name = "Dora-rs Authors", email = "authors@dora-rs.ai" }]
+license = { text = "Apache-2.0" }
+dependencies = [
+    "pyyaml>=6.0",
+    "graphviz>=0.20",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.pytest.ini_options]
+pythonpath = [
+  "."
+]
