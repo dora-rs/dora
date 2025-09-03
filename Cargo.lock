@@ -3936,6 +3936,7 @@ dependencies = [
  "serde_json",
  "serde_yaml 0.9.34+deprecated",
  "shared-memory-server",
+ "shellexpand 3.1.1",
  "sysinfo 0.30.13",
  "tokio",
  "tokio-stream",
