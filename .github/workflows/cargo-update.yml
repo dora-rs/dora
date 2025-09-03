@@ -39,7 +39,8 @@ jobs:
         run: |
           gh pr create \
             --title "chore: Update Cargo.lock" \
-            --body "Automated weekly update of Cargo.lock via \`cargo update\`." \
+            --body "Automated weekly update of Cargo.lock via \`cargo update\`. \ncc @phil-opp" \
             --base ${{ github.ref_name }} \
             --head update-cargo-lock \
             --label "dependencies"
+            --draft
