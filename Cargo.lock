@@ -3902,6 +3902,7 @@ dependencies = [
  "serde-with-expand-env",
  "serde_json",
  "serde_yaml 0.9.34+deprecated",
+ "splitty",
  "tokio",
  "tracing",
  "url",
@@ -14786,6 +14787,12 @@ dependencies = [
  "base64ct",
  "der 0.7.10",
 ]
+
+[[package]]
+name = "splitty"
+version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2db70a1e6827e4d71c655b606caf1346862c38ae52ab4f58c32635e7c7aedd67"
 
 [[package]]
 name = "spm_precompiled"

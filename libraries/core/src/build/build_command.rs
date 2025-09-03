@@ -19,7 +19,7 @@ pub fn run_build_command(
 
     let lines = build.lines().collect::<Vec<_>>();
     for build_line in lines {
-        let mut split = build_line.split_whitespace();
+        let mut split = splitty::split_unquoted_whitespace(build_line).unwrap_quotes(true);
 
         let program = split
             .next()
