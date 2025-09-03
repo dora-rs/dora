@@ -15,7 +15,7 @@ on:
   workflow_dispatch:
 
 env:
-  RUST_LOG: INFO
+  RUST_LOG: DEBUG
 
 jobs:
   test:
