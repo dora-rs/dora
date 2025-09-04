@@ -8,6 +8,7 @@ nodes:
       - image
     env:
       CAPTURE_PATH: 0
+
   - id: camera1
     build: pip install opencv-video-capture
     path: opencv-video-capture
@@ -27,6 +28,13 @@ nodes:
     outputs:
       - depth
       - image
+
+  - id: dora-sonata
+    build: pip install -e ../../node-hub/dora-sonata
+    path: dora-sonata
+    inputs:
+      depth: dora-vggt/depth
+
   - id: plot
     build: pip install dora-rerun
     path: dora-rerun

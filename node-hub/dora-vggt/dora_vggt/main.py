@@ -1,8 +1,9 @@
 """TODO: Add docstring."""
+
 import io
+import math
 import os
 from collections import deque
-
 
 import cv2
 import numpy as np
@@ -11,6 +12,7 @@ import torch
 from dora import Node
 from PIL import Image
 from vggt.models.vggt import VGGT
+from vggt.utils.geometry import unproject_depth_map_to_point_map
 from vggt.utils.load_fn import load_and_preprocess_images
 from vggt.utils.pose_enc import pose_encoding_to_extri_intri
 
@@ -30,6 +32,71 @@ model.eval()
 
 DEPTH_ENCODING = os.environ.get("DEPTH_ENCODING", "float64")
 # Import vecdeque
+
+
+# -------------------------- Convert VGGT point map to SONATA format -----------------------------
+def convert_vggt_to_sonata(
+    point_map_by_unprojection: np.ndarray, images=not None, conf_threshold=math.inf
+):
+    """'Convert VGGT point map to Sonata usable format"""
+
+    def normal_from_cross_product(points_2d: np.ndarray) -> np.ndarray:
+        dzdy = points_2d[1:, :-1, :] - points_2d[:-1, :-1, :]  # vertical diff
+        dzdx = points_2d[:-1, 1:, :] - points_2d[:-1, :-1, :]  # horizontal diff
+        normals = np.cross(dzdx, dzdy)
+        norms = np.linalg.norm(normals, axis=-1, keepdims=True)
+        normals = np.divide(
+            normals, norms, out=np.zeros_like(normals), where=norms != 0
+        )
+        return normals  # [H-1, W-1, 3]
+
+    S, H, W, _ = point_map_by_unprojection.shape  # S, H, W, 3
+    H_valid = H - 1
+    W_valid = W - 1
+    coords_cropped = []
+    colors_cropped = []
+    normals_list = []
+
+    for s in range(S):
+        coords = point_map_by_unprojection[s, :H_valid, :W_valid].reshape(-1, 3)
+        coords_cropped.append(coords)
+
+        normals = normal_from_cross_product(
+            point_map_by_unprojection[s]
+        )  # [H-1, W-1, 3]
+        normals_list.append(normals.reshape(-1, 3))  # [(H-1)*(W-1), 3]
+
+        if images is not None:
+            img = images[0, s] if images.dim() == 5 else images[s]
+            img_np = img.permute(1, 2, 0).cpu().numpy()
+            color = img_np[:H_valid, :W_valid].reshape(-1, 3)
+            colors_cropped.append(color)
+
+    coords_all = np.concatenate(coords_cropped, axis=0)
+    normals_all = np.concatenate(normals_list, axis=0)
+    colors_all = np.concatenate(colors_cropped, axis=0)
+
+    # depth mask
+    z_values = coords_all[:, 1]
+    height_mask = z_values < conf_threshold
+
+    coords_all = coords_all[height_mask]
+    normals_all = normals_all[height_mask]
+    colors_all = colors_all[height_mask]
+
+    sonata_dict = {
+        "coord": torch.from_numpy(coords_all).float(),
+        "normal": torch.from_numpy(normals_all).float(),
+        "color": torch.from_numpy(colors_all).float(),
+    }
+
+    image1 = {
+        "coord": coords_cropped[0],
+        "normal": normals_list[0],
+        "color": colors_cropped[0],
+    }
+
+    return sonata_dict, image1
 
 
 def main():
@@ -94,18 +161,52 @@ def main():
                     pose_enc = model.camera_head(aggregated_tokens_list)[-1]
                     # Extrinsic and intrinsic matrices, following OpenCV convention (camera from world)
                     extrinsic, intrinsic = pose_encoding_to_extri_intri(
-                        pose_enc, images.shape[-2:],
+                        pose_enc, images.shape[-2:]
+                    )  # (B, S, 3, 4) and (B, S, 3, 3)
+
+                    B, V = extrinsic.shape[:2]  # [1, 6, 3, 4]
+                    extrinsic_homo = torch.eye(4, device=device).repeat(
+                        B, V, 1, 1
+                    )  # [1, 6, 4, 4]
+                    extrinsic_homo[:, :, :3, :] = extrinsic
+                    transformation = torch.tensor(
+                        [
+                            [1, 0, 0, 0],  # x right -> x right
+                            [0, 0, -1, 0],  # y down -> z up
+                            [
+                                0,
+                                -1,
+                                0,
+                                0,
+                            ],  # z forward -> y towards (forward translation)
+                            [0, 0, 0, 1],
+                        ],
+                        dtype=torch.float32,
+                        device=extrinsic.device,
                     )
-                    intrinsic = intrinsic[-1][-1]
-                    f_0 = intrinsic[0, 0]
-                    f_1 = intrinsic[1, 1]
-                    r_0 = intrinsic[0, 2]
-                    r_1 = intrinsic[1, 2]
+
+                    transformation = transformation[None, None, :, :]  # [1, 1, 4, 4]
+                    extrinsic_homo = extrinsic_homo @ transformation  # [B, S, 4, 4]
+                    extrinsic = extrinsic_homo[:, :, :3, :]
+                    intrinsic_ = intrinsic[-1][-1]
+                    f_0 = intrinsic_[0, 0]
+                    f_1 = intrinsic_[1, 1]
+                    r_0 = intrinsic_[0, 2]
+                    r_1 = intrinsic_[1, 2]
 
                     # Predict Depth Maps
                     depth_map, depth_conf = model.depth_head(
-                        aggregated_tokens_list, images, ps_idx,
+                        aggregated_tokens_list, images, ps_idx
                     )
+
+                    # point cloud
+                    point_map_by_unprojection = unproject_depth_map_to_point_map(
+                        depth_map.squeeze(0), extrinsic.squeeze(0), intrinsic.squeeze(0)
+                    )
+                    Sonata_format, point_cloud_img1 = convert_vggt_to_sonata(
+                        point_map_by_unprojection, images=images
+                    )
+
                     depth_map[depth_conf < 1.0] = 0.0  # Set low confidence pixels to 0
                     depth_map = depth_map.to(torch.float64)
 
@@ -156,6 +257,8 @@ def main():
                             ],
                         },
                     )
+
+                    torch.save(Sonata_format, "predictions.pt")
 
 
 if __name__ == "__main__":
