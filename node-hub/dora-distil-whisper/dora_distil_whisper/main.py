@@ -201,7 +201,7 @@ def main():
                 noise_timestamp = time.time()
             else:
                 audio = event["value"].to_numpy()
-                confg = (
+                config = (
                     {"language": TARGET_LANGUAGE, "task": "translate"}
                     if TRANSLATE
                     else {
@@ -220,7 +220,7 @@ def main():
                 else:
                     result = pipe(
                         audio,
-                        generate_kwargs=confg,
+                        generate_kwargs=config,
                     )
                 if result["text"] in BAD_SENTENCES:
                     continue
