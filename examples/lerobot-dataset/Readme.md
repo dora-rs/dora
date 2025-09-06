@@ -1,6 +1,6 @@
 # Dataset Recording with SO101 Robot Arm
 
-Guide for recording imitation learning datasets with the SO101 arm using Dora and train policies with LeRobot.
+Guide for recording imitation learning datasets with the SO101 arm using Dora and train policies with LeRobot. You can find a video guide [Here](https://www.youtube.com/watch?v=jFP8UAtz4sg)
 
 ## Overview
 
@@ -81,6 +81,11 @@ In the rerun window you can see the the info regarding Start of episodes, start 
    - Prepare workspace for next demonstration
 
 3. **Repeat** until all episodes are complete
+
+> Control the data recording flow using keyboard shortcuts:
+> Press 'n' (next episode): Early stop the current episode or reset time and move to the next.
+> Press 'r' (re-record): Cancel the current episode and re-record it.
+> Press 'q' (quit): Immediately stop the session, encode videos
 
 **Recording Tips**
 
