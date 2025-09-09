@@ -10,8 +10,6 @@ on:
       - synchronize
       - reopened
       - ready_for_review
-    paths-ignore:
-      - "node-hub/**"
   workflow_dispatch:
 
 env:
