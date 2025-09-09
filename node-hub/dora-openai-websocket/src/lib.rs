@@ -430,13 +430,6 @@ async fn handle_client(fut: upgrade::UpgradeFut) -> Result<(), WebSocketError> {
 
                                 if let Ok(f32_data) = general_purpose::STANDARD.decode(f32_data) {
                                     let f32_data = convert_pcm16_to_f32(&f32_data);
-                                    // Downsample to 16 kHz from 24 kHz
-                                    let f32_data = f32_data
-                                        .into_iter()
-                                        .enumerate()
-                                        .filter(|(i, _)| i % 3 != 0)
-                                        .map(|(_, v)| v)
-                                        .collect::<Vec<f32>>();
 
                                     let mut parameter = MetadataParameters::default();
                                     parameter.insert(
