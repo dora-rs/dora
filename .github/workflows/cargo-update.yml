@@ -43,4 +43,5 @@ jobs:
             --base ${{ github.ref_name }} \
             --head update-cargo-lock \
             --label "dependencies" \
-            --draft
+            --draft \
+            || gh pr edit --base main
