@@ -23,7 +23,7 @@ nodes:
       message: rust-status-node/status
 
   - id: dora-record
-    build: cargo install dora-record --target-dir build
+    build: cargo install dora-record --root build
     path: build/dora-record
     inputs:
       message: rust-status-node/status
