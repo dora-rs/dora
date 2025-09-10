@@ -100,7 +100,7 @@ def main():
 
                 full_response = model.create_chat_completion(
                     messages=history,  # Prompt
-                    max_tokens=24,
+                    max_tokens=100,
                     tools=tools,
                 )
                 response = full_response["choices"][0]["message"]["content"]
