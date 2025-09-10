@@ -31,6 +31,7 @@ use rand::random;
 use serde;
 use serde::Deserialize;
 use serde::Serialize;
+use serde_json::value::RawValue;
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Write};
@@ -59,7 +60,10 @@ pub enum OpenAIRealtimeMessage {
     #[serde(rename = "input_audio_buffer.commit")]
     InputAudioBufferCommit,
     #[serde(rename = "response.create")]
-    ResponseCreate { response: ResponseConfig },
+    ResponseCreate {
+        #[serde(default)]
+        response: ResponseConfig,
+    },
     #[serde(rename = "conversation.item.create")]
     ConversationItemCreate { item: ConversationItem },
     #[serde(rename = "conversation.item.truncate")]
@@ -73,7 +77,7 @@ pub enum OpenAIRealtimeMessage {
 }
 
 fn default_model() -> String {
-    "Qwen/Qwen2.5-0.5B-Instruct-GGUF".to_string()
+    "Qwen/Qwen2.5-1.5B-Instruct-GGUF".to_string()
 }
 #[derive(Serialize, Deserialize, Debug)]
 pub struct SessionConfig {
@@ -123,7 +127,7 @@ pub struct TurnDetectionConfig {
     pub create_response: bool,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Default)]
 pub struct ResponseConfig {
     pub modalities: Vec<String>,
     pub instructions: Option<String>,
@@ -141,8 +145,11 @@ pub struct ConversationItem {
     #[serde(rename = "type")]
     pub item_type: String,
     pub status: Option<String>,
-    pub role: String,
+    pub role: Option<String>,
+    #[serde(default)]
     pub content: Vec<ContentPart>,
+    pub call_id: Option<u32>,
+    pub output: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -162,6 +169,13 @@ pub enum ContentPart {
         audio: String,
         transcript: Option<String>,
     },
+}
+
+// Implement simple tool definition
+#[derive(Serialize, Deserialize, Debug)]
+pub struct ToolCall {
+    pub name: String,
+    pub arguments: Box<RawValue>, // Owned RawValue
 }
 
 // Incoming message types from OpenAI
@@ -192,6 +206,15 @@ pub enum OpenAIRealtimeResponse {
         item_id: String,
         output_index: u32,
         content_index: u32,
+    },
+    #[serde(rename = "response.function_call_arguments.done")]
+    ResponseFunctionCallArgumentsDone {
+        item_id: String,
+        output_index: u32,
+        sequence_number: u32,
+        call_id: u32,
+        name: String,
+        arguments: String,
     },
     #[serde(rename = "response.text.delta")]
     ResponseTextDelta {
@@ -301,6 +324,9 @@ async fn handle_client(fut: upgrade::UpgradeFut) -> Result<(), WebSocketError> {
     let mut replacements = HashMap::new();
     replacements.insert("NODE_ID".to_string(), node_id.clone());
     replacements.insert("LLM_ID".to_string(), llm);
+    if let Ok(json) = serde_json::to_string(&session.tools) {
+        replacements.insert("TOOLS_ID".to_string(), json);
+    }
     println!("Filling template: {}", template);
     replace_placeholder_in_file(&template, &replacements, &dataflow).unwrap();
     // Copy configuration file but replace the node ID with "server-id"
@@ -340,7 +366,7 @@ async fn handle_client(fut: upgrade::UpgradeFut) -> Result<(), WebSocketError> {
                         metadata: _,
                         data,
                     } => {
-                        if data.data_type() == &DataType::Utf8 {
+                        if data.data_type() == &DataType::Utf8 && id.contains("transcript") {
                             let data = data.as_string::<i32>();
                             let str = data.value(0);
                             let serialized_data =
@@ -356,6 +382,60 @@ async fn handle_client(fut: upgrade::UpgradeFut) -> Result<(), WebSocketError> {
                                 Bytes::from(serde_json::to_string(&serialized_data).unwrap())
                                     .into(),
                             ));
+                            frame
+                        } else if data.data_type() == &DataType::Utf8 && id.contains("text") {
+                            let data = data.as_string::<i32>();
+                            let str = data.value(0);
+                            println!("Got the following text: {}", str);
+                            // If response start and finish with <tool_call> parse it.
+                            let frame = if str.starts_with("<tool_call>") {
+                                let str = str
+                                    .trim_start_matches("<tool_call>")
+                                    .trim_end_matches("</tool_call>");
+
+                                // Replace double curly braces with single curly braces
+                                let str = if str.contains("{{") {
+                                    str.replace("{{", "{").replace("}}", "}")
+                                } else {
+                                    str.to_string()
+                                };
+
+                                if let Ok(tool_call) = serde_json::from_str::<ToolCall>(&str) {
+                                    let serialized_data =
+                                        OpenAIRealtimeResponse::ResponseFunctionCallArgumentsDone {
+                                            item_id: "123".to_string(),
+                                            output_index: 123,
+                                            call_id: 123,
+                                            sequence_number: 123,
+                                            name: tool_call.name,
+                                            arguments: tool_call.arguments.to_string(),
+                                        };
+                                    let frame = Frame::text(Payload::Bytes(
+                                        Bytes::from(
+                                            serde_json::to_string(&serialized_data).unwrap(),
+                                        )
+                                        .into(),
+                                    ));
+                                    println!("Sending tool call: {:?}", serialized_data);
+                                    frame
+                                } else {
+                                    continue;
+                                }
+                            } else {
+                                let serialized_data = OpenAIRealtimeResponse::ResponseTextDelta {
+                                    response_id: "123".to_string(),
+                                    item_id: "123".to_string(),
+                                    output_index: 123,
+                                    content_index: 123,
+                                    delta: str.to_string(),
+                                };
+
+                                let frame = Frame::text(Payload::Bytes(
+                                    Bytes::from(serde_json::to_string(&serialized_data).unwrap())
+                                        .into(),
+                                ));
+                                frame
+                            };
                             frame
                         } else if id.contains("audio") {
                             let data: Vec<f32> = into_vec(&data).unwrap();
@@ -451,6 +531,17 @@ async fn handle_client(fut: upgrade::UpgradeFut) -> Result<(), WebSocketError> {
                                         DataId::from("text".to_string()),
                                         Default::default(),
                                         text.into_arrow(),
+                                    )
+                                    .unwrap();
+                                }
+                            }
+                            OpenAIRealtimeMessage::ConversationItemCreate { item } => {
+                                println!("New conversation item: {:?}", item);
+                                if item.item_type == "function_call_output" {
+                                    node.send_output(
+                                        DataId::from("function_call_output".to_string()),
+                                        Default::default(),
+                                        item.output.unwrap_or_default().into_arrow(),
                                     )
                                     .unwrap();
                                 }

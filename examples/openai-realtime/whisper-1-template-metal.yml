@@ -4,12 +4,14 @@ nodes:
     path: dynamic
     inputs:
       audio: tts/audio
-      text: stt/text
+      transcript: stt/text
+      text: llm/text
       speech_started: dora-vad/timestamp_start
       speech_stopped: dora-vad/timestamp_end
     outputs:
       - audio
       - text
+      - function_call_output
 
   - id: dora-vad
     build: pip install -e ../../node-hub/dora-vad
@@ -23,16 +25,17 @@ nodes:
       - timestamp_start
       - timestamp_end
     env:
-      MIN_SPEECH_DURATION_MS: 200
-      MIN_SILENCE_DURATION_MS: 200
-      THRESHOLD: 0.1
+      MIN_SPEECH_DURATION_MS: 500
+      MIN_SILENCE_DURATION_MS: 500
+      THRESHOLD: 0.6
 
   - id: stt
     build: pip install -e ../../node-hub/dora-distil-whisper
     path: dora-distil-whisper
     inputs:
-      audio: dora-vad/audio
-      text_noise: llm/text
+      audio:
+        source: dora-vad/audio
+        queue_size: 1000000
     outputs:
       - text
       - word
@@ -46,6 +49,7 @@ nodes:
     inputs:
       text: stt/text
       text_to_audio: NODE_ID/text
+      text_tool_response: NODE_ID/function_call_output
     outputs:
       - text
     env:
@@ -53,6 +57,8 @@ nodes:
       MODEL_FILE_PATTERN: "*[qQ]6_[kK].[gG][gG][uU][fF]"
       MAX_TOKENS: 10_000
       CONTEXT_SIZE: 10_000
+      TOOLS_JSON: |
+        TOOLS_ID
 
   - id: tts
     build: pip install -e ../../node-hub/dora-kokoro-tts

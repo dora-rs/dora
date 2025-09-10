@@ -21,6 +21,8 @@ def main():
     node = Node()
     last_audios = []
     tmp_audio = []
+    should_stop = 0
+    last_speech_timestamps = []
     while True:
         event = node.next()
         if event is None:
@@ -36,13 +38,12 @@ def main():
             last_audios += [audio]
             tmp_audio = []
 
-            if ((10 * sr) // len(audio)) < len(last_audios):
-                print("Too long audio, trimming")
-                last_audios = last_audios[-(10 * sr) // len(audio) :]
-
-            # If the block of audio are less than 100ms skip some of them
             if (len(audio) / sr) < 0.1:
                 continue
+            # If the block of audio are less than 100ms skip some of them
+            if ((10 * sr) // len(audio)) < len(last_audios) and should_stop == 0:
+                last_audios = last_audios[-(10 * sr) // len(audio) :]
+
             audio = np.concatenate(last_audios)
             speech_timestamps = get_speech_timestamps(
                 torch.from_numpy(audio),
@@ -53,11 +54,20 @@ def main():
                 sampling_rate=sr,
                 speech_pad_ms=200,
             )
+            if len(speech_timestamps) == 0 and should_stop > 0:
+                should_stop += 1
             if len(speech_timestamps) == 0:
-                # If there is no speech, return the audio
+                if should_stop < 5:
+                    # If there is no speech, return the audio
+                    continue
+                speech_timestamps = last_speech_timestamps
+            if speech_timestamps[-1]["end"] == len(audio):
+                # If the speech is at the end of the audio, wait for more audio
+                should_stop += 1
+                last_speech_timestamps = speech_timestamps
                 continue
-            # Send a timestamp_start
 
+            should_stop = 0
             # Check ig there is timestamp
             node.send_output(
                 "audio",

@@ -1,5 +1,6 @@
 """TODO: Add docstring."""
 
+import json
 import os
 
 import pyarrow as pa
@@ -17,6 +18,8 @@ MAX_TOKENS = int(os.getenv("MAX_TOKENS", "512"))
 N_GPU_LAYERS = int(os.getenv("N_GPU_LAYERS", "0"))
 N_THREADS = int(os.getenv("N_THREADS", "4"))
 CONTEXT_SIZE = int(os.getenv("CONTEXT_SIZE", "4096"))
+TOOL_JSON = os.getenv("TOOLS_JSON")
+tools = json.loads(TOOL_JSON) if TOOL_JSON is not None else None
 
 
 def get_model_gguf():
@@ -95,10 +98,12 @@ def main():
             ):
                 history += [{"role": "user", "content": text}]
 
-                response = model.create_chat_completion(
+                full_response = model.create_chat_completion(
                     messages=history,  # Prompt
                     max_tokens=24,
-                )["choices"][0]["message"]["content"]
+                    tools=tools,
+                )
+                response = full_response["choices"][0]["message"]["content"]
 
                 history += [{"role": "assistant", "content": response}]
 

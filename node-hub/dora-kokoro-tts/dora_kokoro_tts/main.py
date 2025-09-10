@@ -25,6 +25,11 @@ def main():
     for event in node:
         if event["type"] == "INPUT":
             text = event["value"][0].as_py()
+
+            # Skip if text start with <tool_call>
+            if text.startswith("<tool_call>"):
+                continue
+
             if re.findall(r"[\u4e00-\u9fff]+", text):
                 pipeline = KPipeline(lang_code="z")
             elif pipeline.lang_code != "a":
