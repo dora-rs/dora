@@ -35,7 +35,6 @@ nodes:
     inputs:
       audio: dora-vad/audio
       text_noise: llm/text
-      text_tool_response: NODE_ID/function_call_output
     outputs:
       - text
       - word
@@ -49,13 +48,14 @@ nodes:
     inputs:
       text: stt/text
       response.create: NODE_ID/response.create
+      text_tool_response: NODE_ID/function_call_output
     outputs:
       - text
     env:
       MODEL_NAME_OR_PATH: LLM_ID
       MODEL_FILE_PATTERN: "*[qQ]6_[kK].[gG][gG][uU][fF]"
-      MAX_TOKENS: 10_000
-      CONTEXT_SIZE: 10_000
+      MAX_TOKENS: 30_000
+      CONTEXT_SIZE: 30_000
       TOOLS_JSON: >
         TOOLS_ID
 

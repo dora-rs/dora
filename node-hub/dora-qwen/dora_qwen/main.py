@@ -18,8 +18,8 @@ MAX_TOKENS = int(os.getenv("MAX_TOKENS", "512"))
 N_GPU_LAYERS = int(os.getenv("N_GPU_LAYERS", "0"))
 N_THREADS = int(os.getenv("N_THREADS", "4"))
 CONTEXT_SIZE = int(os.getenv("CONTEXT_SIZE", "4096"))
-TOOL_JSON = os.getenv("TOOLS_JSON")
-tools = json.loads(TOOL_JSON) if TOOL_JSON is not None else None
+TOOLS_JSON = os.getenv("TOOLS_JSON")
+tools = json.loads(TOOLS_JSON) if TOOLS_JSON is not None else None
 
 
 def get_model_gguf():
@@ -92,21 +92,30 @@ def main():
             # Warning: Make sure to add my_output_id and my_input_id within the dataflow.
             text = event["value"][0].as_py()
             words = text.lower().split()
-
+            tmp_tools = event["metadata"].get("tools")
+            tmp_tools = json.loads(tmp_tools) if tmp_tools is not None else tools
             if len(ACTIVATION_WORDS) == 0 or any(
                 word in ACTIVATION_WORDS for word in words
             ):
-                history += [{"role": "user", "content": text}]
+                if tmp_tools is not None and tmp_tools != []:
+                    tmp_history = []
+                    tmp_history += [{"role": "user", "content": text}]
+                    full_response = model.create_chat_completion(
+                        messages=tmp_history,  # Prompt
+                        max_tokens=100,
+                        tools=tmp_tools,
+                    )
+                else:
+                    history += [{"role": "user", "content": text}]
+                    full_response = model.create_chat_completion(
+                        messages=history,  # Prompt
+                        max_tokens=100,
+                        tools=tmp_tools,
+                    )
 
-                full_response = model.create_chat_completion(
-                    messages=history,  # Prompt
-                    max_tokens=100,
-                    tools=tools,
-                )
                 response = full_response["choices"][0]["message"]["content"]
 
                 history += [{"role": "assistant", "content": response}]
-
                 node.send_output(
                     output_id="text",
                     data=pa.array([response]),

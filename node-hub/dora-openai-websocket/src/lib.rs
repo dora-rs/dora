@@ -77,7 +77,7 @@ pub enum OpenAIRealtimeMessage {
 }
 
 fn default_model() -> String {
-    "Qwen/Qwen2.5-1.5B-Instruct-GGUF".to_string()
+    "Qwen/Qwen2.5-3B-Instruct-GGUF".to_string()
 }
 #[derive(Serialize, Deserialize, Debug)]
 pub struct SessionConfig {
@@ -170,7 +170,7 @@ pub struct ConversationItem {
     pub role: Option<String>,
     #[serde(default)]
     pub content: Vec<ContentPart>,
-    pub call_id: Option<u32>,
+    pub call_id: Option<String>,
     pub output: Option<String>,
 }
 
@@ -234,7 +234,7 @@ pub enum OpenAIRealtimeResponse {
         item_id: String,
         output_index: u32,
         sequence_number: u32,
-        call_id: u32,
+        call_id: String,
         name: String,
         arguments: String,
     },
@@ -427,7 +427,7 @@ async fn handle_client(fut: upgrade::UpgradeFut) -> Result<(), WebSocketError> {
                                         OpenAIRealtimeResponse::ResponseFunctionCallArgumentsDone {
                                             item_id: "123".to_string(),
                                             output_index: 123,
-                                            call_id: 123,
+                                            call_id: "123".to_string(),
                                             sequence_number: 123,
                                             name: tool_call.name,
                                             arguments: tool_call.arguments.to_string(),
@@ -548,9 +548,14 @@ async fn handle_client(fut: upgrade::UpgradeFut) -> Result<(), WebSocketError> {
                             OpenAIRealtimeMessage::InputAudioBufferCommit => break,
                             OpenAIRealtimeMessage::ResponseCreate { response } => {
                                 if let Some(text) = response.instructions {
+                                    let mut parameter = MetadataParameters::default();
+                                    parameter.insert(
+                                        "tools".to_string(),
+                                        dora_node_api::Parameter::String("[]".to_string()),
+                                    );
                                     node.send_output(
-                                        DataId::from("text".to_string()),
-                                        Default::default(),
+                                        DataId::from("response.create".to_string()),
+                                        parameter,
                                         text.into_arrow(),
                                     )
                                     .unwrap();
