@@ -4,12 +4,14 @@ nodes:
     path: dynamic
     inputs:
       audio: tts/audio
-      text: stt/text
+      transcript: stt/text
+      text: llm/text
       speech_started: dora-vad/timestamp_start
       speech_stopped: dora-vad/timestamp_end
     outputs:
       - audio
-      - text
+      - response.create
+      - function_call_output
 
   - id: dora-vad
     build: pip install -e ../../node-hub/dora-vad
@@ -33,6 +35,7 @@ nodes:
     inputs:
       audio: dora-vad/audio
       text_noise: llm/text
+      text_tool_response: NODE_ID/function_call_output
     outputs:
       - text
       - word
@@ -45,7 +48,7 @@ nodes:
     path: dora-qwen
     inputs:
       text: stt/text
-      text_to_audio: NODE_ID/text
+      response.create: NODE_ID/response.create
     outputs:
       - text
     env:
@@ -53,6 +56,8 @@ nodes:
       MODEL_FILE_PATTERN: "*[qQ]6_[kK].[gG][gG][uU][fF]"
       MAX_TOKENS: 10_000
       CONTEXT_SIZE: 10_000
+      TOOLS_JSON: >
+        TOOLS_ID
 
   - id: tts
     build: pip install -e ../../node-hub/dora-kokoro-tts
