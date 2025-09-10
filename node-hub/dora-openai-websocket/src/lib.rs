@@ -139,6 +139,28 @@ pub struct ResponseConfig {
     pub max_output_tokens: Option<u32>,
 }
 
+#[derive(Deserialize, Serialize, Debug)]
+#[serde(tag = "type")]
+pub enum ResponseOutputItem {
+    #[serde(rename = "function_call")]
+    FunctionCall {
+        id: String,
+        name: String,
+        call_id: String,
+        arguments: String,
+        status: String,
+    },
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Deserialize, Serialize, Debug)]
+pub struct ResponseDoneData {
+    pub id: String,
+    pub status: String,
+    pub output: Vec<ResponseOutputItem>,
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ConversationItem {
     pub id: Option<String>,
@@ -233,7 +255,7 @@ pub enum OpenAIRealtimeResponse {
         delta: String,
     },
     #[serde(rename = "response.done")]
-    ResponseDone { response: serde_json::Value },
+    ResponseDone { response: ResponseDoneData },
     #[serde(rename = "input_audio_buffer.speech_started")]
     InputAudioBufferSpeechStarted {
         audio_start_ms: u32,
@@ -497,7 +519,6 @@ async fn handle_client(fut: upgrade::UpgradeFut) -> Result<(), WebSocketError> {
                     OpCode::Text | OpCode::Binary => {
                         let data: OpenAIRealtimeMessage =
                             serde_json::from_slice(&frame.payload).unwrap();
-
                         match data {
                             OpenAIRealtimeMessage::InputAudioBufferAppend { audio } => {
                                 // println!("Received audio data: {}", audio);
@@ -560,7 +581,11 @@ async fn handle_client(fut: upgrade::UpgradeFut) -> Result<(), WebSocketError> {
         }
         if finished {
             let serialized_data = OpenAIRealtimeResponse::ResponseDone {
-                response: serde_json::Value::Null,
+                response: ResponseDoneData {
+                    id: "123".to_string(),
+                    status: "123".to_string(),
+                    output: vec![],
+                },
             };
 
             let payload = Payload::Bytes(
