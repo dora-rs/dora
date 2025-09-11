@@ -407,17 +407,17 @@ async fn handle_client(fut: upgrade::UpgradeFut) -> Result<(), WebSocketError> {
                             frame
                         } else if data.data_type() == &DataType::Utf8 && id.contains("text") {
                             let data = data.as_string::<i32>();
-                            let str = data.value(0);
-                            println!("Got the following text: {}", str);
+                            let orig_str = data.value(0);
+                            println!("Got the following text: {}", orig_str);
                             // If response start and finish with <tool_call> parse it.
-                            let frame = if str.starts_with("<tool_call>") {
-                                let str = str
+                            let frame = if orig_str.starts_with("<tool_call>") {
+                                let str = orig_str
                                     .trim_start_matches("<tool_call>")
                                     .trim_end_matches("</tool_call>");
 
                                 // Replace double curly braces with single curly braces
                                 let str = if str.contains("{{") {
-                                    str.replace("{{", "{").replace("}}", "}")
+                                    str.replace("{{", "{").replace("}}}", "}}")
                                 } else {
                                     str.to_string()
                                 };
@@ -441,7 +441,30 @@ async fn handle_client(fut: upgrade::UpgradeFut) -> Result<(), WebSocketError> {
                                     println!("Sending tool call: {:?}", serialized_data);
                                     frame
                                 } else {
-                                    continue;
+                                    if let Ok(tool_call) =
+                                        serde_json::from_str::<ToolCall>(&orig_str)
+                                    {
+                                        let serialized_data =
+                                        OpenAIRealtimeResponse::ResponseFunctionCallArgumentsDone {
+                                            item_id: "123".to_string(),
+                                            output_index: 123,
+                                            call_id: "123".to_string(),
+                                            sequence_number: 123,
+                                            name: tool_call.name,
+                                            arguments: tool_call.arguments.to_string(),
+                                        };
+                                        let frame = Frame::text(Payload::Bytes(
+                                            Bytes::from(
+                                                serde_json::to_string(&serialized_data).unwrap(),
+                                            )
+                                            .into(),
+                                        ));
+                                        println!("Sending tool call: {:?}", serialized_data);
+                                        frame
+                                    } else {
+                                        println!("Failed to parse tool call: {}", str);
+                                        continue;
+                                    }
                                 }
                             } else {
                                 let serialized_data = OpenAIRealtimeResponse::ResponseTextDelta {
@@ -449,7 +472,7 @@ async fn handle_client(fut: upgrade::UpgradeFut) -> Result<(), WebSocketError> {
                                     item_id: "123".to_string(),
                                     output_index: 123,
                                     content_index: 123,
-                                    delta: str.to_string(),
+                                    delta: orig_str.to_string(),
                                 };
 
                                 let frame = Frame::text(Payload::Bytes(
@@ -564,9 +587,14 @@ async fn handle_client(fut: upgrade::UpgradeFut) -> Result<(), WebSocketError> {
                             OpenAIRealtimeMessage::ConversationItemCreate { item } => {
                                 println!("New conversation item: {:?}", item);
                                 if item.item_type == "function_call_output" {
+                                    let mut parameter = MetadataParameters::default();
+                                    parameter.insert(
+                                        "tools".to_string(),
+                                        dora_node_api::Parameter::String("[]".to_string()),
+                                    );
                                     node.send_output(
                                         DataId::from("function_call_output".to_string()),
-                                        Default::default(),
+                                        parameter,
                                         item.output.unwrap_or_default().into_arrow(),
                                     )
                                     .unwrap();
