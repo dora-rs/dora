@@ -90,7 +90,7 @@ arrow-schema = { version = "54.2.1" }
 arrow-data = { version = "54.2.1" }
 arrow-array = { version = "54.2.1" }
 parquet = { version = "54.2.1" }
-pyo3 = { version = "0.23", features = [
+pyo3 = { version = "0.24", features = [
     "eyre",
     "abi3-py37",
     "multiple-pymethods",
