@@ -4127,6 +4127,7 @@ dependencies = [
  "futures-concurrency",
  "futures-timer",
  "inquire 0.7.5",
+ "is-terminal",
  "serde_json",
  "serde_yaml 0.9.34+deprecated",
  "shared-memory-server",

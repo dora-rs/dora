@@ -22,6 +22,7 @@ use dora_message::{
     node_to_daemon::{DaemonRequest, DataMessage, DropToken, Timestamped},
 };
 use eyre::{WrapErr, bail};
+use is_terminal::IsTerminal;
 use shared_memory_extended::{Shmem, ShmemConf};
 use std::{
     collections::{BTreeSet, HashMap, VecDeque},
@@ -99,18 +100,23 @@ impl DoraNode {
     /// ```
     ///
     pub fn init_from_env() -> eyre::Result<(Self, EventStream)> {
-        let node_config: NodeConfig = {
-            let Ok(raw) = std::env::var("DORA_NODE_CONFIG").wrap_err(
-                "env variable DORA_NODE_CONFIG must be set. Are you sure your using `dora start`?",
-            ) else {
-                println!(
+        let node_config: NodeConfig = match std::env::var("DORA_NODE_CONFIG") {
+            Ok(raw) => serde_yaml::from_str(&raw).context("failed to deserialize node config")?,
+            Err(std::env::VarError::NotUnicode(_)) => {
+                bail!("DORA_NODE_CONFIG env variable is not valid unicode")
+            }
+            Err(std::env::VarError::NotPresent) => {
+                if std::io::stdin().is_terminal() {
+                    println!(
                     "{}",
                     "Starting node in interactive mode as DORA_NODE_CONFIG env variable is not set"
                         .green()
                 );
-                return Self::init_interactive();
-            };
-            serde_yaml::from_str(&raw).context("failed to deserialize node config")?
+                    return Self::init_interactive();
+                } else {
+                    bail!("DORA_NODE_CONFIG env variable is not set")
+                }
+            }
         };
         #[cfg(feature = "tracing")]
         {

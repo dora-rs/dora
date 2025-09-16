@@ -40,3 +40,4 @@ inquire = { version = "0.7.5", default-features = false, features = [
 arrow-json = { workspace = true }
 arrow-schema = { workspace = true }
 colored = "3.0.0"
+is-terminal = "0.4.16"
