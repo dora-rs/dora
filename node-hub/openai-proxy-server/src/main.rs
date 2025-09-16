@@ -21,6 +21,7 @@ use message::{
     ChatCompletionObject, ChatCompletionObjectChoice, ChatCompletionObjectMessage,
     ChatCompletionRequest, Usage,
 };
+use serde::{Deserialize, Serialize};
 use std::{
     collections::VecDeque,
     net::SocketAddr,
@@ -35,7 +36,7 @@ pub mod message;
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
     let web_ui = Path::new("chatbot-ui");
-    let port = 8000;
+    let port = 8080;
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
 
     let (server_events_tx, server_events_rx) = mpsc::channel(3);
@@ -252,7 +253,7 @@ fn static_response(path_str: &str, root: String) -> Response<Body> {
 
     let mime = mime_guess::from_path(path);
 
-    match std::fs::read(format!("{root}/{path}")) {
+    match std::fs::read(format!("{root}{path}")) {
         Ok(content) => Response::builder()
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, mime.first_or_text_plain().to_string())
@@ -260,6 +261,7 @@ fn static_response(path_str: &str, root: String) -> Response<Body> {
             .unwrap(),
         Err(_) => {
             let body = Body::from(std::fs::read(format!("{root}/404.html")).unwrap_or_default());
+            eprintln!("No file found for: {root}{path}");
             Response::builder()
                 .status(StatusCode::NOT_FOUND)
                 .header(header::CONTENT_TYPE, "text/html")
@@ -277,7 +279,7 @@ async fn handle_llama_request(
     match req.uri().path() {
         "/v1/chat/completions" => chat_completions_handler(req, request_tx).await,
         // "/v1/completions" => ggml::completions_handler(req).await,
-        // "/v1/models" => ggml::models_handler().await,
+        "/v1/models" => models_handler().await,
         // "/v1/embeddings" => ggml::embeddings_handler(req).await,
         // "/v1/files" => ggml::files_handler(req).await,
         // "/v1/chunks" => ggml::chunks_handler(req).await,
@@ -285,6 +287,79 @@ async fn handle_llama_request(
         // path if path.starts_with("/v1/files/") => ggml::files_handler(req).await,
         path => error::invalid_endpoint(path),
     }
+}
+/// Describes a model offering that can be used with the API.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Model {
+    /// The model identifier, which can be referenced in the API endpoints.
+    pub id: String,
+    /// The Unix timestamp (in seconds) of when the chat completion was created.
+    pub created: u64,
+    /// The object type, which is always "model".
+    pub object: String,
+    /// The organization that owns the model.
+    pub owned_by: String,
+}
+
+/// Lists the currently available models, and provides basic information about each one such as the owner and availability.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ListModelsResponse {
+    pub object: String,
+    pub data: Vec<Model>,
+}
+
+/// List all models available.
+pub(crate) async fn models_handler() -> Response<Body> {
+    // log
+    info!(target: "stdout", "Handling the coming model list request.");
+    let custom_model = Model {
+        id: "custom model".to_string(),
+        created: 123,
+        object: "model".to_string(),
+        owned_by: "dora".to_string(),
+    };
+    let list_models = vec![custom_model];
+
+    let list_models_response = ListModelsResponse {
+        object: "list".to_string(),
+        data: list_models,
+    };
+    // serialize response
+    let s = match serde_json::to_string(&list_models_response) {
+        Ok(s) => s,
+        Err(e) => {
+            let err_msg = format!("Failed to serialize the model list result. Reason: {}", e);
+
+            // log
+            error!(target: "stdout", "{}", &err_msg);
+
+            return error::internal_server_error(err_msg);
+        }
+    };
+
+    // return response
+    let result = Response::builder()
+        .header("Access-Control-Allow-Origin", "*")
+        .header("Access-Control-Allow-Methods", "*")
+        .header("Access-Control-Allow-Headers", "*")
+        .header("Content-Type", "application/json")
+        .body(Body::from(s));
+    let res = match result {
+        Ok(response) => response,
+        Err(e) => {
+            let err_msg = format!("Failed to get model list. Reason: {}", e);
+
+            // log
+            error!(target: "stdout", "{}", &err_msg);
+
+            error::internal_server_error(err_msg)
+        }
+    };
+
+    // log
+    info!(target: "stdout", "Send the model list response.");
+
+    res
 }
 
 // Forked from https://github.com/LlamaEdge/LlamaEdge/blob/6bfe9c12c85bf390c47d6065686caeca700feffa/llama-api-server/src/backend/ggml.rs#L301

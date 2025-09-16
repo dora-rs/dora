@@ -23,7 +23,6 @@ examples/**/*.txt
 !docs/src/latency.png
 
 # Remove *.html. Likely be outputed mermaid graph.
-*.html
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
