@@ -87,26 +87,44 @@ pub struct DoraNode {
 }
 
 impl DoraNode {
-    /// Initiate a node from environment variables set by the Dora daemon.
+    /// Initiate a node from environment variables set by the Dora daemon or fall back to
+    /// interactive mode.
     ///
     /// This is the recommended initialization function for Dora nodes, which are spawned by
-    /// Dora daemon instances.
+    /// Dora daemon instances. The daemon will set a `DORA_NODE_CONFIG` environment variable to
+    /// configure the node.
     ///
+    /// When the node is started manually without the `DORA_NODE_CONFIG` environment variable set,
+    /// the initialization will fall back to [`init_interactive`](Self::init_interactive) if `stdin`
+    /// is a terminal (detected through
+    /// [`isatty`](https://www.man7.org/linux/man-pages/man3/isatty.3.html)).
     ///
     /// ```no_run
     /// use dora_node_api::DoraNode;
     ///
     /// let (mut node, mut events) = DoraNode::init_from_env().expect("Could not init node.");
     /// ```
-    ///
     pub fn init_from_env() -> eyre::Result<(Self, EventStream)> {
+        Self::init_from_env_inner(true)
+    }
+
+    /// Initialize the node from environment variables set by the Dora daemon; error if not set.
+    ///
+    /// This function behaves the same as [`init_from_env`](Self::init_from_env), but it does _not_
+    /// fall back to [`init_interactive`](Self::init_interactive). Instead, an error is returned
+    /// when the `DORA_NODE_CONFIG` environment variable is missing.
+    pub fn init_from_env_force() -> eyre::Result<(Self, EventStream)> {
+        Self::init_from_env_inner(false)
+    }
+
+    fn init_from_env_inner(fallback_to_interactive: bool) -> eyre::Result<(Self, EventStream)> {
         let node_config: NodeConfig = match std::env::var("DORA_NODE_CONFIG") {
             Ok(raw) => serde_yaml::from_str(&raw).context("failed to deserialize node config")?,
             Err(std::env::VarError::NotUnicode(_)) => {
                 bail!("DORA_NODE_CONFIG env variable is not valid unicode")
             }
             Err(std::env::VarError::NotPresent) => {
-                if std::io::stdin().is_terminal() {
+                if fallback_to_interactive && std::io::stdin().is_terminal() {
                     println!(
                     "{}",
                     "Starting node in interactive mode as DORA_NODE_CONFIG env variable is not set"
@@ -180,7 +198,71 @@ impl DoraNode {
         }
     }
 
-    fn init_interactive() -> eyre::Result<(Self, EventStream)> {
+    /// Initialize the node in a standalone mode that prompts for inputs on the terminal.
+    ///
+    /// Instead of connecting to a `dora daemon`, this interactive mode prompts for node inputs
+    /// on the terminal. In this mode, the node is completely isolated from the dora daemon and
+    /// other nodes, so it cannot be part of a dataflow.
+    ///
+    /// Note that this function will hang indefinitely if no input is supplied to the interactive
+    /// prompt. So it should be only used through a terminal.
+    ///
+    /// Because of the above limitations, it is not recommended to use this function directly.
+    /// Use [**`init_from_env`**](Self::init_from_env) instead, which supports both normal daemon
+    /// connections and manual interactive runs.
+    ///
+    /// ## Example
+    ///
+    /// Run any node that uses `init_interactive` or [`init_from_env`](Self::init_from_env) directly
+    /// from a terminal. The node will then start in "interactive mode" and prompt you for the next
+    /// input:
+    ///
+    /// ```bash
+    /// > cargo build -p rust-dataflow-example-node
+    /// > target/debug/rust-dataflow-example-node
+    /// hello
+    /// Starting node in interactive mode as DORA_NODE_CONFIG env variable is not set
+    /// Node asks for next input
+    /// ? Input ID
+    /// [empty input ID to stop]
+    /// ```
+    ///
+    /// The `rust-dataflow-example-node` expects a `tick` input, so let's set the input ID to
+    /// `tick`. Tick messages don't have any data, so we leave the "Data" empty when prompted:
+    ///
+    /// ```bash
+    /// Node asks for next input
+    /// > Input ID tick
+    /// > Data
+    /// tick 0, sending 0x943ed1be20c711a4
+    /// node sends output random with data: PrimitiveArray<UInt64>
+    /// [
+    ///   10682205980693303716,
+    /// ]
+    /// Node asks for next input
+    /// ? Input ID
+    /// [empty input ID to stop]
+    /// ```
+    ///
+    /// We see that both the `stdout` output of the node and also the output messages that it sends
+    /// are printed to the terminal. Then we get another prompt for the next input.
+    ///
+    /// Empty input IDs are interpreted as stop instructions:
+    ///
+    /// ```bash
+    /// > Input ID
+    /// given input ID is empty -> stopping
+    /// Received stop
+    /// Node asks for next input
+    /// event channel was stopped -> returning empty event list
+    /// node reports EventStreamDropped
+    /// node reports closed outputs []
+    /// node reports OutputsDone
+    /// ```
+    ///
+    /// In addition to the node output, we see log messages for the different events that the node
+    /// reports. After `OutputsDone`, the node should exit.
+    pub fn init_interactive() -> eyre::Result<(Self, EventStream)> {
         #[cfg(feature = "tracing")]
         {
             TracingBuilder::new("node")
@@ -344,7 +426,7 @@ impl DoraNode {
     /// Uses shared memory for efficient data transfer if suitable.
     ///
     /// This method might copy the message once to move it to shared memory.
-    ///    
+    ///
     /// Ignores the output if the given `output_id` is not specified as node output in the dataflow
     /// configuration file.
     pub fn send_output(
