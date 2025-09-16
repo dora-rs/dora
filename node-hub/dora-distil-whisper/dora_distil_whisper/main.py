@@ -97,7 +97,6 @@ BAD_SENTENCES = [
     "",
     " so",
     " So.",
-    " So, let's go.",
     " so so",
     " What?",
     " We'll see you next time.",
@@ -115,8 +114,6 @@ BAD_SENTENCES = [
     " And we'll see you next time.",
     " strength.",
     " Length.",
-    " Let's go.",
-    " Let's do it.",
     "You",
     "You ",
     " You",
@@ -257,35 +254,14 @@ def main():
                 if text.strip() == "" or text.strip() == ".":
                     continue
 
-                # Check if text is chinese
-                is_chinese = re.findall(r"[\u4e00-\u9fff]+", text)
-                if (
-                    is_chinese
-                    or (
-                        text.endswith(".")
-                        or text.endswith("!")
-                        or text.endswith("?")
-                        or text.endswith('."')
-                        or text.endswith('!"')
-                        or text.endswith('?"')
-                    )
-                    and not text.endswith("...")
-                ):
-                    node.send_output(
-                        "text",
-                        pa.array([text]),
-                        {"language": TARGET_LANGUAGE, "primitive": "text"},
-                    )
-                    node.send_output(
-                        "speech_started",
-                        pa.array([text]),
-                    )
-                    cache_audio = None
-                    audio = None
-                    print("Text:", text)
-                elif text.endswith("..."):
-                    print(
-                        "Keeping audio in cache for next text output with punctuation"
-                    )
-                    print("Discarded text", text)
-                    cache_audio = audio
+                node.send_output(
+                    "text",
+                    pa.array([text]),
+                    {"language": TARGET_LANGUAGE, "primitive": "text"},
+                )
+                node.send_output(
+                    "speech_started",
+                    pa.array([text]),
+                )
+                cache_audio = None
+                audio = None
