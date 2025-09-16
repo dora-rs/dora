@@ -124,8 +124,9 @@ async fn build_node(
     let node_env = node_env.clone();
     let mut logger = logger.try_clone().await.context("failed to clone logger")?;
     let (stdout_tx, mut stdout) = tokio::sync::mpsc::channel(10);
-    let task = tokio::task::spawn_blocking(move || {
+    let task = tokio::spawn(async move {
         run_build_command(&build, &working_dir, uv, &node_env, stdout_tx)
+            .await
             .context("build command failed")
     });
     let stdout_task = tokio::spawn(async move {
