@@ -1,14 +1,13 @@
-use std::{
-    collections::BTreeMap,
-    io::{BufRead, BufReader},
-    path::Path,
-    process::{Command, Stdio},
-};
+use std::{collections::BTreeMap, path::Path, process::Stdio};
 
 use dora_message::descriptor::EnvValue;
 use eyre::{Context, eyre};
+use tokio::{
+    io::{AsyncBufReadExt, BufReader},
+    process::Command,
+};
 
-pub fn run_build_command(
+pub async fn run_build_command(
     build: &str,
     working_dir: &Path,
     uv: bool,
@@ -19,7 +18,7 @@ pub fn run_build_command(
 
     let lines = build.lines().collect::<Vec<_>>();
     for build_line in lines {
-        let mut split = build_line.split_whitespace();
+        let mut split = splitty::split_unquoted_whitespace(build_line).unwrap_quotes(true);
 
         let program = split
             .next()
@@ -56,26 +55,28 @@ pub fn run_build_command(
 
         let child_stdout = BufReader::new(child.stdout.take().expect("failed to take stdout"));
         let child_stderr = BufReader::new(child.stderr.take().expect("failed to take stderr"));
-        let stderr_tx = stdout_tx.clone();
         let stdout_tx = stdout_tx.clone();
 
-        std::thread::spawn(move || {
-            for line in child_stdout.lines() {
-                if stdout_tx.blocking_send(line).is_err() {
+        tokio::spawn(async move {
+            let mut stdout_lines = child_stdout.lines();
+            let mut stderr_lines = child_stderr.lines();
+            loop {
+                let line = tokio::select! {
+                    line = stdout_lines.next_line() => line,
+                    line = stderr_lines.next_line() => line,
+                };
+                let Some(line) = line.transpose() else {
                     break;
-                }
-            }
-        });
-        std::thread::spawn(move || {
-            for line in child_stderr.lines() {
-                if stderr_tx.blocking_send(line).is_err() {
+                };
+                if stdout_tx.send(line).await.is_err() {
                     break;
                 }
             }
         });
 
-        let exit_status = cmd
-            .status()
+        let exit_status = child
+            .wait()
+            .await
             .wrap_err_with(|| format!("failed to run `{build}`"))?;
         if !exit_status.success() {
             return Err(eyre!("build command `{build_line}` returned {exit_status}"));
