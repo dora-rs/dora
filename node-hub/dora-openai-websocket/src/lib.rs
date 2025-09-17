@@ -334,7 +334,6 @@ async fn handle_client(fut: upgrade::UpgradeFut) -> Result<(), WebSocketError> {
         return Err(WebSocketError::InvalidConnectionHeader);
     };
 
-    let _tools = serde_json::to_string(&session.tools).unwrap();
     let input_audio_transcription = session
         .input_audio_transcription
         .map_or("moyoyo-whisper".to_string(), |t| t.model);
@@ -347,6 +346,8 @@ async fn handle_client(fut: upgrade::UpgradeFut) -> Result<(), WebSocketError> {
     replacements.insert("NODE_ID".to_string(), node_id.clone());
     replacements.insert("LLM_ID".to_string(), llm);
     if let Ok(json) = serde_json::to_string(&session.tools) {
+        // Escape $ characters to prevent issues in replacement
+        let json = json.replace("$", r"\$");
         replacements.insert("TOOLS_ID".to_string(), json);
     }
     println!("Filling template: {}", template);
