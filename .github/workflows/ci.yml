@@ -12,6 +12,10 @@ on:
       - ready_for_review
   workflow_dispatch:
 
+concurrency:
+    group: ${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: true
+
 env:
   RUST_LOG: DEBUG,uv=trace
 
