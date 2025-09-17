@@ -14,6 +14,10 @@ on:
       - "node-hub/**"
   workflow_dispatch:
 
+concurrency:
+    group: ${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: true
+
 env:
   RUST_LOG: DEBUG
 
