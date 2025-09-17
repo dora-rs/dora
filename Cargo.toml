@@ -121,14 +121,6 @@ name = "c-dataflow"
 path = "examples/c-dataflow/run.rs"
 
 [[example]]
-name = "camera"
-path = "examples/camera/run.rs"
-
-[[example]]
-name = "vlm"
-path = "examples/vlm/run.rs"
-
-[[example]]
 name = "rust-dataflow"
 path = "examples/rust-dataflow/run.rs"
 
@@ -183,10 +175,6 @@ path = "examples/cmake-dataflow/run.rs"
 name = "cxx-ros2-dataflow"
 path = "examples/c++-ros2-dataflow/run.rs"
 required-features = ["ros2-examples"]
-
-[[example]]
-name = "rerun-viewer"
-path = "examples/rerun-viewer/run.rs"
 
 # The profile that 'dist' will build with
 [profile.dist]
