@@ -1,7 +1,7 @@
 """TODO: Add docstring."""
 
+import json
 import os
-import sys
 
 import pyarrow as pa
 from dora import Node
@@ -12,14 +12,26 @@ SYSTEM_PROMPT = os.getenv(
     "You're a very succinct AI assistant with short answers.",
 )
 
+MODEL_NAME_OR_PATH = os.getenv("MODEL_NAME_OR_PATH", "Qwen/Qwen2.5-0.5B-Instruct-GGUF")
+MODEL_FILE_PATTERN = os.getenv("MODEL_FILE_PATTERN", "*fp16.gguf")
+MAX_TOKENS = int(os.getenv("MAX_TOKENS", "512"))
+N_GPU_LAYERS = int(os.getenv("N_GPU_LAYERS", "0"))
+N_THREADS = int(os.getenv("N_THREADS", "4"))
+CONTEXT_SIZE = int(os.getenv("CONTEXT_SIZE", "4096"))
+TOOLS_JSON = os.getenv("TOOLS_JSON")
+tools = json.loads(TOOLS_JSON) if TOOLS_JSON is not None else None
+
 
 def get_model_gguf():
     """TODO: Add docstring."""
     from llama_cpp import Llama
 
     return Llama.from_pretrained(
-        repo_id="Qwen/Qwen2.5-0.5B-Instruct-GGUF",
-        filename="*fp16.gguf",
+        repo_id=MODEL_NAME_OR_PATH,
+        filename=MODEL_FILE_PATTERN,
+        n_gpu_layers=N_GPU_LAYERS,
+        n_ctx=CONTEXT_SIZE,
+        n_threads=N_THREADS,
         verbose=False,
     )
 
@@ -71,12 +83,7 @@ def main():
     """TODO: Add docstring."""
     history = []
     # If OS is not Darwin, use Huggingface model
-    if sys.platform == "darwin":
-        model = get_model_gguf()
-    elif sys.platform == "linux":
-        model, tokenizer = get_model_huggingface()
-    else:
-        model, tokenizer = get_model_darwin()
+    model = get_model_gguf()
 
     node = Node()
 
@@ -85,29 +92,30 @@ def main():
             # Warning: Make sure to add my_output_id and my_input_id within the dataflow.
             text = event["value"][0].as_py()
             words = text.lower().split()
-
+            tmp_tools = event["metadata"].get("tools")
+            tmp_tools = json.loads(tmp_tools) if tmp_tools is not None else tools
             if len(ACTIVATION_WORDS) == 0 or any(
                 word in ACTIVATION_WORDS for word in words
             ):
-                # On linux, Windows
-                if sys.platform == "darwin":
-                    response = model.create_chat_completion(
-                        messages=[{"role": "user", "content": text}],  # Prompt
-                        max_tokens=24,
-                    )["choices"][0]["message"]["content"]
-                elif sys.platform == "linux":
-                    response, history = generate_hf(model, tokenizer, text, history)
+                if tmp_tools is not None and tmp_tools != []:
+                    tmp_history = []
+                    tmp_history += [{"role": "user", "content": text}]
+                    full_response = model.create_chat_completion(
+                        messages=tmp_history,  # Prompt
+                        max_tokens=100,
+                        tools=tmp_tools,
+                    )
                 else:
-                    from mlx_lm import generate
-
-                    response = generate(
-                        model,
-                        tokenizer,
-                        prompt=text,
-                        verbose=False,
-                        max_tokens=50,
+                    history += [{"role": "user", "content": text}]
+                    full_response = model.create_chat_completion(
+                        messages=history,  # Prompt
+                        max_tokens=100,
+                        tools=tmp_tools,
                     )
 
+                response = full_response["choices"][0]["message"]["content"]
+
+                history += [{"role": "assistant", "content": response}]
                 node.send_output(
                     output_id="text",
                     data=pa.array([response]),

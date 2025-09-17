@@ -20,41 +20,60 @@ def main():
     """TODO: Add docstring."""
     node = Node()
     last_audios = []
+    tmp_audio = []
+    should_stop = 0
+    last_speech_timestamps = []
     while True:
         event = node.next()
         if event is None:
             break
         if event["type"] == "INPUT" and event["id"] == "audio":
             audio = event["value"].to_numpy()
-            last_audios += [audio]
-            last_audios = last_audios[-100:]
-            audio = np.concatenate(last_audios)
             sr = event["metadata"].get("sample_rate", 16000)
+
+            tmp_audio += [audio]
+            if (len(tmp_audio) * len(audio) / (sr)) < 0.1:
+                continue
+            audio = np.concatenate(tmp_audio)
+            last_audios += [audio]
+            tmp_audio = []
+
+            if (len(audio) / sr) < 0.1:
+                continue
+            # If the block of audio are less than 100ms skip some of them
+            if ((10 * sr) // len(audio)) < len(last_audios) and should_stop == 0:
+                last_audios = last_audios[-(10 * sr) // len(audio) :]
+
+            audio = np.concatenate(last_audios)
             speech_timestamps = get_speech_timestamps(
                 torch.from_numpy(audio),
                 model,
                 threshold=THRESHOLD,
                 min_speech_duration_ms=MIN_SPEECH_DURATION_MS,
                 min_silence_duration_ms=MIN_SILENCE_DURATION_MS,
+                sampling_rate=sr,
+                speech_pad_ms=200,
             )
-
-            # Check ig there is timestamp
-            if (
-                len(speech_timestamps) > 0
-                and len(audio) > MIN_AUDIO_SAMPLING_DURATION_MS * sr / 1000
-            ):
-                # Check if the audio is not cut at the end. And only return if there is a long time spent
-                if speech_timestamps[-1]["end"] == len(audio):
-                    node.send_output(
-                        "timestamp_start",
-                        pa.array([speech_timestamps[-1]["start"]]),
-                    )
+            if len(speech_timestamps) == 0 and should_stop > 0:
+                should_stop += 1
+            if len(speech_timestamps) == 0:
+                if should_stop < 5:
+                    # If there is no speech, return the audio
                     continue
-                audio = audio[0 : speech_timestamps[-1]["end"]]
-                node.send_output("audio", pa.array(audio), metadata={"sample_rate": sr})
-                last_audios = [audio[speech_timestamps[-1]["end"] :]]
+                speech_timestamps = last_speech_timestamps
+            if speech_timestamps[-1]["end"] == len(audio):
+                # If the speech is at the end of the audio, wait for more audio
+                should_stop += 1
+                last_speech_timestamps = speech_timestamps
+                continue
 
-            # If there is no sound for too long return the audio
-            elif len(last_audios) > MAX_AUDIO_DURATION_S:
-                node.send_output("audio", pa.array(audio), metadata={"sample_rate": sr})
-                last_audios = []
+            should_stop = 0
+            # Check ig there is timestamp
+            node.send_output(
+                "audio",
+                pa.array(
+                    audio  # [speech_timestamps[0]["start"] : speech_timestamps[-1]["end"]]
+                ),
+                metadata={"sample_rate": sr},
+            )
+            last_audios = []

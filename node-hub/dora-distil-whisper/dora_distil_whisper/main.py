@@ -6,6 +6,7 @@ import sys
 import time
 from pathlib import Path
 
+import numpy as np
 import pyarrow as pa
 import torch
 from dora import Node
@@ -46,35 +47,6 @@ def remove_text_noise(text: str, text_noise="") -> str:
     # Split into words
     text_words = normalized_text.split()
     noise_words = normalized_noise.split()
-
-    # Function to find and remove noise sequence flexibly
-    def remove_flexible(text_list, noise_list):
-        i = 0
-        while i <= len(text_list) - len(noise_list):
-            match = True
-            extra_words = 0
-            for j, noise_word in enumerate(noise_list):
-                if i + j + extra_words >= len(text_list):
-                    match = False
-                    break
-                # Allow skipping extra words in text_list
-                while (
-                    i + j + extra_words < len(text_list)
-                    and text_list[i + j + extra_words] != noise_word
-                ):
-                    extra_words += 1
-                    if i + j + extra_words >= len(text_list):
-                        match = False
-                        break
-                if not match:
-                    break
-            if match:
-                # Remove matched part
-                del text_list[i : i + len(noise_list) + extra_words]
-                i = max(0, i - len(noise_list))  # Adjust index after removal
-            else:
-                i += 1
-        return text_list
 
     # Only remove parts of text_noise that are found in text
     cleaned_words = text_words[:]
@@ -124,10 +96,32 @@ def load_model():
 BAD_SENTENCES = [
     "",
     " so",
+    " So.",
     " so so",
+    " What?",
+    " We'll see you next time.",
+    " I'll see you next time.",
+    " We're going to come back.",
+    " let's move on.",
+    " Here we go.",
+    " my",
+    " All right. Thank you.",
+    " That's what we're doing.",
+    " That's what I wanted to do.",
+    " I'll be back.",
+    " Hold this. Hold this.",
+    " Hold this one. Hold this one.",
+    " And we'll see you next time.",
+    " strength.",
+    " Length.",
+    "You",
+    "You ",
+    " You",
     "字幕",
     "字幕志愿",
     "中文字幕",
+    "或或或或",
+    "或",
     "我",
     "你",
     " you",
@@ -181,13 +175,29 @@ def cut_repetition(text, min_repeat_length=4, max_repeat_length=50):
 
 def main():
     """TODO: Add docstring."""
-    node = Node()
     text_noise = ""
-    noise_timestamp = time.time()
     # For macos use mlx:
     if sys.platform != "darwin":
         pipe = load_model()
+    else:
+        import mlx_whisper
 
+        result = mlx_whisper.transcribe(
+            np.array([]),
+            path_or_hf_repo="mlx-community/whisper-large-v3-turbo",
+            append_punctuations=".",
+            language=TARGET_LANGUAGE,
+        )
+        result = mlx_whisper.transcribe(
+            np.array([]),
+            path_or_hf_repo="mlx-community/whisper-large-v3-turbo",
+            append_punctuations=".",
+            language=TARGET_LANGUAGE,
+        )
+
+    node = Node()
+    noise_timestamp = time.time()
+    cache_audio = None
     for event in node:
         if event["type"] == "INPUT":
             if "text_noise" in event["id"]:
@@ -200,7 +210,12 @@ def main():
                 )
                 noise_timestamp = time.time()
             else:
-                audio = event["value"].to_numpy()
+                audio_input = event["value"].to_numpy()
+                if cache_audio is not None:
+                    audio = np.concatenate([cache_audio, audio_input])
+                else:
+                    audio = audio_input
+
                 config = (
                     {"language": TARGET_LANGUAGE, "task": "translate"}
                     if TRANSLATE
@@ -215,6 +230,7 @@ def main():
                         audio,
                         path_or_hf_repo="mlx-community/whisper-large-v3-turbo",
                         append_punctuations=".",
+                        language=TARGET_LANGUAGE,
                     )
 
                 else:
@@ -223,6 +239,8 @@ def main():
                         generate_kwargs=config,
                     )
                 if result["text"] in BAD_SENTENCES:
+                    print("Discarded text: ", result["text"])
+                    # cache_audio = None
                     continue
                 text = cut_repetition(result["text"])
 
@@ -235,6 +253,24 @@ def main():
 
                 if text.strip() == "" or text.strip() == ".":
                     continue
-                node.send_output(
-                    "text", pa.array([text]), {"language": TARGET_LANGUAGE, "primitive": "text"},
-                )
+
+                # Check if text is chinese
+                is_chinese = re.findall(r"[\u4e00-\u9fff]+", text)
+
+                if is_chinese or not text.endswith("..."):
+                    node.send_output(
+                        "text",
+                        pa.array([text]),
+                        {"language": TARGET_LANGUAGE, "primitive": "text"},
+                    )
+                    node.send_output(
+                        "speech_started",
+                        pa.array([text]),
+                    )
+                    cache_audio = None
+                    audio = None
+                elif text.endswith("..."):
+                    print(
+                        "Keeping audio in cache for next text output with punctuation"
+                    )
+                    cache_audio = audio

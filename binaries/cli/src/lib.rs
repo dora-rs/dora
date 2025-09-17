@@ -5,7 +5,7 @@ use std::{
     path::PathBuf,
 };
 
-mod command;
+pub mod command;
 mod common;
 mod formatting;
 pub mod output;
