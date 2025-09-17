@@ -254,14 +254,23 @@ def main():
                 if text.strip() == "" or text.strip() == ".":
                     continue
 
-                node.send_output(
-                    "text",
-                    pa.array([text]),
-                    {"language": TARGET_LANGUAGE, "primitive": "text"},
-                )
-                node.send_output(
-                    "speech_started",
-                    pa.array([text]),
-                )
-                cache_audio = None
-                audio = None
+                # Check if text is chinese
+                is_chinese = re.findall(r"[\u4e00-\u9fff]+", text)
+
+                if is_chinese or not text.endswith("..."):
+                    node.send_output(
+                        "text",
+                        pa.array([text]),
+                        {"language": TARGET_LANGUAGE, "primitive": "text"},
+                    )
+                    node.send_output(
+                        "speech_started",
+                        pa.array([text]),
+                    )
+                    cache_audio = None
+                    audio = None
+                elif text.endswith("..."):
+                    print(
+                        "Keeping audio in cache for next text output with punctuation"
+                    )
+                    cache_audio = audio
