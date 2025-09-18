@@ -1,4 +1,0 @@
-nodes:
-  - id: control
-    custom:
-      source: teleop.py

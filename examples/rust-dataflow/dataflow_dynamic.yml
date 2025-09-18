@@ -23,8 +23,8 @@ nodes:
       message: rust-status-node/status
 
   - id: dora-record
-    build: cargo build -p dora-record
-    path: ../../target/debug/dora-record
+    build: cargo install dora-record --root build
+    path: build/bin/dora-record
     inputs:
       message: rust-status-node/status
       random: rust-node/random
