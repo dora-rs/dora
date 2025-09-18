@@ -19,7 +19,7 @@ nodes:
     inputs:
       audio:
         source: NODE_ID/audio
-        queue_size: 1000000
+        queue_size: 3
     outputs:
       - audio
       - timestamp_start
@@ -35,7 +35,7 @@ nodes:
     inputs:
       audio:
         source: dora-vad/audio
-        queue_size: 1000000
+        queue_size: 3
     outputs:
       - text
       - word
