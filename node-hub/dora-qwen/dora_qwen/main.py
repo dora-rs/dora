@@ -82,7 +82,8 @@ def generate_hf(model, tokenizer, prompt: str, history) -> str:
 def main():
     """TODO: Add docstring."""
     history = []
-    # If OS is not Darwin, use Huggingface model
+    if SYSTEM_PROMPT:
+        history += [{"role": "system", "content": SYSTEM_PROMPT}]
     model = get_model_gguf()
 
     node = Node()
@@ -98,18 +99,17 @@ def main():
                 word in ACTIVATION_WORDS for word in words
             ):
                 if tmp_tools is not None and tmp_tools != []:
-                    tmp_history = []
-                    tmp_history += [{"role": "user", "content": text}]
+                    history += [{"role": "user", "content": text}]
                     full_response = model.create_chat_completion(
-                        messages=tmp_history,  # Prompt
-                        max_tokens=100,
+                        messages=history,  # Prompt
+                        max_tokens=200,
                         tools=tmp_tools,
                     )
                 else:
                     history += [{"role": "user", "content": text}]
                     full_response = model.create_chat_completion(
                         messages=history,  # Prompt
-                        max_tokens=100,
+                        max_tokens=200,
                         tools=tmp_tools,
                     )
 

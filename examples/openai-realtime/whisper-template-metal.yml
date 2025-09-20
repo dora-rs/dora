@@ -58,6 +58,8 @@ nodes:
       CONTEXT_SIZE: 30_000
       TOOLS_JSON: >
         TOOLS_ID
+      SYSTEM_PROMPT: |
+        SYSTEM_PROMPT_ID
 
   - id: tts
     build: pip install -e ../../node-hub/dora-kokoro-tts

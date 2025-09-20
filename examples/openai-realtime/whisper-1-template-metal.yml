@@ -19,7 +19,7 @@ nodes:
     inputs:
       audio:
         source: NODE_ID/audio
-        queue_size: 3
+        queue_size: 10
     outputs:
       - audio
       - timestamp_start
@@ -35,7 +35,7 @@ nodes:
     inputs:
       audio:
         source: dora-vad/audio
-        queue_size: 3
+        queue_size: 10
     outputs:
       - text
       - word
@@ -59,6 +59,8 @@ nodes:
       CONTEXT_SIZE: 10_000
       TOOLS_JSON: |
         TOOLS_ID
+      SYSTEM_PROMPT: |
+        SYSTEM_PROMPT_ID
 
   - id: tts
     build: pip install -e ../../node-hub/dora-kokoro-tts

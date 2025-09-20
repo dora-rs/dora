@@ -116,6 +116,7 @@ pub struct TranscriptionConfig {
 pub struct TurnDetectionConfig {
     #[serde(rename = "type")]
     pub detection_type: String,
+    #[serde(default)]
     pub threshold: f32,
     #[serde(default)]
     pub prefix_padding_ms: u32,
@@ -336,7 +337,8 @@ async fn handle_client(fut: upgrade::UpgradeFut) -> Result<(), WebSocketError> {
 
     let input_audio_transcription = session
         .input_audio_transcription
-        .map_or("moyoyo-whisper".to_string(), |t| t.model);
+        .map_or("whisper".to_string(), |t| t.model);
+    let system_prompt = session.instructions.clone();
     let llm = session.model.clone();
     let id = random::<u16>();
     let node_id = format!("server-{id}");
@@ -345,6 +347,7 @@ async fn handle_client(fut: upgrade::UpgradeFut) -> Result<(), WebSocketError> {
     let mut replacements = HashMap::new();
     replacements.insert("NODE_ID".to_string(), node_id.clone());
     replacements.insert("LLM_ID".to_string(), llm);
+    replacements.insert("SYSTEM_PROMPT_ID".to_string(), system_prompt);
     if let Ok(json) = serde_json::to_string(&session.tools) {
         // Escape $ characters to prevent issues in replacement
         let json = json.replace("$", r"\$");
