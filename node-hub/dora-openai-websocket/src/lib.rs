@@ -403,6 +403,7 @@ async fn handle_client(fut: upgrade::UpgradeFut) -> Result<(), WebSocketError> {
     // Local variable
 
     let mut call_id = 0;
+    let mut item_id = 0;
     loop {
         let event_fut = events.recv_async().map(Either::Left);
         let frame_fut = ws.read_frame().map(Either::Right);
@@ -421,11 +422,12 @@ async fn handle_client(fut: upgrade::UpgradeFut) -> Result<(), WebSocketError> {
                             let serialized_data =
                                 OpenAIRealtimeResponse::ResponseAudioTranscriptDelta {
                                     response_id: "123".to_string(),
-                                    item_id: "123".to_string(),
+                                    item_id: item_id.to_string(),
                                     output_index: 123,
                                     content_index: 123,
                                     delta: str.to_string(),
                                 };
+                            item_id += 1;
 
                             let frame = Frame::text(Payload::Bytes(
                                 Bytes::from(serde_json::to_string(&serialized_data).unwrap())
@@ -478,12 +480,13 @@ async fn handle_client(fut: upgrade::UpgradeFut) -> Result<(), WebSocketError> {
                                     ws.write_frame(frame).await.unwrap();
                                     let serialized_data =
                                         OpenAIRealtimeResponse::ResponseFunctionCallArgumentsDelta {
-                                            item_id: "123".to_string(),
+                                            item_id: item_id.to_string(),
                                             output_index: 123,
                                             call_id: call_id.to_string().into(),
                                             response_id: "123".to_string(),
                                             delta: tool_call.arguments.to_string(),
                                         };
+                                    item_id += 1;
                                     let frame = Frame::text(Payload::Bytes(
                                         Bytes::from(
                                             serde_json::to_string(&serialized_data).unwrap(),
@@ -495,7 +498,7 @@ async fn handle_client(fut: upgrade::UpgradeFut) -> Result<(), WebSocketError> {
 
                                     let serialized_data =
                                         OpenAIRealtimeResponse::ResponseFunctionCallArgumentsDone {
-                                            item_id: "123".to_string(),
+                                            item_id: item_id.to_string(),
                                             output_index: 123,
                                             call_id: call_id.to_string().into(),
                                             sequence_number: 123,
@@ -503,6 +506,7 @@ async fn handle_client(fut: upgrade::UpgradeFut) -> Result<(), WebSocketError> {
                                             arguments: tool_call.arguments.to_string(),
                                         };
                                     call_id += 1;
+                                    item_id += 1;
                                     let frame = Frame::text(Payload::Bytes(
                                         Bytes::from(
                                             serde_json::to_string(&serialized_data).unwrap(),
@@ -516,13 +520,14 @@ async fn handle_client(fut: upgrade::UpgradeFut) -> Result<(), WebSocketError> {
                                     {
                                         let serialized_data =
                                         OpenAIRealtimeResponse::ResponseFunctionCallArgumentsDone {
-                                            item_id: "123".to_string(),
+                                            item_id: item_id.to_string(),
                                             output_index: 123,
                                             call_id: "123".to_string(),
                                             sequence_number: 123,
                                             name: tool_call.name,
                                             arguments: tool_call.arguments.to_string(),
                                         };
+                                        item_id += 1;
                                         let frame = Frame::text(Payload::Bytes(
                                             Bytes::from(
                                                 serde_json::to_string(&serialized_data).unwrap(),
@@ -539,12 +544,12 @@ async fn handle_client(fut: upgrade::UpgradeFut) -> Result<(), WebSocketError> {
                             } else {
                                 let serialized_data = OpenAIRealtimeResponse::ResponseTextDelta {
                                     response_id: "123".to_string(),
-                                    item_id: "123".to_string(),
+                                    item_id: item_id.to_string(),
                                     output_index: 123,
                                     content_index: 123,
                                     delta: orig_str.to_string(),
                                 };
-
+                                item_id += 1;
                                 let frame = Frame::text(Payload::Bytes(
                                     Bytes::from(serde_json::to_string(&serialized_data).unwrap())
                                         .into(),
@@ -557,11 +562,12 @@ async fn handle_client(fut: upgrade::UpgradeFut) -> Result<(), WebSocketError> {
                             let data = convert_f32_to_pcm16(&data);
                             let serialized_data = OpenAIRealtimeResponse::ResponseAudioDelta {
                                 response_id: "123".to_string(),
-                                item_id: "123".to_string(),
+                                item_id: item_id.to_string(),
                                 output_index: 123,
                                 content_index: 123,
                                 delta: general_purpose::STANDARD.encode(data),
                             };
+                            item_id += 1;
                             let frame = Frame::text(Payload::Bytes(
                                 Bytes::from(serde_json::to_string(&serialized_data).unwrap())
                                     .into(),
@@ -586,8 +592,9 @@ async fn handle_client(fut: upgrade::UpgradeFut) -> Result<(), WebSocketError> {
                             let serialized_data =
                                 OpenAIRealtimeResponse::InputAudioBufferSpeechStarted {
                                     audio_start_ms: 123,
-                                    item_id: "123".to_string(),
+                                    item_id: item_id.to_string(),
                                 };
+                            item_id += 1;
 
                             let frame = Frame::text(Payload::Bytes(
                                 Bytes::from(serde_json::to_string(&serialized_data).unwrap())
@@ -598,8 +605,9 @@ async fn handle_client(fut: upgrade::UpgradeFut) -> Result<(), WebSocketError> {
                             let serialized_data =
                                 OpenAIRealtimeResponse::InputAudioBufferSpeechStopped {
                                     audio_end_ms: 123,
-                                    item_id: "123".to_string(),
+                                    item_id: item_id.to_string(),
                                 };
+                            item_id += 1;
 
                             let frame = Frame::text(Payload::Bytes(
                                 Bytes::from(serde_json::to_string(&serialized_data).unwrap())
