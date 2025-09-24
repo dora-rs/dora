@@ -114,6 +114,7 @@ pub struct TranscriptionConfig {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct TurnDetectionConfig {
+    #[serde(default)]
     #[serde(rename = "type")]
     pub detection_type: String,
     #[serde(default)]
@@ -130,6 +131,7 @@ pub struct TurnDetectionConfig {
 
 #[derive(Serialize, Deserialize, Debug, Default)]
 pub struct ResponseConfig {
+    #[serde(default)]
     pub modalities: Vec<String>,
     pub instructions: Option<String>,
     pub voice: Option<String>,
@@ -166,13 +168,16 @@ pub struct ResponseDoneData {
 pub struct ConversationItem {
     pub id: Option<String>,
     #[serde(rename = "type")]
-    pub item_type: String,
-    pub status: Option<String>,
-    pub role: Option<String>,
+    pub item_type: String, // "message", "function_call", "function_call_output"
+    pub object: Option<String>,
+    pub status: Option<String>, // "completed", "in_progress", "incomplete"
+    pub role: Option<String>,   // "user", "assistant", "system"
     #[serde(default)]
     pub content: Vec<ContentPart>,
     pub call_id: Option<String>,
     pub output: Option<String>,
+    pub name: Option<String>,
+    pub arguments: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -238,6 +243,21 @@ pub enum OpenAIRealtimeResponse {
         call_id: String,
         name: String,
         arguments: String,
+    },
+    #[serde(rename = "response.function_call_arguments.delta")]
+    ResponseFunctionCallArgumentsDelta {
+        response_id: String,
+        item_id: String,
+        output_index: u32,
+        call_id: String,
+        delta: String,
+    },
+    #[serde(rename = "response.output_item.added")]
+    ResponseOutputItemAdded {
+        event_id: String,
+        response_id: String,
+        output_index: u32,
+        item: ConversationItem,
     },
     #[serde(rename = "response.text.delta")]
     ResponseTextDelta {
@@ -379,11 +399,14 @@ async fn handle_client(fut: upgrade::UpgradeFut) -> Result<(), WebSocketError> {
         Payload::Bytes(Bytes::from(serde_json::to_string(&serialized_data).unwrap()).into());
     let frame = Frame::text(payload);
     ws.write_frame(frame).await?;
+
+    // Local variable
+
+    let mut call_id = 0;
     loop {
         let event_fut = events.recv_async().map(Either::Left);
         let frame_fut = ws.read_frame().map(Either::Right);
         let event_stream = (event_fut, frame_fut).race();
-        let mut finished = false;
         let frame = match event_stream.await {
             future::Either::Left(Some(ev)) => {
                 let frame = match ev {
@@ -428,13 +451,22 @@ async fn handle_client(fut: upgrade::UpgradeFut) -> Result<(), WebSocketError> {
 
                                 if let Ok(tool_call) = serde_json::from_str::<ToolCall>(&str) {
                                     let serialized_data =
-                                        OpenAIRealtimeResponse::ResponseFunctionCallArgumentsDone {
-                                            item_id: "123".to_string(),
+                                        OpenAIRealtimeResponse::ResponseOutputItemAdded {
+                                            event_id: "123".to_string(),
+                                            response_id: "123".to_string(),
                                             output_index: 123,
-                                            call_id: "123".to_string(),
-                                            sequence_number: 123,
-                                            name: tool_call.name,
-                                            arguments: tool_call.arguments.to_string(),
+                                            item: ConversationItem {
+                                                id: Some("msg_007".to_string()),
+                                                item_type: "function_call".to_string(),
+                                                status: Some("in_progress".to_string()),
+                                                role: Some("assistant".to_string()),
+                                                content: vec![],
+                                                call_id: call_id.to_string().into(),
+                                                output: None,
+                                                name: Some(tool_call.name.clone()),
+                                                arguments: None,
+                                                object: None,
+                                            },
                                         };
                                     let frame = Frame::text(Payload::Bytes(
                                         Bytes::from(
@@ -442,7 +474,41 @@ async fn handle_client(fut: upgrade::UpgradeFut) -> Result<(), WebSocketError> {
                                         )
                                         .into(),
                                     ));
-                                    println!("Sending tool call: {:?}", serialized_data);
+
+                                    ws.write_frame(frame).await.unwrap();
+                                    let serialized_data =
+                                        OpenAIRealtimeResponse::ResponseFunctionCallArgumentsDelta {
+                                            item_id: "123".to_string(),
+                                            output_index: 123,
+                                            call_id: call_id.to_string().into(),
+                                            response_id: "123".to_string(),
+                                            delta: tool_call.arguments.to_string(),
+                                        };
+                                    let frame = Frame::text(Payload::Bytes(
+                                        Bytes::from(
+                                            serde_json::to_string(&serialized_data).unwrap(),
+                                        )
+                                        .into(),
+                                    ));
+
+                                    ws.write_frame(frame).await.unwrap();
+
+                                    let serialized_data =
+                                        OpenAIRealtimeResponse::ResponseFunctionCallArgumentsDone {
+                                            item_id: "123".to_string(),
+                                            output_index: 123,
+                                            call_id: call_id.to_string().into(),
+                                            sequence_number: 123,
+                                            name: tool_call.name,
+                                            arguments: tool_call.arguments.to_string(),
+                                        };
+                                    call_id += 1;
+                                    let frame = Frame::text(Payload::Bytes(
+                                        Bytes::from(
+                                            serde_json::to_string(&serialized_data).unwrap(),
+                                        )
+                                        .into(),
+                                    ));
                                     frame
                                 } else {
                                     if let Ok(tool_call) =
@@ -496,12 +562,25 @@ async fn handle_client(fut: upgrade::UpgradeFut) -> Result<(), WebSocketError> {
                                 content_index: 123,
                                 delta: general_purpose::STANDARD.encode(data),
                             };
-                            finished = true;
-
                             let frame = Frame::text(Payload::Bytes(
                                 Bytes::from(serde_json::to_string(&serialized_data).unwrap())
                                     .into(),
                             ));
+                            ws.write_frame(frame).await?;
+                            let serialized_data = OpenAIRealtimeResponse::ResponseDone {
+                                response: ResponseDoneData {
+                                    id: "123".to_string(),
+                                    status: "123".to_string(),
+                                    output: vec![],
+                                },
+                            };
+
+                            let payload = Payload::Bytes(
+                                Bytes::from(serde_json::to_string(&serialized_data).unwrap())
+                                    .into(),
+                            );
+                            println!("Sending response done: {:?}", serialized_data);
+                            let frame = Frame::text(payload);
                             frame
                         } else if id.contains("speech_started") {
                             let serialized_data =
@@ -616,22 +695,6 @@ async fn handle_client(fut: upgrade::UpgradeFut) -> Result<(), WebSocketError> {
         if let Some(frame) = frame {
             ws.write_frame(frame).await?;
         }
-        if finished {
-            let serialized_data = OpenAIRealtimeResponse::ResponseDone {
-                response: ResponseDoneData {
-                    id: "123".to_string(),
-                    status: "123".to_string(),
-                    output: vec![],
-                },
-            };
-
-            let payload = Payload::Bytes(
-                Bytes::from(serde_json::to_string(&serialized_data).unwrap()).into(),
-            );
-            println!("Sending response done: {:?}", serialized_data);
-            let frame = Frame::text(payload);
-            ws.write_frame(frame).await?;
-        };
     }
 
     Ok(())
