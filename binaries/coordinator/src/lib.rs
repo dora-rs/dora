@@ -27,6 +27,7 @@ use futures::{Future, Stream, StreamExt, future::join_all, stream::FuturesUnorde
 use futures_concurrency::stream::Merge;
 use itertools::Itertools;
 use log_subscriber::LogSubscriber;
+use petname::petname;
 use run::SpawnedDataflow;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -471,7 +472,7 @@ async fn start_inner(
                             local_working_dir,
                             uv,
                         } => {
-                            let name = name.or_else(|| names::Generator::default().next());
+                            let name = name.or_else(|| petname(2, "-"));
 
                             let inner = async {
                                 if let Some(name) = name.as_deref() {
