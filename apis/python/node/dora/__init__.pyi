@@ -433,10 +433,10 @@ at any point without it being considered a breaking change."""
         """Return str(self)."""
 
 def build(dataflow_path: str, uv: bool=None, coordinator_addr: str=None, coordinator_port: int=None, force_local: bool=False) -> None:
-    """Build a Dataflow locally"""
+    """Build a Dataflow, exactly the same way as `dora build` command line tool."""
 
 def run(dataflow_path: str, uv: bool=None) -> None:
-    """Run a Dataflow"""
+    """Run a Dataflow, exactly the same way as `dora run` command line tool."""
 
 def start_runtime() -> None:
     """Start a runtime for Operators"""

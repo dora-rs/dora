@@ -47,6 +47,6 @@ print("Generated dataflow.yml")
 if not os.getenv("NO_BUILD"):
     build("dataflow.yml", uv=True)
 else:
-    print("Skipping build and run steps due to NO_BUILD env var")
+    print("Skipping build due to NO_BUILD env var")
 print("Running dataflow.yml")
 run("dataflow.yml", uv=True)
