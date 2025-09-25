@@ -7,7 +7,7 @@
 <h2 align="center">
   <a href="https://www.dora-rs.ai">Website</a>
   |
-  <a href="https://dora-rs.ai/docs/DORAFLOW_PYTHON_API.md">Python API</a>
+  <a href="https://dora-rs.ai/docs/guides/getting-started/conversation_py/">Python API</a>
   |
   <a href="https://docs.rs/dora-node-api/latest/dora_node_api/">Rust API</a>
   |
@@ -62,7 +62,7 @@
 <details open>
 <summary><b>2025</b></summary>
 
-- \[08/25\] Introduced `doraflow`, a new Pythonic API for imperatively defining `dora` dataflows.
+- \[08/25\] Introduced `dora.builder`, a new Pythonic API for imperatively defining `dora` dataflows.
 - \[07/25\] Added Kornia rust nodes in the hub for V4L / Gstreamer cameras and Sobel image processing.
 - \[06/25\] Add support for git based node, dora-vggt for multi-camera depth estimation, and adding robot_descriptions_py as a default way to get urdfs within dora.
 - \[05/25\] Add support for dora-pytorch-kinematics for fk and ik, dora-mediapipe for pose estimation, dora-rustypot for rust serialport read/write, points2d and points3d visualization in rerun.
@@ -102,21 +102,23 @@ The node hub is available in the [**`dora-rs/node-hub`**](https://github.com/dor
 
 ## Examples
 
-| Type      | Title                                                                                          | Description                             | Last Commit                                                                                                        |
-| --------- | ---------------------------------------------------------------------------------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| Vision    | [YOLO](https://github.com/dora-rs/dora/blob/main/examples/python-dataflow)                     | Use YOLO to detect object within image. | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fpython-dataflow&label=%20)       |
-| ROS2      | [C++ ROS2 Example](https://github.com/dora-rs/dora/blob/main/examples/c++-ros2-dataflow)       | Example using C++ ROS2                  | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fc%2b%2b-ros2-dataflow&label=%20) |
-| ROS2      | [Rust ROS2 Example](https://github.com/dora-rs/dora/blob/main/examples/rust-ros2-dataflow)     | Example using Rust ROS2                 | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Frust-ros2-dataflow&label=%20)    |
-| ROS2      | [Python ROS2 Example](https://github.com/dora-rs/dora/blob/main/examples/python-ros2-dataflow) | Example using Python ROS2               | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fpython-ros2-dataflow&label=%20)  |
-| Benchmark | [GPU Benchmark](https://github.com/dora-rs/dora/blob/main/examples/cuda-benchmark)             | GPU Benchmark of dora-rs                | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fcuda-benchmark&label=%20)        |
-| Benchmark | [CPU Benchmark](https://github.com/dora-rs/dora-benchmark/blob/main)                           | CPU Benchmark of dora-rs                | ![License](https://img.shields.io/github/last-commit/dora-rs/dora-benchmark?path=dora-rs&label=%20)                |
-| Tutorial  | [Rust Example](https://github.com/dora-rs/dora/blob/main/examples/rust-dataflow)               | Example using Rust                      | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Frust-dataflow&label=%20)         |
-| Tutorial  | [Python Example](https://github.com/dora-rs/dora/blob/main/examples/python-dataflow)           | Example using Python                    | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fpython-dataflow&label=%20)       |
-| Tutorial  | [CMake Example](https://github.com/dora-rs/dora/blob/main/examples/cmake-dataflow)             | Example using CMake                     | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fcmake-dataflow&label=%20)        |
-| Tutorial  | [C Example](https://github.com/dora-rs/dora/blob/main/examples/c-dataflow)                     | Example with C node                     | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fc-dataflow&label=%20)            |
-| Tutorial  | [CUDA Example](https://github.com/dora-rs/dora/blob/main/examples/cuda-benchmark)              | Example using CUDA Zero Copy            | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fcuda-benchmark&label=%20)        |
-| Tutorial  | [C++ Example](https://github.com/dora-rs/dora/blob/main/examples/c++-dataflow)                 | Example with C++ node                   | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fc%2b%2b-dataflow&label=%20)      |
-| Tutorial  | [doraflow Examples](https://github.com/dora-rs/dora/blob/main/examples/doraflow)               | Examples using the new Pythonic API.    | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fdoraflow&label=%20)              |
+| Type      | Title                                                                                                          | Description                             | Last Commit                                                                                                          |
+| --------- | -------------------------------------------------------------------------------------------------------------- | --------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| Vision    | [YOLO](https://github.com/dora-rs/dora/blob/main/examples/python-dataflow)                                     | Use YOLO to detect object within image. | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fpython-dataflow&label=%20)         |
+| ROS2      | [C++ ROS2 Example](https://github.com/dora-rs/dora/blob/main/examples/c++-ros2-dataflow)                       | Example using C++ ROS2                  | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fc%2b%2b-ros2-dataflow&label=%20)   |
+| ROS2      | [Rust ROS2 Example](https://github.com/dora-rs/dora/blob/main/examples/rust-ros2-dataflow)                     | Example using Rust ROS2                 | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Frust-ros2-dataflow&label=%20)      |
+| ROS2      | [Python ROS2 Example](https://github.com/dora-rs/dora/blob/main/examples/python-ros2-dataflow)                 | Example using Python ROS2               | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fpython-ros2-dataflow&label=%20)    |
+| Benchmark | [GPU Benchmark](https://github.com/dora-rs/dora/blob/main/examples/cuda-benchmark)                             | GPU Benchmark of dora-rs                | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fcuda-benchmark&label=%20)          |
+| Benchmark | [CPU Benchmark](https://github.com/dora-rs/dora-benchmark/blob/main)                                           | CPU Benchmark of dora-rs                | ![License](https://img.shields.io/github/last-commit/dora-rs/dora-benchmark?path=dora-rs&label=%20)                  |
+| Tutorial  | [Rust Example](https://github.com/dora-rs/dora/blob/main/examples/rust-dataflow)                               | Example using Rust                      | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Frust-dataflow&label=%20)           |
+| Tutorial  | [Python Example](https://github.com/dora-rs/dora/blob/main/examples/python-dataflow)                           | Example using Python                    | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fpython-dataflow&label=%20)         |
+| Tutorial  | [CMake Example](https://github.com/dora-rs/dora/blob/main/examples/cmake-dataflow)                             | Example using CMake                     | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fcmake-dataflow&label=%20)          |
+| Tutorial  | [C Example](https://github.com/dora-rs/dora/blob/main/examples/c-dataflow)                                     | Example with C node                     | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fc-dataflow&label=%20)              |
+| Tutorial  | [CUDA Example](https://github.com/dora-rs/dora/blob/main/examples/cuda-benchmark)                              | Example using CUDA Zero Copy            | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fcuda-benchmark&label=%20)          |
+| Tutorial  | [C++ Example](https://github.com/dora-rs/dora/blob/main/examples/c++-dataflow)                                 | Example with C++ node                   | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fc%2b%2b-dataflow&label=%20)        |
+| Tutorial  | [Python Dataflow Builder Examples](https://github.com/dora-rs/dora/blob/main/examples/python-dataflow-builder) | Examples using the new Pythonic API.    | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fpython-dataflow-builder&label=%20) |
+
+=
 
 ## Getting Started
 
