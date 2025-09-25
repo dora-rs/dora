@@ -31,10 +31,12 @@ The script automatically installs the following packages:
 ### `add_input(name, source)`
 
 Defines an input port for a node. The input can come from:
+
 - **Timer source**: `"dora/timer/millis/20"` creates a timer that ticks every 20ms
 - **Another node's output**: Use the output object returned by `add_output()`
 
 Examples from the code:
+
 ```python
 # Timer input - triggers camera capture every 20ms
 camera.add_input("tick", "dora/timer/millis/20")
@@ -52,6 +54,7 @@ plot.add_input("boxes2d", bbox_output)
 Defines an output port for a node and returns an output object that can be used as input for other nodes.
 
 Examples from the code:
+
 ```python
 # Camera outputs images
 camera_image = camera.add_output("image")
@@ -70,7 +73,7 @@ Run the example:
 python simple_example.py
 ```
 
-To skip the build and run steps (useful for testing YAML generation only):
+To skip the build (useful for testing YAML generation only):
 
 ```bash
 NO_BUILD=1 python simple_example.py
