@@ -13,8 +13,8 @@ on:
   workflow_dispatch:
 
 concurrency:
-    group: ${{ github.workflow }}-${{ github.ref }}
-    cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   RUST_LOG: DEBUG,uv=trace
@@ -406,6 +406,10 @@ jobs:
           dora destroy
           sleep 5
 
+
+          # Test Dora Python Dataflow builder
+          python examples/python-dataflow-builder/simple_example.py
+
           # Run Python queue latency test
           echo "Running CI Queue Latency Test"
           dora run tests/queue_size_latest_data_python/dataflow.yaml --uv
@@ -559,6 +563,6 @@ jobs:
     name: "Check for specified `rust-version`"
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
-    - uses: taiki-e/install-action@cargo-hack
-    - run: cargo hack check --all-targets --rust-version --workspace --ignore-private --locked
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@cargo-hack
+      - run: cargo hack check --all-targets --rust-version --workspace --ignore-private --locked
