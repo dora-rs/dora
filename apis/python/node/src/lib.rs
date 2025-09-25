@@ -376,13 +376,42 @@ pub fn resolve_dataflow(dataflow: String) -> eyre::Result<PathBuf> {
     Ok(dataflow)
 }
 
+/// Build a Dataflow locally
+///
+///
+/// :type dataflow_path: str
+/// :type uv: bool, optional
+/// :type coordinator_addr: str, optional
+/// :type coordinator_port: int, optional
+/// :type force_local: bool, optional
+/// :rtype: None
+#[pyfunction]
+#[pyo3(signature = (dataflow_path, uv=None, coordinator_addr=None, coordinator_port=None, force_local=false))]
+pub fn build(
+    dataflow_path: String,
+    uv: Option<bool>,
+    coordinator_addr: Option<String>,
+    coordinator_port: Option<u16>,
+    force_local: bool,
+) -> eyre::Result<()> {
+    dora_cli::build(
+        dataflow_path,
+        coordinator_addr.map(|addr| addr.parse().unwrap()),
+        coordinator_port,
+        uv.unwrap_or_default(),
+        force_local,
+    )
+}
+
 /// Run a Dataflow
 ///
+/// :type dataflow_path: str
+/// :type uv: bool, optional
 /// :rtype: None
 #[pyfunction]
 #[pyo3(signature = (dataflow_path, uv=None))]
 pub fn run(dataflow_path: String, uv: Option<bool>) -> eyre::Result<()> {
-    dora_cli::run_func(dataflow_path, uv.unwrap_or_default())
+    dora_cli::run(dataflow_path, uv.unwrap_or_default())
 }
 
 #[pymodule]
@@ -391,6 +420,7 @@ fn dora(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
 
     m.add_function(wrap_pyfunction!(start_runtime, &m)?)?;
     m.add_function(wrap_pyfunction!(run, &m)?)?;
+    m.add_function(wrap_pyfunction!(build, &m)?)?;
     m.add_class::<Node>()?;
     m.setattr("__version__", env!("CARGO_PKG_VERSION"))?;
     m.setattr("__author__", "Dora-rs Authors")?;
