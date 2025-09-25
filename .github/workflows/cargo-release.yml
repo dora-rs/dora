@@ -79,7 +79,6 @@ jobs:
           publish_if_not_exists dora-metrics
           publish_if_not_exists dora-download
           publish_if_not_exists dora-core
-          publish_if_not_exists communication-layer-pub-sub
           publish_if_not_exists communication-layer-request-reply
           publish_if_not_exists shared-memory-server
           publish_if_not_exists dora-arrow-convert
