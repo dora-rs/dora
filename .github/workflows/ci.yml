@@ -409,7 +409,7 @@ jobs:
 
 
           # Test Dora Python Dataflow builder
-          python examples/python-dataflow-builder/simple_example.py
+          uv run examples/python-dataflow-builder/simple_example.py
 
           # Run Python queue latency test
           echo "Running CI Queue Latency Test"
