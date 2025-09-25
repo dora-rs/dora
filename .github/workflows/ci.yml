@@ -18,6 +18,7 @@ concurrency:
 
 env:
   RUST_LOG: DEBUG
+  CI: true
 
 jobs:
   test:
