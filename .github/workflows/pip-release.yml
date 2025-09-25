@@ -63,6 +63,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: 3.8
+      - run: rustup default stable
+      - run: rustup update
       - uses: Swatinem/rust-cache@v2
         with:
           cache-provider: buildjet
@@ -75,7 +77,7 @@ jobs:
           args: --release --out dist --zig
           manylinux: manylinux_2_28
           working-directory: ${{ matrix.repository.path }}
-          before-script-linux: rustup default stable && rustup update && sudo apt-get install libatomic1-i386-cross libatomic1-armhf-cross && mkdir -p $HOME/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/i686-unknown-linux-gnu/lib/ && ln -s /usr/i686-linux-gnu/lib/libatomic.so.1 $HOME/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/i686-unknown-linux-gnu/lib/libatomic.so && ln -s /usr/i686-linux-gnu/lib/libatomic.so.1 $HOME/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/i686-unknown-linux-gnu/lib/libatomic.so.1 && ln -s /usr/i686-linux-gnu/lib/libatomic.so.1 /opt/hostedtoolcache/Python/3.8.18/x64/lib/libatomic.so.1 && mkdir -p $HOME/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/armv7-unknown-linux-gnueabihf/lib/ && ln -s /usr/arm-linux-gnueabihf/lib/libatomic.so.1 $HOME/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/armv7-unknown-linux-gnueabihf/lib/libatomic.so
+          before-script-linux: sudo apt-get install libatomic1-i386-cross libatomic1-armhf-cross && mkdir -p $HOME/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/i686-unknown-linux-gnu/lib/ && ln -s /usr/i686-linux-gnu/lib/libatomic.so.1 $HOME/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/i686-unknown-linux-gnu/lib/libatomic.so && ln -s /usr/i686-linux-gnu/lib/libatomic.so.1 $HOME/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/i686-unknown-linux-gnu/lib/libatomic.so.1 && ln -s /usr/i686-linux-gnu/lib/libatomic.so.1 /opt/hostedtoolcache/Python/3.8.18/x64/lib/libatomic.so.1 && mkdir -p $HOME/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/armv7-unknown-linux-gnueabihf/lib/ && ln -s /usr/arm-linux-gnueabihf/lib/libatomic.so.1 $HOME/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/armv7-unknown-linux-gnueabihf/lib/libatomic.so
       - name: Upload wheels
         if: github.event_name == 'release'
         uses: actions/upload-artifact@v4
