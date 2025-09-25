@@ -376,7 +376,7 @@ pub fn resolve_dataflow(dataflow: String) -> eyre::Result<PathBuf> {
     Ok(dataflow)
 }
 
-/// Build a Dataflow locally
+/// Build a Dataflow, exactly the same way as `dora build` command line tool.
 ///
 ///
 /// :type dataflow_path: str
@@ -403,7 +403,7 @@ pub fn build(
     )
 }
 
-/// Run a Dataflow
+/// Run a Dataflow, exactly the same way as `dora run` command line tool.
 ///
 /// :type dataflow_path: str
 /// :type uv: bool, optional
