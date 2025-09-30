@@ -1600,7 +1600,7 @@ pub struct RunningDataflow {
     pending_drop_tokens: HashMap<DropToken, DropTokenInformation>,
 
     /// Keep handles to all timer tasks of this dataflow to cancel them on drop.
-    _timer_handles: Vec<futures::future::RemoteHandle<()>>,
+    _timer_handles: BTreeMap<Duration, futures::future::RemoteHandle<()>>,
     stop_sent: bool,
 
     /// Used in `open_inputs`.
@@ -1629,7 +1629,7 @@ impl RunningDataflow {
             dynamic_nodes: BTreeSet::new(),
             open_external_mappings: HashMap::new(),
             pending_drop_tokens: HashMap::new(),
-            _timer_handles: Vec::new(),
+            _timer_handles: BTreeMap::new(),
             stop_sent: false,
             empty_set: BTreeSet::new(),
             cascading_error_causes: Default::default(),
@@ -1644,6 +1644,9 @@ impl RunningDataflow {
         clock: &Arc<HLC>,
     ) -> eyre::Result<()> {
         for interval in self.timers.keys().copied() {
+            if self._timer_handles.get(&interval).is_some() {
+                continue;
+            }
             let events_tx = events_tx.clone();
             let dataflow_id = self.id;
             let clock = clock.clone();
@@ -1687,7 +1690,7 @@ impl RunningDataflow {
             };
             let (task, handle) = task.remote_handle();
             tokio::spawn(task);
-            self._timer_handles.push(handle);
+            self._timer_handles.insert(interval, handle);
         }
 
         Ok(())
