@@ -1,6 +1,6 @@
 [package]
 name = "dora-cli"
-version.workspace = true
+version = "0.3.9-post0"
 edition.workspace = true
 documentation.workspace = true
 description.workspace = true

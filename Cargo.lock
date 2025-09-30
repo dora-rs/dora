@@ -2385,7 +2385,7 @@ dependencies = [
 
 [[package]]
 name = "dora-cli"
-version = "0.3.9"
+version = "0.3.9-post0"
 dependencies = [
  "bat",
  "clap 4.5.20",
