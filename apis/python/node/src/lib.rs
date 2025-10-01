@@ -235,6 +235,11 @@ impl Node {
         )
     }
 
+    /// Returns the node configuration.
+    pub fn node_config(&mut self, py: Python) -> eyre::Result<PyObject> {
+        Ok(pythonize::pythonize(py, &self.node.get_mut().node_config()).map(|x| x.unbind())?)
+    }
+
     /// Returns the dataflow id.
     ///
     /// :rtype: str
