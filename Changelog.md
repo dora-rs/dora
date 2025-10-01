@@ -1,5 +1,81 @@
 # Changelog
 
+# v0.3.13 (2025-06-30)
+
+## What's Changed
+
+- docs: add kornia nodes and example in Readme by @edgarriba in https://github.com/dora-rs/dora/pull/1046
+- Fix CI/CD by removing bitsandbytes from dora-phi4 as well as increase disk space for dora-phi4 by @haixuanTao in https://github.com/dora-rs/dora/pull/1051
+- Add vggt based URDF visualisation by @haixuanTao in https://github.com/dora-rs/dora/pull/1044
+- docs: fix speech-to-speech example README by @chrislearn in https://github.com/dora-rs/dora/pull/1052
+- Add exif to avif for encoding focal information with avif file by @haixuanTao in https://github.com/dora-rs/dora/pull/1045
+- Made some changes to make clippy happy by @chrislearn in https://github.com/dora-rs/dora/pull/1053
+- CLI Rework by @sjfhsjfh in https://github.com/dora-rs/dora/pull/979
+- Removing support for macos x86 in order to unpin macos version by @haixuanTao in https://github.com/dora-rs/dora/pull/1048
+- fix: in c++ ros2 example, too few ticks. by @drindr in https://github.com/dora-rs/dora/pull/1060
+- Fix buffer not printing because it contains legacy ERROR message by @haixuanTao in https://github.com/dora-rs/dora/pull/1062
+- Add back pyo3 special method by @haixuanTao in https://github.com/dora-rs/dora/pull/1061
+- convert chinese character to pinyin in rerun by @haixuanTao in https://github.com/dora-rs/dora/pull/1049
+- Fix weird daemon folder by @haixuanTao in https://github.com/dora-rs/dora/pull/1064
+- Revert "Fix weird daemon folder" by @phil-opp in https://github.com/dora-rs/dora/pull/1065
+- Add dataset collection node for dora by @ShashwatPatil in https://github.com/dora-rs/dora/pull/1041
+- Remove rust--toolchain.toml and use rust-version in Cargo.toml by @chrislearn in https://github.com/dora-rs/dora/pull/1071
+- Fix many `cargo clippy` warning by @chrislearn in https://github.com/dora-rs/dora/pull/1070
+- Add proper documentation to `dora-node-api` crate by @phil-opp in https://github.com/dora-rs/dora/pull/1056
+- [node-hub] opencv-plot: allow specifying encoding and bbox format in uppercase letters by @dieu-detruit in https://github.com/dora-rs/dora/pull/1075
+- python api: added py.typed by @dieu-detruit in https://github.com/dora-rs/dora/pull/1078
+- Fix all clippy warning by @chrislearn in https://github.com/dora-rs/dora/pull/1076
+- Fix: Create working directory if it doesn't exist by @phil-opp in https://github.com/dora-rs/dora/pull/1066
+- doc: Node & Descriptor by @sjfhsjfh in https://github.com/dora-rs/dora/pull/1069
+- Improve build logging by @phil-opp in https://github.com/dora-rs/dora/pull/1067
+- chore: update json schema by @sjfhsjfh in https://github.com/dora-rs/dora/pull/1080
+- Document public `DYNAMIC_SOURCE` constant by @phil-opp in https://github.com/dora-rs/dora/pull/1082
+- Automate schema regeneration through CI by @phil-opp in https://github.com/dora-rs/dora/pull/1083
+- Update `schemars` crate to `v1.0.4` by @phil-opp in https://github.com/dora-rs/dora/pull/1085
+- Update JSON schema for `dora-core` by @github-actions[bot] in https://github.com/dora-rs/dora/pull/1086
+- Minor tweaks for JSON schema regeneration PR by @phil-opp in https://github.com/dora-rs/dora/pull/1087
+- Update JSON schema for `dora-core` by @github-actions[bot] in https://github.com/dora-rs/dora/pull/1088
+- Error if node with `git` field was not built before dataflow start by @phil-opp in https://github.com/dora-rs/dora/pull/1089
+- Update rust edition to 2024 by @chrislearn in https://github.com/dora-rs/dora/pull/1072
+- Add a MSRV CI job by @phil-opp in https://github.com/dora-rs/dora/pull/1094
+- Updates to rerun 0.24.0 + message type proposal by @rozgo in https://github.com/dora-rs/dora/pull/1096
+- Add mcp-host node and mcp-server node by @chrislearn in https://github.com/dora-rs/dora/pull/1063
+- Update speech-to-text doc by @chrislearn in https://github.com/dora-rs/dora/pull/1097
+- Add default readme for crates by @chrislearn in https://github.com/dora-rs/dora/pull/1102
+- Improve `renovate` config to open separate PRs for Rust and Python by @phil-opp in https://github.com/dora-rs/dora/pull/1107
+- Run cargo update by @phil-opp in https://github.com/dora-rs/dora/pull/1109
+- Run CI also when PRs are marked as ready for review by @phil-opp in https://github.com/dora-rs/dora/pull/1130
+- Feat/build arg with space by @drindr in https://github.com/dora-rs/dora/pull/1103
+- feat/path-with-env by @drindr in https://github.com/dora-rs/dora/pull/1104
+- Update Rust crate tracing-subscriber to v0.3.20 [SECURITY] by @renovate[bot] in https://github.com/dora-rs/dora/pull/1121
+- Downgrade `opentelemetry` to `v0.29` again in `dora-metrics` by @phil-opp in https://github.com/dora-rs/dora/pull/1132
+- Use debug logging in CI to debug `uv` lock deadlock by @phil-opp in https://github.com/dora-rs/dora/pull/1137
+- Fix typo in variable name by @phil-opp in https://github.com/dora-rs/dora/pull/1136
+- Fix build command execution by @Mivik in https://github.com/dora-rs/dora/pull/1140
+- add model endpoint to openai proxy server by @haixuanTao in https://github.com/dora-rs/dora/pull/1144
+- Auto-cancel previous CI jobs on new pushes by @phil-opp in https://github.com/dora-rs/dora/pull/1135
+- Move node-hub to separate repo by @phil-opp in https://github.com/dora-rs/dora/pull/1139
+- chore: Update Cargo.lock by @github-actions[bot] in https://github.com/dora-rs/dora/pull/1138
+- Replace `names` dependency with `petname` crate by @phil-opp in https://github.com/dora-rs/dora/pull/1146
+- Remove `communication-layer-pub-sub` crate by @phil-opp in https://github.com/dora-rs/dora/pull/1145
+- Fix Cargo.lock by @phil-opp in https://github.com/dora-rs/dora/pull/1147
+- Feat: doraflow api by @heyong4725 in https://github.com/dora-rs/dora/pull/1106
+- expose the node_config method in python's api by @drindr in https://github.com/dora-rs/dora/pull/1152
+- Fix typos by @haixuanTao in https://github.com/dora-rs/dora/pull/1153
+- chore: Update Cargo.lock by @github-actions[bot] in https://github.com/dora-rs/dora/pull/1150
+- Fix timer issue for multi dynamic nodes by @haixuanTao in https://github.com/dora-rs/dora/pull/1151
+
+## New Contributors
+
+- @edgarriba made their first contribution in https://github.com/dora-rs/dora/pull/1046
+- @chrislearn made their first contribution in https://github.com/dora-rs/dora/pull/1052
+- @drindr made their first contribution in https://github.com/dora-rs/dora/pull/1060
+- @dieu-detruit made their first contribution in https://github.com/dora-rs/dora/pull/1075
+- @github-actions[bot] made their first contribution in https://github.com/dora-rs/dora/pull/1086
+- @rozgo made their first contribution in https://github.com/dora-rs/dora/pull/1096
+
+**Full Changelog**: https://github.com/dora-rs/dora/compare/v0.3.12...v0.3.13
+
 ## v0.3.12 (2025-06-30)
 
 ## What's Changed

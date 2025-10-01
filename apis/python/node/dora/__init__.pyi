@@ -121,6 +121,9 @@ match event["id"]:
 case "image":
 ```"""
 
+    def node_config(self) -> dict:
+        """Returns the node configuration."""
+
     def recv_async(self, timeout: float=None) -> dict:
         """`.recv_async()` gives you the next input that the node has received asynchronously.
 It does not blocks until the next event becomes available.
