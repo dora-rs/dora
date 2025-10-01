@@ -38,7 +38,7 @@ pub async fn register(
         {
             Err(err) => {
                 warn!(
-                    "Could not connect to: {addr}, with error: {err}. Retring in {DAEMON_COORDINATOR_RETRY_INTERVAL:#?}.."
+                    "Could not connect to: {addr}, with error: {err}. Retrying in {DAEMON_COORDINATOR_RETRY_INTERVAL:#?}.."
                 );
                 sleep(DAEMON_COORDINATOR_RETRY_INTERVAL).await;
             }

@@ -79,7 +79,7 @@ fn get_ros_msgs_each_package<P: AsRef<Path>>(root_dir: P) -> Result<Vec<Package>
     }
     debug_assert!(
         !map.is_empty(),
-        "it seens that no package was generated from your AMENT_PREFIX_PATH directory"
+        "it seems that no package was generated from your AMENT_PREFIX_PATH directory"
     );
 
     let packages = map.into_values().collect();
