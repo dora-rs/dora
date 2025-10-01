@@ -236,6 +236,8 @@ impl Node {
     }
 
     /// Returns the node configuration.
+    ///
+    /// :rtype: dict
     pub fn node_config(&mut self, py: Python) -> eyre::Result<PyObject> {
         Ok(pythonize::pythonize(py, &self.node.get_mut().node_config()).map(|x| x.unbind())?)
     }
