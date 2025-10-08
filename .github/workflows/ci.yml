@@ -13,11 +13,12 @@ on:
   workflow_dispatch:
 
 concurrency:
-    group: ${{ github.workflow }}-${{ github.ref }}
-    cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
-  RUST_LOG: DEBUG,uv=trace
+  RUST_LOG: DEBUG
+  CI: true
 
 jobs:
   test:
@@ -27,7 +28,7 @@ jobs:
         platform: [ubuntu-latest, macos-latest, windows-latest]
       fail-fast: false
     runs-on: ${{ matrix.platform }}
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - name: Print available space (Windows only)
         run: Get-PSDrive
@@ -342,7 +343,7 @@ jobs:
           enable-cache: true
 
       - name: "Test CLI (Python)"
-        timeout-minutes: 45
+        timeout-minutes: 60
         # fail-fast by using bash shell explictly
         shell: bash
         run: |
@@ -405,6 +406,10 @@ jobs:
 
           dora destroy
           sleep 5
+
+
+          # Test Dora Python Dataflow builder
+          uv run examples/python-dataflow-builder/simple_example.py
 
           # Run Python queue latency test
           echo "Running CI Queue Latency Test"
@@ -559,6 +564,6 @@ jobs:
     name: "Check for specified `rust-version`"
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
-    - uses: taiki-e/install-action@cargo-hack
-    - run: cargo hack check --all-targets --rust-version --workspace --ignore-private --locked
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@cargo-hack
+      - run: cargo hack check --all-targets --rust-version --workspace --ignore-private --locked
