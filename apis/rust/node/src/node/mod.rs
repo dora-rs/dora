@@ -279,7 +279,7 @@ impl DoraNode {
     ///
     /// This JSON data is converted to the following Arrow array:
     ///
-    /// ```
+    /// ```text
     /// StructArray
     /// -- validity: [valid, ]
     /// [
