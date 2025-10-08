@@ -43,6 +43,10 @@ pub enum DaemonCommunication {
         socket_file: PathBuf,
     },
     Interactive,
+    IntegrationTest {
+        input_file: PathBuf,
+        output_file: PathBuf,
+    },
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

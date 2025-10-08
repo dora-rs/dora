@@ -75,6 +75,19 @@ impl EventStream {
         input_config: BTreeMap<DataId, Input>,
         clock: Arc<uhlc::HLC>,
     ) -> eyre::Result<Self> {
+        let integration_test = if let DaemonCommunication::IntegrationTest {
+            input_file,
+            output_file,
+        } = &daemon_communication
+        {
+            Some(DaemonChannel::init_integration_test(
+                input_file,
+                output_file,
+            )?)
+        } else {
+            None
+        };
+
         let channel = match daemon_communication {
             DaemonCommunication::Shmem {
                 daemon_events_region_id,
@@ -91,6 +104,10 @@ impl EventStream {
                 })?
             }
             DaemonCommunication::Interactive => DaemonChannel::Interactive(Default::default()),
+            DaemonCommunication::IntegrationTest {
+                input_file,
+                output_file,
+            } => DaemonChannel::init_integration_test(input_file, output_file)?,
         };
 
         let close_channel = match daemon_communication {

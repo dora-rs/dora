@@ -9,12 +9,16 @@ use shared_memory_server::{ShmemClient, ShmemConf};
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::{
+    fs::File,
     net::{SocketAddr, TcpStream},
+    path::Path,
     time::Duration,
 };
 
+use crate::daemon_connection::integration_testing::IntegrationTestingEvents;
 use crate::daemon_connection::interactive::InteractiveEvents;
 
+mod integration_testing;
 mod interactive;
 mod tcp;
 #[cfg(unix)]
@@ -26,6 +30,7 @@ pub enum DaemonChannel {
     #[cfg(unix)]
     UnixDomain(UnixStream),
     Interactive(InteractiveEvents),
+    IntegrationTest(IntegrationTestingEvents),
 }
 
 impl DaemonChannel {
@@ -86,6 +91,22 @@ impl DaemonChannel {
             #[cfg(unix)]
             DaemonChannel::UnixDomain(stream) => unix_domain::request(stream, request),
             DaemonChannel::Interactive(events) => events.request(request),
+            DaemonChannel::IntegrationTest(events) => events.request(request),
         }
+    }
+
+    pub(crate) fn init_integration_test(
+        input_file_path: &Path,
+        output_file_path: &Path,
+    ) -> eyre::Result<Self> {
+        let input_file = File::open(input_file_path)
+            .with_context(|| format!("failed to open input file {}", input_file_path.display()))?;
+        let output_file = File::create(output_file_path).with_context(|| {
+            format!("failed to create input file {}", output_file_path.display())
+        })?;
+        Ok(Self::IntegrationTest(IntegrationTestingEvents::new(
+            input_file,
+            output_file,
+        )))
     }
 }
