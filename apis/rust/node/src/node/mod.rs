@@ -27,6 +27,7 @@ use shared_memory_extended::{Shmem, ShmemConf};
 use std::{
     collections::{BTreeSet, HashMap, VecDeque},
     ops::{Deref, DerefMut},
+    path::PathBuf,
     sync::Arc,
     time::Duration,
 };
@@ -314,6 +315,37 @@ impl DoraNode {
                 outputs: Default::default(),
             },
             daemon_communication: DaemonCommunication::Interactive,
+            dataflow_descriptor: serde_yaml::Value::Null,
+            dynamic: false,
+        };
+        let (mut node, events) = Self::init(node_config)?;
+        node.interactive = true;
+        Ok((node, events))
+    }
+
+    fn init_testing(
+        input_file: PathBuf,
+        output_file: PathBuf,
+    ) -> eyre::Result<(Self, EventStream)> {
+        #[cfg(feature = "tracing")]
+        {
+            TracingBuilder::new("node")
+                .with_stdout("debug")
+                .build()
+                .wrap_err("failed to set up tracing subscriber")?;
+        }
+
+        let node_config = NodeConfig {
+            dataflow_id: DataflowId::new_v4(),
+            node_id: "".parse()?,
+            run_config: NodeRunConfig {
+                inputs: Default::default(),
+                outputs: Default::default(),
+            },
+            daemon_communication: DaemonCommunication::IntegrationTest {
+                input_file,
+                output_file,
+            },
             dataflow_descriptor: serde_yaml::Value::Null,
             dynamic: false,
         };
