@@ -1,11 +1,10 @@
 use std::{
-    io::{Read, stdout},
+    io::{BufRead, Read, stdout},
     sync::Arc,
     time::Duration,
 };
 
-use arrow::array::{Array, RecordBatch};
-use arrow_schema::{Field, Schema};
+use arrow::array::{Array, ArrayData};
 use colored::Colorize;
 use dora_core::{metadata::ArrowTypeInfoExt, uhlc::HLC};
 use dora_message::{
@@ -119,29 +118,24 @@ impl InteractiveEvents {
             let (data, type_info) = loop {
                 let stdout_lock = stdout().lock();
                 let data = inquire::Text::new("Data")
-                    .with_help_message("optional, String or JSON")
+                    .with_help_message("optional, String or JSON, esc to skip")
                     .prompt_skippable()?;
                 std::mem::drop(stdout_lock);
                 let typed_data = if let Some(data) = data {
-                    if data.trim().starts_with('{') {
-                        // input is JSON data
-                        let batch = match read_json_as_arrow_struct(&data) {
-                            Ok(array) => array,
-                            Err(err) => {
-                                eprintln!("{}", format!("{err}").red());
-                                continue;
-                            }
-                        };
-                        let array = batch.column(0).to_data();
-                        let total_len = required_data_size(&array);
-                        let mut buf = vec![0; total_len];
-                        let type_info = copy_array_into_sample(buf.as_mut_slice(), &array);
+                    // input is JSON data
+                    let array = match read_json_as_arrow(data.as_bytes()) {
+                        Ok(array) => array,
+                        Err(err) => {
+                            eprintln!("{}", format!("{err}").red());
+                            continue;
+                        }
+                    };
 
-                        (Some(buf), type_info)
-                    } else {
-                        let type_info = ArrowTypeInfo::byte_array(data.len());
-                        (Some(data.into_bytes()), type_info)
-                    }
+                    let total_len = required_data_size(&array);
+                    let mut buf = vec![0; total_len];
+                    let type_info = copy_array_into_sample(buf.as_mut_slice(), &array);
+
+                    (Some(buf), type_info)
                 } else {
                     (None, ArrowTypeInfo::empty())
                 };
@@ -158,24 +152,41 @@ impl InteractiveEvents {
     }
 }
 
-fn read_json_as_arrow_struct(data: &str) -> eyre::Result<RecordBatch> {
-    let schema_inner = arrow_json::reader::infer_json_schema(data.as_bytes(), None)?.0;
-    // wrap data to get a array of structs
-    let data = "{ \"inner\":"
-        .as_bytes()
-        .chain(data.as_bytes())
-        .chain("}".as_bytes());
-    let schema = Schema::new(vec![Field::new(
-        "inner",
-        arrow_schema::DataType::Struct(schema_inner.fields),
-        false,
-    )]);
+fn read_json_as_arrow(data: &[u8]) -> eyre::Result<ArrayData> {
+    match arrow_json::reader::infer_json_schema(wrapped(data), None) {
+        Ok((schema, _)) => read_from_json_with_schema(wrapped(data), schema),
+        Err(_) => {
+            // try again with quoting the input to treat it as a string
+            match arrow_json::reader::infer_json_schema(wrapped_quoted(data), None) {
+                Ok((schema, _)) => read_from_json_with_schema(wrapped_quoted(data), schema),
+                Err(err) => eyre::bail!("failed to infer JSON schema: {err}"),
+            }
+        }
+    }
+}
 
-    let mut reader = arrow_json::reader::ReaderBuilder::new(Arc::new(schema)).build(data)?;
+fn read_from_json_with_schema(
+    data: impl BufRead,
+    schema: arrow_schema::Schema,
+) -> eyre::Result<ArrayData> {
+    let mut reader = arrow_json::reader::ReaderBuilder::new(Arc::new(schema))
+        .build(data)
+        .context("failed to build JSON reader")?;
     let batch = reader
         .next()
         .context("no record batch in JSON")?
         .context("failed to read record batch")?;
 
-    Ok(batch)
+    Ok(batch.column(0).to_data())
+}
+
+// wrap data into JSON object to also allow bare JSON values
+fn wrapped(data: impl BufRead) -> impl BufRead {
+    "{ \"inner\":".as_bytes().chain(data).chain("}".as_bytes())
+}
+
+// wrap data into JSON object to also allow bare JSON values
+fn wrapped_quoted(data: impl BufRead) -> impl BufRead {
+    let quoted = [b'"'].chain(data).chain([b'"'].as_slice());
+    wrapped(quoted)
 }

@@ -248,7 +248,8 @@ impl DoraNode {
     /// are printed to the terminal. Then we get another prompt for the next input.
     ///
     /// If you want to send an input with data, you can either send it as text (for string data)
-    /// or as a JSON object (for struct data). Other data types are not supported currently.
+    /// or as a JSON object (for struct, string, or array data). Other data types are not supported
+    /// currently.
     ///
     /// Empty input IDs are interpreted as stop instructions:
     ///
