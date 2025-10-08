@@ -265,6 +265,37 @@ impl DoraNode {
     ///
     /// In addition to the node output, we see log messages for the different events that the node
     /// reports. After `OutputsDone`, the node should exit.
+    ///
+    /// ### JSON data
+    ///
+    /// In addition to text input, the `Data` prompt also supports JSON objects, which will be
+    /// converted to Apache Arrow struct arrays:
+    ///
+    /// ```bash
+    /// Node asks for next input
+    /// > Input ID some_input
+    /// > Data { "field_1": 42, "field_2": { "inner": "foo" } }
+    /// ```
+    ///
+    /// This JSON data is converted to the following Arrow array:
+    ///
+    /// ```
+    /// StructArray
+    /// -- validity: [valid, ]
+    /// [
+    ///   -- child 0: "field_1" (Int64)
+    ///      PrimitiveArray<Int64>
+    ///      [42,]
+    ///   -- child 1: "field_2" (Struct([Field { name: "inner", data_type: Utf8, nullable: true, dict_id: 0, dict_is_ordered: false, metadata: {} }]))
+    ///      StructArray
+    ///      -- validity: [valid,]
+    ///      [
+    ///        -- child 0: "inner" (Utf8)
+    ///        StringArray
+    ///        ["foo",]
+    ///      ]
+    /// ]
+    /// ```
     pub fn init_interactive() -> eyre::Result<(Self, EventStream)> {
         #[cfg(feature = "tracing")]
         {
