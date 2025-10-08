@@ -113,16 +113,20 @@ impl Scheduler {
         };
 
         // Enforce queue size limit
-        if let Some((size, queue)) = self.event_queues.get_mut(event_id) {
-            // Remove the oldest event if at limit
-            if &queue.len() >= size {
-                tracing::debug!("Discarding event for input `{event_id}` due to queue size limit");
-                queue.pop_front();
-            }
-            queue.push_back(event);
-        } else {
-            unimplemented!("Received an event that was not in the definition event id description.")
+        let (size, queue) = self
+            .event_queues
+            .entry(event_id.clone())
+            .or_insert_with(|| {
+                self.last_used.push_back(event_id.clone());
+                (1, Default::default())
+            });
+
+        // Remove the oldest event if at limit
+        if &queue.len() >= size {
+            tracing::debug!("Discarding event for input `{event_id}` due to queue size limit");
+            queue.pop_front();
         }
+        queue.push_back(event);
     }
 
     pub(crate) fn next(&mut self) -> Option<EventItem> {
