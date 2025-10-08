@@ -9,6 +9,7 @@ use dora_core::{
     uhlc::{self, HLC},
 };
 use dora_message::{
+    BuildId, DataflowId, SessionId,
     cli_to_coordinator::ControlRequest,
     common::{DaemonId, GitSource},
     coordinator_to_cli::{
@@ -20,13 +21,13 @@ use dora_message::{
     },
     daemon_to_coordinator::{DaemonCoordinatorReply, DataflowDaemonResult},
     descriptor::{Descriptor, ResolvedNode},
-    BuildId, DataflowId, SessionId,
 };
-use eyre::{bail, eyre, ContextCompat, Result, WrapErr};
-use futures::{future::join_all, stream::FuturesUnordered, Future, Stream, StreamExt};
+use eyre::{ContextCompat, Result, WrapErr, bail, eyre};
+use futures::{Future, Stream, StreamExt, future::join_all, stream::FuturesUnordered};
 use futures_concurrency::stream::Merge;
 use itertools::Itertools;
 use log_subscriber::LogSubscriber;
+use petname::petname;
 use run::SpawnedDataflow;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -122,7 +123,9 @@ fn resolve_name(
             Ok(*uuid)
         } else {
             // TODO: Index the archived dataflows in order to return logs based on the index.
-            bail!("multiple archived dataflows found with name `{name}`, Please provide the UUID instead.");
+            bail!(
+                "multiple archived dataflows found with name `{name}`, Please provide the UUID instead."
+            );
         }
     } else if let [uuid] = uuids.as_slice() {
         Ok(*uuid)
@@ -285,7 +288,9 @@ async fn start_inner(
                             );
                         }
                         Err(err) => {
-                            tracing::warn!("failed to register daemon connection for daemon `{daemon_id}`: {err}");
+                            tracing::warn!(
+                                "failed to register daemon connection for daemon `{daemon_id}`: {err}"
+                            );
                         }
                     }
                 }
@@ -341,7 +346,9 @@ async fn start_inner(
                     }
                 }
                 DataflowEvent::DataflowFinishedOnDaemon { daemon_id, result } => {
-                    tracing::debug!("coordinator received DataflowFinishedOnDaemon ({daemon_id:?}, result: {result:?})");
+                    tracing::debug!(
+                        "coordinator received DataflowFinishedOnDaemon ({daemon_id:?}, result: {result:?})"
+                    );
                     match running_dataflows.entry(uuid) {
                         std::collections::hash_map::Entry::Occupied(mut entry) => {
                             let dataflow = entry.get_mut();
@@ -465,7 +472,7 @@ async fn start_inner(
                             local_working_dir,
                             uv,
                         } => {
-                            let name = name.or_else(|| names::Generator::default().next());
+                            let name = name.or_else(|| petname(2, "-"));
 
                             let inner = async {
                                 if let Some(name) = name.as_deref() {
@@ -474,7 +481,9 @@ async fn start_inner(
                                         .values()
                                         .any(|d: &RunningDataflow| d.name.as_deref() == Some(name))
                                     {
-                                        bail!("there is already a running dataflow with name `{name}`");
+                                        bail!(
+                                            "there is already a running dataflow with name `{name}`"
+                                        );
                                     }
                                 }
                                 let dataflow = start_dataflow(
@@ -745,6 +754,10 @@ async fn start_inner(
                         dataflow
                             .log_subscribers
                             .push(LogSubscriber::new(level, connection));
+                        let buffered = std::mem::take(&mut dataflow.buffered_log_messages);
+                        for message in buffered {
+                            send_log_message(&mut dataflow.log_subscribers, &message).await;
+                        }
                     }
                 }
                 ControlEvent::BuildLogSubscribe {
@@ -756,6 +769,10 @@ async fn start_inner(
                         build
                             .log_subscribers
                             .push(LogSubscriber::new(level, connection));
+                        let buffered = std::mem::take(&mut build.buffered_log_messages);
+                        for message in buffered {
+                            send_log_message(&mut build.log_subscribers, &message).await;
+                        }
                     }
                 }
             },
@@ -815,12 +832,21 @@ async fn start_inner(
             Event::Log(message) => {
                 if let Some(dataflow_id) = &message.dataflow_id {
                     if let Some(dataflow) = running_dataflows.get_mut(dataflow_id) {
-                        send_log_message(&mut dataflow.log_subscribers, &message).await;
+                        if dataflow.log_subscribers.is_empty() {
+                            // buffer log message until there are subscribers
+                            dataflow.buffered_log_messages.push(message);
+                        } else {
+                            send_log_message(&mut dataflow.log_subscribers, &message).await;
+                        }
                     }
-                }
-                if let Some(build_id) = message.build_id {
-                    if let Some(build) = running_builds.get_mut(&build_id) {
-                        send_log_message(&mut build.log_subscribers, &message).await;
+                } else if let Some(build_id) = &message.build_id {
+                    if let Some(build) = running_builds.get_mut(build_id) {
+                        if build.log_subscribers.is_empty() {
+                            // buffer log message until there are subscribers
+                            build.buffered_log_messages.push(message);
+                        } else {
+                            send_log_message(&mut build.log_subscribers, &message).await;
+                        }
                     }
                 }
             }
@@ -858,7 +884,9 @@ async fn start_inner(
                     }
                 }
                 None => {
-                    tracing::warn!("received DataflowSpawnResult, but no matching dataflow in `running_dataflows` map");
+                    tracing::warn!(
+                        "received DataflowSpawnResult, but no matching dataflow in `running_dataflows` map"
+                    );
                 }
             },
             Event::DataflowSpawnResult {
@@ -884,7 +912,9 @@ async fn start_inner(
                     };
                 }
                 None => {
-                    tracing::warn!("received DataflowSpawnResult, but no matching dataflow in `running_dataflows` map");
+                    tracing::warn!(
+                        "received DataflowSpawnResult, but no matching dataflow in `running_dataflows` map"
+                    );
                 }
             },
         }
@@ -984,6 +1014,8 @@ struct RunningBuild {
     errors: Vec<String>,
     build_result: CachedResult,
 
+    /// Buffer for log messages that were sent before there were any subscribers.
+    buffered_log_messages: Vec<LogMessage>,
     log_subscribers: Vec<LogSubscriber>,
 
     pending_build_results: BTreeSet<DaemonId>,
@@ -1002,6 +1034,8 @@ struct RunningDataflow {
     spawn_result: CachedResult,
     stop_reply_senders: Vec<tokio::sync::oneshot::Sender<eyre::Result<ControlRequestReply>>>,
 
+    /// Buffer for log messages that were sent before there were any subscribers.
+    buffered_log_messages: Vec<LogMessage>,
     log_subscribers: Vec<LogSubscriber>,
 
     pending_spawn_results: BTreeSet<DaemonId>,
@@ -1323,6 +1357,7 @@ async fn build_dataflow(
     Ok(RunningBuild {
         errors: Vec::new(),
         build_result: CachedResult::default(),
+        buffered_log_messages: Vec::new(),
         log_subscribers: Vec::new(),
         pending_build_results: daemons,
     })
@@ -1404,6 +1439,7 @@ async fn start_dataflow(
         nodes,
         spawn_result: CachedResult::default(),
         stop_reply_senders: Vec::new(),
+        buffered_log_messages: Vec::new(),
         log_subscribers: Vec::new(),
         pending_spawn_results: daemons,
     })

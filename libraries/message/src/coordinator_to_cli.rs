@@ -6,7 +6,7 @@ use std::{
 use uuid::Uuid;
 
 pub use crate::common::{LogLevel, LogMessage, NodeError, NodeErrorCause, NodeExitStatus};
-use crate::{common::DaemonId, id::NodeId, BuildId};
+use crate::{BuildId, common::DaemonId, id::NodeId};
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub enum ControlRequestReply {

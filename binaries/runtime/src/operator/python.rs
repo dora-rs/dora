@@ -3,21 +3,20 @@
 use super::{OperatorEvent, StopReason};
 use dora_core::{
     config::{NodeId, OperatorId},
-    descriptor::{source_is_url, Descriptor, PythonSource},
+    descriptor::{Descriptor, PythonSource, source_is_url},
 };
 use dora_download::download_file;
-use dora_node_api::{merged::MergedEvent, Event, Parameter};
+use dora_node_api::{Event, Parameter, merged::MergedEvent};
 use dora_operator_api_python::PyEvent;
 use dora_operator_api_types::DoraStatus;
-use eyre::{bail, eyre, Context, Result};
+use eyre::{Context, Result, bail, eyre};
 use pyo3::ffi::c_str;
 use pyo3::{
-    pyclass,
+    Py, PyAny, Python, pyclass,
     types::{IntoPyDict, PyAnyMethods, PyDict, PyDictMethods, PyTracebackMethods},
-    Py, PyAny, Python,
 };
 use std::{
-    panic::{catch_unwind, AssertUnwindSafe},
+    panic::{AssertUnwindSafe, catch_unwind},
     path::Path,
 };
 use tokio::sync::{mpsc::Sender, oneshot};
@@ -295,16 +294,15 @@ mod callback_impl {
     use dora_core::metadata::ArrowTypeInfoExt;
     use dora_message::metadata::ArrowTypeInfo;
     use dora_node_api::{
-        arrow_utils::{copy_array_into_sample, required_data_size},
         ZERO_COPY_THRESHOLD,
+        arrow_utils::{copy_array_into_sample, required_data_size},
     };
     use dora_operator_api_python::pydict_to_metadata;
     use dora_tracing::telemetry::deserialize_context;
-    use eyre::{eyre, Context, Result};
+    use eyre::{Context, Result, eyre};
     use pyo3::{
-        pymethods,
+        Bound, PyObject, Python, pymethods,
         types::{PyBytes, PyBytesMethods, PyDict},
-        Bound, PyObject, Python,
     };
     use tokio::sync::oneshot;
     use tracing::{field, span};

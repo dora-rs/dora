@@ -12,7 +12,7 @@ use serde::ser::SerializeTuple;
 
 use crate::typed::TypeInfo;
 
-use super::{error, TypedValue};
+use super::{TypedValue, error};
 
 /// Serialize an array with known size as tuple.
 pub struct ArraySerializeWrapper<'a> {

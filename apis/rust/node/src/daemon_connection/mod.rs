@@ -1,10 +1,10 @@
 use dora_core::{config::NodeId, uhlc::Timestamp};
 use dora_message::{
+    DataflowId,
     daemon_to_node::DaemonReply,
     node_to_daemon::{DaemonRequest, NodeRegisterRequest, Timestamped},
-    DataflowId,
 };
-use eyre::{bail, eyre, Context};
+use eyre::{Context, bail, eyre};
 use shared_memory_server::{ShmemClient, ShmemConf};
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;

@@ -1,5 +1,5 @@
 use dora_message::{
-    config::{format_duration, Input, InputMapping, UserInputMapping},
+    config::{Input, InputMapping, UserInputMapping, format_duration},
     descriptor::{CoreNodeKind, OperatorDefinition},
     id::{DataId, NodeId},
 };
@@ -174,7 +174,7 @@ fn visualize_inputs(
     for (input_id, input) in inputs {
         match &input.mapping {
             mapping @ InputMapping::Timer { .. } => {
-                writeln!(flowchart, "  {} -- {input_id} --> {target}", mapping).unwrap();
+                writeln!(flowchart, "  {mapping} -- {input_id} --> {target}").unwrap();
             }
             InputMapping::User(mapping) => {
                 visualize_user_mapping(mapping, target, nodes, input_id, flowchart)

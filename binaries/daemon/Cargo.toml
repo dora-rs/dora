@@ -2,7 +2,9 @@
 name = "dora-daemon"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 documentation.workspace = true
+readme.workspace = true
 description.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -13,7 +15,7 @@ repository.workspace = true
 default = ["tracing", "telemetry"]
 tracing = ["dep:dora-tracing"]
 # telemetry flag enables to trace dora-daemon as well as send ticks with opentelemetry context
-# for distributed tracing. 
+# for distributed tracing.
 telemetry = ["dep:tracing-opentelemetry"]
 
 [dependencies]
@@ -21,7 +23,7 @@ eyre = "0.6.8"
 tokio = { version = "1.20.1", features = ["full"] }
 tokio-stream = { version = "0.1.11", features = ["net"] }
 tracing = "0.1.36"
-tracing-opentelemetry = { version = "0.18.0", optional = true }
+tracing-opentelemetry = { version = "0.24.0", optional = true }
 futures-concurrency = "7.1.0"
 serde_json = "1.0.86"
 dora-core = { workspace = true, features = ["build"] }
@@ -48,3 +50,5 @@ url = "2.5.4"
 git2 = { workspace = true }
 dunce = "1.0.5"
 itertools = "0.14"
+
+shellexpand = "3.1.1"

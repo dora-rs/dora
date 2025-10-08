@@ -9,7 +9,7 @@ use serde::ser::{SerializeSeq, SerializeTuple};
 
 use crate::typed::TypeInfo;
 
-use super::{error, TypedValue};
+use super::{TypedValue, error};
 
 /// Serialize a variable-sized sequence.
 pub struct SequenceSerializeWrapper<'a> {

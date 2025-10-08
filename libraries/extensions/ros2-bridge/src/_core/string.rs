@@ -91,7 +91,7 @@ impl FFIString {
         if self.is_empty() {
             Ok("")
         } else {
-            CStr::from_ptr(self.data).to_str()
+            unsafe { CStr::from_ptr(self.data).to_str() }
         }
     }
 }
@@ -100,7 +100,7 @@ impl FFIToRust for FFIString {
     type Target = String;
 
     unsafe fn to_rust(&self) -> Self::Target {
-        self.to_str().expect("CStr::to_str failed").to_string()
+        unsafe { self.to_str().expect("CStr::to_str failed").to_string() }
     }
 }
 
@@ -174,7 +174,7 @@ impl FFIToRust for FFIWString {
         if self.is_empty() {
             Self::Target::new()
         } else {
-            U16String(U16CStr::from_ptr_str(self.data).to_ustring())
+            U16String(unsafe { U16CStr::from_ptr_str(self.data).to_ustring() })
         }
     }
 }

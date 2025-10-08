@@ -3,10 +3,10 @@ use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 use uuid::Uuid;
 
 use crate::{
+    BuildId, SessionId,
     common::GitSource,
     descriptor::Descriptor,
     id::{NodeId, OperatorId},
-    BuildId, SessionId,
 };
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]

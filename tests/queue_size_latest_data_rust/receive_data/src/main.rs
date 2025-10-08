@@ -1,12 +1,11 @@
 use std::{thread::sleep, time::Duration};
 
 use dora_node_api::{
-    self,
+    self, DoraNode,
     arrow::{
         array::{AsArray, PrimitiveArray},
         datatypes::UInt64Type,
     },
-    DoraNode,
 };
 
 fn main() -> eyre::Result<()> {
@@ -26,7 +25,7 @@ fn main() -> eyre::Result<()> {
             let _time: u64 = data.values()[0];
             let time_metadata = metadata.timestamp();
             let duration_metadata = time_metadata.get_time().to_system_time().elapsed()?;
-            println!("Latency duration: {:?}", duration_metadata);
+            println!("Latency duration: {duration_metadata:?}");
             assert!(
                 duration_metadata < Duration::from_millis(500),
                 "Time difference should be less than 500ms"

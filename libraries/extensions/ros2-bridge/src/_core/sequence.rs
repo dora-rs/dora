@@ -34,7 +34,7 @@ where
     type Target = Vec<T::Target>;
 
     unsafe fn to_rust(&self) -> Self::Target {
-        self.iter().map(|v| v.to_rust()).collect()
+        self.iter().map(|v| unsafe { v.to_rust() }).collect()
     }
 }
 
@@ -117,7 +117,7 @@ where
         } else {
             let mut new_vec = vec
                 .iter()
-                .map(|v| FFIFromRust::from_rust(v))
+                .map(|v| unsafe { FFIFromRust::from_rust(v) })
                 .collect::<Vec<_>>();
             new_vec.shrink_to_fit();
             assert_eq!(new_vec.len(), new_vec.capacity());

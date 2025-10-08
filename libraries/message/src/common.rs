@@ -5,7 +5,7 @@ use aligned_vec::{AVec, ConstAlign};
 use eyre::Context as _;
 use uuid::Uuid;
 
-use crate::{daemon_to_daemon::InterDaemonEvent, id::NodeId, BuildId, DataflowId};
+use crate::{BuildId, DataflowId, daemon_to_daemon::InterDaemonEvent, id::NodeId};
 
 pub use log::Level as LogLevel;
 
@@ -70,7 +70,10 @@ impl std::fmt::Display for NodeError {
                     other => other.to_string().into(),
                 };
                 if matches!(self.cause, NodeErrorCause::GraceDuration) {
-                    write!(f, "node was killed by dora because it didn't react to a stop message in time ({signal_str})")
+                    write!(
+                        f,
+                        "node was killed by dora because it didn't react to a stop message in time ({signal_str})"
+                    )
                 } else {
                     write!(f, "exited because of signal {signal_str}")
                 }
@@ -79,7 +82,7 @@ impl std::fmt::Display for NodeError {
         }?;
 
         match &self.cause {
-            NodeErrorCause::GraceDuration => {}, // handled above
+            NodeErrorCause::GraceDuration => {} // handled above
             NodeErrorCause::Cascading { caused_by_node } => write!(
                 f,
                 ". This error occurred because node `{caused_by_node}` exited before connecting to dora."
@@ -90,7 +93,7 @@ impl std::fmt::Display for NodeError {
                 let line: &str = "---------------------------------------------------------------------------------\n";
                 let stderr = stderr.trim_end();
                 write!(f, " with stderr output:\n{line}{stderr}\n{line}")?
-            },
+            }
         }
 
         Ok(())

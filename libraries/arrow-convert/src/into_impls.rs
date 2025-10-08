@@ -1,8 +1,8 @@
 use crate::IntoArrow;
 use arrow::array::{PrimitiveArray, StringArray, TimestampNanosecondArray};
 use arrow::datatypes::{
-    ArrowPrimitiveType, ArrowTimestampType, Float16Type, Float32Type, Float64Type, Int16Type,
-    Int32Type, Int64Type, Int8Type, UInt16Type, UInt32Type, UInt64Type, UInt8Type,
+    ArrowPrimitiveType, ArrowTimestampType, Float16Type, Float32Type, Float64Type, Int8Type,
+    Int16Type, Int32Type, Int64Type, UInt8Type, UInt16Type, UInt32Type, UInt64Type,
 };
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 use half::f16;
@@ -78,6 +78,20 @@ impl IntoArrow for NaiveTime {
         arrow::array::Time64NanosecondArray::from(vec![
             arrow::array::temporal_conversions::time_to_time64ns(self),
         ])
+    }
+}
+
+impl IntoArrow for String {
+    type A = StringArray;
+    fn into_arrow(self) -> Self::A {
+        std::iter::once(Some(self)).collect()
+    }
+}
+
+impl IntoArrow for Vec<String> {
+    type A = StringArray;
+    fn into_arrow(self) -> Self::A {
+        StringArray::from(self)
     }
 }
 

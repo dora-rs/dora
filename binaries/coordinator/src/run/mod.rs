@@ -1,18 +1,18 @@
 use crate::{
-    tcp_utils::{tcp_receive, tcp_send},
     DaemonConnections,
+    tcp_utils::{tcp_receive, tcp_send},
 };
 
 use dora_core::{descriptor::DescriptorExt, uhlc::HLC};
 use dora_message::{
+    BuildId, SessionId,
     common::DaemonId,
     coordinator_to_daemon::{DaemonCoordinatorEvent, SpawnDataflowNodes, Timestamped},
     daemon_to_coordinator::DaemonCoordinatorReply,
     descriptor::{Descriptor, ResolvedNode},
     id::NodeId,
-    BuildId, SessionId,
 };
-use eyre::{bail, eyre, ContextCompat, WrapErr};
+use eyre::{ContextCompat, WrapErr, bail, eyre};
 use itertools::Itertools;
 use std::{
     collections::{BTreeMap, BTreeSet},

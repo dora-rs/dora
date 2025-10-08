@@ -1,12 +1,50 @@
-use dora_daemon::{flume, Daemon, LogDestination};
+//! The `dora run` command is a quick and easy way to run a dataflow locally.
+//! It does not support distributed dataflows and will throw an error if there are any `deploy` keys in the YAML file.
+//!
+//! The `dora run` command does not interact with any `dora coordinator` or `dora daemon` instances, or with any other parallel `dora run` commands.
+//!
+//! Use `dora build --local` or manual build commands to build your nodes.
+
+use super::Executable;
+use crate::{
+    common::{handle_dataflow_result, resolve_dataflow},
+    output::print_log_message,
+    session::DataflowSession,
+};
+use dora_daemon::{Daemon, LogDestination, flume};
+use dora_tracing::TracingBuilder;
 use eyre::Context;
 use tokio::runtime::Builder;
 
-use crate::{
-    handle_dataflow_result, output::print_log_message, resolve_dataflow, session::DataflowSession,
-};
+#[derive(Debug, clap::Args)]
+/// Run a dataflow locally.
+///
+/// Directly runs the given dataflow without connecting to a dora
+/// coordinator or daemon. The dataflow is executed on the local machine.
+pub struct Run {
+    /// Path to the dataflow descriptor file
+    #[clap(value_name = "PATH")]
+    dataflow: String,
+    // Use UV to run nodes.
+    #[clap(long, action)]
+    uv: bool,
+}
 
-pub fn run(dataflow: String, uv: bool) -> Result<(), eyre::Error> {
+#[deprecated(note = "use `run` instead")]
+pub fn run_func(dataflow: String, uv: bool) -> eyre::Result<()> {
+    run(dataflow, uv)
+}
+
+pub fn run(dataflow: String, uv: bool) -> eyre::Result<()> {
+    #[cfg(feature = "tracing")]
+    {
+        let log_level = std::env::var("RUST_LOG").ok().unwrap_or("info".to_string());
+        TracingBuilder::new("run")
+            .with_stdout(log_level)
+            .build()
+            .wrap_err("failed to set up tracing subscriber")?;
+    }
+
     let dataflow_path = resolve_dataflow(dataflow).context("could not resolve dataflow")?;
     let dataflow_session =
         DataflowSession::read_session(&dataflow_path).context("failed to read DataflowSession")?;
@@ -31,4 +69,10 @@ pub fn run(dataflow: String, uv: bool) -> Result<(), eyre::Error> {
         LogDestination::Channel { sender: log_tx },
     ))?;
     handle_dataflow_result(result, None)
+}
+
+impl Executable for Run {
+    fn execute(self) -> eyre::Result<()> {
+        run(self.dataflow, self.uv)
+    }
 }

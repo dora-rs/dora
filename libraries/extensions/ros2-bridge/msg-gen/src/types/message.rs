@@ -1,7 +1,7 @@
-use quote::{format_ident, quote, ToTokens};
+use quote::{ToTokens, format_ident, quote};
 use syn::Ident;
 
-use super::{primitives::*, sequences::Array, ConstantType, MemberType};
+use super::{ConstantType, MemberType, primitives::*, sequences::Array};
 
 /// A member of a structure
 #[derive(Debug, Clone)]
@@ -381,7 +381,7 @@ impl Message {
         (def, imp)
     }
 
-    pub fn alias_token_stream(&self, package_name: &Ident) -> impl ToTokens {
+    pub fn alias_token_stream(&self, package_name: &Ident) -> impl ToTokens + use<> {
         let cxx_name = format_ident!("{}", self.name);
         let struct_raw_name = format_ident!("{package_name}__{}", self.name);
 
@@ -394,11 +394,11 @@ impl Message {
         }
     }
 
-    pub fn token_stream(&self) -> impl ToTokens {
+    pub fn token_stream(&self) -> impl ToTokens + use<> {
         self.token_stream_args(false)
     }
 
-    pub fn token_stream_args(&self, gen_cxx_bridge: bool) -> impl ToTokens {
+    pub fn token_stream_args(&self, gen_cxx_bridge: bool) -> impl ToTokens + use<> {
         let rust_type = format_ident!("{}", self.name);
         let raw_type = format_ident!("{}_Raw", self.name);
         let raw_ref_type = format_ident!("{}_RawRef", self.name);

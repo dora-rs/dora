@@ -1,12 +1,12 @@
 use opentelemetry::propagation::Extractor;
-use opentelemetry::sdk::{propagation::TraceContextPropagator, trace as sdktrace};
 use opentelemetry::trace::TraceError;
-use opentelemetry::{global, Context};
+use opentelemetry::{Context, global};
+use opentelemetry_sdk::{propagation::TraceContextPropagator, trace as sdktrace};
 use std::collections::HashMap;
 
 struct MetadataMap<'a>(HashMap<&'a str, &'a str>);
 
-impl<'a> Extractor for MetadataMap<'a> {
+impl Extractor for MetadataMap<'_> {
     /// Get a value for a key from the MetadataMap.  If the value can't be converted to &str, returns None
     fn get(&self, key: &str) -> Option<&str> {
         self.0.get(key).cloned()

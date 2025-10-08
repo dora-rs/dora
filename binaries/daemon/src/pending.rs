@@ -2,18 +2,18 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use dora_core::{
     config::NodeId,
-    uhlc::{Timestamp, HLC},
+    uhlc::{HLC, Timestamp},
 };
 use dora_message::{
+    DataflowId,
     common::DaemonId,
     daemon_to_coordinator::{CoordinatorRequest, DaemonEvent, LogLevel, LogMessage, Timestamped},
     daemon_to_node::DaemonReply,
-    DataflowId,
 };
-use eyre::{bail, Context};
+use eyre::{Context, bail};
 use tokio::{net::TcpStream, sync::oneshot};
 
-use crate::{log::DataflowLogger, socket_stream_utils::socket_stream_send, CascadingErrorCauses};
+use crate::{CascadingErrorCauses, log::DataflowLogger, socket_stream_utils::socket_stream_send};
 
 pub struct PendingNodes {
     dataflow_id: DataflowId,

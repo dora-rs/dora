@@ -3,6 +3,9 @@ use std::collections::BTreeMap;
 use arrow_schema::DataType;
 use serde::{Deserialize, Serialize};
 
+/// Additional data that is sent as part of output messages.
+///
+/// Includes a timestamp, type information, and additional user-provided parameters.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Metadata {
     metadata_version: u16,
@@ -42,6 +45,7 @@ impl Metadata {
     }
 }
 
+/// Additional metadata that can be sent as part of output messages.
 pub type MetadataParameters = BTreeMap<String, Parameter>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -55,6 +59,7 @@ pub struct ArrowTypeInfo {
     pub child_data: Vec<ArrowTypeInfo>,
 }
 
+/// A metadata parameter that can be sent as part of output messages.
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum Parameter {
     Bool(bool),

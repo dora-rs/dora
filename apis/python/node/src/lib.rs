@@ -11,13 +11,13 @@ use dora_node_api::dora_core::config::NodeId;
 use dora_node_api::dora_core::descriptor::source_is_url;
 use dora_node_api::merged::{MergeExternalSend, MergedEvent};
 use dora_node_api::{DataflowId, DoraNode, EventStream};
-use dora_operator_api_python::{pydict_to_metadata, DelayedCleanup, NodeCleanupHandle, PyEvent};
+use dora_operator_api_python::{DelayedCleanup, NodeCleanupHandle, PyEvent, pydict_to_metadata};
 use dora_ros2_bridge_python::Ros2Subscription;
 use eyre::Context;
 use futures::{Stream, StreamExt};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
-/// use pyo3_special_method_derive::{Dict, Dir, Repr, Str};
+use pyo3_special_method_derive::{Dict, Dir, Repr, Str};
 
 /// The custom node API lets you integrate `dora` into your application.
 /// It allows you to retrieve input and send output in any fashion you want.
@@ -32,7 +32,7 @@ use pyo3::types::{PyBytes, PyDict};
 ///
 /// :type node_id: str, optional
 #[pyclass]
-/// #[derive(Dir, Dict, Str, Repr)]
+#[derive(Dir, Dict, Str, Repr)]
 pub struct Node {
     events: Events,
     node: DelayedCleanup<DoraNode>,
@@ -235,6 +235,13 @@ impl Node {
         )
     }
 
+    /// Returns the node configuration.
+    ///
+    /// :rtype: dict
+    pub fn node_config(&mut self, py: Python) -> eyre::Result<PyObject> {
+        Ok(pythonize::pythonize(py, &self.node.get_mut().node_config()).map(|x| x.unbind())?)
+    }
+
     /// Returns the dataflow id.
     ///
     /// :rtype: str
@@ -320,6 +327,7 @@ impl Events {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 enum EventsInner {
     Dora(EventStream),
     Merged(Box<dyn Stream<Item = MergedEvent<PyObject>> + Unpin + Send + Sync>),
@@ -375,13 +383,42 @@ pub fn resolve_dataflow(dataflow: String) -> eyre::Result<PathBuf> {
     Ok(dataflow)
 }
 
-/// Run a Dataflow
+/// Build a Dataflow, exactly the same way as `dora build` command line tool.
 ///
+///
+/// :type dataflow_path: str
+/// :type uv: bool, optional
+/// :type coordinator_addr: str, optional
+/// :type coordinator_port: int, optional
+/// :type force_local: bool, optional
+/// :rtype: None
+#[pyfunction]
+#[pyo3(signature = (dataflow_path, uv=None, coordinator_addr=None, coordinator_port=None, force_local=false))]
+pub fn build(
+    dataflow_path: String,
+    uv: Option<bool>,
+    coordinator_addr: Option<String>,
+    coordinator_port: Option<u16>,
+    force_local: bool,
+) -> eyre::Result<()> {
+    dora_cli::build(
+        dataflow_path,
+        coordinator_addr.map(|addr| addr.parse().unwrap()),
+        coordinator_port,
+        uv.unwrap_or_default(),
+        force_local,
+    )
+}
+
+/// Run a Dataflow, exactly the same way as `dora run` command line tool.
+///
+/// :type dataflow_path: str
+/// :type uv: bool, optional
 /// :rtype: None
 #[pyfunction]
 #[pyo3(signature = (dataflow_path, uv=None))]
 pub fn run(dataflow_path: String, uv: Option<bool>) -> eyre::Result<()> {
-    dora_cli::command::run(dataflow_path, uv.unwrap_or_default())
+    dora_cli::run(dataflow_path, uv.unwrap_or_default())
 }
 
 #[pymodule]
@@ -390,6 +427,7 @@ fn dora(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
 
     m.add_function(wrap_pyfunction!(start_runtime, &m)?)?;
     m.add_function(wrap_pyfunction!(run, &m)?)?;
+    m.add_function(wrap_pyfunction!(build, &m)?)?;
     m.add_class::<Node>()?;
     m.setattr("__version__", env!("CARGO_PKG_VERSION"))?;
     m.setattr("__author__", "Dora-rs Authors")?;

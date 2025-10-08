@@ -2,6 +2,7 @@
 name = "dora-coordinator"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 documentation.workspace = true
 description.workspace = true
 license.workspace = true
@@ -19,12 +20,12 @@ futures = "0.3.21"
 tokio = { version = "1.24.2", features = ["full"] }
 tokio-stream = { version = "0.1.8", features = ["io-util", "net"] }
 uuid = { version = "1.2.1" }
-dora-core = { workspace = true }
+dora-core = { workspace = true, features = ["build"] }
 tracing = "0.1.36"
 dora-tracing = { workspace = true, optional = true }
 futures-concurrency = "7.1.0"
 serde_json = "1.0.86"
-names = "0.14.0"
+petname = "2.0.2"
 ctrlc = "3.2.5"
 log = { version = "0.4.21", features = ["serde"] }
 dora-message = { workspace = true }

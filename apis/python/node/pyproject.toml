@@ -9,7 +9,7 @@ dynamic = ["version"]
 requires-python = ">=3.7"
 license = { text = "MIT" }
 readme = "README.md"
-dependencies = ['pyarrow']
+dependencies = ['pyarrow', "pyyaml>=6.0"]
 
 [dependency-groups]
 dev = ["pytest >=7.1.1", "ruff >=0.9.1"]
@@ -22,11 +22,3 @@ extend-select = [
     "D",  # pydocstyle
     "UP",
 ]
-
-[tool.maturin.target.x86_64-apple-darwin]
-# macOS deployment target SDK version
-macos-deployment-target = "14.5"
-
-[tool.maturin.target.aarch64-apple-darwin]
-# macOS deployment target SDK version
-macos-deployment-target = "14.5"

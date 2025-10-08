@@ -1,10 +1,10 @@
 use nom::{
+    IResult,
     branch::alt,
     character::complete::{alphanumeric0, char, one_of},
     combinator::{opt, recognize},
     multi::{many1, separated_list0, separated_list1},
     sequence::{pair, tuple},
-    IResult,
 };
 
 fn upperalpha(s: &str) -> IResult<&str, char> {

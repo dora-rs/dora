@@ -7,19 +7,19 @@ use dora_core::{
 };
 use dora_download::download_file;
 use dora_node_api::{
-    arrow_utils::{copy_array_into_sample, required_data_size},
     Event, Parameter,
+    arrow_utils::{copy_array_into_sample, required_data_size},
 };
 use dora_operator_api_types::{
-    safer_ffi::closure::ArcDynFn1, DoraDropOperator, DoraInitOperator, DoraInitResult, DoraOnEvent,
-    DoraResult, DoraStatus, Metadata, OnEventResult, Output, SendOutput,
+    DoraDropOperator, DoraInitOperator, DoraInitResult, DoraOnEvent, DoraResult, DoraStatus,
+    Metadata, OnEventResult, Output, SendOutput, safer_ffi::closure::ArcDynFn1,
 };
-use eyre::{bail, eyre, Context, Result};
+use eyre::{Context, Result, bail, eyre};
 use libloading::Symbol;
 use std::{
     collections::BTreeMap,
     ffi::c_void,
-    panic::{catch_unwind, AssertUnwindSafe},
+    panic::{AssertUnwindSafe, catch_unwind},
     path::Path,
     sync::Arc,
 };
@@ -84,7 +84,7 @@ struct SharedLibraryOperator<'lib> {
     bindings: Bindings<'lib>,
 }
 
-impl<'lib> SharedLibraryOperator<'lib> {
+impl SharedLibraryOperator<'_> {
     fn run(self, init_done: oneshot::Sender<Result<()>>) -> eyre::Result<StopReason> {
         let operator_context = {
             let DoraInitResult {
@@ -263,7 +263,7 @@ struct OperatorContext<'lib> {
     drop_fn: Symbol<'lib, DoraDropOperator>,
 }
 
-impl<'lib> Drop for OperatorContext<'lib> {
+impl Drop for OperatorContext<'_> {
     fn drop(&mut self) {
         unsafe { (self.drop_fn.drop_operator)(self.raw) };
     }

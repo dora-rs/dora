@@ -17,7 +17,7 @@ impl<'de> serde::de::DeserializeSeed<'de> for StringDeserializer {
 /// Based on https://docs.rs/serde_yaml/0.9.22/src/serde_yaml/value/de.rs.html#14-121
 struct StringVisitor;
 
-impl<'de> serde::de::Visitor<'de> for StringVisitor {
+impl serde::de::Visitor<'_> for StringVisitor {
     type Value = ArrayData;
 
     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {

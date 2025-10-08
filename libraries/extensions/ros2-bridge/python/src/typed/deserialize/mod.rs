@@ -1,6 +1,6 @@
-use super::{TypeInfo, DUMMY_STRUCT_NAME};
+use super::{DUMMY_STRUCT_NAME, TypeInfo};
 use arrow::{
-    array::{make_array, ArrayData, StructArray},
+    array::{ArrayData, StructArray, make_array},
     datatypes::Field,
 };
 use core::fmt;
@@ -55,7 +55,7 @@ struct StructVisitor<'a> {
     type_info: &'a TypeInfo<'a>,
 }
 
-impl<'a, 'de> serde::de::Visitor<'de> for StructVisitor<'a> {
+impl<'de> serde::de::Visitor<'de> for StructVisitor<'_> {
     type Value = ArrayData;
 
     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
