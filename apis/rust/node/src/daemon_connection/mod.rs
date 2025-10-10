@@ -1,3 +1,4 @@
+use crate::daemon_connection::interactive::InteractiveEvents;
 use dora_core::{config::NodeId, uhlc::Timestamp};
 use dora_message::{
     DataflowId,
@@ -5,18 +6,15 @@ use dora_message::{
     node_to_daemon::{DaemonRequest, NodeRegisterRequest, Timestamped},
 };
 use eyre::{Context, bail, eyre};
+pub use integration_testing::IntegrationTestingEvents;
 use shared_memory_server::{ShmemClient, ShmemConf};
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::{
-    fs::File,
     net::{SocketAddr, TcpStream},
-    path::Path,
     time::Duration,
 };
-
-use crate::daemon_connection::integration_testing::IntegrationTestingEvents;
-use crate::daemon_connection::interactive::InteractiveEvents;
+use tokio::sync::oneshot;
 
 mod integration_testing;
 mod interactive;
@@ -24,13 +22,20 @@ mod tcp;
 #[cfg(unix)]
 mod unix_domain;
 
+mod json_to_arrow;
+
 pub enum DaemonChannel {
     Shmem(ShmemClient<Timestamped<DaemonRequest>, DaemonReply>),
     Tcp(TcpStream),
     #[cfg(unix)]
     UnixDomain(UnixStream),
     Interactive(InteractiveEvents),
-    IntegrationTest(IntegrationTestingEvents),
+    IntegrationTestChannel(
+        tokio::sync::mpsc::Sender<(
+            Timestamped<DaemonRequest>,
+            tokio::sync::oneshot::Sender<DaemonReply>,
+        )>,
+    ),
 }
 
 impl DaemonChannel {
@@ -91,22 +96,13 @@ impl DaemonChannel {
             #[cfg(unix)]
             DaemonChannel::UnixDomain(stream) => unix_domain::request(stream, request),
             DaemonChannel::Interactive(events) => events.request(request),
-            DaemonChannel::IntegrationTest(events) => events.request(request),
+            DaemonChannel::IntegrationTestChannel(channel) => {
+                let (reply_tx, reply) = oneshot::channel();
+                channel.blocking_send((request.clone(), reply_tx))?;
+                reply
+                    .blocking_recv()
+                    .context("failed to receive oneshot reply")
+            }
         }
-    }
-
-    pub(crate) fn init_integration_test(
-        input_file_path: &Path,
-        output_file_path: &Path,
-    ) -> eyre::Result<Self> {
-        let input_file = File::open(input_file_path)
-            .with_context(|| format!("failed to open input file {}", input_file_path.display()))?;
-        let output_file = File::create(output_file_path).with_context(|| {
-            format!("failed to create input file {}", output_file_path.display())
-        })?;
-        Ok(Self::IntegrationTest(IntegrationTestingEvents::new(
-            input_file,
-            output_file,
-        )))
     }
 }

@@ -1,4 +1,7 @@
-use crate::{EventStream, daemon_connection::DaemonChannel};
+use crate::{
+    EventStream,
+    daemon_connection::{DaemonChannel, IntegrationTestingEvents},
+};
 
 use self::{
     arrow_utils::{copy_array_into_sample, required_data_size},
@@ -396,6 +399,30 @@ impl DoraNode {
                 TokioRuntime::Handle(handle) => handle.spawn(monitor_task),
             };
         }
+
+        let daemon_communication = match daemon_communication {
+            DaemonCommunication::IntegrationTest {
+                input_file,
+                output_file,
+            } => {
+                let (sender, mut receiver) = tokio::sync::mpsc::channel(5);
+                let new_communication = DaemonCommunication::IntegrationTestInitialized {
+                    channel: Some(sender),
+                };
+                let mut events = IntegrationTestingEvents::new(input_file, output_file)?;
+                std::thread::spawn(move || {
+                    for (request, reply_sender) in receiver.blocking_recv() {
+                        let reply = events.request(&request);
+                        reply_sender
+                            .send(reply.unwrap_or_else(|err| {
+                                DaemonReply::Result(Err(format!("{err:?}")))
+                            }));
+                    }
+                });
+                new_communication
+            }
+            other => other,
+        };
 
         let event_stream = EventStream::init(
             dataflow_id,

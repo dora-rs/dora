@@ -40,6 +40,12 @@ impl ControlChannel {
                     .wrap_err("failed to connect control channel")?
             }
             DaemonCommunication::Interactive => DaemonChannel::Interactive(Default::default()),
+            DaemonCommunication::IntegrationTest { .. } => {
+                unreachable!("integration test channel should be initialized at this point")
+            }
+            DaemonCommunication::IntegrationTestInitialized { channel } => {
+                DaemonChannel::IntegrationTestChannel(channel.clone().expect("channel is None"))
+            }
         };
 
         Self::init_on_channel(dataflow_id, node_id, channel, clock)
