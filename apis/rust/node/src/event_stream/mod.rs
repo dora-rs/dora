@@ -75,19 +75,6 @@ impl EventStream {
         input_config: BTreeMap<DataId, Input>,
         clock: Arc<uhlc::HLC>,
     ) -> eyre::Result<Self> {
-        let integration_test = if let DaemonCommunication::IntegrationTest {
-            input_file,
-            output_file,
-        } = &daemon_communication
-        {
-            Some(DaemonChannel::init_integration_test(
-                input_file,
-                output_file,
-            )?)
-        } else {
-            None
-        };
-
         let channel = match daemon_communication {
             DaemonCommunication::Shmem {
                 daemon_events_region_id,
@@ -104,10 +91,12 @@ impl EventStream {
                 })?
             }
             DaemonCommunication::Interactive => DaemonChannel::Interactive(Default::default()),
-            DaemonCommunication::IntegrationTest {
-                input_file,
-                output_file,
-            } => DaemonChannel::init_integration_test(input_file, output_file)?,
+            DaemonCommunication::IntegrationTest { .. } => {
+                unreachable!("integration test channel should be initialized at this point")
+            }
+            DaemonCommunication::IntegrationTestInitialized { channel } => {
+                DaemonChannel::IntegrationTestChannel(channel.clone().expect("channel is None"))
+            }
         };
 
         let close_channel = match daemon_communication {
@@ -128,6 +117,12 @@ impl EventStream {
                 })?
             }
             DaemonCommunication::Interactive => DaemonChannel::Interactive(Default::default()),
+            DaemonCommunication::IntegrationTest { .. } => {
+                unreachable!("integration test channel should be initialized at this point")
+            }
+            DaemonCommunication::IntegrationTestInitialized { channel } => {
+                DaemonChannel::IntegrationTestChannel(channel.clone().expect("channel is None"))
+            }
         };
 
         let mut queue_size_limit: HashMap<DataId, (usize, VecDeque<EventItem>)> = input_config
