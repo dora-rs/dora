@@ -171,6 +171,7 @@ impl DoraNode {
                 timestamp: clock.new_timestamp(),
             })
             .wrap_err("failed to request node config from daemon")?;
+
         match reply {
             DaemonReply::NodeConfig {
                 result: Ok(node_config),
@@ -332,7 +333,7 @@ impl DoraNode {
             run_config,
             daemon_communication,
             dataflow_descriptor,
-            dynamic: _,
+            dynamic,
         } = node_config;
         let clock = Arc::new(uhlc::HLC::default());
         let input_config = run_config.inputs.clone();
@@ -394,6 +395,31 @@ impl DoraNode {
             _rt: rt,
             interactive: false,
         };
+
+        if dynamic {
+            // Inject env variable from dataflow descriptor.
+            match &node.dataflow_descriptor {
+                Ok(descriptor) => {
+                    if let Some(env_vars) = descriptor
+                        .nodes
+                        .iter()
+                        .find(|n| n.id == node.id)
+                        .and_then(|n| n.env.as_ref())
+                    {
+                        for (key, value) in env_vars {
+                            // SAFETY: setting env variable is safe as long as we don't
+                            // have multiple threads doing it at the same time.
+                            unsafe {
+                                std::env::set_var(key, value.to_string());
+                            }
+                        }
+                    }
+                }
+                Err(err) => {
+                    warn!("Could not parse dataflow descriptor: {err:#}");
+                }
+            }
+        }
         Ok((node, event_stream))
     }
 
