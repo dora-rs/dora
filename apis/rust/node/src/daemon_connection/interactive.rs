@@ -11,7 +11,7 @@ use dora_message::{
 
 use crate::{
     arrow_utils::{copy_array_into_sample, required_data_size},
-    daemon_connection::json_to_arrow::read_json_as_arrow,
+    daemon_connection::json_to_arrow::read_json_bytes_as_arrow,
     event_stream::data_to_arrow_array,
 };
 
@@ -118,7 +118,7 @@ impl InteractiveEvents {
                 std::mem::drop(stdout_lock);
                 let typed_data = if let Some(data) = data {
                     // input is JSON data
-                    let array = match read_json_as_arrow(data.as_bytes()) {
+                    let array = match read_json_bytes_as_arrow(data.as_bytes()) {
                         Ok(array) => array,
                         Err(err) => {
                             eprintln!("{}", format!("{err}").red());

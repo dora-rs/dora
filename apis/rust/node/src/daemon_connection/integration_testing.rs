@@ -1,30 +1,59 @@
 use std::{fs::File, path::PathBuf};
 
 use colored::Colorize;
+use dora_core::{
+    metadata::ArrowTypeInfoExt,
+    uhlc::{self, HLC, NTP64, Timestamp},
+};
 use dora_message::{
-    common::Timestamped, daemon_to_node::DaemonReply, node_to_daemon::DaemonRequest,
+    common::{DataMessage, Timestamped},
+    daemon_to_node::{DaemonReply, NodeEvent},
+    integration_testing::{InputEvent, IntegrationTestInput, TimedInputEvent},
+    metadata::{ArrowTypeInfo, Metadata},
+    node_to_daemon::DaemonRequest,
 };
 use eyre::Context;
 
-use crate::event_stream::data_to_arrow_array;
+use crate::{
+    arrow_utils::{copy_array_into_sample, required_data_size},
+    daemon_connection::json_to_arrow::read_json_value_as_arrow,
+    event_stream::data_to_arrow_array,
+};
 
 pub struct IntegrationTestingEvents {
-    input_file: File,
+    node_info: IntegrationTestInput,
+    events: std::vec::IntoIter<TimedInputEvent>,
     output_file: File,
     stopped: bool,
+    clock: HLC,
+    start_timestamp: uhlc::Timestamp,
 }
 
 impl IntegrationTestingEvents {
     pub fn new(input_file_path: PathBuf, output_file_path: PathBuf) -> eyre::Result<Self> {
-        let input_file = File::open(&input_file_path)
-            .with_context(|| format!("failed to open {}", input_file_path.display()))?;
+        let mut node_info: IntegrationTestInput = serde_json::from_slice(
+            &std::fs::read(&input_file_path)
+                .with_context(|| format!("failed to open {}", input_file_path.display()))?,
+        )
+        .with_context(|| format!("failed to deserialize {}", input_file_path.display()))?;
         let output_file = File::create(&output_file_path)
             .with_context(|| format!("failed to create {}", output_file_path.display()))?;
 
+        node_info
+            .events
+            .as_mut_slice()
+            .sort_by_key(|i| i.time_offset);
+        let inputs = std::mem::take(&mut node_info.events).into_iter();
+
+        let clock = HLC::default();
+        let start_timestamp = clock.new_timestamp();
         Ok(Self {
-            input_file,
+            node_info,
+            events: inputs,
             output_file,
             stopped: false,
+            clock,
+            start_timestamp,
         })
     }
 
@@ -36,7 +65,14 @@ impl IntegrationTestingEvents {
             DaemonRequest::Register(_) => DaemonReply::Result(Ok(())),
             DaemonRequest::Subscribe => DaemonReply::Result(Ok(())),
             DaemonRequest::SubscribeDrop => DaemonReply::Result(Ok(())),
-            DaemonRequest::NextEvent { .. } => todo!("read next event from input_file"),
+            DaemonRequest::NextEvent { .. } => {
+                let events = if let Some(event) = self.next_event()? {
+                    vec![event]
+                } else {
+                    vec![]
+                };
+                DaemonReply::NextEvents(events)
+            }
             DaemonRequest::SendMessage {
                 output_id,
                 metadata,
@@ -44,7 +80,7 @@ impl IntegrationTestingEvents {
             } => {
                 let (drop_tx, drop_rx) = flume::unbounded();
                 let array = data_to_arrow_array(data.clone(), metadata, drop_tx);
-                // integration testing deosn't use shared memory -> no drop tokens
+                // integration testing doesn't use shared memory -> no drop tokens
                 let _ = drop_rx;
 
                 todo!("serialize array and write it to output_file");
@@ -75,5 +111,48 @@ impl IntegrationTestingEvents {
             }
         };
         Ok(reply)
+    }
+
+    fn next_event(&mut self) -> eyre::Result<Option<Timestamped<NodeEvent>>> {
+        let Some(event) = self.events.next() else {
+            return Ok(None);
+        };
+
+        let TimedInputEvent { time_offset, event } = event;
+        let timestamp = Timestamp::new(
+            self.start_timestamp.get_time() + NTP64::from(time_offset),
+            *self.start_timestamp.get_id(),
+        );
+        let converted = match event {
+            InputEvent::Stop => NodeEvent::Stop,
+            InputEvent::Input { id, metadata, data } => {
+                let (data, type_info) = if let Some(data) = data {
+                    // input is JSON data
+                    let array = read_json_value_as_arrow(&data)
+                        .context("failed to read data as arrow array")?;
+
+                    let total_len = required_data_size(&array);
+                    let mut buf = vec![0; total_len];
+                    let type_info = copy_array_into_sample(buf.as_mut_slice(), &array);
+
+                    (Some(buf), type_info)
+                } else {
+                    (None, ArrowTypeInfo::empty())
+                };
+                let mut meta = Metadata::new(timestamp, type_info);
+                meta.parameters = metadata.unwrap_or_default();
+                NodeEvent::Input {
+                    id,
+                    metadata: meta,
+                    data: data.map(|d| DataMessage::Vec(aligned_vec::AVec::from_slice(1, &d))),
+                }
+            }
+            InputEvent::InputClosed { id } => NodeEvent::InputClosed { id },
+            InputEvent::AllInputsClosed => NodeEvent::AllInputsClosed,
+        };
+        Ok(Some(Timestamped {
+            inner: converted,
+            timestamp,
+        }))
     }
 }

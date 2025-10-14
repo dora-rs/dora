@@ -6,7 +6,7 @@ use std::{
 use arrow::array::{Array, ArrayData};
 use eyre::{Context, ContextCompat};
 
-pub fn read_json_as_arrow(data: &[u8]) -> eyre::Result<ArrayData> {
+pub fn read_json_bytes_as_arrow(data: &[u8]) -> eyre::Result<ArrayData> {
     match arrow_json::reader::infer_json_schema(wrapped(data), None) {
         Ok((schema, _)) => read_from_json_with_schema(wrapped(data), schema),
         Err(_) => {
@@ -43,4 +43,20 @@ fn wrapped(data: impl BufRead) -> impl BufRead {
 fn wrapped_quoted(data: impl BufRead) -> impl BufRead {
     let quoted = [b'"'].chain(data).chain([b'"'].as_slice());
     wrapped(quoted)
+}
+
+pub fn read_json_value_as_arrow(data: &serde_json::Value) -> eyre::Result<ArrayData> {
+    let schema = arrow_json::reader::infer_json_schema_from_iterator(std::iter::once(data).map(Ok))
+        .context("failed to infer JSON schema")?;
+    let mut decoder = arrow_json::reader::ReaderBuilder::new(Arc::new(schema))
+        .build_decoder()
+        .context("failed to build JSON decoder")?;
+    decoder
+        .serialize(&[data])
+        .context("failed to decode JSON to arrow array")?;
+    let batch = decoder
+        .flush()
+        .context("failed to read record batch")?
+        .context("no record batch in JSON")?;
+    Ok(batch.column(0).to_data())
 }
