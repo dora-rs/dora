@@ -99,7 +99,7 @@
 
 ## Node Hub
 
-The node hub is available in the [**`dora-rs/node-hub`**](https://github.com/dora-rs/node-hub/) repository.
+The node hub is available in the [**`dora-rs/dora-hub`**](https://github.com/dora-rs/dora-hub/) repository.
 
 ## Examples
 
