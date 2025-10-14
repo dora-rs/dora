@@ -1,6 +1,6 @@
 nodes:
   - id: camera
-    build: pip install "git+https://github.com/dora-rs/node-hub.git#egg=opencv-video-capture&subdirectory=opencv-video-capture"
+    build: pip install "git+https://github.com/dora-rs/dora-hub.git#egg=opencv-video-capture&subdirectory=node-hub/opencv-video-capture"
     path: opencv-video-capture
     inputs:
       tick: dora/timer/millis/16
@@ -12,7 +12,7 @@ nodes:
       IMAGE_HEIGHT: 480
 
   - id: plot
-    build: pip install "git+https://github.com/dora-rs/node-hub.git#egg=opencv-plot&subdirectory=opencv-plot"
+    build: pip install "git+https://github.com/dora-rs/dora-hub.git#egg=opencv-plot&subdirectory=node-hub/opencv-plot"
     path: dynamic
     inputs:
       image: camera/image
