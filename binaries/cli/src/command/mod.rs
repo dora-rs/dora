@@ -46,6 +46,7 @@ pub enum Command {
     Destroy(Destroy),
     Start(Start),
     Stop(Stop),
+    #[clap(alias = "ps")]
     List(ListArgs),
     // Planned for future releases:
     // Dashboard,
