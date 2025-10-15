@@ -122,32 +122,59 @@ impl DoraNode {
     }
 
     fn init_from_env_inner(fallback_to_interactive: bool) -> eyre::Result<(Self, EventStream)> {
-        let node_config: NodeConfig = match std::env::var("DORA_NODE_CONFIG") {
-            Ok(raw) => serde_yaml::from_str(&raw).context("failed to deserialize node config")?,
+        // normal execution (started by dora daemon)
+        match std::env::var("DORA_NODE_CONFIG") {
+            Ok(raw) => {
+                let node_config: NodeConfig =
+                    serde_yaml::from_str(&raw).context("failed to deserialize node config")?;
+                #[cfg(feature = "tracing")]
+                {
+                    TracingBuilder::new(node_config.node_id.as_ref())
+                        .build()
+                        .wrap_err("failed to set up tracing subscriber")?;
+                }
+
+                return Self::init(node_config);
+            }
             Err(std::env::VarError::NotUnicode(_)) => {
                 bail!("DORA_NODE_CONFIG env variable is not valid unicode")
             }
-            Err(std::env::VarError::NotPresent) => {
-                if fallback_to_interactive && std::io::stdin().is_terminal() {
-                    println!(
-                    "{}",
-                    "Starting node in interactive mode as DORA_NODE_CONFIG env variable is not set"
-                        .green()
-                );
-                    return Self::init_interactive();
-                } else {
-                    bail!("DORA_NODE_CONFIG env variable is not set")
-                }
-            }
-        };
-        #[cfg(feature = "tracing")]
-        {
-            TracingBuilder::new(node_config.node_id.as_ref())
-                .build()
-                .wrap_err("failed to set up tracing subscriber")?;
+            Err(std::env::VarError::NotPresent) => {} // continue trying other init methods
         }
 
-        Self::init(node_config)
+        // node integration test mode
+        match std::env::var("DORA_TEST_WITH_INPUTS") {
+            Ok(raw) => {
+                let input_file = PathBuf::from(raw);
+                let output_file = match std::env::var("DORA_TEST_WRITE_OUTPUTS_TO") {
+                    Ok(raw) => PathBuf::from(raw),
+                    Err(std::env::VarError::NotUnicode(_)) => {
+                        bail!("DORA_TEST_WRITE_OUTPUTS_TO env variable is not valid unicode")
+                    }
+                    Err(std::env::VarError::NotPresent) => {
+                        input_file.with_file_name("outputs.jsonl")
+                    }
+                };
+                return Self::init_testing(input_file, output_file);
+            }
+            Err(std::env::VarError::NotUnicode(_)) => {
+                bail!("DORA_TEST_WITH_INPUTS env variable is not valid unicode")
+            }
+            Err(std::env::VarError::NotPresent) => {} // continue trying other init methods
+        }
+
+        // interactive mode
+        if fallback_to_interactive && std::io::stdin().is_terminal() {
+            println!(
+                "{}",
+                "Starting node in interactive mode as DORA_NODE_CONFIG env variable is not set"
+                    .green()
+            );
+            return Self::init_interactive();
+        }
+
+        // no run mode applicable
+        bail!("DORA_NODE_CONFIG env variable is not set")
     }
 
     /// Initiate a node from a dataflow id and a node id.
