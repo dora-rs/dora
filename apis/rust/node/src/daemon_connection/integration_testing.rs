@@ -1,5 +1,7 @@
 use std::{fs::File, path::PathBuf};
 
+use arrow::array::RecordBatch;
+use arrow_json::LineDelimitedWriter;
 use colored::Colorize;
 use dora_core::{
     metadata::ArrowTypeInfoExt,
@@ -21,11 +23,8 @@ use crate::{
 };
 
 pub struct IntegrationTestingEvents {
-    node_info: IntegrationTestInput,
     events: std::vec::IntoIter<TimedInputEvent>,
     output_file: File,
-    stopped: bool,
-    clock: HLC,
     start_timestamp: uhlc::Timestamp,
 }
 
@@ -48,19 +47,13 @@ impl IntegrationTestingEvents {
         let clock = HLC::default();
         let start_timestamp = clock.new_timestamp();
         Ok(Self {
-            node_info,
             events: inputs,
             output_file,
-            stopped: false,
-            clock,
             start_timestamp,
         })
     }
 
-    pub fn request(
-        &mut self,
-        request: &Timestamped<DaemonRequest>,
-    ) -> Result<DaemonReply, eyre::Error> {
+    pub fn request(&mut self, request: &Timestamped<DaemonRequest>) -> eyre::Result<DaemonReply> {
         let reply = match &request.inner {
             DaemonRequest::Register(_) => DaemonReply::Result(Ok(())),
             DaemonRequest::Subscribe => DaemonReply::Result(Ok(())),
@@ -79,11 +72,22 @@ impl IntegrationTestingEvents {
                 data,
             } => {
                 let (drop_tx, drop_rx) = flume::unbounded();
-                let array = data_to_arrow_array(data.clone(), metadata, drop_tx);
+                let array = data_to_arrow_array(data.clone(), metadata, drop_tx)
+                    .context("failed to convert output to arrow array")?;
                 // integration testing doesn't use shared memory -> no drop tokens
                 let _ = drop_rx;
 
-                todo!("serialize array and write it to output_file");
+                let batch = RecordBatch::try_from_iter([(output_id, array)])
+                    .context("failed to create RecordBatch")?;
+
+                let mut writer = LineDelimitedWriter::new(&mut self.output_file);
+                writer
+                    .write(&batch)
+                    .context("failed to convert output to JSON")?;
+                writer
+                    .finish()
+                    .context("failed to finish output conversion to JSON")?;
+
                 DaemonReply::Empty
             }
             DaemonRequest::CloseOutputs(data_ids) => {
