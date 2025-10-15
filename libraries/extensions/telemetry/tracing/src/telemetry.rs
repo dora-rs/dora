@@ -6,15 +6,15 @@ use std::collections::HashMap;
 
 struct MetadataMap<'a>(HashMap<&'a str, &'a str>);
 
-impl Extractor for MetadataMap<'_> {
+impl<'a> Extractor for MetadataMap<'a> {
     /// Get a value for a key from the MetadataMap.  If the value can't be converted to &str, returns None
-    fn get(&self, key: &str) -> Option<&str> {
-        self.0.get(key).cloned()
+    fn get(&self, key: &str) -> Option<&'a str> {
+        self.0.get(key).map(|v| &**v)
     }
 
     /// Collect all the keys from the MetadataMap.
-    fn keys(&self) -> Vec<&str> {
-        self.0.keys().cloned().collect()
+    fn keys(&self) -> Vec<&'a str> {
+        self.0.keys().map(|v| &**v).collect()
     }
 }
 
