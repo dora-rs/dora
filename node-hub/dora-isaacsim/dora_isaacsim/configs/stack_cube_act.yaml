@@ -1,0 +1,58 @@
+# config.yaml
+frequencies:
+  control: 20
+  camera: 20
+  sim: 60
+
+seed: 110
+
+task:
+    _target_: src.task.base.BaseTask
+    scenary:
+        _target_: src.scenary.stack_cube.StackCubeScenary
+        usd_file_path: "../../node-hub/dora-isaacsim/dora_isaacsim/assets/stack_cube_franka.usd"
+        random: False
+        src_cube_cfg: {
+            name: cube_red,
+            position: [0.511521,0.154694,0.120000],
+            orientation: [0.966067,0.000000,0.000000,0.258293],
+            prim_path: /World/Cube,
+            scale: [0.05, 0.05, 0.05],
+            size: 1.0,
+            color: [1, 0, 0]
+        }
+        target_cube_cfg: {
+            name: cube_blue,
+            position: [0.535,-0.122161,0.130000],
+            orientation: [0.966067,0.000000,0.000000,0.258293],
+            prim_path: /World/Cube2,
+            scale: [0.05, 0.05, 0.05],
+            size: 1.1,
+            color: [0, 0, 1]
+        }
+    robot:
+        _target_: src.robots.base.BaseRobot
+        name: franka
+        robot_prim_path: /World/franka
+        joints_name: [
+          panda_joint1,panda_joint2,panda_joint3,panda_joint4,panda_joint5,panda_joint6,panda_joint7,panda_finger_joint1
+        ]
+        ee_prim_path: /World/franka/panda_hand/tool_center
+        gripper_joint_name: panda_finger_joint1
+        controller:
+            _target_: src.controller.dora_controller.DoraSubscriberController
+            sync: False
+            sim_freq: ${frequencies.sim}
+            control_freq: ${frequencies.control}
+        control_mode: joint
+
+    sensors:
+        camera_rgb_wrist:
+            _target_: src.sensor.camera.Camera
+            camera_prim_path: /World/franka/panda_hand/owl/camera
+            sim_freq: ${frequencies.sim}
+            sensor_freq: ${frequencies.camera}
+            resolution: [640,480]
+        joint_sensor0:
+            _target_: src.sensor.joint_sensor.JointSensor
+            robot_name: franka
