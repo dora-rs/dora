@@ -1,4 +1,20 @@
+use clap::ValueEnum;
 use dora_message::{common::NodeErrorCause, coordinator_to_cli::DataflowResult};
+
+#[derive(Clone, Debug, ValueEnum)]
+pub enum OutputFormat {
+    Table,
+    Json,
+}
+
+impl std::fmt::Display for OutputFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OutputFormat::Table => write!(f, "table"),
+            OutputFormat::Json => write!(f, "json"),
+        }
+    }
+}
 
 pub struct FormatDataflowError<'a>(pub &'a DataflowResult);
 
