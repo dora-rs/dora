@@ -8,7 +8,7 @@ use dora_core::{
         CoreNodeKind, DYNAMIC_SOURCE, Descriptor, DescriptorExt, ResolvedNode, RuntimeNode,
         read_as_descriptor,
     },
-    topics::LOCALHOST,
+    topics::{DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, LOCALHOST},
     uhlc::{self, HLC},
 };
 use dora_message::{
@@ -185,6 +185,18 @@ impl Daemon {
         uv: bool,
         log_destination: LogDestination,
     ) -> eyre::Result<DataflowResult> {
+        // Spawn local listener for dynamic nodes
+        let (events_tx, events_rx) = flume::bounded(10);
+        let _listen_port = local_listener::spawn_listener_loop(
+            (LOCALHOST, DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT).into(),
+            events_tx,
+        )
+        .await?;
+        let dynamic_node_events = events_rx.into_stream().map(|e| Timestamped {
+            inner: Event::DynamicNode(e.inner),
+            timestamp: e.timestamp,
+        });
+
         let working_dir = dataflow_path
             .canonicalize()
             .context("failed to canonicalize dataflow path")?
@@ -237,7 +249,7 @@ impl Daemon {
                 timestamp,
             }
         });
-        let events = (coordinator_events, ctrlc_events).merge();
+        let events = (coordinator_events, ctrlc_events, dynamic_node_events).merge();
         let run_result = Self::run_general(
             Box::pin(events),
             None,
