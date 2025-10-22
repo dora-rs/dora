@@ -270,6 +270,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "arrow-integration-test"
+version = "54.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b41a71dbbd739f9723650799079ebca9fd574e98f9f9e5cc9b8c8d1fe0f169e7"
+dependencies = [
+ "arrow",
+ "arrow-buffer",
+ "hex",
+ "num",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "arrow-ipc"
 version = "54.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1525,6 +1539,7 @@ dependencies = [
  "semver",
  "serde",
  "serde-with-expand-env",
+ "serde_json",
  "serde_yaml 0.9.34+deprecated",
  "tokio",
  "uhlc 0.5.2",
@@ -1548,6 +1563,7 @@ version = "0.3.13"
 dependencies = [
  "aligned-vec",
  "arrow",
+ "arrow-integration-test",
  "arrow-json",
  "arrow-schema",
  "bincode",
@@ -5559,6 +5575,7 @@ version = "1.0.145"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "402a6f66d8c709116cf22f558eab210f5a50187f702eb4d7e5ef38d9a7f1c79c"
 dependencies = [
+ "indexmap 2.12.0",
  "itoa",
  "memchr",
  "ryu",

@@ -91,6 +91,12 @@ impl EventStream {
                 })?
             }
             DaemonCommunication::Interactive => DaemonChannel::Interactive(Default::default()),
+            DaemonCommunication::IntegrationTest { .. } => {
+                unreachable!("integration test channel should be initialized at this point")
+            }
+            DaemonCommunication::IntegrationTestInitialized { channel } => {
+                DaemonChannel::IntegrationTestChannel(channel.clone().expect("channel is None"))
+            }
         };
 
         let close_channel = match daemon_communication {
@@ -111,6 +117,12 @@ impl EventStream {
                 })?
             }
             DaemonCommunication::Interactive => DaemonChannel::Interactive(Default::default()),
+            DaemonCommunication::IntegrationTest { .. } => {
+                unreachable!("integration test channel should be initialized at this point")
+            }
+            DaemonCommunication::IntegrationTestInitialized { channel } => {
+                DaemonChannel::IntegrationTestChannel(channel.clone().expect("channel is None"))
+            }
         };
 
         let mut queue_size_limit: HashMap<DataId, (usize, VecDeque<EventItem>)> = input_config

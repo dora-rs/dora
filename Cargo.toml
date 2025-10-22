@@ -78,6 +78,7 @@ arrow-schema = { version = "54.2.1" }
 arrow-data = { version = "54.2.1" }
 arrow-array = { version = "54.2.1" }
 arrow-json = { version = "54.2.1" }
+arrow-integration-test = "54.3.1"
 parquet = { version = "54.2.1" }
 pyo3 = { version = "0.23", features = [
     "eyre",
@@ -87,6 +88,7 @@ pyo3 = { version = "0.23", features = [
 pythonize = "0.23"
 git2 = { version = "0.18.0", features = ["vendored-openssl"] }
 serde_yaml = "0.9.33"
+serde_json = "1.0.145"
 
 [package]
 name = "dora-examples"
