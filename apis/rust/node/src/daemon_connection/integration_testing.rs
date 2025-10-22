@@ -1,12 +1,12 @@
 use std::{
     fs::File,
+    io::Write as _,
     path::PathBuf,
-    sync::Arc,
     time::{Duration, Instant},
 };
 
-use arrow::array::{Array, Float64Array, RecordBatch, StringArray};
-use arrow_json::LineDelimitedWriter;
+use arrow::array::RecordBatch;
+use arrow_integration_test::{ArrowJsonField, data_type_to_json};
 use colored::Colorize;
 use dora_core::{
     metadata::ArrowTypeInfoExt,
@@ -85,11 +85,15 @@ impl IntegrationTestingEvents {
                 metadata,
                 data,
             } => {
-                let mut fields = Vec::new();
+                let mut output = serde_json::Map::new();
+                output.insert("id".into(), output_id.to_string().into());
 
-                let id: Arc<dyn Array> =
-                    Arc::new(StringArray::from_iter([Some(output_id.as_str())]));
-                fields.push(("id", id));
+                if !self.skip_output_time_offsets {
+                    let time_offset = metadata
+                        .timestamp()
+                        .get_diff_duration(&self.start_timestamp);
+                    output.insert("time_offset_secs".into(), time_offset.as_secs_f64().into());
+                }
 
                 if data.is_some() {
                     let (drop_tx, drop_rx) = flume::unbounded();
@@ -97,28 +101,38 @@ impl IntegrationTestingEvents {
                         .context("failed to convert output to arrow array")?;
                     // integration testing doesn't use shared memory -> no drop tokens
                     let _ = drop_rx;
-                    fields.push(("data", data_array));
+
+                    let data_type_json = data_type_to_json(data_array.data_type());
+
+                    let batch = RecordBatch::try_from_iter([("inner", data_array)])
+                        .context("failed to create RecordBatch")?;
+
+                    let mut writer = arrow_json::ArrayWriter::new(Vec::new());
+                    writer
+                        .write(&batch)
+                        .context("failed to encode data as JSON")?;
+                    writer
+                        .finish()
+                        .context("failed to finish writing JSON data")?;
+                    let json_data_encoded = writer.into_inner();
+
+                    // Reparse the string using serde_json
+                    let json_data: Vec<serde_json::Map<String, serde_json::Value>> =
+                        serde_json::from_reader(json_data_encoded.as_slice())
+                            .context("failed to parse JSON data again")?;
+                    // remove `inner` field again
+                    let json_data_flattened: Vec<_> = json_data
+                        .into_iter()
+                        .map(|mut m| m.remove("inner"))
+                        .collect();
+                    output.insert("data".into(), json_data_flattened.into());
+                    output.insert("type".into(), data_type_json);
                 }
 
-                if !self.skip_output_time_offsets {
-                    let time_offset = metadata
-                        .timestamp()
-                        .get_diff_duration(&self.start_timestamp);
-                    let time_offset_secs =
-                        Float64Array::from_iter_values([time_offset.as_secs_f64()]);
-                    fields.push(("time_offset_secs", Arc::new(time_offset_secs)));
-                }
-
-                let batch =
-                    RecordBatch::try_from_iter(fields).context("failed to create RecordBatch")?;
-
-                let mut writer = LineDelimitedWriter::new(&mut self.output_file);
-                writer
-                    .write(&batch)
-                    .context("failed to convert output to JSON")?;
-                writer
-                    .finish()
-                    .context("failed to finish output conversion to JSON")?;
+                serde_json::to_writer(&mut self.output_file, &output)
+                    .context("failed to write output as JSON")?;
+                writeln!(&mut self.output_file)
+                    .context("failed to write newline to output file")?;
 
                 DaemonReply::Empty
             }
