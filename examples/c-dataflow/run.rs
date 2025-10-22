@@ -7,7 +7,7 @@ use std::{
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
-    set_up_tracing("c-dataflow-runner").wrap_err("failed to set up tracing")?;
+    set_up_tracing("c-dataflow-runner").wrap_err("failed to set up tracing subscriber")?;
 
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     std::env::set_current_dir(root.join(file!()).parent().unwrap())
@@ -22,8 +22,7 @@ async fn main() -> eyre::Result<()> {
     build_package("dora-operator-api-c").await?;
     build_c_operator(root).await?;
 
-    let dataflow = Path::new("dataflow.yml").to_owned();
-    run_dataflow(&dataflow).await?;
+    dora_cli::run("dataflow.yml".to_string(), false)?;
 
     Ok(())
 }
@@ -35,22 +34,6 @@ async fn build_package(package: &str) -> eyre::Result<()> {
     cmd.arg("--package").arg(package);
     if !cmd.status().await?.success() {
         bail!("failed to build {package}");
-    };
-    Ok(())
-}
-
-async fn run_dataflow(dataflow: &Path) -> eyre::Result<()> {
-    let cargo = std::env::var("CARGO").unwrap();
-    let mut cmd = tokio::process::Command::new(&cargo);
-    cmd.arg("run");
-    cmd.arg("--package").arg("dora-cli");
-    cmd.arg("--release");
-    cmd.arg("--")
-        .arg("daemon")
-        .arg("--run-dataflow")
-        .arg(dataflow);
-    if !cmd.status().await?.success() {
-        bail!("failed to run dataflow");
     };
     Ok(())
 }

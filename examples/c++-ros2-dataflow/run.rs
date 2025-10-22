@@ -4,7 +4,7 @@ use std::{env::consts::EXE_SUFFIX, path::Path};
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
-    set_up_tracing("c++-ros2-dataflow-example").wrap_err("failed to set up tracing")?;
+    set_up_tracing("c++-ros2-dataflow-example").wrap_err("failed to set up tracing subscriber")?;
 
     if cfg!(windows) {
         tracing::error!(
@@ -56,8 +56,7 @@ async fn main() -> eyre::Result<()> {
     )
     .await?;
 
-    let dataflow = Path::new("dataflow.yml").to_owned();
-    run_dataflow(&dataflow).await?;
+    dora_cli::run("dataflow.yml".to_string(), false)?;
 
     Ok(())
 }
@@ -146,22 +145,6 @@ async fn build_cxx_node(
 
     if !clang.status().await?.success() {
         bail!("failed to compile c++ node");
-    };
-    Ok(())
-}
-
-async fn run_dataflow(dataflow: &Path) -> eyre::Result<()> {
-    let cargo = std::env::var("CARGO").unwrap();
-    let mut cmd = tokio::process::Command::new(&cargo);
-    cmd.arg("run");
-    cmd.arg("--package").arg("dora-cli");
-    cmd.arg("--release");
-    cmd.arg("--")
-        .arg("daemon")
-        .arg("--run-dataflow")
-        .arg(dataflow);
-    if !cmd.status().await?.success() {
-        bail!("failed to run dataflow");
     };
     Ok(())
 }

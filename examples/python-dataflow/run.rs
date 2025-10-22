@@ -1,3 +1,4 @@
+use dora_cli::{build, run as dora_run};
 use dora_core::{get_uv_path, run};
 use dora_tracing::set_up_tracing;
 use eyre::{WrapErr, bail};
@@ -5,7 +6,7 @@ use std::path::Path;
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
-    set_up_tracing("python-dataflow-runner")?;
+    set_up_tracing("python-dataflow-runner").wrap_err("failed to set up tracing subscriber")?;
 
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     std::env::set_current_dir(root.join(file!()).parent().unwrap())
@@ -31,32 +32,9 @@ async fn main() -> eyre::Result<()> {
     .await
     .context("Unable to install develop dora-rs API")?;
 
-    let dataflow = Path::new("dataflow.yml");
-    run_dataflow(dataflow).await?;
+    build("dataflow.yml".to_string(), None, None, true, true)?;
 
-    Ok(())
-}
+    dora_run("dataflow.yml".to_string(), true)?;
 
-async fn run_dataflow(dataflow: &Path) -> eyre::Result<()> {
-    let cargo = std::env::var("CARGO").unwrap();
-
-    // First build the dataflow (install requirements)
-    let mut cmd = tokio::process::Command::new(&cargo);
-    cmd.arg("run");
-    cmd.arg("--package").arg("dora-cli");
-    cmd.arg("--release");
-    cmd.arg("--").arg("build").arg(dataflow).arg("--uv");
-    if !cmd.status().await?.success() {
-        bail!("failed to run dataflow");
-    };
-
-    let mut cmd = tokio::process::Command::new(&cargo);
-    cmd.arg("run");
-    cmd.arg("--package").arg("dora-cli");
-    cmd.arg("--release");
-    cmd.arg("--").arg("run").arg(dataflow).arg("--uv");
-    if !cmd.status().await?.success() {
-        bail!("failed to run dataflow");
-    };
     Ok(())
 }
