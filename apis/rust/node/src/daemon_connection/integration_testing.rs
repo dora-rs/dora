@@ -15,7 +15,7 @@ use dora_core::{
 use dora_message::{
     common::{DataMessage, Timestamped},
     daemon_to_node::{DaemonReply, NodeEvent},
-    integration_testing::{InputEvent, IntegrationTestInput, TimedInputEvent},
+    integration_testing::{InputDataFormat, InputEvent, IntegrationTestInput, TimedInputEvent},
     metadata::{ArrowTypeInfo, Metadata},
     node_to_daemon::DaemonRequest,
 };
@@ -23,7 +23,7 @@ use eyre::Context;
 
 use crate::{
     arrow_utils::{copy_array_into_sample, required_data_size},
-    daemon_connection::json_to_arrow::read_json_value_as_arrow,
+    daemon_connection::json_to_arrow::{convert_arrow_json_data, read_json_value_as_arrow},
     event_stream::data_to_arrow_array,
 };
 
@@ -162,11 +162,22 @@ impl IntegrationTestingEvents {
 
         let converted = match event {
             InputEvent::Stop => NodeEvent::Stop,
-            InputEvent::Input { id, metadata, data } => {
+            InputEvent::Input {
+                id,
+                metadata,
+                data,
+                data_format,
+            } => {
                 let (data, type_info) = if let Some(data) = data {
-                    // input is JSON data
-                    let array = read_json_value_as_arrow(&data)
-                        .context("failed to read data as arrow array")?;
+                    let array = match data_format {
+                        InputDataFormat::JsonObject => {
+                            // input is JSON data
+                            read_json_value_as_arrow(&data)
+                        }
+                        InputDataFormat::ArrowTest => convert_arrow_json_data(data, false),
+                        InputDataFormat::ArrowTestUnwrap => convert_arrow_json_data(data, true),
+                    }
+                    .context("failed to read data")?;
 
                     let total_len = required_data_size(&array);
                     let mut buf = vec![0; total_len];

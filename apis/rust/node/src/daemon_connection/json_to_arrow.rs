@@ -3,7 +3,8 @@ use std::{
     sync::Arc,
 };
 
-use arrow::array::{Array, ArrayData};
+use arrow::array::{Array, ArrayData, StructArray};
+use arrow_integration_test::ArrowJson;
 use eyre::{Context, ContextCompat};
 
 pub fn read_json_bytes_as_arrow(data: &[u8]) -> eyre::Result<ArrayData> {
@@ -45,6 +46,37 @@ fn wrapped_quoted(data: impl BufRead) -> impl BufRead {
     wrapped(quoted)
 }
 
+pub fn convert_arrow_json_data(
+    value: serde_json::Value,
+    unwrap_first_column: bool,
+) -> eyre::Result<ArrayData> {
+    let data: ArrowJson =
+        serde_json::from_value(value).context("failed to deserialize ArrowJson format")?;
+    let batches = data
+        .get_record_batches()
+        .context("failed to get record batches of given ArrowJson data")?;
+
+    if batches.len() > 1 {
+        eyre::bail!("more than one RecordBatch given in arrow_data field (Dora only supports one)");
+    }
+
+    let batch = batches
+        .into_iter()
+        .next()
+        .context("no record batch given")?;
+    if unwrap_first_column {
+        if batch.columns().len() > 1 {
+            eyre::bail!(
+                "given data has more than one column, use the `arrow_test` data format instead"
+            );
+        }
+        Ok(batch.column(0).to_data())
+    } else {
+        Ok(StructArray::from(batch).to_data())
+    }
+}
+
+/// convert the given JSON object to the closed arrow representation
 pub fn read_json_value_as_arrow(data: &serde_json::Value) -> eyre::Result<ArrayData> {
     let schema = arrow_json::reader::infer_json_schema_from_iterator(std::iter::once(data).map(Ok))
         .context("failed to infer JSON schema")?;

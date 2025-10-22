@@ -1,16 +1,12 @@
 //! Use these types for integration testing nodes.
 
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    time::Duration,
-};
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
     config::Input,
-    daemon_to_node::NodeEvent,
     descriptor::EnvValue,
     id::{DataId, NodeId},
-    metadata::{Metadata, MetadataParameters},
+    metadata::MetadataParameters,
 };
 
 #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -184,10 +180,32 @@ pub enum InputEvent {
     Input {
         id: DataId,
         metadata: Option<MetadataParameters>,
+        #[serde(default)]
+        data_format: InputDataFormat,
         data: Option<serde_json::Value>,
     },
     InputClosed {
         id: DataId,
     },
     AllInputsClosed,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy, serde::Deserialize, serde::Serialize, Default)]
+pub enum InputDataFormat {
+    /// Converts the given JSON object to the closest Arrow representation.
+    ///
+    /// No schema is required, but not all arrow types are representable.
+    #[default]
+    JsonObject,
+    /// Use [Arrow JSON test data format](https://github.com/apache/arrow/blob/main/docs/source/format/Integration.rst#json-test-data-format)
+    ///
+    /// Requires specifying the exact schema. Always returns an Arrow StructArray.
+    ArrowTest,
+    /// Use first column of [Arrow JSON test data format](https://github.com/apache/arrow/blob/main/docs/source/format/Integration.rst#json-test-data-format).
+    ///
+    /// Like [`ArrowTest`][InputDataFormat::ArrowTest], but unwraps the first column of the
+    /// `StructArray`. This makes it possible to provide other Arrow array types as input.
+    ///
+    /// Errors if the given `RecordBatch` specifies more than one column.
+    ArrowTestUnwrap,
 }
