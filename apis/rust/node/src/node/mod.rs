@@ -155,7 +155,9 @@ impl DoraNode {
                         input_file.with_file_name("outputs.jsonl")
                     }
                 };
-                return Self::init_testing(input_file, output_file);
+                let skip_output_time_offsets =
+                    std::env::var_os("DORA_TEST_NO_OUTPUT_TIME_OFFSET").is_some();
+                return Self::init_testing(input_file, output_file, skip_output_time_offsets);
             }
             Err(std::env::VarError::NotUnicode(_)) => {
                 bail!("DORA_TEST_WITH_INPUTS env variable is not valid unicode")
@@ -356,6 +358,7 @@ impl DoraNode {
     fn init_testing(
         input_file: PathBuf,
         output_file: PathBuf,
+        skip_output_time_offsets: bool,
     ) -> eyre::Result<(Self, EventStream)> {
         #[cfg(feature = "tracing")]
         {
@@ -375,6 +378,7 @@ impl DoraNode {
             daemon_communication: DaemonCommunication::IntegrationTest {
                 input_file,
                 output_file,
+                skip_output_time_offsets,
             },
             dataflow_descriptor: serde_yaml::Value::Null,
             dynamic: false,
@@ -432,12 +436,17 @@ impl DoraNode {
                 DaemonCommunication::IntegrationTest {
                     input_file,
                     output_file,
+                    skip_output_time_offsets,
                 } => {
                     let (sender, mut receiver) = tokio::sync::mpsc::channel(5);
                     let new_communication = DaemonCommunication::IntegrationTestInitialized {
                         channel: Some(sender),
                     };
-                    let mut events = IntegrationTestingEvents::new(input_file, output_file)?;
+                    let mut events = IntegrationTestingEvents::new(
+                        input_file,
+                        output_file,
+                        skip_output_time_offsets,
+                    )?;
                     std::thread::spawn(move || {
                         while let Some((request, reply_sender)) = receiver.blocking_recv() {
                             let reply = events.request(&request);

@@ -32,10 +32,15 @@ pub struct IntegrationTestingEvents {
     output_file: File,
     start_timestamp: uhlc::Timestamp,
     start_time: Instant,
+    skip_output_time_offsets: bool,
 }
 
 impl IntegrationTestingEvents {
-    pub fn new(input_file_path: PathBuf, output_file_path: PathBuf) -> eyre::Result<Self> {
+    pub fn new(
+        input_file_path: PathBuf,
+        output_file_path: PathBuf,
+        skip_output_time_offsets: bool,
+    ) -> eyre::Result<Self> {
         let mut node_info: IntegrationTestInput = serde_json::from_slice(
             &std::fs::read(&input_file_path)
                 .with_context(|| format!("failed to open {}", input_file_path.display()))?,
@@ -58,6 +63,7 @@ impl IntegrationTestingEvents {
             output_file,
             start_timestamp,
             start_time,
+            skip_output_time_offsets,
         })
     }
 
@@ -94,11 +100,14 @@ impl IntegrationTestingEvents {
                     fields.push(("data", data_array));
                 }
 
-                let time_offset = metadata
-                    .timestamp()
-                    .get_diff_duration(&self.start_timestamp);
-                let time_offset_secs = Float64Array::from_iter_values([time_offset.as_secs_f64()]);
-                fields.push(("time_offset_secs", Arc::new(time_offset_secs)));
+                if !self.skip_output_time_offsets {
+                    let time_offset = metadata
+                        .timestamp()
+                        .get_diff_duration(&self.start_timestamp);
+                    let time_offset_secs =
+                        Float64Array::from_iter_values([time_offset.as_secs_f64()]);
+                    fields.push(("time_offset_secs", Arc::new(time_offset_secs)));
+                }
 
                 let batch =
                     RecordBatch::try_from_iter(fields).context("failed to create RecordBatch")?;
