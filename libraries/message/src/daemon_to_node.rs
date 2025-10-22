@@ -49,6 +49,7 @@ pub enum DaemonCommunication {
     IntegrationTest {
         input_file: PathBuf,
         output_file: PathBuf,
+        skip_output_time_offsets: bool,
     },
     IntegrationTestInitialized {
         #[serde(skip)]
