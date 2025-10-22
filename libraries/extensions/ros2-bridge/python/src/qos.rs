@@ -11,7 +11,7 @@ use pyo3_special_method_derive::{Dict, Dir, Repr, Str};
 /// :type lease_duration: float, optional
 /// :type max_blocking_time: float, optional
 /// :type keep_last: int, optional
-/// :rtype: dora.Ros2QoSPolicies
+/// :rtype: dora.Ros2QosPolicies
 ///
 #[derive(Clone, Str, Repr, Dir, Dict)]
 #[pyclass]
