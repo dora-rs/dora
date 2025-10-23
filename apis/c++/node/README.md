@@ -70,6 +70,52 @@ Instead, use the following functions to read and destructure the event:
   - The `data` of inputs is currently of type [`rust::Vec<uint8_t>`](https://cxx.rs/binding/vec.html). Use the provided methods for reading or converting the data.
     - **Note:** In the future, we plan to change the data type to the [Apache Arrow](https://arrow.apache.org/) data format to support typed inputs.
 
+### Receiving Arrow Inputs
+
+For Arrow-based inputs, you can use the following functions to receive typed data along with metadata:
+
+- `event_as_arrow_input(event, out_array, out_schema)` - Returns only the Arrow array data (original function)
+- `event_as_arrow_input_with_info(event, out_array, out_schema)` - Returns Arrow array data plus input ID and metadata as JSON
+
+**Example using `event_as_arrow_input_with_info`:**
+
+```c++
+struct ArrowArray c_array;
+struct ArrowSchema c_schema;
+
+// Get Arrow array along with input ID and metadata
+auto input_info = event_as_arrow_input_with_info(
+    std::move(event),
+    reinterpret_cast<uint8_t*>(&c_array),
+    reinterpret_cast<uint8_t*>(&c_schema)
+);
+
+// Check for errors
+if (!input_info.error.empty()) {
+    std::cerr << "Error: " << input_info.error << std::endl;
+    return;
+}
+
+// Access input ID
+std::cout << "Input ID: " << input_info.id << std::endl;
+
+// Access metadata (serialized as JSON)
+std::cout << "Metadata: " << input_info.metadata_json << std::endl;
+
+// You can parse the JSON metadata using a JSON library like nlohmann/json
+// nlohmann::json metadata = nlohmann::json::parse(input_info.metadata_json);
+// auto timestamp_secs = metadata["timestamp"]["secs"];
+
+// Import the Arrow array for processing
+auto result = arrow::ImportArray(&c_array, &c_schema);
+std::shared_ptr<arrow::Array> input_array = result.ValueOrDie();
+```
+
+The metadata JSON contains:
+- `timestamp` - Message timestamp with `secs` and `nanos` fields
+- `type_info` - Arrow type information
+- `parameters` - Custom metadata parameters (key-value pairs)
+
 ### Sending Outputs
 
 Nodes can send outputs using the `send_output` output function and the `dora_node.send_output` field.
