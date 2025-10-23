@@ -1598,6 +1598,7 @@ dependencies = [
  "rust-format",
  "serde",
  "serde-big-array",
+ "serde_json",
 ]
 
 [[package]]

@@ -11,25 +11,30 @@ std::shared_ptr<arrow::Array> receive_and_print_input(rust::cxxbridge1::Box<Dora
 
     struct ArrowArray c_array;
     struct ArrowSchema c_schema;
-    
-    auto result = event_as_arrow_input(
+
+    // Use the new function that returns input ID and metadata
+    auto input_info = event_as_arrow_input_with_info(
         std::move(event),
         reinterpret_cast<uint8_t*>(&c_array),
         reinterpret_cast<uint8_t*>(&c_schema)
     );
-    
-    if (!result.error.empty()) {
-        std::cerr << "Error getting Arrow array: " << std::endl;
+
+    if (!input_info.error.empty()) {
+        std::cerr << "Error getting Arrow array: " << std::string(input_info.error) << std::endl;
         return nullptr;
     }
-    
+
+    // Print input ID and metadata
+    std::cout << "Input ID: " << std::string(input_info.id) << std::endl;
+    std::cout << "Metadata JSON: " << std::string(input_info.metadata_json) << std::endl;
+
     auto result2 = arrow::ImportArray(&c_array, &c_schema);
     std::shared_ptr<arrow::Array> input_array = result2.ValueOrDie();
     std::cout << "Received Arrow array: " << input_array->ToString() << std::endl;
-    
-    std::cout << "Array details: type=" << input_array->type()->ToString() 
+
+    std::cout << "Array details: type=" << input_array->type()->ToString()
     << ", length=" << input_array->length() << std::endl;
-    
+
     return input_array;
 }
 
