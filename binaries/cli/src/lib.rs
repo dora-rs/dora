@@ -30,6 +30,9 @@ pub mod logs;
 // Issue #21: Help module
 pub mod help;
 
+// Issue #22: UX validation and integration module
+pub mod ux;
+
 pub use command::build;
 pub use command::{run, run_func};
 
