@@ -39,6 +39,7 @@ impl ControlChannel {
                 DaemonChannel::new_unix_socket(socket_file)
                     .wrap_err("failed to connect control channel")?
             }
+            DaemonCommunication::Interactive => DaemonChannel::Interactive(Default::default()),
         };
 
         Self::init_on_channel(dataflow_id, node_id, channel, clock)

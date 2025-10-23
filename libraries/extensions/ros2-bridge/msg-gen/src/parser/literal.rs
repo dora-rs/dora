@@ -257,7 +257,7 @@ mod test {
     }
 
     #[test]
-    fn parse_integer_sequenc() -> Result<()> {
+    fn parse_integer_sequence() -> Result<()> {
         assert_eq!(
             basic_type_sequence(BasicType::I8, "[-1, 0x10, 0o10, -0b10]")?.1,
             vec!["-1", "16", "8", "-2"]

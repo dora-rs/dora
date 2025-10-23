@@ -9,7 +9,7 @@ dynamic = ["version"]
 requires-python = ">=3.7"
 license = { text = "MIT" }
 readme = "README.md"
-dependencies = ['pyarrow']
+dependencies = ['pyarrow', "pyyaml>=6.0"]
 
 [dependency-groups]
 dev = ["pytest >=7.1.1", "ruff >=0.9.1"]
