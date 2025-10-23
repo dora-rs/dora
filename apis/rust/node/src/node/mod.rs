@@ -7,6 +7,7 @@ use self::{
 };
 use aligned_vec::{AVec, ConstAlign};
 use arrow::array::Array;
+use colored::Colorize;
 use dora_core::{
     config::{DataId, NodeId, NodeRunConfig},
     descriptor::Descriptor,
@@ -14,14 +15,14 @@ use dora_core::{
     topics::{DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, LOCALHOST},
     uhlc,
 };
-
 use dora_message::{
     DataflowId,
-    daemon_to_node::{DaemonReply, NodeConfig},
+    daemon_to_node::{DaemonCommunication, DaemonReply, NodeConfig},
     metadata::{ArrowTypeInfo, Metadata, MetadataParameters},
     node_to_daemon::{DaemonRequest, DataMessage, DropToken, Timestamped},
 };
 use eyre::{WrapErr, bail};
+use is_terminal::IsTerminal;
 use shared_memory_extended::{Shmem, ShmemConf};
 use std::{
     collections::{BTreeSet, HashMap, VecDeque},
@@ -29,14 +30,13 @@ use std::{
     sync::Arc,
     time::Duration,
 };
+use tokio::runtime::{Handle, Runtime};
 use tracing::{info, warn};
 
 #[cfg(feature = "metrics")]
 use dora_metrics::run_metrics_monitor;
 #[cfg(feature = "tracing")]
 use dora_tracing::TracingBuilder;
-
-use tokio::runtime::{Handle, Runtime};
 
 pub mod arrow_utils;
 mod control_channel;
@@ -82,27 +82,59 @@ pub struct DoraNode {
     dataflow_descriptor: serde_yaml::Result<Descriptor>,
     warned_unknown_output: BTreeSet<DataId>,
     _rt: TokioRuntime,
+
+    interactive: bool,
 }
 
 impl DoraNode {
-    /// Initiate a node from environment variables set by the Dora daemon.
+    /// Initiate a node from environment variables set by the Dora daemon or fall back to
+    /// interactive mode.
     ///
     /// This is the recommended initialization function for Dora nodes, which are spawned by
-    /// Dora daemon instances.
+    /// Dora daemon instances. The daemon will set a `DORA_NODE_CONFIG` environment variable to
+    /// configure the node.
     ///
+    /// When the node is started manually without the `DORA_NODE_CONFIG` environment variable set,
+    /// the initialization will fall back to [`init_interactive`](Self::init_interactive) if `stdin`
+    /// is a terminal (detected through
+    /// [`isatty`](https://www.man7.org/linux/man-pages/man3/isatty.3.html)).
     ///
     /// ```no_run
     /// use dora_node_api::DoraNode;
     ///
     /// let (mut node, mut events) = DoraNode::init_from_env().expect("Could not init node.");
     /// ```
-    ///
     pub fn init_from_env() -> eyre::Result<(Self, EventStream)> {
-        let node_config: NodeConfig = {
-            let raw = std::env::var("DORA_NODE_CONFIG").wrap_err(
-                "env variable DORA_NODE_CONFIG must be set. Are you sure your using `dora start`?",
-            )?;
-            serde_yaml::from_str(&raw).context("failed to deserialize node config")?
+        Self::init_from_env_inner(true)
+    }
+
+    /// Initialize the node from environment variables set by the Dora daemon; error if not set.
+    ///
+    /// This function behaves the same as [`init_from_env`](Self::init_from_env), but it does _not_
+    /// fall back to [`init_interactive`](Self::init_interactive). Instead, an error is returned
+    /// when the `DORA_NODE_CONFIG` environment variable is missing.
+    pub fn init_from_env_force() -> eyre::Result<(Self, EventStream)> {
+        Self::init_from_env_inner(false)
+    }
+
+    fn init_from_env_inner(fallback_to_interactive: bool) -> eyre::Result<(Self, EventStream)> {
+        let node_config: NodeConfig = match std::env::var("DORA_NODE_CONFIG") {
+            Ok(raw) => serde_yaml::from_str(&raw).context("failed to deserialize node config")?,
+            Err(std::env::VarError::NotUnicode(_)) => {
+                bail!("DORA_NODE_CONFIG env variable is not valid unicode")
+            }
+            Err(std::env::VarError::NotPresent) => {
+                if fallback_to_interactive && std::io::stdin().is_terminal() {
+                    println!(
+                    "{}",
+                    "Starting node in interactive mode as DORA_NODE_CONFIG env variable is not set"
+                        .green()
+                );
+                    return Self::init_interactive();
+                } else {
+                    bail!("DORA_NODE_CONFIG env variable is not set")
+                }
+            }
         };
         #[cfg(feature = "tracing")]
         {
@@ -139,6 +171,7 @@ impl DoraNode {
                 timestamp: clock.new_timestamp(),
             })
             .wrap_err("failed to request node config from daemon")?;
+
         match reply {
             DaemonReply::NodeConfig {
                 result: Ok(node_config),
@@ -166,6 +199,130 @@ impl DoraNode {
         }
     }
 
+    /// Initialize the node in a standalone mode that prompts for inputs on the terminal.
+    ///
+    /// Instead of connecting to a `dora daemon`, this interactive mode prompts for node inputs
+    /// on the terminal. In this mode, the node is completely isolated from the dora daemon and
+    /// other nodes, so it cannot be part of a dataflow.
+    ///
+    /// Note that this function will hang indefinitely if no input is supplied to the interactive
+    /// prompt. So it should be only used through a terminal.
+    ///
+    /// Because of the above limitations, it is not recommended to use this function directly.
+    /// Use [**`init_from_env`**](Self::init_from_env) instead, which supports both normal daemon
+    /// connections and manual interactive runs.
+    ///
+    /// ## Example
+    ///
+    /// Run any node that uses `init_interactive` or [`init_from_env`](Self::init_from_env) directly
+    /// from a terminal. The node will then start in "interactive mode" and prompt you for the next
+    /// input:
+    ///
+    /// ```bash
+    /// > cargo build -p rust-dataflow-example-node
+    /// > target/debug/rust-dataflow-example-node
+    /// hello
+    /// Starting node in interactive mode as DORA_NODE_CONFIG env variable is not set
+    /// Node asks for next input
+    /// ? Input ID
+    /// [empty input ID to stop]
+    /// ```
+    ///
+    /// The `rust-dataflow-example-node` expects a `tick` input, so let's set the input ID to
+    /// `tick`. Tick messages don't have any data, so we leave the "Data" empty when prompted:
+    ///
+    /// ```bash
+    /// Node asks for next input
+    /// > Input ID tick
+    /// > Data
+    /// tick 0, sending 0x943ed1be20c711a4
+    /// node sends output random with data: PrimitiveArray<UInt64>
+    /// [
+    ///   10682205980693303716,
+    /// ]
+    /// Node asks for next input
+    /// ? Input ID
+    /// [empty input ID to stop]
+    /// ```
+    ///
+    /// We see that both the `stdout` output of the node and also the output messages that it sends
+    /// are printed to the terminal. Then we get another prompt for the next input.
+    ///
+    /// If you want to send an input with data, you can either send it as text (for string data)
+    /// or as a JSON object (for struct, string, or array data). Other data types are not supported
+    /// currently.
+    ///
+    /// Empty input IDs are interpreted as stop instructions:
+    ///
+    /// ```bash
+    /// > Input ID
+    /// given input ID is empty -> stopping
+    /// Received stop
+    /// Node asks for next input
+    /// event channel was stopped -> returning empty event list
+    /// node reports EventStreamDropped
+    /// node reports closed outputs []
+    /// node reports OutputsDone
+    /// ```
+    ///
+    /// In addition to the node output, we see log messages for the different events that the node
+    /// reports. After `OutputsDone`, the node should exit.
+    ///
+    /// ### JSON data
+    ///
+    /// In addition to text input, the `Data` prompt also supports JSON objects, which will be
+    /// converted to Apache Arrow struct arrays:
+    ///
+    /// ```bash
+    /// Node asks for next input
+    /// > Input ID some_input
+    /// > Data { "field_1": 42, "field_2": { "inner": "foo" } }
+    /// ```
+    ///
+    /// This JSON data is converted to the following Arrow array:
+    ///
+    /// ```text
+    /// StructArray
+    /// -- validity: [valid, ]
+    /// [
+    ///   -- child 0: "field_1" (Int64)
+    ///      PrimitiveArray<Int64>
+    ///      [42,]
+    ///   -- child 1: "field_2" (Struct([Field { name: "inner", data_type: Utf8, nullable: true, dict_id: 0, dict_is_ordered: false, metadata: {} }]))
+    ///      StructArray
+    ///      -- validity: [valid,]
+    ///      [
+    ///        -- child 0: "inner" (Utf8)
+    ///        StringArray
+    ///        ["foo",]
+    ///      ]
+    /// ]
+    /// ```
+    pub fn init_interactive() -> eyre::Result<(Self, EventStream)> {
+        #[cfg(feature = "tracing")]
+        {
+            TracingBuilder::new("node")
+                .with_stdout("debug")
+                .build()
+                .wrap_err("failed to set up tracing subscriber")?;
+        }
+
+        let node_config = NodeConfig {
+            dataflow_id: DataflowId::new_v4(),
+            node_id: "".parse()?,
+            run_config: NodeRunConfig {
+                inputs: Default::default(),
+                outputs: Default::default(),
+            },
+            daemon_communication: DaemonCommunication::Interactive,
+            dataflow_descriptor: serde_yaml::Value::Null,
+            dynamic: false,
+        };
+        let (mut node, events) = Self::init(node_config)?;
+        node.interactive = true;
+        Ok((node, events))
+    }
+
     /// Internal initialization routine that should not be used outside of Dora.
     #[doc(hidden)]
     #[tracing::instrument]
@@ -176,7 +333,7 @@ impl DoraNode {
             run_config,
             daemon_communication,
             dataflow_descriptor,
-            dynamic: _,
+            dynamic,
         } = node_config;
         let clock = Arc::new(uhlc::HLC::default());
         let input_config = run_config.inputs.clone();
@@ -236,12 +393,38 @@ impl DoraNode {
             dataflow_descriptor: serde_yaml::from_value(dataflow_descriptor),
             warned_unknown_output: BTreeSet::new(),
             _rt: rt,
+            interactive: false,
         };
+
+        if dynamic {
+            // Inject env variable from dataflow descriptor.
+            match &node.dataflow_descriptor {
+                Ok(descriptor) => {
+                    if let Some(env_vars) = descriptor
+                        .nodes
+                        .iter()
+                        .find(|n| n.id == node.id)
+                        .and_then(|n| n.env.as_ref())
+                    {
+                        for (key, value) in env_vars {
+                            // SAFETY: setting env variable is safe as long as we don't
+                            // have multiple threads doing it at the same time.
+                            unsafe {
+                                std::env::set_var(key, value.to_string());
+                            }
+                        }
+                    }
+                }
+                Err(err) => {
+                    warn!("Could not parse dataflow descriptor: {err:#}");
+                }
+            }
+        }
         Ok((node, event_stream))
     }
 
     fn validate_output(&mut self, output_id: &DataId) -> bool {
-        if !self.node_config.outputs.contains(output_id) {
+        if !self.node_config.outputs.contains(output_id) && !self.interactive {
             if !self.warned_unknown_output.contains(output_id) {
                 warn!("Ignoring output `{output_id}` not in node's output list.");
                 self.warned_unknown_output.insert(output_id.clone());
@@ -304,7 +487,7 @@ impl DoraNode {
     /// Uses shared memory for efficient data transfer if suitable.
     ///
     /// This method might copy the message once to move it to shared memory.
-    ///    
+    ///
     /// Ignores the output if the given `output_id` is not specified as node output in the dataflow
     /// configuration file.
     pub fn send_output(
@@ -391,7 +574,9 @@ impl DoraNode {
         parameters: MetadataParameters,
         sample: Option<DataSample>,
     ) -> eyre::Result<()> {
-        self.handle_finished_drop_tokens()?;
+        if !self.interactive {
+            self.handle_finished_drop_tokens()?;
+        }
 
         let metadata = Metadata::from_parameters(self.clock.new_timestamp(), type_info, parameters);
 
@@ -453,7 +638,7 @@ impl DoraNode {
     /// The data sample will use shared memory when suitable to enable efficient data transfer
     /// when sending an output message.
     pub fn allocate_data_sample(&mut self, data_len: usize) -> eyre::Result<DataSample> {
-        let data = if data_len >= ZERO_COPY_THRESHOLD {
+        let data = if data_len >= ZERO_COPY_THRESHOLD && !self.interactive {
             // create shared memory region
             let shared_memory = self.allocate_shared_memory(data_len)?;
 
