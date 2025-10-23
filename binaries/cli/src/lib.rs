@@ -119,9 +119,13 @@ pub fn hybrid_main(cli: cli::Cli) {
     
     match &cli.command {
         // Tier 1: Core commands (demonstrate structure)
-        cli::Command::Ps(_) => {
-            println!("Tier 1 Command: PS (List) - Enhanced with smart hints");
-            println!("💡 In future issues, this will show intelligent suggestions");
+        cli::Command::Ps(ps_cmd) => {
+            println!("🔍 Enhanced PS Command with Smart Hints");
+            // Execute the enhanced PS command
+            if let Err(e) = tokio::runtime::Runtime::new().unwrap().block_on(ps_cmd.execute(&context)) {
+                eprintln!("PS command failed: {}", e);
+                std::process::exit(1);
+            }
         },
         cli::Command::Start(_) => {
             println!("Tier 1 Command: START - Enhanced with progress indicators");

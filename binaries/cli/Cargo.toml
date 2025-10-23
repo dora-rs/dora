@@ -80,6 +80,9 @@ git2 = { workspace = true }
 toml = "0.8"
 dirs = "5.0"
 anyhow = "1.0"
+# Enhanced PS command dependencies
+tabled = "0.15"
+chrono = { version = "0.4", features = ["serde"] }
 
 [dev-dependencies]
 tempfile = "3.8"

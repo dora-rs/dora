@@ -3,6 +3,12 @@ use std::path::PathBuf;
 
 pub mod config;
 
+// Enhanced command modules
+pub mod ps;
+
+// Re-export enhanced commands
+pub use ps::PsCommand;
+
 // Basic command structures for now - will be enhanced in future issues
 
 #[derive(Args, Clone, Debug, Default)]
@@ -35,18 +41,6 @@ pub struct NodeArgs {
 }
 
 // Tier 1: Core commands
-#[derive(Args, Clone, Debug, Default)]
-pub struct PsCommand {
-    #[clap(flatten)]
-    pub common: CommonArgs,
-    
-    #[clap(flatten)]
-    pub dataflow: DataflowArgs,
-    
-    /// Show all dataflows
-    #[clap(short, long)]
-    pub all: bool,
-}
 
 #[derive(Args, Clone, Debug)]
 pub struct StartCommand {
