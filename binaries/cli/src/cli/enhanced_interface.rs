@@ -3,16 +3,18 @@ use crate::cli::context::ExecutionContext;
 use crate::cli::interface::{InterfaceDecision, InterfaceStrategy, UserConfig};
 use crate::analysis::{
     ComplexityAnalysisEngine, ComplexityAnalysisRequest, SystemState, UserExpertiseLevel,
-    RecommendationPriority, ComplexityResult,
+    RecommendationPriority, ComplexityResult, ResourceAnalysisEngine, ResourceTarget,
 };
 use std::sync::Arc;
 use std::collections::HashMap;
 use tokio::sync::Mutex;
+use uuid::Uuid;
 
-/// Enhanced interface selector using ML-based complexity analysis
+/// Enhanced interface selector using ML-based complexity analysis and resource monitoring
 #[derive(Debug)]
 pub struct EnhancedInterfaceSelector {
     complexity_engine: Arc<Mutex<ComplexityAnalysisEngine>>,
+    resource_engine: Arc<Mutex<ResourceAnalysisEngine>>,
     config: UserConfig,
     system_monitor: SystemMonitor,
 }
@@ -46,6 +48,17 @@ impl EnhancedInterfaceSelector {
     pub fn new(config: UserConfig) -> Self {
         Self {
             complexity_engine: Arc::new(Mutex::new(ComplexityAnalysisEngine::new())),
+            resource_engine: Arc::new(Mutex::new(ResourceAnalysisEngine::new())),
+            config,
+            system_monitor: SystemMonitor::new(),
+        }
+    }
+
+    /// Create with daemon client for resource monitoring
+    pub fn with_daemon_client(config: UserConfig, daemon_client: crate::cli::daemon_client::DaemonClient) -> Self {
+        Self {
+            complexity_engine: Arc::new(Mutex::new(ComplexityAnalysisEngine::new())),
+            resource_engine: Arc::new(Mutex::new(ResourceAnalysisEngine::with_daemon_client(daemon_client))),
             config,
             system_monitor: SystemMonitor::new(),
         }
@@ -91,12 +104,88 @@ impl EnhancedInterfaceSelector {
             &base_decision,
         );
         
-        Ok(EnhancedInterfaceDecision {
+        // Enhance decision with resource analysis if available
+        let enhanced_decision = self.enhance_with_resource_analysis(
             base_decision,
+            &complexity_result,
+            command,
+        ).await.unwrap_or(base_decision);
+
+        Ok(EnhancedInterfaceDecision {
+            base_decision: enhanced_decision,
             complexity_score: complexity_result.overall_score,
             complexity_explanation: complexity_result.explanation.summary,
             learning_feedback,
         })
+    }
+
+    /// Enhance interface decision with resource analysis
+    async fn enhance_with_resource_analysis(
+        &self,
+        base_decision: InterfaceDecision,
+        complexity_result: &ComplexityResult,
+        command: &Command,
+    ) -> eyre::Result<InterfaceDecision> {
+        // Only enhance for resource-intensive commands
+        let should_enhance = matches!(command, 
+            Command::Monitor(_) | 
+            Command::Analyze(_) | 
+            Command::Inspect(_) |
+            Command::Debug(_)
+        );
+
+        if !should_enhance {
+            return Ok(base_decision);
+        }
+
+        // Perform resource analysis
+        let resource_analysis = {
+            let mut engine = self.resource_engine.lock().await;
+            engine.analyze_system_resources().await?
+        };
+
+        // Adjust decision based on resource health
+        let mut enhanced_decision = base_decision;
+
+        // If system health is poor, prefer TUI for better monitoring
+        if resource_analysis.overall_health.overall_score < 60.0 {
+            enhanced_decision.strategy = match enhanced_decision.strategy {
+                InterfaceStrategy::CliOnly => InterfaceStrategy::PromptForTui {
+                    reason: "System health issues detected - TUI recommended for monitoring".to_string(),
+                    default_yes: true,
+                },
+                InterfaceStrategy::CliWithHint { hint, tui_command } => InterfaceStrategy::PromptForTui {
+                    reason: "System health issues detected - enhanced monitoring needed".to_string(),
+                    default_yes: true,
+                },
+                other => other,
+            };
+            enhanced_decision.confidence = (enhanced_decision.confidence + 0.2).min(1.0);
+            enhanced_decision.reason = format!(
+                "{} (Health score: {:.1}/100)", 
+                enhanced_decision.reason, 
+                resource_analysis.overall_health.overall_score
+            );
+        }
+
+        // If there are critical anomalies, strongly recommend TUI
+        let critical_anomalies = resource_analysis.anomalies.iter()
+            .filter(|a| matches!(a.severity, crate::analysis::anomaly_detection::AnomalySeverity::Critical))
+            .count();
+
+        if critical_anomalies > 0 {
+            enhanced_decision.strategy = InterfaceStrategy::AutoLaunchTui {
+                reason: format!("{} critical system anomalies detected", critical_anomalies),
+                show_cli_first: false,
+            };
+            enhanced_decision.confidence = 0.9;
+            enhanced_decision.reason = format!(
+                "Critical system issues require immediate interactive attention ({} anomalies)",
+                critical_anomalies
+            );
+        }
+
+        Ok(enhanced_decision)
     }
     
     /// Make decision based on complexity analysis results
@@ -287,7 +376,7 @@ impl EnhancedInterfaceSelector {
                     "How was your experience with this {} operation? (1-5 scale)",
                     self.classify_complexity(complexity_result.overall_score)
                 ),
-                session_id: uuid::Uuid::new_v4().to_string(),
+                session_id: Uuid::new_v4().to_string(),
             })
         } else {
             None
