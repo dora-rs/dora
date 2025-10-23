@@ -1,8 +1,10 @@
 use ratatui::{
+    backend::Backend,
     layout::{Constraint, Direction, Layout, Rect, Alignment},
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     widgets::{Block, Borders, List, ListItem, Paragraph, Gauge, Table, Row, Cell},
-    text::{Line, Span},
+    text::{Line, Span, Text},
+    Frame,
 };
 use crossterm::event::{KeyCode, KeyEvent};
 use std::time::Duration;
@@ -10,7 +12,6 @@ use std::time::Duration;
 use crate::tui::{
     app::{AppState, ViewType},
     theme::ThemeConfig,
-    Frame,
     Result,
 };
 use super::{BaseView, View, ViewAction, StateUpdate, utils};
@@ -33,7 +34,7 @@ impl DashboardView {
         }
     }
     
-    fn render_overview(&self, f: &mut Frame, area: Rect, app_state: &AppState) {
+    fn render_overview<B: Backend>(&self, f: &mut Frame<B>, area: Rect, app_state: &AppState) {
         let dataflow_count = app_state.dataflows.len();
         let running_count = app_state.dataflows
             .iter()
@@ -62,7 +63,7 @@ impl DashboardView {
         f.render_widget(overview, area);
     }
     
-    fn render_dataflows(&self, f: &mut Frame, area: Rect, app_state: &AppState) {
+    fn render_dataflows<B: Backend>(&self, f: &mut Frame<B>, area: Rect, app_state: &AppState) {
         if app_state.dataflows.is_empty() {
             let empty_msg = Paragraph::new("No dataflows found. Use 'dora start <dataflow.yaml>' to start one.")
                 .block(self.theme.styled_block("Dataflows"))
@@ -124,7 +125,7 @@ impl DashboardView {
         f.render_widget(table, area);
     }
     
-    fn render_system_metrics(&self, f: &mut Frame, area: Rect, app_state: &AppState) {
+    fn render_system_metrics<B: Backend>(&self, f: &mut Frame<B>, area: Rect, app_state: &AppState) {
         if !self.show_system_info {
             return;
         }
@@ -169,7 +170,7 @@ impl DashboardView {
         f.render_widget(network_info, chunks[2]);
     }
     
-    fn render_quick_actions(&self, f: &mut Frame, area: Rect) {
+    fn render_quick_actions<B: Backend>(&self, f: &mut Frame<B>, area: Rect) {
         let actions = vec![
             "1: Dashboard",
             "2: Dataflows", 
@@ -206,7 +207,7 @@ impl DashboardView {
 }
 
 impl View for DashboardView {
-    fn render(&mut self, f: &mut Frame, area: Rect, app_state: &AppState) {
+    fn render<B: Backend>(&mut self, f: &mut Frame<B>, area: Rect, app_state: &AppState) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -231,10 +232,10 @@ impl View for DashboardView {
             ])
             .split(chunks[1]);
         
-        self.render_overview(f, top_chunks[0], app_state);
-        self.render_system_metrics(f, top_chunks[1], app_state);
-        self.render_dataflows(f, bottom_chunks[0], app_state);
-        self.render_quick_actions(f, bottom_chunks[1]);
+        self.render_overview::<B>(f, top_chunks[0], app_state);
+        self.render_system_metrics::<B>(f, top_chunks[1], app_state);
+        self.render_dataflows::<B>(f, bottom_chunks[0], app_state);
+        self.render_quick_actions::<B>(f, bottom_chunks[1]);
     }
     
     async fn handle_key(&mut self, key: KeyEvent, app_state: &mut AppState) -> Result<ViewAction> {

@@ -3,6 +3,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use clap::Parser;
+
 use crate::{
     cli::{
         Command, Cli,
@@ -11,7 +13,7 @@ use crate::{
     },
     tui::{
         ViewType, AppState, CliContext,
-        app::{DataflowInfo, NodeInfo, StatusMessage},
+        app::{DataflowInfo, NodeInfo, StatusMessage, MessageLevel},
     },
 };
 
@@ -62,6 +64,23 @@ pub enum StatusLevel {
     Error,
 }
 
+/// Result of command mode execution
+#[derive(Debug)]
+pub struct CommandModeExecutionResult {
+    pub success: bool,
+    pub message: String,
+    pub view_action: Option<CommandModeViewAction>,
+    pub duration: Duration,
+}
+
+/// View actions that can result from command mode
+#[derive(Debug, Clone)]
+pub enum CommandModeViewAction {
+    SwitchView(ViewType),
+    RefreshCurrentView,
+    ShowMessage { message: String, level: MessageLevel },
+}
+
 impl TuiCliExecutor {
     pub fn new(context: ExecutionContext) -> Self {
         Self {
@@ -92,7 +111,7 @@ impl TuiCliExecutor {
             std::iter::once("dora".to_string()).chain(args).collect()
         };
         
-        let cli = Cli::try_parse_from(full_args)
+        let cli = crate::cli::Cli::try_parse_from(full_args)
             .map_err(|e| format!("Failed to parse CLI args: {}", e))?;
         
         // Add to history
@@ -441,6 +460,101 @@ impl TuiCliExecutor {
     
     pub fn get_command_history(&self) -> &[String] {
         &self.command_history
+    }
+    
+    /// Execute command from command mode with enhanced error handling and feedback
+    pub async fn execute_command_mode(
+        &mut self,
+        command_str: &str,
+        app_state: &mut AppState,
+    ) -> crate::tui::Result<CommandModeExecutionResult> {
+        let start_time = Instant::now();
+        
+        // Add to history
+        self.command_history.push(command_str.to_string());
+        
+        // Parse command
+        let args = shell_words::split(command_str)
+            .map_err(|e| format!("Failed to parse command: {}", e))?;
+        
+        if args.is_empty() {
+            return Ok(CommandModeExecutionResult {
+                success: false,
+                message: "Empty command".to_string(),
+                view_action: None,
+                duration: start_time.elapsed(),
+            });
+        }
+        
+        // Handle special TUI commands first
+        if let Some(view_action) = self.handle_tui_commands(command_str) {
+            return Ok(CommandModeExecutionResult {
+                success: true,
+                message: format!("Switched to view: {}", command_str),
+                view_action: Some(view_action),
+                duration: start_time.elapsed(),
+            });
+        }
+        
+        // Add "dora" prefix if not present
+        let full_args = if args[0] == "dora" {
+            args
+        } else {
+            std::iter::once("dora".to_string()).chain(args).collect()
+        };
+        
+        let cli = crate::cli::Cli::try_parse_from(full_args)
+            .map_err(|e| format!("Failed to parse CLI args: {}", e))?;
+        
+        // Execute command with enhanced feedback
+        match self.execute_parsed_command(&cli.command, app_state).await {
+            Ok(result) => {
+                let view_action = match &result {
+                    CommandResult::ViewSwitch(view_type) => Some(CommandModeViewAction::SwitchView(view_type.clone())),
+                    CommandResult::StateUpdate(_) => Some(CommandModeViewAction::RefreshCurrentView),
+                    _ => None,
+                };
+                
+                let message = match &result {
+                    CommandResult::Success(msg) => msg.clone(),
+                    CommandResult::ViewSwitch(view_type) => format!("Switched to {:?}", view_type),
+                    CommandResult::StateUpdate(_) => "State updated successfully".to_string(),
+                    CommandResult::Error(err) => err.clone(),
+                    CommandResult::Exit => "Exit requested".to_string(),
+                };
+                
+                Ok(CommandModeExecutionResult {
+                    success: matches!(result, CommandResult::Success(_) | CommandResult::ViewSwitch(_) | CommandResult::StateUpdate(_)),
+                    message,
+                    view_action,
+                    duration: start_time.elapsed(),
+                })
+            },
+            Err(e) => {
+                Ok(CommandModeExecutionResult {
+                    success: false,
+                    message: format!("Command failed: {}", e),
+                    view_action: None,
+                    duration: start_time.elapsed(),
+                })
+            }
+        }
+    }
+    
+    fn handle_tui_commands(&self, command: &str) -> Option<CommandModeViewAction> {
+        let trimmed = command.trim();
+        
+        match trimmed {
+            "dashboard" | "dash" => Some(CommandModeViewAction::SwitchView(ViewType::Dashboard)),
+            "dataflow" | "df" => Some(CommandModeViewAction::SwitchView(ViewType::DataflowManager)),
+            "monitor" | "sys" => Some(CommandModeViewAction::SwitchView(ViewType::SystemMonitor)),
+            "logs" => Some(CommandModeViewAction::SwitchView(ViewType::LogViewer { 
+                target: "system".to_string() 
+            })),
+            "settings" | "config" => Some(CommandModeViewAction::SwitchView(ViewType::SettingsManager)),
+            "help" => Some(CommandModeViewAction::SwitchView(ViewType::Help)),
+            _ => None,
+        }
     }
 }
 

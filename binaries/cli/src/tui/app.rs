@@ -1,25 +1,31 @@
 use ratatui::{
-    backend::CrosstermBackend,
+    backend::{Backend, CrosstermBackend},
     layout::{Constraint, Direction, Layout, Rect, Alignment},
     style::{Color, Modifier, Style},
+    terminal::{Frame, Terminal},
     widgets::{Block, Borders, Clear, Gauge, Paragraph, Wrap},
     text::{Line, Span, Text},
-    Frame, Terminal,
 };
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use std::{
     collections::{HashMap, VecDeque},
     io,
+    path::PathBuf,
     time::{Duration, Instant},
 };
+use futures::future::BoxFuture;
 
+use crate::cli::{Command, Cli};
 use super::{
     theme::ThemeConfig,
     cli_integration::{CliContext, CommandMode},
+    command_mode::{CommandModeManager, CommandModeAction},
+    command_executor::{TuiCliExecutor, CommandModeExecutionResult, CommandModeViewAction},
+    views::ViewAction,
     Result,
 };
 
@@ -153,8 +159,14 @@ pub struct DoraApp {
     /// CLI context for command execution
     cli_context: Option<CliContext>,
     
-    /// Command mode state
+    /// Command mode state (legacy)
     command_mode: CommandMode,
+    
+    /// Command mode manager (new implementation)
+    command_mode_manager: CommandModeManager,
+    
+    /// CLI command executor for TUI
+    command_executor: Option<TuiCliExecutor>,
     
     /// Should quit flag
     should_quit: bool,
@@ -170,13 +182,20 @@ impl DoraApp {
             theme: ThemeConfig::load_user_theme(),
             cli_context: None,
             command_mode: CommandMode::Normal,
+            command_mode_manager: CommandModeManager::new(),
+            command_executor: None,
             should_quit: false,
         }
     }
     
     pub fn new_with_context(initial_view: ViewType, cli_context: CliContext) -> Self {
         let mut app = Self::new(initial_view);
-        app.cli_context = Some(cli_context);
+        app.cli_context = Some(cli_context.clone());
+        
+        // Initialize command executor with a default execution context
+        let execution_context = crate::cli::context::ExecutionContext::detect_basic();
+        app.command_executor = Some(TuiCliExecutor::new(execution_context));
+        
         app
     }
     
@@ -219,7 +238,7 @@ impl DoraApp {
         Ok(())
     }
     
-    async fn run_event_loop(&mut self, terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> Result<()> {
+    async fn run_event_loop<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> Result<()> {
         loop {
             // Render current view
             terminal.draw(|f| self.ui(f))?;
@@ -244,7 +263,7 @@ impl DoraApp {
         Ok(())
     }
     
-    fn ui(&mut self, f: &mut Frame) {
+    fn ui<B: Backend>(&mut self, f: &mut Frame<B>) {
         let size = f.size();
         
         // Main layout: header + body + footer
@@ -265,7 +284,7 @@ impl DoraApp {
         self.render_overlays(f, size);
     }
     
-    fn render_header(&mut self, f: &mut Frame, area: Rect) {
+    fn render_header<B: Backend>(&mut self, f: &mut Frame<B>, area: Rect) {
         let title = format!("🚀 Dora TUI - {}", self.view_title());
         let header = Paragraph::new(title)
             .style(self.theme.styles.highlight_style)
@@ -278,7 +297,7 @@ impl DoraApp {
         f.render_widget(header, area);
     }
     
-    fn render_current_view(&mut self, f: &mut Frame, area: Rect) {
+    fn render_current_view<B: Backend>(&mut self, f: &mut Frame<B>, area: Rect) {
         use super::views::*;
         
         match &self.current_view {
@@ -315,11 +334,10 @@ impl DoraApp {
                     _ => "View not implemented yet".to_string(),
                 };
                 
-                let title = self.view_title();
                 let view_widget = Paragraph::new(content)
                     .style(Style::default().fg(self.theme.colors.text))
                     .block(
-                        self.theme.styled_block(&title)
+                        self.theme.styled_block(&self.view_title())
                             .borders(Borders::ALL)
                     )
                     .wrap(Wrap { trim: true });
@@ -329,13 +347,10 @@ impl DoraApp {
         }
     }
     
-    fn render_footer(&mut self, f: &mut Frame, area: Rect) {
-        let footer_text = if self.is_in_command_mode() {
-            if let CommandMode::Command { buffer, cursor, .. } = &self.command_mode {
-                format!(":{}{}", buffer, if cursor == &buffer.len() { "█" } else { "" })
-            } else {
-                "Command mode".to_string()
-            }
+    fn render_footer<B: Backend>(&mut self, f: &mut Frame<B>, area: Rect) {
+        let footer_text = if self.command_mode_manager.is_active() {
+            // Command mode footer is rendered by the command mode manager
+            "".to_string()
         } else {
             "Press 'q' to quit, ':' for command mode, F1 for help".to_string()
         };
@@ -352,40 +367,54 @@ impl DoraApp {
         f.render_widget(footer, area);
     }
     
-    fn render_overlays(&mut self, f: &mut Frame, area: Rect) {
-        // Render status messages as overlay
+    fn render_overlays<B: Backend>(&mut self, f: &mut Frame<B>, area: Rect) {
+        // Render command mode if active
+        if self.command_mode_manager.is_active() {
+            self.command_mode_manager.render(f, area, &self.theme);
+        }
+        
+        // Render status messages as overlay (but not over command mode)
         if let Some(status) = self.state.status_messages.back() {
-            let popup_area = centered_rect(60, 20, area);
-            
-            let message = Paragraph::new(status.message.as_str())
-                .style(match status.level {
-                    MessageLevel::Info => Style::default().fg(self.theme.colors.text),
-                    MessageLevel::Success => Style::default().fg(self.theme.colors.success),
-                    MessageLevel::Warning => Style::default().fg(self.theme.colors.warning),
-                    MessageLevel::Error => Style::default().fg(self.theme.colors.error),
-                })
-                .block(
-                    Block::default()
-                        .title("Status")
-                        .borders(Borders::ALL)
-                        .border_type(self.theme.styles.border_style)
-                )
-                .alignment(Alignment::Center);
-            
-            f.render_widget(Clear, popup_area);
-            f.render_widget(message, popup_area);
+            if !self.command_mode_manager.is_active() {
+                let popup_area = centered_rect(60, 20, area);
+                
+                let message = Paragraph::new(status.message.as_str())
+                    .style(match status.level {
+                        MessageLevel::Info => Style::default().fg(self.theme.colors.text),
+                        MessageLevel::Success => Style::default().fg(self.theme.colors.success),
+                        MessageLevel::Warning => Style::default().fg(self.theme.colors.warning),
+                        MessageLevel::Error => Style::default().fg(self.theme.colors.error),
+                    })
+                    .block(
+                        Block::default()
+                            .title("Status")
+                            .borders(Borders::ALL)
+                            .border_type(self.theme.styles.border_style)
+                    )
+                    .alignment(Alignment::Center);
+                
+                f.render_widget(Clear, popup_area);
+                f.render_widget(message, popup_area);
+            }
         }
     }
     
     async fn handle_key_event(&mut self, key: KeyEvent) -> Result<()> {
+        // Check if we're in new command mode first
+        if self.command_mode_manager.is_active() {
+            let action = self.command_mode_manager.handle_key_event(key, &self.state).await?;
+            self.handle_command_mode_action(action).await?;
+            return Ok(());
+        }
+        
         // Global key bindings
         match key.code {
-            KeyCode::Char('q') if !self.is_in_command_mode() => {
+            KeyCode::Char('q') => {
                 self.should_quit = true;
                 return Ok(());
             },
-            KeyCode::Char(':') if !self.is_in_command_mode() => {
-                self.enter_command_mode_internal();
+            KeyCode::Char(':') => {
+                self.command_mode_manager.activate();
                 return Ok(());
             },
             KeyCode::F(1) => {
@@ -393,20 +422,12 @@ impl DoraApp {
                 return Ok(());
             },
             KeyCode::Esc => {
-                if self.is_in_command_mode() {
-                    self.exit_command_mode_internal();
-                } else if !self.view_stack.is_empty() {
+                if !self.view_stack.is_empty() {
                     self.pop_view();
                 }
                 return Ok(());
             },
             _ => {}
-        }
-        
-        // Command mode handling
-        if self.is_in_command_mode() {
-            self.handle_command_mode_key(key).await?;
-            return Ok(());
         }
         
         // View navigation shortcuts
@@ -419,6 +440,83 @@ impl DoraApp {
             _ => {}
         }
         
+        Ok(())
+    }
+    
+    async fn handle_command_mode_action(&mut self, action: CommandModeAction) -> Result<()> {
+        match action {
+            CommandModeAction::None => {
+                // Nothing to do
+            },
+            CommandModeAction::UpdateDisplay => {
+                // UI will be updated on next render
+            },
+            CommandModeAction::ExecuteCommand { command, show_output } => {
+                self.execute_command_mode_command(&command, show_output).await?;
+            },
+            CommandModeAction::Cancel => {
+                // Command mode is already deactivated by the manager
+            },
+            CommandModeAction::SwitchView(view_type) => {
+                self.switch_view(view_type);
+            },
+        }
+        Ok(())
+    }
+    
+    async fn execute_command_mode_command(&mut self, command: &str, show_output: bool) -> Result<()> {
+        if let Some(executor) = &mut self.command_executor {
+            let result = executor.execute_command_mode(command, &mut self.state).await?;
+            
+            // Handle the result
+            if let Some(view_action) = result.view_action {
+                match view_action {
+                    CommandModeViewAction::SwitchView(view_type) => {
+                        self.switch_view(view_type);
+                    },
+                    CommandModeViewAction::RefreshCurrentView => {
+                        // Trigger a refresh of current view data
+                        self.refresh_current_view_data().await?;
+                    },
+                    CommandModeViewAction::ShowMessage { message, level } => {
+                        self.show_status_message(message, level);
+                    },
+                }
+            }
+            
+            // Show execution result if requested
+            if show_output {
+                let level = if result.success { 
+                    MessageLevel::Success 
+                } else { 
+                    MessageLevel::Error 
+                };
+                self.show_status_message(result.message, level);
+            }
+        } else {
+            // Fallback to simple command execution
+            self.show_status_message(format!("Executed: {}", command), MessageLevel::Info);
+        }
+        
+        Ok(())
+    }
+    
+    async fn refresh_current_view_data(&mut self) -> Result<()> {
+        // Refresh data based on current view
+        match &self.current_view {
+            ViewType::Dashboard | ViewType::DataflowManager => {
+                self.refresh_dataflow_list().await?;
+            },
+            ViewType::SystemMonitor => {
+                self.update_system_metrics().await?;
+            },
+            ViewType::NodeInspector { .. } => {
+                self.refresh_dataflow_list().await?;
+            },
+            _ => {
+                // Other views don't need specific refresh
+            }
+        }
         Ok(())
     }
     
@@ -469,7 +567,7 @@ impl DoraApp {
     }
     
     pub fn is_in_command_mode(&self) -> bool {
-        matches!(self.command_mode, CommandMode::Command { .. })
+        self.command_mode_manager.is_active()
     }
     
     fn enter_command_mode_internal(&mut self) {

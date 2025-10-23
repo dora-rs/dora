@@ -306,7 +306,7 @@ pub struct MonitorCommand {
 }
 
 // Tier 3: TUI commands
-#[derive(Args, Clone, Debug)]
+#[derive(Args, Clone, Debug, Default)]
 pub struct UiCommand {
     #[clap(flatten)]
     pub common: CommonArgs,

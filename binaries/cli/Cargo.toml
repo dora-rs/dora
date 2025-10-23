@@ -33,6 +33,7 @@ termsize = "0.1"
 lru = "0.12"
 ratatui = "0.28"
 shell-words = "1.1"
+chrono = "0.4"
 dora-core = { workspace = true }
 dora-message = { workspace = true }
 dora-node-api-c = { workspace = true }
