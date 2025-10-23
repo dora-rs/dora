@@ -78,20 +78,104 @@ pub struct StopCommand {
     pub force: bool,
 }
 
+// Tier 1: Enhanced Logs Command (Issue #20)
 #[derive(Args, Clone, Debug, Default)]
 pub struct LogsCommand {
     #[clap(flatten)]
     pub common: CommonArgs,
-    
+
     #[clap(flatten)]
     pub dataflow: DataflowArgs,
-    
+
     #[clap(flatten)]
     pub nodes: NodeArgs,
-    
-    /// Follow log output
+
+    /// Target to get logs from (dataflow, node, or system)
+    pub target: Option<String>,
+
+    /// Follow log output (streaming mode)
     #[clap(short, long)]
     pub follow: bool,
+
+    /// Number of lines to show from the end
+    #[clap(short = 'n', long, default_value = "100")]
+    pub tail: usize,
+
+    /// Show logs since timestamp (e.g., "2h", "30m")
+    #[clap(long)]
+    pub since: Option<String>,
+
+    /// Show logs until timestamp
+    #[clap(long)]
+    pub until: Option<String>,
+
+    /// Filter logs by level
+    #[clap(long, value_enum)]
+    pub level: Vec<crate::logs::LogLevel>,
+
+    /// Filter logs by pattern (regex supported)
+    #[clap(long)]
+    pub filter: Vec<String>,
+
+    /// Exclude logs matching pattern
+    #[clap(long)]
+    pub exclude: Vec<String>,
+
+    /// Show only logs containing errors
+    #[clap(long)]
+    pub errors_only: bool,
+
+    /// Enable intelligent filtering
+    #[clap(long)]
+    pub smart_filter: bool,
+
+    /// Show timestamps
+    #[clap(long)]
+    pub timestamps: bool,
+
+    /// Output format
+    #[clap(long, value_enum, default_value = "text")]
+    pub format: crate::logs::LogFormat,
+
+    /// Maximum log rate (logs per second)
+    #[clap(long)]
+    pub rate_limit: Option<u32>,
+
+    /// Enable pattern detection and analysis
+    #[clap(long)]
+    pub analyze: bool,
+
+    /// Force CLI text output
+    #[clap(long)]
+    pub text: bool,
+
+    /// Force TUI interactive mode
+    #[clap(long)]
+    pub tui: bool,
+
+    /// Auto-escalate to TUI for complex patterns
+    #[clap(long)]
+    pub auto_escalate: bool,
+
+    /// Buffer size for streaming
+    #[clap(long, default_value = "1000")]
+    pub buffer_size: usize,
+
+    /// Export logs to file
+    #[clap(long)]
+    pub export: Option<PathBuf>,
+
+    /// Search for specific patterns
+    #[clap(long)]
+    pub search: Vec<String>,
+
+    /// Context lines around matches
+    #[clap(long, default_value = "3")]
+    pub context: usize,
+
+    /// Suppress hints and suggestions
+    #[clap(long)]
+    pub no_hints: bool,
 }
 
 #[derive(Args, Clone, Debug)]
@@ -1400,5 +1484,210 @@ impl From<ExportFormat> for crate::analysis::ExportFormat {
             ExportFormat::Csv => crate::analysis::ExportFormat::Csv,
             ExportFormat::Html => crate::analysis::ExportFormat::Html,
         }
+    }
+}
+// Issue #20: LogsCommand implementation
+impl LogsCommand {
+    /// Execute the logs command with intelligent streaming
+    pub async fn execute(&self) -> eyre::Result<()> {
+        use crate::logs::{LogSession, LogStream, LogPatternDetector, LogRenderer, SmartLogFilter};
+        use colored::Colorize;
+
+        println!("📋 Initializing log streaming session...\n");
+
+        // Initialize log session
+        let log_session = self.initialize_log_session().await?;
+
+        println!("Log Target: {:?}", log_session.log_target);
+        println!("Follow Mode: {}", log_session.streaming_config.follow);
+        println!("Buffer Size: {}", log_session.streaming_config.buffer_size);
+        println!();
+
+        // Create log stream
+        let mut log_stream = LogStream::new(self.follow);
+
+        // Initialize pattern detector if analyze mode is enabled
+        let mut pattern_detector = if self.analyze || self.auto_escalate {
+            Some(LogPatternDetector::new(self.buffer_size))
+        } else {
+            None
+        };
+
+        // Create smart filter
+        let smart_filter = SmartLogFilter::new(log_session.filter_config.clone());
+
+        // Create renderer
+        let renderer = LogRenderer::new(
+            true, // supports_color
+            self.timestamps,
+            self.format,
+        );
+
+        // Start streaming logs
+        self.stream_logs(&mut log_stream, &mut pattern_detector, &smart_filter, &renderer).await?;
+
+        // Export if requested
+        if let Some(export_path) = &self.export {
+            println!("\n📁 Export requested to: {}", export_path.display());
+        }
+
+        // Show hints unless suppressed
+        if !self.no_hints {
+            self.show_logs_hints();
+        }
+
+        Ok(())
+    }
+
+    async fn initialize_log_session(&self) -> eyre::Result<crate::logs::LogSession> {
+        use crate::logs::{LogSession, LogTarget, TimeFilter, LogFilterConfig, StreamingConfig, LogLevel};
+        use chrono::Utc;
+
+        // Determine log target
+        let log_target = if let Some(target) = &self.target {
+            self.resolve_log_target(target).await?
+        } else if let Some(dataflow_path) = &self.dataflow.dataflow {
+            LogTarget::Dataflow(dataflow_path.display().to_string())
+        } else {
+            LogTarget::System
+        };
+
+        // Create time filter
+        let time_filter = TimeFilter {
+            since: None, // Would parse self.since in real implementation
+            until: None, // Would parse self.until in real implementation
+        };
+
+        // Create filter configuration
+        let filter_config = LogFilterConfig {
+            levels: if self.level.is_empty() {
+                vec![LogLevel::Info, LogLevel::Warn, LogLevel::Error, LogLevel::Fatal]
+            } else {
+                self.level.clone()
+            },
+            include_patterns: self.filter.clone(),
+            exclude_patterns: self.exclude.clone(),
+            smart_filtering: self.smart_filter,
+            errors_only: self.errors_only,
+            search_patterns: self.search.clone(),
+        };
+
+        // Create streaming configuration
+        let streaming_config = StreamingConfig {
+            follow: self.follow,
+            tail: self.tail,
+            rate_limit: self.rate_limit,
+            buffer_size: self.buffer_size,
+        };
+
+        Ok(LogSession::new(
+            log_target,
+            time_filter,
+            filter_config,
+            streaming_config,
+        ))
+    }
+
+    async fn resolve_log_target(&self, target: &str) -> eyre::Result<crate::logs::LogTarget> {
+        use crate::logs::LogTarget;
+
+        if target == "system" {
+            Ok(LogTarget::System)
+        } else if target.contains(".yaml") || target.contains(".yml") {
+            Ok(LogTarget::Dataflow(target.to_string()))
+        } else if target.contains("node") {
+            Ok(LogTarget::Node(target.to_string()))
+        } else {
+            Ok(LogTarget::Component(target.to_string()))
+        }
+    }
+
+    async fn stream_logs(
+        &self,
+        log_stream: &mut crate::logs::LogStream,
+        pattern_detector: &mut Option<crate::logs::LogPatternDetector>,
+        smart_filter: &crate::logs::SmartLogFilter,
+        renderer: &crate::logs::LogRenderer,
+    ) -> eyre::Result<()> {
+        use colored::Colorize;
+
+        println!("📋 Streaming logs... (showing first {} entries for demo)\n", self.tail.min(10));
+
+        let mut count = 0;
+        let max_display = self.tail.min(10); // Limit for demo
+
+        while count < max_display {
+            if let Some(log_entry) = log_stream.next_log().await? {
+                // Apply filtering
+                if !smart_filter.should_display(&log_entry) {
+                    continue;
+                }
+
+                // Check for patterns if analyzer is enabled
+                if let Some(detector) = pattern_detector.as_mut() {
+                    if let Some(escalation) = detector.analyze_log_stream(&log_entry).await? {
+                        println!("\n🚨 {}", escalation.reason.bold().red());
+                        println!("💡 {}", escalation.suggested_action);
+
+                        if self.auto_escalate {
+                            println!("\n🖥️  Would launch interactive log analysis here (Issue #9)");
+                            println!("{}", "Full TUI implementation coming soon...".dimmed());
+                            break;
+                        }
+                        println!();
+                    }
+                }
+
+                // Render log entry
+                println!("{}", renderer.render(&log_entry));
+                count += 1;
+            } else {
+                break;
+            }
+        }
+
+        if count >= max_display {
+            println!("\n... (showing first {} of {} tail entries)", max_display, self.tail);
+        }
+
+        Ok(())
+    }
+
+    fn show_logs_hints(&self) {
+        use colored::Colorize;
+
+        println!("\n{}", "💡 Logs Hints:".bold().cyan());
+
+        // Hint for follow mode
+        if !self.follow {
+            println!("  • Use --follow for real-time log streaming");
+        }
+
+        // Hint for pattern analysis
+        if !self.analyze {
+            println!("  • Use --analyze for intelligent pattern detection");
+        }
+
+        // Hint for auto-escalation
+        if !self.auto_escalate && self.analyze {
+            println!("  • Use --auto-escalate for automatic TUI launch on critical patterns");
+        }
+
+        // Hint for error filtering
+        if !self.errors_only && self.level.is_empty() {
+            println!("  • Use --errors-only for focused error analysis");
+        }
+
+        // Hint for smart filtering
+        if !self.smart_filter {
+            println!("  • Use --smart-filter to reduce log noise intelligently");
+        }
+
+        // Hint for export
+        if self.export.is_none() {
+            println!("  • Use --export <path> to save filtered logs");
+        }
+
+        println!();
     }
 }

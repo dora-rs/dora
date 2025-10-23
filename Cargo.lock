@@ -1415,6 +1415,7 @@ version = "0.3.13"
 dependencies = [
  "atty",
  "bat",
+ "chrono",
  "clap",
  "clap_complete",
  "colored",
