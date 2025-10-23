@@ -114,10 +114,14 @@ pub enum Command {
     /// Self-management (updates, etc.)
     #[clap(name = "self")]
     Self_(SelfCommand),
+    
+    /// User preference management
+    #[clap(alias = "prefs")]
+    Preferences(PreferencesCommand),
 }
 
 /// UI mode selection
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, ValueEnum, Serialize, Deserialize)]
 pub enum UiMode {
     /// Smart decisions based on context
     Auto,

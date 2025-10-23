@@ -427,3 +427,21 @@ pub enum SelfSubcommand {
     Version,
     Info,
 }
+
+#[derive(Args, Clone, Debug, Default)]
+pub struct PreferencesCommand {
+    #[clap(flatten)]
+    pub common: CommonArgs,
+    
+    #[clap(subcommand)]
+    pub action: Option<PreferencesAction>,
+}
+
+#[derive(clap::Subcommand, Clone, Debug)]
+pub enum PreferencesAction {
+    Show,
+    Set { key: String, value: String },
+    Reset,
+    Export { file: std::path::PathBuf },
+    Import { file: std::path::PathBuf },
+}

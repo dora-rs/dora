@@ -18,6 +18,9 @@ pub mod cli;
 // New TUI module  
 pub mod tui;
 
+// Configuration and preferences module
+pub mod config;
+
 pub use command::build;
 
 const LOCALHOST: IpAddr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
@@ -224,6 +227,11 @@ pub fn hybrid_main(cli: cli::Cli) {
         cli::Command::Config(_) => {
             println!("⚙️  Configuration Command - Management operation");
             println!("💡 Enhanced Config command from Issue #4 will be available after branch merge");
+        }
+        
+        cli::Command::Preferences(_) => {
+            println!("🎛️  Preferences Command - User preference management");
+            println!("💡 New in Issue #12: Comprehensive preference system with behavioral learning");
         }
     }
     

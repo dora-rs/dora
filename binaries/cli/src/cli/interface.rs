@@ -458,6 +458,7 @@ impl CommandAnalyzer {
             Command::Runtime(_) => 5,               // Runtime operations complex
             Command::Coordinator(_) => 5,           // Coordinator operations complex
             Command::Self_(_) => 3,                 // Self-management
+            Command::Preferences(_) => 4,           // Preference management
         }
     }
     
@@ -599,6 +600,7 @@ impl Command {
             Command::Runtime(_) => "runtime".to_string(),
             Command::Coordinator(_) => "coordinator".to_string(),
             Command::Self_(_) => "self".to_string(),
+            Command::Preferences(_) => "preferences".to_string(),
         }
     }
 }

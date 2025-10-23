@@ -1,11 +1,10 @@
-// Configuration system for Dora CLI hybrid architecture
-// Provides hierarchical configuration management with user preferences
+pub mod preferences;
+pub mod behavioral_learning;
+pub mod context_preferences;
 
-pub mod manager;
-pub mod structs;
+#[cfg(test)]
+mod tests;
 
-pub use manager::{ConfigManager, ConfigPaths};
-pub use structs::*;
-
-/// Standard result type for configuration operations
-pub type Result<T> = std::result::Result<T, anyhow::Error>;
+pub use preferences::*;
+pub use behavioral_learning::*;
+pub use context_preferences::*;
