@@ -364,25 +364,126 @@ pub enum DebugFocus {
     Data,
 }
 
-#[derive(Args, Clone, Debug)]
+// Tier 2: Enhanced Analyze Command (Issue #19)
+#[derive(Args, Clone, Debug, Default)]
 pub struct AnalyzeCommand {
     #[clap(flatten)]
     pub common: CommonArgs,
-    
+
     #[clap(flatten)]
     pub dataflow: DataflowArgs,
-    
+
+    /// Target to analyze (dataflow, node, system, or recording)
+    pub target: Option<String>,
+
     /// Analysis type
-    #[clap(value_enum)]
-    pub analysis_type: Option<AnalysisType>,
+    #[clap(long, value_enum, default_value = "comprehensive")]
+    pub analysis_type: AnalysisType,
+
+    /// Analysis depth level
+    #[clap(long, value_enum, default_value = "normal")]
+    pub depth: AnalysisDepth,
+
+    /// Time window for analysis (e.g., "1h", "30m", "1d")
+    #[clap(long, default_value = "1h")]
+    pub window: String,
+
+    /// Focus areas for analysis
+    #[clap(long, value_enum)]
+    pub focus: Vec<AnalysisFocus>,
+
+    /// Include comparative analysis with baseline
+    #[clap(long)]
+    pub compare: bool,
+
+    /// Baseline period for comparison
+    #[clap(long, default_value = "24h")]
+    pub baseline: String,
+
+    /// Export analysis results
+    #[clap(long)]
+    pub export: Option<PathBuf>,
+
+    /// Export format
+    #[clap(long, value_enum, default_value = "json")]
+    pub format: ExportFormat,
+
+    /// Real-time analysis mode
+    #[clap(long)]
+    pub live: bool,
+
+    /// Analysis refresh interval for live mode
+    #[clap(long, default_value = "5s")]
+    pub refresh: String,
+
+    /// Force CLI text output
+    #[clap(long)]
+    pub text: bool,
+
+    /// Force TUI interactive mode
+    #[clap(long)]
+    pub tui: bool,
+
+    /// Include predictive analysis
+    #[clap(long)]
+    pub predict: bool,
+
+    /// Prediction horizon
+    #[clap(long, default_value = "1h")]
+    pub horizon: String,
+
+    /// Suppress hints and suggestions
+    #[clap(long)]
+    pub no_hints: bool,
 }
 
-#[derive(clap::ValueEnum, Clone, Debug)]
+#[derive(clap::ValueEnum, Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub enum AnalysisType {
+    #[default]
+    Comprehensive,
     Performance,
-    Resources,
+    Health,
+    Security,
+    Efficiency,
     Trends,
-    Complexity,
+    Comparison,
+}
+
+#[derive(clap::ValueEnum, Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub enum AnalysisDepth {
+    Quick,
+    Normal,
+    Deep,
+    Expert,
+}
+
+impl Default for AnalysisDepth {
+    fn default() -> Self {
+        Self::Normal
+    }
+}
+
+#[derive(clap::ValueEnum, Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub enum AnalysisFocus {
+    Performance,
+    Reliability,
+    Security,
+    Resource,
+    Dependencies,
+    Data,
+    Network,
+    Errors,
+    Patterns,
+    Anomalies,
+}
+
+#[derive(clap::ValueEnum, Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub enum ExportFormat {
+    #[default]
+    Json,
+    Yaml,
+    Csv,
+    Html,
 }
 
 #[derive(Args, Clone, Debug)]
@@ -850,5 +951,454 @@ impl DebugCommand {
         }
 
         println!();
+    }
+}
+
+// Issue #19: AnalyzeCommand implementation
+impl AnalyzeCommand {
+    /// Execute the analyze command
+    pub async fn execute(&self) -> eyre::Result<()> {
+        use crate::analysis::{AnalysisEngines, AnalysisSession, AnalysisResults, AnalysisCliRenderer, ResultComplexityAnalyzer};
+        use colored::Colorize;
+        use chrono::{Utc, Duration};
+        use std::time::Instant;
+
+        println!("📊 Initializing analysis session...\n");
+
+        // Initialize analysis session
+        let analysis_session = self.initialize_session().await?;
+
+        println!("Analysis Target: {:?}", analysis_session.analysis_target);
+        println!("Analysis Type: {:?}", analysis_session.analysis_type);
+        println!("Depth: {:?}", analysis_session.depth);
+        println!();
+
+        // Perform analysis
+        let start_time = Instant::now();
+        let analysis_results = self.perform_analysis(&analysis_session).await?;
+        let analysis_duration = start_time.elapsed();
+
+        // Analyze result complexity for interface decision
+        let complexity_analyzer = ResultComplexityAnalyzer::new();
+        let result_complexity = complexity_analyzer.analyze_complexity(
+            &analysis_results,
+            self.live,
+            self.compare,
+        )?;
+
+        println!("📊 Analysis Complexity:");
+        println!("   Overall Score: {:.1}/10", result_complexity.overall_score);
+        println!("   Data Volume: {:.1}", result_complexity.data_volume_score);
+        println!("   Dimensions: {:.1}", result_complexity.dimension_score);
+        println!();
+
+        // Determine interface strategy
+        let should_use_tui = self.should_launch_interactive_analysis(&result_complexity, &analysis_results);
+
+        if self.tui || (should_use_tui && !self.text) {
+            self.launch_interactive_analysis(&analysis_session, &analysis_results, &result_complexity).await?;
+        } else {
+            self.render_cli_analysis(&analysis_results)?;
+
+            // Show hints unless suppressed
+            if !self.no_hints {
+                self.show_analysis_hints(&analysis_results, &result_complexity);
+            }
+        }
+
+        // Export if requested
+        if let Some(export_path) = &self.export {
+            self.export_results(&analysis_results, export_path)?;
+        }
+
+        println!("\n⏱️  Analysis completed in {:.2}s", analysis_duration.as_secs_f32());
+
+        Ok(())
+    }
+
+    async fn initialize_session(&self) -> eyre::Result<crate::analysis::AnalysisSession> {
+        use crate::analysis::{AnalysisSession, AnalysisTarget, AnalysisConfiguration, TimeWindow};
+        use uuid::Uuid;
+        use chrono::{Utc, Duration};
+
+        let session_id = Uuid::new_v4();
+        let start_time = Utc::now();
+
+        // Determine analysis target
+        let analysis_target = if let Some(target) = &self.target {
+            self.resolve_analysis_target(target).await?
+        } else if let Some(dataflow_path) = &self.dataflow.dataflow {
+            AnalysisTarget::Dataflow(dataflow_path.display().to_string())
+        } else if let Some(name) = &self.dataflow.name {
+            AnalysisTarget::Dataflow(name.clone())
+        } else {
+            AnalysisTarget::Auto
+        };
+
+        // Parse time window
+        let window_duration = self.parse_duration(&self.window)?;
+        let time_window = TimeWindow {
+            start: Utc::now() - window_duration,
+            end: Utc::now(),
+            duration_description: self.window.clone(),
+        };
+
+        let baseline_window = if self.compare {
+            let baseline_duration = self.parse_duration(&self.baseline)?;
+            Some(TimeWindow {
+                start: Utc::now() - baseline_duration,
+                end: Utc::now() - window_duration,
+                duration_description: self.baseline.clone(),
+            })
+        } else {
+            None
+        };
+
+        let configuration = AnalysisConfiguration {
+            compare_baseline: self.compare,
+            export_path: self.export.clone(),
+            export_format: self.format.clone().into(),
+            live_mode: self.live,
+            refresh_interval_secs: 5,
+            enable_prediction: self.predict,
+            prediction_horizon_secs: 3600,
+            verbosity: crate::analysis::AnalysisVerbosity::Normal,
+        };
+
+        Ok(AnalysisSession {
+            session_id,
+            start_time,
+            analysis_target,
+            analysis_type: self.analysis_type.clone(),
+            depth: self.depth.clone().into(),
+            focus_areas: self.focus.iter().cloned().map(|f| f.into()).collect(),
+            time_window,
+            baseline_window,
+            configuration,
+        })
+    }
+
+    fn parse_duration(&self, duration_str: &str) -> eyre::Result<chrono::Duration> {
+        // Simple duration parsing - would use a proper library in production
+        let value: i64 = duration_str
+            .chars()
+            .take_while(|c| c.is_numeric())
+            .collect::<String>()
+            .parse()?;
+
+        let unit = duration_str.chars().skip_while(|c| c.is_numeric()).collect::<String>();
+
+        match unit.as_str() {
+            "s" => Ok(chrono::Duration::seconds(value)),
+            "m" => Ok(chrono::Duration::minutes(value)),
+            "h" => Ok(chrono::Duration::hours(value)),
+            "d" => Ok(chrono::Duration::days(value)),
+            _ => Ok(chrono::Duration::hours(1)),
+        }
+    }
+
+    async fn resolve_analysis_target(&self, target: &str) -> eyre::Result<crate::analysis::AnalysisTarget> {
+        use crate::analysis::AnalysisTarget;
+
+        if target == "system" {
+            Ok(AnalysisTarget::System)
+        } else if target.contains(".yaml") || target.contains(".yml") {
+            Ok(AnalysisTarget::Dataflow(target.to_string()))
+        } else if target.contains("node") {
+            Ok(AnalysisTarget::Node(target.to_string()))
+        } else {
+            Ok(AnalysisTarget::Component(target.to_string()))
+        }
+    }
+
+    async fn perform_analysis(&self, session: &crate::analysis::AnalysisSession) -> eyre::Result<crate::analysis::AnalysisResults> {
+        use crate::analysis::{AnalysisResults, DataCollection, MetricPoint, AnalysisEngines};
+        use chrono::{Utc, Duration};
+
+        let mut results = AnalysisResults::new(session);
+
+        // Collect data for analysis (mock implementation)
+        let data = self.collect_analysis_data(session).await?;
+
+        // Initialize analysis engines
+        let engines = AnalysisEngines::new();
+
+        // Perform analysis based on type
+        match self.analysis_type {
+            AnalysisType::Comprehensive => {
+                results.performance_analysis = Some(engines.performance.analyze(&data).await?);
+                results.health_analysis = Some(engines.health.analyze(&data).await?);
+                results.efficiency_analysis = Some(engines.efficiency.analyze(&data).await?);
+                results.trend_analysis = Some(engines.trends.analyze(&data).await?);
+            }
+            AnalysisType::Performance => {
+                results.performance_analysis = Some(engines.performance.analyze(&data).await?);
+            }
+            AnalysisType::Health => {
+                results.health_analysis = Some(engines.health.analyze(&data).await?);
+            }
+            AnalysisType::Trends => {
+                results.trend_analysis = Some(engines.trends.analyze(&data).await?);
+            }
+            AnalysisType::Efficiency => {
+                results.efficiency_analysis = Some(engines.efficiency.analyze(&data).await?);
+            }
+            _ => {}
+        }
+
+        // Generate insights and recommendations
+        results.insights = self.generate_insights(&results);
+        results.recommendations = self.generate_recommendations(&results);
+
+        // Calculate overall scores
+        results.overall_scores = self.calculate_overall_scores(&results);
+
+        Ok(results)
+    }
+
+    async fn collect_analysis_data(&self, session: &crate::analysis::AnalysisSession) -> eyre::Result<crate::analysis::DataCollection> {
+        use crate::analysis::{DataCollection, MetricPoint};
+
+        // Mock data collection - would query actual metrics in production
+        let mut metrics = Vec::new();
+
+        // Generate some mock throughput metrics
+        for i in 0..20 {
+            metrics.push(MetricPoint::new(
+                "throughput".to_string(),
+                100.0 + (i as f32 * 5.0),
+            ));
+        }
+
+        Ok(DataCollection {
+            metrics,
+            time_range: session.time_window.clone(),
+        })
+    }
+
+    fn generate_insights(&self, results: &crate::analysis::AnalysisResults) -> Vec<crate::analysis::AnalysisInsight> {
+        use crate::analysis::{AnalysisInsight, InsightPriority};
+
+        let mut insights = Vec::new();
+
+        if let Some(perf) = &results.performance_analysis {
+            if perf.performance_scores.overall_performance_score < 50.0 {
+                insights.push(AnalysisInsight {
+                    title: "Performance Below Expected".to_string(),
+                    description: format!(
+                        "Overall performance score is {:.1}/100",
+                        perf.performance_scores.overall_performance_score
+                    ),
+                    priority: InsightPriority::High,
+                    metric_change: None,
+                    affected_components: vec!["System".to_string()],
+                });
+            }
+        }
+
+        insights
+    }
+
+    fn generate_recommendations(&self, results: &crate::analysis::AnalysisResults) -> Vec<crate::analysis::AnalysisRecommendation> {
+        use crate::analysis::{AnalysisRecommendation, RecommendationPriority};
+
+        let mut recommendations = Vec::new();
+
+        if let Some(health) = &results.health_analysis {
+            if health.overall_health_score < 80.0 {
+                recommendations.push(AnalysisRecommendation {
+                    title: "Improve System Health".to_string(),
+                    description: "System health is below optimal levels".to_string(),
+                    priority: RecommendationPriority::Medium,
+                    expected_impact: "Improved system reliability and performance".to_string(),
+                    action_items: vec![
+                        "Review component health statuses".to_string(),
+                        "Address identified issues".to_string(),
+                    ],
+                });
+            }
+        }
+
+        recommendations
+    }
+
+    fn calculate_overall_scores(&self, results: &crate::analysis::AnalysisResults) -> crate::analysis::OverallScores {
+        use crate::analysis::OverallScores;
+
+        let performance_score = results
+            .performance_analysis
+            .as_ref()
+            .map(|p| p.performance_scores.overall_performance_score)
+            .unwrap_or(0.0);
+
+        let health_score = results
+            .health_analysis
+            .as_ref()
+            .map(|h| h.overall_health_score)
+            .unwrap_or(0.0);
+
+        let efficiency_score = results
+            .efficiency_analysis
+            .as_ref()
+            .map(|e| e.resource_efficiency)
+            .unwrap_or(0.0);
+
+        let overall_score = (performance_score + health_score + efficiency_score) / 3.0;
+
+        OverallScores {
+            performance_score,
+            health_score,
+            efficiency_score,
+            reliability_score: health_score,
+            overall_score,
+        }
+    }
+
+    fn render_cli_analysis(&self, results: &crate::analysis::AnalysisResults) -> eyre::Result<()> {
+        use crate::analysis::AnalysisCliRenderer;
+        let renderer = AnalysisCliRenderer::new(true, 80);
+        renderer.render_analysis(results)?;
+        Ok(())
+    }
+
+    fn should_launch_interactive_analysis(
+        &self,
+        complexity: &crate::analysis::complexity::ResultComplexity,
+        results: &crate::analysis::AnalysisResults,
+    ) -> bool {
+        // Auto-launch TUI for:
+        // 1. High complexity (>7.0)
+        // 2. Large data volumes
+        // 3. Multi-dimensional analysis
+        complexity.overall_score > 7.0
+            || complexity.data_volume_score > 4.0
+            || complexity.dimension_score > 3.0
+            || results.insights.len() > 5
+    }
+
+    async fn launch_interactive_analysis(
+        &self,
+        _session: &crate::analysis::AnalysisSession,
+        results: &crate::analysis::AnalysisResults,
+        complexity: &crate::analysis::complexity::ResultComplexity,
+    ) -> eyre::Result<()> {
+        use colored::Colorize;
+
+        println!();
+        println!("{}", "📊 Interactive Analysis Mode".bold().green());
+        println!();
+        println!("Interactive analysis provides:");
+
+        let benefits = crate::analysis::rendering::get_interactive_analysis_benefits(
+            complexity,
+            self.live,
+            self.predict,
+        );
+
+        for benefit in benefits {
+            println!("  • {}", benefit);
+        }
+
+        println!();
+        println!("{}", "Note: Full TUI implementation coming in Issue #9".dimmed());
+        println!("{}", "For now, showing enhanced CLI output...".dimmed());
+        println!();
+
+        // Show CLI analysis anyway
+        self.render_cli_analysis(results)?;
+
+        Ok(())
+    }
+
+    fn show_analysis_hints(
+        &self,
+        results: &crate::analysis::AnalysisResults,
+        complexity: &crate::analysis::complexity::ResultComplexity,
+    ) {
+        use colored::Colorize;
+
+        println!("\n{}", "💡 Analysis Hints:".bold().cyan());
+
+        // Hint for TUI
+        if !self.tui && complexity.overall_score > 5.0 {
+            println!("  • Use --tui for interactive analysis interface");
+        }
+
+        // Hint for depth
+        if matches!(self.depth, AnalysisDepth::Quick | AnalysisDepth::Normal) && !results.recommendations.is_empty() {
+            println!("  • Use --depth deep for more comprehensive analysis");
+        }
+
+        // Hint for live mode
+        if !self.live && results.overall_scores.overall_score < 80.0 {
+            println!("  • Use --live for real-time monitoring and analysis");
+        }
+
+        // Hint for prediction
+        if !self.predict && results.trend_analysis.is_some() {
+            println!("  • Use --predict to include predictive analysis");
+        }
+
+        // Hint for export
+        if self.export.is_none() {
+            println!("  • Use --export <path> to save analysis results");
+        }
+
+        println!();
+    }
+
+    fn export_results(&self, results: &crate::analysis::AnalysisResults, path: &std::path::PathBuf) -> eyre::Result<()> {
+        use std::fs;
+
+        let content = match self.format {
+            ExportFormat::Json => serde_json::to_string_pretty(results)?,
+            ExportFormat::Yaml => serde_yaml::to_string(results)?,
+            _ => serde_json::to_string_pretty(results)?,
+        };
+
+        fs::write(path, content)?;
+        println!("\n✅ Results exported to: {}", path.display());
+
+        Ok(())
+    }
+}
+
+// Type conversions for analysis types
+impl From<AnalysisDepth> for crate::analysis::AnalysisDepth {
+    fn from(depth: AnalysisDepth) -> Self {
+        match depth {
+            AnalysisDepth::Quick => crate::analysis::AnalysisDepth::Quick,
+            AnalysisDepth::Normal => crate::analysis::AnalysisDepth::Normal,
+            AnalysisDepth::Deep => crate::analysis::AnalysisDepth::Deep,
+            AnalysisDepth::Expert => crate::analysis::AnalysisDepth::Expert,
+        }
+    }
+}
+
+impl From<AnalysisFocus> for crate::analysis::AnalysisFocus {
+    fn from(focus: AnalysisFocus) -> Self {
+        match focus {
+            AnalysisFocus::Performance => crate::analysis::AnalysisFocus::Performance,
+            AnalysisFocus::Reliability => crate::analysis::AnalysisFocus::Reliability,
+            AnalysisFocus::Security => crate::analysis::AnalysisFocus::Security,
+            AnalysisFocus::Resource => crate::analysis::AnalysisFocus::Resource,
+            AnalysisFocus::Dependencies => crate::analysis::AnalysisFocus::Dependencies,
+            AnalysisFocus::Data => crate::analysis::AnalysisFocus::Data,
+            AnalysisFocus::Network => crate::analysis::AnalysisFocus::Network,
+            AnalysisFocus::Errors => crate::analysis::AnalysisFocus::Errors,
+            AnalysisFocus::Patterns => crate::analysis::AnalysisFocus::Patterns,
+            AnalysisFocus::Anomalies => crate::analysis::AnalysisFocus::Anomalies,
+        }
+    }
+}
+
+impl From<ExportFormat> for crate::analysis::ExportFormat {
+    fn from(format: ExportFormat) -> Self {
+        match format {
+            ExportFormat::Json => crate::analysis::ExportFormat::Json,
+            ExportFormat::Yaml => crate::analysis::ExportFormat::Yaml,
+            ExportFormat::Csv => crate::analysis::ExportFormat::Csv,
+            ExportFormat::Html => crate::analysis::ExportFormat::Html,
+        }
     }
 }

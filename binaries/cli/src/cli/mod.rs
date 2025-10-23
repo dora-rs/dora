@@ -6,7 +6,6 @@ pub mod context;
 pub mod output;
 pub mod traits;
 pub mod interface;
-pub mod config;  // Issue #16: User Preference Handling
 
 pub use commands::*;
 

@@ -21,6 +21,9 @@ pub mod inspection;
 // Issue #18: Debug module
 pub mod debug;
 
+// Issue #19: Analysis module
+pub mod analysis;
+
 pub use command::build;
 pub use command::{run, run_func};
 

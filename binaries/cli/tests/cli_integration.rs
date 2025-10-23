@@ -71,16 +71,16 @@ fn test_three_tier_structure() {
 #[test]
 fn test_complex_command_with_global_flags() {
     let cli = Cli::try_parse_from([
-        "dora", 
-        "--ui-mode", "tui", 
-        "--output", "yaml", 
-        "--verbose", 
+        "dora",
+        "--ui-mode", "tui",
+        "--output", "yaml",
+        "--verbose",
         "--no-hints",
-        "inspect", 
-        "--deep", 
+        "inspect",
+        "--depth", "3",
         "node1"
     ]).unwrap();
-    
+
     assert_eq!(cli.ui_mode, Some(UiMode::Tui));
     assert_eq!(cli.output, OutputFormat::Yaml);
     assert!(cli.verbose);
