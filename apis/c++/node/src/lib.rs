@@ -37,6 +37,12 @@ mod ffi {
         error: String,
     }
 
+    struct ArrowInputInfo {
+        id: String,
+        metadata_json: String,
+        error: String,
+    }
+
     pub struct CombinedEvents {
         events: Box<MergedEvents>,
     }
@@ -83,6 +89,12 @@ mod ffi {
             out_array: *mut u8,
             out_schema: *mut u8,
         ) -> DoraResult;
+
+        unsafe fn event_as_arrow_input_with_info(
+            event: Box<DoraEvent>,
+            out_array: *mut u8,
+            out_schema: *mut u8,
+        ) -> ArrowInputInfo;
     }
 }
 
@@ -210,6 +222,55 @@ unsafe fn event_as_arrow_input(
             }
         }
         Err(e) => ffi::DoraResult {
+            error: format!("Error exporting Arrow array to C++: {e:?}"),
+        },
+    }
+}
+
+unsafe fn event_as_arrow_input_with_info(
+    event: Box<DoraEvent>,
+    out_array: *mut u8,
+    out_schema: *mut u8,
+) -> ffi::ArrowInputInfo {
+    // Cast to Arrow FFI types
+    let out_array = out_array as *mut arrow::ffi::FFI_ArrowArray;
+    let out_schema = out_schema as *mut arrow::ffi::FFI_ArrowSchema;
+
+    let Some(Event::Input { id, metadata, data }) = event.0 else {
+        return ffi::ArrowInputInfo {
+            id: String::new(),
+            metadata_json: String::new(),
+            error: "Not an input event".to_string(),
+        };
+    };
+
+    if out_array.is_null() || out_schema.is_null() {
+        return ffi::ArrowInputInfo {
+            id: id.to_string(),
+            metadata_json: String::new(),
+            error: "Received null output pointer".to_string(),
+        };
+    }
+
+    // Serialize metadata to JSON
+    let metadata_json = serde_json::to_string(&metadata)
+        .unwrap_or_else(|e| format!("{{\"error\": \"{}\"}}", e));
+
+    let array_data = data.to_data();
+
+    match arrow::ffi::to_ffi(&array_data) {
+        Ok((ffi_array, ffi_schema)) => {
+            std::ptr::write(out_array, ffi_array);
+            std::ptr::write(out_schema, ffi_schema);
+            ffi::ArrowInputInfo {
+                id: id.to_string(),
+                metadata_json,
+                error: String::new(),
+            }
+        }
+        Err(e) => ffi::ArrowInputInfo {
+            id: id.to_string(),
+            metadata_json,
             error: format!("Error exporting Arrow array to C++: {e:?}"),
         },
     }
