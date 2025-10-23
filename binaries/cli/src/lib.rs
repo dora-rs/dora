@@ -18,6 +18,9 @@ pub mod cli;
 // Issue #17: Inspection module
 pub mod inspection;
 
+// Issue #18: Debug module
+pub mod debug;
+
 pub use command::build;
 pub use command::{run, run_func};
 

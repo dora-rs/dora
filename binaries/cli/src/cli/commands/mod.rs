@@ -285,17 +285,83 @@ pub enum InspectOutputFormat {
     Minimal,
 }
 
+// Tier 2: Enhanced Debug Command (Issue #18)
 #[derive(Args, Clone, Debug, Default)]
 pub struct DebugCommand {
     #[clap(flatten)]
     pub common: CommonArgs,
-    
+
     #[clap(flatten)]
     pub dataflow: DataflowArgs,
-    
-    /// Auto-detect issues
+
+    /// Target to debug (dataflow, node, system, or specific component)
+    pub target: Option<String>,
+
+    /// Debug mode
+    #[clap(long, value_enum, default_value = "interactive")]
+    pub mode: DebugMode,
+
+    /// Focus area for debugging
+    #[clap(long, value_enum)]
+    pub focus: Option<DebugFocus>,
+
+    /// Automatic issue detection and triage
     #[clap(long)]
-    pub auto: bool,
+    pub auto_detect: bool,
+
+    /// Enable live monitoring during debug session
+    #[clap(long)]
+    pub live: bool,
+
+    /// Debug session timeout
+    #[clap(long, default_value = "30m")]
+    pub timeout: String,
+
+    /// Capture debug artifacts (logs, traces, profiles)
+    #[clap(long)]
+    pub capture: bool,
+
+    /// Debug output directory
+    #[clap(long)]
+    pub output_dir: Option<PathBuf>,
+
+    /// Force CLI text output (disable auto-TUI)
+    #[clap(long)]
+    pub text: bool,
+
+    /// Force TUI mode
+    #[clap(long)]
+    pub tui: bool,
+
+    /// Include historical data in analysis
+    #[clap(long, default_value = "1h")]
+    pub history_window: String,
+
+    /// Suppress hints and suggestions
+    #[clap(long)]
+    pub no_hints: bool,
+}
+
+#[derive(clap::ValueEnum, Clone, Debug, Default)]
+pub enum DebugMode {
+    #[default]
+    Interactive,
+    Analysis,
+    Trace,
+    Profile,
+    Health,
+    Network,
+}
+
+#[derive(clap::ValueEnum, Clone, Debug)]
+pub enum DebugFocus {
+    Performance,
+    Errors,
+    Memory,
+    Network,
+    Dependencies,
+    Configuration,
+    Data,
 }
 
 #[derive(Args, Clone, Debug)]
@@ -555,5 +621,234 @@ impl InspectCommand {
         if self.export.is_none() {
             println!("  • Use --export <path> to save analysis results");
         }
+    }
+}
+
+// Issue #18: DebugCommand implementation
+impl DebugCommand {
+    /// Execute the debug command
+    pub async fn execute(&self) -> eyre::Result<()> {
+        use crate::debug::{DebugSessionManager, AutomaticIssueDetector, DebugComplexityAnalyzer};
+        use colored::Colorize;
+
+        println!("🔍 Initializing debug session...\n");
+
+        // Initialize debug session
+        let session_manager = DebugSessionManager::new();
+        let debug_session = session_manager.initialize_session(self).await?;
+
+        println!("Debug Target: {:?}", debug_session.debug_target);
+        println!("Debug Mode: {:?}", debug_session.mode);
+        if let Some(focus) = &debug_session.focus {
+            println!("Focus: {:?}", focus);
+        }
+        println!();
+
+        // Perform automatic issue detection if enabled
+        let detected_issues = if self.auto_detect || debug_session.configuration.auto_detect {
+            println!("🔎 Performing automatic issue detection...");
+            let detector = AutomaticIssueDetector::new();
+            let issues = detector.detect_issues(&debug_session).await?;
+            println!("   Found {} potential issues\n", issues.len());
+            issues
+        } else {
+            Vec::new()
+        };
+
+        // Analyze complexity for interface decision
+        let complexity_analyzer = DebugComplexityAnalyzer::new();
+        let complexity_analysis = complexity_analyzer
+            .analyze_complexity(&debug_session, &detected_issues)
+            .await?;
+
+        println!("📊 Debug Complexity Analysis:");
+        println!("   Overall Score: {:.1}/10", complexity_analysis.overall_score);
+        println!("   Issue Complexity: {:.1}", complexity_analysis.issue_complexity);
+        println!("   System Complexity: {:.1}", complexity_analysis.system_complexity);
+        println!("   Data Complexity: {:.1}", complexity_analysis.data_complexity);
+        println!();
+
+        // Show detected issues
+        if !detected_issues.is_empty() {
+            self.show_detected_issues(&detected_issues);
+        }
+
+        // Determine interface strategy
+        let should_use_tui = self.should_launch_interactive_debug(&complexity_analysis, &detected_issues);
+
+        if self.tui || (should_use_tui && !self.text) {
+            self.launch_interactive_debug(&debug_session, &detected_issues).await?;
+        } else {
+            self.show_cli_debug_summary(&debug_session, &detected_issues, &complexity_analysis);
+
+            // Show hints unless suppressed
+            if !self.no_hints {
+                self.show_debug_hints(&detected_issues, &complexity_analysis);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn show_detected_issues(&self, issues: &[crate::debug::DetectedIssue]) {
+        use colored::Colorize;
+
+        println!("{}", "🚨 Detected Issues:".bold().red());
+        println!();
+
+        for (i, issue) in issues.iter().enumerate().take(5) {
+            let severity_icon = match issue.severity {
+                crate::debug::IssueSeverity::Critical => "🔴",
+                crate::debug::IssueSeverity::High => "🟠",
+                crate::debug::IssueSeverity::Medium => "🟡",
+                crate::debug::IssueSeverity::Low => "🟢",
+            };
+
+            println!("{}. {} {}", i + 1, severity_icon, issue.title.bold());
+            println!("   {}", issue.description);
+
+            if !issue.suggested_actions.is_empty() {
+                if let Some(action) = issue.suggested_actions.first() {
+                    println!("   💡 {}", action.action.dimmed());
+                    if let Some(cmd) = &action.command {
+                        println!("      {}", cmd.cyan());
+                    }
+                }
+            }
+            println!();
+        }
+
+        if issues.len() > 5 {
+            println!("   ... and {} more issues", issues.len() - 5);
+            println!("   Use --tui for interactive issue exploration");
+            println!();
+        }
+    }
+
+    fn should_launch_interactive_debug(
+        &self,
+        complexity: &crate::debug::DebugComplexityAnalysis,
+        issues: &[crate::debug::DetectedIssue],
+    ) -> bool {
+        // Auto-launch TUI for:
+        // 1. High complexity (>7.0)
+        // 2. Critical issues detected
+        // 3. Multiple high-priority issues
+        let has_critical_issues = issues.iter()
+            .any(|i| matches!(i.severity, crate::debug::IssueSeverity::Critical));
+
+        let high_priority_count = issues.iter()
+            .filter(|i| matches!(
+                i.severity,
+                crate::debug::IssueSeverity::Critical | crate::debug::IssueSeverity::High
+            ))
+            .count();
+
+        complexity.overall_score > 7.0 || has_critical_issues || high_priority_count > 2
+    }
+
+    async fn launch_interactive_debug(
+        &self,
+        _debug_session: &crate::debug::DebugSession,
+        detected_issues: &[crate::debug::DetectedIssue],
+    ) -> eyre::Result<()> {
+        use colored::Colorize;
+
+        println!();
+        println!("{}", "🖥️  Interactive Debug Mode".bold().green());
+        println!();
+        println!("Interactive debugging provides:");
+        println!("  • Real-time system monitoring and metric visualization");
+        println!("  • Interactive issue investigation with guided workflows");
+
+        if detected_issues.iter().any(|i| matches!(i.issue_type, crate::debug::IssueType::PerformanceDegradation)) {
+            println!("  • Performance profiling with timeline visualization");
+        }
+
+        if detected_issues.iter().any(|i| matches!(i.issue_type, crate::debug::IssueType::DataflowStalled)) {
+            println!("  • Dataflow visualization with bottleneck identification");
+        }
+
+        if self.live {
+            println!("  • Live debugging with real-time data capture");
+        }
+
+        println!();
+        println!("{}", "Note: Full TUI implementation coming in Issue #9".dimmed());
+        println!("{}", "For now, showing enhanced CLI output...".dimmed());
+        println!();
+
+        Ok(())
+    }
+
+    fn show_cli_debug_summary(
+        &self,
+        debug_session: &crate::debug::DebugSession,
+        issues: &[crate::debug::DetectedIssue],
+        complexity: &crate::debug::DebugComplexityAnalysis,
+    ) {
+        use colored::Colorize;
+
+        println!("{}", "Debug Session Summary".bold());
+        println!("{}", "━".repeat(60));
+        println!();
+
+        println!("Session ID: {}", debug_session.session_id);
+        println!("Target: {:?}", debug_session.debug_target);
+        println!("Mode: {:?}", debug_session.mode);
+        println!("Complexity: {:.1}/10", complexity.overall_score);
+        println!();
+
+        if !issues.is_empty() {
+            let critical_count = issues.iter().filter(|i| matches!(i.severity, crate::debug::IssueSeverity::Critical)).count();
+            let high_count = issues.iter().filter(|i| matches!(i.severity, crate::debug::IssueSeverity::High)).count();
+
+            println!("Issues Summary:");
+            if critical_count > 0 {
+                println!("  🔴 Critical: {}", critical_count);
+            }
+            if high_count > 0 {
+                println!("  🟠 High: {}", high_count);
+            }
+            println!("  📊 Total: {}", issues.len());
+            println!();
+        }
+    }
+
+    fn show_debug_hints(
+        &self,
+        issues: &[crate::debug::DetectedIssue],
+        complexity: &crate::debug::DebugComplexityAnalysis,
+    ) {
+        use colored::Colorize;
+
+        println!("{}", "💡 Debug Hints:".bold().cyan());
+
+        // Hint for TUI
+        if !self.tui && complexity.overall_score > 5.0 {
+            println!("  • Use --tui for interactive debugging interface");
+        }
+
+        // Hint for auto-detect
+        if !self.auto_detect {
+            println!("  • Use --auto-detect to automatically identify issues");
+        }
+
+        // Hint for live mode
+        if !self.live && !issues.is_empty() {
+            println!("  • Use --live for real-time monitoring during debugging");
+        }
+
+        // Hint for specific issues
+        if issues.iter().any(|i| matches!(i.issue_type, crate::debug::IssueType::PerformanceDegradation)) {
+            println!("  • Try --mode profile --focus performance for detailed CPU analysis");
+        }
+
+        // Hint for capture
+        if !self.capture {
+            println!("  • Use --capture to save debug artifacts for later analysis");
+        }
+
+        println!();
     }
 }
