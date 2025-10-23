@@ -76,9 +76,11 @@ pyo3 = { workspace = true, features = [
 self-replace = "1.5.0"
 dunce = "1.0.5"
 git2 = { workspace = true }
-# Enhanced logs command dependencies for Issue #7
-chrono = { version = "0.4", features = ["serde"] }
-regex = "1.10"
+# Enhanced build command dependencies for Issue #8
+indicatif = "0.17"
+num_cpus = "1.16"
+sha2 = "0.10"
+petgraph = "0.6"
 
 [build-dependencies]
 pyo3-build-config = "0.23"

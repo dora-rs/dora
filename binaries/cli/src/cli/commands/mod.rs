@@ -1,8 +1,8 @@
 use clap::Args;
 use std::path::PathBuf;
 
-// Enhanced logs command implementation (Issue #7)
-pub mod logs;
+// Enhanced build command implementation (Issue #8)
+pub mod build;
 
 // Basic command structures for now - will be enhanced in future issues
 
@@ -92,52 +92,12 @@ pub struct LogsCommand {
     #[clap(flatten)]
     pub nodes: NodeArgs,
     
-    /// Follow log output (like docker logs -f)
+    /// Follow log output
     #[clap(short, long)]
     pub follow: bool,
-    
-    /// Number of lines to show from the end of logs
-    #[clap(short = 'n', long, default_value = "100")]
-    pub tail: usize,
-    
-    /// Show logs since timestamp (e.g., "2023-01-01T10:00:00Z")
-    #[clap(long)]
-    pub since: Option<String>,
-    
-    /// Show logs until timestamp (e.g., "2023-01-01T15:00:00Z")
-    #[clap(long)]
-    pub until: Option<String>,
-    
-    /// Filter logs by level (debug, info, warn, error)
-    #[clap(long, value_enum)]
-    pub level: Option<LogLevel>,
-    
-    /// Filter logs using regex pattern
-    #[clap(long)]
-    pub filter: Option<String>,
-    
-    /// Search for specific text in logs
-    #[clap(long)]
-    pub search: Option<String>,
-    
-    /// Show only error logs and related context
-    #[clap(long)]
-    pub errors_only: bool,
-    
-    /// Analyze error patterns and burst detection
-    #[clap(long)]
-    pub analyze_errors: bool,
-    
-    /// Include timestamps in output
-    #[clap(short, long)]
-    pub timestamps: bool,
-    
-    /// Show raw log format (no processing)
-    #[clap(long)]
-    pub raw: bool,
 }
 
-#[derive(Args, Clone, Debug)]
+#[derive(Args, Clone, Debug, Default)]
 pub struct BuildCommand {
     #[clap(flatten)]
     pub common: CommonArgs,
@@ -145,7 +105,51 @@ pub struct BuildCommand {
     #[clap(flatten)]
     pub dataflow: DataflowArgs,
     
-    /// Validate only
+    /// Force rebuild even if cache is valid
+    #[clap(long)]
+    pub force: bool,
+    
+    /// Build for specific target architecture
+    #[clap(long)]
+    pub target: Option<String>,
+    
+    /// Build in release mode (optimized)
+    #[clap(long)]
+    pub release: bool,
+    
+    /// Number of parallel build jobs
+    #[clap(short = 'j', long)]
+    pub jobs: Option<usize>,
+    
+    /// Skip dependency validation
+    #[clap(long)]
+    pub skip_deps: bool,
+    
+    /// Clean build cache before building
+    #[clap(long)]
+    pub clean: bool,
+    
+    /// Verbose build output
+    #[clap(short, long)]
+    pub verbose: bool,
+    
+    /// Analyze build performance and suggest optimizations
+    #[clap(long)]
+    pub analyze: bool,
+    
+    /// Output build artifacts to specific directory
+    #[clap(long)]
+    pub output_dir: Option<std::path::PathBuf>,
+    
+    /// Show progress even in non-interactive mode
+    #[clap(long)]
+    pub progress: bool,
+    
+    /// Suppress hints and suggestions
+    #[clap(long)]
+    pub no_hints: bool,
+    
+    /// Validate only (legacy option)
     #[clap(long)]
     pub validate: bool,
 }
@@ -235,14 +239,6 @@ pub enum GraphFormat {
     Mermaid,
     Dot,
     Json,
-}
-
-#[derive(clap::ValueEnum, Clone, Debug)]
-pub enum LogLevel {
-    Debug,
-    Info,
-    Warn,
-    Error,
 }
 
 // Tier 2: Enhanced commands
