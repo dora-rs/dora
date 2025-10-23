@@ -6,6 +6,7 @@ pub mod context;
 pub mod output;
 pub mod traits;
 pub mod interface;
+pub mod progress;
 
 pub use commands::*;
 

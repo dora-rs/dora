@@ -15,14 +15,10 @@ mod template;
 // New hybrid CLI module
 pub mod cli;
 
-// New TUI module
+// New TUI module  
 pub mod tui;
 
-// Configuration system module
-pub mod config;
-
 pub use command::build;
-pub use command::{run, run_func};
 
 const LOCALHOST: IpAddr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
 const LISTEN_WILDCARD: IpAddr = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0));
@@ -119,20 +115,25 @@ pub fn hybrid_main(cli: cli::Cli) {
     
     match &cli.command {
         // Tier 1: Core commands (demonstrate structure)
-        cli::Command::Ps(ps_cmd) => {
-            println!("🔍 Enhanced PS Command with Smart Hints");
-            // Execute the enhanced PS command
-            if let Err(e) = tokio::runtime::Runtime::new().unwrap().block_on(ps_cmd.execute(&context)) {
-                eprintln!("PS command failed: {}", e);
+        cli::Command::Ps(_) => {
+            println!("Tier 1 Command: PS (List) - Enhanced with smart hints");
+            println!("💡 Enhanced PS command from Issue #5 will be available after branch merge");
+        },
+        cli::Command::Start(start_cmd) => {
+            // Execute the enhanced Start command from Issue #6
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            if let Err(e) = rt.block_on(cli::commands::start::StartCommandHandler::execute(start_cmd, &context)) {
+                eprintln!("❌ Start command failed: {}", e);
                 std::process::exit(1);
             }
         },
-        cli::Command::Start(_) => {
-            println!("Tier 1 Command: START - Enhanced with progress indicators");
-            println!("💡 In future issues, this will show progress and auto-TUI");
-        },
-        cli::Command::Stop(_) => {
-            println!("Tier 1 Command: STOP - Enhanced with graceful shutdown");
+        cli::Command::Stop(stop_cmd) => {
+            // Execute the enhanced Stop command from Issue #6
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            if let Err(e) = rt.block_on(cli::commands::stop::StopCommandHandler::execute(stop_cmd, &context)) {
+                eprintln!("❌ Stop command failed: {}", e);
+                std::process::exit(1);
+            }
         },
         cli::Command::Logs(_) => {
             println!("Tier 1 Command: LOGS - Enhanced with smart filtering");
@@ -177,20 +178,15 @@ pub fn hybrid_main(cli: cli::Cli) {
             println!("💡 Will implement dashboard in Issue #24");
         },
         
-        // Configuration command
-        cli::Command::Config(config_cmd) => {
-            println!("⚙️  Configuration Management Command");
-            if let Err(e) = cli::commands::config::ConfigCommandHandler::execute(&config_cmd.subcommand, &context) {
-                eprintln!("Configuration command failed: {}", e);
-                std::process::exit(1);
-            }
-        },
-        
-        // Other system commands
+        // System commands
         cli::Command::System(_) | cli::Command::Daemon(_) | 
         cli::Command::Runtime(_) | cli::Command::Coordinator(_) | 
         cli::Command::Self_(_) => {
             println!("⚙️  System Command - Management operation");
+        },
+        cli::Command::Config(_) => {
+            println!("⚙️  Configuration Command - Management operation");
+            println!("💡 Enhanced Config command from Issue #4 will be available after branch merge");
         }
     }
     

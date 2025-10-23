@@ -354,7 +354,7 @@ impl ExecutionEnvironment {
     
     /// Comprehensive async detection
     pub async fn detect_comprehensive() -> Self {
-        let mut env = Self::detect();
+        let env = Self::detect();
         
         // Could add external tool checks here if needed
         // For now, synchronous detection is comprehensive enough
@@ -445,7 +445,7 @@ impl TerminalCapabilities {
     
     /// Comprehensive async detection
     pub async fn detect_comprehensive() -> Self {
-        let mut caps = Self::detect();
+        let caps = Self::detect();
         
         // Could add async terminal capability queries here
         // For now, synchronous detection is sufficient

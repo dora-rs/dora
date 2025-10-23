@@ -1,13 +1,9 @@
 use clap::Args;
 use std::path::PathBuf;
 
-pub mod config;
-
-// Enhanced command modules
-pub mod ps;
-
-// Re-export enhanced commands
-pub use ps::PsCommand;
+// Enhanced command modules for Issue #6
+pub mod start;
+pub mod stop;
 
 // Basic command structures for now - will be enhanced in future issues
 
@@ -41,38 +37,22 @@ pub struct NodeArgs {
 }
 
 // Tier 1: Core commands
-
-#[derive(Args, Clone, Debug)]
-pub struct StartCommand {
+#[derive(Args, Clone, Debug, Default)]
+pub struct PsCommand {
     #[clap(flatten)]
     pub common: CommonArgs,
     
     #[clap(flatten)]
     pub dataflow: DataflowArgs,
     
-    #[clap(flatten)]
-    pub nodes: NodeArgs,
-    
-    /// Enable debug mode
-    #[clap(long)]
-    pub debug: bool,
+    /// Show all dataflows
+    #[clap(short, long)]
+    pub all: bool,
 }
 
-#[derive(Args, Clone, Debug)]
-pub struct StopCommand {
-    #[clap(flatten)]
-    pub common: CommonArgs,
-    
-    #[clap(flatten)]
-    pub dataflow: DataflowArgs,
-    
-    #[clap(flatten)]
-    pub nodes: NodeArgs,
-    
-    /// Force stop
-    #[clap(long)]
-    pub force: bool,
-}
+// Re-export enhanced commands from Issue #6
+pub use start::StartCommand;
+pub use stop::StopCommand;
 
 #[derive(Args, Clone, Debug, Default)]
 pub struct LogsCommand {
@@ -311,46 +291,9 @@ pub struct ConfigCommand {
 
 #[derive(clap::Subcommand, Clone, Debug)]
 pub enum ConfigSubcommand {
-    /// Get configuration value
-    Get { 
-        key: String 
-    },
-    
-    /// Set configuration value
-    Set { 
-        key: String, 
-        value: String 
-    },
-    
-    /// List all configuration values
-    List {
-        /// Filter by key prefix
-        #[clap(long)]
-        filter: Option<String>,
-        
-        /// Show only non-default values
-        #[clap(long)]
-        changed_only: bool,
-    },
-    
-    /// Reset configuration to defaults
-    Reset {
-        /// Specific key to reset
-        key: Option<String>,
-        
-        /// Confirm reset without prompt
-        #[clap(long)]
-        confirm: bool,
-    },
-    
-    /// Show configuration file locations
-    Paths,
-    
-    /// Validate current configuration
-    Validate,
-    
-    /// Edit configuration in default editor
-    Edit,
+    Get { key: String },
+    Set { key: String, value: String },
+    List,
 }
 
 #[derive(Args, Clone, Debug)]
