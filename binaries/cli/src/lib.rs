@@ -15,8 +15,11 @@ mod template;
 // New hybrid CLI module
 pub mod cli;
 
-// New TUI module  
+// New TUI module
 pub mod tui;
+
+// Configuration system module
+pub mod config;
 
 pub use command::build;
 pub use command::{run, run_func};
@@ -170,10 +173,19 @@ pub fn hybrid_main(cli: cli::Cli) {
             println!("💡 Will implement dashboard in Issue #24");
         },
         
-        // System commands
-        cli::Command::System(_) | cli::Command::Config(_) |
-        cli::Command::Daemon(_) | cli::Command::Runtime(_) |
-        cli::Command::Coordinator(_) | cli::Command::Self_(_) => {
+        // Configuration command
+        cli::Command::Config(config_cmd) => {
+            println!("⚙️  Configuration Management Command");
+            if let Err(e) = cli::commands::config::ConfigCommandHandler::execute(&config_cmd.subcommand, &context) {
+                eprintln!("Configuration command failed: {}", e);
+                std::process::exit(1);
+            }
+        },
+        
+        // Other system commands
+        cli::Command::System(_) | cli::Command::Daemon(_) | 
+        cli::Command::Runtime(_) | cli::Command::Coordinator(_) | 
+        cli::Command::Self_(_) => {
             println!("⚙️  System Command - Management operation");
         }
     }

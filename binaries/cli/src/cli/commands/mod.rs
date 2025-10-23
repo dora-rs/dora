@@ -1,6 +1,8 @@
 use clap::Args;
 use std::path::PathBuf;
 
+pub mod config;
+
 // Basic command structures for now - will be enhanced in future issues
 
 #[derive(Args, Clone, Debug, Default)]
@@ -315,9 +317,46 @@ pub struct ConfigCommand {
 
 #[derive(clap::Subcommand, Clone, Debug)]
 pub enum ConfigSubcommand {
-    Get { key: String },
-    Set { key: String, value: String },
-    List,
+    /// Get configuration value
+    Get { 
+        key: String 
+    },
+    
+    /// Set configuration value
+    Set { 
+        key: String, 
+        value: String 
+    },
+    
+    /// List all configuration values
+    List {
+        /// Filter by key prefix
+        #[clap(long)]
+        filter: Option<String>,
+        
+        /// Show only non-default values
+        #[clap(long)]
+        changed_only: bool,
+    },
+    
+    /// Reset configuration to defaults
+    Reset {
+        /// Specific key to reset
+        key: Option<String>,
+        
+        /// Confirm reset without prompt
+        #[clap(long)]
+        confirm: bool,
+    },
+    
+    /// Show configuration file locations
+    Paths,
+    
+    /// Validate current configuration
+    Validate,
+    
+    /// Edit configuration in default editor
+    Edit,
 }
 
 #[derive(Args, Clone, Debug)]
