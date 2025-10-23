@@ -1,9 +1,8 @@
 use clap::Args;
 use std::path::PathBuf;
 
-// Enhanced command modules for Issue #6
-pub mod start;
-pub mod stop;
+// Enhanced logs command implementation (Issue #7)
+pub mod logs;
 
 // Basic command structures for now - will be enhanced in future issues
 
@@ -50,9 +49,37 @@ pub struct PsCommand {
     pub all: bool,
 }
 
-// Re-export enhanced commands from Issue #6
-pub use start::StartCommand;
-pub use stop::StopCommand;
+#[derive(Args, Clone, Debug)]
+pub struct StartCommand {
+    #[clap(flatten)]
+    pub common: CommonArgs,
+    
+    #[clap(flatten)]
+    pub dataflow: DataflowArgs,
+    
+    #[clap(flatten)]
+    pub nodes: NodeArgs,
+    
+    /// Enable debug mode
+    #[clap(long)]
+    pub debug: bool,
+}
+
+#[derive(Args, Clone, Debug)]
+pub struct StopCommand {
+    #[clap(flatten)]
+    pub common: CommonArgs,
+    
+    #[clap(flatten)]
+    pub dataflow: DataflowArgs,
+    
+    #[clap(flatten)]
+    pub nodes: NodeArgs,
+    
+    /// Force stop
+    #[clap(long)]
+    pub force: bool,
+}
 
 #[derive(Args, Clone, Debug, Default)]
 pub struct LogsCommand {
@@ -65,9 +92,49 @@ pub struct LogsCommand {
     #[clap(flatten)]
     pub nodes: NodeArgs,
     
-    /// Follow log output
+    /// Follow log output (like docker logs -f)
     #[clap(short, long)]
     pub follow: bool,
+    
+    /// Number of lines to show from the end of logs
+    #[clap(short = 'n', long, default_value = "100")]
+    pub tail: usize,
+    
+    /// Show logs since timestamp (e.g., "2023-01-01T10:00:00Z")
+    #[clap(long)]
+    pub since: Option<String>,
+    
+    /// Show logs until timestamp (e.g., "2023-01-01T15:00:00Z")
+    #[clap(long)]
+    pub until: Option<String>,
+    
+    /// Filter logs by level (debug, info, warn, error)
+    #[clap(long, value_enum)]
+    pub level: Option<LogLevel>,
+    
+    /// Filter logs using regex pattern
+    #[clap(long)]
+    pub filter: Option<String>,
+    
+    /// Search for specific text in logs
+    #[clap(long)]
+    pub search: Option<String>,
+    
+    /// Show only error logs and related context
+    #[clap(long)]
+    pub errors_only: bool,
+    
+    /// Analyze error patterns and burst detection
+    #[clap(long)]
+    pub analyze_errors: bool,
+    
+    /// Include timestamps in output
+    #[clap(short, long)]
+    pub timestamps: bool,
+    
+    /// Show raw log format (no processing)
+    #[clap(long)]
+    pub raw: bool,
 }
 
 #[derive(Args, Clone, Debug)]
@@ -168,6 +235,14 @@ pub enum GraphFormat {
     Mermaid,
     Dot,
     Json,
+}
+
+#[derive(clap::ValueEnum, Clone, Debug)]
+pub enum LogLevel {
+    Debug,
+    Info,
+    Warn,
+    Error,
 }
 
 // Tier 2: Enhanced commands

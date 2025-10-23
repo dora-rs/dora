@@ -135,8 +135,26 @@ pub fn hybrid_main(cli: cli::Cli) {
                 std::process::exit(1);
             }
         },
-        cli::Command::Logs(_) => {
-            println!("Tier 1 Command: LOGS - Enhanced with smart filtering");
+        cli::Command::Logs(logs_cmd) => {
+            println!("🔍 Tier 1 Command: LOGS - Enhanced with smart filtering");
+            
+            // Create and execute enhanced logs command
+            let mut enhanced_logs = cli::commands::logs::EnhancedLogsCommand::new(
+                context.clone(), 
+                logs_cmd.clone()
+            );
+            
+            println!("💡 Enhanced logs command with:");
+            println!("  • Docker-like interface patterns");
+            println!("  • Real-time log streaming and filtering");
+            println!("  • Error pattern analysis and correlation");
+            println!("  • Smart TUI suggestions based on complexity");
+            
+            if let Err(e) = tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(enhanced_logs.execute(&interface_decision)) {
+                eprintln!("Error executing enhanced logs: {}", e);
+            }
         },
         cli::Command::Build(_) => {
             println!("Tier 1 Command: BUILD - Enhanced with rich output");
