@@ -450,6 +450,7 @@ impl CommandAnalyzer {
             Command::Debug(_) => 8,                 // Always high complexity
             Command::Analyze(_) => 9,               // Always very high complexity
             Command::Monitor(_) => 7,               // Real-time monitoring complex
+            Command::Help(_) => 5,                  // Help complexity varies
             Command::Ui(_) => 2,                    // TUI launcher
             Command::Dashboard(_) => 3,             // Dashboard complexity
             Command::System(_) => 4,                // System operations
@@ -582,6 +583,7 @@ impl Command {
             Command::Debug(_) => "debug".to_string(),
             Command::Analyze(_) => "analyze".to_string(),
             Command::Monitor(_) => "monitor".to_string(),
+            Command::Help(_) => "help".to_string(),
             Command::Ui(_) => "ui".to_string(),
             Command::Dashboard(_) => "dashboard".to_string(),
             Command::System(_) => "system".to_string(),

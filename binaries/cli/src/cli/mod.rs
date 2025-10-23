@@ -11,7 +11,7 @@ pub use commands::*;
 
 /// Dora CLI - Hybrid command-line interface for dataflow runtime
 #[derive(Debug, Parser)]
-#[clap(name = "dora", about = "Dora dataflow runtime", version)]
+#[clap(name = "dora", about = "Dora dataflow runtime", version, disable_help_subcommand = true)]
 pub struct Cli {
     #[clap(subcommand)]
     pub command: Command,
@@ -75,15 +75,18 @@ pub enum Command {
     // Tier 2: Enhanced commands with smart suggestions
     /// Intelligent resource inspection with TUI suggestions
     Inspect(InspectCommand),
-    
+
     /// Enhanced debugging with auto-TUI features
     Debug(DebugCommand),
-    
+
     /// Multi-modal analysis with adaptive interface
     Analyze(AnalyzeCommand),
-    
+
     /// Real-time system monitoring
     Monitor(MonitorCommand),
+
+    /// Smart help system with tutorials and contextual guidance
+    Help(HelpCommand),
     
     // Tier 3: Explicit TUI modes
     /// Launch TUI interface

@@ -1691,3 +1691,348 @@ impl LogsCommand {
         println!();
     }
 }
+
+// Tier 2: Enhanced Help Command (Issue #21)
+#[derive(Args, Clone, Debug, Default)]
+pub struct HelpCommand {
+    /// Topic or command to get help for
+    pub topic: Option<String>,
+
+    /// Show examples for the topic
+    #[clap(long)]
+    pub examples: bool,
+
+    /// Show advanced usage and options
+    #[clap(long)]
+    pub advanced: bool,
+
+    /// Show interactive tutorial
+    #[clap(long)]
+    pub tutorial: bool,
+
+    /// Search help content
+    #[clap(long)]
+    pub search: Option<String>,
+
+    /// Show help for specific use case
+    #[clap(long)]
+    pub use_case: Option<String>,
+
+    /// Show troubleshooting guide
+    #[clap(long)]
+    pub troubleshoot: bool,
+
+    /// Help format (text, json, markdown)
+    #[clap(long, value_enum, default_value = "text")]
+    pub format: crate::help::HelpFormat,
+
+    /// Detail level for help content
+    #[clap(long, value_enum, default_value = "normal")]
+    pub detail: crate::help::DetailLevel,
+
+    /// Force CLI text output
+    #[clap(long)]
+    pub text: bool,
+
+    /// Force TUI interactive mode
+    #[clap(long)]
+    pub tui: bool,
+
+    /// Show contextual help for current state
+    #[clap(long)]
+    pub contextual: bool,
+
+    /// List all available topics
+    #[clap(long)]
+    pub list: bool,
+
+    /// Show quick reference
+    #[clap(long)]
+    pub quick: bool,
+
+    /// Show related commands and topics
+    #[clap(long)]
+    pub related: bool,
+
+    /// Suppress hints and suggestions
+    #[clap(long)]
+    pub no_hints: bool,
+}
+
+// Issue #21: HelpCommand implementation
+impl HelpCommand {
+    /// Execute the help command with intelligent content delivery
+    pub async fn execute(&self) -> eyre::Result<()> {
+        use crate::help::{HelpContentManager, TutorialSystem, UserExpertiseLevel};
+        use colored::Colorize;
+
+        println!("📖 Dora Help System\n");
+
+        // Initialize help content manager
+        let content_manager = HelpContentManager::new();
+
+        // Determine user expertise level (mock - would analyze usage history in production)
+        let user_expertise = UserExpertiseLevel::Intermediate;
+
+        // Resolve help content based on request
+        let help_content = if let Some(search_query) = &self.search {
+            println!("🔍 Searching for: '{}'\n", search_query);
+            content_manager.search_content(search_query, user_expertise, self.detail).await?
+        } else if let Some(topic) = &self.topic {
+            println!("📚 Help for: '{}'\n", topic);
+            content_manager.get_topic_content(topic, user_expertise, self.detail).await?
+        } else if self.list {
+            content_manager.get_topic_list(user_expertise).await?
+        } else if self.contextual {
+            println!("🎯 Context-Aware Help\n");
+            content_manager.get_contextual_help(&None, user_expertise).await?
+        } else {
+            content_manager.get_overview_content(user_expertise).await?
+        };
+
+        // Analyze help complexity for interface decision
+        let complexity_score = self.analyze_help_complexity(&help_content);
+
+        // Determine if we should launch interactive help
+        let should_use_tui = self.should_launch_interactive_help(complexity_score, &help_content);
+
+        if self.tutorial {
+            // Launch interactive tutorial
+            self.launch_tutorial(&help_content).await?;
+        } else if self.tui || (should_use_tui && !self.text) {
+            // Launch interactive help mode
+            self.launch_interactive_help(&help_content, complexity_score).await?;
+        } else {
+            // Render CLI help
+            self.render_cli_help(&help_content)?;
+
+            // Show hints unless suppressed
+            if !self.no_hints {
+                self.show_help_hints(&help_content, complexity_score);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn analyze_help_complexity(&self, content: &crate::help::HelpContent) -> f32 {
+        let mut complexity = 0.0;
+
+        // Content volume complexity
+        let content_length = content.sections.iter().map(|s| s.content.len()).sum::<usize>();
+        complexity += match content_length {
+            0..=1000 => 1.0,
+            1001..=5000 => 2.0,
+            5001..=10000 => 4.0,
+            _ => 6.0,
+        };
+
+        // Interactive elements complexity
+        let interactive_elements = content.sections.iter()
+            .map(|s| s.interactive_elements.len())
+            .sum::<usize>();
+        complexity += interactive_elements as f32 * 0.5;
+
+        // Tutorial complexity
+        if self.tutorial {
+            complexity += 3.0;
+        }
+
+        // Examples complexity
+        if content.examples.len() > 3 {
+            complexity += content.examples.len() as f32 * 0.3;
+        }
+
+        complexity.min(10.0)
+    }
+
+    fn should_launch_interactive_help(&self, complexity: f32, content: &crate::help::HelpContent) -> bool {
+        // Auto-launch TUI for:
+        // 1. High complexity help (>6.0)
+        // 2. Multiple interactive elements
+        // 3. Tutorial mode
+        // 4. Many examples
+        complexity > 6.0
+            || self.tutorial
+            || content.examples.len() > 5
+            || content.sections.iter().any(|s| !s.interactive_elements.is_empty())
+    }
+
+    fn render_cli_help(&self, content: &crate::help::HelpContent) -> eyre::Result<()> {
+        use colored::Colorize;
+
+        // Render title and summary
+        println!("{}", content.title.bold().green());
+        println!("{}", "═".repeat(60));
+        println!();
+        println!("{}", content.summary);
+        println!();
+
+        // Render sections
+        for section in &content.sections {
+            if matches!(self.detail, crate::help::DetailLevel::Quick) &&
+               !matches!(section.section_type, crate::help::SectionType::Overview | crate::help::SectionType::Usage) {
+                continue;
+            }
+
+            println!("{}", section.title.bold().cyan());
+            println!("{}", "─".repeat(40));
+            println!("{}", section.content);
+            println!();
+
+            // Show interactive elements
+            if !section.interactive_elements.is_empty() {
+                println!("{}",  "Interactive elements available:".dimmed());
+                for element in &section.interactive_elements {
+                    match element {
+                        crate::help::InteractiveElement::RunnableCommand { command, description } => {
+                            println!("  • {}: {}", description, command.cyan());
+                        }
+                        crate::help::InteractiveElement::QuickLink { text, target } => {
+                            println!("  • {}: {}", text, target.cyan());
+                        }
+                        _ => {}
+                    }
+                }
+                println!();
+            }
+        }
+
+        // Render examples if requested or available
+        if (self.examples || !content.examples.is_empty()) && !content.examples.is_empty() {
+            println!("{}", "Examples".bold().yellow());
+            println!("{}", "─".repeat(40));
+            for (i, example) in content.examples.iter().enumerate().take(5) {
+                println!("{}. {}", i + 1, example.title.bold());
+                println!("   {}", example.description);
+                println!("   Command: {}", example.command.cyan());
+                if let Some(output) = &example.expected_output {
+                    println!("   Expected: {}", output.dimmed());
+                }
+                println!();
+            }
+        }
+
+        // Show related topics
+        if self.related && !content.related_topics.is_empty() {
+            println!("{}", "Related Topics".bold().cyan());
+            println!("{}", "─".repeat(40));
+            for topic in &content.related_topics {
+                println!("  • {}", topic);
+            }
+            println!();
+        }
+
+        Ok(())
+    }
+
+    async fn launch_interactive_help(&self, content: &crate::help::HelpContent, complexity: f32) -> eyre::Result<()> {
+        use colored::Colorize;
+
+        println!();
+        println!("{}", "📖 Interactive Help Mode".bold().green());
+        println!();
+        println!("Interactive help provides:");
+        println!("  • Searchable and navigable help content");
+        println!("  • Related topics and cross-references");
+
+        if complexity > 4.0 {
+            println!("  • Progressive disclosure of detailed information");
+        }
+
+        if !content.examples.is_empty() {
+            println!("  • Runnable examples with live execution");
+        }
+
+        if self.search.is_some() {
+            println!("  • Enhanced search with content highlighting");
+        }
+
+        if self.contextual {
+            println!("  • Context-aware help with system-specific guidance");
+        }
+
+        println!();
+        println!("{}", "Note: Full TUI implementation coming in Issue #9".dimmed());
+        println!("{}", "For now, showing enhanced CLI output...".dimmed());
+        println!();
+
+        // Show CLI help anyway
+        self.render_cli_help(content)?;
+
+        Ok(())
+    }
+
+    async fn launch_tutorial(&self, _content: &crate::help::HelpContent) -> eyre::Result<()> {
+        use colored::Colorize;
+        use crate::help::TutorialSystem;
+
+        println!();
+        println!("{}", "🎓 Interactive Tutorial Mode".bold().green());
+        println!();
+
+        let mut tutorial_system = TutorialSystem::new();
+        let user_expertise = crate::help::UserExpertiseLevel::Beginner;
+
+        // Get available tutorials
+        let tutorials = tutorial_system.get_available_tutorials(user_expertise).await;
+
+        if tutorials.is_empty() {
+            println!("No tutorials available for your expertise level.");
+            return Ok(());
+        }
+
+        println!("Available Tutorials:");
+        println!("{}", "─".repeat(60));
+        for (i, tutorial) in tutorials.iter().enumerate() {
+            println!("{}. {} ({:?})", i + 1, tutorial.title.bold(), tutorial.difficulty);
+            println!("   {}", tutorial.description);
+            println!("   Duration: ~{} minutes", tutorial.estimated_duration.num_minutes());
+            println!();
+        }
+
+        println!("{}", "Note: Full interactive tutorial system coming in Issue #9".dimmed());
+        println!("{}", "Tutorials will provide step-by-step guided learning".dimmed());
+        println!();
+
+        Ok(())
+    }
+
+    fn show_help_hints(&self, content: &crate::help::HelpContent, complexity: f32) {
+        use colored::Colorize;
+
+        println!("{}", "💡 Help Hints:".bold().cyan());
+
+        // Hint for TUI
+        if !self.tui && complexity > 6.0 {
+            println!("  • Use --tui for interactive help interface");
+        }
+
+        // Hint for tutorials
+        if !self.tutorial && content.tags.contains(&"tutorial".to_string()) {
+            println!("  • Use --tutorial for step-by-step guided learning");
+        }
+
+        // Hint for examples
+        if !self.examples && !content.examples.is_empty() {
+            println!("  • Use --examples to see usage examples");
+        }
+
+        // Hint for search
+        if self.search.is_none() && !content.topic.is_empty() {
+            println!("  • Use --search <query> to search help content");
+        }
+
+        // Hint for detail level
+        if matches!(self.detail, crate::help::DetailLevel::Quick | crate::help::DetailLevel::Normal) {
+            println!("  • Use --detail expert for comprehensive documentation");
+        }
+
+        // Hint for contextual help
+        if !self.contextual {
+            println!("  • Use --contextual for context-aware help based on system state");
+        }
+
+        println!();
+    }
+}
