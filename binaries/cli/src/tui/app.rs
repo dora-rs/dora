@@ -69,7 +69,7 @@ pub struct DataCache {
     pub cached_data: HashMap<String, serde_json::Value>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct DataflowInfo {
     pub id: String,
     pub name: String,
@@ -77,14 +77,14 @@ pub struct DataflowInfo {
     pub nodes: Vec<NodeInfo>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct NodeInfo {
     pub id: String,
     pub name: String,
     pub status: String,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct SystemMetrics {
     pub cpu_usage: f32,
     pub memory_usage: f32,
@@ -99,7 +99,7 @@ pub struct UserConfig {
     pub show_system_info: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct StatusMessage {
     pub message: String,
     pub level: MessageLevel,
