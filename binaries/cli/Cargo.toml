@@ -77,6 +77,8 @@ pyo3 = { workspace = true, features = [
 self-replace = "1.5.0"
 dunce = "1.0.5"
 git2 = { workspace = true }
+chrono = "0.4"
+dirs = "5.0"
 
 [build-dependencies]
 pyo3-build-config = "0.23"
