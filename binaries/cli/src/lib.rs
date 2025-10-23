@@ -15,16 +15,11 @@ mod template;
 // New hybrid CLI module
 pub mod cli;
 
-// New TUI module  
-pub mod tui;
-
-// Configuration and preferences module
-pub mod config;
-
-// Analysis and complexity algorithms module (Issue #13)
-pub mod analysis;
+// Automation context detection module (Issue #15)
+pub mod automation;
 
 pub use command::build;
+pub use command::{run, run_func};
 
 const LOCALHOST: IpAddr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
 const LISTEN_WILDCARD: IpAddr = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0));
@@ -123,66 +118,20 @@ pub fn hybrid_main(cli: cli::Cli) {
         // Tier 1: Core commands (demonstrate structure)
         cli::Command::Ps(_) => {
             println!("Tier 1 Command: PS (List) - Enhanced with smart hints");
-            println!("💡 Enhanced PS command from Issue #5 will be available after branch merge");
+            println!("💡 In future issues, this will show intelligent suggestions");
         },
-        cli::Command::Start(start_cmd) => {
-            // Execute the enhanced Start command from Issue #6
-            let rt = tokio::runtime::Runtime::new().unwrap();
-            if let Err(e) = rt.block_on(cli::commands::start::StartCommandHandler::execute(start_cmd, &context)) {
-                eprintln!("❌ Start command failed: {}", e);
-                std::process::exit(1);
-            }
+        cli::Command::Start(_) => {
+            println!("Tier 1 Command: START - Enhanced with progress indicators");
+            println!("💡 In future issues, this will show progress and auto-TUI");
         },
-        cli::Command::Stop(stop_cmd) => {
-            // Execute the enhanced Stop command from Issue #6
-            let rt = tokio::runtime::Runtime::new().unwrap();
-            if let Err(e) = rt.block_on(cli::commands::stop::StopCommandHandler::execute(stop_cmd, &context)) {
-                eprintln!("❌ Stop command failed: {}", e);
-                std::process::exit(1);
-            }
+        cli::Command::Stop(_) => {
+            println!("Tier 1 Command: STOP - Enhanced with graceful shutdown");
         },
-        cli::Command::Logs(logs_cmd) => {
-            println!("🔍 Tier 1 Command: LOGS - Enhanced with smart filtering");
-            
-            // Create and execute enhanced logs command
-            let mut enhanced_logs = cli::commands::logs::EnhancedLogsCommand::new(
-                context.clone(), 
-                logs_cmd.clone()
-            );
-            
-            println!("💡 Enhanced logs command with:");
-            println!("  • Docker-like interface patterns");
-            println!("  • Real-time log streaming and filtering");
-            println!("  • Error pattern analysis and correlation");
-            println!("  • Smart TUI suggestions based on complexity");
-            
-            if let Err(e) = tokio::runtime::Runtime::new()
-                .unwrap()
-                .block_on(enhanced_logs.execute(&interface_decision)) {
-                eprintln!("Error executing enhanced logs: {}", e);
-            }
+        cli::Command::Logs(_) => {
+            println!("Tier 1 Command: LOGS - Enhanced with smart filtering");
         },
-        cli::Command::Build(build_cmd) => {
-            println!("🔧 Tier 1 Command: BUILD - Enhanced with rich output");
-            
-            // Create and execute enhanced build command
-            let mut enhanced_build = cli::commands::build::EnhancedBuildCommand::new(
-                context.clone(), 
-                build_cmd.clone()
-            );
-            
-            println!("💡 Enhanced build command with:");
-            println!("  • Comprehensive dependency resolution and build ordering");
-            println!("  • Intelligent build caching for 70%+ faster rebuilds");
-            println!("  • Parallel execution with smart job coordination");
-            println!("  • Build optimization analysis and suggestions");
-            println!("  • Smart TUI suggestions for complex build scenarios");
-            
-            if let Err(e) = tokio::runtime::Runtime::new()
-                .unwrap()
-                .block_on(enhanced_build.execute(&interface_decision)) {
-                eprintln!("Error executing enhanced build: {}", e);
-            }
+        cli::Command::Build(_) => {
+            println!("Tier 1 Command: BUILD - Enhanced with rich output");
         },
         cli::Command::Up(_) | cli::Command::Destroy(_) | cli::Command::New(_) |
         cli::Command::Check(_) | cli::Command::Graph(_) => {
@@ -208,13 +157,9 @@ pub fn hybrid_main(cli: cli::Cli) {
         },
         
         // Tier 3: TUI commands
-        cli::Command::Ui(ui_cmd) => {
+        cli::Command::Ui(_) => {
             println!("🖥️  Tier 3 Command: TUI - Launch TUI interface");
-            
-            // Launch TUI based on command
-            if let Err(e) = launch_tui(ui_cmd, &cli) {
-                eprintln!("Failed to launch TUI: {:?}", e);
-            }
+            println!("💡 Will implement TUI launcher in Issue #9");
         },
         cli::Command::Dashboard(_) => {
             println!("🖥️  Tier 3 Command: DASHBOARD - Interactive dashboard");
@@ -222,19 +167,10 @@ pub fn hybrid_main(cli: cli::Cli) {
         },
         
         // System commands
-        cli::Command::System(_) | cli::Command::Daemon(_) | 
-        cli::Command::Runtime(_) | cli::Command::Coordinator(_) | 
-        cli::Command::Self_(_) => {
+        cli::Command::System(_) | cli::Command::Config(_) |
+        cli::Command::Daemon(_) | cli::Command::Runtime(_) |
+        cli::Command::Coordinator(_) | cli::Command::Self_(_) => {
             println!("⚙️  System Command - Management operation");
-        },
-        cli::Command::Config(_) => {
-            println!("⚙️  Configuration Command - Management operation");
-            println!("💡 Enhanced Config command from Issue #4 will be available after branch merge");
-        }
-        
-        cli::Command::Preferences(_) => {
-            println!("🎛️  Preferences Command - User preference management");
-            println!("💡 New in Issue #12: Comprehensive preference system with behavioral learning");
         }
     }
     
@@ -242,32 +178,6 @@ pub fn hybrid_main(cli: cli::Cli) {
     println!("✅ Issue #3 Complete: Interface Selection Engine");
     println!("📋 Next: Issue #4 (User Configuration System)");
     println!("🔗 See IMPLEMENTATION_ROADMAP.md for full plan");
-}
-
-/// Launch TUI interface based on UI command
-fn launch_tui(ui_cmd: &cli::commands::UiCommand, cli: &cli::Cli) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    use tokio::runtime::Runtime;
-    use tui::{DoraApp, ViewType, CliContext};
-    
-    // Create runtime for async TUI
-    let rt = Runtime::new()?;
-    
-    rt.block_on(async {
-        // Determine initial view based on UI command
-        let initial_view = match &ui_cmd.view {
-            Some(cli::commands::TuiView::Dashboard) | None => ViewType::Dashboard,
-            Some(cli::commands::TuiView::Dataflow) => ViewType::DataflowManager,
-            Some(cli::commands::TuiView::Performance) => ViewType::SystemMonitor,
-            Some(cli::commands::TuiView::Logs) => ViewType::LogViewer { target: "system".to_string() },
-        };
-        
-        // Create CLI context
-        let cli_context = CliContext::from_cli(cli);
-        
-        // Create and run TUI app
-        let mut app = DoraApp::new_with_context(initial_view, cli_context);
-        app.run().await
-    })
 }
 
 // Legacy conversion will be implemented in future issues when needed

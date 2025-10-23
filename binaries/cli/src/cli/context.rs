@@ -1,4 +1,5 @@
 use crate::cli::{OutputFormat, UiMode};
+use crate::automation::{AutomationDetector, AutomationResult, AutomationType};
 use std::{collections::HashMap, path::PathBuf};
 use std::io::IsTerminal;
 
@@ -43,6 +44,9 @@ pub struct ExecutionContext {
     
     /// Environment variables relevant to execution
     pub environment: ExecutionEnvironment,
+    
+    /// Comprehensive automation detection result (Issue #15)
+    pub automation_result: Option<AutomationResult>,
 }
 
 /// CI environment types
@@ -129,6 +133,7 @@ impl ExecutionContext {
             user_preference: Self::load_user_preference(),
             terminal_capabilities,
             environment,
+            automation_result: None,
         }
     }
     
@@ -169,6 +174,7 @@ impl ExecutionContext {
             user_preference: UiMode::Auto,
             terminal_capabilities: TerminalCapabilities::detect_basic(),
             environment: ExecutionEnvironment::detect_basic(),
+            automation_result: None,
         }
     }
     
@@ -177,7 +183,40 @@ impl ExecutionContext {
         let mut context = Self::detect();
         context.terminal_capabilities = TerminalCapabilities::detect_comprehensive().await;
         context.environment = ExecutionEnvironment::detect_comprehensive().await;
+        context = context.with_automation_detection();
         context
+    }
+    
+    /// Run comprehensive automation detection and return updated context
+    pub fn with_automation_detection(mut self) -> Self {
+        let mut detector = AutomationDetector::new();
+        self.automation_result = Some(detector.detect_automation_context(&self));
+        self
+    }
+    
+    /// Get automation type with fallback to basic detection
+    pub fn get_automation_type(&self) -> AutomationType {
+        self.automation_result
+            .as_ref()
+            .map(|result| result.automation_type.clone())
+            .unwrap_or_else(|| {
+                // Fallback to basic detection
+                if self.environment.is_ci {
+                    AutomationType::CiCdPipeline
+                } else if self.is_scripted {
+                    AutomationType::ScriptedExecution
+                } else {
+                    AutomationType::Interactive
+                }
+            })
+    }
+    
+    /// Check if automation is detected with high confidence
+    pub fn is_automated_context(&self) -> bool {
+        self.automation_result
+            .as_ref()
+            .map(|result| result.is_automated && result.confidence > 0.7)
+            .unwrap_or_else(|| self.environment.is_automation)
     }
     
     // Detection methods
