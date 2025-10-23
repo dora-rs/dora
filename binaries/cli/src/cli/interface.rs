@@ -458,7 +458,6 @@ impl CommandAnalyzer {
             Command::Runtime(_) => 5,               // Runtime operations complex
             Command::Coordinator(_) => 5,           // Coordinator operations complex
             Command::Self_(_) => 3,                 // Self-management
-            Command::Preferences(_) => 4,           // Preference management
         }
     }
     
@@ -537,15 +536,6 @@ impl Default for UserConfig {
     }
 }
 
-impl UserConfig {
-    /// Load user configuration from file or return default
-    pub fn load() -> eyre::Result<Self> {
-        // For now, return default configuration
-        // In full implementation, this would load from config file
-        Ok(Self::default())
-    }
-}
-
 impl Default for HintPreferences {
     fn default() -> Self {
         Self {
@@ -600,7 +590,6 @@ impl Command {
             Command::Runtime(_) => "runtime".to_string(),
             Command::Coordinator(_) => "coordinator".to_string(),
             Command::Self_(_) => "self".to_string(),
-            Command::Preferences(_) => "preferences".to_string(),
         }
     }
 }

@@ -21,6 +21,9 @@ pub mod tui;
 // Configuration and preferences module
 pub mod config;
 
+// Analysis and complexity algorithms module (Issue #13)
+pub mod analysis;
+
 pub use command::build;
 
 const LOCALHOST: IpAddr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));

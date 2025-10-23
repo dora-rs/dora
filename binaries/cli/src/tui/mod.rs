@@ -3,7 +3,6 @@ pub mod views;
 pub mod theme;
 pub mod cli_integration;
 pub mod command_executor;
-pub mod command_mode;
 
 #[cfg(test)]
 mod tests;
@@ -11,8 +10,7 @@ mod tests;
 pub use app::{DoraApp, ViewType, AppState};
 pub use theme::ThemeConfig;
 pub use cli_integration::{CliContext, CommandMode};
-pub use command_executor::{TuiCliExecutor, CommandResult, StateUpdate, CommandModeExecutionResult, CommandModeViewAction};
-pub use command_mode::{CommandModeManager, CommandModeAction};
+pub use command_executor::{TuiCliExecutor, CommandResult, StateUpdate};
 pub use views::{View, ViewAction};
 
 // Re-export common ratatui types for convenience
