@@ -15,8 +15,8 @@ mod template;
 // New hybrid CLI module
 pub mod cli;
 
-// Automation context detection module (Issue #15)
-pub mod automation;
+// Issue #17: Inspection module
+pub mod inspection;
 
 pub use command::build;
 pub use command::{run, run_func};
