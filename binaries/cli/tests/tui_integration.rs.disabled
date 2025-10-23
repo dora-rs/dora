@@ -1,0 +1,94 @@
+use dora_cli::tui::{DoraApp, ViewType, CliContext};
+
+// TODO: These tests need to be moved to unit tests in src/tui/app.rs
+// Integration tests can't access #[cfg(test)] methods
+#[test]
+#[ignore]
+fn test_tui_app_creation_and_navigation() {
+    let app = DoraApp::new(ViewType::Dashboard);
+    assert!(matches!(app.current_view(), &ViewType::Dashboard));
+    assert!(!app.should_quit());
+}
+
+#[test]
+#[ignore]
+fn test_tui_with_cli_context() {
+    let context = CliContext::new();
+    let app = DoraApp::new_with_context(ViewType::Dashboard, context);
+    assert!(matches!(app.current_view(), &ViewType::Dashboard));
+}
+
+#[test]
+#[ignore]
+fn test_view_stack_navigation() {
+    let mut app = DoraApp::new(ViewType::Dashboard);
+    
+    // Test initial state
+    assert_eq!(app.view_stack_len(), 0);
+    assert!(matches!(app.current_view(), &ViewType::Dashboard));
+    
+    // Test push view
+    app.push_view(ViewType::DataflowManager);
+    assert_eq!(app.view_stack_len(), 1);
+    assert!(matches!(app.current_view(), &ViewType::DataflowManager));
+    
+    // Test push another view
+    app.push_view(ViewType::SystemMonitor);
+    assert_eq!(app.view_stack_len(), 2);
+    assert!(matches!(app.current_view(), &ViewType::SystemMonitor));
+    
+    // Test pop view
+    app.pop_view();
+    assert_eq!(app.view_stack_len(), 1);
+    assert!(matches!(app.current_view(), &ViewType::DataflowManager));
+    
+    // Test pop to original
+    app.pop_view();
+    assert_eq!(app.view_stack_len(), 0);
+    assert!(matches!(app.current_view(), &ViewType::Dashboard));
+}
+
+#[test]
+#[ignore]
+fn test_view_switching() {
+    let mut app = DoraApp::new(ViewType::Dashboard);
+    
+    app.switch_view(ViewType::Help);
+    assert!(matches!(app.current_view(), &ViewType::Help));
+    
+    app.switch_view(ViewType::LogViewer { target: "test".to_string() });
+    assert!(matches!(app.current_view(), &ViewType::LogViewer { .. }));
+}
+
+#[test]
+#[ignore]
+fn test_command_mode_transitions() {
+    let mut app = DoraApp::new(ViewType::Dashboard);
+    
+    // Initially not in command mode
+    assert!(!app.is_in_command_mode());
+    
+    // Enter command mode
+    app.enter_command_mode();
+    assert!(app.is_in_command_mode());
+    
+    // Exit command mode
+    app.exit_command_mode();
+    assert!(!app.is_in_command_mode());
+}
+
+#[test]
+#[ignore]
+fn test_cli_context_functionality() {
+    let context = CliContext::new();
+    
+    // Test context properties
+    assert!(context.working_directory.exists());
+    assert!(!context.environment.is_empty());
+    
+    // Test environment variable access
+    if let Some(_path) = context.get_env_var("PATH") {
+        // PATH should exist in most environments
+        assert!(true);
+    }
+}

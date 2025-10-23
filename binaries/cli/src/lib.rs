@@ -12,6 +12,12 @@ pub mod output;
 pub mod session;
 mod template;
 
+// New hybrid CLI module
+pub mod cli;
+
+// New TUI module  
+pub mod tui;
+
 pub use command::build;
 pub use command::{run, run_func};
 
@@ -54,6 +60,7 @@ enum Lang {
     Cxx,
 }
 
+/// Main entry point - maintains backward compatibility
 pub fn lib_main(args: Args) {
     if let Err(err) = args.command.execute() {
         eprintln!("\n\n{}", "[ERROR]".bold().red());
@@ -61,6 +68,149 @@ pub fn lib_main(args: Args) {
         std::process::exit(1);
     }
 }
+
+/// New hybrid CLI entry point
+pub fn hybrid_main(cli: cli::Cli) {
+    // Create execution context with enhanced detection (Issue #2)
+    let context = cli::context::ExecutionContext::from_cli(&cli);
+    
+    // Create interface selector (Issue #3)
+    let config = cli::interface::UserConfig::default();
+    let mut selector = cli::interface::InterfaceSelector::new(context.clone(), config);
+    let interface_decision = selector.select_interface(&cli.command);
+    
+    // Display the new CLI structure and global flags
+    println!("🚀 New Dora Hybrid CLI (Issues #1, #2 & #3 Complete)");
+    println!("Global flags detected:");
+    println!("  UI Mode: {:?}", cli.ui_mode.unwrap_or_default());
+    println!("  Output Format: {:?}", cli.output);
+    println!("  No Hints: {}", cli.no_hints);
+    println!("  Verbose: {}", cli.verbose);
+    println!("  Quiet: {}", cli.quiet);
+    println!();
+    
+    // Display context detection results (Issue #2)
+    println!("📋 Execution Context Detection:");
+    println!("  TTY: {}", context.is_tty);
+    println!("  Piped: {}", context.is_piped);
+    println!("  Scripted: {}", context.is_scripted);
+    if let Some((w, h)) = context.terminal_size {
+        println!("  Terminal Size: {}x{}", w, h);
+    }
+    println!("  CI Environment: {:?}", context.environment.ci_environment);
+    println!("  Shell: {:?}", context.environment.shell_type);
+    println!("  Color Support: {}", context.terminal_capabilities.supports_color);
+    println!("  Unicode Support: {}", context.terminal_capabilities.supports_unicode);
+    println!("  TUI Capable: {}", context.terminal_capabilities.tui_capable);
+    println!();
+    
+    // Display interface selection results (Issue #3)
+    println!("🎯 Smart Interface Selection:");
+    println!("  Selected Strategy: {:?}", interface_decision.strategy);
+    println!("  Confidence: {:.2}", interface_decision.confidence);
+    println!("  Reason: {}", interface_decision.reason);
+    if let Some(fallback) = &interface_decision.fallback {
+        println!("  Fallback: {:?}", fallback);
+    }
+    println!();
+    
+    match &cli.command {
+        // Tier 1: Core commands (demonstrate structure)
+        cli::Command::Ps(_) => {
+            println!("Tier 1 Command: PS (List) - Enhanced with smart hints");
+            println!("💡 In future issues, this will show intelligent suggestions");
+        },
+        cli::Command::Start(_) => {
+            println!("Tier 1 Command: START - Enhanced with progress indicators");
+            println!("💡 In future issues, this will show progress and auto-TUI");
+        },
+        cli::Command::Stop(_) => {
+            println!("Tier 1 Command: STOP - Enhanced with graceful shutdown");
+        },
+        cli::Command::Logs(_) => {
+            println!("Tier 1 Command: LOGS - Enhanced with smart filtering");
+        },
+        cli::Command::Build(_) => {
+            println!("Tier 1 Command: BUILD - Enhanced with rich output");
+        },
+        cli::Command::Up(_) | cli::Command::Destroy(_) | cli::Command::New(_) |
+        cli::Command::Check(_) | cli::Command::Graph(_) => {
+            println!("Tier 1 Command: Basic Docker-like operation");
+        },
+        
+        // Tier 2: Enhanced commands with smart suggestions
+        cli::Command::Inspect(_) => {
+            println!("🎯 Tier 2 Command: INSPECT - Smart resource inspection");
+            println!("💡 Will implement complexity analysis and auto-TUI in Issue #17");
+        },
+        cli::Command::Debug(_) => {
+            println!("🎯 Tier 2 Command: DEBUG - Enhanced debugging");
+            println!("💡 Will implement auto-issue detection in Issue #18");
+        },
+        cli::Command::Analyze(_) => {
+            println!("🎯 Tier 2 Command: ANALYZE - Multi-modal analysis");
+            println!("💡 Will implement adaptive interface in Issue #19");
+        },
+        cli::Command::Monitor(_) => {
+            println!("🎯 Tier 2 Command: MONITOR - Real-time monitoring");
+            println!("💡 Will implement smart monitoring in Issue #14");
+        },
+        
+        // Tier 3: TUI commands
+        cli::Command::Ui(ui_cmd) => {
+            println!("🖥️  Tier 3 Command: TUI - Launch TUI interface");
+            
+            // Launch TUI based on command
+            if let Err(e) = launch_tui(ui_cmd, &cli) {
+                eprintln!("Failed to launch TUI: {:?}", e);
+            }
+        },
+        cli::Command::Dashboard(_) => {
+            println!("🖥️  Tier 3 Command: DASHBOARD - Interactive dashboard");
+            println!("💡 Will implement dashboard in Issue #24");
+        },
+        
+        // System commands
+        cli::Command::System(_) | cli::Command::Config(_) |
+        cli::Command::Daemon(_) | cli::Command::Runtime(_) |
+        cli::Command::Coordinator(_) | cli::Command::Self_(_) => {
+            println!("⚙️  System Command - Management operation");
+        }
+    }
+    
+    println!();
+    println!("✅ Issue #3 Complete: Interface Selection Engine");
+    println!("📋 Next: Issue #4 (User Configuration System)");
+    println!("🔗 See IMPLEMENTATION_ROADMAP.md for full plan");
+}
+
+/// Launch TUI interface based on UI command
+fn launch_tui(ui_cmd: &cli::commands::UiCommand, cli: &cli::Cli) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use tokio::runtime::Runtime;
+    use tui::{DoraApp, ViewType, CliContext};
+    
+    // Create runtime for async TUI
+    let rt = Runtime::new()?;
+    
+    rt.block_on(async {
+        // Determine initial view based on UI command
+        let initial_view = match &ui_cmd.view {
+            Some(cli::commands::TuiView::Dashboard) | None => ViewType::Dashboard,
+            Some(cli::commands::TuiView::Dataflow) => ViewType::DataflowManager,
+            Some(cli::commands::TuiView::Performance) => ViewType::SystemMonitor,
+            Some(cli::commands::TuiView::Logs) => ViewType::LogViewer { target: "system".to_string() },
+        };
+        
+        // Create CLI context
+        let cli_context = CliContext::from_cli(cli);
+        
+        // Create and run TUI app
+        let mut app = DoraApp::new_with_context(initial_view, cli_context);
+        app.run().await
+    })
+}
+
+// Legacy conversion will be implemented in future issues when needed
 
 #[cfg(feature = "python")]
 use clap::Parser;
