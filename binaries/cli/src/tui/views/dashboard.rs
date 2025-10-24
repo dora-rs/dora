@@ -7,30 +7,132 @@ use ratatui::{
     Frame,
 };
 use crossterm::event::{KeyCode, KeyEvent};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::tui::{
     app::{AppState, ViewType},
     theme::ThemeConfig,
+    components::{Component, SystemOverviewComponent, DataflowSummaryComponent, ComponentId},
     Result,
 };
-use super::{BaseView, View, ViewAction, StateUpdate, utils};
+use super::{
+    BaseView, View, ViewAction, StateUpdate, utils,
+    DashboardState, SystemOverview, SystemStatus, MemoryUsage, DiskUsage,
+    NetworkActivity, DataflowSummary, RefreshManager,
+};
 
 pub struct DashboardView {
     base: BaseView,
     theme: ThemeConfig,
     selected_dataflow: usize,
     show_system_info: bool,
+    // Issue #24 additions
+    dashboard_state: DashboardState,
+    system_overview_component: SystemOverviewComponent,
+    dataflow_summary_component: DataflowSummaryComponent,
+    refresh_manager: RefreshManager,
 }
 
 impl DashboardView {
     pub fn new(theme: &ThemeConfig) -> Self {
         Self {
             base: BaseView::new("Dashboard".to_string())
-                .with_auto_refresh(Duration::from_secs(5)),
+                .with_auto_refresh(Duration::from_secs(2)), // Issue #24: 2-second refresh
             theme: theme.clone(),
             selected_dataflow: 0,
             show_system_info: true,
+            // Issue #24 additions
+            dashboard_state: DashboardState::default(),
+            system_overview_component: SystemOverviewComponent::new(),
+            dataflow_summary_component: DataflowSummaryComponent::new(),
+            refresh_manager: RefreshManager::new(Duration::from_secs(2)),
+        }
+    }
+
+    /// Collect system overview data (Issue #24)
+    fn collect_system_overview(&self, app_state: &AppState) -> SystemOverview {
+        let metrics = &app_state.system_metrics;
+
+        // Determine system status based on daemon connectivity
+        let status = if app_state.dataflows.is_empty() {
+            SystemStatus::Disconnected
+        } else {
+            SystemStatus::Connected
+        };
+
+        SystemOverview {
+            status,
+            uptime: Duration::from_secs(0), // TODO: Get actual uptime
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            cpu_usage: metrics.cpu_usage as f64,
+            memory_usage: MemoryUsage {
+                total_mb: 8192, // TODO: Get actual system memory
+                used_mb: ((metrics.memory_usage / 100.0) * 8192.0) as u64,
+                usage_percent: metrics.memory_usage as f64,
+            },
+            disk_usage: DiskUsage {
+                total_gb: 500, // TODO: Get actual disk size
+                used_gb: 250, // TODO: Get actual disk usage
+                usage_percent: 50.0, // TODO: Calculate from actual values
+            },
+            network_activity: NetworkActivity {
+                bytes_received: metrics.network_io.0,
+                bytes_transmitted: metrics.network_io.1,
+            },
+            active_connections: app_state.dataflows.len() as u32,
+        }
+    }
+
+    /// Collect dataflow summary data (Issue #24)
+    fn collect_dataflow_summary(&self, app_state: &AppState) -> DataflowSummary {
+        let total = app_state.dataflows.len() as u32;
+        let running = app_state.dataflows.iter()
+            .filter(|df| df.status == "running")
+            .count() as u32;
+        let failed = app_state.dataflows.iter()
+            .filter(|df| df.status == "failed")
+            .count() as u32;
+        let stopped = total - running - failed;
+
+        let total_nodes = app_state.dataflows.iter()
+            .map(|df| df.nodes.len() as u32)
+            .sum();
+
+        let healthy_nodes = app_state.dataflows.iter()
+            .flat_map(|df| &df.nodes)
+            .filter(|node| node.status == "running" || node.status == "healthy")
+            .count() as u32;
+
+        let unhealthy_nodes = total_nodes - healthy_nodes;
+
+        DataflowSummary {
+            total_dataflows: total,
+            running_dataflows: running,
+            failed_dataflows: failed,
+            stopped_dataflows: stopped,
+            total_nodes,
+            healthy_nodes,
+            unhealthy_nodes,
+            recent_deployments: Vec::new(), // TODO: Track deployments
+        }
+    }
+
+    /// Update dashboard data if refresh is needed (Issue #24)
+    fn refresh_dashboard_data(&mut self, app_state: &AppState) {
+        if self.refresh_manager.should_refresh() {
+            // Collect fresh data
+            let system_overview = self.collect_system_overview(app_state);
+            let dataflow_summary = self.collect_dataflow_summary(app_state);
+
+            // Update dashboard state
+            self.dashboard_state.system_overview = system_overview.clone();
+            self.dashboard_state.dataflow_summary = dataflow_summary.clone();
+
+            // Update components
+            self.system_overview_component.set_data(system_overview);
+            self.dataflow_summary_component.set_data(dataflow_summary);
+
+            self.refresh_manager.mark_refreshed();
         }
     }
     
@@ -129,45 +231,9 @@ impl DashboardView {
         if !self.show_system_info {
             return;
         }
-        
-        let metrics = &app_state.system_metrics;
-        
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(3),
-                Constraint::Length(3),
-                Constraint::Length(3),
-            ])
-            .split(area);
-        
-        // CPU usage
-        let cpu_gauge = Gauge::default()
-            .block(Block::default().title("CPU Usage").borders(Borders::ALL))
-            .gauge_style(self.theme.percentage_style(metrics.cpu_usage))
-            .percent(metrics.cpu_usage as u16)
-            .label(format!("{:.1}%", metrics.cpu_usage));
-        f.render_widget(cpu_gauge, chunks[0]);
-        
-        // Memory usage
-        let memory_gauge = Gauge::default()
-            .block(Block::default().title("Memory Usage").borders(Borders::ALL))
-            .gauge_style(self.theme.percentage_style(metrics.memory_usage))
-            .percent(metrics.memory_usage as u16)
-            .label(format!("{:.1}%", metrics.memory_usage));
-        f.render_widget(memory_gauge, chunks[1]);
-        
-        // Network I/O
-        let network_text = format!(
-            "RX: {} | TX: {}",
-            utils::format_bytes(metrics.network_io.0),
-            utils::format_bytes(metrics.network_io.1)
-        );
-        let network_info = Paragraph::new(network_text)
-            .block(Block::default().title("Network I/O").borders(Borders::ALL))
-            .style(Style::default().fg(self.theme.colors.text))
-            .alignment(Alignment::Center);
-        f.render_widget(network_info, chunks[2]);
+
+        // Issue #24: Use SystemOverviewComponent
+        self.system_overview_component.render(f, area, &self.theme, app_state);
     }
     
     fn render_quick_actions(&self, f: &mut Frame, area: Rect) {
@@ -303,15 +369,32 @@ impl View for DashboardView {
                 Ok(ViewAction::ExecuteCommand("new dataflow".to_string()))
             },
             
-            KeyCode::Char('?') => {
+            KeyCode::Char('?') | KeyCode::F(1) => {
                 Ok(ViewAction::ShowHelp)
             },
-            
+
+            // Issue #24: Enhanced navigation shortcuts
+            KeyCode::Char('d') => {
+                Ok(ViewAction::PushView(ViewType::DataflowManager))
+            },
+
+            KeyCode::Char('p') => {
+                Ok(ViewAction::PushView(ViewType::SystemMonitor))
+            },
+
+            KeyCode::F(5) => {
+                // Force refresh
+                Ok(ViewAction::UpdateState(StateUpdate::RefreshDataflows))
+            },
+
             _ => Ok(ViewAction::None),
         }
     }
     
     async fn update(&mut self, app_state: &mut AppState) -> Result<()> {
+        // Issue #24: Refresh dashboard data at 2-second intervals
+        self.refresh_dashboard_data(app_state);
+
         if self.base.needs_refresh() {
             // Request data refresh
             self.base.mark_updated();
@@ -325,11 +408,14 @@ impl View for DashboardView {
             ("↓/j", "Move down"),
             ("Enter", "Inspect selected dataflow"),
             ("Space", "Start/Stop selected dataflow"),
+            ("d", "Navigate to dataflows"),           // Issue #24
+            ("p", "Navigate to performance monitor"), // Issue #24
             ("l", "View logs for selected dataflow"),
             ("r", "Refresh dataflow list"),
+            ("F5", "Force refresh"),                  // Issue #24
             ("s", "Toggle system info display"),
             ("n", "Create new dataflow"),
-            ("?", "Show help"),
+            ("?/F1", "Show help"),
             (":", "Enter command mode"),
             ("q", "Quit"),
         ]
@@ -352,7 +438,9 @@ impl View for DashboardView {
     }
     
     async fn on_mount(&mut self, app_state: &mut AppState) -> Result<()> {
-        // Refresh data when view is first mounted
+        // Issue #24: Start refresh manager and collect initial data
+        self.refresh_manager.start();
+        self.refresh_dashboard_data(app_state);
         self.base.mark_updated();
         Ok(())
     }

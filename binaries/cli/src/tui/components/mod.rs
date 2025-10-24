@@ -21,11 +21,18 @@ pub mod dataflow_list;
 pub mod metrics_chart;
 pub mod status_bar;
 pub mod log_viewer_component;
+pub mod dashboard;
 
 pub use dataflow_list::DataflowListComponent;
 pub use metrics_chart::MetricsChartComponent;
 pub use status_bar::StatusBarComponent;
 pub use log_viewer_component::LogViewerComponent;
+pub use dashboard::{
+    SystemOverviewComponent,
+    DataflowSummaryComponent,
+    PerformanceChartsComponent,
+    RecentActivityComponent,
+};
 
 /// Unique identifier for a component instance
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]

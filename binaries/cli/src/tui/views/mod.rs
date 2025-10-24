@@ -11,6 +11,7 @@ use crate::tui::{
 };
 
 pub mod dashboard;
+pub mod dashboard_types;
 pub mod dataflow_manager;
 pub mod node_inspector;
 pub mod system_monitor;
@@ -19,6 +20,7 @@ pub mod help;
 pub mod layout;
 
 pub use dashboard::DashboardView;
+pub use dashboard_types::*;
 pub use dataflow_manager::DataflowManagerView;
 pub use node_inspector::NodeInspectorView;
 pub use system_monitor::SystemMonitorView;
