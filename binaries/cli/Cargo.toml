@@ -27,6 +27,7 @@ eyre = "0.6.8"
 atty = "0.2"
 term_size = "0.3"
 crossterm = "0.27"
+ratatui = "0.27"
 is-terminal = "0.4"
 sysinfo = "0.29"
 termsize = "0.1"
@@ -38,6 +39,8 @@ dora-operator-api-c = { workspace = true }
 dora-download = { workspace = true }
 serde = { version = "1.0.136", features = ["derive"] }
 serde_yaml = { workspace = true }
+toml = "0.8"
+shell-words = "1.1"
 chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1.0"
 libc = "0.2"
@@ -64,7 +67,6 @@ tabwriter = "1.4.0"
 log = { version = "0.4.21", features = ["serde"] }
 colored = "2.1.0"
 env_logger = "0.11.3"
-chrono = { version = "0.4", features = ["serde"] }
 self_update = { version = "0.42.0", features = [
     "rustls",
     "archive-zip",
@@ -78,7 +80,6 @@ pyo3 = { workspace = true, features = [
 self-replace = "1.5.0"
 dunce = "1.0.5"
 git2 = { workspace = true }
-chrono = "0.4"
 dirs = "5.0"
 
 [build-dependencies]

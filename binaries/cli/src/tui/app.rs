@@ -238,7 +238,7 @@ impl DoraApp {
         Ok(())
     }
     
-    async fn run_event_loop<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> Result<()> {
+    async fn run_event_loop(&mut self, terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> Result<()> {
         loop {
             // Render current view
             terminal.draw(|f| self.ui(f))?;
@@ -263,7 +263,7 @@ impl DoraApp {
         Ok(())
     }
     
-    fn ui<B: Backend>(&mut self, f: &mut Frame<B>) {
+    fn ui(&mut self, f: &mut Frame) {
         let size = f.size();
         
         // Main layout: header + body + footer
@@ -284,7 +284,7 @@ impl DoraApp {
         self.render_overlays(f, size);
     }
     
-    fn render_header<B: Backend>(&mut self, f: &mut Frame<B>, area: Rect) {
+    fn render_header(&mut self, f: &mut Frame, area: Rect) {
         let title = format!("🚀 Dora TUI - {}", self.view_title());
         let header = Paragraph::new(title)
             .style(self.theme.styles.highlight_style)
@@ -297,7 +297,7 @@ impl DoraApp {
         f.render_widget(header, area);
     }
     
-    fn render_current_view<B: Backend>(&mut self, f: &mut Frame<B>, area: Rect) {
+    fn render_current_view(&mut self, f: &mut Frame, area: Rect) {
         use super::views::*;
         
         match &self.current_view {
@@ -334,20 +334,21 @@ impl DoraApp {
                     _ => "View not implemented yet".to_string(),
                 };
                 
+                let title = self.view_title();
                 let view_widget = Paragraph::new(content)
                     .style(Style::default().fg(self.theme.colors.text))
                     .block(
-                        self.theme.styled_block(&self.view_title())
+                        self.theme.styled_block(&title)
                             .borders(Borders::ALL)
                     )
                     .wrap(Wrap { trim: true });
-                
+
                 f.render_widget(view_widget, area);
             }
         }
     }
     
-    fn render_footer<B: Backend>(&mut self, f: &mut Frame<B>, area: Rect) {
+    fn render_footer(&mut self, f: &mut Frame, area: Rect) {
         let footer_text = if self.command_mode_manager.is_active() {
             // Command mode footer is rendered by the command mode manager
             "".to_string()
@@ -367,7 +368,7 @@ impl DoraApp {
         f.render_widget(footer, area);
     }
     
-    fn render_overlays<B: Backend>(&mut self, f: &mut Frame<B>, area: Rect) {
+    fn render_overlays(&mut self, f: &mut Frame, area: Rect) {
         // Render command mode if active
         if self.command_mode_manager.is_active() {
             self.command_mode_manager.render(f, area, &self.theme);
@@ -467,40 +468,62 @@ impl DoraApp {
     async fn execute_command_mode_command(&mut self, command: &str, show_output: bool) -> Result<()> {
         if let Some(executor) = &mut self.command_executor {
             let result = executor.execute_command_mode(command, &mut self.state).await?;
-            
+
             // Handle the result
-            if let Some(view_action) = result.view_action {
-                match view_action {
-                    CommandModeViewAction::SwitchView(view_type) => {
-                        self.switch_view(view_type);
-                    },
-                    CommandModeViewAction::RefreshCurrentView => {
-                        // Trigger a refresh of current view data
-                        self.refresh_current_view_data().await?;
-                    },
-                    CommandModeViewAction::ShowMessage { message, level } => {
-                        self.show_status_message(message, level);
-                    },
+            match result {
+                CommandModeExecutionResult::Success { message, view_actions, state_updates } => {
+                    // Handle view actions
+                    for view_action in view_actions {
+                        match view_action {
+                            CommandModeViewAction::SwitchView(view_type) => {
+                                self.switch_view(view_type);
+                            },
+                            CommandModeViewAction::RefreshCurrentView => {
+                                // Trigger a refresh of current view data
+                                self.refresh_current_view_data().await?;
+                            },
+                            CommandModeViewAction::ShowMessage { message, level } => {
+                                // Convert StatusLevel to MessageLevel
+                                use crate::tui::StatusLevel;
+                                let msg_level = match level {
+                                    StatusLevel::Info => MessageLevel::Info,
+                                    StatusLevel::Success => MessageLevel::Success,
+                                    StatusLevel::Warning => MessageLevel::Warning,
+                                    StatusLevel::Error => MessageLevel::Error,
+                                };
+                                self.show_status_message(message, msg_level);
+                            },
+                            CommandModeViewAction::UpdateDataflows => {
+                                // Refresh dataflow list
+                                self.refresh_current_view_data().await?;
+                            },
+                            CommandModeViewAction::UpdateNodes => {
+                                // Refresh node information
+                                self.refresh_current_view_data().await?;
+                            },
+                        }
+                    }
+
+                    // Show execution result if requested
+                    if show_output {
+                        self.show_status_message(message, MessageLevel::Success);
+                    }
+                },
+                CommandModeExecutionResult::Error(err) => {
+                    if show_output {
+                        self.show_status_message(err, MessageLevel::Error);
+                    }
+                },
+                CommandModeExecutionResult::Exit => {
+                    // Handle exit
+                    self.should_quit = true;
                 }
             }
-            
-            // Show execution result if requested
-            if show_output {
-                let level = if result.success { 
-                    MessageLevel::Success 
-                } else { 
-                    MessageLevel::Error 
-                };
-                self.show_status_message(result.message, level);
-            }
-        } else {
-            // Fallback to simple command execution
-            self.show_status_message(format!("Executed: {}", command), MessageLevel::Info);
         }
-        
+
         Ok(())
     }
-    
+
     async fn refresh_current_view_data(&mut self) -> Result<()> {
         // Refresh data based on current view
         match &self.current_view {

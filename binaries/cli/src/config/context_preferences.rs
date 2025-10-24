@@ -289,7 +289,7 @@ impl ContextAwarePreferences {
             Command::Runtime(_) => 6,
             Command::Coordinator(_) => 6,
             Command::Self_(_) => 3,
-            Command::Preferences(_) => 4,
+            Command::Help(_) => 2,
         }
     }
     
@@ -301,10 +301,10 @@ impl ContextAwarePreferences {
             Command::Build(_) | Command::Check(_) | Command::New(_) => "development".to_string(),
             Command::Inspect(_) | Command::Debug(_) | Command::Analyze(_) => "analysis".to_string(),
             Command::Ui(_) | Command::Dashboard(_) => "interface".to_string(),
-            Command::System(_) | Command::Config(_) | Command::Daemon(_) | 
+            Command::System(_) | Command::Config(_) | Command::Daemon(_) |
             Command::Runtime(_) | Command::Coordinator(_) | Command::Self_(_) => "system".to_string(),
             Command::Graph(_) => "visualization".to_string(),
-            Command::Preferences(_) => "system".to_string(),
+            Command::Help(_) => "help".to_string(),
         }
     }
     
@@ -590,6 +590,7 @@ mod tests {
                 is_ci: false,
                 is_automation: false,
             },
+            automation_result: None,
         }
     }
 

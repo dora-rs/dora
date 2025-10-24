@@ -330,9 +330,15 @@ impl ExecutionContext {
     }
     
     pub fn supports_realtime_updates(&self) -> bool {
-        self.is_tty && 
-        !self.is_piped && 
+        self.is_tty &&
+        !self.is_piped &&
         self.terminal_capabilities.supports_unicode
+    }
+}
+
+impl Default for ExecutionContext {
+    fn default() -> Self {
+        Self::detect_basic()
     }
 }
 

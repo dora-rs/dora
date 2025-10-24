@@ -15,6 +15,15 @@ mod template;
 // New hybrid CLI module
 pub mod cli;
 
+// Issue #4: Configuration system
+pub mod config;
+
+// Issue #5: Automation detection module
+pub mod automation;
+
+// Issue #9: TUI module
+pub mod tui;
+
 // Issue #17: Inspection module
 pub mod inspection;
 
@@ -86,14 +95,22 @@ pub fn lib_main(args: Args) {
 
 /// New hybrid CLI entry point
 pub fn hybrid_main(cli: cli::Cli) {
+    // Handle case where no command is provided (e.g., --version or --help)
+    let Some(command) = &cli.command else {
+        // Clap will have already handled --version and --help
+        // If we get here with no command, something went wrong
+        eprintln!("Error: No command provided. Use --help for usage information.");
+        std::process::exit(1);
+    };
+
     // Create execution context with enhanced detection (Issue #2)
     let context = cli::context::ExecutionContext::from_cli(&cli);
-    
+
     // Create interface selector (Issue #3)
     let config = cli::interface::UserConfig::default();
     let mut selector = cli::interface::InterfaceSelector::new(context.clone(), config);
-    let interface_decision = selector.select_interface(&cli.command);
-    
+    let interface_decision = selector.select_interface(command);
+
     // Display the new CLI structure and global flags
     println!("🚀 New Dora Hybrid CLI (Issues #1, #2 & #3 Complete)");
     println!("Global flags detected:");
@@ -103,7 +120,7 @@ pub fn hybrid_main(cli: cli::Cli) {
     println!("  Verbose: {}", cli.verbose);
     println!("  Quiet: {}", cli.quiet);
     println!();
-    
+
     // Display context detection results (Issue #2)
     println!("📋 Execution Context Detection:");
     println!("  TTY: {}", context.is_tty);
@@ -118,7 +135,7 @@ pub fn hybrid_main(cli: cli::Cli) {
     println!("  Unicode Support: {}", context.terminal_capabilities.supports_unicode);
     println!("  TUI Capable: {}", context.terminal_capabilities.tui_capable);
     println!();
-    
+
     // Display interface selection results (Issue #3)
     println!("🎯 Smart Interface Selection:");
     println!("  Selected Strategy: {:?}", interface_decision.strategy);
@@ -128,8 +145,8 @@ pub fn hybrid_main(cli: cli::Cli) {
         println!("  Fallback: {:?}", fallback);
     }
     println!();
-    
-    match &cli.command {
+
+    match command {
         // Tier 1: Core commands (demonstrate structure)
         cli::Command::Ps(_) => {
             println!("Tier 1 Command: PS (List) - Enhanced with smart hints");
@@ -176,13 +193,35 @@ pub fn hybrid_main(cli: cli::Cli) {
         },
 
         // Tier 3: TUI commands
-        cli::Command::Ui(_) => {
-            println!("🖥️  Tier 3 Command: TUI - Launch TUI interface");
-            println!("💡 Will implement TUI launcher in Issue #9");
+        cli::Command::Ui(cmd) => {
+            println!("🖥️  Launching TUI interface...");
+
+            // Determine initial view from command
+            let initial_view = if let Some(view) = &cmd.view {
+                match view {
+                    cli::TuiView::Dashboard => tui::ViewType::Dashboard,
+                    cli::TuiView::Dataflow => tui::ViewType::DataflowManager,
+                    cli::TuiView::Performance => tui::ViewType::SystemMonitor,
+                    cli::TuiView::Logs => tui::ViewType::LogViewer { target: "all".to_string() },
+                }
+            } else {
+                tui::ViewType::Dashboard
+            };
+
+            // Launch TUI
+            if let Err(e) = launch_tui(initial_view) {
+                eprintln!("❌ Failed to launch TUI: {}", e);
+                std::process::exit(1);
+            }
         },
         cli::Command::Dashboard(_) => {
-            println!("🖥️  Tier 3 Command: DASHBOARD - Interactive dashboard");
-            println!("💡 Will implement dashboard in Issue #24");
+            println!("🖥️  Launching Dashboard...");
+
+            // Launch TUI with dashboard view
+            if let Err(e) = launch_tui(tui::ViewType::Dashboard) {
+                eprintln!("❌ Failed to launch dashboard: {}", e);
+                std::process::exit(1);
+            }
         },
         
         // System commands
@@ -197,6 +236,20 @@ pub fn hybrid_main(cli: cli::Cli) {
     println!("✅ Issue #3 Complete: Interface Selection Engine");
     println!("📋 Next: Issue #4 (User Configuration System)");
     println!("🔗 See IMPLEMENTATION_ROADMAP.md for full plan");
+}
+
+/// Launch TUI with specified initial view
+fn launch_tui(initial_view: tui::ViewType) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // Create tokio runtime for async TUI
+    let runtime = tokio::runtime::Runtime::new()?;
+
+    runtime.block_on(async {
+        // Create TUI app
+        let mut app = tui::DoraApp::new(initial_view);
+
+        // Run the TUI
+        app.run().await
+    })
 }
 
 // Legacy conversion will be implemented in future issues when needed

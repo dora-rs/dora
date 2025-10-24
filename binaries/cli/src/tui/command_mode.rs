@@ -277,9 +277,21 @@ impl CommandModeManager {
                         // Apply selected completion if available
                         if let Some(suggestion) = completion_state.get_selected_suggestion() {
                             let suggestion_text = suggestion.text.clone();
-                            let completion_text = self.apply_completion(buffer, *cursor_position, &suggestion_text);
-                            *buffer = completion_text.0;
-                            *cursor_position = completion_text.1;
+
+                            // Apply completion inline to avoid borrow issues
+                            let before_cursor = &buffer[..*cursor_position];
+                            let after_cursor = &buffer[*cursor_position..];
+                            let word_start = before_cursor.rfind(' ').map(|i| i + 1).unwrap_or(0);
+                            let new_buffer = format!(
+                                "{}{}{}",
+                                &buffer[..word_start],
+                                suggestion_text,
+                                after_cursor
+                            );
+                            let new_cursor = word_start + suggestion_text.len();
+
+                            *buffer = new_buffer;
+                            *cursor_position = new_cursor;
                             completion_state.clear();
                         }
                         
@@ -387,9 +399,9 @@ impl CommandModeManager {
         }
     }
     
-    pub fn render<B: Backend>(
+    pub fn render(
         &self,
-        f: &mut Frame<B>,
+        f: &mut Frame,
         area: Rect,
         theme: &ThemeConfig,
     ) {
@@ -407,9 +419,9 @@ impl CommandModeManager {
         }
     }
     
-    fn render_command_input<B: Backend>(
+    fn render_command_input(
         &self,
-        f: &mut Frame<B>,
+        f: &mut Frame,
         area: Rect,
         buffer: &str,
         cursor_position: usize,
@@ -440,9 +452,9 @@ impl CommandModeManager {
         );
     }
     
-    fn render_completion_popup<B: Backend>(
+    fn render_completion_popup(
         &self,
-        f: &mut Frame<B>,
+        f: &mut Frame,
         area: Rect,
         completion_state: &CompletionState,
         theme: &ThemeConfig,
@@ -857,9 +869,6 @@ impl Default for CommandModeManager {
         Self::new()
     }
 }
-
-#[cfg(test)]
-mod tests;
 
 #[cfg(test)]
 mod basic_tests {

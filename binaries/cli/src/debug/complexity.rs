@@ -23,13 +23,16 @@ impl DebugComplexityAnalyzer {
         let mut complexity_factors = Vec::new();
 
         // Base complexity from debug mode
-        complexity_score += match debug_session.mode {
+        complexity_score += match &debug_session.mode {
             DebugMode::Interactive => 6.0,
             DebugMode::Analysis => 3.0,
             DebugMode::Trace => 5.0,
             DebugMode::Profile => 7.0,
             DebugMode::Health => 2.0,
             DebugMode::Network => 4.0,
+            DebugMode::Auto => 5.0,
+            DebugMode::Snapshot => 3.0,
+            DebugMode::Live => 7.0,
         };
 
         // Issue complexity

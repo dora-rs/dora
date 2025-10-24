@@ -289,13 +289,76 @@ pub enum InspectOutputFormat {
 pub struct DebugCommand {
     #[clap(flatten)]
     pub common: CommonArgs,
-    
+
     #[clap(flatten)]
     pub dataflow: DataflowArgs,
-    
+
+    /// Debug target
+    pub target: Option<String>,
+
+    /// Debug mode
+    #[clap(long, value_enum)]
+    pub mode: Option<DebugMode>,
+
+    /// Debug focus area
+    #[clap(long, value_enum)]
+    pub focus: Option<DebugFocus>,
+
     /// Auto-detect issues
     #[clap(long)]
     pub auto: bool,
+
+    /// Auto-detect issues (alias for backwards compatibility)
+    #[clap(long)]
+    pub auto_detect: bool,
+
+    /// Enable live monitoring
+    #[clap(long)]
+    pub live: bool,
+
+    /// Capture debug artifacts
+    #[clap(long)]
+    pub capture: bool,
+
+    /// Debug session timeout
+    #[clap(long, default_value = "30m")]
+    pub timeout: String,
+
+    /// History window for analysis
+    #[clap(long, default_value = "1h")]
+    pub history_window: String,
+
+    /// Output directory for artifacts
+    #[clap(long)]
+    pub output_dir: Option<std::path::PathBuf>,
+}
+
+#[derive(clap::ValueEnum, Clone, Debug)]
+pub enum DebugMode {
+    Interactive,
+    Auto,
+    Snapshot,
+    Live,
+    Analysis,
+    Trace,
+    Profile,
+    Health,
+    Network,
+}
+
+impl Default for DebugMode {
+    fn default() -> Self {
+        DebugMode::Auto
+    }
+}
+
+#[derive(clap::ValueEnum, Clone, Debug)]
+pub enum DebugFocus {
+    Performance,
+    Errors,
+    Resources,
+    Network,
+    All,
 }
 
 #[derive(Args, Clone, Debug)]
@@ -311,25 +374,51 @@ pub struct AnalyzeCommand {
     pub analysis_type: Option<AnalysisType>,
 }
 
-#[derive(clap::ValueEnum, Clone, Debug)]
+#[derive(clap::ValueEnum, Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum AnalysisType {
     Performance,
     Resources,
     Trends,
     Complexity,
+    Comprehensive,
 }
 
 #[derive(Args, Clone, Debug)]
 pub struct MonitorCommand {
     #[clap(flatten)]
     pub common: CommonArgs,
-    
+
     #[clap(flatten)]
     pub dataflow: DataflowArgs,
-    
+
     /// Monitoring interval
     #[clap(long)]
     pub interval: Option<String>,
+}
+
+#[derive(Args, Clone, Debug, Default)]
+pub struct HelpCommand {
+    #[clap(flatten)]
+    pub common: CommonArgs,
+
+    /// Help topic or command name
+    pub topic: Option<String>,
+
+    /// Show tutorial
+    #[clap(long)]
+    pub tutorial: bool,
+
+    /// List all topics
+    #[clap(long)]
+    pub list: bool,
+
+    /// Search help content
+    #[clap(long)]
+    pub search: Option<String>,
+
+    /// Show examples
+    #[clap(long)]
+    pub examples: bool,
 }
 
 // Tier 3: TUI commands
@@ -343,7 +432,7 @@ pub struct UiCommand {
     pub view: Option<TuiView>,
 }
 
-#[derive(clap::ValueEnum, Clone, Debug)]
+#[derive(clap::ValueEnum, Clone, Debug, PartialEq)]
 pub enum TuiView {
     Dashboard,
     Dataflow,

@@ -172,7 +172,7 @@ impl InterfaceSelector {
     fn generate_cache_key(&self, command: &Command) -> String {
         // Include relevant context and command details
         format!("{}:{}:{}:{}",
-            command.name(),
+            command.name().to_string(),
             self.context.is_tty,
             self.context.is_piped,
             self.config.global_ui_mode.as_u8()
@@ -224,7 +224,7 @@ impl InterfaceSelector {
     /// Check user preference overrides
     fn check_user_preferences(&self, command: &Command) -> Option<InterfaceDecision> {
         // Check command-specific preferences first
-        let command_name = command.name();
+        let command_name = command.name().to_string();
         if let Some(mode) = self.config.command_preferences.get(&command_name) {
             return Some(self.create_preference_decision(mode, "User command preference"));
         }
@@ -382,7 +382,7 @@ impl InterfaceSelector {
             },
             _ => format!(
                 "For enhanced experience, try 'dora ui {}'", 
-                command.name()
+                command.name().to_string()
             ),
         }
     }
@@ -391,7 +391,7 @@ impl InterfaceSelector {
     fn generate_tui_command(&self, command: &Command) -> String {
         match command {
             Command::Ps(_) => "dora ui".to_string(),
-            _ => format!("dora ui {}", command.name()),
+            _ => format!("dora ui {}", command.name().to_string()),
         }
     }
     
@@ -565,36 +565,7 @@ impl Default for InteractionPatterns {
     }
 }
 
-impl Command {
-    /// Get command name for caching and analysis
-    pub fn name(&self) -> String {
-        match self {
-            Command::Ps(_) => "ps".to_string(),
-            Command::Start(_) => "start".to_string(),
-            Command::Stop(_) => "stop".to_string(),
-            Command::Logs(_) => "logs".to_string(),
-            Command::Build(_) => "build".to_string(),
-            Command::Up(_) => "up".to_string(),
-            Command::Destroy(_) => "destroy".to_string(),
-            Command::New(_) => "new".to_string(),
-            Command::Check(_) => "check".to_string(),
-            Command::Graph(_) => "graph".to_string(),
-            Command::Inspect(_) => "inspect".to_string(),
-            Command::Debug(_) => "debug".to_string(),
-            Command::Analyze(_) => "analyze".to_string(),
-            Command::Monitor(_) => "monitor".to_string(),
-            Command::Help(_) => "help".to_string(),
-            Command::Ui(_) => "ui".to_string(),
-            Command::Dashboard(_) => "dashboard".to_string(),
-            Command::System(_) => "system".to_string(),
-            Command::Config(_) => "config".to_string(),
-            Command::Daemon(_) => "daemon".to_string(),
-            Command::Runtime(_) => "runtime".to_string(),
-            Command::Coordinator(_) => "coordinator".to_string(),
-            Command::Self_(_) => "self".to_string(),
-        }
-    }
-}
+// Command name method moved to config/preferences.rs to avoid duplication
 
 #[cfg(test)]
 mod tests {

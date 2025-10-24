@@ -16,6 +16,7 @@ pub mod node_inspector;
 pub mod system_monitor;
 pub mod log_viewer;
 pub mod help;
+pub mod layout;
 
 pub use dashboard::DashboardView;
 pub use dataflow_manager::DataflowManagerView;
@@ -23,6 +24,7 @@ pub use node_inspector::NodeInspectorView;
 pub use system_monitor::SystemMonitorView;
 pub use log_viewer::LogViewerView;
 pub use help::HelpView;
+pub use layout::{LayoutManager, LayoutConfig};
 
 /// Core trait that all TUI views must implement
 pub trait View {
@@ -143,6 +145,9 @@ pub struct BaseView {
     pub focused: bool,
     pub last_update: Option<std::time::Instant>,
     pub auto_refresh_interval: Option<Duration>,
+    pub component_registry: crate::tui::ComponentRegistry,
+    pub event_dispatcher: crate::tui::EventDispatcher,
+    pub layout_manager: LayoutManager,
 }
 
 impl BaseView {
@@ -152,18 +157,21 @@ impl BaseView {
             focused: false,
             last_update: None,
             auto_refresh_interval: None,
+            component_registry: crate::tui::ComponentRegistry::new(),
+            event_dispatcher: crate::tui::EventDispatcher::new(),
+            layout_manager: LayoutManager::new(),
         }
     }
-    
+
     pub fn with_auto_refresh(mut self, interval: Duration) -> Self {
         self.auto_refresh_interval = Some(interval);
         self
     }
-    
+
     pub fn set_focused(&mut self, focused: bool) {
         self.focused = focused;
     }
-    
+
     pub fn needs_refresh(&self) -> bool {
         if let Some(interval) = self.auto_refresh_interval {
             if let Some(last_update) = self.last_update {
@@ -175,9 +183,57 @@ impl BaseView {
             false
         }
     }
-    
+
     pub fn mark_updated(&mut self) {
         self.last_update = Some(std::time::Instant::now());
+    }
+
+    /// Register a component with this view
+    pub fn add_component(&mut self, id: crate::tui::ComponentId, component: Box<dyn crate::tui::Component>) {
+        self.component_registry.register(id, component);
+    }
+
+    /// Set which component has focus
+    pub fn set_component_focus(&mut self, component_id: Option<crate::tui::ComponentId>) {
+        self.event_dispatcher.set_focus(component_id);
+    }
+
+    /// Get currently focused component ID
+    pub fn focused_component(&self) -> Option<&crate::tui::ComponentId> {
+        self.event_dispatcher.get_focused()
+    }
+
+    /// Set the layout configuration
+    pub fn set_layout(&mut self, config: LayoutConfig) {
+        self.layout_manager.set_layout(config);
+    }
+
+    /// Render all components according to the layout
+    pub fn render_components(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        theme: &crate::tui::ThemeConfig,
+        app_state: &AppState,
+    ) {
+        let layout_areas = self.layout_manager.calculate_layout(area);
+
+        for (component_id, component_area) in layout_areas {
+            if let Some(component) = self.component_registry.get(&component_id) {
+                component.render(frame, component_area, theme, app_state);
+            }
+        }
+    }
+
+    /// Update all components
+    pub async fn update_components(&mut self, app_state: &AppState) -> Result<()> {
+        for component_id in self.component_registry.component_ids() {
+            // Note: We can't get mutable reference to components from registry
+            // This will be addressed when we implement proper component updates
+            // For now, components will update themselves when needed
+            let _ = component_id;
+        }
+        Ok(())
     }
 }
 

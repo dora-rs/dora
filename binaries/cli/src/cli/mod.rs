@@ -11,10 +11,10 @@ pub use commands::*;
 
 /// Dora CLI - Hybrid command-line interface for dataflow runtime
 #[derive(Debug, Parser)]
-#[clap(name = "dora", about = "Dora dataflow runtime", version, disable_help_subcommand = true)]
+#[clap(name = "dora", about = "Dora dataflow runtime", version, arg_required_else_help = true, disable_help_subcommand = true)]
 pub struct Cli {
     #[clap(subcommand)]
-    pub command: Command,
+    pub command: Option<Command>,
     
     /// Force interface mode
     #[clap(long, global = true, value_enum)]
@@ -38,7 +38,7 @@ pub struct Cli {
 }
 
 /// Three-tier command structure
-#[derive(Debug, Subcommand)]
+#[derive(Debug, Clone, Subcommand)]
 pub enum Command {
     // Tier 1: Core Docker-like commands (Basic operations)
     /// List running dataflows and their status
@@ -117,7 +117,7 @@ pub enum Command {
 }
 
 /// UI mode selection
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, ValueEnum, Serialize, Deserialize)]
 pub enum UiMode {
     /// Smart decisions based on context
     Auto,

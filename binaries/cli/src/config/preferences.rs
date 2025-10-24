@@ -706,7 +706,7 @@ impl Command {
             Command::Runtime(_) => "runtime",
             Command::Coordinator(_) => "coordinator",
             Command::Self_(_) => "self",
-            Command::Preferences(_) => "preferences",
+            Command::Help(_) => "help",
         }
     }
 }

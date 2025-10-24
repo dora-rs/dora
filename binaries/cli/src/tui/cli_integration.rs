@@ -37,7 +37,7 @@ impl CliContext {
     
     pub fn from_cli(cli: &Cli) -> Self {
         let mut context = Self::new();
-        context.original_command = Some(cli.command.clone());
+        context.original_command = cli.command.clone();
         context
     }
     

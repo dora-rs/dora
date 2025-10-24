@@ -3,6 +3,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use clap::Parser;
+
 use crate::{
     cli::{
         Command, Cli,
@@ -43,6 +45,28 @@ pub enum StateUpdate {
     SystemMetricsUpdated,
     ConfigurationChanged,
     RefreshRequired,
+}
+
+/// Result of executing a command in command mode
+#[derive(Debug, Clone)]
+pub enum CommandModeExecutionResult {
+    Success {
+        message: String,
+        view_actions: Vec<CommandModeViewAction>,
+        state_updates: Vec<StateUpdate>,
+    },
+    Error(String),
+    Exit,
+}
+
+/// View actions triggered by command mode execution
+#[derive(Debug, Clone)]
+pub enum CommandModeViewAction {
+    SwitchView(ViewType),
+    RefreshCurrentView,
+    ShowMessage { message: String, level: StatusLevel },
+    UpdateDataflows,
+    UpdateNodes,
 }
 
 /// Manages state synchronization between CLI and TUI
@@ -97,9 +121,10 @@ impl TuiCliExecutor {
         
         // Add to history
         self.command_history.push(command_str.to_string());
-        
+
         // Execute command with TUI context
-        let result = self.execute_parsed_command(&cli.command, app_state).await?;
+        let command = cli.command.ok_or("No command provided")?;
+        let result = self.execute_parsed_command(&command, app_state).await?;
         
         // Synchronize state if needed
         if matches!(result, CommandResult::StateUpdate(_)) {
@@ -319,7 +344,7 @@ impl TuiCliExecutor {
         cmd: &InspectCommand,
         app_state: &mut AppState,
     ) -> crate::tui::Result<CommandResult> {
-        let resource = cmd.resource.as_deref().unwrap_or("system");
+        let resource = cmd.target.as_deref().unwrap_or("system");
         
         // Refresh relevant state
         self.state_synchronizer.refresh_node_state(resource, app_state).await?;
@@ -442,6 +467,37 @@ impl TuiCliExecutor {
     pub fn get_command_history(&self) -> &[String] {
         &self.command_history
     }
+
+    /// Execute a command in command mode and return structured result
+    pub async fn execute_command_mode(
+        &mut self,
+        command_str: &str,
+        app_state: &mut AppState,
+    ) -> crate::tui::Result<CommandModeExecutionResult> {
+        // Parse and execute command
+        let result = self.execute_command(command_str, app_state).await?;
+
+        // Convert CommandResult to CommandModeExecutionResult
+        match result {
+            CommandResult::Success(msg) => Ok(CommandModeExecutionResult::Success {
+                message: msg,
+                view_actions: vec![],
+                state_updates: vec![],
+            }),
+            CommandResult::ViewSwitch(view_type) => Ok(CommandModeExecutionResult::Success {
+                message: format!("Switched to {} view", format!("{:?}", view_type)),
+                view_actions: vec![CommandModeViewAction::SwitchView(view_type)],
+                state_updates: vec![],
+            }),
+            CommandResult::Exit => Ok(CommandModeExecutionResult::Exit),
+            CommandResult::Error(err) => Ok(CommandModeExecutionResult::Error(err)),
+            CommandResult::StateUpdate(update) => Ok(CommandModeExecutionResult::Success {
+                message: "State updated".to_string(),
+                view_actions: vec![CommandModeViewAction::RefreshCurrentView],
+                state_updates: vec![update],
+            }),
+        }
+    }
 }
 
 impl StateSynchronizer {
@@ -507,7 +563,7 @@ impl StateSynchronizer {
         app_state.system_metrics.memory_usage = 60.0;
         app_state.system_metrics.network_io = (1024, 512);
         app_state.system_metrics.last_update = Some(Instant::now());
-        
+
         Ok(())
     }
 }

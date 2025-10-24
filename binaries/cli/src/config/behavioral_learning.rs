@@ -44,23 +44,26 @@ pub struct PatternAnalyzer {
 }
 
 /// Trait for detecting different types of patterns
-pub trait PatternDetector: Send + Sync {
+pub trait PatternDetector: Send + Sync + std::fmt::Debug {
     fn detect_patterns(&self, choices: &[InterfaceChoice]) -> HashMap<String, ActionPattern>;
     fn pattern_type(&self) -> PatternType;
 }
 
 /// Detects command sequence patterns
+#[derive(Debug)]
 pub struct CommandSequenceDetector {
     min_sequence_length: usize,
     max_sequence_length: usize,
 }
 
 /// Detects time-based usage patterns
+#[derive(Debug)]
 pub struct TimeBasedPatternDetector {
     time_window_hours: u8,
 }
 
 /// Detects context-based choice patterns
+#[derive(Debug)]
 pub struct ContextPatternDetector;
 
 impl BehavioralLearningEngine {

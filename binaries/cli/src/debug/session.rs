@@ -35,7 +35,7 @@ impl DebugSessionManager {
             session_id,
             start_time,
             debug_target,
-            mode: cmd.mode.clone(),
+            mode: cmd.mode.clone().unwrap_or_default(),
             focus: cmd.focus.clone(),
             configuration: DebugConfiguration {
                 auto_detect: cmd.auto_detect,

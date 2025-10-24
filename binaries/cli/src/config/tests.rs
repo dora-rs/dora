@@ -1,15 +1,14 @@
 #[cfg(test)]
 mod preference_tests {
-    use super::preferences::*;
-    use super::behavioral_learning::*;
-    use super::context_preferences::*;
+    use crate::config::preferences::*;
+    use crate::config::behavioral_learning::*;
+    use crate::config::context_preferences::*;
     use crate::cli::{Command, UiMode};
     use crate::cli::context::{ExecutionContext, ExecutionEnvironment, TerminalCapabilities};
     use std::collections::HashMap;
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
-    use tempfile::TempDir;
 
     /// Create a test execution context
     fn create_test_context() -> ExecutionContext {
@@ -43,6 +42,7 @@ mod preference_tests {
                 is_ci: false,
                 is_automation: false,
             },
+            automation_result: None,
         }
     }
 
