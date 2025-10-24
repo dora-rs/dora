@@ -178,6 +178,101 @@ impl Message {
             (quote! {}, quote! {})
         };
 
+        let msg_converter = match struct_raw_name.to_string().as_str() {
+            "action_msgs__GoalStatus" => quote! {
+                impl From<crate::ros2_client::action_msgs::GoalStatus> for ffi::action_msgs__GoalStatus {
+                    fn from(status: crate::ros2_client::action_msgs::GoalStatus) -> Self {
+                        use crate::ros2_client::action_msgs::GoalStatus;
+                        let GoalStatus {goal_info, status} = status;
+                        Self { goal_info: goal_info.into(), status: status as i8 }
+                    }
+                }
+            },
+            "action_msgs__GoalInfo" => quote! {
+                impl From<crate::ros2_client::action_msgs::GoalInfo> for ffi::action_msgs__GoalInfo {
+                    fn from(info: crate::ros2_client::action_msgs::GoalInfo) -> Self {
+                        use crate::ros2_client::action_msgs::GoalInfo;
+                        let GoalInfo {goal_id, stamp} = info;
+                        Self { goal_id: goal_id.into(), stamp: stamp.into()}
+                    }
+                }
+            },
+            "unique_identifier_msgs__UUID" => quote! {
+                impl From<crate::ros2_client::unique_identifier_msgs::UUID> for ffi::unique_identifier_msgs__UUID {
+                    fn from(uuid: crate::ros2_client::unique_identifier_msgs::UUID) -> Self {
+                        use crate::ros2_client::unique_identifier_msgs::UUID;
+                        let UUID {uuid} = uuid;
+                        let mut buf = [0u8; 16];
+                        uuid.as_simple().encode_lower(&mut buf);
+                        Self { uuid: buf }
+                    }
+                }
+            },
+            "builtin_interfaces__Time" => quote! {
+                impl From<crate::ros2_client::builtin_interfaces::Time> for ffi::builtin_interfaces__Time {
+                    fn from(time: crate::ros2_client::builtin_interfaces::Time) -> Self {
+                        let t = time.to_nanos();
+                        let quot = t / 1_000_000_000;
+                        let rem = t % 1_000_000_000;
+
+                        // https://doc.rust-lang.org/reference/expressions/operator-expr.html#arithmetic-and-logical-binary-operators
+                        // "Rust uses a remainder defined with truncating division.
+                        // Given remainder = dividend % divisor,
+                        // the remainder will have the same sign as the dividend."
+
+                        if rem >= 0 {
+                            // positive time, no surprise here
+                            // OR, negative time, but a whole number of seconds, fractional part is zero
+                            Self {
+                                // Saturate seconds to i32. This is different from C++ implementation
+                                // in rclcpp, which just uses
+                                // `ret.sec = static_cast<std::int32_t>(result.quot)`.
+                                sec: if quot > (i32::MAX as i64) {
+                                    tracing::warn!("rcl_interfaces::Time conversion overflow");
+                                    i32::MAX
+                                } else if quot < (i32::MIN as i64) {
+                                    tracing::warn!("rcl_interfaces::Time conversion underflow");
+                                    i32::MIN
+                                } else {
+                                    quot as i32
+                                },
+                                nanosec: rem as u32,
+                            }
+                        } else {
+                            // Now `t` is negative AND `rem` is non-zero.
+                            // We do some non-obvious arithmetic:
+
+                            // saturate whole seconds
+                            let quot_sat = if quot >= (i32::MIN as i64) {
+                                quot as i32
+                            } else {
+                                tracing::warn!("rcl_interfaces::Time conversion underflow");
+                                i32::MIN
+                            };
+
+                            // Now, `rem` is between -999_999_999 and -1, inclusive.
+                            // Case rem = 0 is included in the positive branch.
+                            //
+                            // Adding 1_000_000_000 will make it positive, so cast to u32 is ok.
+                            //
+                            // It is also the right thing to do, because
+                            // * 0.0 sec = 0 sec and 0 nanosec
+                            // * -0.000_000_001 sec = -1 sec and 999_999_999 nanosec
+                            // * ...
+                            // * -0.99999999999 sec = -1 sec and 000_000_001 nanosec
+                            // * -1.0           sec = -1 sec and 0 nanosec
+                            // * -1.00000000001 sec = -2 sec and 999_999_999 nanosec
+                            Self {
+                                sec: quot_sat - 1, // note -1
+                                nanosec: (1_000_000_000 + rem) as u32,
+                            }
+                        }
+                    }
+                }
+            },
+            _ => quote! {},
+        };
+
         let def = if self.members.is_empty() {
             quote! {
                 #[allow(non_camel_case_types)]
@@ -220,6 +315,8 @@ impl Message {
                 #(#constants_def_inner)*
 
             }
+
+            #msg_converter
 
             impl crate::_core::InternalDefault for ffi::#struct_raw_name {
                 fn _default() -> Self {
