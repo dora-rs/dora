@@ -208,7 +208,7 @@ impl Message {
                     }
                 }
             },
-            "builtin_interfaces__Time" => quote!{
+            "builtin_interfaces__Time" => quote! {
                 impl From<crate::ros2_client::builtin_interfaces::Time> for ffi::builtin_interfaces__Time {
                     fn from(time: crate::ros2_client::builtin_interfaces::Time) -> Self {
                         let t = time.to_nanos();
@@ -270,7 +270,7 @@ impl Message {
                     }
                 }
             },
-            _ => quote!{}
+            _ => quote! {},
         };
 
         let def = if self.members.is_empty() {
