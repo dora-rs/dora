@@ -21,6 +21,7 @@ pub mod performance_analyzer;
 pub mod performance_analyzer_types;
 pub mod system_monitor;
 pub mod log_viewer;
+pub mod log_viewer_types;
 pub mod help;
 pub mod layout;
 
@@ -35,6 +36,7 @@ pub use performance_analyzer::PerformanceAnalyzerView;
 pub use performance_analyzer_types::*;
 pub use system_monitor::SystemMonitorView;
 pub use log_viewer::LogViewerView;
+pub use log_viewer_types::*;
 pub use help::HelpView;
 pub use layout::{LayoutManager, LayoutConfig};
 
