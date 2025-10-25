@@ -27,6 +27,8 @@ pub mod debug_session_types;
 pub mod settings;
 pub mod settings_types;
 pub mod help;
+pub mod help_browser;
+pub mod help_browser_types;
 pub mod layout;
 
 pub use dashboard::DashboardView;
@@ -46,6 +48,8 @@ pub use debug_session_types::*;
 pub use settings::SettingsView;
 pub use settings_types::*;
 pub use help::HelpView;
+pub use help_browser::HelpBrowserView;
+pub use help_browser_types::*;
 pub use layout::{LayoutManager, LayoutConfig};
 
 /// Core trait that all TUI views must implement
