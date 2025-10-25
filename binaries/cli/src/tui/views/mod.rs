@@ -24,6 +24,8 @@ pub mod log_viewer;
 pub mod log_viewer_types;
 pub mod debug_session;
 pub mod debug_session_types;
+pub mod settings;
+pub mod settings_types;
 pub mod help;
 pub mod layout;
 
@@ -41,6 +43,8 @@ pub use log_viewer::LogViewerView;
 pub use log_viewer_types::*;
 pub use debug_session::DebugSessionView;
 pub use debug_session_types::*;
+pub use settings::SettingsView;
+pub use settings_types::*;
 pub use help::HelpView;
 pub use layout::{LayoutManager, LayoutConfig};
 
