@@ -33,6 +33,7 @@ use super::{
 pub enum ViewType {
     Dashboard,
     DataflowManager,
+    DataflowExplorer,
     NodeInspector { node_id: String },
     SystemMonitor,
     LogViewer { target: String },
@@ -309,6 +310,10 @@ impl DoraApp {
                 let mut view = DataflowManagerView::new(&self.theme);
                 view.render(f, area, &self.state);
             },
+            ViewType::DataflowExplorer => {
+                let mut view = DataflowExplorerView::new(&self.theme);
+                view.render(f, area, &self.state);
+            },
             ViewType::NodeInspector { node_id } => {
                 let mut view = NodeInspectorView::new(node_id, &self.theme);
                 view.render(f, area, &self.state);
@@ -438,6 +443,7 @@ impl DoraApp {
             KeyCode::Char('3') => self.switch_view(ViewType::SystemMonitor),
             KeyCode::Char('4') => self.switch_view(ViewType::LogViewer { target: "system".to_string() }),
             KeyCode::Char('5') => self.switch_view(ViewType::SettingsManager),
+            KeyCode::Char('e') => self.switch_view(ViewType::DataflowExplorer),
             _ => {}
         }
         
@@ -527,7 +533,7 @@ impl DoraApp {
     async fn refresh_current_view_data(&mut self) -> Result<()> {
         // Refresh data based on current view
         match &self.current_view {
-            ViewType::Dashboard | ViewType::DataflowManager => {
+            ViewType::Dashboard | ViewType::DataflowManager | ViewType::DataflowExplorer => {
                 self.refresh_dataflow_list().await?;
             },
             ViewType::SystemMonitor => {
@@ -565,6 +571,7 @@ impl DoraApp {
         match &self.current_view {
             ViewType::Dashboard => "Dashboard".to_string(),
             ViewType::DataflowManager => "Dataflow Manager".to_string(),
+            ViewType::DataflowExplorer => "Dataflow Explorer".to_string(),
             ViewType::NodeInspector { node_id } => format!("Node Inspector: {}", node_id),
             ViewType::SystemMonitor => "System Monitor".to_string(),
             ViewType::LogViewer { target } => format!("Logs: {}", target),
