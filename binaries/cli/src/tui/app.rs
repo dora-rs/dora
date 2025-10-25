@@ -315,7 +315,7 @@ impl DoraApp {
                 view.render(f, area, &self.state);
             },
             ViewType::NodeInspector { node_id } => {
-                let mut view = NodeInspectorView::new(node_id, &self.theme);
+                let mut view = NodeInspectorView::new(&self.theme, node_id.clone());
                 view.render(f, area, &self.state);
             },
             ViewType::SystemMonitor => {
