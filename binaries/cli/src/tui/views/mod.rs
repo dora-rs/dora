@@ -31,6 +31,8 @@ pub mod help_browser;
 pub mod help_browser_types;
 pub mod data_viz;
 pub mod data_viz_types;
+pub mod analysis_tools;
+pub mod analysis_tools_types;
 pub mod layout;
 
 pub use dashboard::DashboardView;
@@ -54,6 +56,8 @@ pub use help_browser::HelpBrowserView;
 pub use help_browser_types::*;
 pub use data_viz::DataVizView;
 pub use data_viz_types::*;
+pub use analysis_tools::AnalysisToolsView;
+pub use analysis_tools_types::*;
 pub use layout::{LayoutManager, LayoutConfig};
 
 /// Core trait that all TUI views must implement
