@@ -33,6 +33,8 @@ pub mod data_viz;
 pub mod data_viz_types;
 pub mod analysis_tools;
 pub mod analysis_tools_types;
+pub mod collab_features;
+pub mod collab_features_types;
 pub mod layout;
 
 pub use dashboard::DashboardView;
@@ -58,6 +60,8 @@ pub use data_viz::DataVizView;
 pub use data_viz_types::*;
 pub use analysis_tools::AnalysisToolsView;
 pub use analysis_tools_types::*;
+pub use collab_features::CollabFeaturesView;
+pub use collab_features_types::*;
 pub use layout::{LayoutManager, LayoutConfig};
 
 /// Core trait that all TUI views must implement
