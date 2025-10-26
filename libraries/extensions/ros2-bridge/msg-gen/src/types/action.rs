@@ -221,13 +221,20 @@ impl Action {
         let send_goal = format_ident!("send_goal__{package_name}__{}", self.name);
         let cxx_send_goal = "send_goal".to_string();
 
-        let matches = format_ident!("matches__{package_name}__{}", self.name);
-        let cxx_matches = format_ident!("matches");
+        let response_matches = format_ident!("matches__{package_name}__{}_response", self.name);
+        let cxx_response_matches = format_ident!("matches_response");
+        let feedback_matches = format_ident!("matches__{package_name}__{}_feedback", self.name);
+        let cxx_feedback_matches = format_ident!("matches_feedback");
+        let status_matches = format_ident!("matches__{package_name}__{}_status", self.name);
+        let cxx_status_matches = format_ident!("matches_status");
+
         let downcast = format_ident!("action_downcast__{package_name}__{}", self.name);
         let cxx_downcast = format_ident!("downcast");
 
         let goal_type_raw = format_ident!("{package_name}__{}_Goal", self.name);
         let result_type_raw = format_ident!("{package_name}__{}_Result", self.name);
+        let feedback_type_raw = format_ident!("{package_name}__{}_Feedback", self.name);
+        let status_type_raw = format_ident!("action_msgs__GoalStatus");
 
         let result_type_raw_str = result_type_raw.to_string();
 
@@ -244,8 +251,16 @@ impl Action {
             fn #send_goal(self: &mut #client_name, request: #goal_type_raw) -> Result<()>;
 
             #[namespace = #package_name]
-            #[cxx_name = #cxx_matches]
-            fn #matches(self: &mut #client_name, event: &CombinedEvent) -> bool;
+            #[cxx_name = #cxx_response_matches]
+            fn #response_matches(self: &mut #client_name, event: &CombinedEvent) -> bool;
+
+            #[namespace = #package_name]
+            #[cxx_name = #cxx_feedback_matches]
+            fn #feedback_matches(self: &mut #client_name, event: &CombinedEvent) -> bool;
+
+            #[namespace = #package_name]
+            #[cxx_name = #cxx_status_matches]
+            fn #status_matches(self: &mut #client_name, event: &CombinedEvent) -> bool;
 
             #[namespace = #package_name]
             #[cxx_name = #cxx_downcast]
@@ -265,14 +280,26 @@ impl Action {
                         qos.into(),
                     ).map_err(|e| eyre::eyre!("{e:?}"))?;
                     let (response_tx, response_rx) = flume::bounded(1);
-                    let stream = response_rx.into_stream().map(|v: eyre::Result<_>| Box::new(v) as Box<dyn std::any::Any + 'static>);
-                    let id = events.events.merge(Box::pin(stream));
+                    let response_stream = response_rx.into_stream().map(|v: eyre::Result<_>| Box::new(v) as Box<dyn std::any::Any + 'static>);
+                    let response_id = events.events.merge(Box::pin(response_stream));
+
+                    let (feedback_tx, feedback_rx) = flume::bounded(1);
+                    let feedback_stream = feedback_rx.into_stream().map(|v: eyre::Result<_>| Box::new(v) as Box<dyn std::any::Any + 'static>);
+                    let feedback_id = events.events.merge(Box::pin(feedback_stream));
+
+                    let (status_tx, status_rx) = flume::bounded(1);
+                    let status_stream = status_rx.into_stream().map(|v: eyre::Result<_>| Box::new(v) as Box<dyn std::any::Any + 'static>);
+                    let status_id = events.events.merge(Box::pin(status_stream));
 
                     Ok(Box::new(#client_name {
                         client: std::sync::Arc::new(client),
                         response_tx: std::sync::Arc::new(response_tx),
+                        feedback_tx: std::sync::Arc::new(feedback_tx),
+                        status_tx: std::sync::Arc::new(status_tx),
                         executor: self.executor.clone(),
-                        stream_id: id,
+                        response_id: response_id,
+                        feedback_id: feedback_id,
+                        status_id: status_id,
                     }))
                 }
             }
@@ -281,8 +308,12 @@ impl Action {
             pub struct #client_name {
                 client: std::sync::Arc<ros2_client::action::ActionClient< #package :: action :: #self_name>>,
                 response_tx: std::sync::Arc<flume::Sender<eyre::Result<ffi::#result_type_raw>>>,
+                feedback_tx: std::sync::Arc<flume::Sender<eyre::Result<ffi::#feedback_type_raw>>>,
+                status_tx: std::sync::Arc<flume::Sender<eyre::Result<ffi::#status_type_raw>>>,
                 executor: std::sync::Arc<futures::executor::ThreadPool>,
-                stream_id: u32,
+                response_id: u32,
+                feedback_id: u32,
+                status_id: u32,
             }
 
             impl #client_name {
@@ -314,12 +345,20 @@ impl Action {
 
                     let feedback_handle = {
                         let client_ref = Arc::clone(&client_arc);
+                        let feedback_tx = self.feedback_tx.clone();
                         async move {
                             let feedback_stream = client_ref.feedback_stream(goal_id);
                             feedback_stream.for_each(|feedback| async {
                                 match feedback {
-                                    Ok(feedback) => println!("Received feedback: {:?}", feedback),
-                                    Err(e) => eprintln!("Error while receive feedback: {:?}", e),
+                                    Ok(feedback) => {
+                                        let feedback = Ok(feedback);
+                                        if feedback_tx.send_async(feedback).await.is_err() {
+                                            tracing::warn!("failed to send action feedback");
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::error!("Failed to receive feedback for request {goal_id:?}: {:?}", e);
+                                    }
                                 }
                             }).await;
                         }
@@ -330,12 +369,20 @@ impl Action {
 
                     let status_handle = {
                         let client_ref = Arc::clone(&client_arc);
+                        let status_tx = self.status_tx.clone();
                         async move {
                             let status_stream = client_ref.status_stream(goal_id);
                             status_stream.for_each(|status| async {
                                 match status {
-                                    Ok(status) => println!("Status update: {:?}", status),
-                                    Err(e) => eprintln!("Error receiving status update: {:?}", e),
+                                    Ok(status) => {
+                                        let status = Ok(status.into());
+                                        if status_tx.send_async(status).await.is_err() {
+                                            tracing::warn!("failed to send action status");
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::error!("Failed to receive status for request {goal_id:?}: {:?}", e);
+                                    }
                                 }
                             }).await;
                         }
@@ -366,9 +413,25 @@ impl Action {
                 }
 
                 #[allow(non_snake_case)]
-                fn #matches(&self, event: &crate::ffi::CombinedEvent) -> bool {
+                fn #response_matches(&self, event: &crate::ffi::CombinedEvent) -> bool {
                     match &event.event.as_ref().0 {
-                        Some(crate::MergedEvent::External(event)) if event.id == self.stream_id => true,
+                        Some(crate::MergedEvent::External(event)) if event.id == self.response_id => true,
+                        _ => false
+                    }
+                }
+
+                #[allow(non_snake_case)]
+                fn #feedback_matches(&self, event: &crate::ffi::CombinedEvent) -> bool {
+                    match &event.event.as_ref().0 {
+                        Some(crate::MergedEvent::External(event)) if event.id == self.feedback_id => true,
+                        _ => false
+                    }
+                }
+
+                #[allow(non_snake_case)]
+                fn #status_matches(&self, event: &crate::ffi::CombinedEvent) -> bool {
+                    match &event.event.as_ref().0 {
+                        Some(crate::MergedEvent::External(event)) if event.id == self.status_id => true,
                         _ => false
                     }
                 }
@@ -378,7 +441,7 @@ impl Action {
                     use eyre::WrapErr;
 
                     match (*event.event).0 {
-                        Some(crate::MergedEvent::External(event)) if event.id == self.stream_id => {
+                        Some(crate::MergedEvent::External(event)) if event.id == self.response_id => {
                             let result = event.event.downcast::<eyre::Result<ffi::#result_type_raw>>()
                                 .map_err(|_| eyre::eyre!("downcast to {} failed", #result_type_raw_str))?;
 
