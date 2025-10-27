@@ -185,18 +185,6 @@ impl Daemon {
         uv: bool,
         log_destination: LogDestination,
     ) -> eyre::Result<DataflowResult> {
-        // Spawn local listener for dynamic nodes
-        let (events_tx, events_rx) = flume::bounded(10);
-        let _listen_port = local_listener::spawn_listener_loop(
-            (LOCALHOST, DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT).into(),
-            events_tx,
-        )
-        .await?;
-        let dynamic_node_events = events_rx.into_stream().map(|e| Timestamped {
-            inner: Event::DynamicNode(e.inner),
-            timestamp: e.timestamp,
-        });
-
         let working_dir = dataflow_path
             .canonicalize()
             .context("failed to canonicalize dataflow path")?
@@ -216,6 +204,24 @@ impl Daemon {
 
         descriptor.check(&working_dir)?;
         let nodes = descriptor.resolve_aliases_and_set_defaults()?;
+
+        let (events_tx, events_rx) = flume::bounded(10);
+        if nodes
+            .iter()
+            .find(|(_n, resolved_nodes)| resolved_nodes.kind.dynamic())
+            .is_some()
+        {
+            // Spawn local listener for dynamic nodes
+            let _listen_port = local_listener::spawn_listener_loop(
+                (LOCALHOST, DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT).into(),
+                events_tx,
+            )
+            .await?;
+        }
+        let dynamic_node_events = events_rx.into_stream().map(|e| Timestamped {
+            inner: Event::DynamicNode(e.inner),
+            timestamp: e.timestamp,
+        });
 
         let dataflow_id = Uuid::new_v7(Timestamp::now(NoContext));
         let spawn_command = SpawnDataflowNodes {
