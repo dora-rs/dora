@@ -1,4 +1,3 @@
-use dora_tracing::set_up_tracing;
 use eyre::{Context, bail};
 use std::{
     env::consts::{DLL_PREFIX, DLL_SUFFIX, EXE_SUFFIX},
@@ -6,8 +5,6 @@ use std::{
 };
 
 fn main() -> eyre::Result<()> {
-    set_up_tracing("c++-dataflow-runner").wrap_err("failed to set up tracing subscriber")?;
-
     if cfg!(windows) {
         tracing::error!(
             "The c++ example does not work on Windows currently because of a linker error"
