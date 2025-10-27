@@ -2,8 +2,7 @@ use dora_tracing::set_up_tracing;
 use eyre::{Context, bail};
 use std::path::Path;
 
-#[tokio::main]
-async fn main() -> eyre::Result<()> {
+fn main() -> eyre::Result<()> {
     set_up_tracing("cmake-dataflow-runner").wrap_err("failed to set up tracing subscriber")?;
 
     if cfg!(windows) {
@@ -17,40 +16,40 @@ async fn main() -> eyre::Result<()> {
     std::env::set_current_dir(root.join(file!()).parent().unwrap())
         .wrap_err("failed to set working dir")?;
 
-    tokio::fs::create_dir_all("build").await?;
-    let mut cmd = tokio::process::Command::new("cmake");
+    std::fs::create_dir_all("build")?;
+    let mut cmd = std::process::Command::new("cmake");
     cmd.arg(format!("-DDORA_ROOT_DIR={}", root.display()));
     cmd.arg("-B").arg("build");
     cmd.arg(".");
-    if !cmd.status().await?.success() {
+    if !cmd.status()?.success() {
         bail!("failed to generating make file");
     }
 
-    let mut cmd = tokio::process::Command::new("cmake");
+    let mut cmd = std::process::Command::new("cmake");
     cmd.arg("--build").arg("build");
-    if !cmd.status().await?.success() {
+    if !cmd.status()?.success() {
         bail!("failed to build a cmake-generated project binary tree");
     }
 
-    let mut cmd = tokio::process::Command::new("cmake");
+    let mut cmd = std::process::Command::new("cmake");
     cmd.arg("--install").arg("build");
-    if !cmd.status().await?.success() {
+    if !cmd.status()?.success() {
         bail!("failed to build a cmake-generated project binary tree");
     }
 
-    build_package("dora-runtime").await?;
+    build_package("dora-runtime")?;
 
     dora_cli::run("dataflow.yml".to_string(), false)?;
 
     Ok(())
 }
 
-async fn build_package(package: &str) -> eyre::Result<()> {
+fn build_package(package: &str) -> eyre::Result<()> {
     let cargo = std::env::var("CARGO").unwrap();
-    let mut cmd = tokio::process::Command::new(&cargo);
+    let mut cmd = std::process::Command::new(&cargo);
     cmd.arg("build");
     cmd.arg("--package").arg(package);
-    if !cmd.status().await?.success() {
+    if !cmd.status()?.success() {
         bail!("failed to build {package}");
     }
     Ok(())
