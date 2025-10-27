@@ -596,6 +596,97 @@ Advanced log analysis with intelligent filtering.
 - Performance correlation
 - Export capabilities
 
+### Advanced Context Awareness View
+
+Interactive visualization and exploration of the context awareness system (Phase 1 complete).
+
+**Sections:**
+
+1. **Execution Context**
+   - Environment detection (TTY, piped, scripted)
+   - CI/CD environment detection (GitHub Actions, GitLab CI, Jenkins, etc.)
+   - Terminal capabilities (color levels, unicode, mouse support)
+   - Terminal size and type
+
+2. **Context Preferences**
+   - Adaptation rules (time-based, environment-based, complexity-based, usage pattern)
+   - Rule priorities and trigger counts
+   - Active/inactive rule status
+   - Condition and action definitions
+
+3. **Behavioral Learning**
+   - Command sequence patterns
+   - Time preference patterns
+   - Interface choice patterns
+   - Workflow patterns
+   - Confidence scores and sample sizes
+
+4. **Preference Resolution**
+   - 6-level hierarchy (Temporary Override → System Default)
+   - Active preferences at each level
+   - Priority ordering visualization
+   - Preference source tracking
+
+**Navigation:**
+- `Tab/Shift+Tab`: Switch sections
+- `↑↓, j/k`: Navigate items
+- `r`: Refresh data
+- `q`: Back to previous view
+
+**Phase 2 Plans:**
+- Integration with actual ExecutionContext from cli/context.rs
+- Real-time ContextAwarePreferences from config/context_preferences.rs
+- Live behavioral learning updates
+- Preference editing and management
+
+### Performance Optimization Suite
+
+Comprehensive performance analysis, bottleneck detection, and optimization recommendations (Phase 1 complete).
+
+**Sections:**
+
+1. **Performance Metrics**
+   - Message throughput and latency
+   - CPU and memory usage
+   - Network and disk I/O
+   - Error rates
+   - Status indicators (Healthy, Warning, Critical)
+   - Min/avg/max value ranges
+
+2. **Bottleneck Detection**
+   - Location-aware detection (node, link, system, network)
+   - Bottleneck types (CPU-bound, memory-bound, I/O-bound, network-bound)
+   - Severity levels (Low, Medium, High, Critical)
+   - Impact analysis
+   - Affected components tracking
+
+3. **Optimization Suggestions**
+   - AI-powered recommendations
+   - Categories (Architecture, Configuration, Resource Allocation, Caching, Parallelization)
+   - Priority levels (Low to Critical)
+   - Expected impact estimates (Minimal to Major percentage improvements)
+   - Effort estimates (Trivial <1h to Very High >40h)
+   - Step-by-step implementation guides
+
+4. **Resource Analysis**
+   - Per-component CPU, memory, network, disk usage
+   - Thread count tracking
+   - Visual resource bars
+   - Real-time metrics updates
+
+**Navigation:**
+- `Tab/Shift+Tab`: Switch sections
+- `↑↓, j/k`: Navigate items
+- `r`: Refresh metrics
+- `q`: Back to previous view
+
+**Phase 2 Plans:**
+- Real-time performance monitoring integration
+- ML-based bottleneck prediction
+- Automated optimization application
+- Historical performance tracking
+- Export optimization reports
+
 ---
 
 ## Development Workflows
@@ -974,12 +1065,15 @@ cargo clippy --all --fix
 - ✅ Smart command suggestions
 - ✅ Progressive disclosure pattern
 - ✅ Dashboard with real-time metrics (scaffolding)
-- ✅ Data visualization (5 chart types with mock data)
-- ✅ Analysis tools (4 analysis types with mock data)
-- ✅ Collaborative features (UI scaffolding)
+- ✅ Data visualization (5 chart types with mock data) - Issue #29
+- ✅ Analysis tools (4 analysis types with mock data) - Issue #30
+- ✅ Collaborative features (UI scaffolding) - Issue #34
+- ✅ Advanced context awareness (execution env, preferences, learning) - Issue #35
+- ✅ Performance optimization suite (metrics, bottlenecks, suggestions) - Issue #36
 - ✅ Context-aware interface selection
 - ✅ Behavioral learning system (basic)
 - ✅ Theme support
+- ✅ Phase 4 TUI scaffolding complete (Issues #29-36)
 
 ### Phase 2 (Planned)
 
@@ -998,11 +1092,11 @@ cargo clippy --all --fix
 - 🔄 Real-time synchronization
 
 **Advanced Features:**
-- 🔄 Advanced context awareness (Issue #35)
-- 🔄 Performance optimization suite (Issue #36)
 - 🔄 Plugin system for extensibility
 - 🔄 Custom dashboard layouts
 - 🔄 Export and reporting tools
+- 🔄 Enhanced ML-based optimization
+- 🔄 Distributed system monitoring
 
 ---
 
@@ -1056,7 +1150,7 @@ cargo clippy --all --fix
 
 ---
 
-*This manual corresponds to the current implementation as of the Phase 4 TUI scaffolding work (Issues #29-34). It will be updated as new features are implemented and integrated in Phase 2.*
+*This manual corresponds to the current implementation as of the Phase 4 TUI scaffolding work (Issues #29-36). All Phase 4 issues are complete. Phase 2 will focus on integrating these views with real backend systems.*
 
-**Last Updated**: 2025-01-27
+**Last Updated**: 2025-10-27
 **Maintainers**: Dora Development Team
