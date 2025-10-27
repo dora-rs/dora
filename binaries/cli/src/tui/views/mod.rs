@@ -37,6 +37,8 @@ pub mod collab_features;
 pub mod collab_features_types;
 pub mod context_awareness;
 pub mod context_awareness_types;
+pub mod perf_optimization;
+pub mod perf_optimization_types;
 pub mod layout;
 
 pub use dashboard::DashboardView;
@@ -66,6 +68,8 @@ pub use collab_features::CollabFeaturesView;
 pub use collab_features_types::*;
 pub use context_awareness::ContextAwarenessView;
 pub use context_awareness_types::*;
+pub use perf_optimization::PerfOptimizationView;
+pub use perf_optimization_types::*;
 pub use layout::{LayoutManager, LayoutConfig};
 
 /// Core trait that all TUI views must implement
