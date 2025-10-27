@@ -5,8 +5,7 @@ use std::{
     path::Path,
 };
 
-#[tokio::main]
-async fn main() -> eyre::Result<()> {
+fn main() -> eyre::Result<()> {
     set_up_tracing("c++-dataflow-runner").wrap_err("failed to set up tracing subscriber")?;
 
     if cfg!(windows) {
@@ -21,48 +20,43 @@ async fn main() -> eyre::Result<()> {
     std::env::set_current_dir(root.join(file!()).parent().unwrap())
         .wrap_err("failed to set working dir")?;
 
-    tokio::fs::create_dir_all("build").await?;
+    std::fs::create_dir_all("build")?;
     let build_dir = Path::new("build");
 
-    build_package("dora-node-api-cxx").await?;
+    build_package("dora-node-api-cxx")?;
     let node_cxxbridge = target
         .join("cxxbridge")
         .join("dora-node-api-cxx")
         .join("src");
-    tokio::fs::copy(
+    std::fs::copy(
         node_cxxbridge.join("lib.rs.cc"),
         build_dir.join("node-bridge.cc"),
-    )
-    .await?;
-    tokio::fs::copy(
+    )?;
+    std::fs::copy(
         node_cxxbridge.join("lib.rs.h"),
         build_dir.join("dora-node-api.h"),
-    )
-    .await?;
-    tokio::fs::write(
+    )?;
+    std::fs::write(
         build_dir.join("operator.h"),
         r###"#include "../operator-rust-api/operator.h""###,
-    )
-    .await?;
+    )?;
 
-    build_package("dora-operator-api-cxx").await?;
+    build_package("dora-operator-api-cxx")?;
     let operator_cxxbridge = target
         .join("cxxbridge")
         .join("dora-operator-api-cxx")
         .join("src");
-    tokio::fs::copy(
+    std::fs::copy(
         operator_cxxbridge.join("lib.rs.cc"),
         build_dir.join("operator-bridge.cc"),
-    )
-    .await?;
-    tokio::fs::copy(
+    )?;
+    std::fs::copy(
         operator_cxxbridge.join("lib.rs.h"),
         build_dir.join("dora-operator-api.h"),
-    )
-    .await?;
+    )?;
 
-    build_package("dora-node-api-c").await?;
-    build_package("dora-operator-api-c").await?;
+    build_package("dora-node-api-c")?;
+    build_package("dora-operator-api-c")?;
     build_cxx_node(
         root,
         &[
@@ -71,8 +65,7 @@ async fn main() -> eyre::Result<()> {
         ],
         "node_rust_api",
         &["-l", "dora_node_api_cxx"],
-    )
-    .await?;
+    )?;
     build_cxx_node(
         root,
         &[&dunce::canonicalize(
@@ -80,8 +73,7 @@ async fn main() -> eyre::Result<()> {
         )?],
         "node_c_api",
         &["-l", "dora_node_api_c"],
-    )
-    .await?;
+    )?;
     build_cxx_operator(
         &[
             &dunce::canonicalize(Path::new("operator-rust-api").join("operator.cc"))?,
@@ -94,8 +86,7 @@ async fn main() -> eyre::Result<()> {
             "-L",
             root.join("target").join("debug").to_str().unwrap(),
         ],
-    )
-    .await?;
+    )?;
     build_cxx_operator(
         &[&dunce::canonicalize(
             Path::new("operator-c-api").join("operator.cc"),
@@ -107,34 +98,28 @@ async fn main() -> eyre::Result<()> {
             "-L",
             root.join("target").join("debug").to_str().unwrap(),
         ],
-    )
-    .await?;
+    )?;
 
-    build_package("dora-runtime").await?;
+    build_package("dora-runtime")?;
 
     dora_cli::run("dataflow.yml".to_string(), false)?;
 
     Ok(())
 }
 
-async fn build_package(package: &str) -> eyre::Result<()> {
+fn build_package(package: &str) -> eyre::Result<()> {
     let cargo = std::env::var("CARGO").unwrap();
-    let mut cmd = tokio::process::Command::new(&cargo);
+    let mut cmd = std::process::Command::new(&cargo);
     cmd.arg("build");
     cmd.arg("--package").arg(package);
-    if !cmd.status().await?.success() {
+    if !cmd.status()?.success() {
         bail!("failed to build {package}");
     };
     Ok(())
 }
 
-async fn build_cxx_node(
-    root: &Path,
-    paths: &[&Path],
-    out_name: &str,
-    args: &[&str],
-) -> eyre::Result<()> {
-    let mut clang = tokio::process::Command::new("clang++");
+fn build_cxx_node(root: &Path, paths: &[&Path], out_name: &str, args: &[&str]) -> eyre::Result<()> {
+    let mut clang = std::process::Command::new("clang++");
     clang.args(paths);
     clang.arg("-std=c++17");
     #[cfg(target_os = "linux")]
@@ -196,21 +181,17 @@ async fn build_cxx_node(
         clang.current_dir(parent);
     }
 
-    if !clang.status().await?.success() {
+    if !clang.status()?.success() {
         bail!("failed to compile c++ node");
     };
     Ok(())
 }
 
-async fn build_cxx_operator(
-    paths: &[&Path],
-    out_name: &str,
-    link_args: &[&str],
-) -> eyre::Result<()> {
+fn build_cxx_operator(paths: &[&Path], out_name: &str, link_args: &[&str]) -> eyre::Result<()> {
     let mut object_file_paths = Vec::new();
 
     for path in paths {
-        let mut compile = tokio::process::Command::new("clang++");
+        let mut compile = std::process::Command::new("clang++");
         compile.arg("-c").arg(path);
         compile.arg("-std=c++17");
         let object_file_path = path.with_extension("o");
@@ -220,13 +201,13 @@ async fn build_cxx_operator(
         if let Some(parent) = path.parent() {
             compile.current_dir(parent);
         }
-        if !compile.status().await?.success() {
+        if !compile.status()?.success() {
             bail!("failed to compile cxx operator");
         };
         object_file_paths.push(object_file_path);
     }
 
-    let mut link = tokio::process::Command::new("clang++");
+    let mut link = std::process::Command::new("clang++");
     link.arg("-shared").args(&object_file_paths);
     link.args(link_args);
     #[cfg(target_os = "windows")]
@@ -277,7 +258,7 @@ async fn build_cxx_operator(
     if let Some(parent) = paths[0].parent() {
         link.current_dir(parent);
     }
-    if !link.status().await?.success() {
+    if !link.status()?.success() {
         bail!("failed to create shared library from cxx operator (c api)");
     };
 

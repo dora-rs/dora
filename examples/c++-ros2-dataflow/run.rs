@@ -2,8 +2,7 @@ use dora_tracing::set_up_tracing;
 use eyre::{Context, bail};
 use std::{env::consts::EXE_SUFFIX, path::Path};
 
-#[tokio::main]
-async fn main() -> eyre::Result<()> {
+fn main() -> eyre::Result<()> {
     set_up_tracing("c++-ros2-dataflow-example").wrap_err("failed to set up tracing subscriber")?;
 
     if cfg!(windows) {
