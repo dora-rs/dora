@@ -213,7 +213,7 @@ impl TransitionManager {
         // Record transition
         let mut transition = Transition {
             transition_type: TransitionType::CliToTui {
-                triggering_command: trigger.command().cloned().unwrap_or(Command::Ui(UiCommand::default())),
+                triggering_command: trigger.command().cloned().unwrap_or(Command::Tui(UiCommand::default())),
                 target_view: target_view.clone(),
             },
             timestamp: start_time,
@@ -504,7 +504,7 @@ mod basic_tests {
     #[tokio::test]
     async fn test_cli_to_tui_transition() {
         let mut manager = TransitionManager::new();
-        let trigger = TransitionTrigger::ExplicitCommand(Command::Ui(UiCommand::default()));
+        let trigger = TransitionTrigger::ExplicitCommand(Command::Tui(UiCommand::default()));
         
         let context = manager.transition_to_tui(trigger, ViewType::Dashboard).await.unwrap();
         
@@ -514,7 +514,7 @@ mod basic_tests {
 
     #[test]
     fn test_transition_trigger_command_extraction() {
-        let cmd = Command::Ui(UiCommand::default());
+        let cmd = Command::Tui(UiCommand::default());
         let trigger = TransitionTrigger::ExplicitCommand(cmd.clone());
         
         assert!(trigger.command().is_some());
@@ -527,7 +527,7 @@ mod basic_tests {
         // Add some mock transitions
         manager.record_transition(Transition {
             transition_type: TransitionType::CliToTui {
-                triggering_command: Command::Ui(UiCommand::default()),
+                triggering_command: Command::Tui(UiCommand::default()),
                 target_view: ViewType::Dashboard,
             },
             timestamp: Instant::now(),
@@ -538,7 +538,7 @@ mod basic_tests {
                 view_states: HashMap::new(),
                 last_refresh: Instant::now(),
             }),
-            trigger: TransitionTrigger::ExplicitCommand(Command::Ui(UiCommand::default())),
+            trigger: TransitionTrigger::ExplicitCommand(Command::Tui(UiCommand::default())),
             duration: Some(Duration::from_millis(100)),
         });
         

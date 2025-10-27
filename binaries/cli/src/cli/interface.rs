@@ -451,7 +451,7 @@ impl CommandAnalyzer {
             Command::Analyze(_) => 9,               // Always very high complexity
             Command::Monitor(_) => 7,               // Real-time monitoring complex
             Command::Help(_) => 5,                  // Help complexity varies
-            Command::Ui(_) => 2,                    // TUI launcher
+            Command::Tui(_) => 2,                    // TUI launcher
             Command::Dashboard(_) => 3,             // Dashboard complexity
             Command::System(_) => 4,                // System operations
             Command::Config(_) => 3,                // Configuration complexity

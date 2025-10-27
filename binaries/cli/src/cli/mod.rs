@@ -90,7 +90,8 @@ pub enum Command {
     
     // Tier 3: Explicit TUI modes
     /// Launch TUI interface
-    Ui(UiCommand),
+    #[clap(alias = "ui")]
+    Tui(UiCommand),
     
     /// Launch interactive dashboard
     Dashboard(DashboardCommand),

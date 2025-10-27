@@ -294,7 +294,7 @@ impl CommandComplexityAnalyzer {
                 });
                 7.0
             },
-            Command::Ui(_) => {
+            Command::Tui(_) => {
                 factors.push(ComplexityFactor {
                     factor_type: FactorType::CommandComplexity,
                     impact: 2.0,

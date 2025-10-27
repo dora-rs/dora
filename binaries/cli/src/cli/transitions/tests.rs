@@ -19,7 +19,7 @@ async fn test_transition_manager_creation() {
 #[tokio::test]
 async fn test_cli_to_tui_transition() {
     let mut manager = TransitionManager::new();
-    let trigger = TransitionTrigger::ExplicitCommand(Command::Ui(UiCommand::default()));
+    let trigger = TransitionTrigger::ExplicitCommand(Command::Tui(UiCommand::default()));
     
     let context = manager.transition_to_tui(trigger.clone(), ViewType::Dashboard).await.unwrap();
     
@@ -41,7 +41,7 @@ async fn test_tui_to_cli_transition() {
     let mut manager = TransitionManager::new();
     
     // First transition to TUI
-    let trigger = TransitionTrigger::ExplicitCommand(Command::Ui(UiCommand::default()));
+    let trigger = TransitionTrigger::ExplicitCommand(Command::Tui(UiCommand::default()));
     let _context = manager.transition_to_tui(trigger, ViewType::Dashboard).await.unwrap();
     
     // Create TUI state
@@ -99,7 +99,7 @@ async fn test_transition_performance_tracking() {
     
     // Add some transitions with varying durations
     for i in 0..3 {
-        let trigger = TransitionTrigger::ExplicitCommand(Command::Ui(UiCommand::default()));
+        let trigger = TransitionTrigger::ExplicitCommand(Command::Tui(UiCommand::default()));
         let _context = manager.transition_to_tui(trigger, ViewType::Dashboard).await.unwrap();
         
         // Manually set duration for testing
@@ -140,7 +140,7 @@ async fn test_transition_performance_tracking() {
 
 #[test]
 fn test_transition_trigger_command_extraction() {
-    let cmd = Command::Ui(UiCommand::default());
+    let cmd = Command::Tui(UiCommand::default());
     
     let explicit_trigger = TransitionTrigger::ExplicitCommand(cmd.clone());
     assert!(explicit_trigger.command().is_some());
@@ -179,14 +179,14 @@ fn test_shared_context_creation() {
 #[test]
 fn test_tui_launch_options_from_trigger() {
     // Explicit command should not show transition message
-    let explicit_trigger = TransitionTrigger::ExplicitCommand(Command::Ui(UiCommand::default()));
+    let explicit_trigger = TransitionTrigger::ExplicitCommand(Command::Tui(UiCommand::default()));
     let options = TuiLaunchOptions::from_trigger(&explicit_trigger);
     assert!(!options.show_transition_message);
     assert!(!options.preserve_cli_output);
     
     // Smart suggestion should show message and preserve output
     let suggestion_trigger = TransitionTrigger::SmartSuggestion {
-        original_command: Command::Ui(UiCommand::default()),
+        original_command: Command::Tui(UiCommand::default()),
         reason: "test".to_string(),
     };
     let options = TuiLaunchOptions::from_trigger(&suggestion_trigger);
@@ -195,7 +195,7 @@ fn test_tui_launch_options_from_trigger() {
     
     // Auto launch should show message
     let auto_trigger = TransitionTrigger::AutoLaunch {
-        original_command: Command::Ui(UiCommand::default()),
+        original_command: Command::Tui(UiCommand::default()),
         complexity_score: 8,
     };
     let options = TuiLaunchOptions::from_trigger(&auto_trigger);
@@ -236,7 +236,7 @@ fn test_exit_reason_variants() {
     let user_exit = ExitReason::UserExit;
     let command_exit = ExitReason::CommandExit("test command".to_string());
     let error_exit = ExitReason::ErrorExit("test error".to_string());
-    let switch_exit = ExitReason::SwitchToCommand(Command::Ui(UiCommand::default()));
+    let switch_exit = ExitReason::SwitchToCommand(Command::Tui(UiCommand::default()));
     
     // Test that all variants can be created and cloned
     let _user_exit_clone = user_exit.clone();
@@ -281,7 +281,7 @@ fn test_transition_history_bounds() {
     for i in 0..150 {
         let transition = Transition {
             transition_type: TransitionType::CliToTui {
-                triggering_command: Command::Ui(UiCommand::default()),
+                triggering_command: Command::Tui(UiCommand::default()),
                 target_view: ViewType::Dashboard,
             },
             timestamp: Instant::now(),
@@ -292,7 +292,7 @@ fn test_transition_history_bounds() {
                 view_states: HashMap::new(),
                 last_refresh: Instant::now(),
             }),
-            trigger: TransitionTrigger::ExplicitCommand(Command::Ui(UiCommand::default())),
+            trigger: TransitionTrigger::ExplicitCommand(Command::Tui(UiCommand::default())),
             duration: Some(Duration::from_millis(i)),
         };
         

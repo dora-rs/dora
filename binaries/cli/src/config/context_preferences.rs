@@ -281,7 +281,7 @@ impl ContextAwarePreferences {
             Command::Debug(_) => 9,
             Command::Analyze(_) => 9,
             Command::Monitor(_) => 7,
-            Command::Ui(_) => 1,
+            Command::Tui(_) => 1,
             Command::Dashboard(_) => 1,
             Command::System(_) => 5,
             Command::Config(_) => 4,
@@ -300,7 +300,7 @@ impl ContextAwarePreferences {
             Command::Start(_) | Command::Stop(_) | Command::Up(_) | Command::Destroy(_) => "lifecycle".to_string(),
             Command::Build(_) | Command::Check(_) | Command::New(_) => "development".to_string(),
             Command::Inspect(_) | Command::Debug(_) | Command::Analyze(_) => "analysis".to_string(),
-            Command::Ui(_) | Command::Dashboard(_) => "interface".to_string(),
+            Command::Tui(_) | Command::Dashboard(_) => "interface".to_string(),
             Command::System(_) | Command::Config(_) | Command::Daemon(_) |
             Command::Runtime(_) | Command::Coordinator(_) | Command::Self_(_) => "system".to_string(),
             Command::Graph(_) => "visualization".to_string(),

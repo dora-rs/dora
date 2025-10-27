@@ -193,7 +193,7 @@ pub fn hybrid_main(cli: cli::Cli) {
         },
 
         // Tier 3: TUI commands
-        cli::Command::Ui(cmd) => {
+        cli::Command::Tui(cmd) => {
             println!("🖥️  Launching TUI interface...");
 
             // Determine initial view from command

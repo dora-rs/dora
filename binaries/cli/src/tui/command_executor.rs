@@ -183,7 +183,7 @@ impl TuiCliExecutor {
                 Ok(CommandResult::ViewSwitch(ViewType::SystemMonitor))
             },
             
-            Command::Ui(ui_cmd) => {
+            Command::Tui(ui_cmd) => {
                 if let Some(view) = self.parse_ui_command(ui_cmd) {
                     Ok(CommandResult::ViewSwitch(view))
                 } else {

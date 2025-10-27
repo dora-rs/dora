@@ -598,7 +598,7 @@ impl UserPreferences {
             Command::Debug(_) => 9,
             Command::Analyze(_) => 9,
             Command::Monitor(_) => 7,
-            Command::Ui(_) => 1,
+            Command::Tui(_) => 1,
             Command::Dashboard(_) => 1,
             _ => 5, // Default complexity
         }
@@ -698,7 +698,7 @@ impl Command {
             Command::Debug(_) => "debug",
             Command::Analyze(_) => "analyze",
             Command::Monitor(_) => "monitor",
-            Command::Ui(_) => "ui",
+            Command::Tui(_) => "ui",
             Command::Dashboard(_) => "dashboard",
             Command::System(_) => "system",
             Command::Config(_) => "config",
