@@ -35,5 +35,5 @@ dora run ./dataflow.yml --uv (or dora start ./dataflow_dynamic.yml --uv)
 
 ```bash
 # activate your virtual environment in another terminal
-python opencv-plot --name plot --uv
+python opencv-plot --uv
 ```

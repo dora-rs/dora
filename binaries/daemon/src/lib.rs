@@ -8,7 +8,7 @@ use dora_core::{
         CoreNodeKind, DYNAMIC_SOURCE, Descriptor, DescriptorExt, ResolvedNode, RuntimeNode,
         read_as_descriptor,
     },
-    topics::LOCALHOST,
+    topics::{DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, LOCALHOST},
     uhlc::{self, HLC},
 };
 use dora_message::{
@@ -205,6 +205,24 @@ impl Daemon {
         descriptor.check(&working_dir)?;
         let nodes = descriptor.resolve_aliases_and_set_defaults()?;
 
+        let (events_tx, events_rx) = flume::bounded(10);
+        if nodes
+            .iter()
+            .find(|(_n, resolved_nodes)| resolved_nodes.kind.dynamic())
+            .is_some()
+        {
+            // Spawn local listener for dynamic nodes
+            let _listen_port = local_listener::spawn_listener_loop(
+                (LOCALHOST, DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT).into(),
+                events_tx,
+            )
+            .await?;
+        }
+        let dynamic_node_events = events_rx.into_stream().map(|e| Timestamped {
+            inner: Event::DynamicNode(e.inner),
+            timestamp: e.timestamp,
+        });
+
         let dataflow_id = Uuid::new_v7(Timestamp::now(NoContext));
         let spawn_command = SpawnDataflowNodes {
             build_id,
@@ -237,7 +255,7 @@ impl Daemon {
                 timestamp,
             }
         });
-        let events = (coordinator_events, ctrlc_events).merge();
+        let events = (coordinator_events, ctrlc_events, dynamic_node_events).merge();
         let run_result = Self::run_general(
             Box::pin(events),
             None,
