@@ -4,9 +4,10 @@ use clap::Parser;
 
 use crate::{
     cli::{Cli, Command, commands::*, context::ExecutionContext},
+    execute_legacy_command,
     tui::{
         AppState, ViewType,
-        app::{DataflowInfo, NodeInfo, StatusMessage},
+        app::{DataflowInfo, MessageLevel, NodeInfo, StatusMessage},
     },
 };
 
@@ -26,6 +27,12 @@ pub enum CommandResult {
     Exit,
     Error(String),
     StateUpdate(StateUpdate),
+}
+
+#[derive(Debug)]
+enum LegacyExecution {
+    Success,
+    Error(String),
 }
 
 /// Types of state updates that can occur
@@ -116,7 +123,7 @@ impl TuiCliExecutor {
             std::iter::once("dora".to_string()).chain(args).collect()
         };
 
-        let cli = Cli::try_parse_from(full_args)
+        let cli = Cli::try_parse_from(full_args.clone())
             .map_err(|e| format!("Failed to parse CLI args: {}", e))?;
 
         // Add to history
@@ -124,7 +131,9 @@ impl TuiCliExecutor {
 
         // Execute command with TUI context
         let command = cli.command.ok_or("No command provided")?;
-        let result = self.execute_parsed_command(&command, app_state).await?;
+        let result = self
+            .execute_parsed_command(&command, app_state, &full_args)
+            .await?;
 
         // Synchronize state if needed
         if matches!(result, CommandResult::StateUpdate(_)) {
@@ -138,33 +147,66 @@ impl TuiCliExecutor {
         &mut self,
         command: &Command,
         app_state: &mut AppState,
+        full_args: &[String],
     ) -> crate::tui::Result<CommandResult> {
         match command {
-            // State-changing commands that need immediate UI updates
-            Command::Start(cmd) => self.execute_start_in_tui(cmd, app_state).await,
-
-            Command::Stop(cmd) => self.execute_stop_in_tui(cmd, app_state).await,
-
-            Command::Build(cmd) => self.execute_build_in_tui(cmd, app_state).await,
-
-            // View navigation commands
             Command::Ps(_) => {
+                match self
+                    .execute_legacy_and_refresh(full_args, app_state)
+                    .await?
+                {
+                    LegacyExecution::Success => {}
+                    LegacyExecution::Error(err) => return Ok(CommandResult::Error(err)),
+                }
                 self.state_synchronizer
                     .refresh_dataflow_state(app_state)
                     .await?;
                 Ok(CommandResult::ViewSwitch(ViewType::Dashboard))
             }
 
+            Command::Start(_)
+            | Command::Stop(_)
+            | Command::Up(_)
+            | Command::Destroy(_)
+            | Command::Build(_)
+            | Command::New(_)
+            | Command::Check(_)
+            | Command::Graph(_)
+            | Command::Daemon(_)
+            | Command::Runtime(_)
+            | Command::Coordinator(_)
+            | Command::Self_(_) => {
+                match self
+                    .execute_legacy_and_refresh(full_args, app_state)
+                    .await?
+                {
+                    LegacyExecution::Success => {
+                        Ok(CommandResult::StateUpdate(StateUpdate::RefreshRequired))
+                    }
+                    LegacyExecution::Error(err) => Ok(CommandResult::Error(err)),
+                }
+            }
+
             Command::Inspect(cmd) => self.execute_inspect_in_tui(cmd, app_state).await,
 
-            Command::Logs(cmd) => Ok(CommandResult::ViewSwitch(ViewType::LogViewer {
-                target: cmd
-                    .dataflow
-                    .dataflow
-                    .as_ref()
-                    .map(|df| df.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "system".to_string()),
-            })),
+            Command::Logs(cmd) => {
+                match self
+                    .execute_legacy_and_refresh(full_args, app_state)
+                    .await?
+                {
+                    LegacyExecution::Success => {
+                        Ok(CommandResult::ViewSwitch(ViewType::LogViewer {
+                            target: cmd
+                                .dataflow
+                                .dataflow
+                                .as_ref()
+                                .map(|df| df.to_string_lossy().to_string())
+                                .unwrap_or_else(|| "system".to_string()),
+                        }))
+                    }
+                    LegacyExecution::Error(err) => Ok(CommandResult::Error(err)),
+                }
+            }
 
             Command::Debug(cmd) => Ok(CommandResult::ViewSwitch(ViewType::DebugSession {
                 dataflow_id: cmd
@@ -185,173 +227,108 @@ impl TuiCliExecutor {
                 }
             }
 
-            // Configuration commands
-            Command::Config(config_cmd) => self.execute_config_in_tui(config_cmd, app_state).await,
+            Command::Config(_) | Command::System(_) | Command::Analyze(_) | Command::Help(_) => {
+                match self
+                    .execute_legacy_and_refresh(full_args, app_state)
+                    .await?
+                {
+                    LegacyExecution::Success => Ok(CommandResult::Success(format!(
+                        "Command `{}` completed",
+                        full_args
+                            .iter()
+                            .skip(1)
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    ))),
+                    LegacyExecution::Error(err) => Ok(CommandResult::Error(err)),
+                }
+            }
 
-            // System commands
-            Command::System(sys_cmd) => self.execute_system_in_tui(sys_cmd, app_state).await,
-
-            // Exit commands
             _ if self.is_exit_command(command) => Ok(CommandResult::Exit),
 
             // Other commands - execute in background
-            _ => self.execute_command_background(command).await,
+            _ => match self
+                .execute_legacy_and_refresh(full_args, app_state)
+                .await?
+            {
+                LegacyExecution::Success => Ok(CommandResult::Success(format!(
+                    "Command `{}` completed",
+                    full_args
+                        .iter()
+                        .skip(1)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                ))),
+                LegacyExecution::Error(err) => Ok(CommandResult::Error(err)),
+            },
         }
     }
 
-    async fn execute_start_in_tui(
+    async fn execute_legacy_and_refresh(
         &mut self,
-        cmd: &StartCommand,
+        full_args: &[String],
         app_state: &mut AppState,
-    ) -> crate::tui::Result<CommandResult> {
-        // Show progress in TUI status area
-        app_state.status_messages.push_back(StatusMessage {
-            message: format!(
-                "Starting dataflow '{}'...",
-                cmd.dataflow
-                    .dataflow
-                    .as_ref()
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "unknown".to_string())
-            ),
-            level: crate::tui::app::MessageLevel::Info,
-            timestamp: std::time::Instant::now(),
-        });
+    ) -> crate::tui::Result<LegacyExecution> {
+        let display = full_args
+            .iter()
+            .skip(1)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" ");
 
-        // Execute start command (mock implementation)
-        tokio::time::sleep(Duration::from_millis(500)).await; // Simulate work
+        self.push_status_message(
+            app_state,
+            format!("Running `{display}`..."),
+            MessageLevel::Info,
+        );
 
-        let success = true; // This would be the actual result
-        let dataflow_name = cmd
-            .dataflow
-            .dataflow
-            .as_ref()
-            .map(|p| {
-                p.file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string()
-            })
-            .unwrap_or_else(|| "dataflow".to_string());
+        let args: Vec<String> = full_args.iter().skip(1).cloned().collect();
+        let working_dir = self.execution_context.working_dir.clone();
 
-        // Update status based on result
-        let status_message = if success {
-            StatusMessage {
-                message: format!("✅ Dataflow '{}' started successfully", dataflow_name),
-                level: crate::tui::app::MessageLevel::Success,
-                timestamp: std::time::Instant::now(),
+        let result = tokio::task::spawn_blocking(move || {
+            execute_legacy_command(args.iter().map(|s| s.as_str()), Some(working_dir.as_path()))
+        })
+        .await
+        .map_err(|err| format!("failed to join command task: {err}"))?;
+
+        match result {
+            Ok(_) => {
+                self.push_status_message(
+                    app_state,
+                    format!("✅ `{display}` completed"),
+                    MessageLevel::Success,
+                );
+                Ok(LegacyExecution::Success)
             }
-        } else {
-            StatusMessage {
-                message: format!("❌ Failed to start dataflow '{}'", dataflow_name),
-                level: crate::tui::app::MessageLevel::Error,
-                timestamp: std::time::Instant::now(),
+            Err(err) => {
+                let message = err.to_string();
+                self.push_status_message(
+                    app_state,
+                    format!("❌ `{display}` failed: {}", message),
+                    MessageLevel::Error,
+                );
+                Ok(LegacyExecution::Error(message))
             }
-        };
-
-        app_state.status_messages.push_back(status_message);
-
-        // Add new dataflow to state
-        if success {
-            let new_dataflow = DataflowInfo {
-                id: format!("df_{}", chrono::Utc::now().timestamp()),
-                name: dataflow_name.clone(),
-                status: "running".to_string(),
-                nodes: vec![NodeInfo {
-                    id: "node_1".to_string(),
-                    name: "Example Node".to_string(),
-                    status: "running".to_string(),
-                }],
-            };
-
-            app_state.dataflows.push(new_dataflow.clone());
-
-            Ok(CommandResult::StateUpdate(StateUpdate::DataflowAdded(
-                new_dataflow,
-            )))
-        } else {
-            Ok(CommandResult::Error(format!(
-                "Failed to start dataflow '{}'",
-                dataflow_name
-            )))
         }
     }
 
-    async fn execute_stop_in_tui(
+    fn push_status_message(
         &mut self,
-        cmd: &StopCommand,
         app_state: &mut AppState,
-    ) -> crate::tui::Result<CommandResult> {
-        let dataflow_name = cmd
-            .dataflow
-            .dataflow
-            .as_ref()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|| "unknown".to_string());
-
+        message: String,
+        level: MessageLevel,
+    ) {
         app_state.status_messages.push_back(StatusMessage {
-            message: format!("Stopping dataflow '{}'...", dataflow_name),
-            level: crate::tui::app::MessageLevel::Info,
-            timestamp: std::time::Instant::now(),
+            message,
+            level,
+            timestamp: Instant::now(),
         });
 
-        // Execute stop command (mock implementation)
-        tokio::time::sleep(Duration::from_millis(300)).await;
-
-        let success = true;
-
-        if success {
-            // Remove dataflow from state
-            app_state.dataflows.retain(|df| df.name != dataflow_name);
-
-            app_state.status_messages.push_back(StatusMessage {
-                message: format!("✅ Dataflow '{}' stopped", dataflow_name),
-                level: crate::tui::app::MessageLevel::Success,
-                timestamp: std::time::Instant::now(),
-            });
-
-            Ok(CommandResult::StateUpdate(StateUpdate::DataflowRemoved(
-                dataflow_name,
-            )))
-        } else {
-            Ok(CommandResult::Error(format!(
-                "Failed to stop dataflow '{}'",
-                dataflow_name
-            )))
+        while app_state.status_messages.len() > 20 {
+            app_state.status_messages.pop_front();
         }
-    }
-
-    async fn execute_build_in_tui(
-        &mut self,
-        cmd: &BuildCommand,
-        app_state: &mut AppState,
-    ) -> crate::tui::Result<CommandResult> {
-        let target = cmd
-            .dataflow
-            .dataflow
-            .as_ref()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|| "current".to_string());
-
-        app_state.status_messages.push_back(StatusMessage {
-            message: format!("Building '{}'...", target),
-            level: crate::tui::app::MessageLevel::Info,
-            timestamp: std::time::Instant::now(),
-        });
-
-        // Execute build command (mock implementation)
-        tokio::time::sleep(Duration::from_millis(1000)).await;
-
-        app_state.status_messages.push_back(StatusMessage {
-            message: format!("✅ Build completed for '{}'", target),
-            level: crate::tui::app::MessageLevel::Success,
-            timestamp: std::time::Instant::now(),
-        });
-
-        Ok(CommandResult::Success(format!(
-            "Build completed for '{}'",
-            target
-        )))
     }
 
     async fn execute_inspect_in_tui(
@@ -382,84 +359,6 @@ impl TuiCliExecutor {
         }
     }
 
-    async fn execute_config_in_tui(
-        &mut self,
-        cmd: &ConfigCommand,
-        app_state: &mut AppState,
-    ) -> crate::tui::Result<CommandResult> {
-        match &cmd.subcommand {
-            ConfigSubcommand::Get { key } => {
-                let value = self.get_config_value(key);
-                Ok(CommandResult::Success(format!("{} = {}", key, value)))
-            }
-            ConfigSubcommand::Set { key, value } => {
-                self.set_config_value(key, value);
-                app_state.status_messages.push_back(StatusMessage {
-                    message: format!("Set {} = {}", key, value),
-                    level: crate::tui::app::MessageLevel::Success,
-                    timestamp: std::time::Instant::now(),
-                });
-                Ok(CommandResult::StateUpdate(
-                    StateUpdate::ConfigurationChanged,
-                ))
-            }
-            ConfigSubcommand::List => Ok(CommandResult::ViewSwitch(ViewType::SettingsManager)),
-        }
-    }
-
-    async fn execute_system_in_tui(
-        &mut self,
-        cmd: &SystemCommand,
-        app_state: &mut AppState,
-    ) -> crate::tui::Result<CommandResult> {
-        match &cmd.subcommand {
-            SystemSubcommand::Status => {
-                self.state_synchronizer
-                    .refresh_system_metrics(app_state)
-                    .await?;
-                Ok(CommandResult::ViewSwitch(ViewType::SystemMonitor))
-            }
-            SystemSubcommand::Info => {
-                Ok(CommandResult::Success("System info displayed".to_string()))
-            }
-            SystemSubcommand::Clean => {
-                app_state.status_messages.push_back(StatusMessage {
-                    message: "Cleaning system cache...".to_string(),
-                    level: crate::tui::app::MessageLevel::Info,
-                    timestamp: std::time::Instant::now(),
-                });
-
-                // Mock cleanup
-                tokio::time::sleep(Duration::from_millis(500)).await;
-
-                app_state.status_messages.push_back(StatusMessage {
-                    message: "✅ System cache cleaned".to_string(),
-                    level: crate::tui::app::MessageLevel::Success,
-                    timestamp: std::time::Instant::now(),
-                });
-
-                Ok(CommandResult::Success("System cleaned".to_string()))
-            }
-        }
-    }
-
-    async fn execute_command_background(
-        &mut self,
-        command: &Command,
-    ) -> crate::tui::Result<CommandResult> {
-        // Execute command in background without blocking TUI
-        let command_str = format!("{:?}", command);
-
-        // This would spawn a background task to execute the command
-        // For now, just simulate execution
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        Ok(CommandResult::Success(format!(
-            "Command executed: {}",
-            command_str
-        )))
-    }
-
     fn parse_ui_command(&self, ui_cmd: &UiCommand) -> Option<ViewType> {
         match &ui_cmd.view {
             Some(TuiView::Dashboard) | None => Some(ViewType::Dashboard),
@@ -479,20 +378,6 @@ impl TuiCliExecutor {
                 subcommand: SelfSubcommand::Version | SelfSubcommand::Info
             })
         )
-    }
-
-    fn get_config_value(&self, key: &str) -> String {
-        // Mock config retrieval
-        match key {
-            "theme" => "dark".to_string(),
-            "refresh_interval" => "1000".to_string(),
-            _ => "unknown".to_string(),
-        }
-    }
-
-    fn set_config_value(&mut self, _key: &str, _value: &str) {
-        // Mock config setting
-        // This would update the actual configuration
     }
 
     pub fn get_command_history(&self) -> &[String] {
