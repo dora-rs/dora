@@ -38,7 +38,7 @@ members = [
 ]
 
 [workspace.package]
-edition = "2024"
+edition = "2021"
 rust-version = "1.85.0"
 # Make sure to also bump `apis/node/python/__init__.py` version.
 version = "0.3.13"

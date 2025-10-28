@@ -303,7 +303,7 @@ impl Listener {
 
     async fn handle_events(&mut self) -> eyre::Result<()> {
         if let Some(events) = &mut self.subscribed_events {
-            while let Ok(event) = events.try_recv() {
+            while let Ok(event) = events.recv().await {
                 self.queue.push_back(Box::new(Some(event)));
             }
         }
