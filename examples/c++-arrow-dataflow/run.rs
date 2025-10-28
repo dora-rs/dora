@@ -1,4 +1,3 @@
-use dora_tracing::set_up_tracing;
 use eyre::{Context, bail};
 use std::{env::consts::EXE_SUFFIX, path::Path, process::Command};
 
@@ -7,10 +6,7 @@ struct ArrowConfig {
     libs: String,
 }
 
-#[tokio::main]
-async fn main() -> eyre::Result<()> {
-    set_up_tracing("c++-dataflow-runner").wrap_err("failed to set up tracing")?;
-
+fn main() -> eyre::Result<()> {
     if cfg!(windows) {
         tracing::error!(
             "The c++ example does not work on Windows currently because of a linker error"
@@ -30,24 +26,22 @@ async fn main() -> eyre::Result<()> {
     std::env::set_current_dir(root.join(file!()).parent().unwrap())
         .wrap_err("failed to set working dir")?;
 
-    tokio::fs::create_dir_all("build").await?;
+    std::fs::create_dir_all("build")?;
     let build_dir = Path::new("build");
 
-    build_package("dora-node-api-cxx").await?;
+    build_package("dora-node-api-cxx")?;
     let node_cxxbridge = target
         .join("cxxbridge")
         .join("dora-node-api-cxx")
         .join("src");
-    tokio::fs::copy(
+    std::fs::copy(
         node_cxxbridge.join("lib.rs.cc"),
         build_dir.join("node-bridge.cc"),
-    )
-    .await?;
-    tokio::fs::copy(
+    )?;
+    std::fs::copy(
         node_cxxbridge.join("lib.rs.h"),
         build_dir.join("dora-node-api.h"),
-    )
-    .await?;
+    )?;
 
     build_cxx_node(
         root,
@@ -62,10 +56,9 @@ async fn main() -> eyre::Result<()> {
             &arrow_config.cflags,
             &arrow_config.libs,
         ],
-    )
-    .await?;
-    let dataflow = Path::new("dataflow.yml").to_owned();
-    run_dataflow(&dataflow).await?;
+    )?;
+
+    dora_cli::run("dataflow.yml".to_string(), false)?;
 
     Ok(())
 }
@@ -98,40 +91,19 @@ fn find_arrow_config() -> eyre::Result<ArrowConfig> {
     Ok(ArrowConfig { cflags, libs })
 }
 
-async fn build_package(package: &str) -> eyre::Result<()> {
+fn build_package(package: &str) -> eyre::Result<()> {
     let cargo = std::env::var("CARGO").unwrap();
-    let mut cmd = tokio::process::Command::new(&cargo);
+    let mut cmd = std::process::Command::new(&cargo);
     cmd.arg("build");
     cmd.arg("--package").arg(package);
-    if !cmd.status().await?.success() {
+    if !cmd.status()?.success() {
         bail!("failed to build {package}");
     };
     Ok(())
 }
 
-async fn run_dataflow(dataflow: &Path) -> eyre::Result<()> {
-    let cargo = std::env::var("CARGO").unwrap();
-    let mut cmd = tokio::process::Command::new(&cargo);
-    cmd.arg("run");
-    cmd.arg("--package").arg("dora-cli");
-    cmd.arg("--release");
-    cmd.arg("--")
-        .arg("daemon")
-        .arg("--run-dataflow")
-        .arg(dataflow);
-    if !cmd.status().await?.success() {
-        bail!("failed to run dataflow");
-    };
-    Ok(())
-}
-
-async fn build_cxx_node(
-    root: &Path,
-    paths: &[&Path],
-    out_name: &str,
-    args: &[&str],
-) -> eyre::Result<()> {
-    let mut clang = tokio::process::Command::new("clang++");
+fn build_cxx_node(root: &Path, paths: &[&Path], out_name: &str, args: &[&str]) -> eyre::Result<()> {
+    let mut clang = std::process::Command::new("clang++");
     clang.args(paths);
     clang.arg("-std=c++17");
     #[cfg(target_os = "linux")]
@@ -201,7 +173,7 @@ async fn build_cxx_node(
         clang.current_dir(parent);
     }
 
-    if !clang.status().await?.success() {
+    if !clang.status()?.success() {
         bail!("failed to compile c++ node");
     };
     Ok(())
