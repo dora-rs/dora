@@ -1,24 +1,21 @@
+use crossterm::event::{KeyCode, KeyEvent};
 /// Dataflow Explorer View for Issue #25
 use ratatui::{
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Row, Table, Tabs, Cell},
-    text::{Line, Span, Text},
     Frame,
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    style::{Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, Cell, List, ListItem, Paragraph, Row, Table, Tabs},
 };
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::time::Duration;
 
 use crate::tui::{
+    Result,
     app::{AppState, ViewType},
     theme::ThemeConfig,
-    Result,
 };
 
-use super::{
-    BaseView, View, ViewAction, StateUpdate, utils,
-    ExplorerState, ExplorerTab, ViewMode,
-};
+use super::{BaseView, ExplorerState, ExplorerTab, StateUpdate, View, ViewAction, ViewMode, utils};
 
 pub struct DataflowExplorerView {
     base: BaseView,
@@ -49,8 +46,13 @@ impl DataflowExplorerView {
 
     /// Get currently selected dataflow (internal/testing use)
     #[doc(hidden)]
-    pub fn get_selected_dataflow<'a>(&self, app_state: &'a AppState) -> Option<&'a crate::tui::app::DataflowInfo> {
-        let filtered: Vec<_> = app_state.dataflows.iter()
+    pub fn get_selected_dataflow<'a>(
+        &self,
+        app_state: &'a AppState,
+    ) -> Option<&'a crate::tui::app::DataflowInfo> {
+        let filtered: Vec<_> = app_state
+            .dataflows
+            .iter()
             .filter(|df| self.state.show_stopped || df.status != "stopped")
             .collect();
         filtered.get(self.selected_index).copied()
@@ -60,16 +62,12 @@ impl DataflowExplorerView {
     #[doc(hidden)]
     pub fn get_item_count(&self, app_state: &AppState) -> usize {
         match self.state.active_tab {
-            ExplorerTab::Overview => {
-                app_state.dataflows.iter()
-                    .filter(|df| self.state.show_stopped || df.status != "stopped")
-                    .count()
-            }
-            ExplorerTab::Nodes => {
-                app_state.dataflows.iter()
-                    .flat_map(|df| &df.nodes)
-                    .count()
-            }
+            ExplorerTab::Overview => app_state
+                .dataflows
+                .iter()
+                .filter(|df| self.state.show_stopped || df.status != "stopped")
+                .count(),
+            ExplorerTab::Nodes => app_state.dataflows.iter().flat_map(|df| &df.nodes).count(),
             _ => 0,
         }
     }
@@ -118,7 +116,7 @@ impl DataflowExplorerView {
             .highlight_style(
                 Style::default()
                     .fg(self.theme.colors.primary)
-                    .add_modifier(Modifier::BOLD)
+                    .add_modifier(Modifier::BOLD),
             )
             .divider(Span::raw(" │ "));
 
@@ -137,13 +135,19 @@ impl DataflowExplorerView {
     /// Render dataflows grouped by status
     fn render_grouped_list(&self, f: &mut Frame, area: Rect, app_state: &AppState) {
         // Group dataflows by status
-        let running: Vec<_> = app_state.dataflows.iter()
+        let running: Vec<_> = app_state
+            .dataflows
+            .iter()
             .filter(|df| df.status == "running")
             .collect();
-        let stopped: Vec<_> = app_state.dataflows.iter()
+        let stopped: Vec<_> = app_state
+            .dataflows
+            .iter()
             .filter(|df| df.status == "stopped")
             .collect();
-        let failed: Vec<_> = app_state.dataflows.iter()
+        let failed: Vec<_> = app_state
+            .dataflows
+            .iter()
             .filter(|df| df.status == "failed")
             .collect();
 
@@ -152,10 +156,16 @@ impl DataflowExplorerView {
         // Running section
         if !running.is_empty() {
             items.push(ListItem::new(Line::from(vec![
-                Span::styled("▼ RUNNING ", Style::default()
-                    .fg(self.theme.colors.success)
-                    .add_modifier(Modifier::BOLD)),
-                Span::styled(format!("({})", running.len()), Style::default().fg(self.theme.colors.muted)),
+                Span::styled(
+                    "▼ RUNNING ",
+                    Style::default()
+                        .fg(self.theme.colors.success)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("({})", running.len()),
+                    Style::default().fg(self.theme.colors.muted),
+                ),
             ])));
 
             for df in running {
@@ -166,7 +176,10 @@ impl DataflowExplorerView {
                     Span::raw(" "),
                     Span::styled(&df.name, Style::default().fg(self.theme.colors.text)),
                     Span::raw(" "),
-                    Span::styled(format!("({} nodes)", df.nodes.len()), Style::default().fg(self.theme.colors.muted)),
+                    Span::styled(
+                        format!("({} nodes)", df.nodes.len()),
+                        Style::default().fg(self.theme.colors.muted),
+                    ),
                 ])));
             }
         }
@@ -175,10 +188,16 @@ impl DataflowExplorerView {
         if !failed.is_empty() {
             items.push(ListItem::new(""));
             items.push(ListItem::new(Line::from(vec![
-                Span::styled("▼ FAILED ", Style::default()
-                    .fg(self.theme.colors.error)
-                    .add_modifier(Modifier::BOLD)),
-                Span::styled(format!("({})", failed.len()), Style::default().fg(self.theme.colors.muted)),
+                Span::styled(
+                    "▼ FAILED ",
+                    Style::default()
+                        .fg(self.theme.colors.error)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("({})", failed.len()),
+                    Style::default().fg(self.theme.colors.muted),
+                ),
             ])));
 
             for df in failed {
@@ -189,7 +208,10 @@ impl DataflowExplorerView {
                     Span::raw(" "),
                     Span::styled(&df.name, Style::default().fg(self.theme.colors.error)),
                     Span::raw(" "),
-                    Span::styled(format!("({} nodes)", df.nodes.len()), Style::default().fg(self.theme.colors.muted)),
+                    Span::styled(
+                        format!("({} nodes)", df.nodes.len()),
+                        Style::default().fg(self.theme.colors.muted),
+                    ),
                 ])));
             }
         }
@@ -198,10 +220,16 @@ impl DataflowExplorerView {
         if self.state.show_stopped && !stopped.is_empty() {
             items.push(ListItem::new(""));
             items.push(ListItem::new(Line::from(vec![
-                Span::styled("▼ STOPPED ", Style::default()
-                    .fg(self.theme.colors.muted)
-                    .add_modifier(Modifier::BOLD)),
-                Span::styled(format!("({})", stopped.len()), Style::default().fg(self.theme.colors.muted)),
+                Span::styled(
+                    "▼ STOPPED ",
+                    Style::default()
+                        .fg(self.theme.colors.muted)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("({})", stopped.len()),
+                    Style::default().fg(self.theme.colors.muted),
+                ),
             ])));
 
             for df in stopped {
@@ -212,17 +240,22 @@ impl DataflowExplorerView {
                     Span::raw(" "),
                     Span::styled(&df.name, Style::default().fg(self.theme.colors.muted)),
                     Span::raw(" "),
-                    Span::styled(format!("({} nodes)", df.nodes.len()), Style::default().fg(self.theme.colors.muted)),
+                    Span::styled(
+                        format!("({} nodes)", df.nodes.len()),
+                        Style::default().fg(self.theme.colors.muted),
+                    ),
                 ])));
             }
         }
 
         if items.is_empty() {
             let title = format!("Dataflows [{}]", self.state.view_mode.name());
-            let empty_msg = Paragraph::new("No dataflows found.\nUse 'dora start <dataflow.yaml>' to start one.")
-                .block(self.theme.styled_block(&title))
-                .style(Style::default().fg(self.theme.colors.muted))
-                .alignment(Alignment::Center);
+            let empty_msg = Paragraph::new(
+                "No dataflows found.\nUse 'dora start <dataflow.yaml>' to start one.",
+            )
+            .block(self.theme.styled_block(&title))
+            .style(Style::default().fg(self.theme.colors.muted))
+            .alignment(Alignment::Center);
             f.render_widget(empty_msg, area);
             return;
         }
@@ -239,10 +272,12 @@ impl DataflowExplorerView {
     fn render_flat_list(&self, f: &mut Frame, area: Rect, app_state: &AppState) {
         if app_state.dataflows.is_empty() {
             let title = format!("Dataflows [{}]", self.state.view_mode.name());
-            let empty_msg = Paragraph::new("No dataflows found.\nUse 'dora start <dataflow.yaml>' to start one.")
-                .block(self.theme.styled_block(&title))
-                .style(Style::default().fg(self.theme.colors.muted))
-                .alignment(Alignment::Center);
+            let empty_msg = Paragraph::new(
+                "No dataflows found.\nUse 'dora start <dataflow.yaml>' to start one.",
+            )
+            .block(self.theme.styled_block(&title))
+            .style(Style::default().fg(self.theme.colors.muted))
+            .alignment(Alignment::Center);
             f.render_widget(empty_msg, area);
             return;
         }
@@ -257,7 +292,8 @@ impl DataflowExplorerView {
             .height(1)
             .bottom_margin(1);
 
-        let rows = app_state.dataflows
+        let rows = app_state
+            .dataflows
             .iter()
             .filter(|df| self.state.show_stopped || df.status != "stopped")
             .map(|df| {
@@ -297,10 +333,12 @@ impl DataflowExplorerView {
     fn render_dependency_tree(&self, f: &mut Frame, area: Rect, app_state: &AppState) {
         if app_state.dataflows.is_empty() {
             let title = format!("Dataflows [{}]", self.state.view_mode.name());
-            let empty_msg = Paragraph::new("No dataflows found.\nUse 'dora start <dataflow.yaml>' to start one.")
-                .block(self.theme.styled_block(&title))
-                .style(Style::default().fg(self.theme.colors.muted))
-                .alignment(Alignment::Center);
+            let empty_msg = Paragraph::new(
+                "No dataflows found.\nUse 'dora start <dataflow.yaml>' to start one.",
+            )
+            .block(self.theme.styled_block(&title))
+            .style(Style::default().fg(self.theme.colors.muted))
+            .alignment(Alignment::Center);
             f.render_widget(empty_msg, area);
             return;
         }
@@ -319,11 +357,17 @@ impl DataflowExplorerView {
                 Span::raw(" "),
                 status_indicator,
                 Span::raw(" "),
-                Span::styled(&dataflow.name, Style::default()
-                    .fg(self.theme.colors.primary)
-                    .add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    &dataflow.name,
+                    Style::default()
+                        .fg(self.theme.colors.primary)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::raw(" "),
-                Span::styled(format!("({} nodes)", dataflow.nodes.len()), Style::default().fg(self.theme.colors.muted)),
+                Span::styled(
+                    format!("({} nodes)", dataflow.nodes.len()),
+                    Style::default().fg(self.theme.colors.muted),
+                ),
             ])));
 
             // Node lines
@@ -333,7 +377,10 @@ impl DataflowExplorerView {
                 let node_status = utils::status_indicator(&node.status);
 
                 items.push(ListItem::new(Line::from(vec![
-                    Span::styled(node_prefix_base, Style::default().fg(self.theme.colors.muted)),
+                    Span::styled(
+                        node_prefix_base,
+                        Style::default().fg(self.theme.colors.muted),
+                    ),
                     Span::styled(node_prefix, Style::default().fg(self.theme.colors.muted)),
                     Span::raw(" "),
                     node_status,
@@ -421,27 +468,41 @@ impl DataflowExplorerView {
                 Span::styled("CPU Usage: ", Style::default().fg(self.theme.colors.text)),
                 Span::styled(
                     format!("{:.1}%", metrics.cpu_usage),
-                    Style::default().fg(self.theme.colors.primary).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(self.theme.colors.primary)
+                        .add_modifier(Modifier::BOLD),
                 ),
             ]),
             Line::from(vec![
-                Span::styled("Memory Usage: ", Style::default().fg(self.theme.colors.text)),
+                Span::styled(
+                    "Memory Usage: ",
+                    Style::default().fg(self.theme.colors.text),
+                ),
                 Span::styled(
                     format!("{:.1}%", metrics.memory_usage),
-                    Style::default().fg(self.theme.colors.primary).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(self.theme.colors.primary)
+                        .add_modifier(Modifier::BOLD),
                 ),
             ]),
             Line::from(vec![
                 Span::styled("Network I/O: ", Style::default().fg(self.theme.colors.text)),
                 Span::styled(
-                    format!("↓{} ↑{}", utils::format_bytes(metrics.network_io.0), utils::format_bytes(metrics.network_io.1)),
+                    format!(
+                        "↓{} ↑{}",
+                        utils::format_bytes(metrics.network_io.0),
+                        utils::format_bytes(metrics.network_io.1)
+                    ),
                     Style::default().fg(self.theme.colors.muted),
                 ),
             ]),
             Line::from(""),
-            Line::from(Span::styled("Per-Dataflow Performance", Style::default()
-                .fg(self.theme.colors.primary)
-                .add_modifier(Modifier::BOLD))),
+            Line::from(Span::styled(
+                "Per-Dataflow Performance",
+                Style::default()
+                    .fg(self.theme.colors.primary)
+                    .add_modifier(Modifier::BOLD),
+            )),
         ];
 
         let mut all_lines = perf_text;
@@ -449,15 +510,26 @@ impl DataflowExplorerView {
         for dataflow in &app_state.dataflows {
             all_lines.push(Line::from(""));
             all_lines.push(Line::from(vec![
-                Span::styled(&dataflow.name, Style::default().fg(self.theme.colors.text).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    &dataflow.name,
+                    Style::default()
+                        .fg(self.theme.colors.text)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::raw(" - "),
-                Span::styled(format!("{} nodes", dataflow.nodes.len()), Style::default().fg(self.theme.colors.muted)),
+                Span::styled(
+                    format!("{} nodes", dataflow.nodes.len()),
+                    Style::default().fg(self.theme.colors.muted),
+                ),
             ]));
 
             // TODO: Add per-dataflow metrics when available
             all_lines.push(Line::from(vec![
                 Span::raw("  "),
-                Span::styled("Metrics not yet available", Style::default().fg(self.theme.colors.muted)),
+                Span::styled(
+                    "Metrics not yet available",
+                    Style::default().fg(self.theme.colors.muted),
+                ),
             ]));
         }
 
@@ -474,9 +546,12 @@ impl DataflowExplorerView {
             let mut lines = vec![
                 Line::from(vec![
                     Span::styled("Dataflow: ", Style::default().fg(self.theme.colors.muted)),
-                    Span::styled(&dataflow.name, Style::default()
-                        .fg(self.theme.colors.primary)
-                        .add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        &dataflow.name,
+                        Style::default()
+                            .fg(self.theme.colors.primary)
+                            .add_modifier(Modifier::BOLD),
+                    ),
                 ]),
                 Line::from(""),
                 Line::from(vec![
@@ -491,12 +566,18 @@ impl DataflowExplorerView {
                 ]),
                 Line::from(vec![
                     Span::styled("Nodes: ", Style::default().fg(self.theme.colors.muted)),
-                    Span::styled(dataflow.nodes.len().to_string(), Style::default().fg(self.theme.colors.text)),
+                    Span::styled(
+                        dataflow.nodes.len().to_string(),
+                        Style::default().fg(self.theme.colors.text),
+                    ),
                 ]),
                 Line::from(""),
-                Line::from(Span::styled("Nodes:", Style::default()
-                    .fg(self.theme.colors.primary)
-                    .add_modifier(Modifier::BOLD))),
+                Line::from(Span::styled(
+                    "Nodes:",
+                    Style::default()
+                        .fg(self.theme.colors.primary)
+                        .add_modifier(Modifier::BOLD),
+                )),
             ];
 
             for node in &dataflow.nodes {
@@ -509,9 +590,12 @@ impl DataflowExplorerView {
             }
 
             lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled("Actions:", Style::default()
-                .fg(self.theme.colors.primary)
-                .add_modifier(Modifier::BOLD))));
+            lines.push(Line::from(Span::styled(
+                "Actions:",
+                Style::default()
+                    .fg(self.theme.colors.primary)
+                    .add_modifier(Modifier::BOLD),
+            )));
             lines.push(Line::from("  s - Start/Stop"));
             lines.push(Line::from("  r - Restart"));
             lines.push(Line::from("  i - Detailed inspect"));
@@ -536,19 +620,28 @@ impl DataflowExplorerView {
         if let Some(dataflow) = self.get_selected_dataflow(app_state) {
             let config_text = vec![
                 Line::from(vec![
-                    Span::styled("Configuration: ", Style::default()
-                        .fg(self.theme.colors.primary)
-                        .add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        "Configuration: ",
+                        Style::default()
+                            .fg(self.theme.colors.primary)
+                            .add_modifier(Modifier::BOLD),
+                    ),
                     Span::styled(&dataflow.name, Style::default().fg(self.theme.colors.text)),
                 ]),
                 Line::from(""),
-                Line::from(Span::styled("# Dataflow Configuration", Style::default().fg(self.theme.colors.muted))),
+                Line::from(Span::styled(
+                    "# Dataflow Configuration",
+                    Style::default().fg(self.theme.colors.muted),
+                )),
                 Line::from(""),
                 Line::from(format!("id: {}", dataflow.id)),
                 Line::from(format!("name: {}", dataflow.name)),
                 Line::from(format!("status: {}", dataflow.status)),
                 Line::from(""),
-                Line::from(Span::styled("nodes:", Style::default().fg(self.theme.colors.primary))),
+                Line::from(Span::styled(
+                    "nodes:",
+                    Style::default().fg(self.theme.colors.primary),
+                )),
             ];
 
             let mut all_lines = config_text;
@@ -562,7 +655,7 @@ impl DataflowExplorerView {
             all_lines.push(Line::from(""));
             all_lines.push(Line::from(Span::styled(
                 "Note: Full YAML configuration requires daemon integration",
-                Style::default().fg(self.theme.colors.muted)
+                Style::default().fg(self.theme.colors.muted),
             )));
 
             let paragraph = Paragraph::new(all_lines)
@@ -629,42 +722,82 @@ impl DataflowExplorerView {
     /// Render debug tab
     fn render_debug_tab(&self, f: &mut Frame, area: Rect, app_state: &AppState) {
         let debug_info = vec![
-            Line::from(vec![
-                Span::styled("Debug Information", Style::default()
+            Line::from(vec![Span::styled(
+                "Debug Information",
+                Style::default()
                     .fg(self.theme.colors.primary)
-                    .add_modifier(Modifier::BOLD)),
-            ]),
+                    .add_modifier(Modifier::BOLD),
+            )]),
             Line::from(""),
-            Line::from(vec![
-                Span::styled("Explorer State:", Style::default().fg(self.theme.colors.text).add_modifier(Modifier::BOLD)),
-            ]),
+            Line::from(vec![Span::styled(
+                "Explorer State:",
+                Style::default()
+                    .fg(self.theme.colors.text)
+                    .add_modifier(Modifier::BOLD),
+            )]),
             Line::from(format!("  Active Tab: {:?}", self.state.active_tab)),
             Line::from(format!("  View Mode: {:?}", self.state.view_mode)),
             Line::from(format!("  Selected Index: {}", self.selected_index)),
             Line::from(format!("  Show Stopped: {}", self.state.show_stopped)),
-            Line::from(format!("  Inspection Panel: {}", self.show_inspection_panel)),
+            Line::from(format!(
+                "  Inspection Panel: {}",
+                self.show_inspection_panel
+            )),
             Line::from(""),
-            Line::from(vec![
-                Span::styled("System State:", Style::default().fg(self.theme.colors.text).add_modifier(Modifier::BOLD)),
-            ]),
+            Line::from(vec![Span::styled(
+                "System State:",
+                Style::default()
+                    .fg(self.theme.colors.text)
+                    .add_modifier(Modifier::BOLD),
+            )]),
             Line::from(format!("  Total Dataflows: {}", app_state.dataflows.len())),
-            Line::from(format!("  Running: {}", app_state.dataflows.iter().filter(|df| df.status == "running").count())),
-            Line::from(format!("  Stopped: {}", app_state.dataflows.iter().filter(|df| df.status == "stopped").count())),
-            Line::from(format!("  Failed: {}", app_state.dataflows.iter().filter(|df| df.status == "failed").count())),
+            Line::from(format!(
+                "  Running: {}",
+                app_state
+                    .dataflows
+                    .iter()
+                    .filter(|df| df.status == "running")
+                    .count()
+            )),
+            Line::from(format!(
+                "  Stopped: {}",
+                app_state
+                    .dataflows
+                    .iter()
+                    .filter(|df| df.status == "stopped")
+                    .count()
+            )),
+            Line::from(format!(
+                "  Failed: {}",
+                app_state
+                    .dataflows
+                    .iter()
+                    .filter(|df| df.status == "failed")
+                    .count()
+            )),
             Line::from(""),
-            Line::from(vec![
-                Span::styled("Metrics:", Style::default().fg(self.theme.colors.text).add_modifier(Modifier::BOLD)),
-            ]),
+            Line::from(vec![Span::styled(
+                "Metrics:",
+                Style::default()
+                    .fg(self.theme.colors.text)
+                    .add_modifier(Modifier::BOLD),
+            )]),
             Line::from(format!("  CPU: {:.1}%", app_state.system_metrics.cpu_usage)),
-            Line::from(format!("  Memory: {:.1}%", app_state.system_metrics.memory_usage)),
+            Line::from(format!(
+                "  Memory: {:.1}%",
+                app_state.system_metrics.memory_usage
+            )),
         ];
 
         if let Some(dataflow) = self.get_selected_dataflow(app_state) {
             let mut lines = debug_info;
             lines.push(Line::from(""));
-            lines.push(Line::from(vec![
-                Span::styled("Selected Dataflow:", Style::default().fg(self.theme.colors.text).add_modifier(Modifier::BOLD)),
-            ]));
+            lines.push(Line::from(vec![Span::styled(
+                "Selected Dataflow:",
+                Style::default()
+                    .fg(self.theme.colors.text)
+                    .add_modifier(Modifier::BOLD),
+            )]));
             lines.push(Line::from(format!("  Name: {}", dataflow.name)));
             lines.push(Line::from(format!("  ID: {}", dataflow.id)));
             lines.push(Line::from(format!("  Status: {}", dataflow.status)));
@@ -700,7 +833,12 @@ impl DataflowExplorerView {
             .iter()
             .flat_map(|(key, desc)| {
                 vec![
-                    Span::styled(*key, Style::default().fg(self.theme.colors.primary).add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        *key,
+                        Style::default()
+                            .fg(self.theme.colors.primary)
+                            .add_modifier(Modifier::BOLD),
+                    ),
                     Span::raw(":"),
                     Span::styled(*desc, Style::default().fg(self.theme.colors.text)),
                     Span::raw("  "),
@@ -721,9 +859,9 @@ impl View for DataflowExplorerView {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(3),  // Tab bar
-                Constraint::Min(10),    // Content area
-                Constraint::Length(2),  // Status bar
+                Constraint::Length(3), // Tab bar
+                Constraint::Min(10),   // Content area
+                Constraint::Length(2), // Status bar
             ])
             .split(area);
 
@@ -731,22 +869,23 @@ impl View for DataflowExplorerView {
         self.render_tabs(f, chunks[0]);
 
         // Split content area if inspection panel is shown
-        let content_area = if self.show_inspection_panel && self.state.active_tab == ExplorerTab::Overview {
-            let split = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([
-                    Constraint::Percentage(60),  // Main content
-                    Constraint::Percentage(40),  // Inspection panel
-                ])
-                .split(chunks[1]);
+        let content_area =
+            if self.show_inspection_panel && self.state.active_tab == ExplorerTab::Overview {
+                let split = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([
+                        Constraint::Percentage(60), // Main content
+                        Constraint::Percentage(40), // Inspection panel
+                    ])
+                    .split(chunks[1]);
 
-            // Render inspection panel
-            self.render_inspection_panel(f, split[1], app_state);
+                // Render inspection panel
+                self.render_inspection_panel(f, split[1], app_state);
 
-            split[0]
-        } else {
-            chunks[1]
-        };
+                split[0]
+            } else {
+                chunks[1]
+            };
 
         // Render active tab content
         match self.state.active_tab {
@@ -814,7 +953,10 @@ impl View for DataflowExplorerView {
             // View mode cycling
             KeyCode::Char('v') => {
                 self.state.cycle_view_mode();
-                Ok(ViewAction::ShowStatus(format!("View mode: {}", self.state.view_mode.name())))
+                Ok(ViewAction::ShowStatus(format!(
+                    "View mode: {}",
+                    self.state.view_mode.name()
+                )))
             }
 
             // Toggle inspection panel
@@ -822,7 +964,11 @@ impl View for DataflowExplorerView {
                 self.show_inspection_panel = !self.show_inspection_panel;
                 Ok(ViewAction::ShowStatus(format!(
                     "Inspection panel: {}",
-                    if self.show_inspection_panel { "on" } else { "off" }
+                    if self.show_inspection_panel {
+                        "on"
+                    } else {
+                        "off"
+                    }
                 )))
             }
 
@@ -862,19 +1008,13 @@ impl View for DataflowExplorerView {
             }
 
             // Refresh
-            KeyCode::F(5) => {
-                Ok(ViewAction::UpdateState(StateUpdate::RefreshDataflows))
-            }
+            KeyCode::F(5) => Ok(ViewAction::UpdateState(StateUpdate::RefreshDataflows)),
 
             // Help
-            KeyCode::Char('?') | KeyCode::F(1) => {
-                Ok(ViewAction::ShowHelp)
-            }
+            KeyCode::Char('?') | KeyCode::F(1) => Ok(ViewAction::ShowHelp),
 
             // Back/Quit
-            KeyCode::Char('q') | KeyCode::Esc => {
-                Ok(ViewAction::PopView)
-            }
+            KeyCode::Char('q') | KeyCode::Esc => Ok(ViewAction::PopView),
 
             // Enter to inspect selected dataflow
             KeyCode::Enter => {

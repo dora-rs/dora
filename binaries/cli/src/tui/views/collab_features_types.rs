@@ -759,7 +759,10 @@ mod tests {
     fn test_knowledge_category_labels() {
         assert_eq!(KnowledgeCategory::GettingStarted.label(), "Getting Started");
         assert_eq!(KnowledgeCategory::BestPractices.label(), "Best Practices");
-        assert_eq!(KnowledgeCategory::Troubleshooting.label(), "Troubleshooting");
+        assert_eq!(
+            KnowledgeCategory::Troubleshooting.label(),
+            "Troubleshooting"
+        );
         assert_eq!(KnowledgeCategory::AdvancedTopics.label(), "Advanced Topics");
         assert_eq!(KnowledgeCategory::Tutorials.label(), "Tutorials");
         assert_eq!(KnowledgeCategory::ReferenceGuide.label(), "Reference Guide");
@@ -860,52 +863,66 @@ mod tests {
     fn test_mock_sessions() {
         let sessions = create_mock_sessions();
         assert_eq!(sessions.len(), 4);
-        assert!(sessions
-            .iter()
-            .any(|s| s.session_type == SessionType::CodeReview));
-        assert!(sessions
-            .iter()
-            .any(|s| s.session_type == SessionType::PairProgramming));
-        assert!(sessions
-            .iter()
-            .any(|s| s.session_type == SessionType::TeamDebug));
-        assert!(sessions
-            .iter()
-            .any(|s| s.session_type == SessionType::LiveDemo));
+        assert!(
+            sessions
+                .iter()
+                .any(|s| s.session_type == SessionType::CodeReview)
+        );
+        assert!(
+            sessions
+                .iter()
+                .any(|s| s.session_type == SessionType::PairProgramming)
+        );
+        assert!(
+            sessions
+                .iter()
+                .any(|s| s.session_type == SessionType::TeamDebug)
+        );
+        assert!(
+            sessions
+                .iter()
+                .any(|s| s.session_type == SessionType::LiveDemo)
+        );
     }
 
     #[test]
     fn test_mock_reviews() {
         let reviews = create_mock_reviews();
         assert_eq!(reviews.len(), 5);
-        assert!(reviews
-            .iter()
-            .any(|r| r.status == ReviewStatus::InReview));
-        assert!(reviews
-            .iter()
-            .any(|r| r.status == ReviewStatus::Approved));
+        assert!(reviews.iter().any(|r| r.status == ReviewStatus::InReview));
+        assert!(reviews.iter().any(|r| r.status == ReviewStatus::Approved));
         assert!(reviews.iter().any(|r| r.status == ReviewStatus::Merged));
-        assert!(reviews
-            .iter()
-            .any(|r| r.status == ReviewStatus::ChangesRequested));
+        assert!(
+            reviews
+                .iter()
+                .any(|r| r.status == ReviewStatus::ChangesRequested)
+        );
     }
 
     #[test]
     fn test_mock_articles() {
         let articles = create_mock_articles();
         assert_eq!(articles.len(), 6);
-        assert!(articles
-            .iter()
-            .any(|a| a.category == KnowledgeCategory::GettingStarted));
-        assert!(articles
-            .iter()
-            .any(|a| a.category == KnowledgeCategory::BestPractices));
-        assert!(articles
-            .iter()
-            .any(|a| a.difficulty == DifficultyLevel::Beginner));
-        assert!(articles
-            .iter()
-            .any(|a| a.difficulty == DifficultyLevel::Advanced));
+        assert!(
+            articles
+                .iter()
+                .any(|a| a.category == KnowledgeCategory::GettingStarted)
+        );
+        assert!(
+            articles
+                .iter()
+                .any(|a| a.category == KnowledgeCategory::BestPractices)
+        );
+        assert!(
+            articles
+                .iter()
+                .any(|a| a.difficulty == DifficultyLevel::Beginner)
+        );
+        assert!(
+            articles
+                .iter()
+                .any(|a| a.difficulty == DifficultyLevel::Advanced)
+        );
     }
 
     #[test]

@@ -1,16 +1,16 @@
 // Comprehensive tests for Data Visualization View (Issue #32 - Phase 1)
 // Tests cover all chart types, navigation, state management, and mock data
 
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use dora_cli::tui::{
     app::AppState,
     theme::ThemeConfig,
     views::{
-        DataVizView, View, ViewAction, ChartType, ChartData, DataVizState,
-        TimeSeriesData, CategoryData, EventData, EventSeverity, GaugeData, DataPoint,
+        CategoryData, ChartData, ChartType, DataPoint, DataVizState, DataVizView, EventData,
+        EventSeverity, GaugeData, TimeSeriesData, View, ViewAction,
     },
 };
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::{backend::TestBackend, Terminal};
+use ratatui::{Terminal, backend::TestBackend};
 
 // Helper function to create a test view
 fn create_test_view() -> DataVizView {
@@ -468,7 +468,11 @@ fn test_chart_type_names() {
 fn test_chart_type_descriptions() {
     assert!(ChartType::LineChart.description().contains("time-series"));
     assert!(ChartType::BarChart.description().contains("categorical"));
-    assert!(ChartType::ScatterPlot.description().contains("relationships"));
+    assert!(
+        ChartType::ScatterPlot
+            .description()
+            .contains("relationships")
+    );
     assert!(ChartType::Gauge.description().contains("progress"));
     assert!(ChartType::Timeline.description().contains("events"));
 }

@@ -126,6 +126,12 @@ fn start_coordinator() -> eyre::Result<()> {
     let mut cmd = Command::new(path);
     cmd.arg("coordinator");
     cmd.arg("--quiet");
+    if std::env::var_os("RUST_LOG").is_none() {
+        cmd.env("RUST_LOG", "error");
+    }
+    if std::env::var_os("ZENOH_LOG").is_none() {
+        cmd.env("ZENOH_LOG", "error");
+    }
     cmd.spawn().wrap_err("failed to run `dora coordinator`")?;
 
     println!("started dora coordinator");
@@ -146,6 +152,12 @@ fn start_daemon() -> eyre::Result<()> {
     let mut cmd = Command::new(path);
     cmd.arg("daemon");
     cmd.arg("--quiet");
+    if std::env::var_os("RUST_LOG").is_none() {
+        cmd.env("RUST_LOG", "error");
+    }
+    if std::env::var_os("ZENOH_LOG").is_none() {
+        cmd.env("ZENOH_LOG", "error");
+    }
     cmd.spawn().wrap_err("failed to run `dora daemon`")?;
 
     println!("started dora daemon");

@@ -1,8 +1,7 @@
+use dora_cli::cli::TuiView;
 /// Integration test for TUI navigation and keyboard handling
 /// Verifies that view switching and keyboard shortcuts work correctly
-
-use dora_cli::tui::{ViewType};
-use dora_cli::cli::{TuiView};
+use dora_cli::tui::ViewType;
 
 #[test]
 fn test_cli_view_enum_variants_exist() {
@@ -20,10 +19,18 @@ fn test_view_type_enum_has_all_variants() {
         ViewType::Dashboard,
         ViewType::DataflowManager,
         ViewType::SystemMonitor,
-        ViewType::LogViewer { target: "all".to_string() },
-        ViewType::NodeInspector { node_id: "node1".to_string() },
-        ViewType::RecordingAnalyzer { recording_id: "rec1".to_string() },
-        ViewType::DebugSession { dataflow_id: "df1".to_string() },
+        ViewType::LogViewer {
+            target: "all".to_string(),
+        },
+        ViewType::NodeInspector {
+            node_id: "node1".to_string(),
+        },
+        ViewType::RecordingAnalyzer {
+            recording_id: "rec1".to_string(),
+        },
+        ViewType::DebugSession {
+            dataflow_id: "df1".to_string(),
+        },
         ViewType::SettingsManager,
         ViewType::Help,
     ];
@@ -40,7 +47,7 @@ fn test_view_type_supports_clone() {
 
     // Both should be Dashboard
     match (view1, view2) {
-        (ViewType::Dashboard, ViewType::Dashboard) => {},
+        (ViewType::Dashboard, ViewType::Dashboard) => {}
         _ => panic!("Clone should preserve ViewType variant"),
     }
 }
@@ -55,7 +62,7 @@ fn test_view_type_with_parameters() {
     match log_view {
         ViewType::LogViewer { target } => {
             assert_eq!(target, "node-camera");
-        },
+        }
         _ => panic!("Expected LogViewer variant"),
     }
 
@@ -66,7 +73,7 @@ fn test_view_type_with_parameters() {
     match node_view {
         ViewType::NodeInspector { node_id } => {
             assert_eq!(node_id, "detector");
-        },
+        }
         _ => panic!("Expected NodeInspector variant"),
     }
 }
@@ -79,7 +86,9 @@ fn test_view_navigation_sequence() {
     let views = vec![
         ViewType::Dashboard,
         ViewType::DataflowManager,
-        ViewType::NodeInspector { node_id: "camera".to_string() },
+        ViewType::NodeInspector {
+            node_id: "camera".to_string(),
+        },
         ViewType::Dashboard, // Back to dashboard
     ];
 
@@ -96,7 +105,7 @@ fn test_default_view_type() {
     let default_view = ViewType::default();
 
     match default_view {
-        ViewType::Dashboard => {}, // Expected default
+        ViewType::Dashboard => {} // Expected default
         _ => panic!("Default should be Dashboard"),
     }
 }

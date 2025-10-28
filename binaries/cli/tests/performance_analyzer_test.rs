@@ -1,11 +1,11 @@
 /// Tests for PerformanceAnalyzerView (Issue #26)
 #[cfg(test)]
 mod performance_analyzer_tests {
-    use dora_cli::tui::views::{
-        AnalyzerTab, PerformanceAnalyzerState, PerformanceAnalyzerView,
-        MetricType, TimeRange, PerformanceAlert, AlertSeverity,
-    };
     use dora_cli::tui::theme::ThemeConfig;
+    use dora_cli::tui::views::{
+        AlertSeverity, AnalyzerTab, MetricType, PerformanceAlert, PerformanceAnalyzerState,
+        PerformanceAnalyzerView, TimeRange,
+    };
 
     #[test]
     fn test_analyzer_tab_all_returns_three_tabs() {
@@ -163,12 +163,7 @@ mod performance_analyzer_tests {
 
     #[test]
     fn test_performance_alert_creation() {
-        let alert = PerformanceAlert::new(
-            MetricType::Cpu,
-            AlertSeverity::Warning,
-            75.0,
-            70.0,
-        );
+        let alert = PerformanceAlert::new(MetricType::Cpu, AlertSeverity::Warning, 75.0, 70.0);
 
         assert_eq!(alert.metric_type, MetricType::Cpu);
         assert_eq!(alert.severity, AlertSeverity::Warning);
@@ -275,7 +270,8 @@ mod performance_analyzer_tests {
         // Add some alerts
         let alert1 = PerformanceAlert::new(MetricType::Cpu, AlertSeverity::Warning, 75.0, 70.0);
         let alert2 = PerformanceAlert::new(MetricType::Memory, AlertSeverity::Critical, 96.0, 95.0);
-        let alert3 = PerformanceAlert::new(MetricType::Latency, AlertSeverity::Warning, 150.0, 100.0);
+        let alert3 =
+            PerformanceAlert::new(MetricType::Latency, AlertSeverity::Warning, 150.0, 100.0);
 
         state.add_alert(alert1);
         state.add_alert(alert2);

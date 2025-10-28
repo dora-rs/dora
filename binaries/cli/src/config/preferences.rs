@@ -1,10 +1,9 @@
-use crate::cli::{Command, UiMode};
 use crate::cli::context::ExecutionContext;
+use crate::cli::{Command, UiMode};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// Main user preferences structure
@@ -12,16 +11,16 @@ use std::time::Duration;
 pub struct UserPreferences {
     /// Interface behavior preferences
     pub interface: InterfacePreferences,
-    
+
     /// Command-specific preferences
     pub commands: CommandPreferences,
-    
+
     /// Behavioral learning data
     pub behavior: BehaviorPreferences,
-    
+
     /// Environment-specific overrides
     pub environments: HashMap<String, EnvironmentPreferences>,
-    
+
     /// Preference metadata
     pub metadata: PreferenceMetadata,
 }
@@ -30,19 +29,19 @@ pub struct UserPreferences {
 pub struct InterfacePreferences {
     /// Global UI mode preference
     pub default_ui_mode: UiMode,
-    
+
     /// Complexity thresholds for auto-suggestions
     pub complexity_thresholds: ComplexityThresholds,
-    
+
     /// Auto-launch settings
     pub auto_launch: AutoLaunchPreferences,
-    
+
     /// Hint and suggestion preferences
     pub hints: HintPreferences,
-    
+
     /// TUI-specific preferences
     pub tui: TuiPreferences,
-    
+
     /// CLI-specific preferences
     pub cli: CliPreferences,
 }
@@ -51,13 +50,13 @@ pub struct InterfacePreferences {
 pub struct CommandPreferences {
     /// Command-specific UI mode overrides
     pub command_ui_modes: HashMap<String, UiMode>,
-    
+
     /// Command-specific default flags
     pub default_flags: HashMap<String, Vec<String>>,
-    
+
     /// Command aliases
     pub aliases: HashMap<String, String>,
-    
+
     /// Auto-completion preferences
     pub completion: CompletionPreferences,
 }
@@ -66,19 +65,19 @@ pub struct CommandPreferences {
 pub struct BehaviorPreferences {
     /// User action patterns
     pub action_patterns: HashMap<String, ActionPattern>,
-    
+
     /// Command usage statistics
     pub command_usage: HashMap<String, UsageStatistics>,
-    
+
     /// Interface choice history
     pub interface_choices: VecDeque<InterfaceChoice>,
-    
+
     /// Learning settings
     pub learning_enabled: bool,
-    
+
     /// Adaptation weights
     pub adaptation_weights: AdaptationWeights,
-    
+
     /// Maximum history size
     pub max_history_size: usize,
 }
@@ -87,16 +86,16 @@ pub struct BehaviorPreferences {
 pub struct EnvironmentPreferences {
     /// Environment name
     pub name: String,
-    
+
     /// UI mode override for this environment
     pub ui_mode_override: Option<UiMode>,
-    
+
     /// Complexity threshold override
     pub complexity_threshold_override: Option<u8>,
-    
+
     /// Disable learning in this environment
     pub disable_learning: bool,
-    
+
     /// Environment-specific aliases
     pub aliases: HashMap<String, String>,
 }
@@ -105,16 +104,16 @@ pub struct EnvironmentPreferences {
 pub struct PreferenceMetadata {
     /// Version of the preference format
     pub version: String,
-    
+
     /// When preferences were created
     pub created_at: DateTime<Utc>,
-    
+
     /// Last updated timestamp
     pub updated_at: DateTime<Utc>,
-    
+
     /// User ID for synchronization
     pub user_id: Option<String>,
-    
+
     /// Schema version for migration
     pub schema_version: u32,
 }
@@ -123,10 +122,10 @@ pub struct PreferenceMetadata {
 pub struct ComplexityThresholds {
     /// Threshold for suggesting TUI (0-10)
     pub suggestion_threshold: u8,
-    
+
     /// Threshold for auto-launching TUI (0-10)
     pub auto_launch_threshold: u8,
-    
+
     /// Threshold for showing hints (0-10)
     pub hint_threshold: u8,
 }
@@ -135,13 +134,13 @@ pub struct ComplexityThresholds {
 pub struct AutoLaunchPreferences {
     /// Confidence threshold for auto-launch (0.0-1.0)
     pub confidence_threshold: f32,
-    
+
     /// Commands that should never auto-launch TUI
     pub blacklist: Vec<String>,
-    
+
     /// Commands that should always auto-launch TUI
     pub whitelist: Vec<String>,
-    
+
     /// Delay before auto-launch (milliseconds)
     pub delay_ms: u64,
 }
@@ -150,13 +149,13 @@ pub struct AutoLaunchPreferences {
 pub struct HintPreferences {
     /// Whether to show hints
     pub show_hints: bool,
-    
+
     /// Frequency of hints (never, rare, normal, frequent)
     pub hint_frequency: HintFrequency,
-    
+
     /// Types of hints to show
     pub hint_types: Vec<HintType>,
-    
+
     /// Dismissed hints (to avoid repetition)
     pub dismissed_hints: Vec<String>,
 }
@@ -165,17 +164,17 @@ pub struct HintPreferences {
 pub struct TuiPreferences {
     /// Color theme
     pub theme: String,
-    
+
     /// Auto-refresh interval
     #[serde(with = "duration_serde")]
     pub auto_refresh_interval: Duration,
-    
+
     /// Mouse support
     pub mouse_support: bool,
-    
+
     /// Key bindings
     pub key_bindings: HashMap<String, String>,
-    
+
     /// Default view on TUI launch
     pub default_view: String,
 }
@@ -184,16 +183,16 @@ pub struct TuiPreferences {
 pub struct CliPreferences {
     /// Output width preference
     pub output_width: Option<usize>,
-    
+
     /// Color preferences
     pub color_mode: ColorMode,
-    
+
     /// Pagination preferences
     pub pagination: bool,
-    
+
     /// Command aliases
     pub command_aliases: HashMap<String, String>,
-    
+
     /// Default output format
     pub default_output_format: String,
 }
@@ -202,13 +201,13 @@ pub struct CliPreferences {
 pub struct CompletionPreferences {
     /// Enable tab completion
     pub enabled: bool,
-    
+
     /// Show completion descriptions
     pub show_descriptions: bool,
-    
+
     /// Maximum number of suggestions
     pub max_suggestions: usize,
-    
+
     /// Context-aware completion
     pub context_aware: bool,
 }
@@ -247,13 +246,13 @@ pub struct InterfaceChoice {
 pub struct AdaptationWeights {
     /// Weight for behavioral learning (0.0-1.0)
     pub behavioral_weight: f32,
-    
+
     /// Weight for context-based decisions (0.0-1.0)
     pub context_weight: f32,
-    
+
     /// Weight for complexity-based decisions (0.0-1.0)
     pub complexity_weight: f32,
-    
+
     /// Weight for explicit preferences (0.0-1.0)
     pub explicit_weight: f32,
 }
@@ -350,7 +349,7 @@ pub struct BehavioralPreference {
 impl UserPreferences {
     pub fn load_or_create() -> eyre::Result<Self> {
         let config_path = Self::get_preferences_path()?;
-        
+
         if config_path.exists() {
             let content = std::fs::read_to_string(&config_path)?;
             let mut preferences: UserPreferences = toml::from_str(&content)?;
@@ -363,23 +362,23 @@ impl UserPreferences {
             Ok(default_prefs)
         }
     }
-    
+
     pub fn save(&self) -> eyre::Result<()> {
         let config_path = Self::get_preferences_path()?;
         self.ensure_preferences_dir()?;
-        
+
         let content = toml::to_string_pretty(self)?;
         std::fs::write(&config_path, content)?;
         Ok(())
     }
-    
+
     pub fn get_preferences_path() -> eyre::Result<PathBuf> {
         let config_dir = dirs::config_dir()
             .ok_or_else(|| eyre::eyre!("Could not determine config directory"))?;
-        
+
         Ok(config_dir.join("dora").join("preferences.toml"))
     }
-    
+
     fn ensure_preferences_dir(&self) -> eyre::Result<()> {
         let config_path = Self::get_preferences_path()?;
         if let Some(parent) = config_path.parent() {
@@ -387,34 +386,37 @@ impl UserPreferences {
         }
         Ok(())
     }
-    
+
     fn validate(&self) -> eyre::Result<()> {
         // Validate thresholds are in range
         if self.interface.complexity_thresholds.suggestion_threshold > 10 {
             return Err(eyre::eyre!("Suggestion threshold must be 0-10"));
         }
-        
-        if self.interface.auto_launch.confidence_threshold < 0.0 || 
-           self.interface.auto_launch.confidence_threshold > 1.0 {
+
+        if self.interface.auto_launch.confidence_threshold < 0.0
+            || self.interface.auto_launch.confidence_threshold > 1.0
+        {
             return Err(eyre::eyre!("Confidence threshold must be 0.0-1.0"));
         }
-        
+
         // Validate adaptation weights sum to reasonable value
-        let total_weight = self.behavior.adaptation_weights.behavioral_weight +
-                          self.behavior.adaptation_weights.context_weight +
-                          self.behavior.adaptation_weights.complexity_weight +
-                          self.behavior.adaptation_weights.explicit_weight;
-        
+        let total_weight = self.behavior.adaptation_weights.behavioral_weight
+            + self.behavior.adaptation_weights.context_weight
+            + self.behavior.adaptation_weights.complexity_weight
+            + self.behavior.adaptation_weights.explicit_weight;
+
         if total_weight < 0.5 || total_weight > 4.0 {
-            return Err(eyre::eyre!("Adaptation weights should sum to a reasonable value"));
+            return Err(eyre::eyre!(
+                "Adaptation weights should sum to a reasonable value"
+            ));
         }
-        
+
         Ok(())
     }
-    
+
     fn migrate_if_needed(&mut self) -> eyre::Result<()> {
         const CURRENT_SCHEMA_VERSION: u32 = 1;
-        
+
         if self.metadata.schema_version < CURRENT_SCHEMA_VERSION {
             // Perform migration based on schema version
             match self.metadata.schema_version {
@@ -424,24 +426,27 @@ impl UserPreferences {
                     self.metadata.schema_version = 1;
                 }
                 _ => {
-                    return Err(eyre::eyre!("Unknown schema version: {}", self.metadata.schema_version));
+                    return Err(eyre::eyre!(
+                        "Unknown schema version: {}",
+                        self.metadata.schema_version
+                    ));
                 }
             }
-            
+
             self.metadata.updated_at = Utc::now();
             self.save()?;
         }
-        
+
         Ok(())
     }
-    
+
     pub fn predict_interface_preference(
         &self,
         command: &Command,
         context: &ExecutionContext,
     ) -> InterfacePreferencePrediction {
         let mut prediction = InterfacePreferencePrediction::new();
-        
+
         // Apply explicit preferences first
         if let Some(explicit_pref) = self.get_explicit_preference(command) {
             prediction.add_factor(PreferenceFactor {
@@ -451,7 +456,7 @@ impl UserPreferences {
                 confidence: 1.0,
             });
         }
-        
+
         // Apply behavioral learning
         if self.behavior.learning_enabled {
             if let Some(behavioral_pref) = self.get_behavioral_preference(command, context) {
@@ -463,7 +468,7 @@ impl UserPreferences {
                 });
             }
         }
-        
+
         // Apply context-based preferences
         if let Some(context_pref) = self.get_context_preference(command, context) {
             prediction.add_factor(PreferenceFactor {
@@ -473,7 +478,7 @@ impl UserPreferences {
                 confidence: context_pref.confidence,
             });
         }
-        
+
         // Apply complexity-based preferences
         let complexity_pref = self.get_complexity_preference(command, context);
         prediction.add_factor(PreferenceFactor {
@@ -482,30 +487,36 @@ impl UserPreferences {
             preference: complexity_pref.preference,
             confidence: complexity_pref.confidence,
         });
-        
+
         prediction.finalize()
     }
-    
+
     fn get_explicit_preference(&self, command: &Command) -> Option<UiMode> {
         let command_name = command.name();
-        
+
         // Check command-specific override
         if let Some(mode) = self.commands.command_ui_modes.get(command_name) {
             return Some(mode.clone());
         }
-        
+
         // Fall back to default UI mode
         Some(self.interface.default_ui_mode)
     }
-    
-    fn get_behavioral_preference(&self, command: &Command, context: &ExecutionContext) -> Option<BehavioralPreference> {
+
+    fn get_behavioral_preference(
+        &self,
+        command: &Command,
+        context: &ExecutionContext,
+    ) -> Option<BehavioralPreference> {
         let command_name = command.name();
-        
+
         // Check usage statistics
         if let Some(stats) = self.behavior.command_usage.get(command_name) {
-            if stats.total_uses >= 5 { // Minimum usage for reliable prediction
+            if stats.total_uses >= 5 {
+                // Minimum usage for reliable prediction
                 // Find most used interface for this command
-                let preferred_interface = stats.interface_distribution
+                let preferred_interface = stats
+                    .interface_distribution
                     .iter()
                     .max_by_key(|(_, count)| *count)
                     .map(|(interface, count)| {
@@ -515,11 +526,11 @@ impl UserPreferences {
                             confidence,
                         }
                     });
-                
+
                 return preferred_interface;
             }
         }
-        
+
         // Check for patterns
         let context_key = format!("{}:{}", command_name, self.context_signature(context));
         if let Some(pattern) = self.behavior.action_patterns.get(&context_key) {
@@ -530,13 +541,17 @@ impl UserPreferences {
                 });
             }
         }
-        
+
         None
     }
-    
-    fn get_context_preference(&self, _command: &Command, context: &ExecutionContext) -> Option<BehavioralPreference> {
+
+    fn get_context_preference(
+        &self,
+        _command: &Command,
+        context: &ExecutionContext,
+    ) -> Option<BehavioralPreference> {
         // Apply context-based rules
-        
+
         // CI/scripted environments prefer minimal
         if context.is_scripted || context.environment.is_ci {
             return Some(BehavioralPreference {
@@ -544,7 +559,7 @@ impl UserPreferences {
                 confidence: 0.9,
             });
         }
-        
+
         // Small terminals prefer CLI
         if let Some((width, height)) = context.terminal_size {
             if width < 80 || height < 24 {
@@ -554,7 +569,7 @@ impl UserPreferences {
                 });
             }
         }
-        
+
         // Non-TTY environments prefer minimal
         if !context.is_tty {
             return Some(BehavioralPreference {
@@ -562,13 +577,17 @@ impl UserPreferences {
                 confidence: 0.9,
             });
         }
-        
+
         None
     }
-    
-    fn get_complexity_preference(&self, command: &Command, _context: &ExecutionContext) -> BehavioralPreference {
+
+    fn get_complexity_preference(
+        &self,
+        command: &Command,
+        _context: &ExecutionContext,
+    ) -> BehavioralPreference {
         let complexity_score = self.calculate_command_complexity(command);
-        
+
         if complexity_score >= self.interface.complexity_thresholds.suggestion_threshold {
             BehavioralPreference {
                 preference: UiMode::Tui,
@@ -586,7 +605,7 @@ impl UserPreferences {
             }
         }
     }
-    
+
     fn calculate_command_complexity(&self, command: &Command) -> u8 {
         match command {
             Command::Ps(_) => 2,
@@ -603,13 +622,11 @@ impl UserPreferences {
             _ => 5, // Default complexity
         }
     }
-    
+
     fn context_signature(&self, context: &ExecutionContext) -> String {
         format!(
             "tty:{},scripted:{},size:{:?}",
-            context.is_tty,
-            context.is_scripted,
-            context.terminal_size
+            context.is_tty, context.is_scripted, context.terminal_size
         )
     }
 }
@@ -622,26 +639,26 @@ impl InterfacePreferencePrediction {
             factors: Vec::new(),
         }
     }
-    
+
     pub fn add_factor(&mut self, factor: PreferenceFactor) {
         self.factors.push(factor);
     }
-    
+
     pub fn finalize(mut self) -> Self {
         if self.factors.is_empty() {
             return self;
         }
-        
+
         // Calculate weighted average
         let mut mode_weights: HashMap<UiMode, f32> = HashMap::new();
         let mut total_weight = 0.0;
-        
+
         for factor in &self.factors {
             let weighted_confidence = factor.weight * factor.confidence;
             *mode_weights.entry(factor.preference.clone()).or_insert(0.0) += weighted_confidence;
             total_weight += factor.weight;
         }
-        
+
         // Find the mode with highest weighted confidence
         if let Some((predicted_mode, confidence)) = mode_weights
             .into_iter()
@@ -654,7 +671,7 @@ impl InterfacePreferencePrediction {
                 0.0
             };
         }
-        
+
         self
     }
 }
@@ -663,7 +680,7 @@ impl ContextSnapshot {
     pub fn from_context(context: &ExecutionContext) -> Self {
         use chrono::prelude::*;
         let now = Local::now();
-        
+
         Self {
             is_tty: context.is_tty,
             is_scripted: context.is_scripted,

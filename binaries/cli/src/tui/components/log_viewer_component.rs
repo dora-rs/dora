@@ -1,19 +1,13 @@
 /// Log Viewer Component - reusable log display widget
-
 use ratatui::{
+    Frame,
     layout::Rect,
     style::Style,
     widgets::{Block, Borders, List, ListItem, ListState},
-    Frame,
 };
 use std::collections::VecDeque;
 
-use crate::tui::{
-    app::AppState,
-    theme::ThemeConfig,
-    views::ViewAction,
-    Result,
-};
+use crate::tui::{Result, app::AppState, theme::ThemeConfig, views::ViewAction};
 
 use super::{Component, ComponentEvent, ComponentType};
 
@@ -122,8 +116,10 @@ impl Default for LogViewerComponent {
 }
 
 impl Component for LogViewerComponent {
-    fn update<'a>(&'a mut self, _app_state: &'a AppState)
-        -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
+    fn update<'a>(
+        &'a mut self,
+        _app_state: &'a AppState,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
         Box::pin(async {
             // Log updates would come from a log stream
             Ok(())
@@ -140,7 +136,9 @@ impl Component for LogViewerComponent {
                 Style::default().fg(theme.colors.border)
             });
 
-        let items: Vec<ListItem> = self.logs.iter()
+        let items: Vec<ListItem> = self
+            .logs
+            .iter()
             .filter(|entry| {
                 if let Some(filter) = self.filter_level {
                     entry.level as u8 >= filter as u8
@@ -150,7 +148,8 @@ impl Component for LogViewerComponent {
             })
             .map(|entry| {
                 let style = self.level_style(entry.level, theme);
-                let content = format!("[{}] {} {}: {}",
+                let content = format!(
+                    "[{}] {} {}: {}",
                     entry.timestamp,
                     entry.level.as_str(),
                     entry.source,
@@ -166,30 +165,31 @@ impl Component for LogViewerComponent {
         frame.render_stateful_widget(list, area, &mut state);
     }
 
-    fn handle_event<'a>(&'a mut self, event: ComponentEvent, _app_state: &'a AppState)
-        -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<ViewAction>> + Send + 'a>> {
+    fn handle_event<'a>(
+        &'a mut self,
+        event: ComponentEvent,
+        _app_state: &'a AppState,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<ViewAction>> + Send + 'a>> {
         Box::pin(async move {
             if !self.focused {
                 return Ok(ViewAction::None);
             }
 
             match event {
-                ComponentEvent::Key(key_event) => {
-                    match key_event.code {
-                        crossterm::event::KeyCode::Up | crossterm::event::KeyCode::Char('k') => {
-                            self.scroll_up();
-                        },
-                        crossterm::event::KeyCode::Down | crossterm::event::KeyCode::Char('j') => {
-                            self.scroll_down();
-                        },
-                        crossterm::event::KeyCode::Char('g') => {
-                            self.scroll_to_top();
-                        },
-                        crossterm::event::KeyCode::Char('G') => {
-                            self.scroll_to_bottom();
-                        },
-                        _ => {}
+                ComponentEvent::Key(key_event) => match key_event.code {
+                    crossterm::event::KeyCode::Up | crossterm::event::KeyCode::Char('k') => {
+                        self.scroll_up();
                     }
+                    crossterm::event::KeyCode::Down | crossterm::event::KeyCode::Char('j') => {
+                        self.scroll_down();
+                    }
+                    crossterm::event::KeyCode::Char('g') => {
+                        self.scroll_to_top();
+                    }
+                    crossterm::event::KeyCode::Char('G') => {
+                        self.scroll_to_bottom();
+                    }
+                    _ => {}
                 },
                 _ => {}
             }

@@ -1,9 +1,17 @@
+use clap::Parser;
 use colored::Colorize;
 use command::Executable;
+use dora_core::{
+    descriptor::{Descriptor, DescriptorExt},
+    topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT,
+};
+use eyre::{Context, eyre};
 use std::{
-    net::{IpAddr, Ipv4Addr},
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     path::PathBuf,
 };
+
+use crate::command::check::check_environment;
 
 mod command;
 mod common;
@@ -95,94 +103,105 @@ pub fn lib_main(args: Args) {
 
 /// New hybrid CLI entry point
 pub fn hybrid_main(cli: cli::Cli) {
-    // Handle case where no command is provided (e.g., --version or --help)
-    let Some(command) = &cli.command else {
-        // Clap will have already handled --version and --help
-        // If we get here with no command, something went wrong
-        eprintln!("Error: No command provided. Use --help for usage information.");
-        std::process::exit(1);
-    };
+    run_new_cli(cli)
+}
 
-    // Create execution context with enhanced detection (Issue #2)
-    let context = cli::context::ExecutionContext::from_cli(&cli);
+pub fn run_new_cli(cli: cli::Cli) {
+    let command_opt = cli.command.clone();
 
-    // Create interface selector (Issue #3)
-    let config = cli::interface::UserConfig::default();
-    let mut selector = cli::interface::InterfaceSelector::new(context.clone(), config);
-    let interface_decision = selector.select_interface(command);
-
-    // Debug output (only if verbose flag is set)
-    if cli.verbose {
-        println!("🚀 Dora CLI - Verbose Mode");
-        println!("Global flags:");
-        println!("  UI Mode: {:?}", cli.ui_mode.unwrap_or_default());
-        println!("  Output Format: {:?}", cli.output);
-        println!();
-        println!("Execution Context:");
-        println!("  TTY: {}, Piped: {}, Scripted: {}", context.is_tty, context.is_piped, context.is_scripted);
-        println!("  Selected Strategy: {:?}", interface_decision.strategy);
-        println!();
-    }
-
-    match command {
-        // Basic commands - placeholder for actual implementation
-        cli::Command::Ps(_) | cli::Command::Start(_) | cli::Command::Stop(_) |
-        cli::Command::Logs(_) | cli::Command::Build(_) | cli::Command::Up(_) |
-        cli::Command::Destroy(_) | cli::Command::New(_) | cli::Command::Check(_) |
-        cli::Command::Graph(_) => {
-            // TODO: Implement actual command logic
-            // For now, just silently succeed
-        },
-
-        // Enhanced commands
-        cli::Command::Inspect(_) | cli::Command::Debug(_) | cli::Command::Analyze(_) |
-        cli::Command::Monitor(_) | cli::Command::Help(_) => {
-            // TODO: Implement actual command logic
-        },
-
-        // TUI commands
-        cli::Command::Tui(cmd) => {
+    match command_opt {
+        Some(cli::Command::Tui(cmd)) => {
             if cli.verbose {
                 println!("🖥️  Launching TUI interface...");
+                println!("  Output Format: {:?}", cli.output);
+                println!();
             }
 
-            // Determine initial view from command
             let initial_view = if let Some(view) = &cmd.view {
                 match view {
                     cli::TuiView::Dashboard => tui::ViewType::Dashboard,
                     cli::TuiView::Dataflow => tui::ViewType::DataflowManager,
                     cli::TuiView::Performance => tui::ViewType::SystemMonitor,
-                    cli::TuiView::Logs => tui::ViewType::LogViewer { target: "all".to_string() },
+                    cli::TuiView::Logs => tui::ViewType::LogViewer {
+                        target: "all".to_string(),
+                    },
                 }
             } else {
                 tui::ViewType::Dashboard
             };
 
-            // Launch TUI
             if let Err(e) = launch_tui(initial_view) {
                 eprintln!("❌ Failed to launch TUI: {}", e);
                 std::process::exit(1);
             }
-        },
-        cli::Command::Dashboard(_) => {
+        }
+        Some(cli::Command::Dashboard(_)) => {
             if cli.verbose {
                 println!("🖥️  Launching Dashboard...");
             }
 
-            // Launch TUI with dashboard view
             if let Err(e) = launch_tui(tui::ViewType::Dashboard) {
                 eprintln!("❌ Failed to launch dashboard: {}", e);
                 std::process::exit(1);
             }
-        },
-
-        // System commands
-        cli::Command::System(_) | cli::Command::Config(_) |
-        cli::Command::Daemon(_) | cli::Command::Runtime(_) |
-        cli::Command::Coordinator(_) | cli::Command::Self_(_) => {
-            // TODO: Implement actual system command logic
+        }
+        Some(cli::Command::Check(cmd)) => {
+            let context = cli::context::ExecutionContext::from_cli(&cli);
+            if let Err(err) = execute_check_command(cmd, &context) {
+                eprintln!("[ERROR] {err:?}");
+                std::process::exit(1);
+            }
+        }
+        _ => {
+            let legacy_args = Args::parse();
+            lib_main(legacy_args);
         }
     }
+}
+
+fn execute_check_command(
+    cmd: crate::cli::commands::CheckCommand,
+    context: &cli::context::ExecutionContext,
+) -> eyre::Result<()> {
+    let crate::cli::commands::CheckCommand { common, dataflow } = cmd;
+
+    let base_dir = common
+        .working_dir
+        .clone()
+        .map(|dir| {
+            let candidate = PathBuf::from(dir);
+            if candidate.is_relative() {
+                context.working_dir.join(candidate)
+            } else {
+                candidate
+            }
+        })
+        .unwrap_or_else(|| context.working_dir.clone());
+
+    if let Some(dataflow) = dataflow.dataflow.clone() {
+        let full_path = if dataflow.is_relative() {
+            base_dir.join(dataflow)
+        } else {
+            dataflow
+        };
+
+        let descriptor_path = full_path
+            .canonicalize()
+            .wrap_err("failed to resolve dataflow path")?;
+
+        let working_dir = descriptor_path
+            .parent()
+            .ok_or_else(|| eyre!("dataflow path has no parent directory"))?
+            .to_path_buf();
+
+        Descriptor::blocking_read(&descriptor_path)?
+            .check(&working_dir)
+            .wrap_err("dataflow validation failed")?;
+    }
+
+    let coordinator_addr: SocketAddr =
+        (crate::LOCALHOST, DORA_COORDINATOR_PORT_CONTROL_DEFAULT).into();
+    check_environment(coordinator_addr)
 }
 
 /// Launch TUI with specified initial view

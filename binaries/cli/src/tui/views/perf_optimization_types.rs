@@ -37,7 +37,9 @@ impl PerfSection {
         match self {
             Self::PerformanceMetrics => "Real-time system and dataflow performance metrics",
             Self::BottleneckDetection => "Identify performance bottlenecks automatically",
-            Self::OptimizationSuggestions => "AI-powered recommendations for performance improvements",
+            Self::OptimizationSuggestions => {
+                "AI-powered recommendations for performance improvements"
+            }
             Self::ResourceAnalysis => "Detailed CPU, memory, and network usage analysis",
         }
     }
@@ -371,7 +373,10 @@ impl PerfOptimizationState {
 
     pub fn next_section(&mut self) {
         let sections = PerfSection::all();
-        let current_idx = sections.iter().position(|s| s == &self.current_section).unwrap_or(0);
+        let current_idx = sections
+            .iter()
+            .position(|s| s == &self.current_section)
+            .unwrap_or(0);
         let next_idx = (current_idx + 1) % sections.len();
         self.current_section = sections[next_idx].clone();
         self.selected_index = 0;
@@ -380,8 +385,15 @@ impl PerfOptimizationState {
 
     pub fn previous_section(&mut self) {
         let sections = PerfSection::all();
-        let current_idx = sections.iter().position(|s| s == &self.current_section).unwrap_or(0);
-        let prev_idx = if current_idx == 0 { sections.len() - 1 } else { current_idx - 1 };
+        let current_idx = sections
+            .iter()
+            .position(|s| s == &self.current_section)
+            .unwrap_or(0);
+        let prev_idx = if current_idx == 0 {
+            sections.len() - 1
+        } else {
+            current_idx - 1
+        };
         self.current_section = sections[prev_idx].clone();
         self.selected_index = 0;
         self.update_data();
@@ -391,7 +403,9 @@ impl PerfOptimizationState {
         self.data = match &self.current_section {
             PerfSection::PerformanceMetrics => PerfData::Metrics(create_mock_metrics()),
             PerfSection::BottleneckDetection => PerfData::Bottlenecks(create_mock_bottlenecks()),
-            PerfSection::OptimizationSuggestions => PerfData::Suggestions(create_mock_suggestions()),
+            PerfSection::OptimizationSuggestions => {
+                PerfData::Suggestions(create_mock_suggestions())
+            }
             PerfSection::ResourceAnalysis => PerfData::Resources(create_mock_resources()),
         };
     }
@@ -517,7 +531,10 @@ pub fn create_mock_bottlenecks() -> Vec<Bottleneck> {
             bottleneck_type: BottleneckType::CpuBound,
             severity: Severity::High,
             impact: "Processing queue backlog increasing, 200+ messages waiting".to_string(),
-            affected_components: vec!["image_processor".to_string(), "downstream_nodes".to_string()],
+            affected_components: vec![
+                "image_processor".to_string(),
+                "downstream_nodes".to_string(),
+            ],
             detected_at: Utc::now(),
             metrics: HashMap::from([
                 ("cpu_usage".to_string(), 95.5),
@@ -705,9 +722,18 @@ mod tests {
 
     #[test]
     fn test_perf_section_title() {
-        assert_eq!(PerfSection::PerformanceMetrics.title(), "Performance Metrics");
-        assert_eq!(PerfSection::BottleneckDetection.title(), "Bottleneck Detection");
-        assert_eq!(PerfSection::OptimizationSuggestions.title(), "Optimization Suggestions");
+        assert_eq!(
+            PerfSection::PerformanceMetrics.title(),
+            "Performance Metrics"
+        );
+        assert_eq!(
+            PerfSection::BottleneckDetection.title(),
+            "Bottleneck Detection"
+        );
+        assert_eq!(
+            PerfSection::OptimizationSuggestions.title(),
+            "Optimization Suggestions"
+        );
         assert_eq!(PerfSection::ResourceAnalysis.title(), "Resource Analysis");
     }
 
@@ -752,7 +778,10 @@ mod tests {
     fn test_optimization_category_name() {
         assert_eq!(OptimizationCategory::Architecture.name(), "Architecture");
         assert_eq!(OptimizationCategory::Caching.name(), "Caching");
-        assert_eq!(OptimizationCategory::Parallelization.name(), "Parallelization");
+        assert_eq!(
+            OptimizationCategory::Parallelization.name(),
+            "Parallelization"
+        );
     }
 
     #[test]

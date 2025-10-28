@@ -36,10 +36,12 @@ impl DebugComplexityAnalyzer {
         };
 
         // Issue complexity
-        let critical_issues = detected_issues.iter()
+        let critical_issues = detected_issues
+            .iter()
             .filter(|i| matches!(i.severity, IssueSeverity::Critical))
             .count();
-        let high_issues = detected_issues.iter()
+        let high_issues = detected_issues
+            .iter()
             .filter(|i| matches!(i.severity, IssueSeverity::High))
             .count();
 
@@ -51,7 +53,8 @@ impl DebugComplexityAnalyzer {
                 factor_type: FactorType::IssueComplexity,
                 impact: 3.0,
                 description: format!("{} critical issues detected", critical_issues),
-                evidence: detected_issues.iter()
+                evidence: detected_issues
+                    .iter()
                     .filter(|i| matches!(i.severity, IssueSeverity::Critical))
                     .map(|i| i.title.clone())
                     .collect(),
@@ -69,7 +72,7 @@ impl DebugComplexityAnalyzer {
                     evidence: vec!["Full system analysis required".to_string()],
                 });
                 4.0
-            },
+            }
             DebugTarget::Dataflow(name) => {
                 // Get dataflow complexity
                 let dataflow_complexity = Self::calculate_dataflow_complexity(name);
@@ -79,12 +82,13 @@ impl DebugComplexityAnalyzer {
                     complexity_factors.push(ComplexityFactor {
                         factor_type: FactorType::DataflowComplexity,
                         impact: dataflow_complexity,
-                        description: "Complex dataflow with multiple nodes and dependencies".to_string(),
+                        description: "Complex dataflow with multiple nodes and dependencies"
+                            .to_string(),
                         evidence: vec![format!("Dataflow: {}", name)],
                     });
                 }
                 dataflow_complexity
-            },
+            }
             _ => 1.0,
         };
 
@@ -151,7 +155,10 @@ mod tests {
             related_issues: vec![],
         };
 
-        let complexity = analyzer.analyze_complexity(&debug_session, &[critical_issue]).await.unwrap();
+        let complexity = analyzer
+            .analyze_complexity(&debug_session, &[critical_issue])
+            .await
+            .unwrap();
 
         assert!(complexity.overall_score > 7.0); // Interactive (6) + Live (2) + Critical issue (3)
         assert!(complexity.issue_complexity > 0.0);
@@ -163,9 +170,17 @@ mod tests {
         let mut debug_session = DebugSession::default();
         debug_session.debug_target = DebugTarget::System;
 
-        let complexity = analyzer.analyze_complexity(&debug_session, &[]).await.unwrap();
+        let complexity = analyzer
+            .analyze_complexity(&debug_session, &[])
+            .await
+            .unwrap();
 
         assert!(complexity.system_complexity == 4.0);
-        assert!(complexity.factors.iter().any(|f| matches!(f.factor_type, FactorType::SystemComplexity)));
+        assert!(
+            complexity
+                .factors
+                .iter()
+                .any(|f| matches!(f.factor_type, FactorType::SystemComplexity))
+        );
     }
 }

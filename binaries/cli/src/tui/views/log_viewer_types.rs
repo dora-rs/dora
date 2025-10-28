@@ -528,12 +528,7 @@ mod tests {
     #[test]
     fn test_log_viewer_state_add_log() {
         let mut state = LogViewerState::new();
-        let entry = LogEntry::new(
-            1,
-            LogLevel::Info,
-            "test".to_string(),
-            "Message".to_string(),
-        );
+        let entry = LogEntry::new(1, LogLevel::Info, "test".to_string(), "Message".to_string());
 
         state.add_log(entry);
         assert_eq!(state.buffer_count(), 1);
@@ -624,9 +619,24 @@ mod tests {
         let mut state = LogViewerState::new();
 
         // Add different level logs
-        state.add_log(LogEntry::new(0, LogLevel::Error, "test".to_string(), "Error".to_string()));
-        state.add_log(LogEntry::new(1, LogLevel::Warn, "test".to_string(), "Warning".to_string()));
-        state.add_log(LogEntry::new(2, LogLevel::Info, "test".to_string(), "Info".to_string()));
+        state.add_log(LogEntry::new(
+            0,
+            LogLevel::Error,
+            "test".to_string(),
+            "Error".to_string(),
+        ));
+        state.add_log(LogEntry::new(
+            1,
+            LogLevel::Warn,
+            "test".to_string(),
+            "Warning".to_string(),
+        ));
+        state.add_log(LogEntry::new(
+            2,
+            LogLevel::Info,
+            "test".to_string(),
+            "Info".to_string(),
+        ));
 
         assert_eq!(state.filtered_count(), 3);
 
@@ -643,10 +653,30 @@ mod tests {
     fn test_log_stats() {
         let mut state = LogViewerState::new();
 
-        state.add_log(LogEntry::new(0, LogLevel::Error, "test".to_string(), "E1".to_string()));
-        state.add_log(LogEntry::new(1, LogLevel::Error, "test".to_string(), "E2".to_string()));
-        state.add_log(LogEntry::new(2, LogLevel::Warn, "test".to_string(), "W1".to_string()));
-        state.add_log(LogEntry::new(3, LogLevel::Info, "test".to_string(), "I1".to_string()));
+        state.add_log(LogEntry::new(
+            0,
+            LogLevel::Error,
+            "test".to_string(),
+            "E1".to_string(),
+        ));
+        state.add_log(LogEntry::new(
+            1,
+            LogLevel::Error,
+            "test".to_string(),
+            "E2".to_string(),
+        ));
+        state.add_log(LogEntry::new(
+            2,
+            LogLevel::Warn,
+            "test".to_string(),
+            "W1".to_string(),
+        ));
+        state.add_log(LogEntry::new(
+            3,
+            LogLevel::Info,
+            "test".to_string(),
+            "I1".to_string(),
+        ));
 
         let stats = state.stats();
         assert_eq!(stats.total, 4);

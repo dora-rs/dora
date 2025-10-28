@@ -1,11 +1,11 @@
 /// Tests for Debug Session View (Issue #29)
 #[cfg(test)]
 mod debug_session_tests {
-    use dora_cli::tui::views::{
-        ExecutionState, DebugPanel, Variable, CallStackFrame, Breakpoint, CodeLocation,
-        DebugSessionState, DebugSessionView, View,
-    };
     use dora_cli::tui::theme::ThemeConfig;
+    use dora_cli::tui::views::{
+        Breakpoint, CallStackFrame, CodeLocation, DebugPanel, DebugSessionState, DebugSessionView,
+        ExecutionState, Variable, View,
+    };
 
     // ExecutionState tests
     #[test]
@@ -107,11 +107,7 @@ mod debug_session_tests {
     // CallStackFrame tests
     #[test]
     fn test_call_stack_frame_creation() {
-        let frame = CallStackFrame::new(
-            "main".to_string(),
-            "main.rs".to_string(),
-            42,
-        );
+        let frame = CallStackFrame::new("main".to_string(), "main.rs".to_string(), 42);
 
         assert_eq!(frame.function_name, "main");
         assert_eq!(frame.file_name, "main.rs");
@@ -120,11 +116,7 @@ mod debug_session_tests {
 
     #[test]
     fn test_call_stack_frame_format_display() {
-        let frame = CallStackFrame::new(
-            "process_frame".to_string(),
-            "node.rs".to_string(),
-            123,
-        );
+        let frame = CallStackFrame::new("process_frame".to_string(), "node.rs".to_string(), 123);
 
         let display = frame.format_display();
         assert!(display.contains("process_frame"));
@@ -169,11 +161,7 @@ mod debug_session_tests {
     // CodeLocation tests
     #[test]
     fn test_code_location_creation() {
-        let loc = CodeLocation::new(
-            "main.rs".to_string(),
-            42,
-            "main".to_string(),
-        );
+        let loc = CodeLocation::new("main.rs".to_string(), 42, "main".to_string());
 
         assert_eq!(loc.file_name, "main.rs");
         assert_eq!(loc.line_number, 42);
@@ -182,11 +170,7 @@ mod debug_session_tests {
 
     #[test]
     fn test_code_location_format_display() {
-        let loc = CodeLocation::new(
-            "camera.rs".to_string(),
-            123,
-            "capture_frame".to_string(),
-        );
+        let loc = CodeLocation::new("camera.rs".to_string(), 123, "capture_frame".to_string());
 
         let display = loc.format_display();
         assert!(display.contains("camera.rs"));
@@ -225,11 +209,7 @@ mod debug_session_tests {
     #[test]
     fn test_debug_session_state_add_call_frame() {
         let mut state = DebugSessionState::new("test".to_string());
-        let frame = CallStackFrame::new(
-            "main".to_string(),
-            "main.rs".to_string(),
-            10,
-        );
+        let frame = CallStackFrame::new("main".to_string(), "main.rs".to_string(), 10);
 
         state.add_call_frame(frame);
         assert_eq!(state.call_stack.len(), 1);
@@ -352,8 +332,17 @@ mod debug_session_tests {
 
         // Add data to different panels
         for i in 0..3 {
-            state.add_variable(Variable::new(format!("v{}", i), "0".to_string(), "i32".to_string(), "local".to_string()));
-            state.add_call_frame(CallStackFrame::new(format!("func{}", i), "test.rs".to_string(), i));
+            state.add_variable(Variable::new(
+                format!("v{}", i),
+                "0".to_string(),
+                "i32".to_string(),
+                "local".to_string(),
+            ));
+            state.add_call_frame(CallStackFrame::new(
+                format!("func{}", i),
+                "test.rs".to_string(),
+                i,
+            ));
             state.add_breakpoint(Breakpoint::new(i, "test.rs".to_string(), i * 10));
         }
 
@@ -381,8 +370,18 @@ mod debug_session_tests {
         let mut state = DebugSessionState::new("test".to_string());
 
         // Add items
-        state.add_variable(Variable::new("v1".to_string(), "1".to_string(), "i32".to_string(), "local".to_string()));
-        state.add_variable(Variable::new("v2".to_string(), "2".to_string(), "i32".to_string(), "local".to_string()));
+        state.add_variable(Variable::new(
+            "v1".to_string(),
+            "1".to_string(),
+            "i32".to_string(),
+            "local".to_string(),
+        ));
+        state.add_variable(Variable::new(
+            "v2".to_string(),
+            "2".to_string(),
+            "i32".to_string(),
+            "local".to_string(),
+        ));
 
         state.switch_panel(DebugPanel::Variables);
         state.selected_variable = 1;
@@ -399,10 +398,19 @@ mod debug_session_tests {
 
         // Add data
         for i in 0..3 {
-            state.add_variable(Variable::new(format!("v{}", i), "0".to_string(), "i32".to_string(), "local".to_string()));
+            state.add_variable(Variable::new(
+                format!("v{}", i),
+                "0".to_string(),
+                "i32".to_string(),
+                "local".to_string(),
+            ));
         }
         for i in 0..5 {
-            state.add_call_frame(CallStackFrame::new(format!("f{}", i), "test.rs".to_string(), i));
+            state.add_call_frame(CallStackFrame::new(
+                format!("f{}", i),
+                "test.rs".to_string(),
+                i,
+            ));
         }
         for i in 0..2 {
             state.add_breakpoint(Breakpoint::new(i, "test.rs".to_string(), i * 10));
@@ -423,8 +431,17 @@ mod debug_session_tests {
         let mut state = DebugSessionState::new("test".to_string());
 
         // Add data
-        state.add_variable(Variable::new("v".to_string(), "0".to_string(), "i32".to_string(), "local".to_string()));
-        state.add_call_frame(CallStackFrame::new("f".to_string(), "test.rs".to_string(), 1));
+        state.add_variable(Variable::new(
+            "v".to_string(),
+            "0".to_string(),
+            "i32".to_string(),
+            "local".to_string(),
+        ));
+        state.add_call_frame(CallStackFrame::new(
+            "f".to_string(),
+            "test.rs".to_string(),
+            1,
+        ));
         state.add_breakpoint(Breakpoint::new(1, "test.rs".to_string(), 10));
         state.selected_variable = 1;
         state.selected_frame = 1;
@@ -485,7 +502,10 @@ mod debug_session_tests {
         let view = DebugSessionView::new("test", &theme);
 
         assert!(view.auto_refresh().is_some());
-        assert_eq!(view.auto_refresh().unwrap(), std::time::Duration::from_millis(500));
+        assert_eq!(
+            view.auto_refresh().unwrap(),
+            std::time::Duration::from_millis(500)
+        );
     }
 
     #[test]
@@ -522,13 +542,35 @@ mod debug_session_tests {
         state.set_execution_state(ExecutionState::Paused);
 
         // Add variables visible at breakpoint
-        state.add_variable(Variable::new("input".to_string(), "42".to_string(), "i32".to_string(), "local".to_string()));
-        state.add_variable(Variable::new("result".to_string(), "84".to_string(), "i32".to_string(), "local".to_string()));
+        state.add_variable(Variable::new(
+            "input".to_string(),
+            "42".to_string(),
+            "i32".to_string(),
+            "local".to_string(),
+        ));
+        state.add_variable(Variable::new(
+            "result".to_string(),
+            "84".to_string(),
+            "i32".to_string(),
+            "local".to_string(),
+        ));
 
         // Add call stack
-        state.add_call_frame(CallStackFrame::new("handler".to_string(), "handler.rs".to_string(), 25));
-        state.add_call_frame(CallStackFrame::new("process".to_string(), "main.rs".to_string(), 50));
-        state.add_call_frame(CallStackFrame::new("main".to_string(), "main.rs".to_string(), 10));
+        state.add_call_frame(CallStackFrame::new(
+            "handler".to_string(),
+            "handler.rs".to_string(),
+            25,
+        ));
+        state.add_call_frame(CallStackFrame::new(
+            "process".to_string(),
+            "main.rs".to_string(),
+            50,
+        ));
+        state.add_call_frame(CallStackFrame::new(
+            "main".to_string(),
+            "main.rs".to_string(),
+            10,
+        ));
 
         // Verify state
         assert_eq!(state.execution_state, ExecutionState::Paused);

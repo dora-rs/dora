@@ -2,7 +2,6 @@
 // Intelligent help content delivery and personalization
 
 use super::types::*;
-use chrono::{Duration, Utc};
 use eyre::Result;
 use std::collections::HashMap;
 
@@ -35,7 +34,10 @@ impl HelpContentManager {
         detail_level: DetailLevel,
     ) -> Result<HelpContent> {
         // Resolve topic from index
-        let base_content = self.content_index.get_topic(topic).await?
+        let base_content = self
+            .content_index
+            .get_topic(topic)
+            .await?
             .unwrap_or_else(|| self.generate_default_topic_content(topic));
 
         // Apply user expertise filtering
@@ -45,8 +47,10 @@ impl HelpContentManager {
         let detailed_content = self.apply_detail_level(&filtered_content, detail_level);
 
         // Add personalized suggestions
-        let personalized_content = self.personalization_engine
-            .enhance_content(&detailed_content, user_expertise).await?;
+        let personalized_content = self
+            .personalization_engine
+            .enhance_content(&detailed_content, user_expertise)
+            .await?;
 
         Ok(personalized_content)
     }
@@ -84,13 +88,17 @@ impl HelpContentManager {
         if let Some(context) = system_context {
             // Analyze current dataflows
             if !context.active_dataflows.is_empty() {
-                let dataflow_help = self.generate_dataflow_contextual_help(&context.active_dataflows).await?;
+                let dataflow_help = self
+                    .generate_dataflow_contextual_help(&context.active_dataflows)
+                    .await?;
                 contextual_content.sections.extend(dataflow_help);
             }
 
             // Analyze recent errors
             if !context.recent_errors.is_empty() {
-                let error_help = self.generate_error_contextual_help(&context.recent_errors).await?;
+                let error_help = self
+                    .generate_error_contextual_help(&context.recent_errors)
+                    .await?;
                 contextual_content.sections.extend(error_help);
             }
 
@@ -101,7 +109,9 @@ impl HelpContentManager {
             }
 
             // Suggest next actions
-            let suggestions = self.generate_contextual_suggestions(context, user_expertise).await?;
+            let suggestions = self
+                .generate_contextual_suggestions(context, user_expertise)
+                .await?;
             contextual_content.sections.push(HelpSection {
                 title: "Suggested Actions".to_string(),
                 content: suggestions,
@@ -117,7 +127,10 @@ impl HelpContentManager {
     }
 
     /// Get overview of all help content
-    pub async fn get_overview_content(&self, user_expertise: UserExpertiseLevel) -> Result<HelpContent> {
+    pub async fn get_overview_content(
+        &self,
+        user_expertise: UserExpertiseLevel,
+    ) -> Result<HelpContent> {
         let mut overview = HelpContent::new("overview".to_string());
         overview.title = "Dora CLI Help Overview".to_string();
         overview.summary = "Comprehensive guide to Dora CLI commands and features".to_string();
@@ -130,21 +143,26 @@ impl HelpContentManager {
                       • dora start - Start a dataflow\n\
                       • dora stop - Stop a dataflow\n\
                       • dora logs - View dataflow logs\n\
-                      • dora build - Build dataflow components".to_string(),
+                      • dora build - Build dataflow components"
+                .to_string(),
             section_type: SectionType::Overview,
             visibility_level: DetailLevel::Normal,
             interactive_elements: Vec::new(),
         });
 
         // Enhanced commands section
-        if matches!(user_expertise, UserExpertiseLevel::Intermediate | UserExpertiseLevel::Expert) {
+        if matches!(
+            user_expertise,
+            UserExpertiseLevel::Intermediate | UserExpertiseLevel::Expert
+        ) {
             overview.sections.push(HelpSection {
                 title: "Enhanced Commands".to_string(),
                 content: "Advanced commands with smart features:\n\
                           • dora inspect - Deep resource inspection\n\
                           • dora debug - Interactive debugging\n\
                           • dora analyze - Multi-modal analysis\n\
-                          • dora monitor - Real-time monitoring".to_string(),
+                          • dora monitor - Real-time monitoring"
+                    .to_string(),
                 section_type: SectionType::Advanced,
                 visibility_level: DetailLevel::Detailed,
                 interactive_elements: Vec::new(),
@@ -178,7 +196,8 @@ impl HelpContentManager {
                            • configuration - System configuration\n\
                            • debugging - Debugging and troubleshooting\n\
                            • examples - Usage examples\n\
-                           • tutorials - Interactive tutorials".to_string();
+                           • tutorials - Interactive tutorials"
+            .to_string();
 
         topics_content.sections.push(HelpSection {
             title: "Topics".to_string(),
@@ -211,26 +230,30 @@ impl HelpContentManager {
         content
     }
 
-    fn filter_content_by_expertise(&self, content: &HelpContent, expertise: UserExpertiseLevel) -> HelpContent {
+    fn filter_content_by_expertise(
+        &self,
+        content: &HelpContent,
+        expertise: UserExpertiseLevel,
+    ) -> HelpContent {
         let mut filtered = content.clone();
 
         // Filter sections based on expertise
-        filtered.sections.retain(|section| {
-            match (expertise, &section.section_type) {
+        filtered
+            .sections
+            .retain(|section| match (expertise, &section.section_type) {
                 (UserExpertiseLevel::Beginner, SectionType::Advanced) => false,
                 (UserExpertiseLevel::Beginner, SectionType::Tutorial) => true,
                 _ => true,
-            }
-        });
+            });
 
         // Filter examples by difficulty
-        filtered.examples.retain(|example| {
-            match (expertise, example.difficulty) {
+        filtered
+            .examples
+            .retain(|example| match (expertise, example.difficulty) {
                 (UserExpertiseLevel::Beginner, DifficultyLevel::Advanced) => false,
                 (UserExpertiseLevel::Beginner, DifficultyLevel::Expert) => false,
                 _ => true,
-            }
-        });
+            });
 
         filtered
     }
@@ -239,19 +262,24 @@ impl HelpContentManager {
         let mut detailed = content.clone();
 
         // Filter sections by visibility level
-        detailed.sections.retain(|section| {
-            match detail_level {
-                DetailLevel::Quick => matches!(section.visibility_level, DetailLevel::Quick | DetailLevel::Normal),
-                DetailLevel::Normal => !matches!(section.visibility_level, DetailLevel::Expert),
-                DetailLevel::Detailed => true,
-                DetailLevel::Expert => true,
-            }
+        detailed.sections.retain(|section| match detail_level {
+            DetailLevel::Quick => matches!(
+                section.visibility_level,
+                DetailLevel::Quick | DetailLevel::Normal
+            ),
+            DetailLevel::Normal => !matches!(section.visibility_level, DetailLevel::Expert),
+            DetailLevel::Detailed => true,
+            DetailLevel::Expert => true,
         });
 
         detailed
     }
 
-    fn combine_search_results(&self, results: Vec<HelpSearchResult>, detail_level: DetailLevel) -> HelpContent {
+    fn combine_search_results(
+        &self,
+        results: Vec<HelpSearchResult>,
+        detail_level: DetailLevel,
+    ) -> HelpContent {
         let mut combined = HelpContent::new("search-results".to_string());
         combined.title = "Search Results".to_string();
         combined.summary = format!("Found {} matching topics", results.len());
@@ -259,22 +287,27 @@ impl HelpContentManager {
         for result in results.iter().take(10) {
             combined.sections.push(HelpSection {
                 title: result.title.clone(),
-                content: format!("{}\n\nRelevance: {:.0}%", result.snippet, result.relevance_score * 100.0),
+                content: format!(
+                    "{}\n\nRelevance: {:.0}%",
+                    result.snippet,
+                    result.relevance_score * 100.0
+                ),
                 section_type: SectionType::Overview,
                 visibility_level: detail_level,
-                interactive_elements: vec![
-                    InteractiveElement::QuickLink {
-                        text: "View full topic".to_string(),
-                        target: result.topic.clone(),
-                    }
-                ],
+                interactive_elements: vec![InteractiveElement::QuickLink {
+                    text: "View full topic".to_string(),
+                    target: result.topic.clone(),
+                }],
             });
         }
 
         combined
     }
 
-    async fn generate_dataflow_contextual_help(&self, dataflows: &[DataflowInfo]) -> Result<Vec<HelpSection>> {
+    async fn generate_dataflow_contextual_help(
+        &self,
+        dataflows: &[DataflowInfo],
+    ) -> Result<Vec<HelpSection>> {
         let mut sections = Vec::new();
 
         sections.push(HelpSection {
@@ -289,7 +322,10 @@ impl HelpContentManager {
         });
 
         // Add examples for common dataflow operations
-        let first_dataflow = dataflows.first().map(|d| d.name.as_str()).unwrap_or("DATAFLOW_NAME");
+        let first_dataflow = dataflows
+            .first()
+            .map(|d| d.name.as_str())
+            .unwrap_or("DATAFLOW_NAME");
         let examples_content = format!(
             "• View dataflow status: `dora ps`\n\
              • Inspect a specific dataflow: `dora inspect {}`\n\
@@ -303,18 +339,19 @@ impl HelpContentManager {
             content: examples_content,
             section_type: SectionType::Examples,
             visibility_level: DetailLevel::Normal,
-            interactive_elements: vec![
-                InteractiveElement::RunnableCommand {
-                    command: "dora ps".to_string(),
-                    description: "Show current dataflow status".to_string(),
-                },
-            ],
+            interactive_elements: vec![InteractiveElement::RunnableCommand {
+                command: "dora ps".to_string(),
+                description: "Show current dataflow status".to_string(),
+            }],
         });
 
         Ok(sections)
     }
 
-    async fn generate_error_contextual_help(&self, errors: &[ErrorInfo]) -> Result<Vec<HelpSection>> {
+    async fn generate_error_contextual_help(
+        &self,
+        errors: &[ErrorInfo],
+    ) -> Result<Vec<HelpSection>> {
         let mut sections = Vec::new();
 
         let error_summary = format!(
@@ -334,7 +371,8 @@ impl HelpContentManager {
         let grouped_errors = self.group_errors_by_type(errors);
 
         for (error_type, error_group) in grouped_errors {
-            let troubleshooting_content = self.get_error_type_help(&error_type, &error_group).await?;
+            let troubleshooting_content =
+                self.get_error_type_help(&error_type, &error_group).await?;
             sections.push(troubleshooting_content);
         }
 
@@ -344,14 +382,19 @@ impl HelpContentManager {
     fn group_errors_by_type(&self, errors: &[ErrorInfo]) -> HashMap<String, Vec<ErrorInfo>> {
         let mut grouped = HashMap::new();
         for error in errors {
-            grouped.entry(error.error_type.clone())
+            grouped
+                .entry(error.error_type.clone())
                 .or_insert_with(Vec::new)
                 .push(error.clone());
         }
         grouped
     }
 
-    async fn get_error_type_help(&self, error_type: &str, errors: &[ErrorInfo]) -> Result<HelpSection> {
+    async fn get_error_type_help(
+        &self,
+        error_type: &str,
+        errors: &[ErrorInfo],
+    ) -> Result<HelpSection> {
         let content = format!(
             "Error type: {}\nOccurrences: {}\n\nSuggested actions:\n\
              • Check logs with `dora logs --errors-only`\n\
@@ -370,7 +413,10 @@ impl HelpContentManager {
         })
     }
 
-    async fn generate_performance_help(&self, issues: &PerformanceIssues) -> Result<Vec<HelpSection>> {
+    async fn generate_performance_help(
+        &self,
+        issues: &PerformanceIssues,
+    ) -> Result<Vec<HelpSection>> {
         let mut sections = Vec::new();
 
         let mut recommendations = Vec::new();
@@ -378,10 +424,12 @@ impl HelpContentManager {
             recommendations.push("• Consider reducing node workload or optimizing algorithms");
         }
         if issues.high_memory_usage {
-            recommendations.push("• Review memory allocations and consider streaming data processing");
+            recommendations
+                .push("• Review memory allocations and consider streaming data processing");
         }
         if issues.slow_response_time {
-            recommendations.push("• Profile dataflow performance with `dora analyze --performance`");
+            recommendations
+                .push("• Profile dataflow performance with `dora analyze --performance`");
         }
 
         sections.push(HelpSection {
@@ -490,14 +538,22 @@ impl HelpPersonalizationEngine {
         match user_expertise {
             UserExpertiseLevel::Beginner => {
                 enhanced.related_topics.insert(0, "tutorials".to_string());
-                enhanced.related_topics.insert(1, "getting-started".to_string());
+                enhanced
+                    .related_topics
+                    .insert(1, "getting-started".to_string());
             }
             UserExpertiseLevel::Intermediate => {
-                enhanced.related_topics.insert(0, "advanced-usage".to_string());
+                enhanced
+                    .related_topics
+                    .insert(0, "advanced-usage".to_string());
             }
             UserExpertiseLevel::Expert => {
-                enhanced.related_topics.insert(0, "api-reference".to_string());
-                enhanced.related_topics.insert(1, "optimization".to_string());
+                enhanced
+                    .related_topics
+                    .insert(0, "api-reference".to_string());
+                enhanced
+                    .related_topics
+                    .insert(1, "optimization".to_string());
             }
         }
 
@@ -508,15 +564,14 @@ impl HelpPersonalizationEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Duration;
 
     #[tokio::test]
     async fn test_get_topic_content() {
         let manager = HelpContentManager::new();
-        let content = manager.get_topic_content(
-            "start",
-            UserExpertiseLevel::Beginner,
-            DetailLevel::Normal,
-        ).await;
+        let content = manager
+            .get_topic_content("start", UserExpertiseLevel::Beginner, DetailLevel::Normal)
+            .await;
 
         assert!(content.is_ok());
         let content = content.unwrap();
@@ -526,11 +581,13 @@ mod tests {
     #[tokio::test]
     async fn test_search_content() {
         let manager = HelpContentManager::new();
-        let results = manager.search_content(
-            "start dataflow",
-            UserExpertiseLevel::Beginner,
-            DetailLevel::Normal,
-        ).await;
+        let results = manager
+            .search_content(
+                "start dataflow",
+                UserExpertiseLevel::Beginner,
+                DetailLevel::Normal,
+            )
+            .await;
 
         assert!(results.is_ok());
     }
@@ -555,7 +612,9 @@ mod tests {
             },
         };
 
-        let help = manager.get_contextual_help(&Some(context), UserExpertiseLevel::Beginner).await;
+        let help = manager
+            .get_contextual_help(&Some(context), UserExpertiseLevel::Beginner)
+            .await;
         assert!(help.is_ok());
         let help = help.unwrap();
         assert!(!help.sections.is_empty());

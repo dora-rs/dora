@@ -1,8 +1,8 @@
-use crate::cli::{Command, UiMode};
 use crate::cli::context::ExecutionContext;
+use crate::cli::{Command, UiMode};
+use lru::LruCache;
 use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
-use lru::LruCache;
 // use serde::{Serialize, Deserialize}; // For future config serialization
 
 /// Smart interface selection engine for hybrid CLI
@@ -27,17 +27,17 @@ pub struct InterfaceDecision {
 #[derive(Debug, Clone, PartialEq)]
 pub enum InterfaceStrategy {
     CliOnly,
-    CliWithHint { 
-        hint: String, 
-        tui_command: String 
+    CliWithHint {
+        hint: String,
+        tui_command: String,
     },
-    PromptForTui { 
-        reason: String, 
-        default_yes: bool 
+    PromptForTui {
+        reason: String,
+        default_yes: bool,
     },
-    AutoLaunchTui { 
-        reason: String, 
-        show_cli_first: bool 
+    AutoLaunchTui {
+        reason: String,
+        show_cli_first: bool,
     },
 }
 
@@ -78,7 +78,7 @@ pub struct CommandAnalyzer {
 /// Analysis result for a command
 #[derive(Debug, Clone)]
 pub struct CommandAnalysis {
-    pub complexity_score: u8,           // 0-10 scale
+    pub complexity_score: u8, // 0-10 scale
     pub data_volume_estimate: DataVolume,
     pub interaction_benefit: InteractionBenefit,
     pub automation_suitability: AutomationLevel,
@@ -88,21 +88,21 @@ pub struct CommandAnalysis {
 /// Estimated data volume for command
 #[derive(Debug, Clone, PartialEq)]
 pub enum DataVolume {
-    Minimal,        // Single values, short lists
-    Small,          // Tables under 50 rows
-    Medium,         // Tables 50-500 rows, simple graphs
-    Large,          // Complex data requiring visualization
-    Streaming,      // Real-time data streams
+    Minimal,   // Single values, short lists
+    Small,     // Tables under 50 rows
+    Medium,    // Tables 50-500 rows, simple graphs
+    Large,     // Complex data requiring visualization
+    Streaming, // Real-time data streams
 }
 
 /// Benefit of interactive interface
 #[derive(Debug, Clone, PartialEq)]
 pub enum InteractionBenefit {
-    None,           // Static output only
-    Low,            // Minor filtering/sorting benefit
-    Medium,         // Significant navigation benefit
-    High,           // Essential for effective use
-    Critical,       // Nearly unusable without interaction
+    None,     // Static output only
+    Low,      // Minor filtering/sorting benefit
+    Medium,   // Significant navigation benefit
+    High,     // Essential for effective use
+    Critical, // Nearly unusable without interaction
 }
 
 /// Automation suitability levels
@@ -154,7 +154,7 @@ impl InterfaceSelector {
             decision_cache: LruCache::new(NonZeroUsize::new(100).unwrap()),
         }
     }
-    
+
     /// Select the most appropriate interface for a command
     pub fn select_interface(&mut self, command: &Command) -> InterfaceDecision {
         // Check cache first for performance
@@ -162,40 +162,41 @@ impl InterfaceSelector {
         if let Some(cached) = self.decision_cache.get(&cache_key) {
             return cached.clone();
         }
-        
+
         let decision = self.analyze_and_decide(command);
         self.decision_cache.put(cache_key, decision.clone());
         decision
     }
-    
+
     /// Generate cache key for command
     fn generate_cache_key(&self, command: &Command) -> String {
         // Include relevant context and command details
-        format!("{}:{}:{}:{}",
+        format!(
+            "{}:{}:{}:{}",
             command.name().to_string(),
             self.context.is_tty,
             self.context.is_piped,
             self.config.global_ui_mode.as_u8()
         )
     }
-    
+
     /// Analyze command and make interface decision
     fn analyze_and_decide(&self, command: &Command) -> InterfaceDecision {
         let analysis = self.command_analyzer.analyze(command);
-        
+
         // Early exit conditions
         if let Some(decision) = self.check_forced_contexts(&analysis) {
             return decision;
         }
-        
+
         if let Some(decision) = self.check_user_preferences(command) {
             return decision;
         }
-        
+
         // Smart decision based on multiple factors
         self.make_intelligent_decision(command, &analysis)
     }
-    
+
     /// Check for contexts that force certain interfaces
     fn check_forced_contexts(&self, _analysis: &CommandAnalysis) -> Option<InterfaceDecision> {
         // Never TUI in non-interactive contexts
@@ -207,7 +208,7 @@ impl InterfaceSelector {
                 fallback: None,
             });
         }
-        
+
         // Force CLI if TUI not capable
         if !self.context.terminal_capabilities.tui_capable {
             return Some(InterfaceDecision {
@@ -217,10 +218,10 @@ impl InterfaceSelector {
                 fallback: None,
             });
         }
-        
+
         None
     }
-    
+
     /// Check user preference overrides
     fn check_user_preferences(&self, command: &Command) -> Option<InterfaceDecision> {
         // Check command-specific preferences first
@@ -228,16 +229,25 @@ impl InterfaceSelector {
         if let Some(mode) = self.config.command_preferences.get(&command_name) {
             return Some(self.create_preference_decision(mode, "User command preference"));
         }
-        
+
         // Check global preferences
         match self.config.global_ui_mode {
-            UiMode::Cli => Some(self.create_preference_decision(&UiMode::Cli, "User global preference: CLI")),
-            UiMode::Tui => Some(self.create_preference_decision(&UiMode::Tui, "User global preference: TUI")),
-            UiMode::Minimal => Some(self.create_preference_decision(&UiMode::Minimal, "User global preference: Minimal")),
+            UiMode::Cli => {
+                Some(self.create_preference_decision(&UiMode::Cli, "User global preference: CLI"))
+            }
+            UiMode::Tui => {
+                Some(self.create_preference_decision(&UiMode::Tui, "User global preference: TUI"))
+            }
+            UiMode::Minimal => {
+                Some(self.create_preference_decision(
+                    &UiMode::Minimal,
+                    "User global preference: Minimal",
+                ))
+            }
             UiMode::Auto => None, // Continue with smart detection
         }
     }
-    
+
     /// Create decision based on user preference
     fn create_preference_decision(&self, mode: &UiMode, reason: &str) -> InterfaceDecision {
         let strategy = match mode {
@@ -249,7 +259,7 @@ impl InterfaceSelector {
             UiMode::Minimal => InterfaceStrategy::CliOnly,
             UiMode::Auto => unreachable!(),
         };
-        
+
         InterfaceDecision {
             strategy,
             confidence: 1.0,
@@ -257,27 +267,30 @@ impl InterfaceSelector {
             fallback: None,
         }
     }
-    
+
     /// Make intelligent decision based on analysis
-    fn make_intelligent_decision(&self, command: &Command, analysis: &CommandAnalysis) -> InterfaceDecision {
+    fn make_intelligent_decision(
+        &self,
+        command: &Command,
+        analysis: &CommandAnalysis,
+    ) -> InterfaceDecision {
         let complexity_weight = 0.4;
         let interaction_weight = 0.3;
         let data_volume_weight = 0.2;
         let user_pattern_weight = 0.1;
-        
+
         let complexity_score = analysis.complexity_score as f32 / 10.0;
         let interaction_score = self.interaction_benefit_score(&analysis.interaction_benefit);
         let data_volume_score = self.data_volume_score(&analysis.data_volume_estimate);
         let user_pattern_score = self.get_user_pattern_score(command);
-        
-        let weighted_score = 
-            complexity_score * complexity_weight +
-            interaction_score * interaction_weight +
-            data_volume_score * data_volume_weight +
-            user_pattern_score * user_pattern_weight;
-        
+
+        let weighted_score = complexity_score * complexity_weight
+            + interaction_score * interaction_weight
+            + data_volume_score * data_volume_weight
+            + user_pattern_score * user_pattern_weight;
+
         let confidence = self.calculate_confidence(analysis, weighted_score);
-        
+
         match (weighted_score, confidence) {
             // Low score: CLI only
             (score, _) if score < 0.3 => InterfaceDecision {
@@ -286,7 +299,7 @@ impl InterfaceSelector {
                 reason: "Simple operation best suited for CLI".to_string(),
                 fallback: None,
             },
-            
+
             // Medium score: CLI with hint
             (score, conf) if score < 0.6 && conf > 0.7 => InterfaceDecision {
                 strategy: InterfaceStrategy::CliWithHint {
@@ -297,7 +310,7 @@ impl InterfaceSelector {
                 reason: "TUI available for enhanced experience".to_string(),
                 fallback: Some(InterfaceStrategy::CliOnly),
             },
-            
+
             // Medium-high score: Prompt for TUI
             (score, _conf) if score < 0.8 => InterfaceDecision {
                 strategy: InterfaceStrategy::PromptForTui {
@@ -308,7 +321,7 @@ impl InterfaceSelector {
                 reason: "Interactive interface likely beneficial".to_string(),
                 fallback: Some(InterfaceStrategy::CliOnly),
             },
-            
+
             // High score: Auto-launch TUI
             (_, conf) => InterfaceDecision {
                 strategy: InterfaceStrategy::AutoLaunchTui {
@@ -321,7 +334,7 @@ impl InterfaceSelector {
             },
         }
     }
-    
+
     /// Convert interaction benefit to score
     fn interaction_benefit_score(&self, benefit: &InteractionBenefit) -> f32 {
         match benefit {
@@ -332,7 +345,7 @@ impl InterfaceSelector {
             InteractionBenefit::Critical => 1.0,
         }
     }
-    
+
     /// Convert data volume to score
     fn data_volume_score(&self, volume: &DataVolume) -> f32 {
         match volume {
@@ -343,50 +356,51 @@ impl InterfaceSelector {
             DataVolume::Streaming => 1.0,
         }
     }
-    
+
     /// Get user pattern score (placeholder for future ML)
     fn get_user_pattern_score(&self, _command: &Command) -> f32 {
         0.5 // Neutral score - will be enhanced with user behavior tracking
     }
-    
+
     /// Calculate confidence in decision
     fn calculate_confidence(&self, analysis: &CommandAnalysis, weighted_score: f32) -> f32 {
         let mut confidence: f32 = 0.8;
-        
+
         // Increase confidence for clear cases
         if weighted_score < 0.2 || weighted_score > 0.8 {
             confidence += 0.1;
         }
-        
+
         // Decrease confidence for edge cases
-        if analysis.complexity_score == 5 { // Middle complexity
+        if analysis.complexity_score == 5 {
+            // Middle complexity
             confidence -= 0.1;
         }
-        
+
         // Terminal capabilities affect confidence
         if self.context.terminal_capabilities.tui_capable {
             confidence += 0.05;
         }
-        
+
         confidence.clamp(0.0, 1.0)
     }
-    
+
     /// Generate helpful hint for CLI with hint strategy
     fn generate_helpful_hint(&self, command: &Command, analysis: &CommandAnalysis) -> String {
         match (command, &analysis.interaction_benefit) {
             (Command::Logs(_), InteractionBenefit::High) => {
                 "Try 'dora ui logs' for interactive filtering and search".to_string()
-            },
+            }
             (Command::Inspect(_), InteractionBenefit::Medium) => {
                 "Use 'dora ui inspect' for live metrics and interactive exploration".to_string()
-            },
+            }
             _ => format!(
-                "For enhanced experience, try 'dora ui {}'", 
+                "For enhanced experience, try 'dora ui {}'",
                 command.name().to_string()
             ),
         }
     }
-    
+
     /// Generate TUI command equivalent
     fn generate_tui_command(&self, command: &Command) -> String {
         match command {
@@ -394,17 +408,25 @@ impl InterfaceSelector {
             _ => format!("dora ui {}", command.name().to_string()),
         }
     }
-    
+
     /// Generate reason for TUI prompt
     fn generate_prompt_reason(&self, analysis: &CommandAnalysis) -> String {
         match analysis.interaction_benefit {
-            InteractionBenefit::High => "This operation benefits significantly from interactive features".to_string(),
-            InteractionBenefit::Critical => "This operation is much easier with an interactive interface".to_string(),
-            _ => match analysis.data_volume_estimate {
-                DataVolume::Large => "Large amount of data is easier to navigate interactively".to_string(),
-                DataVolume::Streaming => "Real-time data is best viewed in an interactive interface".to_string(),
-                _ => "Interactive interface may provide a better experience".to_string(),
+            InteractionBenefit::High => {
+                "This operation benefits significantly from interactive features".to_string()
             }
+            InteractionBenefit::Critical => {
+                "This operation is much easier with an interactive interface".to_string()
+            }
+            _ => match analysis.data_volume_estimate {
+                DataVolume::Large => {
+                    "Large amount of data is easier to navigate interactively".to_string()
+                }
+                DataVolume::Streaming => {
+                    "Real-time data is best viewed in an interactive interface".to_string()
+                }
+                _ => "Interactive interface may provide a better experience".to_string(),
+            },
         }
     }
 }
@@ -417,13 +439,13 @@ impl CommandAnalyzer {
             interaction_patterns: InteractionPatterns::default(),
         }
     }
-    
+
     /// Analyze command characteristics
     pub fn analyze(&self, command: &Command) -> CommandAnalysis {
         let base_complexity = self.calculate_base_complexity(command);
         let context_modifiers = self.apply_context_modifiers(command);
         let final_complexity = (base_complexity as i8 + context_modifiers).clamp(0, 10) as u8;
-        
+
         CommandAnalysis {
             complexity_score: final_complexity,
             data_volume_estimate: self.estimate_data_volume(command),
@@ -432,42 +454,42 @@ impl CommandAnalyzer {
             output_characteristics: self.analyze_output_characteristics(command),
         }
     }
-    
+
     /// Calculate base complexity score for command
     fn calculate_base_complexity(&self, command: &Command) -> u8 {
         match command {
-            Command::Ps(_) => 1,                    // Simple list
-            Command::Start(_) => 2,                 // Moderate complexity
-            Command::Stop(_) => 1,                  // Simple operation
-            Command::Logs(_) => 3,                  // Can be complex with filtering
-            Command::Build(_) => 2,                 // Build complexity varies
-            Command::Up(_) => 3,                    // Multiple operations
-            Command::Destroy(_) => 2,               // Moderate safety considerations
-            Command::New(_) => 2,                   // Template complexity
-            Command::Check(_) => 2,                 // Validation complexity
-            Command::Graph(_) => 4,                 // Visualization complexity
-            Command::Inspect(_) => 6,               // High inspection complexity
-            Command::Debug(_) => 8,                 // Always high complexity
-            Command::Analyze(_) => 9,               // Always very high complexity
-            Command::Monitor(_) => 7,               // Real-time monitoring complex
-            Command::Help(_) => 5,                  // Help complexity varies
-            Command::Tui(_) => 2,                    // TUI launcher
-            Command::Dashboard(_) => 3,             // Dashboard complexity
-            Command::System(_) => 4,                // System operations
-            Command::Config(_) => 3,                // Configuration complexity
-            Command::Daemon(_) => 5,                // Daemon operations complex
-            Command::Runtime(_) => 5,               // Runtime operations complex
-            Command::Coordinator(_) => 5,           // Coordinator operations complex
-            Command::Self_(_) => 3,                 // Self-management
+            Command::Ps(_) => 1,          // Simple list
+            Command::Start(_) => 2,       // Moderate complexity
+            Command::Stop(_) => 1,        // Simple operation
+            Command::Logs(_) => 3,        // Can be complex with filtering
+            Command::Build(_) => 2,       // Build complexity varies
+            Command::Up(_) => 3,          // Multiple operations
+            Command::Destroy(_) => 2,     // Moderate safety considerations
+            Command::New(_) => 2,         // Template complexity
+            Command::Check(_) => 2,       // Validation complexity
+            Command::Graph(_) => 4,       // Visualization complexity
+            Command::Inspect(_) => 6,     // High inspection complexity
+            Command::Debug(_) => 8,       // Always high complexity
+            Command::Analyze(_) => 9,     // Always very high complexity
+            Command::Monitor(_) => 7,     // Real-time monitoring complex
+            Command::Help(_) => 5,        // Help complexity varies
+            Command::Tui(_) => 2,         // TUI launcher
+            Command::Dashboard(_) => 3,   // Dashboard complexity
+            Command::System(_) => 4,      // System operations
+            Command::Config(_) => 3,      // Configuration complexity
+            Command::Daemon(_) => 5,      // Daemon operations complex
+            Command::Runtime(_) => 5,     // Runtime operations complex
+            Command::Coordinator(_) => 5, // Coordinator operations complex
+            Command::Self_(_) => 3,       // Self-management
         }
     }
-    
+
     /// Apply context-based modifiers
     fn apply_context_modifiers(&self, _command: &Command) -> i8 {
         // Future: Apply modifiers based on command parameters
         0
     }
-    
+
     /// Estimate data volume for command
     fn estimate_data_volume(&self, command: &Command) -> DataVolume {
         match command {
@@ -480,7 +502,7 @@ impl CommandAnalyzer {
             _ => DataVolume::Minimal,
         }
     }
-    
+
     /// Assess interaction benefit
     fn assess_interaction_benefit(&self, command: &Command) -> InteractionBenefit {
         match command {
@@ -494,33 +516,36 @@ impl CommandAnalyzer {
             _ => InteractionBenefit::None,
         }
     }
-    
+
     /// Check automation suitability
     fn check_automation_level(&self, command: &Command) -> AutomationLevel {
         match command {
             Command::Start(_) | Command::Stop(_) | Command::Build(_) | Command::Check(_) => {
                 AutomationLevel::OptimizedForAutomation
-            },
+            }
             Command::Ps(_) | Command::New(_) | Command::Up(_) | Command::Destroy(_) => {
                 AutomationLevel::SuitableForAutomation
-            },
+            }
             Command::Logs(_) | Command::Graph(_) | Command::Inspect(_) => {
                 AutomationLevel::InteractivePreferred
-            },
+            }
             Command::Debug(_) | Command::Analyze(_) | Command::Monitor(_) => {
                 AutomationLevel::InteractiveRequired
-            },
+            }
             _ => AutomationLevel::SuitableForAutomation,
         }
     }
-    
+
     /// Analyze output characteristics
     fn analyze_output_characteristics(&self, command: &Command) -> OutputCharacteristics {
         OutputCharacteristics {
             is_real_time: matches!(command, Command::Monitor(_) | Command::Logs(_)),
             has_colors: true, // Most commands benefit from colors
             is_structured: !matches!(command, Command::Logs(_)),
-            requires_scrolling: matches!(command, Command::Inspect(_) | Command::Debug(_) | Command::Analyze(_)),
+            requires_scrolling: matches!(
+                command,
+                Command::Inspect(_) | Command::Debug(_) | Command::Analyze(_)
+            ),
         }
     }
 }
@@ -595,10 +620,11 @@ mod tests {
         let context = mock_interactive_context();
         let config = UserConfig::default();
         let mut selector = InterfaceSelector::new(context, config);
-        
+
         // Create a mock Ps command (we'll need to implement this)
-        let decision = selector.select_interface(&Command::Ps(super::super::commands::PsCommand::default()));
-        
+        let decision =
+            selector.select_interface(&Command::Ps(super::super::commands::PsCommand::default()));
+
         assert!(matches!(decision.strategy, InterfaceStrategy::CliOnly));
         assert!(decision.confidence > 0.8);
     }
@@ -608,9 +634,11 @@ mod tests {
         let context = mock_non_interactive_context();
         let config = UserConfig::default();
         let mut selector = InterfaceSelector::new(context, config);
-        
-        let decision = selector.select_interface(&Command::Debug(super::super::commands::DebugCommand::default()));
-        
+
+        let decision = selector.select_interface(&Command::Debug(
+            super::super::commands::DebugCommand::default(),
+        ));
+
         assert!(matches!(decision.strategy, InterfaceStrategy::CliOnly));
         assert_eq!(decision.reason, "Non-interactive environment detected");
     }
@@ -621,9 +649,11 @@ mod tests {
         let mut config = UserConfig::default();
         config.global_ui_mode = UiMode::Cli;
         let mut selector = InterfaceSelector::new(context, config);
-        
-        let decision = selector.select_interface(&Command::Debug(super::super::commands::DebugCommand::default()));
-        
+
+        let decision = selector.select_interface(&Command::Debug(
+            super::super::commands::DebugCommand::default(),
+        ));
+
         assert!(matches!(decision.strategy, InterfaceStrategy::CliOnly));
         assert!(decision.reason.contains("User global preference"));
     }
@@ -633,15 +663,15 @@ mod tests {
         let context = mock_interactive_context();
         let config = UserConfig::default();
         let mut selector = InterfaceSelector::new(context, config);
-        
+
         let command = Command::Ps(super::super::commands::PsCommand::default());
-        
+
         // First call
         let decision1 = selector.select_interface(&command);
-        
+
         // Second call (should use cache)
         let decision2 = selector.select_interface(&command);
-        
+
         // Test that decisions are identical (cache working)
         assert_eq!(decision1.strategy, decision2.strategy);
         assert_eq!(decision1.confidence, decision2.confidence);
@@ -651,12 +681,12 @@ mod tests {
     #[test]
     fn test_complexity_analysis() {
         let analyzer = CommandAnalyzer::new();
-        
+
         // Simple command should have low complexity
         let simple = Command::Ps(super::super::commands::PsCommand::default());
         let analysis = analyzer.analyze(&simple);
         assert!(analysis.complexity_score <= 3);
-        
+
         // Complex command should have high complexity
         let complex = Command::Debug(super::super::commands::DebugCommand::default());
         let analysis = analyzer.analyze(&complex);

@@ -1,20 +1,14 @@
 /// Metrics Chart Component - reusable chart widget for displaying metrics
-
 use ratatui::{
+    Frame,
     layout::Rect,
     style::Style,
     widgets::{Block, Borders},
-    Frame,
 };
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-use crate::tui::{
-    app::AppState,
-    theme::ThemeConfig,
-    views::ViewAction,
-    Result,
-};
+use crate::tui::{Result, app::AppState, theme::ThemeConfig, views::ViewAction};
 
 use super::{Component, ComponentEvent, ComponentType};
 
@@ -83,8 +77,16 @@ impl MetricsChartComponent {
             return;
         }
 
-        let min = self.metrics_data.iter().map(|p| p.value).fold(f64::INFINITY, f64::min);
-        let max = self.metrics_data.iter().map(|p| p.value).fold(f64::NEG_INFINITY, f64::max);
+        let min = self
+            .metrics_data
+            .iter()
+            .map(|p| p.value)
+            .fold(f64::INFINITY, f64::min);
+        let max = self
+            .metrics_data
+            .iter()
+            .map(|p| p.value)
+            .fold(f64::NEG_INFINITY, f64::max);
 
         // Add 10% padding
         let padding = (max - min) * 0.1;
@@ -118,17 +120,19 @@ impl MetricsChartComponent {
 }
 
 impl Component for MetricsChartComponent {
-    fn update<'a>(&'a mut self, app_state: &'a AppState)
-        -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
+    fn update<'a>(
+        &'a mut self,
+        app_state: &'a AppState,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
         Box::pin(async move {
-        // Add new metric value based on chart type
-        let value = match self.chart_type {
-            ChartType::CpuUsage => app_state.system_metrics.cpu_usage as f64,
-            ChartType::MemoryUsage => app_state.system_metrics.memory_usage as f64,
-            ChartType::NetworkRx => app_state.system_metrics.network_io.0 as f64 / 1024.0,
-            ChartType::NetworkTx => app_state.system_metrics.network_io.1 as f64 / 1024.0,
-            ChartType::Custom(_) => 0.0,
-        };
+            // Add new metric value based on chart type
+            let value = match self.chart_type {
+                ChartType::CpuUsage => app_state.system_metrics.cpu_usage as f64,
+                ChartType::MemoryUsage => app_state.system_metrics.memory_usage as f64,
+                ChartType::NetworkRx => app_state.system_metrics.network_io.0 as f64 / 1024.0,
+                ChartType::NetworkTx => app_state.system_metrics.network_io.1 as f64 / 1024.0,
+                ChartType::Custom(_) => 0.0,
+            };
 
             self.add_data_point(value);
 
@@ -137,7 +141,8 @@ impl Component for MetricsChartComponent {
     }
 
     fn render(&self, frame: &mut Frame, area: Rect, theme: &ThemeConfig, _app_state: &AppState) {
-        let title = format!("{} - Last {}s",
+        let title = format!(
+            "{} - Last {}s",
             self.chart_type.display_name(),
             self.time_window.as_secs()
         );
@@ -156,24 +161,26 @@ impl Component for MetricsChartComponent {
         frame.render_widget(block, area);
     }
 
-    fn handle_event<'a>(&'a mut self, event: ComponentEvent, _app_state: &'a AppState)
-        -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<ViewAction>> + Send + 'a>> {
+    fn handle_event<'a>(
+        &'a mut self,
+        event: ComponentEvent,
+        _app_state: &'a AppState,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<ViewAction>> + Send + 'a>> {
         Box::pin(async move {
             if !self.focused {
                 return Ok(ViewAction::None);
             }
 
             match event {
-                ComponentEvent::Key(key_event) => {
-                    match key_event.code {
-                        crossterm::event::KeyCode::Char('a') => {
-                            self.auto_scale = !self.auto_scale;
-                            return Ok(ViewAction::ShowStatus(
-                                format!("Auto-scale: {}", if self.auto_scale { "ON" } else { "OFF" })
-                            ));
-                        },
-                        _ => {}
+                ComponentEvent::Key(key_event) => match key_event.code {
+                    crossterm::event::KeyCode::Char('a') => {
+                        self.auto_scale = !self.auto_scale;
+                        return Ok(ViewAction::ShowStatus(format!(
+                            "Auto-scale: {}",
+                            if self.auto_scale { "ON" } else { "OFF" }
+                        )));
                     }
+                    _ => {}
                 },
                 _ => {}
             }

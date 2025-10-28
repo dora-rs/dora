@@ -1,22 +1,16 @@
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 /// Node Inspector View - Detailed node inspection and monitoring (Issue #27)
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Gauge, List, ListItem, Paragraph, Wrap},
-    Frame,
 };
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::time::Duration;
 
-use super::{
-    BaseView, View, ViewAction, InspectorTab, NodeInspectorState, NodeMetrics,
-};
-use crate::tui::{
-    app::{AppState, ViewType},
-    theme::ThemeConfig,
-    Result,
-};
+use super::{BaseView, InspectorTab, NodeInspectorState, NodeMetrics, View, ViewAction};
+use crate::tui::{Result, app::AppState, theme::ThemeConfig};
 
 /// Node Inspector View for detailed node inspection and monitoring
 pub struct NodeInspectorView {
@@ -95,20 +89,25 @@ impl NodeInspectorView {
         // Find the node in app_state
         let node_info = self.find_node_info(app_state);
 
-        let node_name = node_info.as_ref()
+        let node_name = node_info
+            .as_ref()
             .map(|n| n.name.as_str())
             .unwrap_or(&self.state.node_id);
 
-        let node_status = node_info.as_ref()
+        let node_status = node_info
+            .as_ref()
             .map(|n| n.status.as_str())
             .unwrap_or("unknown");
 
         // Create overview content
         let overview_text = vec![
             Line::from(vec![
-                Span::styled("Node: ", Style::default()
-                    .fg(self.theme.colors.primary)
-                    .add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "Node: ",
+                    Style::default()
+                        .fg(self.theme.colors.primary)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(node_name, Style::default().fg(self.theme.colors.text)),
             ]),
             Line::from(""),
@@ -121,11 +120,12 @@ impl NodeInspectorView {
                 self.status_span(node_status),
             ]),
             Line::from(""),
-            Line::from(vec![
-                Span::styled("─── Metrics ───", Style::default()
+            Line::from(vec![Span::styled(
+                "─── Metrics ───",
+                Style::default()
                     .fg(self.theme.colors.primary)
-                    .add_modifier(Modifier::BOLD)),
-            ]),
+                    .add_modifier(Modifier::BOLD),
+            )]),
             Line::from(""),
         ];
 
@@ -137,10 +137,7 @@ impl NodeInspectorView {
         // Split area for overview and metrics
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(10),
-                Constraint::Min(5),
-            ])
+            .constraints([Constraint::Length(10), Constraint::Min(5)])
             .split(area);
 
         f.render_widget(paragraph, chunks[0]);
@@ -209,10 +206,7 @@ impl NodeInspectorView {
         // Split into inputs and outputs
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Percentage(50),
-                Constraint::Percentage(50),
-            ])
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(area);
 
         // Render inputs
@@ -271,11 +265,12 @@ impl NodeInspectorView {
         let metrics = NodeMetrics::default(); // TODO: Get real metrics
 
         let perf_text = vec![
-            Line::from(vec![
-                Span::styled("Performance Metrics", Style::default()
+            Line::from(vec![Span::styled(
+                "Performance Metrics",
+                Style::default()
                     .fg(self.theme.colors.primary)
-                    .add_modifier(Modifier::BOLD)),
-            ]),
+                    .add_modifier(Modifier::BOLD),
+            )]),
             Line::from(""),
             Line::from(vec![
                 Span::styled("CPU Usage: ", Style::default().fg(self.theme.colors.muted)),
@@ -286,11 +281,17 @@ impl NodeInspectorView {
                 Span::raw(format!("{:.1} MB", metrics.memory_mb)),
             ]),
             Line::from(vec![
-                Span::styled("Message Rate: ", Style::default().fg(self.theme.colors.muted)),
+                Span::styled(
+                    "Message Rate: ",
+                    Style::default().fg(self.theme.colors.muted),
+                ),
                 Span::raw(format!("{:.1} msg/s", metrics.message_rate)),
             ]),
             Line::from(vec![
-                Span::styled("Processing Latency: ", Style::default().fg(self.theme.colors.muted)),
+                Span::styled(
+                    "Processing Latency: ",
+                    Style::default().fg(self.theme.colors.muted),
+                ),
                 Span::raw(format!("{:.2} ms", metrics.processing_latency_ms)),
             ]),
             Line::from(vec![
@@ -298,14 +299,17 @@ impl NodeInspectorView {
                 Span::raw(format_uptime(metrics.uptime_seconds)),
             ]),
             Line::from(vec![
-                Span::styled("Error Count: ", Style::default().fg(self.theme.colors.muted)),
+                Span::styled(
+                    "Error Count: ",
+                    Style::default().fg(self.theme.colors.muted),
+                ),
                 Span::raw(format!("{}", metrics.error_count)),
             ]),
             Line::from(""),
-            Line::from(vec![
-                Span::styled("─── Message Statistics ───", Style::default()
-                    .fg(self.theme.colors.primary)),
-            ]),
+            Line::from(vec![Span::styled(
+                "─── Message Statistics ───",
+                Style::default().fg(self.theme.colors.primary),
+            )]),
             Line::from(""),
             Line::from("Total Messages: 1,234"),
             Line::from("Avg Processing Time: 2.5 ms"),
@@ -323,15 +327,17 @@ impl NodeInspectorView {
     /// Render Configuration tab
     fn render_configuration_tab(&self, f: &mut Frame, area: Rect, _app_state: &AppState) {
         let config_text = vec![
-            Line::from(vec![
-                Span::styled("Node Configuration", Style::default()
+            Line::from(vec![Span::styled(
+                "Node Configuration",
+                Style::default()
                     .fg(self.theme.colors.primary)
-                    .add_modifier(Modifier::BOLD)),
-            ]),
+                    .add_modifier(Modifier::BOLD),
+            )]),
             Line::from(""),
-            Line::from(vec![
-                Span::styled("node:", Style::default().fg(Color::Yellow)),
-            ]),
+            Line::from(vec![Span::styled(
+                "node:",
+                Style::default().fg(Color::Yellow),
+            )]),
             Line::from(vec![
                 Span::raw("  id: "),
                 Span::styled(&self.state.node_id, Style::default().fg(Color::Cyan)),
@@ -341,28 +347,31 @@ impl NodeInspectorView {
                 Span::styled("detector", Style::default().fg(Color::Cyan)),
             ]),
             Line::from(""),
-            Line::from(vec![
-                Span::styled("inputs:", Style::default().fg(Color::Yellow)),
-            ]),
+            Line::from(vec![Span::styled(
+                "inputs:",
+                Style::default().fg(Color::Yellow),
+            )]),
             Line::from("  - camera_feed"),
             Line::from("  - control_signal"),
             Line::from(""),
-            Line::from(vec![
-                Span::styled("outputs:", Style::default().fg(Color::Yellow)),
-            ]),
+            Line::from(vec![Span::styled(
+                "outputs:",
+                Style::default().fg(Color::Yellow),
+            )]),
             Line::from("  - detection_result"),
             Line::from("  - debug_image"),
             Line::from(""),
-            Line::from(vec![
-                Span::styled("parameters:", Style::default().fg(Color::Yellow)),
-            ]),
+            Line::from(vec![Span::styled(
+                "parameters:",
+                Style::default().fg(Color::Yellow),
+            )]),
             Line::from("  confidence_threshold: 0.5"),
             Line::from("  max_detections: 100"),
             Line::from(""),
-            Line::from(vec![
-                Span::styled("Press [e] to edit configuration", Style::default()
-                    .fg(self.theme.colors.muted)),
-            ]),
+            Line::from(vec![Span::styled(
+                "Press [e] to edit configuration",
+                Style::default().fg(self.theme.colors.muted),
+            )]),
         ];
 
         let title = format!("Configuration - {}", self.state.node_id);
@@ -376,18 +385,22 @@ impl NodeInspectorView {
     /// Render Debug tab
     fn render_debug_tab(&self, f: &mut Frame, area: Rect, _app_state: &AppState) {
         let debug_text = vec![
-            Line::from(vec![
-                Span::styled("Debug Information", Style::default()
+            Line::from(vec![Span::styled(
+                "Debug Information",
+                Style::default()
                     .fg(self.theme.colors.primary)
-                    .add_modifier(Modifier::BOLD)),
-            ]),
+                    .add_modifier(Modifier::BOLD),
+            )]),
             Line::from(""),
             Line::from(vec![
                 Span::styled("Process ID: ", Style::default().fg(self.theme.colors.muted)),
                 Span::raw("12345"),
             ]),
             Line::from(vec![
-                Span::styled("Working Directory: ", Style::default().fg(self.theme.colors.muted)),
+                Span::styled(
+                    "Working Directory: ",
+                    Style::default().fg(self.theme.colors.muted),
+                ),
                 Span::raw("/path/to/node"),
             ]),
             Line::from(vec![
@@ -395,10 +408,10 @@ impl NodeInspectorView {
                 Span::raw("python operator.py"),
             ]),
             Line::from(""),
-            Line::from(vec![
-                Span::styled("─── Recent Logs ───", Style::default()
-                    .fg(self.theme.colors.primary)),
-            ]),
+            Line::from(vec![Span::styled(
+                "─── Recent Logs ───",
+                Style::default().fg(self.theme.colors.primary),
+            )]),
             Line::from(""),
             Line::from("[INFO] Node started successfully"),
             Line::from("[INFO] Connected to input: camera_feed"),
@@ -406,18 +419,18 @@ impl NodeInspectorView {
             Line::from("[DEBUG] Detection complete in 2.3ms"),
             Line::from("[INFO] Sent output to detection_result"),
             Line::from(""),
-            Line::from(vec![
-                Span::styled("─── Environment Variables ───", Style::default()
-                    .fg(self.theme.colors.primary)),
-            ]),
+            Line::from(vec![Span::styled(
+                "─── Environment Variables ───",
+                Style::default().fg(self.theme.colors.primary),
+            )]),
             Line::from(""),
             Line::from("DORA_NODE_ID: detector-node"),
             Line::from("PYTHONPATH: /usr/local/lib/python3.10"),
             Line::from(""),
-            Line::from(vec![
-                Span::styled("Use ↑↓ to scroll", Style::default()
-                    .fg(self.theme.colors.muted)),
-            ]),
+            Line::from(vec![Span::styled(
+                "Use ↑↓ to scroll",
+                Style::default().fg(self.theme.colors.muted),
+            )]),
         ];
 
         let title = format!("Debug - {}", self.state.node_id);
@@ -460,23 +473,26 @@ impl View for NodeInspectorView {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(3),  // Title
-                Constraint::Length(7),  // Tabs
-                Constraint::Min(10),    // Content
-                Constraint::Length(3),  // Help
+                Constraint::Length(3), // Title
+                Constraint::Length(7), // Tabs
+                Constraint::Min(10),   // Content
+                Constraint::Length(3), // Help
             ])
             .split(area);
 
         // Render title
-        let node_name = self.find_node_info(app_state)
+        let node_name = self
+            .find_node_info(app_state)
             .map(|n| n.name.as_str())
             .unwrap_or(&self.state.node_id);
         let title = format!("Node Inspector: {}", node_name);
         let title_paragraph = Paragraph::new(title)
             .block(self.theme.styled_block(""))
-            .style(Style::default()
-                .fg(self.theme.colors.primary)
-                .add_modifier(Modifier::BOLD));
+            .style(
+                Style::default()
+                    .fg(self.theme.colors.primary)
+                    .add_modifier(Modifier::BOLD),
+            );
         f.render_widget(title_paragraph, chunks[0]);
 
         // Render tabs

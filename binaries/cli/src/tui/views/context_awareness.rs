@@ -2,19 +2,14 @@
 // Issue #35: Advanced Context Awareness
 
 use super::{BaseView, View, ViewAction};
-use crate::tui::{
-    app::AppState,
-    theme::ThemeConfig,
-    views::context_awareness_types::*,
-    Result,
-};
+use crate::tui::{Result, app::AppState, theme::ThemeConfig, views::context_awareness_types::*};
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
+    Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
-    Frame,
+    widgets::{Block, Borders, List, ListItem, Paragraph},
 };
 
 /// Context Awareness View
@@ -63,13 +58,18 @@ impl ContextAwarenessView {
         frame.render_widget(header, area);
     }
 
-    fn render_execution_context(&self, frame: &mut Frame, area: Rect, data: &ExecutionEnvironmentData) {
+    fn render_execution_context(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        data: &ExecutionEnvironmentData,
+    ) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(8),  // Environment
-                Constraint::Length(8),  // Capabilities
-                Constraint::Min(6),     // Current Context
+                Constraint::Length(8), // Environment
+                Constraint::Length(8), // Capabilities
+                Constraint::Min(6),    // Current Context
             ])
             .split(area);
 
@@ -80,85 +80,139 @@ impl ContextAwarenessView {
                 Span::raw(if data.environment.is_tty { "Yes" } else { "No" }),
                 Span::raw("  "),
                 Span::styled("Piped: ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(if data.environment.is_piped { "Yes" } else { "No" }),
+                Span::raw(if data.environment.is_piped {
+                    "Yes"
+                } else {
+                    "No"
+                }),
                 Span::raw("  "),
                 Span::styled("Scripted: ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(if data.environment.is_scripted { "Yes" } else { "No" }),
+                Span::raw(if data.environment.is_scripted {
+                    "Yes"
+                } else {
+                    "No"
+                }),
             ]),
             Line::from(vec![
                 Span::styled("Terminal: ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(data.environment.terminal_type.as_deref().unwrap_or("unknown")),
+                Span::raw(
+                    data.environment
+                        .terminal_type
+                        .as_deref()
+                        .unwrap_or("unknown"),
+                ),
             ]),
             Line::from(vec![
                 Span::styled("Shell: ", Style::default().add_modifier(Modifier::BOLD)),
                 Span::raw(data.environment.shell.as_deref().unwrap_or("unknown")),
             ]),
             Line::from(vec![
-                Span::styled("CI Detected: ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(data.environment.detected_ci.as_ref().map(|ci| ci.name()).unwrap_or("None")),
+                Span::styled(
+                    "CI Detected: ",
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(
+                    data.environment
+                        .detected_ci
+                        .as_ref()
+                        .map(|ci| ci.name())
+                        .unwrap_or("None"),
+                ),
             ]),
         ];
 
-        let env_block = Paragraph::new(env_lines)
-            .block(Block::default()
+        let env_block = Paragraph::new(env_lines).block(
+            Block::default()
                 .borders(Borders::ALL)
                 .title("Execution Environment")
-                .border_style(Style::default().fg(self.theme.colors.border)));
+                .border_style(Style::default().fg(self.theme.colors.border)),
+        );
 
         frame.render_widget(env_block, chunks[0]);
 
         // Capabilities Section
         let cap_lines = vec![
             Line::from(vec![
-                Span::styled("Color Support: ", Style::default().add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "Color Support: ",
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
                 Span::raw(data.capabilities.color_level.name()),
             ]),
             Line::from(vec![
                 Span::styled("Unicode: ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(if data.capabilities.supports_unicode { "Yes" } else { "No" }),
+                Span::raw(if data.capabilities.supports_unicode {
+                    "Yes"
+                } else {
+                    "No"
+                }),
                 Span::raw("  "),
                 Span::styled("Mouse: ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(if data.capabilities.supports_mouse { "Yes" } else { "No" }),
+                Span::raw(if data.capabilities.supports_mouse {
+                    "Yes"
+                } else {
+                    "No"
+                }),
             ]),
             Line::from(vec![
-                Span::styled("Terminal Size: ", Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(format!("{}x{}", data.capabilities.terminal_width, data.capabilities.terminal_height)),
+                Span::styled(
+                    "Terminal Size: ",
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(format!(
+                    "{}x{}",
+                    data.capabilities.terminal_width, data.capabilities.terminal_height
+                )),
             ]),
         ];
 
-        let cap_block = Paragraph::new(cap_lines)
-            .block(Block::default()
+        let cap_block = Paragraph::new(cap_lines).block(
+            Block::default()
                 .borders(Borders::ALL)
                 .title("Terminal Capabilities")
-                .border_style(Style::default().fg(self.theme.colors.border)));
+                .border_style(Style::default().fg(self.theme.colors.border)),
+        );
 
         frame.render_widget(cap_block, chunks[1]);
 
         // Current Context Section
         let ctx_lines = vec![
             Line::from(vec![
-                Span::styled("Command Category: ", Style::default().add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "Command Category: ",
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
                 Span::raw(data.current_context.command_category.name()),
             ]),
             Line::from(vec![
-                Span::styled("Time of Day: ", Style::default().add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "Time of Day: ",
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
                 Span::raw(data.current_context.time_of_day.name()),
             ]),
             Line::from(vec![
-                Span::styled("Terminal Type: ", Style::default().add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "Terminal Type: ",
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
                 Span::raw(data.current_context.terminal_type.name()),
             ]),
             Line::from(vec![
-                Span::styled("Environment: ", Style::default().add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "Environment: ",
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
                 Span::raw(data.current_context.environment_type.name()),
             ]),
         ];
 
-        let ctx_block = Paragraph::new(ctx_lines)
-            .block(Block::default()
+        let ctx_block = Paragraph::new(ctx_lines).block(
+            Block::default()
                 .borders(Borders::ALL)
                 .title("Current Context Key")
-                .border_style(Style::default().fg(self.theme.colors.border)));
+                .border_style(Style::default().fg(self.theme.colors.border)),
+        );
 
         frame.render_widget(ctx_block, chunks[2]);
     }
@@ -170,7 +224,9 @@ impl ContextAwarenessView {
             .map(|(i, rule)| {
                 let is_selected = i == self.state.selected_index;
                 let style = if is_selected {
-                    Style::default().fg(self.theme.colors.accent).add_modifier(Modifier::BOLD)
+                    Style::default()
+                        .fg(self.theme.colors.accent)
+                        .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(self.theme.colors.text)
                 };
@@ -187,22 +243,29 @@ impl ContextAwarenessView {
                         Span::styled(status, status_style),
                         Span::raw(" "),
                         Span::styled(&rule.name, style),
-                        Span::styled(format!(" [{}]", rule.rule_type.name()),
-                            Style::default().fg(self.theme.colors.muted)),
+                        Span::styled(
+                            format!(" [{}]", rule.rule_type.name()),
+                            Style::default().fg(self.theme.colors.muted),
+                        ),
                     ]),
                     Line::from(vec![
                         Span::raw("  Condition: "),
-                        Span::styled(&rule.condition, Style::default().fg(self.theme.colors.muted)),
+                        Span::styled(
+                            &rule.condition,
+                            Style::default().fg(self.theme.colors.muted),
+                        ),
                     ]),
                     Line::from(vec![
                         Span::raw("  Action: "),
                         Span::styled(&rule.action, Style::default().fg(self.theme.colors.muted)),
                     ]),
-                    Line::from(vec![
-                        Span::styled(format!("  Priority: {} | Triggers: {}",
-                            rule.priority, rule.trigger_count),
-                            Style::default().fg(self.theme.colors.muted)),
-                    ]),
+                    Line::from(vec![Span::styled(
+                        format!(
+                            "  Priority: {} | Triggers: {}",
+                            rule.priority, rule.trigger_count
+                        ),
+                        Style::default().fg(self.theme.colors.muted),
+                    )]),
                     Line::from(""),
                 ];
 
@@ -210,25 +273,35 @@ impl ContextAwarenessView {
             })
             .collect();
 
-        let list = List::new(items)
-            .block(Block::default()
+        let list = List::new(items).block(
+            Block::default()
                 .borders(Borders::ALL)
-                .title(format!("Adaptation Rules ({} total, {} active)",
+                .title(format!(
+                    "Adaptation Rules ({} total, {} active)",
                     rules.len(),
-                    rules.iter().filter(|r| r.is_active).count()))
-                .border_style(Style::default().fg(self.theme.colors.border)));
+                    rules.iter().filter(|r| r.is_active).count()
+                ))
+                .border_style(Style::default().fg(self.theme.colors.border)),
+        );
 
         frame.render_widget(list, area);
     }
 
-    fn render_learning_patterns(&self, frame: &mut Frame, area: Rect, patterns: &[LearningPattern]) {
+    fn render_learning_patterns(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        patterns: &[LearningPattern],
+    ) {
         let items: Vec<ListItem> = patterns
             .iter()
             .enumerate()
             .map(|(i, pattern)| {
                 let is_selected = i == self.state.selected_index;
                 let style = if is_selected {
-                    Style::default().fg(self.theme.colors.accent).add_modifier(Modifier::BOLD)
+                    Style::default()
+                        .fg(self.theme.colors.accent)
+                        .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(self.theme.colors.text)
                 };
@@ -243,22 +316,24 @@ impl ContextAwarenessView {
                 };
 
                 let content = vec![
-                    Line::from(vec![
-                        Span::styled(&pattern.description, style),
-                    ]),
+                    Line::from(vec![Span::styled(&pattern.description, style)]),
                     Line::from(vec![
                         Span::raw("  Type: "),
-                        Span::styled(pattern.pattern_type.name(),
-                            Style::default().fg(self.theme.colors.muted)),
+                        Span::styled(
+                            pattern.pattern_type.name(),
+                            Style::default().fg(self.theme.colors.muted),
+                        ),
                         Span::raw("  "),
                         Span::styled(confidence_bar, confidence_style),
-                        Span::styled(format!(" {:.0}%", pattern.confidence * 100.0),
-                            Style::default().fg(self.theme.colors.muted)),
+                        Span::styled(
+                            format!(" {:.0}%", pattern.confidence * 100.0),
+                            Style::default().fg(self.theme.colors.muted),
+                        ),
                     ]),
-                    Line::from(vec![
-                        Span::styled(format!("  Sample size: {} observations", pattern.sample_size),
-                            Style::default().fg(self.theme.colors.muted)),
-                    ]),
+                    Line::from(vec![Span::styled(
+                        format!("  Sample size: {} observations", pattern.sample_size),
+                        Style::default().fg(self.theme.colors.muted),
+                    )]),
                     Line::from(""),
                 ];
 
@@ -266,11 +341,12 @@ impl ContextAwarenessView {
             })
             .collect();
 
-        let list = List::new(items)
-            .block(Block::default()
+        let list = List::new(items).block(
+            Block::default()
                 .borders(Borders::ALL)
                 .title(format!("Learning Patterns ({} discovered)", patterns.len()))
-                .border_style(Style::default().fg(self.theme.colors.border)));
+                .border_style(Style::default().fg(self.theme.colors.border)),
+        );
 
         frame.render_widget(list, area);
     }
@@ -282,7 +358,9 @@ impl ContextAwarenessView {
             .map(|(i, level)| {
                 let is_selected = i == self.state.selected_index;
                 let style = if is_selected {
-                    Style::default().fg(self.theme.colors.accent).add_modifier(Modifier::BOLD)
+                    Style::default()
+                        .fg(self.theme.colors.accent)
+                        .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(self.theme.colors.text)
                 };
@@ -291,22 +369,26 @@ impl ContextAwarenessView {
 
                 let mut content = vec![
                     Line::from(vec![
-                        Span::styled(format!("{} ", priority_indicator),
-                            Style::default().fg(self.theme.colors.accent)),
+                        Span::styled(
+                            format!("{} ", priority_indicator),
+                            Style::default().fg(self.theme.colors.accent),
+                        ),
                         Span::styled(level.level.name(), style),
                     ]),
                     Line::from(vec![
                         Span::raw("  "),
-                        Span::styled(level.level.description(),
-                            Style::default().fg(self.theme.colors.muted)),
+                        Span::styled(
+                            level.level.description(),
+                            Style::default().fg(self.theme.colors.muted),
+                        ),
                     ]),
                 ];
 
                 if !level.preferences.is_empty() {
-                    content.push(Line::from(vec![
-                        Span::styled(format!("  {} preferences set", level.preferences.len()),
-                            Style::default().fg(self.theme.colors.muted)),
-                    ]));
+                    content.push(Line::from(vec![Span::styled(
+                        format!("  {} preferences set", level.preferences.len()),
+                        Style::default().fg(self.theme.colors.muted),
+                    )]));
 
                     // Show first 2 preferences as examples
                     for (key, value) in level.preferences.iter().take(2) {
@@ -318,10 +400,10 @@ impl ContextAwarenessView {
                         ]));
                     }
                     if level.preferences.len() > 2 {
-                        content.push(Line::from(vec![
-                            Span::styled(format!("    ...and {} more", level.preferences.len() - 2),
-                                Style::default().fg(self.theme.colors.muted)),
-                        ]));
+                        content.push(Line::from(vec![Span::styled(
+                            format!("    ...and {} more", level.preferences.len() - 2),
+                            Style::default().fg(self.theme.colors.muted),
+                        )]));
                     }
                 }
 
@@ -331,28 +413,30 @@ impl ContextAwarenessView {
             })
             .collect();
 
-        let list = List::new(items)
-            .block(Block::default()
+        let list = List::new(items).block(
+            Block::default()
                 .borders(Borders::ALL)
                 .title("Preference Resolution Hierarchy (High to Low Priority)")
-                .border_style(Style::default().fg(self.theme.colors.border)));
+                .border_style(Style::default().fg(self.theme.colors.border)),
+        );
 
         frame.render_widget(list, area);
     }
 
     fn render_help(&self, frame: &mut Frame, area: Rect) {
-        let help_text = vec![
-            Line::from(vec![
-                Span::styled("Tab/Shift+Tab", Style::default().fg(self.theme.colors.accent)),
-                Span::raw(": Switch section  "),
-                Span::styled("↑/↓ or j/k", Style::default().fg(self.theme.colors.accent)),
-                Span::raw(": Navigate  "),
-                Span::styled("r", Style::default().fg(self.theme.colors.accent)),
-                Span::raw(": Refresh  "),
-                Span::styled("q", Style::default().fg(self.theme.colors.accent)),
-                Span::raw(": Back"),
-            ]),
-        ];
+        let help_text = vec![Line::from(vec![
+            Span::styled(
+                "Tab/Shift+Tab",
+                Style::default().fg(self.theme.colors.accent),
+            ),
+            Span::raw(": Switch section  "),
+            Span::styled("↑/↓ or j/k", Style::default().fg(self.theme.colors.accent)),
+            Span::raw(": Navigate  "),
+            Span::styled("r", Style::default().fg(self.theme.colors.accent)),
+            Span::raw(": Refresh  "),
+            Span::styled("q", Style::default().fg(self.theme.colors.accent)),
+            Span::raw(": Back"),
+        ])];
 
         let help = Paragraph::new(help_text)
             .block(Block::default().borders(Borders::TOP))
@@ -373,9 +457,9 @@ impl View for ContextAwarenessView {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(3),  // Header
-                Constraint::Min(10),    // Content
-                Constraint::Length(3),  // Help
+                Constraint::Length(3), // Header
+                Constraint::Min(10),   // Content
+                Constraint::Length(3), // Help
             ])
             .split(area);
 
@@ -484,18 +568,19 @@ mod tests {
         let mut app_state = AppState::default();
 
         // Tab to next section
-        let result = view.handle_key(
-            KeyEvent::from(KeyCode::Tab),
-            &mut app_state
-        ).await;
+        let result = view
+            .handle_key(KeyEvent::from(KeyCode::Tab), &mut app_state)
+            .await;
         assert!(result.is_ok());
-        assert_eq!(view.state.current_section, ContextSection::ContextPreferences);
+        assert_eq!(
+            view.state.current_section,
+            ContextSection::ContextPreferences
+        );
 
         // BackTab to previous section
-        let result = view.handle_key(
-            KeyEvent::from(KeyCode::BackTab),
-            &mut app_state
-        ).await;
+        let result = view
+            .handle_key(KeyEvent::from(KeyCode::BackTab), &mut app_state)
+            .await;
         assert!(result.is_ok());
         assert_eq!(view.state.current_section, ContextSection::ExecutionContext);
     }
@@ -505,10 +590,9 @@ mod tests {
         let mut view = ContextAwarenessView::new();
         let mut app_state = AppState::default();
 
-        let result = view.handle_key(
-            KeyEvent::from(KeyCode::Char('q')),
-            &mut app_state
-        ).await;
+        let result = view
+            .handle_key(KeyEvent::from(KeyCode::Char('q')), &mut app_state)
+            .await;
 
         assert!(result.is_ok());
         assert!(matches!(result.unwrap(), ViewAction::PopView));

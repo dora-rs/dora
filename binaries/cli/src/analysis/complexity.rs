@@ -320,9 +320,7 @@ mod tests {
             },
         });
 
-        let complexity = analyzer
-            .analyze_complexity(&results, false, false)
-            .unwrap();
+        let complexity = analyzer.analyze_complexity(&results, false, false).unwrap();
 
         assert!(complexity.overall_score > 0.0);
         assert!(complexity.data_volume_score > 0.0);

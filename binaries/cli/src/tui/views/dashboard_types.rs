@@ -1,6 +1,5 @@
 /// Dashboard-specific data structures for Issue #24
 use std::time::{Duration, Instant};
-use serde::{Deserialize, Serialize};
 
 /// Complete dashboard state
 #[derive(Debug, Clone)]
@@ -240,11 +239,7 @@ impl RecentActivity {
 
     /// Get recent activities (newest first)
     pub fn recent(&self, limit: usize) -> Vec<&ActivityItem> {
-        self.activities
-            .iter()
-            .rev()
-            .take(limit)
-            .collect()
+        self.activities.iter().rev().take(limit).collect()
     }
 }
 

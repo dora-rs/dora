@@ -2,19 +2,14 @@
 // Issue #36: Performance Optimization Suite
 
 use super::{BaseView, View, ViewAction};
-use crate::tui::{
-    app::AppState,
-    theme::ThemeConfig,
-    views::perf_optimization_types::*,
-    Result,
-};
+use crate::tui::{Result, app::AppState, theme::ThemeConfig, views::perf_optimization_types::*};
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
+    Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph},
-    Frame,
 };
 
 /// Performance Optimization View
@@ -70,7 +65,9 @@ impl PerfOptimizationView {
             .map(|(i, metric)| {
                 let is_selected = i == self.state.selected_index;
                 let style = if is_selected {
-                    Style::default().fg(self.theme.colors.accent).add_modifier(Modifier::BOLD)
+                    Style::default()
+                        .fg(self.theme.colors.accent)
+                        .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(self.theme.colors.text)
                 };
@@ -94,19 +91,27 @@ impl PerfOptimizationView {
                         Span::styled(status_symbol, status_style),
                         Span::raw(" "),
                         Span::styled(&metric.name, style),
-                        Span::styled(format!(" [{}]", metric.metric_type.name()),
-                            Style::default().fg(self.theme.colors.muted)),
+                        Span::styled(
+                            format!(" [{}]", metric.metric_type.name()),
+                            Style::default().fg(self.theme.colors.muted),
+                        ),
                     ]),
                     Line::from(vec![
                         Span::raw("  Current: "),
-                        Span::styled(format!("{:.1} {}", metric.current_value, metric.unit),
-                            Style::default().fg(self.theme.colors.accent)),
+                        Span::styled(
+                            format!("{:.1} {}", metric.current_value, metric.unit),
+                            Style::default().fg(self.theme.colors.accent),
+                        ),
                         Span::raw("  Avg: "),
-                        Span::styled(format!("{:.1}", metric.avg_value),
-                            Style::default().fg(self.theme.colors.muted)),
+                        Span::styled(
+                            format!("{:.1}", metric.avg_value),
+                            Style::default().fg(self.theme.colors.muted),
+                        ),
                         Span::raw("  Range: "),
-                        Span::styled(format!("{:.1}-{:.1}", metric.min_value, metric.max_value),
-                            Style::default().fg(self.theme.colors.muted)),
+                        Span::styled(
+                            format!("{:.1}-{:.1}", metric.min_value, metric.max_value),
+                            Style::default().fg(self.theme.colors.muted),
+                        ),
                     ]),
                     Line::from(""),
                 ];
@@ -115,11 +120,12 @@ impl PerfOptimizationView {
             })
             .collect();
 
-        let list = List::new(items)
-            .block(Block::default()
+        let list = List::new(items).block(
+            Block::default()
                 .borders(Borders::ALL)
                 .title(format!("Performance Metrics ({} monitored)", metrics.len()))
-                .border_style(Style::default().fg(self.theme.colors.border)));
+                .border_style(Style::default().fg(self.theme.colors.border)),
+        );
 
         frame.render_widget(list, area);
     }
@@ -131,7 +137,9 @@ impl PerfOptimizationView {
             .map(|(i, bottleneck)| {
                 let is_selected = i == self.state.selected_index;
                 let style = if is_selected {
-                    Style::default().fg(self.theme.colors.accent).add_modifier(Modifier::BOLD)
+                    Style::default()
+                        .fg(self.theme.colors.accent)
+                        .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(self.theme.colors.text)
                 };
@@ -140,7 +148,9 @@ impl PerfOptimizationView {
                     Severity::Low => Style::default().fg(self.theme.colors.success),
                     Severity::Medium => Style::default().fg(self.theme.colors.warning),
                     Severity::High => Style::default().fg(self.theme.colors.error),
-                    Severity::Critical => Style::default().fg(self.theme.colors.error).add_modifier(Modifier::BOLD),
+                    Severity::Critical => Style::default()
+                        .fg(self.theme.colors.error)
+                        .add_modifier(Modifier::BOLD),
                 };
 
                 let severity_symbol = "●".repeat(bottleneck.severity.priority() as usize);
@@ -150,19 +160,26 @@ impl PerfOptimizationView {
                         Span::styled(severity_symbol, severity_style),
                         Span::raw(" "),
                         Span::styled(bottleneck.location.display(), style),
-                        Span::styled(format!(" [{}]", bottleneck.bottleneck_type.name()),
-                            Style::default().fg(self.theme.colors.muted)),
+                        Span::styled(
+                            format!(" [{}]", bottleneck.bottleneck_type.name()),
+                            Style::default().fg(self.theme.colors.muted),
+                        ),
                     ]),
                     Line::from(vec![
                         Span::raw("  Impact: "),
-                        Span::styled(&bottleneck.impact, Style::default().fg(self.theme.colors.muted)),
+                        Span::styled(
+                            &bottleneck.impact,
+                            Style::default().fg(self.theme.colors.muted),
+                        ),
                     ]),
-                    Line::from(vec![
-                        Span::styled(format!("  Severity: {} | Affected: {}",
+                    Line::from(vec![Span::styled(
+                        format!(
+                            "  Severity: {} | Affected: {}",
                             bottleneck.severity.name(),
-                            bottleneck.affected_components.join(", ")),
-                            Style::default().fg(self.theme.colors.muted)),
-                    ]),
+                            bottleneck.affected_components.join(", ")
+                        ),
+                        Style::default().fg(self.theme.colors.muted),
+                    )]),
                     Line::from(""),
                 ];
 
@@ -170,23 +187,34 @@ impl PerfOptimizationView {
             })
             .collect();
 
-        let list = List::new(items)
-            .block(Block::default()
+        let list = List::new(items).block(
+            Block::default()
                 .borders(Borders::ALL)
-                .title(format!("Detected Bottlenecks ({} found)", bottlenecks.len()))
-                .border_style(Style::default().fg(self.theme.colors.border)));
+                .title(format!(
+                    "Detected Bottlenecks ({} found)",
+                    bottlenecks.len()
+                ))
+                .border_style(Style::default().fg(self.theme.colors.border)),
+        );
 
         frame.render_widget(list, area);
     }
 
-    fn render_suggestions(&self, frame: &mut Frame, area: Rect, suggestions: &[OptimizationSuggestion]) {
+    fn render_suggestions(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        suggestions: &[OptimizationSuggestion],
+    ) {
         let items: Vec<ListItem> = suggestions
             .iter()
             .enumerate()
             .map(|(i, suggestion)| {
                 let is_selected = i == self.state.selected_index;
                 let style = if is_selected {
-                    Style::default().fg(self.theme.colors.accent).add_modifier(Modifier::BOLD)
+                    Style::default()
+                        .fg(self.theme.colors.accent)
+                        .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(self.theme.colors.text)
                 };
@@ -195,24 +223,28 @@ impl PerfOptimizationView {
                     Priority::Low => Style::default().fg(self.theme.colors.muted),
                     Priority::Medium => Style::default().fg(self.theme.colors.warning),
                     Priority::High => Style::default().fg(self.theme.colors.error),
-                    Priority::Critical => Style::default().fg(self.theme.colors.error).add_modifier(Modifier::BOLD),
+                    Priority::Critical => Style::default()
+                        .fg(self.theme.colors.error)
+                        .add_modifier(Modifier::BOLD),
                 };
 
-                let impact_bar = "█".repeat((match suggestion.expected_impact {
-                    ImpactLevel::Minimal => 1,
-                    ImpactLevel::Moderate => 2,
-                    ImpactLevel::Significant => 3,
-                    ImpactLevel::Major => 4,
-                }) as usize);
+                let impact_bar = "█".repeat(
+                    (match suggestion.expected_impact {
+                        ImpactLevel::Minimal => 1,
+                        ImpactLevel::Moderate => 2,
+                        ImpactLevel::Significant => 3,
+                        ImpactLevel::Major => 4,
+                    }) as usize,
+                );
 
                 let content = vec![
-                    Line::from(vec![
-                        Span::styled(&suggestion.title, style),
-                    ]),
+                    Line::from(vec![Span::styled(&suggestion.title, style)]),
                     Line::from(vec![
                         Span::raw("  Category: "),
-                        Span::styled(suggestion.category.name(),
-                            Style::default().fg(self.theme.colors.muted)),
+                        Span::styled(
+                            suggestion.category.name(),
+                            Style::default().fg(self.theme.colors.muted),
+                        ),
                         Span::raw("  Priority: "),
                         Span::styled(suggestion.priority.name(), priority_style),
                     ]),
@@ -220,16 +252,22 @@ impl PerfOptimizationView {
                         Span::raw("  Impact: "),
                         Span::styled(impact_bar, Style::default().fg(self.theme.colors.success)),
                         Span::raw(" "),
-                        Span::styled(suggestion.expected_impact.name(),
-                            Style::default().fg(self.theme.colors.muted)),
+                        Span::styled(
+                            suggestion.expected_impact.name(),
+                            Style::default().fg(self.theme.colors.muted),
+                        ),
                         Span::raw("  Effort: "),
-                        Span::styled(suggestion.estimated_effort.name(),
-                            Style::default().fg(self.theme.colors.muted)),
+                        Span::styled(
+                            suggestion.estimated_effort.name(),
+                            Style::default().fg(self.theme.colors.muted),
+                        ),
                     ]),
                     Line::from(vec![
                         Span::raw("  "),
-                        Span::styled(&suggestion.description,
-                            Style::default().fg(self.theme.colors.muted)),
+                        Span::styled(
+                            &suggestion.description,
+                            Style::default().fg(self.theme.colors.muted),
+                        ),
                     ]),
                     Line::from(""),
                 ];
@@ -238,11 +276,15 @@ impl PerfOptimizationView {
             })
             .collect();
 
-        let list = List::new(items)
-            .block(Block::default()
+        let list = List::new(items).block(
+            Block::default()
                 .borders(Borders::ALL)
-                .title(format!("Optimization Suggestions ({} recommendations)", suggestions.len()))
-                .border_style(Style::default().fg(self.theme.colors.border)));
+                .title(format!(
+                    "Optimization Suggestions ({} recommendations)",
+                    suggestions.len()
+                ))
+                .border_style(Style::default().fg(self.theme.colors.border)),
+        );
 
         frame.render_widget(list, area);
     }
@@ -254,7 +296,9 @@ impl PerfOptimizationView {
             .map(|(i, resource)| {
                 let is_selected = i == self.state.selected_index;
                 let style = if is_selected {
-                    Style::default().fg(self.theme.colors.accent).add_modifier(Modifier::BOLD)
+                    Style::default()
+                        .fg(self.theme.colors.accent)
+                        .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(self.theme.colors.text)
                 };
@@ -272,8 +316,10 @@ impl PerfOptimizationView {
                 let content = vec![
                     Line::from(vec![
                         Span::styled(&resource.component, style),
-                        Span::styled(format!(" ({} threads)", resource.thread_count),
-                            Style::default().fg(self.theme.colors.muted)),
+                        Span::styled(
+                            format!(" ({} threads)", resource.thread_count),
+                            Style::default().fg(self.theme.colors.muted),
+                        ),
                     ]),
                     Line::from(vec![
                         Span::raw("  CPU: "),
@@ -281,18 +327,28 @@ impl PerfOptimizationView {
                         Span::raw(" "),
                         Span::styled(format!("{:.1}%", resource.cpu_percent), cpu_style),
                         Span::raw("  Mem: "),
-                        Span::styled(format!("{:.0} MB", resource.memory_mb),
-                            Style::default().fg(self.theme.colors.muted)),
+                        Span::styled(
+                            format!("{:.0} MB", resource.memory_mb),
+                            Style::default().fg(self.theme.colors.muted),
+                        ),
                     ]),
                     Line::from(vec![
                         Span::raw("  Net: "),
-                        Span::styled(format!("↓{:.1} ↑{:.1} MB/s",
-                            resource.network_rx_mbps, resource.network_tx_mbps),
-                            Style::default().fg(self.theme.colors.muted)),
+                        Span::styled(
+                            format!(
+                                "↓{:.1} ↑{:.1} MB/s",
+                                resource.network_rx_mbps, resource.network_tx_mbps
+                            ),
+                            Style::default().fg(self.theme.colors.muted),
+                        ),
                         Span::raw("  Disk: "),
-                        Span::styled(format!("R{:.1} W{:.1} MB/s",
-                            resource.disk_read_mbps, resource.disk_write_mbps),
-                            Style::default().fg(self.theme.colors.muted)),
+                        Span::styled(
+                            format!(
+                                "R{:.1} W{:.1} MB/s",
+                                resource.disk_read_mbps, resource.disk_write_mbps
+                            ),
+                            Style::default().fg(self.theme.colors.muted),
+                        ),
                     ]),
                     Line::from(""),
                 ];
@@ -301,28 +357,30 @@ impl PerfOptimizationView {
             })
             .collect();
 
-        let list = List::new(items)
-            .block(Block::default()
+        let list = List::new(items).block(
+            Block::default()
                 .borders(Borders::ALL)
                 .title(format!("Resource Usage ({} components)", resources.len()))
-                .border_style(Style::default().fg(self.theme.colors.border)));
+                .border_style(Style::default().fg(self.theme.colors.border)),
+        );
 
         frame.render_widget(list, area);
     }
 
     fn render_help(&self, frame: &mut Frame, area: Rect) {
-        let help_text = vec![
-            Line::from(vec![
-                Span::styled("Tab/Shift+Tab", Style::default().fg(self.theme.colors.accent)),
-                Span::raw(": Switch section  "),
-                Span::styled("↑/↓ or j/k", Style::default().fg(self.theme.colors.accent)),
-                Span::raw(": Navigate  "),
-                Span::styled("r", Style::default().fg(self.theme.colors.accent)),
-                Span::raw(": Refresh  "),
-                Span::styled("q", Style::default().fg(self.theme.colors.accent)),
-                Span::raw(": Back"),
-            ]),
-        ];
+        let help_text = vec![Line::from(vec![
+            Span::styled(
+                "Tab/Shift+Tab",
+                Style::default().fg(self.theme.colors.accent),
+            ),
+            Span::raw(": Switch section  "),
+            Span::styled("↑/↓ or j/k", Style::default().fg(self.theme.colors.accent)),
+            Span::raw(": Navigate  "),
+            Span::styled("r", Style::default().fg(self.theme.colors.accent)),
+            Span::raw(": Refresh  "),
+            Span::styled("q", Style::default().fg(self.theme.colors.accent)),
+            Span::raw(": Back"),
+        ])];
 
         let help = Paragraph::new(help_text)
             .block(Block::default().borders(Borders::TOP))
@@ -343,9 +401,9 @@ impl View for PerfOptimizationView {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(3),  // Header
-                Constraint::Min(10),    // Content
-                Constraint::Length(3),  // Help
+                Constraint::Length(3), // Header
+                Constraint::Min(10),   // Content
+                Constraint::Length(3), // Help
             ])
             .split(area);
 
@@ -453,18 +511,16 @@ mod tests {
         let mut app_state = AppState::default();
 
         // Tab to next section
-        let result = view.handle_key(
-            KeyEvent::from(KeyCode::Tab),
-            &mut app_state
-        ).await;
+        let result = view
+            .handle_key(KeyEvent::from(KeyCode::Tab), &mut app_state)
+            .await;
         assert!(result.is_ok());
         assert_eq!(view.state.current_section, PerfSection::BottleneckDetection);
 
         // BackTab to previous section
-        let result = view.handle_key(
-            KeyEvent::from(KeyCode::BackTab),
-            &mut app_state
-        ).await;
+        let result = view
+            .handle_key(KeyEvent::from(KeyCode::BackTab), &mut app_state)
+            .await;
         assert!(result.is_ok());
         assert_eq!(view.state.current_section, PerfSection::PerformanceMetrics);
     }
@@ -474,10 +530,9 @@ mod tests {
         let mut view = PerfOptimizationView::new();
         let mut app_state = AppState::default();
 
-        let result = view.handle_key(
-            KeyEvent::from(KeyCode::Char('q')),
-            &mut app_state
-        ).await;
+        let result = view
+            .handle_key(KeyEvent::from(KeyCode::Char('q')), &mut app_state)
+            .await;
 
         assert!(result.is_ok());
         assert!(matches!(result.unwrap(), ViewAction::PopView));

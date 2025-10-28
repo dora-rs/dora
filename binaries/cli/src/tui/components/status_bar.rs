@@ -1,19 +1,13 @@
 /// Status Bar Component - displays status messages and keybindings
-
 use ratatui::{
+    Frame,
     layout::{Alignment, Rect},
     style::Style,
-    widgets::{Block, Borders, Paragraph},
     text::{Line, Span},
-    Frame,
+    widgets::{Block, Borders, Paragraph},
 };
 
-use crate::tui::{
-    app::AppState,
-    theme::ThemeConfig,
-    views::ViewAction,
-    Result,
-};
+use crate::tui::{Result, app::AppState, theme::ThemeConfig, views::ViewAction};
 
 use super::{Component, ComponentEvent, ComponentType};
 
@@ -42,8 +36,10 @@ impl Default for StatusBarComponent {
 }
 
 impl Component for StatusBarComponent {
-    fn update<'a>(&'a mut self, _app_state: &'a AppState)
-        -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
+    fn update<'a>(
+        &'a mut self,
+        _app_state: &'a AppState,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
         Box::pin(async { Ok(()) })
     }
 
@@ -82,8 +78,11 @@ impl Component for StatusBarComponent {
         frame.render_widget(paragraph, area);
     }
 
-    fn handle_event<'a>(&'a mut self, _event: ComponentEvent, _app_state: &'a AppState)
-        -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<ViewAction>> + Send + 'a>> {
+    fn handle_event<'a>(
+        &'a mut self,
+        _event: ComponentEvent,
+        _app_state: &'a AppState,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<ViewAction>> + Send + 'a>> {
         Box::pin(async { Ok(ViewAction::None) })
     }
 

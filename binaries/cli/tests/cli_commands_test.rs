@@ -1,8 +1,7 @@
+use clap::Parser;
 /// Integration tests for CLI command parsing and execution
 /// Verifies that all hybrid CLI commands can be parsed correctly
-
 use dora_cli::cli::{Cli, Command, TuiView};
-use clap::Parser;
 
 #[test]
 fn test_basic_commands_parse() {
@@ -17,11 +16,7 @@ fn test_basic_commands_parse() {
 
     for cmd in commands {
         let result = Cli::try_parse_from(cmd.clone());
-        assert!(
-            result.is_ok(),
-            "Failed to parse command: {:?}",
-            cmd
-        );
+        assert!(result.is_ok(), "Failed to parse command: {:?}", cmd);
     }
 }
 
@@ -38,29 +33,18 @@ fn test_smart_commands_parse() {
 
     for cmd in commands {
         let result = Cli::try_parse_from(cmd.clone());
-        assert!(
-            result.is_ok(),
-            "Failed to parse smart command: {:?}",
-            cmd
-        );
+        assert!(result.is_ok(), "Failed to parse smart command: {:?}", cmd);
     }
 }
 
 #[test]
 fn test_tui_commands_parse() {
     // Test Tier 3 TUI commands parse correctly
-    let commands = vec![
-        vec!["dora", "ui"],
-        vec!["dora", "dashboard"],
-    ];
+    let commands = vec![vec!["dora", "ui"], vec!["dora", "dashboard"]];
 
     for cmd in commands {
         let result = Cli::try_parse_from(cmd.clone());
-        assert!(
-            result.is_ok(),
-            "Failed to parse TUI command: {:?}",
-            cmd
-        );
+        assert!(result.is_ok(), "Failed to parse TUI command: {:?}", cmd);
     }
 }
 
@@ -68,18 +52,23 @@ fn test_tui_commands_parse() {
 fn test_ui_command_with_view_flag() {
     // Test ui command with different view options
     let test_cases = vec![
-        (vec!["dora", "ui", "--view", "dashboard"], TuiView::Dashboard),
+        (
+            vec!["dora", "ui", "--view", "dashboard"],
+            TuiView::Dashboard,
+        ),
         (vec!["dora", "ui", "--view", "dataflow"], TuiView::Dataflow),
-        (vec!["dora", "ui", "--view", "performance"], TuiView::Performance),
+        (
+            vec!["dora", "ui", "--view", "performance"],
+            TuiView::Performance,
+        ),
         (vec!["dora", "ui", "--view", "logs"], TuiView::Logs),
     ];
 
     for (args, expected_view) in test_cases {
-        let cli = Cli::try_parse_from(args.clone())
-            .expect(&format!("Failed to parse: {:?}", args));
+        let cli = Cli::try_parse_from(args.clone()).expect(&format!("Failed to parse: {:?}", args));
 
         match cli.command {
-            Some(Command::Ui(cmd)) => {
+            Some(Command::Tui(cmd)) => {
                 assert_eq!(
                     cmd.view,
                     Some(expected_view),
@@ -118,11 +107,7 @@ fn test_ui_mode_flag() {
 
     for args in test_cases {
         let result = Cli::try_parse_from(args.clone());
-        assert!(
-            result.is_ok(),
-            "Failed to parse ui-mode: {:?}",
-            args
-        );
+        assert!(result.is_ok(), "Failed to parse ui-mode: {:?}", args);
     }
 }
 
@@ -139,11 +124,7 @@ fn test_output_format_flag() {
 
     for args in test_cases {
         let result = Cli::try_parse_from(args.clone());
-        assert!(
-            result.is_ok(),
-            "Failed to parse output format: {:?}",
-            args
-        );
+        assert!(result.is_ok(), "Failed to parse output format: {:?}", args);
     }
 }
 
@@ -160,19 +141,14 @@ fn test_system_commands_parse() {
 
     for cmd in commands {
         let result = Cli::try_parse_from(cmd.clone());
-        assert!(
-            result.is_ok(),
-            "Failed to parse system command: {:?}",
-            cmd
-        );
+        assert!(result.is_ok(), "Failed to parse system command: {:?}", cmd);
     }
 }
 
 #[test]
 fn test_command_has_value() {
     // Test that parsed commands actually contain a command
-    let cli = Cli::try_parse_from(vec!["dora", "ps"])
-        .expect("Failed to parse ps command");
+    let cli = Cli::try_parse_from(vec!["dora", "ps"]).expect("Failed to parse ps command");
 
     assert!(
         cli.command.is_some(),
@@ -180,7 +156,7 @@ fn test_command_has_value() {
     );
 
     match cli.command {
-        Some(Command::Ps(_)) => {}, // Expected
+        Some(Command::Ps(_)) => {} // Expected
         _ => panic!("Expected Ps command"),
     }
 }
@@ -192,10 +168,13 @@ fn test_multiple_flags_together() {
         "dora",
         "--verbose",
         "--no-hints",
-        "--ui-mode", "cli",
-        "--output", "json",
-        "ps"
-    ]).expect("Failed to parse with multiple flags");
+        "--ui-mode",
+        "cli",
+        "--output",
+        "json",
+        "ps",
+    ])
+    .expect("Failed to parse with multiple flags");
 
     assert!(cli.verbose, "Verbose should be set");
     assert!(cli.no_hints, "No hints should be set");
@@ -230,7 +209,10 @@ fn test_version_flag_is_handled() {
     let result = Cli::try_parse_from(vec!["dora", "--version"]);
 
     // --version causes clap to return an error with version text
-    assert!(result.is_err(), "Version flag should trigger version display");
+    assert!(
+        result.is_err(),
+        "Version flag should trigger version display"
+    );
 
     // Verify it's a DisplayVersion error
     if let Err(e) = result {

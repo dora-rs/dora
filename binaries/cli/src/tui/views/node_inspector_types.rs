@@ -206,7 +206,7 @@ impl Default for NodeInspectorState {
 #[derive(Debug, Clone)]
 pub struct ConnectionInfo {
     pub name: String,
-    pub conn_type: String,  // "input" or "output"
+    pub conn_type: String, // "input" or "output"
     pub data_type: String,
     pub connected_to: Vec<String>,
     pub message_count: u64,

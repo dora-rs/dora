@@ -2,9 +2,9 @@
 #[cfg(test)]
 mod dataflow_explorer_phase2_tests {
     use dora_cli::tui::{
-        views::DataflowExplorerView,
-        theme::ThemeConfig,
         app::{AppState, DataflowInfo, NodeInfo},
+        theme::ThemeConfig,
+        views::DataflowExplorerView,
     };
 
     fn create_test_app_state() -> AppState {
@@ -31,13 +31,11 @@ mod dataflow_explorer_phase2_tests {
                 id: "df2".to_string(),
                 name: "Test Dataflow 2".to_string(),
                 status: "stopped".to_string(),
-                nodes: vec![
-                    NodeInfo {
-                        id: "node3".to_string(),
-                        name: "Node 3".to_string(),
-                        status: "stopped".to_string(),
-                    },
-                ],
+                nodes: vec![NodeInfo {
+                    id: "node3".to_string(),
+                    name: "Node 3".to_string(),
+                    status: "stopped".to_string(),
+                }],
             },
         ];
         state

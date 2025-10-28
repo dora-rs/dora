@@ -1,9 +1,7 @@
 /// Tests for DataflowExplorerView (Issue #25 Phase 1)
 #[cfg(test)]
 mod dataflow_explorer_tests {
-    use dora_cli::tui::views::{
-        ExplorerState, ExplorerTab, ViewMode, DataflowExplorerView,
-    };
+    use dora_cli::tui::views::{DataflowExplorerView, ExplorerState, ExplorerTab, ViewMode};
 
     #[test]
     fn test_explorer_tab_all_returns_six_tabs() {

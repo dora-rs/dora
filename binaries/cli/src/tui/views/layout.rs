@@ -1,10 +1,7 @@
 /// Layout Management for Component-Based Views
 ///
 /// This module provides layout management for arranging components within views.
-
-use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
-};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use std::collections::HashMap;
 
 use crate::tui::ComponentId;
@@ -13,9 +10,7 @@ use crate::tui::ComponentId;
 #[derive(Debug, Clone)]
 pub enum LayoutConfig {
     /// Single component fills entire area
-    Single {
-        component_id: ComponentId,
-    },
+    Single { component_id: ComponentId },
 
     /// Vertical split
     Vertical {
@@ -100,7 +95,11 @@ impl LayoutManager {
                     }
                 }
 
-                LayoutConfig::Grid { rows, cols, components } => {
+                LayoutConfig::Grid {
+                    rows,
+                    cols,
+                    components,
+                } => {
                     let row_height = area.height / *rows as u16;
                     let col_width = area.width / *cols as u16;
 
@@ -156,7 +155,12 @@ mod tests {
             component_id: component_id.clone(),
         });
 
-        let area = Rect { x: 0, y: 0, width: 100, height: 50 };
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 50,
+        };
         let layout = manager.calculate_layout(area);
 
         assert_eq!(layout.len(), 1);
@@ -176,7 +180,12 @@ mod tests {
             ],
         });
 
-        let area = Rect { x: 0, y: 0, width: 100, height: 100 };
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 100,
+        };
         let layout = manager.calculate_layout(area);
 
         assert_eq!(layout.len(), 2);
@@ -197,7 +206,12 @@ mod tests {
             ],
         });
 
-        let area = Rect { x: 0, y: 0, width: 100, height: 50 };
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 50,
+        };
         let layout = manager.calculate_layout(area);
 
         assert_eq!(layout.len(), 2);
@@ -224,7 +238,12 @@ mod tests {
             ],
         });
 
-        let area = Rect { x: 0, y: 0, width: 100, height: 100 };
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 100,
+        };
         let layout = manager.calculate_layout(area);
 
         assert_eq!(layout.len(), 4);

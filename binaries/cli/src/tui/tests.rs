@@ -1,10 +1,9 @@
 #[cfg(test)]
-
 use crate::tui::{
-    app::{DoraApp, ViewType, AppState, MessageLevel},
+    app::{AppState, DoraApp, MessageLevel, ViewType},
+    cli_integration::{CliContext, CommandHistory, KeyBindings, TabCompletion},
     theme::ThemeConfig,
-    cli_integration::{CliContext, CommandHistory, TabCompletion, KeyBindings},
-    views::{View, ViewAction, StateUpdate},
+    views::{StateUpdate, View, ViewAction},
 };
 
 #[cfg(test)]
@@ -28,27 +27,27 @@ mod app_tests {
     #[test]
     fn test_view_navigation() {
         let mut app = DoraApp::new(ViewType::Dashboard);
-        
+
         // Test push view
         app.push_view(ViewType::DataflowManager);
         assert!(matches!(app.current_view(), &ViewType::DataflowManager));
         assert_eq!(app.view_stack_len(), 1);
-        
+
         // Test push another view
         app.push_view(ViewType::SystemMonitor);
         assert!(matches!(app.current_view(), &ViewType::SystemMonitor));
         assert_eq!(app.view_stack_len(), 2);
-        
+
         // Test pop view
         app.pop_view();
         assert!(matches!(app.current_view(), &ViewType::DataflowManager));
         assert_eq!(app.view_stack_len(), 1);
-        
+
         // Test pop to original
         app.pop_view();
         assert!(matches!(app.current_view(), &ViewType::Dashboard));
         assert_eq!(app.view_stack_len(), 0);
-        
+
         // Test pop when empty (should not crash)
         app.pop_view();
         assert!(matches!(app.current_view(), &ViewType::Dashboard));
@@ -58,23 +57,25 @@ mod app_tests {
     #[test]
     fn test_view_switching() {
         let mut app = DoraApp::new(ViewType::Dashboard);
-        
+
         app.switch_view(ViewType::Help);
         assert!(matches!(app.current_view(), &ViewType::Help));
-        
-        app.switch_view(ViewType::LogViewer { target: "test".to_string() });
+
+        app.switch_view(ViewType::LogViewer {
+            target: "test".to_string(),
+        });
         assert!(matches!(app.current_view(), &ViewType::LogViewer { .. }));
     }
 
     #[test]
     fn test_command_mode() {
         let mut app = DoraApp::new(ViewType::Dashboard);
-        
+
         assert!(!app.is_in_command_mode());
-        
+
         app.enter_command_mode();
         assert!(app.is_in_command_mode());
-        
+
         app.exit_command_mode();
         assert!(!app.is_in_command_mode());
     }
@@ -82,10 +83,10 @@ mod app_tests {
     #[test]
     fn test_status_messages() {
         let mut app = DoraApp::new(ViewType::Dashboard);
-        
+
         app.show_status_message("Test message".to_string(), MessageLevel::Info);
         assert!(app.has_status_messages());
-        
+
         app.show_error_message("Error message".to_string());
         assert!(app.has_status_messages());
     }
@@ -99,7 +100,7 @@ mod theme_tests {
     fn test_theme_creation() {
         let theme = ThemeConfig::default_dark();
         assert_eq!(theme.name, "dark");
-        
+
         let theme = ThemeConfig::default_light();
         assert_eq!(theme.name, "light");
     }
@@ -113,12 +114,12 @@ mod theme_tests {
     #[test]
     fn test_status_styling() {
         let theme = ThemeConfig::default_dark();
-        
+
         // Test status-based colors
         let running_style = theme.status_style("running");
         let error_style = theme.status_style("error");
         let warning_style = theme.status_style("warning");
-        
+
         // Colors should be different for different statuses
         assert_ne!(running_style, error_style);
         assert_ne!(error_style, warning_style);
@@ -127,10 +128,10 @@ mod theme_tests {
     #[test]
     fn test_percentage_styling() {
         let theme = ThemeConfig::default_dark();
-        
+
         let low_style = theme.percentage_style(25.0);
         let high_style = theme.percentage_style(95.0);
-        
+
         // High percentage should have different (warning) color
         assert_ne!(low_style, high_style);
     }
@@ -151,21 +152,17 @@ mod cli_integration_tests {
     fn test_command_history() {
         let mut history = CommandHistory::new();
         assert_eq!(history.commands.len(), 0);
-        
-        history.add_entry(
-            "ps".to_string(), 
-            true, 
-            std::env::current_dir().unwrap()
-        );
-        
+
+        history.add_entry("ps".to_string(), true, std::env::current_dir().unwrap());
+
         assert_eq!(history.commands.len(), 1);
         assert_eq!(history.commands[0].command, "ps");
         assert!(history.commands[0].success);
-        
+
         // Test search
         let results = history.search("ps");
         assert_eq!(results.len(), 1);
-        
+
         let results = history.search("nonexistent");
         assert_eq!(results.len(), 0);
     }
@@ -173,13 +170,13 @@ mod cli_integration_tests {
     #[test]
     fn test_tab_completion() {
         let mut completion = TabCompletion::new();
-        
+
         completion.update_suggestions("p");
         assert!(completion.suggestions.contains(&"ps".to_string()));
-        
+
         completion.update_suggestions("st");
         assert!(completion.suggestions.contains(&"start".to_string()));
-        
+
         completion.update_suggestions("--");
         assert!(completion.suggestions.iter().any(|s| s.starts_with("--")));
     }
@@ -187,20 +184,23 @@ mod cli_integration_tests {
     #[test]
     fn test_key_bindings() {
         let bindings = KeyBindings::default_bindings();
-        
+
         // Test global bindings
         assert_eq!(bindings.get_binding("q", None), Some(&"quit".to_string()));
-        assert_eq!(bindings.get_binding(":", None), Some(&"command_mode".to_string()));
-        
+        assert_eq!(
+            bindings.get_binding(":", None),
+            Some(&"command_mode".to_string())
+        );
+
         // Test view-specific bindings
         assert_eq!(
-            bindings.get_binding("r", Some("dashboard")), 
+            bindings.get_binding("r", Some("dashboard")),
             Some(&"refresh_dashboard".to_string())
         );
-        
+
         // Test fallback to global
         assert_eq!(
-            bindings.get_binding("q", Some("dashboard")), 
+            bindings.get_binding("q", Some("dashboard")),
             Some(&"quit".to_string())
         );
     }
@@ -208,11 +208,14 @@ mod cli_integration_tests {
     #[test]
     fn test_key_bindings_modification() {
         let mut bindings = KeyBindings::default_bindings();
-        
+
         // Add custom binding
         bindings.add_binding("x".to_string(), "custom_action".to_string(), None);
-        assert_eq!(bindings.get_binding("x", None), Some(&"custom_action".to_string()));
-        
+        assert_eq!(
+            bindings.get_binding("x", None),
+            Some(&"custom_action".to_string())
+        );
+
         // Remove binding
         bindings.remove_binding("x", None);
         assert_eq!(bindings.get_binding("x", None), None);
@@ -228,10 +231,10 @@ mod view_tests {
     fn test_dashboard_view() {
         let theme = ThemeConfig::default_dark();
         let view = DashboardView::new(&theme);
-        
+
         assert_eq!(view.title(), "Dashboard");
         assert!(view.can_focus());
-        
+
         let help_text = view.help_text();
         assert!(!help_text.is_empty());
     }
@@ -240,9 +243,9 @@ mod view_tests {
     fn test_help_view() {
         let theme = ThemeConfig::default_dark();
         let view = HelpView::new(&theme);
-        
+
         assert_eq!(view.title(), "Help");
-        
+
         let help_text = view.help_text();
         assert!(!help_text.is_empty());
         assert!(help_text.iter().any(|(key, _)| *key == "Esc"));
@@ -253,10 +256,10 @@ mod view_tests {
         // Test ViewAction variants
         let action = ViewAction::SwitchView(ViewType::Dashboard);
         assert!(matches!(action, ViewAction::SwitchView(_)));
-        
+
         let action = ViewAction::ExecuteCommand("ps".to_string());
         assert!(matches!(action, ViewAction::ExecuteCommand(_)));
-        
+
         let action = ViewAction::ShowStatus("Test".to_string());
         assert!(matches!(action, ViewAction::ShowStatus(_)));
     }
@@ -265,10 +268,10 @@ mod view_tests {
     fn test_state_updates() {
         let update = StateUpdate::RefreshDataflows;
         assert!(matches!(update, StateUpdate::RefreshDataflows));
-        
+
         let update = StateUpdate::UpdateSystemMetrics;
         assert!(matches!(update, StateUpdate::UpdateSystemMetrics));
-        
+
         let update = StateUpdate::AddStatusMessage("Test".to_string(), MessageLevel::Info);
         assert!(matches!(update, StateUpdate::AddStatusMessage(_, _)));
     }
@@ -292,7 +295,7 @@ mod app_state_tests {
         let success = MessageLevel::Success;
         let warning = MessageLevel::Warning;
         let error = MessageLevel::Error;
-        
+
         // Test that message levels can be cloned
         let _info_clone = info.clone();
         let _success_clone = success.clone();

@@ -1,6 +1,5 @@
 /// Settings types and state management (Issue #30 - Phase 1)
 /// Provides type definitions for settings configuration with mock data support.
-
 use std::time::Instant;
 
 /// Settings category
@@ -106,7 +105,13 @@ impl SettingValue {
     /// Format value for display
     pub fn format_display(&self) -> String {
         match self {
-            Self::Boolean(b) => if *b { "Enabled".to_string() } else { "Disabled".to_string() },
+            Self::Boolean(b) => {
+                if *b {
+                    "Enabled".to_string()
+                } else {
+                    "Disabled".to_string()
+                }
+            }
             Self::Integer(i) => i.to_string(),
             Self::Float(f) => format!("{:.2}", f),
             Self::String(s) => {
@@ -390,7 +395,10 @@ impl SettingsState {
                 "Buffer Size".to_string(),
                 "Maximum log entries to keep in memory".to_string(),
                 SettingValue::Integer(1000),
-                SettingType::Integer { min: 100, max: 10000 },
+                SettingType::Integer {
+                    min: 100,
+                    max: 10000,
+                },
                 SettingValue::Integer(1000),
             ),
             SettingItem::new(
@@ -509,10 +517,7 @@ mod tests {
     #[test]
     fn test_setting_type_names() {
         assert_eq!(SettingType::Boolean.name(), "Boolean");
-        assert_eq!(
-            SettingType::Integer { min: 0, max: 100 }.name(),
-            "Integer"
-        );
+        assert_eq!(SettingType::Integer { min: 0, max: 100 }.name(), "Integer");
     }
 
     #[test]

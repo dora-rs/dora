@@ -1,27 +1,22 @@
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 /// Debug Session View implementation (Issue #29 - Phase 1)
 /// Provides a comprehensive debugging interface with mock data.
-
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
-    Frame,
 };
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::time::Duration;
 
 use super::{
-    debug_session_types::{
-        DebugSessionState, ExecutionState, DebugPanel, Variable, CallStackFrame, Breakpoint,
-    },
     BaseView, View, ViewAction,
+    debug_session_types::{
+        Breakpoint, CallStackFrame, DebugPanel, DebugSessionState, ExecutionState, Variable,
+    },
 };
-use crate::tui::{
-    app::{AppState, ViewType},
-    theme::ThemeConfig,
-    Result,
-};
+use crate::tui::{Result, app::AppState, theme::ThemeConfig};
 
 /// Debug Session View - Interactive debugging interface
 pub struct DebugSessionView {
@@ -106,21 +101,9 @@ impl DebugSessionView {
         ));
 
         // Add mock breakpoints
-        state.add_breakpoint(Breakpoint::new(
-            1,
-            "camera_node.rs".to_string(),
-            142,
-        ));
-        state.add_breakpoint(Breakpoint::new(
-            2,
-            "node.rs".to_string(),
-            89,
-        ));
-        state.add_breakpoint(Breakpoint::new(
-            3,
-            "runtime.rs".to_string(),
-            203,
-        ));
+        state.add_breakpoint(Breakpoint::new(1, "camera_node.rs".to_string(), 142));
+        state.add_breakpoint(Breakpoint::new(2, "node.rs".to_string(), 89));
+        state.add_breakpoint(Breakpoint::new(3, "runtime.rs".to_string(), 203));
 
         // Enable first breakpoint and add hit count
         if let Some(bp) = state.breakpoints.get_mut(0) {
@@ -151,21 +134,51 @@ impl DebugSessionView {
             ]),
             Line::from(""),
             Line::from(vec![
-                Span::styled("F5", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "F5",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::raw("  Continue  "),
-                Span::styled("F10", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "F10",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::raw(" Step Over"),
             ]),
             Line::from(vec![
-                Span::styled("F11", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "F11",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::raw(" Step Into  "),
-                Span::styled("F9", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "F9",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::raw("  Toggle BP"),
             ]),
             Line::from(vec![
-                Span::styled("Tab", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "Tab",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::raw(" Switch Panel  "),
-                Span::styled("c", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "c",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::raw(" Clear"),
             ]),
         ];
@@ -190,7 +203,12 @@ impl DebugSessionView {
             Line::from("  140 │     let frame = capture_frame()?;"),
             Line::from("  141 │     let processed = process(frame);"),
             Line::from(vec![
-                Span::styled("▶", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "▶",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::raw(" 142 │     "),
                 Span::styled("send_output", Style::default().fg(Color::Cyan)),
                 Span::raw("(processed);"),
@@ -200,10 +218,9 @@ impl DebugSessionView {
             Line::from("  145 │ }"),
         ];
 
-        let title = format!(" {} @ {}:{} ",
-            location.function_name,
-            location.file_name,
-            location.line_number
+        let title = format!(
+            " {} @ {}:{} ",
+            location.function_name, location.file_name, location.line_number
         );
 
         let block = Block::default()
@@ -227,7 +244,8 @@ impl DebugSessionView {
             .enumerate()
             .map(|(i, var)| {
                 let style = if i == self.state.selected_variable
-                    && self.state.active_panel == DebugPanel::Variables {
+                    && self.state.active_panel == DebugPanel::Variables
+                {
                     self.theme.highlight_style()
                 } else {
                     Style::default()
@@ -245,13 +263,12 @@ impl DebugSessionView {
 
         let title = format!(" Variables ({}) ", self.state.variables.len());
 
-        let list = List::new(items)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(border_style)
-                    .title(title),
-            );
+        let list = List::new(items).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(border_style)
+                .title(title),
+        );
 
         f.render_widget(list, area);
     }
@@ -265,7 +282,8 @@ impl DebugSessionView {
             .enumerate()
             .map(|(i, frame)| {
                 let style = if i == self.state.selected_frame
-                    && self.state.active_panel == DebugPanel::CallStack {
+                    && self.state.active_panel == DebugPanel::CallStack
+                {
                     self.theme.highlight_style()
                 } else {
                     Style::default()
@@ -285,13 +303,12 @@ impl DebugSessionView {
 
         let title = format!(" Call Stack ({}) ", self.state.call_stack.len());
 
-        let list = List::new(items)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(border_style)
-                    .title(title),
-            );
+        let list = List::new(items).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(border_style)
+                .title(title),
+        );
 
         f.render_widget(list, area);
     }
@@ -305,7 +322,8 @@ impl DebugSessionView {
             .enumerate()
             .map(|(i, bp)| {
                 let style = if i == self.state.selected_breakpoint
-                    && self.state.active_panel == DebugPanel::Breakpoints {
+                    && self.state.active_panel == DebugPanel::Breakpoints
+                {
                     self.theme.highlight_style()
                 } else if bp.enabled {
                     Style::default()
@@ -323,19 +341,24 @@ impl DebugSessionView {
             self.theme.normal_border_style()
         };
 
-        let enabled_count = self.state.breakpoints.iter().filter(|bp| bp.enabled).count();
-        let title = format!(" Breakpoints ({}/{}) ",
+        let enabled_count = self
+            .state
+            .breakpoints
+            .iter()
+            .filter(|bp| bp.enabled)
+            .count();
+        let title = format!(
+            " Breakpoints ({}/{}) ",
             enabled_count,
             self.state.breakpoints.len()
         );
 
-        let list = List::new(items)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(border_style)
-                    .title(title),
-            );
+        let list = List::new(items).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(border_style)
+                .title(title),
+        );
 
         f.render_widget(list, area);
     }
@@ -349,7 +372,9 @@ impl DebugSessionView {
             Span::styled("Panel: ", Style::default().fg(Color::Gray)),
             Span::styled(
                 self.state.active_panel.name(),
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::raw("  │  "),
             Span::styled("q", Style::default().fg(Color::Cyan)),
@@ -373,7 +398,9 @@ impl DebugSessionView {
                 match self.state.execution_state {
                     ExecutionState::Paused | ExecutionState::Stopped => {
                         self.state.set_execution_state(ExecutionState::Running);
-                        Ok(ViewAction::ShowStatus("Continuing execution...".to_string()))
+                        Ok(ViewAction::ShowStatus(
+                            "Continuing execution...".to_string(),
+                        ))
                     }
                     ExecutionState::Running => {
                         self.state.set_execution_state(ExecutionState::Paused);
@@ -459,7 +486,10 @@ impl View for DebugSessionView {
 
     async fn handle_key(&mut self, key: KeyEvent, _app_state: &mut AppState) -> Result<ViewAction> {
         // Handle execution controls first
-        if matches!(key.code, KeyCode::F(5) | KeyCode::F(9) | KeyCode::F(10) | KeyCode::F(11)) {
+        if matches!(
+            key.code,
+            KeyCode::F(5) | KeyCode::F(9) | KeyCode::F(10) | KeyCode::F(11)
+        ) {
             return self.handle_execution_control(key.code).await;
         }
 

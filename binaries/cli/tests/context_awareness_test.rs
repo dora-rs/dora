@@ -1,14 +1,12 @@
 // Integration tests for Context Awareness Feature (Issue #35)
 
+use crossterm::event::{KeyCode, KeyEvent};
 use dora_cli::tui::{
     app::AppState,
     views::{
-        View, ViewAction,
-        context_awareness::ContextAwarenessView,
-        context_awareness_types::*,
+        View, ViewAction, context_awareness::ContextAwarenessView, context_awareness_types::*,
     },
 };
-use crossterm::event::{KeyCode, KeyEvent};
 
 #[tokio::test]
 async fn test_context_awareness_view_initialization() {
@@ -16,7 +14,10 @@ async fn test_context_awareness_view_initialization() {
 
     assert_eq!(view.state.current_section, ContextSection::ExecutionContext);
     assert_eq!(view.state.selected_index, 0);
-    assert!(matches!(view.state.data, ContextData::ExecutionEnvironment(_)));
+    assert!(matches!(
+        view.state.data,
+        ContextData::ExecutionEnvironment(_)
+    ));
 }
 
 #[tokio::test]
@@ -28,14 +29,18 @@ async fn test_section_navigation() {
     let sections = ContextSection::all();
     for (i, expected_section) in sections.iter().enumerate() {
         if i > 0 {
-            let result = view.handle_key(KeyEvent::from(KeyCode::Tab), &mut app_state).await;
+            let result = view
+                .handle_key(KeyEvent::from(KeyCode::Tab), &mut app_state)
+                .await;
             assert!(result.is_ok());
         }
         assert_eq!(view.state.current_section, *expected_section);
     }
 
     // Wrap around
-    let result = view.handle_key(KeyEvent::from(KeyCode::Tab), &mut app_state).await;
+    let result = view
+        .handle_key(KeyEvent::from(KeyCode::Tab), &mut app_state)
+        .await;
     assert!(result.is_ok());
     assert_eq!(view.state.current_section, ContextSection::ExecutionContext);
 }
@@ -46,14 +51,24 @@ async fn test_section_navigation_backward() {
     let mut app_state = AppState::default();
 
     // Go backward from first section (should wrap to last)
-    let result = view.handle_key(KeyEvent::from(KeyCode::BackTab), &mut app_state).await;
+    let result = view
+        .handle_key(KeyEvent::from(KeyCode::BackTab), &mut app_state)
+        .await;
     assert!(result.is_ok());
-    assert_eq!(view.state.current_section, ContextSection::PreferenceResolution);
+    assert_eq!(
+        view.state.current_section,
+        ContextSection::PreferenceResolution
+    );
 
     // Go backward again
-    let result = view.handle_key(KeyEvent::from(KeyCode::BackTab), &mut app_state).await;
+    let result = view
+        .handle_key(KeyEvent::from(KeyCode::BackTab), &mut app_state)
+        .await;
     assert!(result.is_ok());
-    assert_eq!(view.state.current_section, ContextSection::BehavioralLearning);
+    assert_eq!(
+        view.state.current_section,
+        ContextSection::BehavioralLearning
+    );
 }
 
 #[tokio::test]
@@ -68,12 +83,16 @@ async fn test_item_navigation() {
     let initial_index = view.state.selected_index;
 
     // Navigate down
-    let result = view.handle_key(KeyEvent::from(KeyCode::Down), &mut app_state).await;
+    let result = view
+        .handle_key(KeyEvent::from(KeyCode::Down), &mut app_state)
+        .await;
     assert!(result.is_ok());
     assert_eq!(view.state.selected_index, initial_index + 1);
 
     // Navigate up
-    let result = view.handle_key(KeyEvent::from(KeyCode::Up), &mut app_state).await;
+    let result = view
+        .handle_key(KeyEvent::from(KeyCode::Up), &mut app_state)
+        .await;
     assert!(result.is_ok());
     assert_eq!(view.state.selected_index, initial_index);
 }
@@ -87,12 +106,16 @@ async fn test_vim_style_navigation() {
     view.state.update_data();
 
     // Test 'j' (down)
-    let result = view.handle_key(KeyEvent::from(KeyCode::Char('j')), &mut app_state).await;
+    let result = view
+        .handle_key(KeyEvent::from(KeyCode::Char('j')), &mut app_state)
+        .await;
     assert!(result.is_ok());
     assert!(view.state.selected_index > 0);
 
     // Test 'k' (up)
-    let result = view.handle_key(KeyEvent::from(KeyCode::Char('k')), &mut app_state).await;
+    let result = view
+        .handle_key(KeyEvent::from(KeyCode::Char('k')), &mut app_state)
+        .await;
     assert!(result.is_ok());
     assert_eq!(view.state.selected_index, 0);
 }
@@ -102,7 +125,9 @@ async fn test_quit_action() {
     let mut view = ContextAwarenessView::new();
     let mut app_state = AppState::default();
 
-    let result = view.handle_key(KeyEvent::from(KeyCode::Char('q')), &mut app_state).await;
+    let result = view
+        .handle_key(KeyEvent::from(KeyCode::Char('q')), &mut app_state)
+        .await;
     assert!(result.is_ok());
     assert!(matches!(result.unwrap(), ViewAction::PopView));
 }
@@ -112,7 +137,9 @@ async fn test_refresh_action() {
     let mut view = ContextAwarenessView::new();
     let mut app_state = AppState::default();
 
-    let result = view.handle_key(KeyEvent::from(KeyCode::Char('r')), &mut app_state).await;
+    let result = view
+        .handle_key(KeyEvent::from(KeyCode::Char('r')), &mut app_state)
+        .await;
     assert!(result.is_ok());
     assert!(matches!(result.unwrap(), ViewAction::None));
 }
@@ -175,8 +202,8 @@ fn test_preference_levels_mock_data() {
     assert_eq!(levels.len(), 6);
 
     // Check priority ordering (highest to lowest)
-    for i in 0..levels.len()-1 {
-        assert!(levels[i].level.priority() > levels[i+1].level.priority());
+    for i in 0..levels.len() - 1 {
+        assert!(levels[i].level.priority() > levels[i + 1].level.priority());
     }
 }
 
@@ -236,9 +263,18 @@ fn test_resolution_level_ordering() {
 #[test]
 fn test_adaptation_rule_type_names() {
     assert_eq!(AdaptationRuleType::TimeBased.name(), "Time-Based");
-    assert_eq!(AdaptationRuleType::EnvironmentBased.name(), "Environment-Based");
-    assert_eq!(AdaptationRuleType::ComplexityBased.name(), "Complexity-Based");
-    assert_eq!(AdaptationRuleType::UsagePatternBased.name(), "Usage Pattern-Based");
+    assert_eq!(
+        AdaptationRuleType::EnvironmentBased.name(),
+        "Environment-Based"
+    );
+    assert_eq!(
+        AdaptationRuleType::ComplexityBased.name(),
+        "Complexity-Based"
+    );
+    assert_eq!(
+        AdaptationRuleType::UsagePatternBased.name(),
+        "Usage Pattern-Based"
+    );
 }
 
 #[test]
@@ -377,9 +413,7 @@ fn test_preference_level_structure() {
     let level = PreferenceLevel {
         level: ResolutionLevel::UserPreference,
         source: "user_config".to_string(),
-        preferences: std::collections::HashMap::from([
-            ("theme".to_string(), "dark".to_string()),
-        ]),
+        preferences: std::collections::HashMap::from([("theme".to_string(), "dark".to_string())]),
         is_active: true,
     };
 
@@ -501,12 +535,36 @@ fn test_learning_patterns_confidence_validity() {
 fn test_all_resolution_levels_present() {
     let levels = create_mock_preference_levels();
 
-    assert!(levels.iter().any(|l| l.level == ResolutionLevel::TemporaryOverride));
-    assert!(levels.iter().any(|l| l.level == ResolutionLevel::ContextAdaptation));
-    assert!(levels.iter().any(|l| l.level == ResolutionLevel::UserPreference));
-    assert!(levels.iter().any(|l| l.level == ResolutionLevel::WorkspaceConfig));
-    assert!(levels.iter().any(|l| l.level == ResolutionLevel::ProjectDefault));
-    assert!(levels.iter().any(|l| l.level == ResolutionLevel::SystemDefault));
+    assert!(
+        levels
+            .iter()
+            .any(|l| l.level == ResolutionLevel::TemporaryOverride)
+    );
+    assert!(
+        levels
+            .iter()
+            .any(|l| l.level == ResolutionLevel::ContextAdaptation)
+    );
+    assert!(
+        levels
+            .iter()
+            .any(|l| l.level == ResolutionLevel::UserPreference)
+    );
+    assert!(
+        levels
+            .iter()
+            .any(|l| l.level == ResolutionLevel::WorkspaceConfig)
+    );
+    assert!(
+        levels
+            .iter()
+            .any(|l| l.level == ResolutionLevel::ProjectDefault)
+    );
+    assert!(
+        levels
+            .iter()
+            .any(|l| l.level == ResolutionLevel::SystemDefault)
+    );
 }
 
 #[tokio::test]
@@ -517,7 +575,9 @@ async fn test_complete_navigation_cycle() {
     // Navigate through all sections and verify data updates
     for _ in 0..ContextSection::all().len() {
         // Navigate to next section
-        let result = view.handle_key(KeyEvent::from(KeyCode::Tab), &mut app_state).await;
+        let result = view
+            .handle_key(KeyEvent::from(KeyCode::Tab), &mut app_state)
+            .await;
         assert!(result.is_ok());
 
         // Verify selection resets

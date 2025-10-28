@@ -1,5 +1,5 @@
 mod build;
-mod check;
+pub mod check;
 mod coordinator;
 mod daemon;
 mod destroy;

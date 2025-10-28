@@ -1,10 +1,10 @@
 #[cfg(test)]
 mod preference_tests {
-    use crate::config::preferences::*;
+    use crate::cli::context::{ExecutionContext, ExecutionEnvironment, TerminalCapabilities};
+    use crate::cli::{Command, UiMode};
     use crate::config::behavioral_learning::*;
     use crate::config::context_preferences::*;
-    use crate::cli::{Command, UiMode};
-    use crate::cli::context::{ExecutionContext, ExecutionEnvironment, TerminalCapabilities};
+    use crate::config::preferences::*;
     use std::collections::HashMap;
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
@@ -54,9 +54,12 @@ mod preference_tests {
     #[test]
     fn test_user_preferences_default() {
         let prefs = UserPreferences::default();
-        
+
         assert_eq!(prefs.interface.default_ui_mode, UiMode::Auto);
-        assert_eq!(prefs.interface.complexity_thresholds.suggestion_threshold, 6);
+        assert_eq!(
+            prefs.interface.complexity_thresholds.suggestion_threshold,
+            6
+        );
         assert!(prefs.behavior.learning_enabled);
         assert_eq!(prefs.behavior.adaptation_weights.behavioral_weight, 0.4);
         assert_eq!(prefs.metadata.schema_version, 1);
@@ -87,12 +90,12 @@ mod preference_tests {
         let prefs = UserPreferences::default();
         let context = create_test_context();
         let command = create_test_command();
-        
+
         let prediction = prefs.predict_interface_preference(&command, &context);
-        
+
         assert!(prediction.confidence > 0.0);
         assert!(!prediction.factors.is_empty());
-        
+
         // Debug command should have high complexity, suggesting TUI
         assert_eq!(prediction.predicted_mode, UiMode::Tui);
     }
@@ -117,7 +120,7 @@ mod preference_tests {
     fn test_context_snapshot_creation() {
         let context = create_test_context();
         let snapshot = ContextSnapshot::from_context(&context);
-        
+
         assert_eq!(snapshot.is_tty, true);
         assert_eq!(snapshot.is_scripted, false);
         assert_eq!(snapshot.terminal_size, Some((120, 40)));
@@ -128,24 +131,21 @@ mod preference_tests {
     async fn test_behavioral_learning_engine() {
         let prefs = Arc::new(Mutex::new(UserPreferences::default()));
         let mut engine = BehavioralLearningEngine::new(prefs.clone());
-        
+
         let command = create_test_command();
         let context = create_test_context();
-        
+
         // Record an interface choice
-        let result = engine.record_interface_choice(
-            &command,
-            &context,
-            UiMode::Tui,
-            DecisionTrigger::UserChoice,
-        ).await;
-        
+        let result = engine
+            .record_interface_choice(&command, &context, UiMode::Tui, DecisionTrigger::UserChoice)
+            .await;
+
         assert!(result.is_ok());
-        
+
         // Verify choice was recorded
         let preferences = prefs.lock().unwrap();
         assert_eq!(preferences.behavior.interface_choices.len(), 1);
-        
+
         let choice = &preferences.behavior.interface_choices[0];
         assert_eq!(choice.command, "debug");
         assert_eq!(choice.chosen_interface, UiMode::Tui);
@@ -156,28 +156,28 @@ mod preference_tests {
     async fn test_user_feedback_recording() {
         let prefs = Arc::new(Mutex::new(UserPreferences::default()));
         let engine = BehavioralLearningEngine::new(prefs.clone());
-        
+
         let command = create_test_command();
         let context = create_test_context();
-        
+
         // Record an interface choice first
         let session_id = engine.get_current_session_id();
-        engine.record_interface_choice(
-            &command,
-            &context,
-            UiMode::Tui,
-            DecisionTrigger::UserChoice,
-        ).await.unwrap();
-        
+        engine
+            .record_interface_choice(&command, &context, UiMode::Tui, DecisionTrigger::UserChoice)
+            .await
+            .unwrap();
+
         // Record user feedback
-        let result = engine.record_user_feedback(
-            &session_id,
-            SatisfactionLevel::VerySatisfied,
-            Some("Great experience".to_string()),
-        ).await;
-        
+        let result = engine
+            .record_user_feedback(
+                &session_id,
+                SatisfactionLevel::VerySatisfied,
+                Some("Great experience".to_string()),
+            )
+            .await;
+
         assert!(result.is_ok());
-        
+
         // Verify feedback was recorded
         let preferences = prefs.lock().unwrap();
         let choice = &preferences.behavior.interface_choices[0];
@@ -188,13 +188,13 @@ mod preference_tests {
     #[test]
     fn test_pattern_detection() {
         use crate::config::behavioral_learning::{CommandSequenceDetector, PatternDetector};
-        
+
         let detector = CommandSequenceDetector::new();
-        
+
         // Create test interface choices
         let mut choices = Vec::new();
         let base_time = chrono::Utc::now();
-        
+
         for i in 0..5 {
             choices.push(InterfaceChoice {
                 command: "debug".to_string(),
@@ -205,9 +205,9 @@ mod preference_tests {
                 session_id: "test_session".to_string(),
             });
         }
-        
+
         let patterns = detector.detect_patterns(&choices);
-        
+
         // Should detect consistent TUI preference for debug command sequences
         assert!(!patterns.is_empty());
     }
@@ -216,33 +216,36 @@ mod preference_tests {
     fn test_contextual_preferences() {
         let prefs = Arc::new(Mutex::new(UserPreferences::default()));
         let context_prefs = ContextAwarePreferences::new(prefs);
-        
+
         let command = create_test_command();
         let context = create_test_context();
-        
+
         let contextual = context_prefs.get_contextual_preference(&command, &context);
-        
+
         assert!(contextual.confidence > 0.0);
         assert!(!contextual.reasoning.is_empty());
-        
+
         // Should prefer TUI for complex debug command in interactive context
-        assert!(matches!(contextual.ui_mode_preference, UiMode::Tui | UiMode::Auto));
+        assert!(matches!(
+            contextual.ui_mode_preference,
+            UiMode::Tui | UiMode::Auto
+        ));
     }
 
     #[test]
     fn test_ci_environment_preference_override() {
         let prefs = Arc::new(Mutex::new(UserPreferences::default()));
         let context_prefs = ContextAwarePreferences::new(prefs);
-        
+
         let command = Command::Ps(crate::cli::commands::PsCommand::default());
         let mut context = create_test_context();
-        
+
         // Simulate CI environment
         context.environment.is_ci = true;
         context.is_scripted = true;
-        
+
         let contextual = context_prefs.get_contextual_preference(&command, &context);
-        
+
         // CI environment should strongly prefer minimal mode
         assert_eq!(contextual.ui_mode_preference, UiMode::Minimal);
         assert!(contextual.confidence > 0.8);
@@ -252,12 +255,12 @@ mod preference_tests {
     fn test_time_based_preferences() {
         let engine = AdaptationEngine::new();
         let context = create_test_context();
-        
+
         let time_factors = engine.apply_time_based_rules(&context);
-        
+
         // Should have at least one time-based factor
         assert!(!time_factors.is_empty());
-        
+
         // Factors should have reasonable weights
         for (_, weight, _) in &time_factors {
             assert!(*weight > 0.0);
@@ -268,19 +271,19 @@ mod preference_tests {
     #[test]
     fn test_complexity_based_preferences() {
         let engine = AdaptationEngine::new();
-        
+
         // Test simple command (low complexity)
         let simple_factors = engine.apply_complexity_rules(2);
         assert!(!simple_factors.is_empty());
-        
+
         // Should prefer CLI for simple commands
         let (mode, _, _) = &simple_factors[0];
         assert_eq!(*mode, UiMode::Cli);
-        
+
         // Test complex command (high complexity)
         let complex_factors = engine.apply_complexity_rules(9);
         assert!(!complex_factors.is_empty());
-        
+
         // Should prefer TUI for complex commands
         let (mode, _, _) = &complex_factors[0];
         assert_eq!(*mode, UiMode::Tui);
@@ -290,28 +293,31 @@ mod preference_tests {
     fn test_preference_cache() {
         let prefs = Arc::new(Mutex::new(UserPreferences::default()));
         let context_prefs = ContextAwarePreferences::new(prefs);
-        
+
         let command = create_test_command();
         let context = create_test_context();
-        
+
         // First call should compute preferences
         let start_time = std::time::Instant::now();
         let result1 = context_prefs.get_contextual_preference(&command, &context);
         let first_duration = start_time.elapsed();
-        
+
         // Second call should use cache (should be faster)
         let start_time = std::time::Instant::now();
         let result2 = context_prefs.get_contextual_preference(&command, &context);
         let second_duration = start_time.elapsed();
-        
+
         // Results should be identical
         assert_eq!(result1.ui_mode_preference, result2.ui_mode_preference);
         assert_eq!(result1.confidence, result2.confidence);
-        
+
         // Second call should be faster (cache hit)
         // Note: This may not always be true in debug builds or on very fast systems
         // but it's a good general indicator
-        println!("First call: {:?}, Second call: {:?}", first_duration, second_duration);
+        println!(
+            "First call: {:?}, Second call: {:?}",
+            first_duration, second_duration
+        );
     }
 
     #[test]
@@ -332,7 +338,7 @@ mod preference_tests {
     #[test]
     fn test_learning_config_defaults() {
         let config = LearningConfig::default();
-        
+
         assert_eq!(config.max_history_size, 1000);
         assert_eq!(config.pattern_analysis_window, 50);
         assert_eq!(config.min_pattern_frequency, 0.3);
@@ -344,10 +350,10 @@ mod preference_tests {
     async fn test_pattern_cleaning() {
         let prefs = Arc::new(Mutex::new(UserPreferences::default()));
         let engine = BehavioralLearningEngine::new(prefs.clone());
-        
+
         {
             let mut preferences = prefs.lock().unwrap();
-            
+
             // Add an old pattern that should be cleaned
             let old_pattern = ActionPattern {
                 pattern_type: PatternType::CommandSequence,
@@ -356,39 +362,45 @@ mod preference_tests {
                 context_factors: vec![],
                 preferred_interface: Some(UiMode::Cli),
             };
-            
-            preferences.behavior.action_patterns.insert("old_pattern".to_string(), old_pattern);
+
+            preferences
+                .behavior
+                .action_patterns
+                .insert("old_pattern".to_string(), old_pattern);
         }
-        
+
         // Record a new interface choice to trigger pattern cleaning
         let command = create_test_command();
         let context = create_test_context();
-        
-        engine.record_interface_choice(
-            &command,
-            &context,
-            UiMode::Tui,
-            DecisionTrigger::UserChoice,
-        ).await.unwrap();
-        
+
+        engine
+            .record_interface_choice(&command, &context, UiMode::Tui, DecisionTrigger::UserChoice)
+            .await
+            .unwrap();
+
         // Old pattern should be cleaned up
         let preferences = prefs.lock().unwrap();
-        assert!(!preferences.behavior.action_patterns.contains_key("old_pattern"));
+        assert!(
+            !preferences
+                .behavior
+                .action_patterns
+                .contains_key("old_pattern")
+        );
     }
 
     #[test]
     fn test_contextual_preference_reasoning() {
         let prefs = Arc::new(Mutex::new(UserPreferences::default()));
         let context_prefs = ContextAwarePreferences::new(prefs);
-        
+
         let command = create_test_command();
         let context = create_test_context();
-        
+
         let contextual = context_prefs.get_contextual_preference(&command, &context);
-        
+
         // Should have reasoning for the decision
         assert!(!contextual.reasoning.is_empty());
-        
+
         let reasoning_summary = contextual.get_reasoning_summary();
         assert!(!reasoning_summary.is_empty());
         assert_ne!(reasoning_summary, "No specific reasoning available");
@@ -398,18 +410,19 @@ mod preference_tests {
     fn test_auto_launch_threshold() {
         let prefs = Arc::new(Mutex::new(UserPreferences::default()));
         let context_prefs = ContextAwarePreferences::new(prefs);
-        
+
         let command = create_test_command();
         let context = create_test_context();
-        
+
         let contextual = context_prefs.get_contextual_preference(&command, &context);
-        
+
         // Test auto-launch decision
         let should_auto_launch = contextual.should_auto_launch_tui();
-        
+
         // Should be consistent with preference and confidence
-        if contextual.ui_mode_preference == UiMode::Tui && 
-           contextual.confidence >= contextual.auto_launch_threshold {
+        if contextual.ui_mode_preference == UiMode::Tui
+            && contextual.confidence >= contextual.auto_launch_threshold
+        {
             assert!(should_auto_launch);
         } else {
             assert!(!should_auto_launch);
@@ -463,63 +476,72 @@ mod integration_tests {
         // Create temporary directory for preferences
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path().to_path_buf();
-        
+
         // Override preferences path for testing
         std::env::set_var("DORA_CONFIG_DIR", temp_path.to_str().unwrap());
-        
+
         // Create and save initial preferences
         let mut prefs = UserPreferences::default();
         prefs.behavior.learning_enabled = true;
-        
+
         let prefs_arc = Arc::new(Mutex::new(prefs));
         let engine = BehavioralLearningEngine::new(prefs_arc.clone());
         let context_prefs = ContextAwarePreferences::new(prefs_arc.clone());
-        
+
         let command = Command::Debug(crate::cli::commands::DebugCommand::default());
         let context = super::preference_tests::create_test_context();
-        
+
         // Step 1: Get initial preference prediction
         let initial_prediction = context_prefs.get_contextual_preference(&command, &context);
-        
+
         // Step 2: Record user choice (different from prediction)
-        engine.record_interface_choice(
-            &command,
-            &context,
-            UiMode::Cli, // User chose CLI instead of predicted TUI
-            DecisionTrigger::UserChoice,
-        ).await.unwrap();
-        
-        // Step 3: Record positive feedback
-        let session_id = engine.get_current_session_id();
-        engine.record_user_feedback(
-            &session_id,
-            SatisfactionLevel::Satisfied,
-            None,
-        ).await.unwrap();
-        
-        // Step 4: Record several more similar choices to establish pattern
-        for _ in 0..5 {
-            engine.record_interface_choice(
+        engine
+            .record_interface_choice(
                 &command,
                 &context,
-                UiMode::Cli,
+                UiMode::Cli, // User chose CLI instead of predicted TUI
                 DecisionTrigger::UserChoice,
-            ).await.unwrap();
+            )
+            .await
+            .unwrap();
+
+        // Step 3: Record positive feedback
+        let session_id = engine.get_current_session_id();
+        engine
+            .record_user_feedback(&session_id, SatisfactionLevel::Satisfied, None)
+            .await
+            .unwrap();
+
+        // Step 4: Record several more similar choices to establish pattern
+        for _ in 0..5 {
+            engine
+                .record_interface_choice(
+                    &command,
+                    &context,
+                    UiMode::Cli,
+                    DecisionTrigger::UserChoice,
+                )
+                .await
+                .unwrap();
         }
-        
+
         // Step 5: Get new prediction - should now prefer CLI for debug commands
         let learned_prediction = context_prefs.get_contextual_preference(&command, &context);
-        
+
         // The system should have learned from user behavior
-        // (Note: This may still prefer TUI due to complexity weighting, 
+        // (Note: This may still prefer TUI due to complexity weighting,
         // but behavioral weight should have increased)
         let preferences = prefs_arc.lock().unwrap();
         assert!(preferences.behavior.command_usage.contains_key("debug"));
-        
+
         let debug_stats = &preferences.behavior.command_usage["debug"];
         assert_eq!(debug_stats.total_uses, 6); // 1 + 5 additional
-        assert!(debug_stats.interface_distribution.contains_key(&UiMode::Cli));
-        
+        assert!(
+            debug_stats
+                .interface_distribution
+                .contains_key(&UiMode::Cli)
+        );
+
         // Clean up environment variable
         std::env::remove_var("DORA_CONFIG_DIR");
     }
@@ -527,17 +549,26 @@ mod integration_tests {
     #[test]
     fn test_preference_serialization_roundtrip() {
         let original_prefs = UserPreferences::default();
-        
+
         // Serialize to TOML
         let toml_string = toml::to_string_pretty(&original_prefs).unwrap();
-        
+
         // Deserialize back
         let deserialized_prefs: UserPreferences = toml::from_str(&toml_string).unwrap();
-        
+
         // Should be equivalent
-        assert_eq!(original_prefs.interface.default_ui_mode, deserialized_prefs.interface.default_ui_mode);
-        assert_eq!(original_prefs.behavior.learning_enabled, deserialized_prefs.behavior.learning_enabled);
-        assert_eq!(original_prefs.metadata.schema_version, deserialized_prefs.metadata.schema_version);
+        assert_eq!(
+            original_prefs.interface.default_ui_mode,
+            deserialized_prefs.interface.default_ui_mode
+        );
+        assert_eq!(
+            original_prefs.behavior.learning_enabled,
+            deserialized_prefs.behavior.learning_enabled
+        );
+        assert_eq!(
+            original_prefs.metadata.schema_version,
+            deserialized_prefs.metadata.schema_version
+        );
     }
 
     #[test]
@@ -608,7 +639,7 @@ explicit_weight = 1.0
 
 [environments]
 "#;
-        
+
         let prefs: UserPreferences = toml::from_str(prefs_toml).unwrap();
         assert!(prefs.validate().is_ok());
     }

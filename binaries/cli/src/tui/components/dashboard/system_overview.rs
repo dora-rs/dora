@@ -1,20 +1,20 @@
+use ratatui::{
+    Frame,
+    layout::{Constraint, Direction, Layout, Rect},
+    style::{Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, Gauge, Paragraph},
+};
+use std::future::Future;
 /// System Overview Component for Dashboard (Issue #24)
 use std::pin::Pin;
-use std::future::Future;
-use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
-    widgets::{Block, Borders, Gauge, Paragraph},
-    text::{Line, Span},
-    Frame,
-};
 
 use crate::tui::{
+    Result,
     app::AppState,
     components::{Component, ComponentEvent, ComponentType},
     theme::ThemeConfig,
     views::{SystemOverview, SystemStatus, ViewAction},
-    Result,
 };
 
 pub struct SystemOverviewComponent {
@@ -47,7 +47,9 @@ impl SystemOverviewComponent {
                     Span::styled("Status: ", Style::default().fg(theme.colors.text)),
                     Span::styled(
                         format!("● {}", system.status),
-                        Style::default().fg(status_color).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(status_color)
+                            .add_modifier(Modifier::BOLD),
                     ),
                 ]),
                 Line::from(vec![
@@ -59,15 +61,11 @@ impl SystemOverviewComponent {
                 ]),
                 Line::from(vec![
                     Span::styled("Version: ", Style::default().fg(theme.colors.text)),
-                    Span::styled(
-                        &system.version,
-                        Style::default().fg(theme.colors.muted),
-                    ),
+                    Span::styled(&system.version, Style::default().fg(theme.colors.muted)),
                 ]),
             ];
 
-            let status_paragraph = Paragraph::new(status_text)
-                .style(Style::default());
+            let status_paragraph = Paragraph::new(status_text).style(Style::default());
 
             frame.render_widget(status_paragraph, area);
         }
@@ -146,8 +144,10 @@ impl Default for SystemOverviewComponent {
 }
 
 impl Component for SystemOverviewComponent {
-    fn update<'a>(&'a mut self, _app_state: &'a AppState)
-        -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+    fn update<'a>(
+        &'a mut self,
+        _app_state: &'a AppState,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
         Box::pin(async move {
             // Data is set from dashboard view
             Ok(())
@@ -170,21 +170,19 @@ impl Component for SystemOverviewComponent {
         // Split area for status and gauges
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(4),
-                Constraint::Min(9),
-            ])
+            .constraints([Constraint::Length(4), Constraint::Min(9)])
             .split(inner_area);
 
         self.render_system_status(frame, chunks[0], theme);
         self.render_resource_gauges(frame, chunks[1], theme);
     }
 
-    fn handle_event<'a>(&'a mut self, _event: ComponentEvent, _app_state: &'a AppState)
-        -> Pin<Box<dyn Future<Output = Result<ViewAction>> + Send + 'a>> {
-        Box::pin(async move {
-            Ok(ViewAction::None)
-        })
+    fn handle_event<'a>(
+        &'a mut self,
+        _event: ComponentEvent,
+        _app_state: &'a AppState,
+    ) -> Pin<Box<dyn Future<Output = Result<ViewAction>> + Send + 'a>> {
+        Box::pin(async move { Ok(ViewAction::None) })
     }
 
     fn component_type(&self) -> ComponentType {

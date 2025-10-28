@@ -123,10 +123,7 @@ impl CliRenderer {
     }
 
     fn render_header(&self, result: &InspectionResult) -> String {
-        let title = format!(
-            "📊 Inspection Report: {}",
-            result.resource.identifier
-        );
+        let title = format!("📊 Inspection Report: {}", result.resource.identifier);
 
         if self.config.use_colors {
             format!(
@@ -138,7 +135,8 @@ impl CliRenderer {
                     result.timestamp.format("%Y-%m-%d %H:%M:%S"),
                     result.analysis_depth,
                     result.complexity_score
-                ).dimmed()
+                )
+                .dimmed()
             )
         } else {
             format!(
@@ -153,9 +151,7 @@ impl CliRenderer {
     }
 
     fn render_resource_section(&self, resource: &ResolvedResource) -> String {
-        let mut lines = vec![
-            self.section_title("Resource Information"),
-        ];
+        let mut lines = vec![self.section_title("Resource Information")];
 
         let status_display = self.format_status(&resource.status);
 
@@ -164,7 +160,10 @@ impl CliRenderer {
         lines.push(format!("  Status:     {}", status_display));
 
         if let Some(created) = resource.created_at {
-            lines.push(format!("  Created:    {}", created.format("%Y-%m-%d %H:%M:%S")));
+            lines.push(format!(
+                "  Created:    {}",
+                created.format("%Y-%m-%d %H:%M:%S")
+            ));
         }
 
         if self.config.show_metadata && !resource.metadata.is_empty() {
@@ -179,18 +178,14 @@ impl CliRenderer {
     }
 
     fn render_health_section(&self, health: &HealthScore, complexity: f32) -> String {
-        let mut lines = vec![
-            self.section_title("Health Overview"),
-        ];
+        let mut lines = vec![self.section_title("Health Overview")];
 
         let health_bar = self.render_health_bar(health.overall_score);
         let status_display = self.format_health_status(&health.status);
 
         lines.push(format!(
             "  Overall Score: {:.0}% {} {}",
-            health.overall_score,
-            health_bar,
-            status_display
+            health.overall_score, health_bar, status_display
         ));
         lines.push(format!("  Complexity:    {:.0}", complexity));
 
@@ -210,9 +205,7 @@ impl CliRenderer {
                 let severity_icon = self.format_severity(&issue.severity);
                 lines.push(format!(
                     "    {} [{}] {}",
-                    severity_icon,
-                    issue.component,
-                    issue.description
+                    severity_icon, issue.component, issue.description
                 ));
             }
         }
@@ -221,9 +214,7 @@ impl CliRenderer {
     }
 
     fn render_performance_section(&self, perf: &PerformanceMetrics) -> String {
-        let mut lines = vec![
-            self.section_title("Performance Metrics"),
-        ];
+        let mut lines = vec![self.section_title("Performance Metrics")];
 
         if let Some(cpu) = perf.cpu_usage {
             let cpu_bar = self.render_mini_bar(100.0 - cpu);
@@ -262,9 +253,7 @@ impl CliRenderer {
     }
 
     fn render_error_section(&self, errors: &ErrorSummary) -> String {
-        let mut lines = vec![
-            self.section_title(&format!("Errors ({})", errors.total_errors)),
-        ];
+        let mut lines = vec![self.section_title(&format!("Errors ({})", errors.total_errors))];
 
         if !errors.recent_errors.is_empty() {
             lines.push("  Recent Errors:".to_string());
@@ -287,9 +276,7 @@ impl CliRenderer {
             for pattern in &errors.error_patterns {
                 lines.push(format!(
                     "    {} ({}x) - {}",
-                    pattern.pattern_type,
-                    pattern.frequency,
-                    pattern.description
+                    pattern.pattern_type, pattern.frequency, pattern.description
                 ));
             }
         }
@@ -298,9 +285,7 @@ impl CliRenderer {
     }
 
     fn render_recommendations_section(&self, recommendations: &[Recommendation]) -> String {
-        let mut lines = vec![
-            self.section_title("Recommendations"),
-        ];
+        let mut lines = vec![self.section_title("Recommendations")];
 
         let display_count = self.config.max_recommendations.min(recommendations.len());
 
@@ -308,7 +293,10 @@ impl CliRenderer {
             let priority_icon = self.format_priority(&rec.priority);
             let impact_badge = self.format_impact(&rec.impact);
 
-            lines.push(format!("  {} {} {}", priority_icon, rec.title, impact_badge));
+            lines.push(format!(
+                "  {} {} {}",
+                priority_icon, rec.title, impact_badge
+            ));
             lines.push(format!("     {}", rec.description));
 
             if let Some(cmd) = &rec.suggested_command {
@@ -328,9 +316,7 @@ impl CliRenderer {
     }
 
     fn render_actions_section(&self, actions: &[SuggestedAction]) -> String {
-        let mut lines = vec![
-            self.section_title("Suggested Actions"),
-        ];
+        let mut lines = vec![self.section_title("Suggested Actions")];
 
         for action in actions {
             let action_icon = self.format_action_type(&action.action_type);
@@ -536,22 +522,18 @@ mod tests {
                 recent_errors: vec![],
                 error_patterns: vec![],
             },
-            recommendations: vec![
-                Recommendation {
-                    priority: RecommendationPriority::Medium,
-                    title: "Test Recommendation".to_string(),
-                    description: "This is a test recommendation".to_string(),
-                    suggested_command: Some("dora inspect test".to_string()),
-                    impact: ImpactLevel::Low,
-                },
-            ],
-            suggested_actions: vec![
-                SuggestedAction {
-                    action_type: ActionType::Monitor,
-                    description: "Monitor the resource".to_string(),
-                    command: Some("dora inspect test --live".to_string()),
-                },
-            ],
+            recommendations: vec![Recommendation {
+                priority: RecommendationPriority::Medium,
+                title: "Test Recommendation".to_string(),
+                description: "This is a test recommendation".to_string(),
+                suggested_command: Some("dora inspect test".to_string()),
+                impact: ImpactLevel::Low,
+            }],
+            suggested_actions: vec![SuggestedAction {
+                action_type: ActionType::Monitor,
+                description: "Monitor the resource".to_string(),
+                command: Some("dora inspect test --live".to_string()),
+            }],
         }
     }
 
@@ -560,7 +542,9 @@ mod tests {
         let renderer = CliRenderer::new();
         let result = create_test_result();
 
-        let output = renderer.render(&result, Some(InspectOutputFormat::Table)).unwrap();
+        let output = renderer
+            .render(&result, Some(InspectOutputFormat::Table))
+            .unwrap();
 
         assert!(output.contains("Inspection Report"));
         assert!(output.contains("test-dataflow"));
@@ -572,7 +556,9 @@ mod tests {
         let renderer = CliRenderer::new();
         let result = create_test_result();
 
-        let output = renderer.render(&result, Some(InspectOutputFormat::Json)).unwrap();
+        let output = renderer
+            .render(&result, Some(InspectOutputFormat::Json))
+            .unwrap();
 
         assert!(output.contains("\"resource\""));
         assert!(output.contains("\"test-dataflow\""));
@@ -583,7 +569,9 @@ mod tests {
         let renderer = CliRenderer::new();
         let result = create_test_result();
 
-        let output = renderer.render(&result, Some(InspectOutputFormat::Yaml)).unwrap();
+        let output = renderer
+            .render(&result, Some(InspectOutputFormat::Yaml))
+            .unwrap();
 
         // YAML rendering currently uses JSON format (TODO: add serde_yaml dependency)
         assert!(output.contains("\"resource\""));

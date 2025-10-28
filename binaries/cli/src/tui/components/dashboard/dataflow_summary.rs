@@ -1,20 +1,20 @@
+use ratatui::{
+    Frame,
+    layout::{Constraint, Direction, Layout, Rect},
+    style::{Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, Gauge, Paragraph},
+};
+use std::future::Future;
 /// Dataflow Summary Component for Dashboard (Issue #24)
 use std::pin::Pin;
-use std::future::Future;
-use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
-    widgets::{Block, Borders, Gauge, Paragraph},
-    text::{Line, Span},
-    Frame,
-};
 
 use crate::tui::{
+    Result,
     app::{AppState, ViewType},
     components::{Component, ComponentEvent, ComponentType},
     theme::ThemeConfig,
     views::{DataflowSummary, ViewAction},
-    Result,
 };
 use crossterm::event::KeyCode;
 
@@ -42,7 +42,9 @@ impl DataflowSummaryComponent {
                     Span::styled("Total Dataflows: ", Style::default().fg(theme.colors.text)),
                     Span::styled(
                         data.total_dataflows.to_string(),
-                        Style::default().fg(theme.colors.primary).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(theme.colors.primary)
+                            .add_modifier(Modifier::BOLD),
                     ),
                 ]),
                 Line::from(vec![
@@ -71,7 +73,9 @@ impl DataflowSummaryComponent {
                     Span::styled("Total Nodes: ", Style::default().fg(theme.colors.text)),
                     Span::styled(
                         data.total_nodes.to_string(),
-                        Style::default().fg(theme.colors.primary).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(theme.colors.primary)
+                            .add_modifier(Modifier::BOLD),
                     ),
                 ]),
                 Line::from(vec![
@@ -99,16 +103,17 @@ impl DataflowSummaryComponent {
         if let Some(data) = &self.dataflow_data {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(3),
-                    Constraint::Length(3),
-                ])
+                .constraints([Constraint::Length(3), Constraint::Length(3)])
                 .split(area);
 
             // Dataflow health gauge
             let dataflow_health = data.health_percentage();
             let dataflow_gauge = Gauge::default()
-                .block(Block::default().title("Dataflow Health").borders(Borders::ALL))
+                .block(
+                    Block::default()
+                        .title("Dataflow Health")
+                        .borders(Borders::ALL),
+                )
                 .gauge_style(theme.percentage_style(dataflow_health as f32))
                 .percent(dataflow_health.min(100.0) as u16)
                 .label(format!("{:.0}%", dataflow_health));
@@ -135,8 +140,10 @@ impl Default for DataflowSummaryComponent {
 }
 
 impl Component for DataflowSummaryComponent {
-    fn update<'a>(&'a mut self, _app_state: &'a AppState)
-        -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+    fn update<'a>(
+        &'a mut self,
+        _app_state: &'a AppState,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
         Box::pin(async move {
             // Data is set from dashboard view
             Ok(())
@@ -158,18 +165,18 @@ impl Component for DataflowSummaryComponent {
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Min(8),
-                Constraint::Length(6),
-            ])
+            .constraints([Constraint::Min(8), Constraint::Length(6)])
             .split(inner_area);
 
         self.render_dataflow_stats(frame, chunks[0], theme);
         self.render_health_indicators(frame, chunks[1], theme);
     }
 
-    fn handle_event<'a>(&'a mut self, event: ComponentEvent, _app_state: &'a AppState)
-        -> Pin<Box<dyn Future<Output = Result<ViewAction>> + Send + 'a>> {
+    fn handle_event<'a>(
+        &'a mut self,
+        event: ComponentEvent,
+        _app_state: &'a AppState,
+    ) -> Pin<Box<dyn Future<Output = Result<ViewAction>> + Send + 'a>> {
         Box::pin(async move {
             // Enter key navigates to dataflow list
             if let ComponentEvent::Key(key_event) = event {

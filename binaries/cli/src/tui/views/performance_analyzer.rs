@@ -1,24 +1,22 @@
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 /// Performance Analyzer View - Real-time performance monitoring (Issue #26)
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     symbols,
     text::{Line, Span},
     widgets::{Axis, Block, Borders, Chart, Dataset, GraphType, List, ListItem, Paragraph, Wrap},
-    Frame,
 };
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::time::Duration;
 
+#[cfg(test)]
+use super::TimeRange;
 use super::{
-    BaseView, View, ViewAction, AnalyzerTab, PerformanceAnalyzerState, MetricType,
-    TimeRange, PerformanceAlert, AlertSeverity,
+    AlertSeverity, AnalyzerTab, BaseView, MetricType, PerformanceAlert, PerformanceAnalyzerState,
+    View, ViewAction,
 };
-use crate::tui::{
-    app::AppState,
-    theme::ThemeConfig,
-    Result,
-};
+use crate::tui::{Result, app::AppState, theme::ThemeConfig};
 
 /// Performance Analyzer View for system performance monitoring
 pub struct PerformanceAnalyzerView {
@@ -111,10 +109,11 @@ impl PerformanceAnalyzerView {
             .collect::<Vec<_>>();
 
         let time_range_info = format!("Time Range: {} [t]", self.state.time_range.name());
-        let tabs_block = Paragraph::new(tabs_text)
-            .block(Block::default()
+        let tabs_block = Paragraph::new(tabs_text).block(
+            Block::default()
                 .title(time_range_info)
-                .borders(Borders::ALL));
+                .borders(Borders::ALL),
+        );
 
         f.render_widget(tabs_block, area);
     }
@@ -147,12 +146,14 @@ impl PerformanceAnalyzerView {
         let y_max = (max_y * 1.2).max(10.0); // Add 20% headroom
         let x_max = self.state.time_range.duration_secs() as f64;
 
-        let datasets = vec![Dataset::default()
-            .name(metric_type.name())
-            .marker(symbols::Marker::Braille)
-            .graph_type(GraphType::Line)
-            .style(Style::default().fg(self.get_metric_color(metric_type)))
-            .data(&data)];
+        let datasets = vec![
+            Dataset::default()
+                .name(metric_type.name())
+                .marker(symbols::Marker::Braille)
+                .graph_type(GraphType::Line)
+                .style(Style::default().fg(self.get_metric_color(metric_type)))
+                .data(&data),
+        ];
 
         let title = format!("{} ({})", metric_type.name(), metric_type.unit());
 
@@ -160,11 +161,7 @@ impl PerformanceAnalyzerView {
             .title("Time")
             .style(Style::default().fg(self.theme.colors.muted))
             .bounds([0.0, x_max])
-            .labels(vec![
-                Span::raw(""),
-                Span::raw(""),
-                Span::raw(""),
-            ]);
+            .labels(vec![Span::raw(""), Span::raw(""), Span::raw("")]);
 
         let y_axis = Axis::default()
             .title(metric_type.unit())
@@ -177,10 +174,12 @@ impl PerformanceAnalyzerView {
             ]);
 
         let chart = Chart::new(datasets)
-            .block(Block::default()
-                .title(title)
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(self.theme.colors.border)))
+            .block(
+                Block::default()
+                    .title(title)
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(self.theme.colors.border)),
+            )
             .x_axis(x_axis)
             .y_axis(y_axis);
 
@@ -201,26 +200,17 @@ impl PerformanceAnalyzerView {
     fn render_overview_tab(&self, f: &mut Frame, area: Rect) {
         let vertical_chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Percentage(50),
-                Constraint::Percentage(50),
-            ])
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(area);
 
         let top_chunks = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Percentage(50),
-                Constraint::Percentage(50),
-            ])
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(vertical_chunks[0]);
 
         let bottom_chunks = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Percentage(50),
-                Constraint::Percentage(50),
-            ])
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(vertical_chunks[1]);
 
         // Render 4 charts in grid
@@ -234,10 +224,7 @@ impl PerformanceAnalyzerView {
     fn render_metrics_tab(&self, f: &mut Frame, area: Rect) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Min(10),
-                Constraint::Length(8),
-            ])
+            .constraints([Constraint::Min(10), Constraint::Length(8)])
             .split(area);
 
         // Render large chart for selected metric
@@ -263,17 +250,25 @@ impl PerformanceAnalyzerView {
 
         let stats_text = vec![
             Line::from(vec![
-                Span::styled("Selected Metric: ", Style::default()
-                    .fg(self.theme.colors.primary)
-                    .add_modifier(Modifier::BOLD)),
-                Span::styled(self.state.selected_metric.name(),
-                    Style::default().fg(self.theme.colors.text)),
+                Span::styled(
+                    "Selected Metric: ",
+                    Style::default()
+                        .fg(self.theme.colors.primary)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    self.state.selected_metric.name(),
+                    Style::default().fg(self.theme.colors.text),
+                ),
             ]),
             Line::from(""),
             Line::from(vec![
                 Span::styled("Current: ", Style::default().fg(self.theme.colors.muted)),
-                Span::raw(format!("{:.2} {}", data.last().map(|(_, y)| *y).unwrap_or(0.0),
-                    self.state.selected_metric.unit())),
+                Span::raw(format!(
+                    "{:.2} {}",
+                    data.last().map(|(_, y)| *y).unwrap_or(0.0),
+                    self.state.selected_metric.unit()
+                )),
             ]),
             Line::from(vec![
                 Span::styled("Min: ", Style::default().fg(self.theme.colors.muted)),
@@ -290,9 +285,11 @@ impl PerformanceAnalyzerView {
         ];
 
         let paragraph = Paragraph::new(stats_text)
-            .block(Block::default()
-                .title("Statistics [Use ↑↓ to change metric]")
-                .borders(Borders::ALL))
+            .block(
+                Block::default()
+                    .title("Statistics [Use ↑↓ to change metric]")
+                    .borders(Borders::ALL),
+            )
             .wrap(Wrap { trim: true });
 
         f.render_widget(paragraph, area);
@@ -302,15 +299,20 @@ impl PerformanceAnalyzerView {
     fn render_alerts_tab(&self, f: &mut Frame, area: Rect) {
         if self.state.alerts.is_empty() {
             let no_alerts = Paragraph::new("No performance alerts")
-                .block(Block::default()
-                    .title("Performance Alerts")
-                    .borders(Borders::ALL))
+                .block(
+                    Block::default()
+                        .title("Performance Alerts")
+                        .borders(Borders::ALL),
+                )
                 .style(Style::default().fg(self.theme.colors.muted));
             f.render_widget(no_alerts, area);
             return;
         }
 
-        let items: Vec<ListItem> = self.state.alerts.iter()
+        let items: Vec<ListItem> = self
+            .state
+            .alerts
+            .iter()
             .enumerate()
             .map(|(i, alert)| {
                 let style = if i == self.state.selected_alert {
@@ -337,12 +339,19 @@ impl PerformanceAnalyzerView {
             .collect();
 
         let list = List::new(items)
-            .block(Block::default()
-                .title(format!("Performance Alerts ({}) [c]lear", self.state.alerts.len()))
-                .borders(Borders::ALL))
-            .highlight_style(Style::default()
-                .fg(self.theme.colors.highlight)
-                .add_modifier(Modifier::BOLD));
+            .block(
+                Block::default()
+                    .title(format!(
+                        "Performance Alerts ({}) [c]lear",
+                        self.state.alerts.len()
+                    ))
+                    .borders(Borders::ALL),
+            )
+            .highlight_style(
+                Style::default()
+                    .fg(self.theme.colors.highlight)
+                    .add_modifier(Modifier::BOLD),
+            );
 
         f.render_widget(list, area);
     }
@@ -386,10 +395,10 @@ impl View for PerformanceAnalyzerView {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(3),  // Title
-                Constraint::Length(7),  // Tabs
-                Constraint::Min(10),    // Content
-                Constraint::Length(3),  // Help
+                Constraint::Length(3), // Title
+                Constraint::Length(7), // Tabs
+                Constraint::Min(10),   // Content
+                Constraint::Length(3), // Help
             ])
             .split(area);
 
@@ -397,9 +406,11 @@ impl View for PerformanceAnalyzerView {
         let title = format!("Performance Analyzer - {}", self.state.time_range.name());
         let title_paragraph = Paragraph::new(title)
             .block(Block::default().borders(Borders::ALL))
-            .style(Style::default()
-                .fg(self.theme.colors.primary)
-                .add_modifier(Modifier::BOLD));
+            .style(
+                Style::default()
+                    .fg(self.theme.colors.primary)
+                    .add_modifier(Modifier::BOLD),
+            );
         f.render_widget(title_paragraph, chunks[0]);
 
         // Render tabs
@@ -537,7 +548,10 @@ mod tests {
 
         assert_eq!(view.get_metric_color(MetricType::Cpu), Color::Cyan);
         assert_eq!(view.get_metric_color(MetricType::Memory), Color::Green);
-        assert_eq!(view.get_metric_color(MetricType::MessageRate), Color::Yellow);
+        assert_eq!(
+            view.get_metric_color(MetricType::MessageRate),
+            Color::Yellow
+        );
         assert_eq!(view.get_metric_color(MetricType::Latency), Color::Magenta);
     }
 }

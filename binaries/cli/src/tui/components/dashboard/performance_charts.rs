@@ -1,20 +1,20 @@
+use ratatui::{
+    Frame,
+    layout::{Constraint, Direction, Layout, Rect},
+    style::Style,
+    text::{Line, Span},
+    widgets::{Block, Borders, Paragraph, Sparkline},
+};
+use std::future::Future;
 /// Performance Charts Component for Dashboard (Issue #24)
 use std::pin::Pin;
-use std::future::Future;
-use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
-    widgets::{Block, Borders, Paragraph, Sparkline},
-    text::{Line, Span},
-    Frame,
-};
 
 use crate::tui::{
+    Result,
     app::AppState,
     components::{Component, ComponentEvent, ComponentType},
     theme::ThemeConfig,
     views::{PerformanceMetrics, ViewAction},
-    Result,
 };
 
 pub struct PerformanceChartsComponent {
@@ -44,20 +44,26 @@ impl PerformanceChartsComponent {
             return;
         }
 
-        let data: Vec<u64> = self.metrics.cpu_history
+        let data: Vec<u64> = self
+            .metrics
+            .cpu_history
             .iter()
             .map(|point| point.value as u64)
             .collect();
 
-        let current_cpu = self.metrics.cpu_history
+        let current_cpu = self
+            .metrics
+            .cpu_history
             .last()
             .map(|p| p.value)
             .unwrap_or(0.0);
 
         let sparkline = Sparkline::default()
-            .block(Block::default()
-                .title(format!("CPU Usage: {:.1}%", current_cpu))
-                .borders(Borders::ALL))
+            .block(
+                Block::default()
+                    .title(format!("CPU Usage: {:.1}%", current_cpu))
+                    .borders(Borders::ALL),
+            )
             .data(&data)
             .style(Style::default().fg(theme.colors.primary));
 
@@ -69,20 +75,26 @@ impl PerformanceChartsComponent {
             return;
         }
 
-        let data: Vec<u64> = self.metrics.memory_history
+        let data: Vec<u64> = self
+            .metrics
+            .memory_history
             .iter()
             .map(|point| point.value as u64)
             .collect();
 
-        let current_mem = self.metrics.memory_history
+        let current_mem = self
+            .metrics
+            .memory_history
             .last()
             .map(|p| p.value)
             .unwrap_or(0.0);
 
         let sparkline = Sparkline::default()
-            .block(Block::default()
-                .title(format!("Memory Usage: {:.1}%", current_mem))
-                .borders(Borders::ALL))
+            .block(
+                Block::default()
+                    .title(format!("Memory Usage: {:.1}%", current_mem))
+                    .borders(Borders::ALL),
+            )
             .data(&data)
             .style(Style::default().fg(theme.colors.accent));
 
@@ -140,8 +152,10 @@ impl Default for PerformanceChartsComponent {
 }
 
 impl Component for PerformanceChartsComponent {
-    fn update<'a>(&'a mut self, _app_state: &'a AppState)
-        -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+    fn update<'a>(
+        &'a mut self,
+        _app_state: &'a AppState,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
         Box::pin(async move {
             // Metrics updated from dashboard view
             Ok(())
@@ -164,19 +178,13 @@ impl Component for PerformanceChartsComponent {
         // Split into charts and stats
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Percentage(75),
-                Constraint::Percentage(25),
-            ])
+            .constraints([Constraint::Percentage(75), Constraint::Percentage(25)])
             .split(inner_area);
 
         // Split charts area for CPU and Memory
         let chart_chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Percentage(50),
-                Constraint::Percentage(50),
-            ])
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(chunks[0]);
 
         self.render_cpu_chart(frame, chart_chunks[0], theme);
@@ -184,11 +192,12 @@ impl Component for PerformanceChartsComponent {
         self.render_stats(frame, chunks[1], theme);
     }
 
-    fn handle_event<'a>(&'a mut self, _event: ComponentEvent, _app_state: &'a AppState)
-        -> Pin<Box<dyn Future<Output = Result<ViewAction>> + Send + 'a>> {
-        Box::pin(async move {
-            Ok(ViewAction::None)
-        })
+    fn handle_event<'a>(
+        &'a mut self,
+        _event: ComponentEvent,
+        _app_state: &'a AppState,
+    ) -> Pin<Box<dyn Future<Output = Result<ViewAction>> + Send + 'a>> {
+        Box::pin(async move { Ok(ViewAction::None) })
     }
 
     fn component_type(&self) -> ComponentType {

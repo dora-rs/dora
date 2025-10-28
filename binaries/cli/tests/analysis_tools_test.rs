@@ -1,17 +1,17 @@
 // Comprehensive tests for Interactive Analysis Tools (Issue #33 - Phase 1)
 // Tests cover all analysis types, navigation, state management, and mock data
 
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use dora_cli::tui::{
     app::AppState,
     theme::ThemeConfig,
     views::{
-        AnalysisToolsView, View, ViewAction, AnalysisType, AnalysisResults,
-        AnalysisToolsState, DistributionStats, CorrelationPair, TrendAnalysis,
-        OutlierData, CorrelationStrength, TrendDirection, OutlierSeverity,
+        AnalysisResults, AnalysisToolsState, AnalysisToolsView, AnalysisType, CorrelationPair,
+        CorrelationStrength, DistributionStats, OutlierData, OutlierSeverity, TrendAnalysis,
+        TrendDirection, View, ViewAction,
     },
 };
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::{backend::TestBackend, Terminal};
+use ratatui::{Terminal, backend::TestBackend};
 
 // Helper functions
 fn create_test_view() -> AnalysisToolsView {
@@ -197,7 +197,11 @@ fn test_mock_trend_data() {
     let results = AnalysisResults::create_mock_trend();
     if let AnalysisResults::Trend(trends) = results {
         assert_eq!(trends.len(), 4);
-        assert!(trends.iter().all(|t| t.confidence >= 0.0 && t.confidence <= 1.0));
+        assert!(
+            trends
+                .iter()
+                .all(|t| t.confidence >= 0.0 && t.confidence <= 1.0)
+        );
         assert!(trends.iter().all(|t| t.prediction.is_some()));
     } else {
         panic!("Expected Trend results");
@@ -309,7 +313,11 @@ fn test_trend_direction_icons() {
 fn test_trend_analysis_mock() {
     let trends = TrendAnalysis::create_mock_trends();
     assert!(!trends.is_empty());
-    assert!(trends.iter().all(|t| t.confidence >= 0.0 && t.confidence <= 1.0));
+    assert!(
+        trends
+            .iter()
+            .all(|t| t.confidence >= 0.0 && t.confidence <= 1.0)
+    );
     assert!(trends.iter().all(|t| t.prediction.is_some()));
 }
 
@@ -317,22 +325,13 @@ fn test_trend_analysis_mock() {
 
 #[test]
 fn test_outlier_severity_from_z_score() {
-    assert_eq!(
-        OutlierSeverity::from_z_score(1.5),
-        OutlierSeverity::Mild
-    );
+    assert_eq!(OutlierSeverity::from_z_score(1.5), OutlierSeverity::Mild);
     assert_eq!(
         OutlierSeverity::from_z_score(2.3),
         OutlierSeverity::Moderate
     );
-    assert_eq!(
-        OutlierSeverity::from_z_score(2.8),
-        OutlierSeverity::Severe
-    );
-    assert_eq!(
-        OutlierSeverity::from_z_score(3.5),
-        OutlierSeverity::Extreme
-    );
+    assert_eq!(OutlierSeverity::from_z_score(2.8), OutlierSeverity::Severe);
+    assert_eq!(OutlierSeverity::from_z_score(3.5), OutlierSeverity::Extreme);
 }
 
 #[test]
@@ -373,8 +372,16 @@ fn test_analysis_type_names() {
 
 #[test]
 fn test_analysis_type_descriptions() {
-    assert!(AnalysisType::Distribution.description().contains("Statistical"));
-    assert!(AnalysisType::Correlation.description().contains("Correlation"));
+    assert!(
+        AnalysisType::Distribution
+            .description()
+            .contains("Statistical")
+    );
+    assert!(
+        AnalysisType::Correlation
+            .description()
+            .contains("Correlation")
+    );
     assert!(AnalysisType::Trend.description().contains("Trend"));
     assert!(AnalysisType::Outlier.description().contains("Outlier"));
 }

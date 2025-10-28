@@ -1,20 +1,20 @@
-/// Recent Activity Component for Dashboard (Issue #24)
-use std::pin::Pin;
-use std::future::Future;
 use ratatui::{
+    Frame,
     layout::Rect,
     style::{Color, Modifier, Style},
-    widgets::{Block, Borders, List, ListItem},
     text::{Line, Span},
-    Frame,
+    widgets::{Block, Borders, List, ListItem},
 };
+use std::future::Future;
+/// Recent Activity Component for Dashboard (Issue #24)
+use std::pin::Pin;
 
 use crate::tui::{
+    Result,
     app::AppState,
     components::{Component, ComponentEvent, ComponentType},
     theme::ThemeConfig,
-    views::{RecentActivity, ActivityType, ViewAction},
-    Result,
+    views::{ActivityType, RecentActivity, ViewAction},
 };
 
 pub struct RecentActivityComponent {
@@ -67,8 +67,10 @@ impl Default for RecentActivityComponent {
 }
 
 impl Component for RecentActivityComponent {
-    fn update<'a>(&'a mut self, _app_state: &'a AppState)
-        -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+    fn update<'a>(
+        &'a mut self,
+        _app_state: &'a AppState,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
         Box::pin(async move {
             // Activity updated from dashboard view
             Ok(())
@@ -88,14 +90,10 @@ impl Component for RecentActivityComponent {
         let inner_area = block.inner(area);
 
         if self.activity.activities.is_empty() {
-            let empty_list = List::new(vec![
-                ListItem::new(Line::from(
-                    Span::styled(
-                        "No recent activity",
-                        Style::default().fg(theme.colors.muted),
-                    )
-                ))
-            ])
+            let empty_list = List::new(vec![ListItem::new(Line::from(Span::styled(
+                "No recent activity",
+                Style::default().fg(theme.colors.muted),
+            )))])
             .block(block);
 
             frame.render_widget(empty_list, area);
@@ -118,10 +116,7 @@ impl Component for RecentActivityComponent {
                         Style::default().fg(color).add_modifier(Modifier::BOLD),
                     ),
                     Span::raw(" "),
-                    Span::styled(
-                        &item.description,
-                        Style::default().fg(theme.colors.text),
-                    ),
+                    Span::styled(&item.description, Style::default().fg(theme.colors.text)),
                     Span::raw(" "),
                     Span::styled(
                         format!("({})", time_str),
@@ -138,11 +133,12 @@ impl Component for RecentActivityComponent {
         frame.render_widget(list, area);
     }
 
-    fn handle_event<'a>(&'a mut self, _event: ComponentEvent, _app_state: &'a AppState)
-        -> Pin<Box<dyn Future<Output = Result<ViewAction>> + Send + 'a>> {
-        Box::pin(async move {
-            Ok(ViewAction::None)
-        })
+    fn handle_event<'a>(
+        &'a mut self,
+        _event: ComponentEvent,
+        _app_state: &'a AppState,
+    ) -> Pin<Box<dyn Future<Output = Result<ViewAction>> + Send + 'a>> {
+        Box::pin(async move { Ok(ViewAction::None) })
     }
 
     fn component_type(&self) -> ComponentType {

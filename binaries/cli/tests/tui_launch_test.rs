@@ -1,6 +1,5 @@
 /// Integration test for TUI launch functionality
 /// Verifies that the TUI can be launched and initialized properly
-
 use dora_cli::tui::{DoraApp, ViewType};
 
 #[test]
@@ -10,10 +9,18 @@ fn test_tui_app_can_be_created_for_all_views() {
         ViewType::Dashboard,
         ViewType::DataflowManager,
         ViewType::SystemMonitor,
-        ViewType::LogViewer { target: "test".to_string() },
-        ViewType::NodeInspector { node_id: "test_node".to_string() },
-        ViewType::RecordingAnalyzer { recording_id: "test_rec".to_string() },
-        ViewType::DebugSession { dataflow_id: "test_df".to_string() },
+        ViewType::LogViewer {
+            target: "test".to_string(),
+        },
+        ViewType::NodeInspector {
+            node_id: "test_node".to_string(),
+        },
+        ViewType::RecordingAnalyzer {
+            recording_id: "test_rec".to_string(),
+        },
+        ViewType::DebugSession {
+            dataflow_id: "test_df".to_string(),
+        },
         ViewType::SettingsManager,
         ViewType::Help,
     ];

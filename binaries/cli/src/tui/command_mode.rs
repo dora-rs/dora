@@ -1,27 +1,19 @@
 use std::{
     collections::{HashMap, VecDeque},
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     backend::Backend,
-    layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    layout::Rect,
+    style::{Modifier, Style},
     terminal::Frame,
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
 };
 
-use crate::{
-    cli::{Command, Cli},
-    tui::{
-        app::{AppState, MessageLevel, StatusMessage},
-        theme::ThemeConfig,
-        ViewType,
-        Result,
-    },
-};
+use crate::tui::{Result, ViewType, app::AppState, theme::ThemeConfig};
 
 /// Command mode state management
 #[derive(Debug, Clone)]
@@ -53,37 +45,37 @@ impl CompletionState {
             completion_type: CompletionType::Command,
         }
     }
-    
+
     pub fn clear(&mut self) {
         self.suggestions.clear();
         self.selected_index = None;
         self.completion_prefix.clear();
     }
-    
+
     pub fn select_next(&mut self) {
         if self.suggestions.is_empty() {
             return;
         }
-        
+
         self.selected_index = match self.selected_index {
             None => Some(0),
             Some(i) if i >= self.suggestions.len() - 1 => Some(0),
             Some(i) => Some(i + 1),
         };
     }
-    
+
     pub fn select_previous(&mut self) {
         if self.suggestions.is_empty() {
             return;
         }
-        
+
         self.selected_index = match self.selected_index {
             None => Some(self.suggestions.len() - 1),
             Some(0) => Some(self.suggestions.len() - 1),
             Some(i) => Some(i - 1),
         };
     }
-    
+
     pub fn get_selected_suggestion(&self) -> Option<&CommandSuggestion> {
         self.selected_index.and_then(|i| self.suggestions.get(i))
     }
@@ -133,41 +125,41 @@ impl HistoryNavigation {
             original_buffer: String::new(),
         }
     }
-    
+
     pub fn reset(&mut self, buffer: String) {
         self.current_index = None;
         self.original_buffer = buffer;
     }
-    
+
     pub fn navigate_up(&mut self, history: &[String]) -> Option<String> {
         if history.is_empty() {
             return None;
         }
-        
+
         match self.current_index {
             None => {
                 self.current_index = Some(history.len() - 1);
                 Some(history[history.len() - 1].clone())
-            },
+            }
             Some(0) => None, // Already at oldest
             Some(i) => {
                 self.current_index = Some(i - 1);
                 Some(history[i - 1].clone())
-            },
+            }
         }
     }
-    
+
     pub fn navigate_down(&mut self, history: &[String]) -> Option<String> {
         match self.current_index {
             None => None,
             Some(i) if i >= history.len() - 1 => {
                 self.current_index = None;
                 Some(self.original_buffer.clone())
-            },
+            }
             Some(i) => {
                 self.current_index = Some(i + 1);
                 Some(history[i + 1].clone())
-            },
+            }
         }
     }
 }
@@ -186,10 +178,7 @@ pub struct CommandModeManager {
 pub enum CommandModeAction {
     None,
     UpdateDisplay,
-    ExecuteCommand {
-        command: String,
-        show_output: bool,
-    },
+    ExecuteCommand { command: String, show_output: bool },
     Cancel,
     SwitchView(ViewType),
 }
@@ -203,11 +192,11 @@ impl CommandModeManager {
             last_execution_time: None,
         }
     }
-    
+
     pub fn is_active(&self) -> bool {
         matches!(self.state, CommandModeState::Active { .. })
     }
-    
+
     pub fn activate(&mut self) {
         self.state = CommandModeState::Active {
             buffer: String::new(),
@@ -216,11 +205,11 @@ impl CommandModeManager {
             history_navigation: HistoryNavigation::new(),
         };
     }
-    
+
     pub fn deactivate(&mut self) {
         self.state = CommandModeState::Inactive;
     }
-    
+
     pub async fn handle_key_event(
         &mut self,
         key: KeyEvent,
@@ -228,9 +217,9 @@ impl CommandModeManager {
     ) -> Result<CommandModeAction> {
         match &mut self.state {
             CommandModeState::Inactive => Ok(CommandModeAction::None),
-            CommandModeState::Active { 
-                buffer, 
-                cursor_position, 
+            CommandModeState::Active {
+                buffer,
+                cursor_position,
                 completion_state,
                 history_navigation,
             } => {
@@ -238,11 +227,11 @@ impl CommandModeManager {
                     KeyCode::Enter => {
                         let command = buffer.clone();
                         self.deactivate();
-                        
+
                         if !command.is_empty() {
                             self.add_to_history(command.clone());
                             self.last_execution_time = Some(Instant::now());
-                            
+
                             // Check for special TUI commands
                             if let Some(view_action) = self.parse_tui_command(&command) {
                                 Ok(view_action)
@@ -255,25 +244,27 @@ impl CommandModeManager {
                         } else {
                             Ok(CommandModeAction::Cancel)
                         }
-                    },
-                    
+                    }
+
                     KeyCode::Esc => {
                         self.deactivate();
                         Ok(CommandModeAction::Cancel)
-                    },
-                    
+                    }
+
                     KeyCode::Tab => {
                         // Update completion first
-                        let suggestions = self.completion_engine
+                        let suggestions = self
+                            .completion_engine
                             .get_completions(buffer, *cursor_position, app_state)
                             .await?;
                         completion_state.suggestions = suggestions;
-                        completion_state.selected_index = if completion_state.suggestions.is_empty() {
+                        completion_state.selected_index = if completion_state.suggestions.is_empty()
+                        {
                             None
                         } else {
                             Some(0)
                         };
-                        
+
                         // Apply selected completion if available
                         if let Some(suggestion) = completion_state.get_selected_suggestion() {
                             let suggestion_text = suggestion.text.clone();
@@ -294,16 +285,17 @@ impl CommandModeManager {
                             *cursor_position = new_cursor;
                             completion_state.clear();
                         }
-                        
+
                         Ok(CommandModeAction::UpdateDisplay)
-                    },
-                    
+                    }
+
                     KeyCode::Up => {
                         if !completion_state.suggestions.is_empty() {
                             completion_state.select_previous();
                         } else {
                             // Navigate command history
-                            let history: Vec<String> = self.command_history.iter().cloned().collect();
+                            let history: Vec<String> =
+                                self.command_history.iter().cloned().collect();
                             if let Some(prev_command) = history_navigation.navigate_up(&history) {
                                 *buffer = prev_command;
                                 *cursor_position = buffer.len();
@@ -311,14 +303,15 @@ impl CommandModeManager {
                             }
                         }
                         Ok(CommandModeAction::UpdateDisplay)
-                    },
-                    
+                    }
+
                     KeyCode::Down => {
                         if !completion_state.suggestions.is_empty() {
                             completion_state.select_next();
                         } else {
                             // Navigate command history
-                            let history: Vec<String> = self.command_history.iter().cloned().collect();
+                            let history: Vec<String> =
+                                self.command_history.iter().cloned().collect();
                             if let Some(next_command) = history_navigation.navigate_down(&history) {
                                 *buffer = next_command;
                                 *cursor_position = buffer.len();
@@ -326,99 +319,101 @@ impl CommandModeManager {
                             }
                         }
                         Ok(CommandModeAction::UpdateDisplay)
-                    },
-                    
+                    }
+
                     KeyCode::Left => {
                         if *cursor_position > 0 {
                             *cursor_position -= 1;
                         }
                         Ok(CommandModeAction::UpdateDisplay)
-                    },
-                    
+                    }
+
                     KeyCode::Right => {
                         if *cursor_position < buffer.len() {
                             *cursor_position += 1;
                         }
                         Ok(CommandModeAction::UpdateDisplay)
-                    },
-                    
+                    }
+
                     KeyCode::Backspace => {
                         if *cursor_position > 0 {
                             buffer.remove(*cursor_position - 1);
                             *cursor_position -= 1;
                             // Update completion after modifying buffer
-                            let suggestions = self.completion_engine
+                            let suggestions = self
+                                .completion_engine
                                 .get_completions(buffer, *cursor_position, app_state)
                                 .await?;
                             completion_state.suggestions = suggestions;
-                            completion_state.selected_index = if completion_state.suggestions.is_empty() {
-                                None
-                            } else {
-                                Some(0)
-                            };
+                            completion_state.selected_index =
+                                if completion_state.suggestions.is_empty() {
+                                    None
+                                } else {
+                                    Some(0)
+                                };
                         }
                         Ok(CommandModeAction::UpdateDisplay)
-                    },
-                    
+                    }
+
                     KeyCode::Delete => {
                         if *cursor_position < buffer.len() {
                             buffer.remove(*cursor_position);
                             // Update completion after modifying buffer
-                            let suggestions = self.completion_engine
+                            let suggestions = self
+                                .completion_engine
                                 .get_completions(buffer, *cursor_position, app_state)
                                 .await?;
                             completion_state.suggestions = suggestions;
-                            completion_state.selected_index = if completion_state.suggestions.is_empty() {
-                                None
-                            } else {
-                                Some(0)
-                            };
+                            completion_state.selected_index =
+                                if completion_state.suggestions.is_empty() {
+                                    None
+                                } else {
+                                    Some(0)
+                                };
                         }
                         Ok(CommandModeAction::UpdateDisplay)
-                    },
-                    
+                    }
+
                     KeyCode::Char(c) => {
                         buffer.insert(*cursor_position, c);
                         *cursor_position += 1;
                         // Update completion after modifying buffer
-                        let suggestions = self.completion_engine
+                        let suggestions = self
+                            .completion_engine
                             .get_completions(buffer, *cursor_position, app_state)
                             .await?;
                         completion_state.suggestions = suggestions;
-                        completion_state.selected_index = if completion_state.suggestions.is_empty() {
+                        completion_state.selected_index = if completion_state.suggestions.is_empty()
+                        {
                             None
                         } else {
                             Some(0)
                         };
                         Ok(CommandModeAction::UpdateDisplay)
-                    },
-                    
+                    }
+
                     _ => Ok(CommandModeAction::None),
                 }
             }
         }
     }
-    
-    pub fn render(
-        &self,
-        f: &mut Frame,
-        area: Rect,
-        theme: &ThemeConfig,
-    ) {
-        if let CommandModeState::Active { 
-            ref buffer, 
-            cursor_position, 
+
+    pub fn render(&self, f: &mut Frame, area: Rect, theme: &ThemeConfig) {
+        if let CommandModeState::Active {
+            ref buffer,
+            cursor_position,
             ref completion_state,
-            .. 
-        } = self.state {
+            ..
+        } = self.state
+        {
             self.render_command_input(f, area, buffer, cursor_position, theme);
-            
+
             if !completion_state.suggestions.is_empty() {
                 self.render_completion_popup(f, area, completion_state, theme);
             }
         }
     }
-    
+
     fn render_command_input(
         &self,
         f: &mut Frame,
@@ -433,25 +428,22 @@ impl CommandModeManager {
             width: area.width,
             height: 1,
         };
-        
+
         // Create input text with cursor
         let display_text = format!(":{}", buffer);
-        
+
         // Create input widget
         let input = Paragraph::new(display_text.as_str())
             .style(theme.styles.status_style)
             .block(Block::default());
-        
+
         f.render_widget(input, input_area);
-        
+
         // Set cursor position (accounting for the ':' prefix)
         let cursor_display_pos = (cursor_position + 1).min(display_text.len());
-        f.set_cursor(
-            input_area.x + cursor_display_pos as u16,
-            input_area.y,
-        );
+        f.set_cursor(input_area.x + cursor_display_pos as u16, input_area.y);
     }
-    
+
     fn render_completion_popup(
         &self,
         f: &mut Frame,
@@ -463,21 +455,21 @@ impl CommandModeManager {
         if suggestions.is_empty() {
             return;
         }
-        
+
         let popup_height = (suggestions.len() as u16).min(10);
         let popup_width = suggestions
             .iter()
             .map(|s| s.text.len() + s.description.len() + 4)
             .max()
             .unwrap_or(50) as u16;
-        
+
         let popup_area = Rect {
             x: area.x,
             y: area.y + area.height.saturating_sub(popup_height + 3),
             width: popup_width.min(area.width),
             height: popup_height + 2,
         };
-        
+
         // Create list items
         let items: Vec<ListItem> = suggestions
             .iter()
@@ -489,40 +481,44 @@ impl CommandModeManager {
                 } else {
                     Style::default().fg(theme.colors.text)
                 };
-                
+
                 let content = vec![Line::from(vec![
                     Span::styled(&suggestion.text, style.add_modifier(Modifier::BOLD)),
                     Span::raw(" - "),
                     Span::styled(&suggestion.description, style),
                 ])];
-                
+
                 ListItem::new(content).style(style)
             })
             .collect();
-        
+
         let list = List::new(items)
             .block(
                 Block::default()
                     .title("Completions")
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(theme.colors.border))
+                    .border_style(Style::default().fg(theme.colors.border)),
             )
             .style(Style::default().fg(theme.colors.text));
-        
+
         f.render_widget(Clear, popup_area);
         f.render_widget(list, popup_area);
     }
-    
-    
-    fn apply_completion(&self, buffer: &str, cursor_position: usize, completion: &str) -> (String, usize) {
+
+    fn apply_completion(
+        &self,
+        buffer: &str,
+        cursor_position: usize,
+        completion: &str,
+    ) -> (String, usize) {
         // Find the word being completed
         let before_cursor = &buffer[..cursor_position];
         let after_cursor = &buffer[cursor_position..];
-        
+
         // Find the start of the current word
         let word_start = before_cursor.rfind(' ').map(|i| i + 1).unwrap_or(0);
         let word_prefix = &before_cursor[word_start..];
-        
+
         // Replace the current word with the completion
         let new_buffer = format!(
             "{}{}{}",
@@ -530,45 +526,45 @@ impl CommandModeManager {
             completion,
             after_cursor
         );
-        
+
         let new_cursor_position = word_start + completion.len();
-        
+
         (new_buffer, new_cursor_position)
     }
-    
+
     fn parse_tui_command(&self, command: &str) -> Option<CommandModeAction> {
         let trimmed = command.trim();
-        
+
         match trimmed {
             "dashboard" | "dash" => Some(CommandModeAction::SwitchView(ViewType::Dashboard)),
             "dataflow" | "df" => Some(CommandModeAction::SwitchView(ViewType::DataflowManager)),
             "monitor" | "sys" => Some(CommandModeAction::SwitchView(ViewType::SystemMonitor)),
-            "logs" => Some(CommandModeAction::SwitchView(ViewType::LogViewer { 
-                target: "system".to_string() 
+            "logs" => Some(CommandModeAction::SwitchView(ViewType::LogViewer {
+                target: "system".to_string(),
             })),
             "settings" | "config" => Some(CommandModeAction::SwitchView(ViewType::SettingsManager)),
             "help" => Some(CommandModeAction::SwitchView(ViewType::Help)),
             _ => None,
         }
     }
-    
+
     fn add_to_history(&mut self, command: String) {
         // Avoid duplicate consecutive entries
         if self.command_history.back() != Some(&command) {
             self.command_history.push_back(command);
         }
-        
+
         // Keep history bounded
         const MAX_HISTORY: usize = 100;
         while self.command_history.len() > MAX_HISTORY {
             self.command_history.pop_front();
         }
     }
-    
+
     pub fn get_command_history(&self) -> &VecDeque<String> {
         &self.command_history
     }
-    
+
     pub fn get_last_execution_time(&self) -> Option<Instant> {
         self.last_execution_time
     }
@@ -593,11 +589,11 @@ impl CompletionEngine {
         let mut engine = Self {
             command_registry: HashMap::new(),
         };
-        
+
         engine.register_built_in_commands();
         engine
     }
-    
+
     pub async fn get_completions(
         &self,
         input: &str,
@@ -606,73 +602,101 @@ impl CompletionEngine {
     ) -> Result<Vec<CommandSuggestion>> {
         let context = self.analyze_completion_context(input, cursor_position);
         let mut suggestions = Vec::new();
-        
+
         match context.completion_type {
             CompletionType::Command => {
                 suggestions.extend(self.complete_command(&context.prefix));
-            },
-            
+            }
+
             CompletionType::Subcommand => {
                 if let Some(parent_cmd) = &context.parent_command {
                     suggestions.extend(self.complete_subcommand(parent_cmd, &context.prefix));
                 }
-            },
-            
+            }
+
             CompletionType::Flag => {
                 if let Some(cmd) = &context.current_command {
                     suggestions.extend(self.complete_flag(cmd, &context.prefix));
                 }
-            },
-            
+            }
+
             CompletionType::Value => {
                 suggestions.extend(self.complete_value(&context, app_state).await?);
-            },
-            
+            }
+
             CompletionType::FilePath => {
                 suggestions.extend(self.complete_file_path(&context.prefix));
-            },
+            }
         }
-        
+
         // Sort suggestions by priority and relevance
         suggestions.sort_by(|a, b| {
-            b.priority.cmp(&a.priority)
+            b.priority
+                .cmp(&a.priority)
                 .then_with(|| a.text.len().cmp(&b.text.len()))
         });
-        
+
         Ok(suggestions)
     }
-    
+
     fn register_built_in_commands(&mut self) {
         let commands = vec![
             ("ps", "List running dataflows", vec![], vec!["--all", "-a"]),
-            ("start", "Start a dataflow", vec![], vec!["--debug", "--working-dir"]),
+            (
+                "start",
+                "Start a dataflow",
+                vec![],
+                vec!["--debug", "--working-dir"],
+            ),
             ("stop", "Stop a dataflow", vec![], vec!["--force", "-f"]),
             ("build", "Build a dataflow", vec![], vec!["--validate"]),
-            ("logs", "View dataflow logs", vec![], vec!["--follow", "-f", "--tail"]),
+            (
+                "logs",
+                "View dataflow logs",
+                vec![],
+                vec!["--follow", "-f", "--tail"],
+            ),
             ("inspect", "Inspect a resource", vec![], vec!["--deep"]),
             ("debug", "Debug a dataflow", vec![], vec!["--auto"]),
-            ("monitor", "Monitor system resources", vec![], vec!["--interval"]),
-            ("config", "Manage configuration", vec!["get", "set", "list"], vec![]),
+            (
+                "monitor",
+                "Monitor system resources",
+                vec![],
+                vec!["--interval"],
+            ),
+            (
+                "config",
+                "Manage configuration",
+                vec!["get", "set", "list"],
+                vec![],
+            ),
             ("ui", "Launch TUI interface", vec![], vec!["--view"]),
             ("help", "Show help information", vec![], vec![]),
         ];
-        
+
         for (name, desc, subcmds, flags) in commands {
-            self.command_registry.insert(name.to_string(), CommandInfo {
-                name: name.to_string(),
-                description: desc.to_string(),
-                subcommands: subcmds.into_iter().map(String::from).collect(),
-                common_flags: flags.into_iter().map(String::from).collect(),
-            });
+            self.command_registry.insert(
+                name.to_string(),
+                CommandInfo {
+                    name: name.to_string(),
+                    description: desc.to_string(),
+                    subcommands: subcmds.into_iter().map(String::from).collect(),
+                    common_flags: flags.into_iter().map(String::from).collect(),
+                },
+            );
         }
     }
-    
+
     fn analyze_completion_context(&self, input: &str, cursor_position: usize) -> CompletionContext {
         let before_cursor = &input[..cursor_position.min(input.len())];
         let parts: Vec<&str> = before_cursor.split_whitespace().collect();
-        
-        let prefix = before_cursor.split_whitespace().last().unwrap_or("").to_string();
-        
+
+        let prefix = before_cursor
+            .split_whitespace()
+            .last()
+            .unwrap_or("")
+            .to_string();
+
         if parts.is_empty() || (parts.len() == 1 && !before_cursor.ends_with(' ')) {
             // Completing command name
             CompletionContext {
@@ -696,7 +720,7 @@ impl CompletionEngine {
                     };
                 }
             }
-            
+
             // Could be flag or value
             if prefix.starts_with('-') {
                 CompletionContext {
@@ -737,7 +761,7 @@ impl CompletionEngine {
             }
         }
     }
-    
+
     fn complete_command(&self, prefix: &str) -> Vec<CommandSuggestion> {
         self.command_registry
             .values()
@@ -750,7 +774,7 @@ impl CompletionEngine {
             })
             .collect()
     }
-    
+
     fn complete_subcommand(&self, parent_cmd: &str, prefix: &str) -> Vec<CommandSuggestion> {
         if let Some(info) = self.command_registry.get(parent_cmd) {
             info.subcommands
@@ -767,7 +791,7 @@ impl CompletionEngine {
             Vec::new()
         }
     }
-    
+
     fn complete_flag(&self, cmd: &str, prefix: &str) -> Vec<CommandSuggestion> {
         if let Some(info) = self.command_registry.get(cmd) {
             info.common_flags
@@ -784,10 +808,14 @@ impl CompletionEngine {
             Vec::new()
         }
     }
-    
-    async fn complete_value(&self, context: &CompletionContext, app_state: &AppState) -> Result<Vec<CommandSuggestion>> {
+
+    async fn complete_value(
+        &self,
+        context: &CompletionContext,
+        app_state: &AppState,
+    ) -> Result<Vec<CommandSuggestion>> {
         let mut suggestions = Vec::new();
-        
+
         if let Some(cmd) = &context.current_command {
             match cmd.as_str() {
                 "start" | "stop" | "logs" => {
@@ -802,8 +830,8 @@ impl CompletionEngine {
                             });
                         }
                     }
-                },
-                
+                }
+
                 "inspect" => {
                     // Complete with dataflow names
                     for dataflow in &app_state.dataflows {
@@ -816,29 +844,32 @@ impl CompletionEngine {
                             });
                         }
                     }
-                    
+
                     // Also complete with node names
                     for dataflow in &app_state.dataflows {
                         for node in &dataflow.nodes {
                             if node.name.starts_with(&context.prefix) {
                                 suggestions.push(CommandSuggestion {
                                     text: node.name.clone(),
-                                    description: format!("Node in {} ({})", dataflow.name, node.status),
+                                    description: format!(
+                                        "Node in {} ({})",
+                                        dataflow.name, node.status
+                                    ),
                                     suggestion_type: SuggestionType::NodeName,
                                     priority: 85,
                                 });
                             }
                         }
                     }
-                },
-                
+                }
+
                 _ => {}
             }
         }
-        
+
         Ok(suggestions)
     }
-    
+
     fn complete_file_path(&self, prefix: &str) -> Vec<CommandSuggestion> {
         // Simple file path completion - in a real implementation,
         // this would scan the filesystem
@@ -879,34 +910,44 @@ mod basic_tests {
     fn test_command_mode_activation() {
         let mut manager = CommandModeManager::new();
         assert!(!manager.is_active());
-        
+
         manager.activate();
         assert!(manager.is_active());
-        
+
         manager.deactivate();
         assert!(!manager.is_active());
     }
-    
+
     #[test]
     fn test_history_navigation() {
         let mut nav = HistoryNavigation::new();
-        let history = vec!["ps".to_string(), "start test.yaml".to_string(), "logs test".to_string()];
-        
+        let history = vec![
+            "ps".to_string(),
+            "start test.yaml".to_string(),
+            "logs test".to_string(),
+        ];
+
         // Navigate up from empty
         assert_eq!(nav.navigate_up(&history), Some("logs test".to_string()));
-        assert_eq!(nav.navigate_up(&history), Some("start test.yaml".to_string()));
+        assert_eq!(
+            nav.navigate_up(&history),
+            Some("start test.yaml".to_string())
+        );
         assert_eq!(nav.navigate_up(&history), Some("ps".to_string()));
         assert_eq!(nav.navigate_up(&history), None); // At oldest
-        
+
         // Navigate down
-        assert_eq!(nav.navigate_down(&history), Some("start test.yaml".to_string()));
+        assert_eq!(
+            nav.navigate_down(&history),
+            Some("start test.yaml".to_string())
+        );
         assert_eq!(nav.navigate_down(&history), Some("logs test".to_string()));
     }
-    
+
     #[test]
     fn test_completion_state() {
         let mut state = CompletionState::new();
-        
+
         state.suggestions = vec![
             CommandSuggestion {
                 text: "ps".to_string(),
@@ -921,44 +962,49 @@ mod basic_tests {
                 priority: 70,
             },
         ];
-        
+
         // Test selection
         state.select_next();
         assert_eq!(state.selected_index, Some(0));
-        
+
         state.select_next();
         assert_eq!(state.selected_index, Some(1));
-        
+
         state.select_next(); // Should wrap around
         assert_eq!(state.selected_index, Some(0));
-        
+
         state.select_previous();
         assert_eq!(state.selected_index, Some(1));
     }
-    
+
     #[tokio::test]
     async fn test_completion_engine() {
         let engine = CompletionEngine::new();
         let app_state = AppState::default();
-        
+
         let suggestions = engine.get_completions("p", 1, &app_state).await.unwrap();
         assert!(suggestions.iter().any(|s| s.text == "ps"));
-        
-        let suggestions = engine.get_completions("config ", 7, &app_state).await.unwrap();
+
+        let suggestions = engine
+            .get_completions("config ", 7, &app_state)
+            .await
+            .unwrap();
         assert!(suggestions.iter().any(|s| s.text == "get"));
         assert!(suggestions.iter().any(|s| s.text == "set"));
     }
-    
+
     #[test]
     fn test_command_parsing() {
         let manager = CommandModeManager::new();
-        
-        if let Some(CommandModeAction::SwitchView(ViewType::Dashboard)) = manager.parse_tui_command("dashboard") {
+
+        if let Some(CommandModeAction::SwitchView(ViewType::Dashboard)) =
+            manager.parse_tui_command("dashboard")
+        {
             // Expected
         } else {
             panic!("Expected dashboard view switch");
         }
-        
+
         assert!(manager.parse_tui_command("invalid_command").is_none());
     }
 }

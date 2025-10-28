@@ -1,10 +1,8 @@
 /// Tests for NodeInspectorView (Issue #27)
 #[cfg(test)]
 mod node_inspector_tests {
-    use dora_cli::tui::views::{
-        InspectorTab, NodeInspectorState, NodeInspectorView, NodeMetrics,
-    };
     use dora_cli::tui::theme::ThemeConfig;
+    use dora_cli::tui::views::{InspectorTab, NodeInspectorState, NodeInspectorView, NodeMetrics};
 
     #[test]
     fn test_inspector_tab_all_returns_five_tabs() {

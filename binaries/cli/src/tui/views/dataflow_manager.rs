@@ -1,7 +1,7 @@
-use ratatui::layout::Rect;
-use crossterm::event::KeyEvent;
-use crate::tui::{app::AppState, theme::ThemeConfig, Frame, Result};
 use super::{BaseView, View, ViewAction};
+use crate::tui::{Frame, Result, app::AppState, theme::ThemeConfig};
+use crossterm::event::KeyEvent;
+use ratatui::layout::Rect;
 
 pub struct DataflowManagerView {
     base: BaseView,
@@ -21,19 +21,23 @@ impl View for DataflowManagerView {
     fn render(&mut self, _f: &mut Frame, _area: Rect, _app_state: &AppState) {
         // TODO: Implement dataflow manager view
     }
-    
-    async fn handle_key(&mut self, _key: KeyEvent, _app_state: &mut AppState) -> Result<ViewAction> {
+
+    async fn handle_key(
+        &mut self,
+        _key: KeyEvent,
+        _app_state: &mut AppState,
+    ) -> Result<ViewAction> {
         Ok(ViewAction::None)
     }
-    
+
     async fn update(&mut self, _app_state: &mut AppState) -> Result<()> {
         Ok(())
     }
-    
+
     fn help_text(&self) -> Vec<(&str, &str)> {
         vec![("Esc", "Go back")]
     }
-    
+
     fn title(&self) -> &str {
         &self.base.title
     }

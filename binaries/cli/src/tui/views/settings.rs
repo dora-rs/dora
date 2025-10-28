@@ -1,25 +1,20 @@
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 /// Settings View implementation (Issue #30 - Phase 1)
 /// Provides settings configuration interface with mock data.
-
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
-    Frame,
 };
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::time::Duration;
 
 use super::{
-    settings_types::{SettingsCategory, SettingItem, SettingsState, SettingValue},
     BaseView, View, ViewAction,
+    settings_types::{SettingsCategory, SettingsState},
 };
-use crate::tui::{
-    app::{AppState, ViewType},
-    theme::ThemeConfig,
-    Result,
-};
+use crate::tui::{Result, app::AppState, theme::ThemeConfig};
 
 /// Settings View - Configuration interface
 pub struct SettingsView {
@@ -31,8 +26,8 @@ pub struct SettingsView {
 impl SettingsView {
     /// Create a new Settings View
     pub fn new(theme: &ThemeConfig) -> Self {
-        let base = BaseView::new("Settings".to_string())
-            .with_auto_refresh(Duration::from_millis(500));
+        let base =
+            BaseView::new("Settings".to_string()).with_auto_refresh(Duration::from_millis(500));
 
         let state = SettingsState::new();
 
@@ -89,7 +84,8 @@ impl SettingsView {
             })
             .collect();
 
-        let title = format!(" {} Settings ({}) ",
+        let title = format!(
+            " {} Settings ({}) ",
             self.state.current_category.name(),
             settings.len()
         );
@@ -113,9 +109,10 @@ impl SettingsView {
                     Span::styled(&setting.display_name, Style::default().fg(Color::Cyan)),
                 ]),
                 Line::from(""),
-                Line::from(vec![
-                    Span::styled("Description: ", Style::default().fg(Color::Gray)),
-                ]),
+                Line::from(vec![Span::styled(
+                    "Description: ",
+                    Style::default().fg(Color::Gray),
+                )]),
                 Line::from(setting.description.clone()),
                 Line::from(""),
                 Line::from(vec![
@@ -126,7 +123,9 @@ impl SettingsView {
                     Span::styled("Value: ", Style::default().fg(Color::Gray)),
                     Span::styled(
                         setting.value.format_display(),
-                        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
                     ),
                 ]),
                 Line::from(vec![
@@ -152,17 +151,42 @@ impl SettingsView {
     fn render_shortcuts(&self, f: &mut Frame, area: Rect) {
         let shortcuts = vec![
             Line::from(vec![
-                Span::styled("Tab", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "Tab",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::raw("  Switch Category  "),
-                Span::styled("Space", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "Space",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::raw(" Toggle"),
             ]),
             Line::from(vec![
-                Span::styled("↑/↓", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "↑/↓",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::raw("  Navigate  "),
-                Span::styled("r", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "r",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::raw("  Reset  "),
-                Span::styled("R", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "R",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::raw(" Reset All"),
             ]),
         ];
@@ -205,7 +229,9 @@ impl SettingsView {
     /// Handle reset all settings
     fn handle_reset_all(&mut self) -> Result<ViewAction> {
         self.state.reset_all_to_defaults();
-        Ok(ViewAction::ShowStatus("Reset all settings to defaults".to_string()))
+        Ok(ViewAction::ShowStatus(
+            "Reset all settings to defaults".to_string(),
+        ))
     }
 }
 
@@ -215,8 +241,8 @@ impl View for SettingsView {
         let main_chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Min(10),     // Main content
-                Constraint::Length(4),   // Shortcuts
+                Constraint::Min(10),   // Main content
+                Constraint::Length(4), // Shortcuts
             ])
             .split(area);
 
@@ -224,9 +250,9 @@ impl View for SettingsView {
         let content_chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
-                Constraint::Percentage(25),  // Categories
-                Constraint::Percentage(40),  // Settings list
-                Constraint::Percentage(35),  // Details
+                Constraint::Percentage(25), // Categories
+                Constraint::Percentage(40), // Settings list
+                Constraint::Percentage(35), // Details
             ])
             .split(main_chunks[0]);
 
@@ -259,15 +285,9 @@ impl View for SettingsView {
                 self.state.navigate_down();
                 Ok(ViewAction::None)
             }
-            KeyCode::Char(' ') => {
-                self.handle_toggle()
-            }
-            KeyCode::Char('r') => {
-                self.handle_reset()
-            }
-            KeyCode::Char('R') => {
-                self.handle_reset_all()
-            }
+            KeyCode::Char(' ') => self.handle_toggle(),
+            KeyCode::Char('r') => self.handle_reset(),
+            KeyCode::Char('R') => self.handle_reset_all(),
             KeyCode::Char('?') => Ok(ViewAction::ShowHelp),
             _ => Ok(ViewAction::None),
         }
