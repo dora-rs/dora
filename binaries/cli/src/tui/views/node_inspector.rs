@@ -31,6 +31,18 @@ impl NodeInspectorView {
         }
     }
 
+    fn build_node_metrics(&self, app_state: &AppState) -> NodeMetrics {
+        let sys = &app_state.system_metrics;
+        NodeMetrics {
+            cpu_percent: sys.cpu_usage as f64,
+            memory_percent: sys.memory_usage as f64,
+            message_rate: 0.0,
+            processing_latency_ms: 0.0,
+            uptime_seconds: sys.last_update.map(|_| 0).unwrap_or(0),
+            error_count: 0,
+        }
+    }
+
     /// Render tab bar
     fn render_tab_bar(&self, f: &mut Frame, area: Rect) {
         let tabs = InspectorTab::all();
@@ -147,8 +159,16 @@ impl NodeInspectorView {
     }
 
     /// Render metrics gauges
-    fn render_metrics_gauges(&self, f: &mut Frame, area: Rect, _app_state: &AppState) {
-        let metrics = NodeMetrics::default(); // TODO: Get real metrics from app_state
+    fn render_metrics_gauges(&self, f: &mut Frame, area: Rect, app_state: &AppState) {
+        let sys_metrics = &app_state.system_metrics;
+        let node_metrics = NodeMetrics {
+            cpu_percent: sys_metrics.cpu_usage as f64,
+            memory_percent: sys_metrics.memory_usage as f64,
+            message_rate: 0.0,
+            processing_latency_ms: 0.0,
+            uptime_seconds: sys_metrics.last_update.map(|_| 0).unwrap_or(0),
+            error_count: 0,
+        };
 
         let gauge_areas = Layout::default()
             .direction(Direction::Vertical)
@@ -161,8 +181,8 @@ impl NodeInspectorView {
             .split(area);
 
         // CPU gauge
-        let cpu_percent = metrics.cpu_percent.min(100.0) as u16;
-        let cpu_label = format!("CPU: {:.1}%", metrics.cpu_percent);
+        let cpu_percent = node_metrics.cpu_percent.clamp(0.0, 100.0) as u16;
+        let cpu_label = format!("CPU: {:.1}%", node_metrics.cpu_percent);
         let cpu_gauge = Gauge::default()
             .block(Block::default().borders(Borders::ALL))
             .gauge_style(Style::default().fg(Color::Cyan))
@@ -170,9 +190,9 @@ impl NodeInspectorView {
             .percent(cpu_percent);
         f.render_widget(cpu_gauge, gauge_areas[0]);
 
-        // Memory gauge
-        let memory_percent = (metrics.memory_mb / 1024.0 * 100.0).min(100.0) as u16;
-        let memory_label = format!("Memory: {:.1} MB", metrics.memory_mb);
+        // Memory gauge (memory usage stored as percentage)
+        let memory_percent = node_metrics.memory_percent.clamp(0.0, 100.0) as u16;
+        let memory_label = format!("Memory: {:.1}%", node_metrics.memory_percent);
         let memory_gauge = Gauge::default()
             .block(Block::default().borders(Borders::ALL))
             .gauge_style(Style::default().fg(Color::Green))
@@ -180,22 +200,24 @@ impl NodeInspectorView {
             .percent(memory_percent);
         f.render_widget(memory_gauge, gauge_areas[1]);
 
-        // Message rate
-        let message_label = format!("Messages: {:.1} msg/s", metrics.message_rate);
-        let message_gauge = Gauge::default()
+        // Network throughput
+        let (rx, tx) = sys_metrics.network_io;
+        let throughput_label = format!("Network: ↓ {} KB  ↑ {} KB", rx / 1024, tx / 1024);
+        let throughput = ((rx + tx) as f64 / 1024.0).min(100.0) as u16;
+        let throughput_gauge = Gauge::default()
             .block(Block::default().borders(Borders::ALL))
             .gauge_style(Style::default().fg(Color::Yellow))
-            .label(message_label)
-            .percent(50); // Placeholder
-        f.render_widget(message_gauge, gauge_areas[2]);
+            .label(throughput_label)
+            .percent(throughput);
+        f.render_widget(throughput_gauge, gauge_areas[2]);
 
         // Latency
-        let latency_label = format!("Latency: {:.2} ms", metrics.processing_latency_ms);
+        let latency_label = "Latency: n/a".to_string();
         let latency_gauge = Gauge::default()
             .block(Block::default().borders(Borders::ALL))
             .gauge_style(Style::default().fg(Color::Magenta))
             .label(latency_label)
-            .percent(30); // Placeholder
+            .percent(0);
         f.render_widget(latency_gauge, gauge_areas[3]);
     }
 
@@ -261,8 +283,8 @@ impl NodeInspectorView {
     }
 
     /// Render Performance tab
-    fn render_performance_tab(&self, f: &mut Frame, area: Rect, _app_state: &AppState) {
-        let metrics = NodeMetrics::default(); // TODO: Get real metrics
+    fn render_performance_tab(&self, f: &mut Frame, area: Rect, app_state: &AppState) {
+        let metrics = self.build_node_metrics(app_state);
 
         let perf_text = vec![
             Line::from(vec![Span::styled(
@@ -278,7 +300,7 @@ impl NodeInspectorView {
             ]),
             Line::from(vec![
                 Span::styled("Memory: ", Style::default().fg(self.theme.colors.muted)),
-                Span::raw(format!("{:.1} MB", metrics.memory_mb)),
+                Span::raw(format!("{:.1}%", metrics.memory_percent)),
             ]),
             Line::from(vec![
                 Span::styled(
