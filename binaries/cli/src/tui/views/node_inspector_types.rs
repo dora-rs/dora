@@ -218,7 +218,7 @@ pub struct ConnectionInfo {
 #[derive(Debug, Clone)]
 pub struct NodeMetrics {
     pub cpu_percent: f64,
-    pub memory_mb: f64,
+    pub memory_percent: f64,
     pub message_rate: f64,
     pub processing_latency_ms: f64,
     pub uptime_seconds: u64,
@@ -229,7 +229,7 @@ impl Default for NodeMetrics {
     fn default() -> Self {
         Self {
             cpu_percent: 0.0,
-            memory_mb: 0.0,
+            memory_percent: 0.0,
             message_rate: 0.0,
             processing_latency_ms: 0.0,
             uptime_seconds: 0,
@@ -478,7 +478,7 @@ mod tests {
         let metrics = NodeMetrics::default();
 
         assert_eq!(metrics.cpu_percent, 0.0);
-        assert_eq!(metrics.memory_mb, 0.0);
+        assert_eq!(metrics.memory_percent, 0.0);
         assert_eq!(metrics.message_rate, 0.0);
         assert_eq!(metrics.processing_latency_ms, 0.0);
         assert_eq!(metrics.uptime_seconds, 0);
