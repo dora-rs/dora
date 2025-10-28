@@ -4,7 +4,7 @@ fn main() {
     let mut args: Vec<String> = std::env::args().collect();
 
     if args.len() == 2 && matches!(args[1].as_str(), "-h" | "--help") {
-        print_combined_help();
+        print_legacy_help_with_hint();
         return;
     }
 
@@ -16,6 +16,11 @@ fn main() {
         .map(|(idx, arg)| (idx, arg.as_str()));
 
     let next_positional = next_positional_index.map(|(_, arg)| arg);
+
+    if matches!(next_positional, Some("help")) && args.len() == 2 {
+        print_legacy_help_with_hint();
+        return;
+    }
 
     let should_use_new_cli = matches!(next_positional, Some("tui") | Some("dashboard"));
 
@@ -41,14 +46,10 @@ fn main() {
     dora_cli::lib_main(dora_cli::Args::parse_from(args));
 }
 
-fn print_combined_help() {
+fn print_legacy_help_with_hint() {
     println!("Legacy CLI (default `dora <command>`):\n");
     if let Err(err) = dora_cli::Args::command().print_help() {
         eprintln!("{err}");
     }
-    println!("\n\nTUI Commands (run via `dora tui <command>` or `dora dashboard`):\n");
-    if let Err(err) = dora_cli::cli::Cli::command().print_help() {
-        eprintln!("{err}");
-    }
-    println!();
+    println!("\nHint: run `dora tui --help` for interactive dashboard commands.\n");
 }
