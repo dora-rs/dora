@@ -9,7 +9,7 @@ use crate::{
     tui::{
         AppState, ViewType,
         app::{DataflowInfo, MessageLevel, NodeInfo, StatusMessage},
-        metrics::gather_system_metrics,
+        metrics::MetricsCollector,
     },
 };
 use dora_core::topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT;
@@ -86,6 +86,7 @@ pub struct StateSynchronizer {
     last_sync: Instant,
     sync_interval: Duration,
     pending_updates: Vec<StateUpdate>,
+    metrics_collector: MetricsCollector,
 }
 
 /// Status levels for messages
@@ -430,6 +431,7 @@ impl StateSynchronizer {
             last_sync: Instant::now(),
             sync_interval: Duration::from_millis(1000),
             pending_updates: Vec::new(),
+            metrics_collector: MetricsCollector::new(),
         }
     }
 
@@ -516,18 +518,12 @@ impl StateSynchronizer {
         &mut self,
         app_state: &mut AppState,
     ) -> crate::tui::Result<()> {
-        let result = tokio::task::spawn_blocking(gather_system_metrics).await;
-
-        match result {
-            Ok(Ok(metrics)) => {
+        match self.metrics_collector.collect() {
+            Ok(metrics) => {
                 app_state.system_metrics = metrics;
                 app_state.last_error = None;
             }
-            Ok(Err(err)) => self.capture_error(app_state, err.to_string()),
-            Err(err) => self.capture_error(
-                app_state,
-                format!("failed to refresh system metrics: {err}"),
-            ),
+            Err(err) => self.capture_error(app_state, err.to_string()),
         }
 
         Ok(())
