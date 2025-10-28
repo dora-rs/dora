@@ -4,12 +4,15 @@ use clap::Parser;
 
 use crate::{
     cli::{Cli, Command, commands::*, context::ExecutionContext},
+    common::{connect_to_coordinator, query_running_dataflows},
     execute_legacy_command,
     tui::{
-        AppState, ViewType,
         app::{DataflowInfo, MessageLevel, NodeInfo, StatusMessage},
+        AppState, ViewType,
     },
 };
+use dora_core::topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT;
+use eyre::WrapErr;
 
 /// Executes CLI commands within TUI environment with state synchronization
 #[derive(Debug)]
@@ -288,13 +291,15 @@ impl TuiCliExecutor {
         let working_dir = self.execution_context.working_dir.clone();
 
         let result = tokio::task::spawn_blocking(move || {
-            execute_legacy_command(args.iter().map(|s| s.as_str()), Some(working_dir.as_path()))
+            execute_legacy_command(
+                args.iter().map(|s| s.as_str()),
+                Some(working_dir.as_path()),
+            )
         })
-        .await
-        .map_err(|err| format!("failed to join command task: {err}"))?;
+        .await;
 
         match result {
-            Ok(_) => {
+            Ok(Ok(())) => {
                 self.push_status_message(
                     app_state,
                     format!("✅ `{display}` completed"),
@@ -302,11 +307,20 @@ impl TuiCliExecutor {
                 );
                 Ok(LegacyExecution::Success)
             }
-            Err(err) => {
+            Ok(Err(err)) => {
                 let message = err.to_string();
                 self.push_status_message(
                     app_state,
                     format!("❌ `{display}` failed: {}", message),
+                    MessageLevel::Error,
+                );
+                Ok(LegacyExecution::Error(message))
+            }
+            Err(err) => {
+                let message = format!("failed to join command task: {err}");
+                self.push_status_message(
+                    app_state,
+                    format!("❌ {message}"),
                     MessageLevel::Error,
                 );
                 Ok(LegacyExecution::Error(message))
@@ -442,28 +456,58 @@ impl StateSynchronizer {
         &mut self,
         app_state: &mut AppState,
     ) -> crate::tui::Result<()> {
-        // Mock dataflow state refresh
-        // In a real implementation, this would query the Dora runtime
+        let coordinator_addr =
+            (crate::LOCALHOST, DORA_COORDINATOR_PORT_CONTROL_DEFAULT).into();
 
-        // Simulate some dataflows if none exist
-        if app_state.dataflows.is_empty() {
-            app_state.dataflows = vec![DataflowInfo {
-                id: "df_example".to_string(),
-                name: "example_dataflow".to_string(),
-                status: "running".to_string(),
-                nodes: vec![
-                    NodeInfo {
-                        id: "node_input".to_string(),
-                        name: "Input Node".to_string(),
-                        status: "running".to_string(),
+        let result = tokio::task::spawn_blocking(move || -> eyre::Result<Vec<DataflowInfo>> {
+            let mut session = connect_to_coordinator(coordinator_addr)
+                .with_context(|| "failed to connect to coordinator".to_string())?;
+            let list = query_running_dataflows(&mut *session)
+                .with_context(|| "failed to query running dataflows".to_string())?;
+
+            let flows = list
+                .0
+                .into_iter()
+                .map(|entry| DataflowInfo {
+                    id: entry.id.uuid.to_string(),
+                    name: entry
+                        .id
+                        .name
+                        .clone()
+                        .unwrap_or_else(|| entry.id.uuid.to_string()),
+                    status: match entry.status {
+                        dora_message::coordinator_to_cli::DataflowStatus::Running => {
+                            "running".to_string()
+                        }
+                        dora_message::coordinator_to_cli::DataflowStatus::Finished => {
+                            "finished".to_string()
+                        }
+                        dora_message::coordinator_to_cli::DataflowStatus::Failed => {
+                            "failed".to_string()
+                        }
                     },
-                    NodeInfo {
-                        id: "node_process".to_string(),
-                        name: "Processing Node".to_string(),
-                        status: "running".to_string(),
-                    },
-                ],
-            }];
+                    nodes: Vec::<NodeInfo>::new(),
+                })
+                .collect();
+
+            Ok(flows)
+        })
+        .await;
+
+        match result {
+            Ok(Ok(flows)) => {
+                app_state.dataflows = flows;
+                app_state.last_error = None;
+            }
+            Ok(Err(err)) => {
+                self.capture_error(app_state, err.to_string());
+            }
+            Err(err) => {
+                self.capture_error(
+                    app_state,
+                    format!("failed to refresh dataflows: {err}"),
+                );
+            }
         }
 
         Ok(())
@@ -489,6 +533,22 @@ impl StateSynchronizer {
         app_state.system_metrics.last_update = Some(Instant::now());
 
         Ok(())
+    }
+}
+
+impl StateSynchronizer {
+    fn capture_error(&self, app_state: &mut AppState, message: String) {
+        if app_state.last_error.as_deref() != Some(message.as_str()) {
+            app_state.status_messages.push_back(StatusMessage {
+                message: format!("❌ {}", message),
+                level: MessageLevel::Error,
+                timestamp: Instant::now(),
+            });
+            while app_state.status_messages.len() > 20 {
+                app_state.status_messages.pop_front();
+            }
+        }
+        app_state.last_error = Some(message);
     }
 }
 
