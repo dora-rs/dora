@@ -99,12 +99,41 @@ if (!input_info.error.empty()) {
 // Access input ID
 std::cout << "Input ID: " << input_info.id << std::endl;
 
-// Access metadata (serialized as JSON)
-std::cout << "Metadata: " << input_info.metadata_json << std::endl;
+// Access metadata via the provided helper type
+auto metadata = std::move(input_info.metadata);
+std::cout << "Metadata timestamp: " << metadata->timestamp() << std::endl;
 
-// You can parse the JSON metadata using a JSON library like nlohmann/json
-// nlohmann::json metadata = nlohmann::json::parse(input_info.metadata_json);
-// auto timestamp_secs = metadata["timestamp"]["secs"];
+auto keys = metadata->list_keys();
+for (std::size_t i = 0; i < keys.size(); i++) {
+    const std::string key(keys[i]);
+    try {
+        switch (metadata->type(key)) {
+        case MetadataValueType::Float:
+            std::cout << "Parameter " << key << " (float): "
+                      << metadata->get_float(key) << std::endl;
+            break;
+        case MetadataValueType::Integer:
+            std::cout << "Parameter " << key << " (int): "
+                      << metadata->get_int(key) << std::endl;
+            break;
+        case MetadataValueType::String:
+            std::cout << "Parameter " << key << " (string): "
+                      << std::string(metadata->get_str(key)) << std::endl;
+            break;
+        case MetadataValueType::Bool:
+            std::cout << "Parameter " << key << " (bool): "
+                      << std::string(metadata->get_json(key)) << std::endl;
+            break;
+        default:
+            std::cout << "Parameter " << key << " has unsupported type" << std::endl;
+            break;
+        }
+    } catch (const std::exception& err) {
+        std::cout << "Parameter " << key << " unavailable: " << err.what() << std::endl;
+    }
+}
+
+std::cout << "Metadata as JSON: " << std::string(metadata->to_json()) << std::endl;
 
 // Import the Arrow array for processing
 auto result = arrow::ImportArray(&c_array, &c_schema);
