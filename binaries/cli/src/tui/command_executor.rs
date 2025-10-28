@@ -7,8 +7,9 @@ use crate::{
     common::{connect_to_coordinator, query_running_dataflows},
     execute_legacy_command,
     tui::{
-        app::{DataflowInfo, MessageLevel, NodeInfo, StatusMessage},
         AppState, ViewType,
+        app::{DataflowInfo, MessageLevel, NodeInfo, StatusMessage},
+        metrics::gather_system_metrics,
     },
 };
 use dora_core::topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT;
@@ -291,10 +292,7 @@ impl TuiCliExecutor {
         let working_dir = self.execution_context.working_dir.clone();
 
         let result = tokio::task::spawn_blocking(move || {
-            execute_legacy_command(
-                args.iter().map(|s| s.as_str()),
-                Some(working_dir.as_path()),
-            )
+            execute_legacy_command(args.iter().map(|s| s.as_str()), Some(working_dir.as_path()))
         })
         .await;
 
@@ -318,11 +316,7 @@ impl TuiCliExecutor {
             }
             Err(err) => {
                 let message = format!("failed to join command task: {err}");
-                self.push_status_message(
-                    app_state,
-                    format!("❌ {message}"),
-                    MessageLevel::Error,
-                );
+                self.push_status_message(app_state, format!("❌ {message}"), MessageLevel::Error);
                 Ok(LegacyExecution::Error(message))
             }
         }
@@ -456,8 +450,7 @@ impl StateSynchronizer {
         &mut self,
         app_state: &mut AppState,
     ) -> crate::tui::Result<()> {
-        let coordinator_addr =
-            (crate::LOCALHOST, DORA_COORDINATOR_PORT_CONTROL_DEFAULT).into();
+        let coordinator_addr = (crate::LOCALHOST, DORA_COORDINATOR_PORT_CONTROL_DEFAULT).into();
 
         let result = tokio::task::spawn_blocking(move || -> eyre::Result<Vec<DataflowInfo>> {
             let mut session = connect_to_coordinator(coordinator_addr)
@@ -503,10 +496,7 @@ impl StateSynchronizer {
                 self.capture_error(app_state, err.to_string());
             }
             Err(err) => {
-                self.capture_error(
-                    app_state,
-                    format!("failed to refresh dataflows: {err}"),
-                );
+                self.capture_error(app_state, format!("failed to refresh dataflows: {err}"));
             }
         }
 
@@ -526,18 +516,26 @@ impl StateSynchronizer {
         &mut self,
         app_state: &mut AppState,
     ) -> crate::tui::Result<()> {
-        // Mock system metrics refresh
-        app_state.system_metrics.cpu_usage = 45.0;
-        app_state.system_metrics.memory_usage = 60.0;
-        app_state.system_metrics.network_io = (1024, 512);
-        app_state.system_metrics.last_update = Some(Instant::now());
+        let result = tokio::task::spawn_blocking(gather_system_metrics).await;
+
+        match result {
+            Ok(Ok(metrics)) => {
+                app_state.system_metrics = metrics;
+                app_state.last_error = None;
+            }
+            Ok(Err(err)) => self.capture_error(app_state, err.to_string()),
+            Err(err) => self.capture_error(
+                app_state,
+                format!("failed to refresh system metrics: {err}"),
+            ),
+        }
 
         Ok(())
     }
 }
 
 impl StateSynchronizer {
-    fn capture_error(&self, app_state: &mut AppState, message: String) {
+    fn capture_error(&mut self, app_state: &mut AppState, message: String) {
         if app_state.last_error.as_deref() != Some(message.as_str()) {
             app_state.status_messages.push_back(StatusMessage {
                 message: format!("❌ {}", message),

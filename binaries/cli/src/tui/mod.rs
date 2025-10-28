@@ -3,6 +3,7 @@ pub mod cli_integration;
 pub mod command_executor;
 pub mod command_mode;
 pub mod components;
+pub mod metrics;
 pub mod theme;
 pub mod views;
 
