@@ -23,6 +23,7 @@ use super::{
     cli_integration::{CliContext, CommandMode},
     command_executor::{CommandModeExecutionResult, CommandModeViewAction, TuiCliExecutor},
     command_mode::{CommandModeAction, CommandModeManager},
+    metrics::gather_system_metrics,
     theme::ThemeConfig,
 };
 
@@ -757,13 +758,23 @@ impl DoraApp {
     }
 
     async fn update_system_metrics(&mut self) -> Result<()> {
-        // Mock system metrics
-        self.state.system_metrics = SystemMetrics {
-            cpu_usage: 45.2,
-            memory_usage: 68.7,
-            network_io: (1024 * 1024, 512 * 1024),
-            last_update: Some(Instant::now()),
-        };
+        match tokio::task::spawn_blocking(gather_system_metrics).await {
+            Ok(Ok(metrics)) => {
+                self.state.system_metrics = metrics;
+            }
+            Ok(Err(err)) => {
+                self.show_status_message(
+                    format!("❌ failed to collect system metrics: {err}"),
+                    MessageLevel::Error,
+                );
+            }
+            Err(err) => {
+                self.show_status_message(
+                    format!("❌ metrics task join error: {err}"),
+                    MessageLevel::Error,
+                );
+            }
+        }
 
         Ok(())
     }
