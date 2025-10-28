@@ -6,7 +6,7 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{
-    backend::{Backend, CrosstermBackend},
+    backend::CrosstermBackend,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::Style,
     terminal::{Frame, Terminal},
@@ -23,7 +23,7 @@ use super::{
     cli_integration::{CliContext, CommandMode},
     command_executor::{CommandModeExecutionResult, CommandModeViewAction, TuiCliExecutor},
     command_mode::{CommandModeAction, CommandModeManager},
-    metrics::gather_system_metrics,
+    metrics::MetricsCollector,
     theme::ThemeConfig,
 };
 
@@ -758,22 +758,15 @@ impl DoraApp {
     }
 
     async fn update_system_metrics(&mut self) -> Result<()> {
-        match tokio::task::spawn_blocking(gather_system_metrics).await {
-            Ok(Ok(metrics)) => {
-                self.state.system_metrics = metrics;
-            }
-            Ok(Err(err)) => {
-                self.show_status_message(
-                    format!("❌ failed to collect system metrics: {err}"),
-                    MessageLevel::Error,
-                );
-            }
-            Err(err) => {
-                self.show_status_message(
-                    format!("❌ metrics task join error: {err}"),
-                    MessageLevel::Error,
-                );
-            }
+        let mut collector = MetricsCollector::new();
+        if let Err(err) = collector
+            .collect()
+            .map(|metrics| self.state.system_metrics = metrics)
+        {
+            self.show_status_message(
+                format!("❌ failed to collect system metrics: {err}"),
+                MessageLevel::Error,
+            );
         }
 
         Ok(())

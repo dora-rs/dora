@@ -5,33 +5,55 @@ use sysinfo::{CpuExt, NetworkExt, NetworksExt, System, SystemExt};
 
 use crate::tui::app::SystemMetrics;
 
-pub(crate) fn gather_system_metrics() -> Result<SystemMetrics> {
-    let mut system = System::new_all();
-    system.refresh_cpu();
-    system.refresh_memory();
-    system.refresh_networks();
+#[derive(Debug)]
+pub struct MetricsCollector {
+    system: System,
+    last_io: Option<(u64, u64)>,
+}
 
-    let cpu_usage = system.global_cpu_info().cpu_usage();
+impl MetricsCollector {
+    pub fn new() -> Self {
+        let mut system = System::new_all();
+        system.refresh_all();
+        Self {
+            system,
+            last_io: None,
+        }
+    }
 
-    let total_memory = system.total_memory() as f32;
-    let used_memory = system.used_memory() as f32;
-    let memory_percent = if total_memory > 0.0 {
-        (used_memory / total_memory) * 100.0
-    } else {
-        0.0
-    };
+    pub fn collect(&mut self) -> Result<SystemMetrics> {
+        self.system.refresh_cpu();
+        self.system.refresh_memory();
+        self.system.refresh_networks();
 
-    let networks = system.networks();
-    let total_received: u64 = networks.iter().map(|(_, data)| data.total_received()).sum();
-    let total_transmitted: u64 = networks
-        .iter()
-        .map(|(_, data)| data.total_transmitted())
-        .sum();
+        let cpu_usage = self.system.global_cpu_info().cpu_usage();
 
-    Ok(SystemMetrics {
-        cpu_usage,
-        memory_usage: memory_percent,
-        network_io: (total_received, total_transmitted),
-        last_update: Some(Instant::now()),
-    })
+        let total_memory = self.system.total_memory() as f32;
+        let used_memory = self.system.used_memory() as f32;
+        let memory_percent = if total_memory > 0.0 {
+            (used_memory / total_memory) * 100.0
+        } else {
+            0.0
+        };
+
+        let networks = self.system.networks();
+        let total_received: u64 = networks.iter().map(|(_, data)| data.received()).sum();
+        let total_transmitted: u64 = networks.iter().map(|(_, data)| data.transmitted()).sum();
+
+        let io_delta = match self.last_io {
+            Some((prev_rx, prev_tx)) => (
+                total_received.saturating_sub(prev_rx),
+                total_transmitted.saturating_sub(prev_tx),
+            ),
+            None => (total_received, total_transmitted),
+        };
+        self.last_io = Some((total_received, total_transmitted));
+
+        Ok(SystemMetrics {
+            cpu_usage,
+            memory_usage: memory_percent,
+            network_io: io_delta,
+            last_update: Some(Instant::now()),
+        })
+    }
 }
