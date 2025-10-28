@@ -1,11 +1,10 @@
 /// Tests for Help Browser View (Issue #31)
 #[cfg(test)]
 mod help_browser_tests {
-    use dora_cli::tui::views::{
-        HelpCategory, HelpTopic, HelpContent, HelpBrowserState,
-        HelpBrowserView, View,
-    };
     use dora_cli::tui::theme::ThemeConfig;
+    use dora_cli::tui::views::{
+        HelpBrowserState, HelpBrowserView, HelpCategory, HelpContent, HelpTopic, View,
+    };
 
     // HelpCategory tests
     #[test]
@@ -105,7 +104,11 @@ mod help_browser_tests {
         let content = HelpContent::new(
             "test".to_string(),
             "Test".to_string(),
-            vec!["Line 1".to_string(), "Line 2".to_string(), "Line 3".to_string()],
+            vec![
+                "Line 1".to_string(),
+                "Line 2".to_string(),
+                "Line 3".to_string(),
+            ],
             vec![],
         );
 
@@ -121,12 +124,8 @@ mod help_browser_tests {
             vec!["related1".to_string()],
         );
 
-        let content_without_related = HelpContent::new(
-            "test".to_string(),
-            "Test".to_string(),
-            vec![],
-            vec![],
-        );
+        let content_without_related =
+            HelpContent::new("test".to_string(), "Test".to_string(), vec![], vec![]);
 
         assert!(content_with_related.has_related_topics());
         assert!(!content_without_related.has_related_topics());
@@ -150,19 +149,22 @@ mod help_browser_tests {
         let state = HelpBrowserState::new();
 
         // Check we have topics in all categories
-        let getting_started_topics: Vec<_> = state.topics
+        let getting_started_topics: Vec<_> = state
+            .topics
             .iter()
             .filter(|t| t.category == HelpCategory::GettingStarted)
             .collect();
         assert!(getting_started_topics.len() > 0);
 
-        let commands_topics: Vec<_> = state.topics
+        let commands_topics: Vec<_> = state
+            .topics
             .iter()
             .filter(|t| t.category == HelpCategory::Commands)
             .collect();
         assert!(commands_topics.len() > 0);
 
-        let tui_topics: Vec<_> = state.topics
+        let tui_topics: Vec<_> = state
+            .topics
             .iter()
             .filter(|t| t.category == HelpCategory::TuiGuide)
             .collect();
@@ -380,7 +382,10 @@ mod help_browser_tests {
         let view = HelpBrowserView::new(&theme);
 
         assert!(view.auto_refresh().is_some());
-        assert_eq!(view.auto_refresh().unwrap(), std::time::Duration::from_millis(1000));
+        assert_eq!(
+            view.auto_refresh().unwrap(),
+            std::time::Duration::from_millis(1000)
+        );
     }
 
     #[test]
@@ -445,7 +450,8 @@ mod help_browser_tests {
         let state = HelpBrowserState::new();
 
         for category in HelpCategory::all() {
-            let topics: Vec<_> = state.topics
+            let topics: Vec<_> = state
+                .topics
                 .iter()
                 .filter(|t| t.category == category)
                 .collect();

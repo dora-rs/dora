@@ -26,7 +26,10 @@ impl AutomaticIssueDetector {
         let mut all_issues = Vec::new();
 
         // Run performance detection
-        let perf_issues = self.performance_detector.detect_issues(debug_session).await?;
+        let perf_issues = self
+            .performance_detector
+            .detect_issues(debug_session)
+            .await?;
         all_issues.extend(perf_issues);
 
         // Run dataflow detection if target is dataflow
@@ -86,12 +89,16 @@ impl PerformanceIssueDetector {
         let current_metrics = self.get_current_metrics().await?;
 
         // Check for CPU issues
-        if let Some(cpu_issue) = self.analyze_cpu_performance(&current_metrics, &self.baseline_metrics) {
+        if let Some(cpu_issue) =
+            self.analyze_cpu_performance(&current_metrics, &self.baseline_metrics)
+        {
             issues.push(cpu_issue);
         }
 
         // Check for memory issues
-        if let Some(memory_issue) = self.analyze_memory_performance(&current_metrics, &self.baseline_metrics) {
+        if let Some(memory_issue) =
+            self.analyze_memory_performance(&current_metrics, &self.baseline_metrics)
+        {
             issues.push(memory_issue);
         }
 
@@ -101,7 +108,7 @@ impl PerformanceIssueDetector {
     async fn get_current_metrics(&self) -> Result<SystemMetrics> {
         // Mock implementation - in production, this would query actual system metrics
         Ok(SystemMetrics {
-            cpu_usage_percent: 85.0,  // Simulating high CPU
+            cpu_usage_percent: 85.0, // Simulating high CPU
             memory_usage_mb: 512.0,
             disk_io_mbps: 50.0,
             network_io_mbps: 100.0,
@@ -216,39 +223,32 @@ impl PerformanceIssueDetector {
                     memory_usage, baseline_memory
                 ),
                 affected_components: vec!["Memory".to_string()],
-                symptoms: vec![
-                    Symptom {
-                        description: format!("Memory usage at {:.0}MB", memory_usage),
-                        metric_value: Some(memory_usage),
-                        timestamp: Utc::now(),
-                    }
-                ],
-                possible_causes: vec![
-                    PossibleCause {
-                        description: "Memory leak in application code".to_string(),
-                        likelihood: 0.8,
-                        investigation_steps: vec![
-                            "Check for unclosed resources or circular references".to_string(),
-                            "Review memory allocation patterns".to_string(),
-                        ],
-                    },
-                ],
-                suggested_actions: vec![
-                    SuggestedAction {
-                        action: "Profile memory usage".to_string(),
-                        command: Some("dora debug --mode profile --focus memory".to_string()),
-                        urgency: ActionUrgency::High,
-                    },
-                ],
-                debugging_hints: vec![
-                    DebuggingHint {
-                        hint: "Interactive debugging can show memory allocation patterns over time".to_string(),
-                        interactive_features: vec![
-                            "Memory timeline visualization".to_string(),
-                            "Heap analysis".to_string(),
-                        ],
-                    },
-                ],
+                symptoms: vec![Symptom {
+                    description: format!("Memory usage at {:.0}MB", memory_usage),
+                    metric_value: Some(memory_usage),
+                    timestamp: Utc::now(),
+                }],
+                possible_causes: vec![PossibleCause {
+                    description: "Memory leak in application code".to_string(),
+                    likelihood: 0.8,
+                    investigation_steps: vec![
+                        "Check for unclosed resources or circular references".to_string(),
+                        "Review memory allocation patterns".to_string(),
+                    ],
+                }],
+                suggested_actions: vec![SuggestedAction {
+                    action: "Profile memory usage".to_string(),
+                    command: Some("dora debug --mode profile --focus memory".to_string()),
+                    urgency: ActionUrgency::High,
+                }],
+                debugging_hints: vec![DebuggingHint {
+                    hint: "Interactive debugging can show memory allocation patterns over time"
+                        .to_string(),
+                    interactive_features: vec![
+                        "Memory timeline visualization".to_string(),
+                        "Heap analysis".to_string(),
+                    ],
+                }],
                 first_detected: Utc::now(),
                 related_issues: Vec::new(),
             })
@@ -285,41 +285,37 @@ impl DataflowIssueDetector {
                     severity: IssueSeverity::Critical,
                     confidence: 0.95,
                     title: "Dataflow Stalled".to_string(),
-                    description: format!("Dataflow '{}' appears to be stalled with no message flow", dataflow_name),
+                    description: format!(
+                        "Dataflow '{}' appears to be stalled with no message flow",
+                        dataflow_name
+                    ),
                     affected_components: vec![dataflow_name.clone()],
-                    symptoms: vec![
-                        Symptom {
-                            description: "No messages processed in last 30s".to_string(),
-                            metric_value: Some(0.0),
-                            timestamp: Utc::now(),
-                        }
-                    ],
-                    possible_causes: vec![
-                        PossibleCause {
-                            description: "Deadlock in node processing".to_string(),
-                            likelihood: 0.6,
-                            investigation_steps: vec![
-                                "Check node states".to_string(),
-                                "Review inter-node dependencies".to_string(),
-                            ],
-                        },
-                    ],
-                    suggested_actions: vec![
-                        SuggestedAction {
-                            action: "Inspect dataflow state interactively".to_string(),
-                            command: Some(format!("dora debug {} --tui", dataflow_name)),
-                            urgency: ActionUrgency::Critical,
-                        },
-                    ],
-                    debugging_hints: vec![
-                        DebuggingHint {
-                            hint: "Interactive TUI provides real-time dataflow visualization".to_string(),
-                            interactive_features: vec![
-                                "Dataflow graph with node states".to_string(),
-                                "Message flow visualization".to_string(),
-                            ],
-                        },
-                    ],
+                    symptoms: vec![Symptom {
+                        description: "No messages processed in last 30s".to_string(),
+                        metric_value: Some(0.0),
+                        timestamp: Utc::now(),
+                    }],
+                    possible_causes: vec![PossibleCause {
+                        description: "Deadlock in node processing".to_string(),
+                        likelihood: 0.6,
+                        investigation_steps: vec![
+                            "Check node states".to_string(),
+                            "Review inter-node dependencies".to_string(),
+                        ],
+                    }],
+                    suggested_actions: vec![SuggestedAction {
+                        action: "Inspect dataflow state interactively".to_string(),
+                        command: Some(format!("dora debug {} --tui", dataflow_name)),
+                        urgency: ActionUrgency::Critical,
+                    }],
+                    debugging_hints: vec![DebuggingHint {
+                        hint: "Interactive TUI provides real-time dataflow visualization"
+                            .to_string(),
+                        interactive_features: vec![
+                            "Dataflow graph with node states".to_string(),
+                            "Message flow visualization".to_string(),
+                        ],
+                    }],
                     first_detected: Utc::now(),
                     related_issues: Vec::new(),
                 });
@@ -375,7 +371,11 @@ mod tests {
 
         // Should detect at least the CPU issue from mock data
         assert!(!issues.is_empty());
-        assert!(issues.iter().any(|i| i.issue_type == IssueType::PerformanceDegradation));
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.issue_type == IssueType::PerformanceDegradation)
+        );
     }
 
     #[tokio::test]
@@ -396,6 +396,9 @@ mod tests {
         assert!(issue.is_some());
         let issue = issue.unwrap();
         assert_eq!(issue.issue_type, IssueType::PerformanceDegradation);
-        assert!(matches!(issue.severity, IssueSeverity::Critical | IssueSeverity::High));
+        assert!(matches!(
+            issue.severity,
+            IssueSeverity::Critical | IssueSeverity::High
+        ));
     }
 }

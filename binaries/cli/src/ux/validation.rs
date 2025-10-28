@@ -91,7 +91,7 @@ impl UxValidator {
     /// Validate command UX consistency
     pub fn validate_command(&self, command_name: &str, command_output: &str) -> UxValidationResult {
         let mut violations = Vec::new();
-        let mut warnings = Vec::new();
+        let warnings = Vec::new();
 
         // Check terminology consistency
         violations.extend(self.check_terminology(command_name, command_output));
@@ -114,7 +114,9 @@ impl UxValidator {
         }
 
         let metrics = self.calculate_metrics(command_name, command_output, &violations, &warnings);
-        let passed = violations.iter().all(|v| !matches!(v.severity, Severity::Critical | Severity::High));
+        let passed = violations
+            .iter()
+            .all(|v| !matches!(v.severity, Severity::Critical | Severity::High));
 
         UxValidationResult {
             passed,
@@ -130,7 +132,7 @@ impl UxValidator {
         commands: &HashMap<String, String>,
     ) -> UxValidationResult {
         let mut violations = Vec::new();
-        let mut warnings = Vec::new();
+        let warnings = Vec::new();
         let total_commands = commands.len();
 
         // Check for consistent terminology across commands
@@ -154,7 +156,9 @@ impl UxValidator {
             hint_coverage: self.calculate_hint_coverage(commands),
         };
 
-        let passed = violations.iter().all(|v| !matches!(v.severity, Severity::Critical | Severity::High));
+        let passed = violations
+            .iter()
+            .all(|v| !matches!(v.severity, Severity::Critical | Severity::High));
 
         UxValidationResult {
             passed,
@@ -228,7 +232,10 @@ impl UxValidator {
         output.contains("Hint:") || output.contains("💡") || output.contains("Try:")
     }
 
-    fn check_cross_command_terminology(&self, commands: &HashMap<String, String>) -> Vec<UxViolation> {
+    fn check_cross_command_terminology(
+        &self,
+        commands: &HashMap<String, String>,
+    ) -> Vec<UxViolation> {
         let mut violations = Vec::new();
         let mut term_usage: HashMap<String, Vec<String>> = HashMap::new();
 
@@ -299,7 +306,11 @@ impl UxValidator {
         }
     }
 
-    fn calculate_consistency_score(&self, violations: &[UxViolation], total_commands: usize) -> f32 {
+    fn calculate_consistency_score(
+        &self,
+        violations: &[UxViolation],
+        total_commands: usize,
+    ) -> f32 {
         let total_possible_issues = total_commands * 10; // Assume 10 checks per command
         let found_issues = violations.len();
         ((total_possible_issues - found_issues) as f32 / total_possible_issues as f32) * 100.0
@@ -316,7 +327,13 @@ impl UxValidator {
     fn calculate_format_score(&self, violations: &[UxViolation]) -> f32 {
         let format_violations = violations
             .iter()
-            .filter(|v| matches!(v.category, ViolationCategory::InconsistentFormatting | ViolationCategory::InconsistentOutputFormat))
+            .filter(|v| {
+                matches!(
+                    v.category,
+                    ViolationCategory::InconsistentFormatting
+                        | ViolationCategory::InconsistentOutputFormat
+                )
+            })
             .count();
         100.0 - (format_violations as f32 * 5.0).min(100.0)
     }
@@ -354,7 +371,10 @@ pub struct TerminologyRules {
 impl Default for TerminologyRules {
     fn default() -> Self {
         let mut standard_terms = HashMap::new();
-        standard_terms.insert("dataflow".to_string(), vec!["dataflows".to_string(), "data-flow".to_string()]);
+        standard_terms.insert(
+            "dataflow".to_string(),
+            vec!["dataflows".to_string(), "data-flow".to_string()],
+        );
         standard_terms.insert("node".to_string(), vec!["nodes".to_string()]);
         standard_terms.insert("operator".to_string(), vec!["operators".to_string()]);
 

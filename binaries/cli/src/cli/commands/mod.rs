@@ -8,7 +8,7 @@ pub struct CommonArgs {
     /// Working directory
     #[clap(short = 'C', long, global = true)]
     pub working_dir: Option<PathBuf>,
-    
+
     /// Configuration file path
     #[clap(short, long, global = true)]
     pub config: Option<PathBuf>,
@@ -19,7 +19,7 @@ pub struct DataflowArgs {
     /// Dataflow configuration file
     #[clap(value_name = "DATAFLOW")]
     pub dataflow: Option<PathBuf>,
-    
+
     /// Dataflow name (for running dataflows)
     #[clap(long)]
     pub name: Option<String>,
@@ -37,10 +37,10 @@ pub struct NodeArgs {
 pub struct PsCommand {
     #[clap(flatten)]
     pub common: CommonArgs,
-    
+
     #[clap(flatten)]
     pub dataflow: DataflowArgs,
-    
+
     /// Show all dataflows
     #[clap(short, long)]
     pub all: bool,
@@ -50,13 +50,13 @@ pub struct PsCommand {
 pub struct StartCommand {
     #[clap(flatten)]
     pub common: CommonArgs,
-    
+
     #[clap(flatten)]
     pub dataflow: DataflowArgs,
-    
+
     #[clap(flatten)]
     pub nodes: NodeArgs,
-    
+
     /// Enable debug mode
     #[clap(long)]
     pub debug: bool,
@@ -66,13 +66,13 @@ pub struct StartCommand {
 pub struct StopCommand {
     #[clap(flatten)]
     pub common: CommonArgs,
-    
+
     #[clap(flatten)]
     pub dataflow: DataflowArgs,
-    
+
     #[clap(flatten)]
     pub nodes: NodeArgs,
-    
+
     /// Force stop
     #[clap(long)]
     pub force: bool,
@@ -82,13 +82,13 @@ pub struct StopCommand {
 pub struct LogsCommand {
     #[clap(flatten)]
     pub common: CommonArgs,
-    
+
     #[clap(flatten)]
     pub dataflow: DataflowArgs,
-    
+
     #[clap(flatten)]
     pub nodes: NodeArgs,
-    
+
     /// Follow log output
     #[clap(short, long)]
     pub follow: bool,
@@ -98,10 +98,10 @@ pub struct LogsCommand {
 pub struct BuildCommand {
     #[clap(flatten)]
     pub common: CommonArgs,
-    
+
     #[clap(flatten)]
     pub dataflow: DataflowArgs,
-    
+
     /// Validate only
     #[clap(long)]
     pub validate: bool,
@@ -111,10 +111,10 @@ pub struct BuildCommand {
 pub struct UpCommand {
     #[clap(flatten)]
     pub common: CommonArgs,
-    
+
     #[clap(flatten)]
     pub dataflow: DataflowArgs,
-    
+
     /// Run in background
     #[clap(short, long)]
     pub detach: bool,
@@ -124,10 +124,10 @@ pub struct UpCommand {
 pub struct DestroyCommand {
     #[clap(flatten)]
     pub common: CommonArgs,
-    
+
     #[clap(flatten)]
     pub dataflow: DataflowArgs,
-    
+
     /// Force destroy
     #[clap(long)]
     pub force: bool,
@@ -137,15 +137,15 @@ pub struct DestroyCommand {
 pub struct NewCommand {
     #[clap(flatten)]
     pub common: CommonArgs,
-    
+
     /// Entity type to create
     #[clap(long, value_enum, default_value = "dataflow")]
     pub kind: NewKind,
-    
+
     /// Programming language
     #[clap(long, value_enum, default_value = "rust")]
     pub lang: NewLang,
-    
+
     /// Name of the entity
     pub name: String,
 }
@@ -169,7 +169,7 @@ pub enum NewLang {
 pub struct CheckCommand {
     #[clap(flatten)]
     pub common: CommonArgs,
-    
+
     #[clap(flatten)]
     pub dataflow: DataflowArgs,
 }
@@ -178,10 +178,10 @@ pub struct CheckCommand {
 pub struct GraphCommand {
     #[clap(flatten)]
     pub common: CommonArgs,
-    
+
     #[clap(flatten)]
     pub dataflow: DataflowArgs,
-    
+
     /// Output format
     #[clap(long, value_enum, default_value = "mermaid")]
     pub format: GraphFormat,
@@ -365,10 +365,10 @@ pub enum DebugFocus {
 pub struct AnalyzeCommand {
     #[clap(flatten)]
     pub common: CommonArgs,
-    
+
     #[clap(flatten)]
     pub dataflow: DataflowArgs,
-    
+
     /// Analysis type
     #[clap(value_enum)]
     pub analysis_type: Option<AnalysisType>,
@@ -426,7 +426,7 @@ pub struct HelpCommand {
 pub struct UiCommand {
     #[clap(flatten)]
     pub common: CommonArgs,
-    
+
     /// Initial view
     #[clap(long, value_enum)]
     pub view: Option<TuiView>,
@@ -444,7 +444,7 @@ pub enum TuiView {
 pub struct DashboardCommand {
     #[clap(flatten)]
     pub common: CommonArgs,
-    
+
     /// Dashboard layout
     #[clap(long)]
     pub layout: Option<String>,
@@ -455,7 +455,7 @@ pub struct DashboardCommand {
 pub struct SystemCommand {
     #[clap(flatten)]
     pub common: CommonArgs,
-    
+
     #[clap(subcommand)]
     pub subcommand: SystemSubcommand,
 }
@@ -471,7 +471,7 @@ pub enum SystemSubcommand {
 pub struct ConfigCommand {
     #[clap(flatten)]
     pub common: CommonArgs,
-    
+
     #[clap(subcommand)]
     pub subcommand: ConfigSubcommand,
 }
@@ -487,7 +487,7 @@ pub enum ConfigSubcommand {
 pub struct DaemonCommand {
     #[clap(flatten)]
     pub common: CommonArgs,
-    
+
     #[clap(subcommand)]
     pub subcommand: DaemonSubcommand,
 }
@@ -503,7 +503,7 @@ pub enum DaemonSubcommand {
 pub struct RuntimeCommand {
     #[clap(flatten)]
     pub common: CommonArgs,
-    
+
     #[clap(subcommand)]
     pub subcommand: RuntimeSubcommand,
 }
@@ -519,7 +519,7 @@ pub enum RuntimeSubcommand {
 pub struct CoordinatorCommand {
     #[clap(flatten)]
     pub common: CommonArgs,
-    
+
     #[clap(subcommand)]
     pub subcommand: CoordinatorSubcommand,
 }
@@ -548,29 +548,41 @@ pub enum SelfSubcommand {
 impl InspectCommand {
     /// Execute the inspect command
     pub async fn execute(&self) -> eyre::Result<()> {
-        use crate::inspection::{ResourceAnalyzer, CliRenderer};
+        use crate::inspection::{CliRenderer, ResourceAnalyzer};
 
         // Determine the target
-        let target = self.target.clone()
-            .or_else(|| self.dataflow.dataflow.as_ref().map(|p| p.display().to_string()))
+        let target = self
+            .target
+            .clone()
+            .or_else(|| {
+                self.dataflow
+                    .dataflow
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+            })
             .unwrap_or_else(|| "current".to_string());
 
         // Create analyzer
         let mut analyzer = ResourceAnalyzer::new();
 
         // Perform analysis
-        let result = analyzer.analyze_resource(
-            &target,
-            self.resource_type.clone(),
-            self.depth,
-            self.focus.clone(),
-        ).await?;
+        let result = analyzer
+            .analyze_resource(
+                &target,
+                self.resource_type.clone(),
+                self.depth,
+                self.focus.clone(),
+            )
+            .await?;
 
         // Check if we should use TUI
         if self.tui || (!self.text && self.should_suggest_tui(&result)) {
             // For now, just print a message - TUI integration will be in future issues
             println!("🖥️  TUI mode would be launched here (Issue #9)");
-            println!("Complexity: {:.0}, Recommended for better visualization\n", result.complexity_score);
+            println!(
+                "Complexity: {:.0}, Recommended for better visualization\n",
+                result.complexity_score
+            );
         }
 
         // Render output
@@ -581,7 +593,8 @@ impl InspectCommand {
         // Export if requested
         if let Some(export_path) = &self.export {
             use std::fs;
-            let export_format = export_path.extension()
+            let export_format = export_path
+                .extension()
                 .and_then(|e| e.to_str())
                 .map(|e| match e {
                     "json" => InspectOutputFormat::Json,

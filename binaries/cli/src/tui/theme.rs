@@ -1,6 +1,6 @@
 use ratatui::{
     style::{Color, Modifier, Style},
-    widgets::{Block, Borders, BorderType},
+    widgets::{Block, BorderType, Borders},
 };
 
 #[derive(Debug, Clone)]
@@ -43,7 +43,7 @@ impl ThemeConfig {
         // In the future, this would check user config files
         Self::default_dark()
     }
-    
+
     pub fn default_dark() -> Self {
         Self {
             name: "dark".to_string(),
@@ -72,12 +72,11 @@ impl ThemeConfig {
                 selection_style: Style::default()
                     .bg(Color::DarkGray)
                     .add_modifier(Modifier::BOLD),
-                status_style: Style::default()
-                    .fg(Color::Cyan),
+                status_style: Style::default().fg(Color::Cyan),
             },
         }
     }
-    
+
     pub fn default_light() -> Self {
         Self {
             name: "light".to_string(),
@@ -106,12 +105,11 @@ impl ThemeConfig {
                 selection_style: Style::default()
                     .bg(Color::LightBlue)
                     .add_modifier(Modifier::BOLD),
-                status_style: Style::default()
-                    .fg(Color::Blue),
+                status_style: Style::default().fg(Color::Blue),
             },
         }
     }
-    
+
     pub fn styled_block<'a>(&self, title: &'a str) -> Block<'a> {
         Block::default()
             .title(title)
@@ -121,10 +119,10 @@ impl ThemeConfig {
             .title_style(
                 Style::default()
                     .fg(self.colors.text)
-                    .add_modifier(Modifier::BOLD)
+                    .add_modifier(Modifier::BOLD),
             )
     }
-    
+
     pub fn status_style(&self, status: &str) -> Style {
         let color = match status.to_lowercase().as_str() {
             "running" | "active" | "healthy" | "ok" | "success" => self.colors.success,
@@ -135,16 +133,18 @@ impl ThemeConfig {
         };
         Style::default().fg(color)
     }
-    
+
     pub fn priority_style(&self, priority: &str) -> Style {
         match priority.to_lowercase().as_str() {
-            "high" | "critical" => Style::default().fg(self.colors.error).add_modifier(Modifier::BOLD),
+            "high" | "critical" => Style::default()
+                .fg(self.colors.error)
+                .add_modifier(Modifier::BOLD),
             "medium" | "normal" => Style::default().fg(self.colors.warning),
             "low" => Style::default().fg(self.colors.muted),
             _ => Style::default().fg(self.colors.text),
         }
     }
-    
+
     pub fn percentage_style(&self, percentage: f32) -> Style {
         let color = if percentage >= 90.0 {
             self.colors.error
@@ -157,7 +157,7 @@ impl ThemeConfig {
         };
         Style::default().fg(color)
     }
-    
+
     pub fn diff_style(&self, change: i32) -> Style {
         if change > 0 {
             Style::default().fg(self.colors.success)
@@ -167,7 +167,7 @@ impl ThemeConfig {
             Style::default().fg(self.colors.muted)
         }
     }
-    
+
     pub fn highlight_text(&self, _text: &str, highlighted: bool) -> Style {
         if highlighted {
             self.styles.selection_style
@@ -175,13 +175,13 @@ impl ThemeConfig {
             Style::default().fg(self.colors.text)
         }
     }
-    
+
     pub fn table_header_style(&self) -> Style {
         Style::default()
             .fg(self.colors.primary)
             .add_modifier(Modifier::BOLD)
     }
-    
+
     pub fn table_row_style(&self, selected: bool) -> Style {
         if selected {
             self.styles.selection_style
@@ -189,11 +189,11 @@ impl ThemeConfig {
             Style::default().fg(self.colors.text)
         }
     }
-    
+
     pub fn progress_bar_style(&self) -> Style {
         Style::default().fg(self.colors.primary)
     }
-    
+
     pub fn border_style(&self) -> Style {
         Style::default().fg(self.colors.border)
     }
@@ -286,10 +286,7 @@ pub struct ThemeManager {
 impl ThemeManager {
     /// Load the theme manager with default themes
     pub fn load_default() -> Self {
-        let themes = vec![
-            ThemeConfig::default_dark(),
-            ThemeConfig::default_light(),
-        ];
+        let themes = vec![ThemeConfig::default_dark(), ThemeConfig::default_light()];
 
         Self {
             current_theme: themes[0].clone(),
@@ -314,7 +311,10 @@ impl ThemeManager {
 
     /// Get list of available theme names
     pub fn available_theme_names(&self) -> Vec<String> {
-        self.available_themes.iter().map(|t| t.name.clone()).collect()
+        self.available_themes
+            .iter()
+            .map(|t| t.name.clone())
+            .collect()
     }
 
     /// Add a custom theme

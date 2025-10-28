@@ -1,7 +1,6 @@
 // Log Streaming Implementation for Issue #20
 
 use super::types::*;
-use chrono::Utc;
 use eyre::Result;
 use std::collections::VecDeque;
 
@@ -142,8 +141,7 @@ impl SmartLogFilter {
         }
 
         // Check errors_only filter
-        if self.filter_config.errors_only
-            && !matches!(log.level, LogLevel::Error | LogLevel::Fatal)
+        if self.filter_config.errors_only && !matches!(log.level, LogLevel::Error | LogLevel::Fatal)
         {
             return false;
         }
@@ -264,18 +262,19 @@ impl LogRenderer {
 
         match self.format {
             LogFormat::Text | LogFormat::Colored => {
-                format!("{}{}{}: {}", timestamp_str, level_str, source_str, log.message)
+                format!(
+                    "{}{}{}: {}",
+                    timestamp_str, level_str, source_str, log.message
+                )
             }
-            LogFormat::Json => {
-                serde_json::json!({
-                    "timestamp": log.timestamp,
-                    "level": log.level,
-                    "source": log.source,
-                    "message": log.message,
-                    "fields": log.fields,
-                })
-                .to_string()
-            }
+            LogFormat::Json => serde_json::json!({
+                "timestamp": log.timestamp,
+                "level": log.level,
+                "source": log.source,
+                "message": log.message,
+                "fields": log.fields,
+            })
+            .to_string(),
             LogFormat::Compact => {
                 format!("{}{} {}", level_str, source_str, log.message)
             }

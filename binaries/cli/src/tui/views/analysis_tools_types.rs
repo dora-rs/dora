@@ -33,8 +33,12 @@ impl AnalysisType {
 
     pub fn description(&self) -> &'static str {
         match self {
-            AnalysisType::Distribution => "Statistical distribution analysis with summary statistics",
-            AnalysisType::Correlation => "Correlation matrix showing relationships between variables",
+            AnalysisType::Distribution => {
+                "Statistical distribution analysis with summary statistics"
+            }
+            AnalysisType::Correlation => {
+                "Correlation matrix showing relationships between variables"
+            }
             AnalysisType::Trend => "Trend detection and pattern analysis over time",
             AnalysisType::Outlier => "Outlier detection using statistical methods",
         }
@@ -621,27 +625,22 @@ mod tests {
     fn test_trend_analysis_mock() {
         let trends = TrendAnalysis::create_mock_trends();
         assert!(!trends.is_empty());
-        assert!(trends.iter().all(|t| t.confidence >= 0.0 && t.confidence <= 1.0));
+        assert!(
+            trends
+                .iter()
+                .all(|t| t.confidence >= 0.0 && t.confidence <= 1.0)
+        );
     }
 
     #[test]
     fn test_outlier_severity_from_z_score() {
-        assert_eq!(
-            OutlierSeverity::from_z_score(1.5),
-            OutlierSeverity::Mild
-        );
+        assert_eq!(OutlierSeverity::from_z_score(1.5), OutlierSeverity::Mild);
         assert_eq!(
             OutlierSeverity::from_z_score(2.3),
             OutlierSeverity::Moderate
         );
-        assert_eq!(
-            OutlierSeverity::from_z_score(2.8),
-            OutlierSeverity::Severe
-        );
-        assert_eq!(
-            OutlierSeverity::from_z_score(3.5),
-            OutlierSeverity::Extreme
-        );
+        assert_eq!(OutlierSeverity::from_z_score(2.8), OutlierSeverity::Severe);
+        assert_eq!(OutlierSeverity::from_z_score(3.5), OutlierSeverity::Extreme);
     }
 
     #[test]

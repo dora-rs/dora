@@ -1,11 +1,10 @@
 /// Tests for Settings Configuration View (Issue #30)
 #[cfg(test)]
 mod settings_tests {
-    use dora_cli::tui::views::{
-        SettingsCategory, SettingType, SettingValue, SettingItem, SettingsState,
-        SettingsView, View,
-    };
     use dora_cli::tui::theme::ThemeConfig;
+    use dora_cli::tui::views::{
+        SettingItem, SettingType, SettingValue, SettingsCategory, SettingsState, SettingsView, View,
+    };
 
     // SettingsCategory tests
     #[test]
@@ -409,7 +408,10 @@ mod settings_tests {
         let view = SettingsView::new(&theme);
 
         assert!(view.auto_refresh().is_some());
-        assert_eq!(view.auto_refresh().unwrap(), std::time::Duration::from_millis(500));
+        assert_eq!(
+            view.auto_refresh().unwrap(),
+            std::time::Duration::from_millis(500)
+        );
     }
 
     #[test]

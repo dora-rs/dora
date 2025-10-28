@@ -5,21 +5,17 @@ use super::data_viz_types::{
     CategoryData, ChartData, ChartType, DataVizState, EventData, GaugeData, TimeSeriesData,
 };
 use super::{BaseView, View, ViewAction};
-use crate::tui::{
-    app::AppState,
-    theme::ThemeConfig,
-    Result,
-};
+use crate::tui::{Result, app::AppState, theme::ThemeConfig};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{
-        canvas::{Canvas, Line as CanvasLine, Points},
         Block, Borders, List, ListItem, Paragraph,
+        canvas::{Canvas, Line as CanvasLine, Points},
     },
-    Frame,
 };
 use std::time::Duration;
 
@@ -305,10 +301,7 @@ impl DataVizView {
             let mut text_with_target = gauge_text;
             text_with_target.push(Line::from(vec![
                 Span::raw("  Target: "),
-                Span::styled(
-                    format!("{:.1}{}", target, gauge.unit),
-                    Style::default(),
-                ),
+                Span::styled(format!("{:.1}{}", target, gauge.unit), Style::default()),
             ]));
 
             let widget = Paragraph::new(text_with_target).block(

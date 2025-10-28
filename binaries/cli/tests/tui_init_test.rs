@@ -1,7 +1,6 @@
 /// Integration test for TUI initialization
 /// Tests that all TUI components can be created and initialized
-
-use dora_cli::tui::{DoraApp, ThemeConfig, AppState, ViewType};
+use dora_cli::tui::{AppState, DoraApp, ThemeConfig, ViewType};
 
 #[test]
 fn test_app_state_creation() {
@@ -54,10 +53,18 @@ fn test_view_type_variants() {
         ViewType::Dashboard,
         ViewType::DataflowManager,
         ViewType::SystemMonitor,
-        ViewType::LogViewer { target: "test".to_string() },
-        ViewType::NodeInspector { node_id: "test_node".to_string() },
-        ViewType::RecordingAnalyzer { recording_id: "test_recording".to_string() },
-        ViewType::DebugSession { dataflow_id: "test_dataflow".to_string() },
+        ViewType::LogViewer {
+            target: "test".to_string(),
+        },
+        ViewType::NodeInspector {
+            node_id: "test_node".to_string(),
+        },
+        ViewType::RecordingAnalyzer {
+            recording_id: "test_recording".to_string(),
+        },
+        ViewType::DebugSession {
+            dataflow_id: "test_dataflow".to_string(),
+        },
         ViewType::SettingsManager,
         ViewType::Help,
     ];

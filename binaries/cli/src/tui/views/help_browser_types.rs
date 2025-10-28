@@ -1,6 +1,5 @@
 /// Help Browser types and state management (Issue #31 - Phase 1)
 /// Provides type definitions for help content browsing with mock data support.
-
 use std::time::Instant;
 
 /// Help content category
@@ -247,7 +246,8 @@ impl HelpBrowserState {
     /// Page down
     pub fn page_down(&mut self) {
         if let Some(content) = &self.current_content {
-            self.scroll_offset = (self.scroll_offset + 10).min(content.line_count().saturating_sub(1));
+            self.scroll_offset =
+                (self.scroll_offset + 10).min(content.line_count().saturating_sub(1));
         }
     }
 
@@ -436,7 +436,8 @@ impl HelpBrowserState {
                 vec![
                     "Welcome to Dora!".to_string(),
                     "".to_string(),
-                    "Dora is a dataflow-oriented robotic framework that helps you build".to_string(),
+                    "Dora is a dataflow-oriented robotic framework that helps you build"
+                        .to_string(),
                     "and manage complex robotic systems.".to_string(),
                     "".to_string(),
                     "Quick Start Steps:".to_string(),
@@ -457,7 +458,8 @@ impl HelpBrowserState {
                     "- Check the FAQ section for common questions".to_string(),
                     "- Visit the troubleshooting guide for issues".to_string(),
                     "".to_string(),
-                    "For more information, see the Installation and First Dataflow topics.".to_string(),
+                    "For more information, see the Installation and First Dataflow topics."
+                        .to_string(),
                 ],
                 vec!["installation".to_string(), "first-dataflow".to_string()],
             ),

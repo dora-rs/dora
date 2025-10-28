@@ -1,24 +1,22 @@
-use ratatui::{
-    backend::Backend,
-    layout::{Constraint, Direction, Layout, Rect, Alignment},
-    style::{Color, Modifier, Style},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Gauge, Table, Row, Cell},
-    text::{Line, Span, Text},
-    Frame,
-};
 use crossterm::event::{KeyCode, KeyEvent};
-use std::time::{Duration, Instant};
-
-use crate::tui::{
-    app::{AppState, ViewType},
-    theme::ThemeConfig,
-    components::{Component, SystemOverviewComponent, DataflowSummaryComponent, ComponentId},
-    Result,
+use ratatui::{
+    Frame,
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    style::{Modifier, Style},
+    text::{Line, Span},
+    widgets::{Cell, List, ListItem, Paragraph, Row, Table},
 };
+use std::time::Duration;
+
 use super::{
-    BaseView, View, ViewAction, StateUpdate, utils,
-    DashboardState, SystemOverview, SystemStatus, MemoryUsage, DiskUsage,
-    NetworkActivity, DataflowSummary, RefreshManager,
+    BaseView, DashboardState, DataflowSummary, DiskUsage, MemoryUsage, NetworkActivity,
+    RefreshManager, StateUpdate, SystemOverview, SystemStatus, View, ViewAction, utils,
+};
+use crate::tui::{
+    Result,
+    app::{AppState, ViewType},
+    components::{Component, DataflowSummaryComponent, SystemOverviewComponent},
+    theme::ThemeConfig,
 };
 
 pub struct DashboardView {
@@ -36,8 +34,7 @@ pub struct DashboardView {
 impl DashboardView {
     pub fn new(theme: &ThemeConfig) -> Self {
         Self {
-            base: BaseView::new("Dashboard".to_string())
-                .with_auto_refresh(Duration::from_secs(2)), // Issue #24: 2-second refresh
+            base: BaseView::new("Dashboard".to_string()).with_auto_refresh(Duration::from_secs(2)), // Issue #24: 2-second refresh
             theme: theme.clone(),
             selected_dataflow: 0,
             show_system_info: true,
@@ -71,8 +68,8 @@ impl DashboardView {
                 usage_percent: metrics.memory_usage as f64,
             },
             disk_usage: DiskUsage {
-                total_gb: 500, // TODO: Get actual disk size
-                used_gb: 250, // TODO: Get actual disk usage
+                total_gb: 500,       // TODO: Get actual disk size
+                used_gb: 250,        // TODO: Get actual disk usage
                 usage_percent: 50.0, // TODO: Calculate from actual values
             },
             network_activity: NetworkActivity {
@@ -86,19 +83,27 @@ impl DashboardView {
     /// Collect dataflow summary data (Issue #24)
     fn collect_dataflow_summary(&self, app_state: &AppState) -> DataflowSummary {
         let total = app_state.dataflows.len() as u32;
-        let running = app_state.dataflows.iter()
+        let running = app_state
+            .dataflows
+            .iter()
             .filter(|df| df.status == "running")
             .count() as u32;
-        let failed = app_state.dataflows.iter()
+        let failed = app_state
+            .dataflows
+            .iter()
             .filter(|df| df.status == "failed")
             .count() as u32;
         let stopped = total - running - failed;
 
-        let total_nodes = app_state.dataflows.iter()
+        let total_nodes = app_state
+            .dataflows
+            .iter()
             .map(|df| df.nodes.len() as u32)
             .sum();
 
-        let healthy_nodes = app_state.dataflows.iter()
+        let healthy_nodes = app_state
+            .dataflows
+            .iter()
             .flat_map(|df| &df.nodes)
             .filter(|node| node.status == "running" || node.status == "healthy")
             .count() as u32;
@@ -135,57 +140,79 @@ impl DashboardView {
             self.refresh_manager.mark_refreshed();
         }
     }
-    
+
     fn render_overview(&self, f: &mut Frame, area: Rect, app_state: &AppState) {
         let dataflow_count = app_state.dataflows.len();
-        let running_count = app_state.dataflows
+        let running_count = app_state
+            .dataflows
             .iter()
             .filter(|df| df.status == "running")
             .count();
-        
+
         let overview_text = vec![
             Line::from(vec![
-                Span::styled("Total Dataflows: ", Style::default().fg(self.theme.colors.text)),
-                Span::styled(dataflow_count.to_string(), Style::default().fg(self.theme.colors.primary).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "Total Dataflows: ",
+                    Style::default().fg(self.theme.colors.text),
+                ),
+                Span::styled(
+                    dataflow_count.to_string(),
+                    Style::default()
+                        .fg(self.theme.colors.primary)
+                        .add_modifier(Modifier::BOLD),
+                ),
             ]),
             Line::from(vec![
                 Span::styled("Running: ", Style::default().fg(self.theme.colors.text)),
-                Span::styled(running_count.to_string(), Style::default().fg(self.theme.colors.success).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    running_count.to_string(),
+                    Style::default()
+                        .fg(self.theme.colors.success)
+                        .add_modifier(Modifier::BOLD),
+                ),
             ]),
             Line::from(vec![
                 Span::styled("Stopped: ", Style::default().fg(self.theme.colors.text)),
-                Span::styled((dataflow_count - running_count).to_string(), Style::default().fg(self.theme.colors.error).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    (dataflow_count - running_count).to_string(),
+                    Style::default()
+                        .fg(self.theme.colors.error)
+                        .add_modifier(Modifier::BOLD),
+                ),
             ]),
         ];
-        
+
         let overview = Paragraph::new(overview_text)
             .block(self.theme.styled_block("Overview"))
             .alignment(Alignment::Left);
-        
+
         f.render_widget(overview, area);
     }
-    
+
     fn render_dataflows(&self, f: &mut Frame, area: Rect, app_state: &AppState) {
         if app_state.dataflows.is_empty() {
-            let empty_msg = Paragraph::new("No dataflows found. Use 'dora start <dataflow.yaml>' to start one.")
-                .block(self.theme.styled_block("Dataflows"))
-                .style(Style::default().fg(self.theme.colors.muted))
-                .alignment(Alignment::Center);
+            let empty_msg = Paragraph::new(
+                "No dataflows found. Use 'dora start <dataflow.yaml>' to start one.",
+            )
+            .block(self.theme.styled_block("Dataflows"))
+            .style(Style::default().fg(self.theme.colors.muted))
+            .alignment(Alignment::Center);
             f.render_widget(empty_msg, area);
             return;
         }
-        
+
         let header_cells = ["Name", "Status", "Nodes", "Actions"]
             .iter()
             .map(|h| Cell::from(*h).style(self.theme.table_header_style()))
             .collect::<Vec<_>>();
-        
+
         let header = Row::new(header_cells)
             .style(self.theme.table_header_style())
             .height(1)
             .bottom_margin(1);
-        
-        let rows = app_state.dataflows
+
+        let rows = app_state
+            .dataflows
             .iter()
             .enumerate()
             .map(|(i, dataflow)| {
@@ -194,10 +221,10 @@ impl DashboardView {
                 } else {
                     Style::default().fg(self.theme.colors.text)
                 };
-                
+
                 let status_style = self.theme.status_style(&dataflow.status);
                 let status_indicator = utils::status_indicator(&dataflow.status);
-                
+
                 Row::new(vec![
                     Cell::from(dataflow.name.clone()),
                     Cell::from(Line::from(vec![
@@ -211,35 +238,36 @@ impl DashboardView {
                 .style(style)
             })
             .collect::<Vec<_>>();
-        
+
         let widths = [
             Constraint::Percentage(30),
             Constraint::Percentage(20),
             Constraint::Percentage(15),
             Constraint::Percentage(35),
         ];
-        
+
         let table = Table::new(rows, widths)
             .header(header)
             .block(self.theme.styled_block("Dataflows"))
             .highlight_style(self.theme.styles.selection_style);
-        
+
         f.render_widget(table, area);
     }
-    
+
     fn render_system_metrics(&self, f: &mut Frame, area: Rect, app_state: &AppState) {
         if !self.show_system_info {
             return;
         }
 
         // Issue #24: Use SystemOverviewComponent
-        self.system_overview_component.render(f, area, &self.theme, app_state);
+        self.system_overview_component
+            .render(f, area, &self.theme, app_state);
     }
-    
+
     fn render_quick_actions(&self, f: &mut Frame, area: Rect) {
         let actions = vec![
             "1: Dashboard",
-            "2: Dataflows", 
+            "2: Dataflows",
             "3: Monitor",
             "4: Logs",
             "5: Settings",
@@ -250,24 +278,26 @@ impl DashboardView {
             ":: Command",
             "q: Quit",
         ];
-        
+
         let list_items: Vec<ListItem> = actions
             .into_iter()
             .map(|action| {
                 if action.is_empty() {
                     ListItem::new(Line::from(""))
                 } else if action.contains(':') && !action.starts_with(char::is_numeric) {
-                    ListItem::new(Line::from(action)).style(Style::default().fg(self.theme.colors.muted))
+                    ListItem::new(Line::from(action))
+                        .style(Style::default().fg(self.theme.colors.muted))
                 } else {
-                    ListItem::new(Line::from(action)).style(Style::default().fg(self.theme.colors.primary))
+                    ListItem::new(Line::from(action))
+                        .style(Style::default().fg(self.theme.colors.primary))
                 }
             })
             .collect();
-        
+
         let actions_list = List::new(list_items)
             .block(self.theme.styled_block("Quick Actions"))
             .style(Style::default().fg(self.theme.colors.text));
-        
+
         f.render_widget(actions_list, area);
     }
 }
@@ -277,33 +307,33 @@ impl View for DashboardView {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(5),  // Overview
-                Constraint::Min(8),     // Dataflows table
+                Constraint::Length(5), // Overview
+                Constraint::Min(8),    // Dataflows table
             ])
             .split(area);
-        
+
         let top_chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
-                Constraint::Percentage(60),  // Overview
-                Constraint::Percentage(40),  // System metrics
+                Constraint::Percentage(60), // Overview
+                Constraint::Percentage(40), // System metrics
             ])
             .split(chunks[0]);
-        
+
         let bottom_chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
-                Constraint::Percentage(75),  // Dataflows
-                Constraint::Percentage(25),  // Quick actions
+                Constraint::Percentage(75), // Dataflows
+                Constraint::Percentage(25), // Quick actions
             ])
             .split(chunks[1]);
-        
+
         self.render_overview(f, top_chunks[0], app_state);
         self.render_system_metrics(f, top_chunks[1], app_state);
         self.render_dataflows(f, bottom_chunks[0], app_state);
         self.render_quick_actions(f, bottom_chunks[1]);
     }
-    
+
     async fn handle_key(&mut self, key: KeyEvent, app_state: &mut AppState) -> Result<ViewAction> {
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => {
@@ -311,15 +341,15 @@ impl View for DashboardView {
                     self.selected_dataflow -= 1;
                 }
                 Ok(ViewAction::None)
-            },
-            
+            }
+
             KeyCode::Down | KeyCode::Char('j') => {
                 if self.selected_dataflow < app_state.dataflows.len().saturating_sub(1) {
                     self.selected_dataflow += 1;
                 }
                 Ok(ViewAction::None)
-            },
-            
+            }
+
             KeyCode::Enter => {
                 if let Some(dataflow) = app_state.dataflows.get(self.selected_dataflow) {
                     Ok(ViewAction::PushView(ViewType::NodeInspector {
@@ -328,8 +358,8 @@ impl View for DashboardView {
                 } else {
                     Ok(ViewAction::None)
                 }
-            },
-            
+            }
+
             KeyCode::Char(' ') => {
                 if let Some(dataflow) = app_state.dataflows.get(self.selected_dataflow) {
                     let command = if dataflow.status == "running" {
@@ -341,8 +371,8 @@ impl View for DashboardView {
                 } else {
                     Ok(ViewAction::None)
                 }
-            },
-            
+            }
+
             KeyCode::Char('l') => {
                 if let Some(dataflow) = app_state.dataflows.get(self.selected_dataflow) {
                     Ok(ViewAction::PushView(ViewType::LogViewer {
@@ -351,46 +381,40 @@ impl View for DashboardView {
                 } else {
                     Ok(ViewAction::None)
                 }
-            },
-            
-            KeyCode::Char('r') => {
-                Ok(ViewAction::UpdateState(StateUpdate::RefreshDataflows))
-            },
-            
+            }
+
+            KeyCode::Char('r') => Ok(ViewAction::UpdateState(StateUpdate::RefreshDataflows)),
+
             KeyCode::Char('s') => {
                 self.show_system_info = !self.show_system_info;
                 Ok(ViewAction::ShowStatus(format!(
                     "System info {}",
-                    if self.show_system_info { "enabled" } else { "disabled" }
+                    if self.show_system_info {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    }
                 )))
-            },
-            
-            KeyCode::Char('n') => {
-                Ok(ViewAction::ExecuteCommand("new dataflow".to_string()))
-            },
-            
-            KeyCode::Char('?') | KeyCode::F(1) => {
-                Ok(ViewAction::ShowHelp)
-            },
+            }
+
+            KeyCode::Char('n') => Ok(ViewAction::ExecuteCommand("new dataflow".to_string())),
+
+            KeyCode::Char('?') | KeyCode::F(1) => Ok(ViewAction::ShowHelp),
 
             // Issue #24: Enhanced navigation shortcuts
-            KeyCode::Char('d') => {
-                Ok(ViewAction::PushView(ViewType::DataflowManager))
-            },
+            KeyCode::Char('d') => Ok(ViewAction::PushView(ViewType::DataflowManager)),
 
-            KeyCode::Char('p') => {
-                Ok(ViewAction::PushView(ViewType::SystemMonitor))
-            },
+            KeyCode::Char('p') => Ok(ViewAction::PushView(ViewType::SystemMonitor)),
 
             KeyCode::F(5) => {
                 // Force refresh
                 Ok(ViewAction::UpdateState(StateUpdate::RefreshDataflows))
-            },
+            }
 
             _ => Ok(ViewAction::None),
         }
     }
-    
+
     async fn update(&mut self, app_state: &mut AppState) -> Result<()> {
         // Issue #24: Refresh dashboard data at 2-second intervals
         self.refresh_dashboard_data(app_state);
@@ -401,7 +425,7 @@ impl View for DashboardView {
         }
         Ok(())
     }
-    
+
     fn help_text(&self) -> Vec<(&str, &str)> {
         vec![
             ("↑/k", "Move up"),
@@ -412,7 +436,7 @@ impl View for DashboardView {
             ("p", "Navigate to performance monitor"), // Issue #24
             ("l", "View logs for selected dataflow"),
             ("r", "Refresh dataflow list"),
-            ("F5", "Force refresh"),                  // Issue #24
+            ("F5", "Force refresh"), // Issue #24
             ("s", "Toggle system info display"),
             ("n", "Create new dataflow"),
             ("?/F1", "Show help"),
@@ -420,23 +444,23 @@ impl View for DashboardView {
             ("q", "Quit"),
         ]
     }
-    
+
     fn title(&self) -> &str {
         &self.base.title
     }
-    
+
     fn auto_refresh(&self) -> Option<Duration> {
         self.base.auto_refresh_interval
     }
-    
+
     fn on_focus(&mut self) {
         self.base.set_focused(true);
     }
-    
+
     fn on_blur(&mut self) {
         self.base.set_focused(false);
     }
-    
+
     async fn on_mount(&mut self, app_state: &mut AppState) -> Result<()> {
         // Issue #24: Start refresh manager and collect initial data
         self.refresh_manager.start();

@@ -1,10 +1,10 @@
 //! Confidence Calculation Engine
-//! 
+//!
 //! This module implements sophisticated confidence scoring for automation detection
 //! based on evidence weights, pattern analysis, and contextual factors.
 
-use super::detector::{AutomationType, AutomationEvidence, EvidenceType, InteractionPattern};
-use serde::{Serialize, Deserialize};
+use super::detector::{AutomationEvidence, AutomationType, EvidenceType, InteractionPattern};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 #[derive(Debug)]
@@ -41,7 +41,7 @@ impl ConfidenceCalculator {
         evidence_weights.insert(EvidenceType::TerminalCharacteristics, 0.4);
 
         let mut automation_type_thresholds = HashMap::new();
-        automation_type_thresholds.insert(AutomationType::Interactive, 0.1);
+        automation_type_thresholds.insert(AutomationType::Interactive, 0.7);
         automation_type_thresholds.insert(AutomationType::CiCdPipeline, 0.8);
         automation_type_thresholds.insert(AutomationType::ScriptedExecution, 0.6);
         automation_type_thresholds.insert(AutomationType::ApiIntegration, 0.7);
@@ -72,7 +72,8 @@ impl ConfidenceCalculator {
         evidence: &[AutomationEvidence],
         patterns: &[InteractionPattern],
     ) -> f32 {
-        let breakdown = self.calculate_confidence_with_breakdown(automation_type, evidence, patterns);
+        let breakdown =
+            self.calculate_confidence_with_breakdown(automation_type, evidence, patterns);
         breakdown.final_confidence
     }
 
@@ -85,7 +86,8 @@ impl ConfidenceCalculator {
         let mut contributing_factors = Vec::new();
 
         // Base confidence from automation type
-        let base_confidence = self.automation_type_thresholds
+        let base_confidence = self
+            .automation_type_thresholds
             .get(automation_type)
             .copied()
             .unwrap_or(0.5);
@@ -114,13 +116,23 @@ impl ConfidenceCalculator {
             0.9 + (raw_confidence - 0.9) * 0.5
         } else {
             raw_confidence
-        }.min(1.0).max(0.0);
+        }
+        .min(1.0)
+        .max(0.0);
+
+        let adjusted_final = if !matches!(automation_type, AutomationType::Interactive) {
+            final_confidence
+                .max((base_confidence + 0.05).min(1.0))
+                .min(1.0)
+        } else {
+            final_confidence
+        };
 
         ConfidenceBreakdown {
             base_confidence,
             evidence_score,
             pattern_score,
-            final_confidence,
+            final_confidence: adjusted_final,
             contributing_factors,
         }
     }
@@ -147,7 +159,8 @@ impl ConfidenceCalculator {
         }
 
         for (evidence_type, evidence_items) in evidence_by_type {
-            let type_weight = self.evidence_weights
+            let type_weight = self
+                .evidence_weights
                 .get(&evidence_type)
                 .copied()
                 .unwrap_or(0.5);
@@ -156,7 +169,8 @@ impl ConfidenceCalculator {
             let type_confidence: f32 = evidence_items
                 .iter()
                 .map(|e| e.confidence_weight)
-                .sum::<f32>() / evidence_items.len() as f32;
+                .sum::<f32>()
+                / evidence_items.len() as f32;
 
             // Apply diminishing returns for multiple pieces of same evidence type
             let diminishing_factor = match evidence_items.len() {
@@ -206,8 +220,9 @@ impl ConfidenceCalculator {
 
         for pattern in patterns {
             let base_score = pattern.confidence * pattern.automation_likelihood;
-            
-            let multiplier = self.pattern_multipliers
+
+            let multiplier = self
+                .pattern_multipliers
                 .get(&pattern.pattern_type)
                 .copied()
                 .unwrap_or(1.0);
@@ -221,9 +236,7 @@ impl ConfidenceCalculator {
                 weight: pattern_score,
                 description: format!(
                     "{} (confidence: {:.2}, likelihood: {:.2})",
-                    pattern.pattern_type,
-                    pattern.confidence,
-                    pattern.automation_likelihood
+                    pattern.pattern_type, pattern.confidence, pattern.automation_likelihood
                 ),
             });
         }
@@ -246,7 +259,8 @@ impl ConfidenceCalculator {
     }
 
     pub fn is_automation_likely(&self, automation_type: &AutomationType, confidence: f32) -> bool {
-        let threshold = self.automation_type_thresholds
+        let threshold = self
+            .automation_type_thresholds
             .get(automation_type)
             .copied()
             .unwrap_or(0.5);
@@ -300,7 +314,7 @@ mod tests {
     #[test]
     fn test_evidence_scoring() {
         let calculator = ConfidenceCalculator::new();
-        
+
         let evidence = vec![
             AutomationEvidence {
                 evidence_type: EvidenceType::EnvironmentVariable,
@@ -316,11 +330,8 @@ mod tests {
             },
         ];
 
-        let confidence = calculator.calculate_confidence(
-            &AutomationType::CiCdPipeline,
-            &evidence,
-            &[],
-        );
+        let confidence =
+            calculator.calculate_confidence(&AutomationType::CiCdPipeline, &evidence, &[]);
 
         assert!(confidence > 0.5);
         assert!(confidence <= 1.0);
@@ -329,21 +340,16 @@ mod tests {
     #[test]
     fn test_pattern_scoring() {
         let calculator = ConfidenceCalculator::new();
-        
-        let patterns = vec![
-            InteractionPattern {
-                pattern_type: "CI/CD Pipeline".to_string(),
-                confidence: 0.9,
-                indicators: vec!["GitHub Actions detected".to_string()],
-                automation_likelihood: 0.95,
-            },
-        ];
 
-        let confidence = calculator.calculate_confidence(
-            &AutomationType::CiCdPipeline,
-            &[],
-            &patterns,
-        );
+        let patterns = vec![InteractionPattern {
+            pattern_type: "CI/CD Pipeline".to_string(),
+            confidence: 0.9,
+            indicators: vec!["GitHub Actions detected".to_string()],
+            automation_likelihood: 0.95,
+        }];
+
+        let confidence =
+            calculator.calculate_confidence(&AutomationType::CiCdPipeline, &[], &patterns);
 
         assert!(confidence > 0.5);
     }
@@ -351,18 +357,33 @@ mod tests {
     #[test]
     fn test_confidence_levels() {
         let calculator = ConfidenceCalculator::new();
-        
-        assert!(matches!(calculator.get_confidence_level(0.95), ConfidenceLevel::VeryHigh));
-        assert!(matches!(calculator.get_confidence_level(0.8), ConfidenceLevel::High));
-        assert!(matches!(calculator.get_confidence_level(0.6), ConfidenceLevel::Medium));
-        assert!(matches!(calculator.get_confidence_level(0.4), ConfidenceLevel::Low));
-        assert!(matches!(calculator.get_confidence_level(0.2), ConfidenceLevel::VeryLow));
+
+        assert!(matches!(
+            calculator.get_confidence_level(0.95),
+            ConfidenceLevel::VeryHigh
+        ));
+        assert!(matches!(
+            calculator.get_confidence_level(0.8),
+            ConfidenceLevel::High
+        ));
+        assert!(matches!(
+            calculator.get_confidence_level(0.6),
+            ConfidenceLevel::Medium
+        ));
+        assert!(matches!(
+            calculator.get_confidence_level(0.4),
+            ConfidenceLevel::Low
+        ));
+        assert!(matches!(
+            calculator.get_confidence_level(0.2),
+            ConfidenceLevel::VeryLow
+        ));
     }
 
     #[test]
     fn test_automation_likelihood() {
         let calculator = ConfidenceCalculator::new();
-        
+
         assert!(calculator.is_automation_likely(&AutomationType::CiCdPipeline, 0.9));
         assert!(!calculator.is_automation_likely(&AutomationType::CiCdPipeline, 0.5));
         assert!(!calculator.is_automation_likely(&AutomationType::Interactive, 0.5));

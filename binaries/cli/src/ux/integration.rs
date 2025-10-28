@@ -116,12 +116,16 @@ impl WorkflowValidator {
         // Workflow 1: Inspect → Debug → Analyze
         self.register_workflow(Workflow {
             name: "inspect-debug-analyze".to_string(),
-            description: "Validate integration between inspect, debug, and analyze commands".to_string(),
+            description: "Validate integration between inspect, debug, and analyze commands"
+                .to_string(),
             steps: vec![
                 WorkflowStep {
                     command: "inspect".to_string(),
                     args: vec!["dataflow-id".to_string()],
-                    expected_output_contains: Some(vec!["Dataflow".to_string(), "Status".to_string()]),
+                    expected_output_contains: Some(vec![
+                        "Dataflow".to_string(),
+                        "Status".to_string(),
+                    ]),
                     expected_exit_code: 0,
                     validation: StepValidation::OutputContains(vec!["inspection".to_string()]),
                 },
@@ -181,7 +185,10 @@ impl WorkflowValidator {
                 WorkflowStep {
                     command: "help".to_string(),
                     args: vec!["inspect".to_string()],
-                    expected_output_contains: Some(vec!["inspect".to_string(), "Usage".to_string()]),
+                    expected_output_contains: Some(vec![
+                        "inspect".to_string(),
+                        "Usage".to_string(),
+                    ]),
                     expected_exit_code: 0,
                     validation: StepValidation::OutputContains(vec!["help".to_string()]),
                 },

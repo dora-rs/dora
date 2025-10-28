@@ -1,19 +1,21 @@
 // Interactive Analysis Tools View - Phase 1: Simplified Implementation with Mock Data
 // TODO(Issue #33 Phase 2): Add real statistical tests, ML tools, and automated insights
 
+#[cfg(test)]
+use super::analysis_tools_types::AnalysisType;
 use super::analysis_tools_types::{
-    AnalysisResults, AnalysisToolsState, AnalysisType, CorrelationPair, DistributionStats,
-    OutlierData, TrendAnalysis, TrendDirection,
+    AnalysisResults, AnalysisToolsState, CorrelationPair, DistributionStats, OutlierData,
+    TrendAnalysis,
 };
 use super::{BaseView, View, ViewAction};
-use crate::tui::{app::AppState, theme::ThemeConfig, Result};
+use crate::tui::{Result, app::AppState, theme::ThemeConfig};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph, Row, Table},
-    Frame,
 };
 use std::time::Duration;
 
@@ -89,7 +91,12 @@ impl AnalysisToolsView {
         frame.render_widget(list, area);
     }
 
-    fn render_distribution_analysis(&self, frame: &mut Frame, area: Rect, stats: &[DistributionStats]) {
+    fn render_distribution_analysis(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        stats: &[DistributionStats],
+    ) {
         if stats.is_empty() {
             return;
         }
@@ -167,13 +174,24 @@ impl AnalysisToolsView {
         frame.render_widget(widget, area);
     }
 
-    fn render_correlation_analysis(&self, frame: &mut Frame, area: Rect, pairs: &[CorrelationPair]) {
+    fn render_correlation_analysis(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        pairs: &[CorrelationPair],
+    ) {
         if pairs.is_empty() {
             return;
         }
 
-        let header = Row::new(vec!["Variable 1", "Variable 2", "Coefficient", "Strength", "P-Value"])
-            .style(Style::default().add_modifier(Modifier::BOLD));
+        let header = Row::new(vec![
+            "Variable 1",
+            "Variable 2",
+            "Coefficient",
+            "Strength",
+            "P-Value",
+        ])
+        .style(Style::default().add_modifier(Modifier::BOLD));
 
         let rows: Vec<Row> = pairs
             .iter()
@@ -222,8 +240,14 @@ impl AnalysisToolsView {
             return;
         }
 
-        let header = Row::new(vec!["Variable", "Trend", "Strength", "Confidence", "Change Rate"])
-            .style(Style::default().add_modifier(Modifier::BOLD));
+        let header = Row::new(vec![
+            "Variable",
+            "Trend",
+            "Strength",
+            "Confidence",
+            "Change Rate",
+        ])
+        .style(Style::default().add_modifier(Modifier::BOLD));
 
         let rows: Vec<Row> = trends
             .iter()
@@ -237,7 +261,11 @@ impl AnalysisToolsView {
 
                 Row::new(vec![
                     trend.variable_name.clone(),
-                    format!("{} {}", trend.trend_direction.icon(), trend.trend_direction.label()),
+                    format!(
+                        "{} {}",
+                        trend.trend_direction.icon(),
+                        trend.trend_direction.label()
+                    ),
                     format!("{:.2}", trend.trend_strength),
                     format!("{:.1}%", trend.confidence * 100.0),
                     format!("{:.1}%", trend.change_rate),
@@ -310,9 +338,10 @@ impl AnalysisToolsView {
                 Span::styled(&selected_outlier.detection_method, Style::default()),
             ]),
             Line::from(""),
-            Line::from(vec![
-                Span::styled("Top Outliers:", Style::default().add_modifier(Modifier::BOLD)),
-            ]),
+            Line::from(vec![Span::styled(
+                "Top Outliers:",
+                Style::default().add_modifier(Modifier::BOLD),
+            )]),
             Line::from(""),
         ];
 
@@ -345,9 +374,9 @@ impl View for AnalysisToolsView {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(6),  // Header
-                Constraint::Min(10),    // Analysis results
-                Constraint::Length(8),  // Shortcuts
+                Constraint::Length(6), // Header
+                Constraint::Min(10),   // Analysis results
+                Constraint::Length(8), // Shortcuts
             ])
             .split(area);
 

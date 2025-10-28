@@ -1,13 +1,12 @@
 /// Tests for Dashboard Components (Issue #24 Phase 2)
-
 use dora_cli::tui::{
     components::{
-        Component, PerformanceChartsComponent, RecentActivityComponent,
-        SystemOverviewComponent, DataflowSummaryComponent,
+        Component, DataflowSummaryComponent, PerformanceChartsComponent, RecentActivityComponent,
+        SystemOverviewComponent,
     },
     views::{
-        SystemOverview, SystemStatus, MemoryUsage, DiskUsage, NetworkActivity,
-        DataflowSummary, PerformanceMetrics, RecentActivity, ActivityItem, ActivityType,
+        ActivityItem, ActivityType, DataflowSummary, DiskUsage, MemoryUsage, NetworkActivity,
+        PerformanceMetrics, RecentActivity, SystemOverview, SystemStatus,
     },
 };
 use std::time::{Duration, Instant};

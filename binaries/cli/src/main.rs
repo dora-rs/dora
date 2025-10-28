@@ -1,35 +1,54 @@
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 
 fn main() {
-    // Use new hybrid CLI - demonstrates Issue #1 implementation
-    match dora_cli::cli::Cli::try_parse() {
-        Ok(cli) => {
-            // Use new hybrid CLI with three-tier structure and global flags
-            dora_cli::hybrid_main(cli);
-        }
-        Err(e) => {
-            // Check if this is a help/version request (not an actual error)
-            use clap::error::ErrorKind;
-            match e.kind() {
-                ErrorKind::DisplayHelp
-                | ErrorKind::DisplayVersion
-                | ErrorKind::MissingSubcommand
-                | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => {
-                    // Help/version/usage display - not a real error
-                    print!("{}", e);
-                    std::process::exit(0);
-                }
-                _ => {
-                    // Actual parsing error - fall back to legacy CLI
-                    eprintln!("Note: Using legacy CLI (new hybrid CLI parsing failed)");
-                    eprintln!("Error: {}", e);
-                    eprintln!();
+    let mut args: Vec<String> = std::env::args().collect();
 
-                    // Fallback to legacy CLI for backward compatibility
-                    let args = dora_cli::Args::parse();
-                    dora_cli::lib_main(args);
-                }
+    if args.len() == 2 && matches!(args[1].as_str(), "-h" | "--help") {
+        print_combined_help();
+        return;
+    }
+
+    let next_positional_index = args
+        .iter()
+        .enumerate()
+        .skip(1)
+        .find(|(_, arg)| !arg.starts_with('-'))
+        .map(|(idx, arg)| (idx, arg.as_str()));
+
+    let next_positional = next_positional_index.map(|(_, arg)| arg);
+
+    let should_use_new_cli = matches!(next_positional, Some("tui") | Some("dashboard"));
+
+    if should_use_new_cli {
+        match dora_cli::cli::Cli::try_parse_from(&args) {
+            Ok(cli) => {
+                dora_cli::run_new_cli(cli);
+                return;
+            }
+            Err(e) => {
+                e.exit();
             }
         }
     }
+
+    if let Some((idx, _)) = next_positional_index {
+        match args[idx].as_str() {
+            "ps" => args[idx] = "list".to_string(),
+            _ => {}
+        }
+    }
+
+    dora_cli::lib_main(dora_cli::Args::parse_from(args));
+}
+
+fn print_combined_help() {
+    println!("Legacy CLI (default `dora <command>`):\n");
+    if let Err(err) = dora_cli::Args::command().print_help() {
+        eprintln!("{err}");
+    }
+    println!("\n\nTUI Commands (run via `dora tui <command>` or `dora dashboard`):\n");
+    if let Err(err) = dora_cli::cli::Cli::command().print_help() {
+        eprintln!("{err}");
+    }
+    println!();
 }

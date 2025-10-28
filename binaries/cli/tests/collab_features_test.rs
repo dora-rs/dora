@@ -1,16 +1,12 @@
 // Comprehensive tests for Collaborative Features (Issue #34)
 
+use crossterm::event::{KeyCode, KeyEvent};
 use dora_cli::tui::{
     app::AppState,
     theme::ThemeConfig,
-    views::{
-        collab_features::CollabFeaturesView,
-        collab_features_types::*,
-        View, ViewAction,
-    },
+    views::{View, ViewAction, collab_features::CollabFeaturesView, collab_features_types::*},
 };
-use crossterm::event::{KeyCode, KeyEvent};
-use ratatui::{backend::TestBackend, Terminal};
+use ratatui::{Terminal, backend::TestBackend};
 
 // ============================================================================
 // Helper Functions
@@ -181,7 +177,10 @@ fn test_difficulty_level_icons() {
 fn test_knowledge_category_labels() {
     assert_eq!(KnowledgeCategory::GettingStarted.label(), "Getting Started");
     assert_eq!(KnowledgeCategory::BestPractices.label(), "Best Practices");
-    assert_eq!(KnowledgeCategory::Troubleshooting.label(), "Troubleshooting");
+    assert_eq!(
+        KnowledgeCategory::Troubleshooting.label(),
+        "Troubleshooting"
+    );
     assert_eq!(KnowledgeCategory::AdvancedTopics.label(), "Advanced Topics");
     assert_eq!(KnowledgeCategory::Tutorials.label(), "Tutorials");
     assert_eq!(KnowledgeCategory::ReferenceGuide.label(), "Reference Guide");
@@ -224,10 +223,26 @@ fn test_mock_sessions() {
     assert_eq!(sessions.len(), 4);
 
     // Verify all session types are represented
-    assert!(sessions.iter().any(|s| s.session_type == SessionType::CodeReview));
-    assert!(sessions.iter().any(|s| s.session_type == SessionType::PairProgramming));
-    assert!(sessions.iter().any(|s| s.session_type == SessionType::TeamDebug));
-    assert!(sessions.iter().any(|s| s.session_type == SessionType::LiveDemo));
+    assert!(
+        sessions
+            .iter()
+            .any(|s| s.session_type == SessionType::CodeReview)
+    );
+    assert!(
+        sessions
+            .iter()
+            .any(|s| s.session_type == SessionType::PairProgramming)
+    );
+    assert!(
+        sessions
+            .iter()
+            .any(|s| s.session_type == SessionType::TeamDebug)
+    );
+    assert!(
+        sessions
+            .iter()
+            .any(|s| s.session_type == SessionType::LiveDemo)
+    );
 
     // Verify all have hosts and session IDs
     assert!(sessions.iter().all(|s| !s.host.is_empty()));
@@ -243,8 +258,16 @@ fn test_mock_reviews() {
     assert!(reviews.iter().any(|r| r.status == ReviewStatus::InReview));
     assert!(reviews.iter().any(|r| r.status == ReviewStatus::Approved));
     assert!(reviews.iter().any(|r| r.status == ReviewStatus::Merged));
-    assert!(reviews.iter().any(|r| r.status == ReviewStatus::ChangesRequested));
-    assert!(reviews.iter().any(|r| r.status == ReviewStatus::PendingReview));
+    assert!(
+        reviews
+            .iter()
+            .any(|r| r.status == ReviewStatus::ChangesRequested)
+    );
+    assert!(
+        reviews
+            .iter()
+            .any(|r| r.status == ReviewStatus::PendingReview)
+    );
 
     // Verify all have required fields
     assert!(reviews.iter().all(|r| !r.title.is_empty()));
@@ -258,16 +281,48 @@ fn test_mock_articles() {
     assert_eq!(articles.len(), 6);
 
     // Verify different categories
-    assert!(articles.iter().any(|a| a.category == KnowledgeCategory::GettingStarted));
-    assert!(articles.iter().any(|a| a.category == KnowledgeCategory::BestPractices));
-    assert!(articles.iter().any(|a| a.category == KnowledgeCategory::Troubleshooting));
-    assert!(articles.iter().any(|a| a.category == KnowledgeCategory::AdvancedTopics));
-    assert!(articles.iter().any(|a| a.category == KnowledgeCategory::Tutorials));
+    assert!(
+        articles
+            .iter()
+            .any(|a| a.category == KnowledgeCategory::GettingStarted)
+    );
+    assert!(
+        articles
+            .iter()
+            .any(|a| a.category == KnowledgeCategory::BestPractices)
+    );
+    assert!(
+        articles
+            .iter()
+            .any(|a| a.category == KnowledgeCategory::Troubleshooting)
+    );
+    assert!(
+        articles
+            .iter()
+            .any(|a| a.category == KnowledgeCategory::AdvancedTopics)
+    );
+    assert!(
+        articles
+            .iter()
+            .any(|a| a.category == KnowledgeCategory::Tutorials)
+    );
 
     // Verify different difficulty levels
-    assert!(articles.iter().any(|a| a.difficulty == DifficultyLevel::Beginner));
-    assert!(articles.iter().any(|a| a.difficulty == DifficultyLevel::Intermediate));
-    assert!(articles.iter().any(|a| a.difficulty == DifficultyLevel::Advanced));
+    assert!(
+        articles
+            .iter()
+            .any(|a| a.difficulty == DifficultyLevel::Beginner)
+    );
+    assert!(
+        articles
+            .iter()
+            .any(|a| a.difficulty == DifficultyLevel::Intermediate)
+    );
+    assert!(
+        articles
+            .iter()
+            .any(|a| a.difficulty == DifficultyLevel::Advanced)
+    );
 
     // Verify all have required fields
     assert!(articles.iter().all(|a| !a.title.is_empty()));
@@ -416,25 +471,25 @@ fn test_state_data_updates_on_section_change() {
 
     // Initial section should be TeamWorkspace
     match &state.data {
-        CollabData::TeamWorkspace(_) => {},
+        CollabData::TeamWorkspace(_) => {}
         _ => panic!("Expected TeamWorkspace data"),
     }
 
     state.next_section();
     match &state.data {
-        CollabData::LiveSessions(_) => {},
+        CollabData::LiveSessions(_) => {}
         _ => panic!("Expected LiveSessions data"),
     }
 
     state.next_section();
     match &state.data {
-        CollabData::CodeReviews(_) => {},
+        CollabData::CodeReviews(_) => {}
         _ => panic!("Expected CodeReviews data"),
     }
 
     state.next_section();
     match &state.data {
-        CollabData::KnowledgeBase(_) => {},
+        CollabData::KnowledgeBase(_) => {}
         _ => panic!("Expected KnowledgeBase data"),
     }
 }
@@ -487,10 +542,7 @@ async fn test_handle_quit_key() {
 async fn test_handle_ctrl_c_key() {
     let mut view = create_test_view();
     let mut app_state = AppState::default();
-    let key = KeyEvent::new(
-        KeyCode::Char('c'),
-        crossterm::event::KeyModifiers::CONTROL,
-    );
+    let key = KeyEvent::new(KeyCode::Char('c'), crossterm::event::KeyModifiers::CONTROL);
     let action = view.handle_key(key, &mut app_state).await.unwrap();
     assert!(matches!(action, ViewAction::Quit));
 }

@@ -1,17 +1,13 @@
 /// Interactive Log Viewer implementation (Issue #28 - Phase 1)
 use super::{BaseView, View, ViewAction};
-use crate::tui::{
-    app::AppState,
-    theme::ThemeConfig,
-    Result,
-};
+use crate::tui::{Result, app::AppState, theme::ThemeConfig};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
-    Frame,
 };
 use std::time::Duration;
 
@@ -37,8 +33,7 @@ impl LogViewerView {
         };
 
         Self {
-            base: BaseView::new(title)
-                .with_auto_refresh(Duration::from_secs(1)),
+            base: BaseView::new(title).with_auto_refresh(Duration::from_secs(1)),
             theme: theme.clone(),
             state: LogViewerState::new(),
             mock_log_counter: 0,
@@ -168,12 +163,11 @@ impl LogViewerView {
             ),
             Span::styled(
                 format!("{:5} ", level_str),
-                Style::default().fg(level_color).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(level_color)
+                    .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(
-                format!("{:15} ", source),
-                Style::default().fg(Color::Cyan),
-            ),
+            Span::styled(format!("{:15} ", source), Style::default().fg(Color::Cyan)),
             Span::styled(
                 message.to_string(),
                 Style::default().fg(if is_selected {
@@ -193,13 +187,16 @@ impl LogViewerView {
             vec![
                 Line::from(vec![
                     Span::styled("Level: ", Style::default().add_modifier(Modifier::BOLD)),
-                    Span::styled(entry.level.name(), Style::default().fg(match entry.level {
-                        LogLevel::Error => Color::Red,
-                        LogLevel::Warn => Color::Yellow,
-                        LogLevel::Info => Color::Blue,
-                        LogLevel::Debug => Color::Gray,
-                        LogLevel::Trace => Color::DarkGray,
-                    })),
+                    Span::styled(
+                        entry.level.name(),
+                        Style::default().fg(match entry.level {
+                            LogLevel::Error => Color::Red,
+                            LogLevel::Warn => Color::Yellow,
+                            LogLevel::Info => Color::Blue,
+                            LogLevel::Debug => Color::Gray,
+                            LogLevel::Trace => Color::DarkGray,
+                        }),
+                    ),
                 ]),
                 Line::from(vec![
                     Span::styled("Source: ", Style::default().add_modifier(Modifier::BOLD)),
@@ -210,9 +207,10 @@ impl LogViewerView {
                     Span::raw(entry.timestamp_str()),
                 ]),
                 Line::from(""),
-                Line::from(vec![
-                    Span::styled("Message:", Style::default().add_modifier(Modifier::BOLD)),
-                ]),
+                Line::from(vec![Span::styled(
+                    "Message:",
+                    Style::default().add_modifier(Modifier::BOLD),
+                )]),
                 Line::from(entry.message.clone()),
             ]
         } else {
@@ -235,33 +233,51 @@ impl LogViewerView {
     fn render_stats(&self, f: &mut Frame, area: Rect) {
         let stats = self.state.stats();
 
-        let content = vec![
-            Line::from(vec![
-                Span::styled("Total: ", Style::default().fg(Color::Gray)),
-                Span::styled(format!("{}", stats.total), Style::default().fg(Color::White)),
-                Span::styled(" | Filtered: ", Style::default().fg(Color::Gray)),
-                Span::styled(format!("{}", stats.filtered), Style::default().fg(Color::Cyan)),
-                Span::styled(" | ", Style::default().fg(Color::Gray)),
-                Span::styled("E:", Style::default().fg(Color::Red)),
-                Span::styled(format!("{}", stats.error_count), Style::default().fg(Color::Red)),
-                Span::styled(" W:", Style::default().fg(Color::Yellow)),
-                Span::styled(format!("{}", stats.warn_count), Style::default().fg(Color::Yellow)),
-                Span::styled(" I:", Style::default().fg(Color::Blue)),
-                Span::styled(format!("{}", stats.info_count), Style::default().fg(Color::Blue)),
-                Span::styled(" D:", Style::default().fg(Color::Gray)),
-                Span::styled(format!("{}", stats.debug_count), Style::default().fg(Color::Gray)),
-                Span::styled(" T:", Style::default().fg(Color::DarkGray)),
-                Span::styled(format!("{}", stats.trace_count), Style::default().fg(Color::DarkGray)),
-            ]),
-        ];
+        let content = vec![Line::from(vec![
+            Span::styled("Total: ", Style::default().fg(Color::Gray)),
+            Span::styled(
+                format!("{}", stats.total),
+                Style::default().fg(Color::White),
+            ),
+            Span::styled(" | Filtered: ", Style::default().fg(Color::Gray)),
+            Span::styled(
+                format!("{}", stats.filtered),
+                Style::default().fg(Color::Cyan),
+            ),
+            Span::styled(" | ", Style::default().fg(Color::Gray)),
+            Span::styled("E:", Style::default().fg(Color::Red)),
+            Span::styled(
+                format!("{}", stats.error_count),
+                Style::default().fg(Color::Red),
+            ),
+            Span::styled(" W:", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                format!("{}", stats.warn_count),
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::styled(" I:", Style::default().fg(Color::Blue)),
+            Span::styled(
+                format!("{}", stats.info_count),
+                Style::default().fg(Color::Blue),
+            ),
+            Span::styled(" D:", Style::default().fg(Color::Gray)),
+            Span::styled(
+                format!("{}", stats.debug_count),
+                Style::default().fg(Color::Gray),
+            ),
+            Span::styled(" T:", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("{}", stats.trace_count),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ])];
 
-        let paragraph = Paragraph::new(content)
-            .block(
-                Block::default()
-                    .title("Statistics")
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(self.theme.colors.border)),
-            );
+        let paragraph = Paragraph::new(content).block(
+            Block::default()
+                .title("Statistics")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(self.theme.colors.border)),
+        );
 
         f.render_widget(paragraph, area);
     }
@@ -290,22 +306,19 @@ impl LogViewerView {
             format!("\"{}\"", self.state.filter.search_query)
         };
 
-        let content = vec![
-            Line::from(vec![
-                Span::styled("Levels: ", Style::default().fg(Color::Gray)),
-                Span::styled(filter_status, Style::default().fg(Color::Cyan)),
-                Span::styled(" | Search: ", Style::default().fg(Color::Gray)),
-                Span::styled(search_status, Style::default().fg(Color::Yellow)),
-            ]),
-        ];
+        let content = vec![Line::from(vec![
+            Span::styled("Levels: ", Style::default().fg(Color::Gray)),
+            Span::styled(filter_status, Style::default().fg(Color::Cyan)),
+            Span::styled(" | Search: ", Style::default().fg(Color::Gray)),
+            Span::styled(search_status, Style::default().fg(Color::Yellow)),
+        ])];
 
-        let paragraph = Paragraph::new(content)
-            .block(
-                Block::default()
-                    .title("Filters")
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(self.theme.colors.border)),
-            );
+        let paragraph = Paragraph::new(content).block(
+            Block::default()
+                .title("Filters")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(self.theme.colors.border)),
+        );
 
         f.render_widget(paragraph, area);
     }
@@ -321,17 +334,19 @@ impl LogViewerView {
 
         let content = vec![Line::from(vec![
             Span::raw("Search: "),
-            Span::styled(&self.search_input, Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled(
+                &self.search_input,
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
             Span::styled("_", Style::default().add_modifier(Modifier::SLOW_BLINK)),
         ])];
 
-        let paragraph = Paragraph::new(content)
-            .block(
-                Block::default()
-                    .title("Search (Esc to cancel, Enter to apply)")
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Yellow)),
-            );
+        let paragraph = Paragraph::new(content).block(
+            Block::default()
+                .title("Search (Esc to cancel, Enter to apply)")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Yellow)),
+        );
 
         f.render_widget(paragraph, search_area);
     }
@@ -343,10 +358,10 @@ impl View for LogViewerView {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(3),  // Filter panel
-                Constraint::Min(10),    // Log list
-                Constraint::Length(8),  // Details panel
-                Constraint::Length(3),  // Stats panel
+                Constraint::Length(3), // Filter panel
+                Constraint::Min(10),   // Log list
+                Constraint::Length(8), // Details panel
+                Constraint::Length(3), // Stats panel
             ])
             .split(area);
 

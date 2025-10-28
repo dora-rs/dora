@@ -1,7 +1,6 @@
 // Analysis Engines for Issue #19
 
 use super::types::*;
-use chrono::Utc;
 use eyre::Result;
 use std::time::Instant;
 
@@ -61,18 +60,12 @@ impl PerformanceAnalysisEngine {
         );
 
         // Identify performance issues
-        let issues = self.identify_performance_issues(
-            &throughput_analysis,
-            &latency_analysis,
-            &bottlenecks,
-        );
+        let issues =
+            self.identify_performance_issues(&throughput_analysis, &latency_analysis, &bottlenecks);
 
         // Generate performance insights
-        let insights = self.generate_performance_insights(
-            &performance_scores,
-            &bottlenecks,
-            &issues,
-        );
+        let insights =
+            self.generate_performance_insights(&performance_scores, &bottlenecks, &issues);
 
         let analysis_duration = start_time.elapsed();
 
@@ -96,7 +89,8 @@ impl PerformanceAnalysisEngine {
         let throughput_metrics: Vec<_> = metrics
             .iter()
             .filter(|m| {
-                m.metric_name.contains("throughput") || m.metric_name.contains("messages_per_second")
+                m.metric_name.contains("throughput")
+                    || m.metric_name.contains("messages_per_second")
             })
             .collect();
 
@@ -146,8 +140,7 @@ impl PerformanceAnalysisEngine {
 
         let values: Vec<f32> = metrics.iter().map(|m| m.value).collect();
         let mean = values.iter().sum::<f32>() / values.len() as f32;
-        let variance =
-            values.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / values.len() as f32;
+        let variance = values.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / values.len() as f32;
         let std_dev = variance.sqrt();
 
         // Stability score: 100 - (coefficient of variation * 100)
@@ -233,7 +226,10 @@ impl PerformanceAnalysisEngine {
         TrendDirection::Stable
     }
 
-    async fn analyze_resource_usage(&self, _metrics: &[MetricPoint]) -> Result<ResourceUsageAnalysis> {
+    async fn analyze_resource_usage(
+        &self,
+        _metrics: &[MetricPoint],
+    ) -> Result<ResourceUsageAnalysis> {
         // Mock resource usage - would query actual system metrics in production
         Ok(ResourceUsageAnalysis {
             cpu_usage: 45.0,
@@ -307,10 +303,7 @@ impl PerformanceAnalysisEngine {
             issues.push(PerformanceIssue {
                 issue_type: "High Latency".to_string(),
                 severity: "Medium".to_string(),
-                description: format!(
-                    "P95 latency is high: {:.1}ms",
-                    latency.percentiles.p95
-                ),
+                description: format!("P95 latency is high: {:.1}ms", latency.percentiles.p95),
                 metrics: vec!["latency".to_string()],
             });
         }
@@ -372,7 +365,10 @@ impl TrendAnalysisEngine {
 
         // Analyze trends for each metric
         for (metric_name, metric_data) in metric_groups {
-            if let Some(trend) = self.analyze_metric_trend(&metric_name, &metric_data).await? {
+            if let Some(trend) = self
+                .analyze_metric_trend(&metric_name, &metric_data)
+                .await?
+            {
                 trends.push(trend);
             }
         }
@@ -440,8 +436,8 @@ impl TrendAnalysisEngine {
             return TrendDirection::Stable;
         }
 
-        let first_half_avg = values[..values.len() / 2].iter().sum::<f32>()
-            / (values.len() / 2) as f32;
+        let first_half_avg =
+            values[..values.len() / 2].iter().sum::<f32>() / (values.len() / 2) as f32;
         let second_half_avg = values[values.len() / 2..].iter().sum::<f32>()
             / (values.len() - values.len() / 2) as f32;
 
@@ -498,10 +494,16 @@ impl TrendAnalysisEngine {
 
         let mut key_findings = Vec::new();
         if increasing_trends > 0 {
-            key_findings.push(format!("{} metrics showing increasing trends", increasing_trends));
+            key_findings.push(format!(
+                "{} metrics showing increasing trends",
+                increasing_trends
+            ));
         }
         if decreasing_trends > 0 {
-            key_findings.push(format!("{} metrics showing decreasing trends", decreasing_trends));
+            key_findings.push(format!(
+                "{} metrics showing decreasing trends",
+                decreasing_trends
+            ));
         }
 
         TrendSummary {
@@ -615,7 +617,7 @@ impl Default for PatternAnalysisEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Duration;
+    use chrono::{Duration, Utc};
 
     fn create_test_data() -> DataCollection {
         let mut metrics = Vec::new();

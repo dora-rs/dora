@@ -1,37 +1,43 @@
 use clap::{Parser, Subcommand, ValueEnum};
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 pub mod commands;
 pub mod context;
+pub mod interface;
 pub mod output;
 pub mod traits;
-pub mod interface;
 
 pub use commands::*;
 
 /// Dora CLI - Hybrid command-line interface for dataflow runtime
 #[derive(Debug, Parser)]
-#[clap(name = "dora", about = "Dora dataflow runtime", version, arg_required_else_help = true, disable_help_subcommand = true)]
+#[clap(
+    name = "dora",
+    about = "Dora dataflow runtime",
+    version,
+    arg_required_else_help = true,
+    disable_help_subcommand = true
+)]
 pub struct Cli {
     #[clap(subcommand)]
     pub command: Option<Command>,
-    
+
     /// Force interface mode
     #[clap(long, global = true, value_enum)]
     pub ui_mode: Option<UiMode>,
-    
+
     /// Output format
     #[clap(long, global = true, value_enum, default_value = "auto")]
     pub output: OutputFormat,
-    
+
     /// Disable TUI hints and prompts
     #[clap(long, global = true)]
     pub no_hints: bool,
-    
+
     /// Verbose output
     #[clap(short, long, global = true)]
     pub verbose: bool,
-    
+
     /// Quiet mode - suppress non-error output
     #[clap(short, long, global = true)]
     pub quiet: bool,
@@ -44,34 +50,34 @@ pub enum Command {
     /// List running dataflows and their status
     #[clap(alias = "list")]
     Ps(PsCommand),
-    
+
     /// Start a dataflow
     Start(StartCommand),
-    
+
     /// Stop a dataflow
     Stop(StopCommand),
-    
+
     /// View dataflow logs
     Logs(LogsCommand),
-    
+
     /// Build dataflow configuration
     Build(BuildCommand),
-    
+
     /// Run a complete dataflow (up + start)
     Up(UpCommand),
-    
+
     /// Destroy a dataflow and clean up resources
     Destroy(DestroyCommand),
-    
+
     /// Create new dataflow, node, or operator
     New(NewCommand),
-    
+
     /// Check dataflow configuration for errors
     Check(CheckCommand),
-    
+
     /// Generate dataflow graph visualization
     Graph(GraphCommand),
-    
+
     // Tier 2: Enhanced commands with smart suggestions
     /// Intelligent resource inspection with TUI suggestions
     Inspect(InspectCommand),
@@ -87,31 +93,31 @@ pub enum Command {
 
     /// Smart help system with tutorials and contextual guidance
     Help(HelpCommand),
-    
+
     // Tier 3: Explicit TUI modes
     /// Launch TUI interface
     #[clap(alias = "ui")]
     Tui(UiCommand),
-    
+
     /// Launch interactive dashboard
     Dashboard(DashboardCommand),
-    
+
     // System management
     /// System-level operations
     System(SystemCommand),
-    
+
     /// Configuration management
     Config(ConfigCommand),
-    
+
     /// Daemon operations
     Daemon(DaemonCommand),
-    
+
     /// Runtime operations
     Runtime(RuntimeCommand),
-    
+
     /// Coordinator operations
     Coordinator(CoordinatorCommand),
-    
+
     /// Self-management (updates, etc.)
     #[clap(name = "self")]
     Self_(SelfCommand),

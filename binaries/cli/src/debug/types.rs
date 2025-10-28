@@ -1,9 +1,8 @@
 // Debug Types for Issue #18
 
-use crate::cli::commands::{DebugMode, DebugFocus};
+use crate::cli::commands::{DebugFocus, DebugMode};
 use chrono::{DateTime, Utc};
-use serde::{Serialize, Deserialize};
-use std::collections::HashMap;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Debug session containing all debugging state

@@ -1,8 +1,7 @@
 // Inspection Types for Issue #17
 
-use crate::cli::commands::{ResourceType, InspectionFocus};
 use chrono::{DateTime, Utc};
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Result of resource inspection
@@ -40,7 +39,7 @@ pub enum ResourceStatus {
 /// Health score for resource
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealthScore {
-    pub overall_score: f32,  // 0-100
+    pub overall_score: f32, // 0-100
     pub status: HealthStatus,
     pub component_scores: HashMap<String, f32>,
     pub issues: Vec<HealthIssue>,

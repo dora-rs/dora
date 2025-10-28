@@ -183,7 +183,9 @@ impl PerformanceMonitor {
                 ),
                 recommendation: "Consider optimizing command logic or adding caching".to_string(),
             });
-            suggestions.push("Execution time is too high. Consider adding progress indicators.".to_string());
+            suggestions.push(
+                "Execution time is too high. Consider adding progress indicators.".to_string(),
+            );
         } else if metrics.execution_time > self.thresholds.warn_execution_time {
             violations.push(PerformanceViolation {
                 metric_type: MetricType::ExecutionTime,
@@ -212,7 +214,9 @@ impl PerformanceMonitor {
                     ),
                     recommendation: "Reduce memory allocations or implement streaming".to_string(),
                 });
-                suggestions.push("High memory usage detected. Consider streaming or pagination.".to_string());
+                suggestions.push(
+                    "High memory usage detected. Consider streaming or pagination.".to_string(),
+                );
             }
         }
 
@@ -362,10 +366,14 @@ impl PerformanceMonitor {
         let recent = &history[history.len() - recent_count..];
         let older = &history[..history.len() - recent_count];
 
-        let recent_avg: Duration = recent.iter().map(|m| m.execution_time).sum::<Duration>() / recent_count as u32;
-        let older_avg: Duration = older.iter().map(|m| m.execution_time).sum::<Duration>() / older.len() as u32;
+        let recent_avg: Duration =
+            recent.iter().map(|m| m.execution_time).sum::<Duration>() / recent_count as u32;
+        let older_avg: Duration =
+            older.iter().map(|m| m.execution_time).sum::<Duration>() / older.len() as u32;
 
-        let change_percent = ((recent_avg.as_secs_f64() - older_avg.as_secs_f64()) / older_avg.as_secs_f64()) * 100.0;
+        let change_percent = ((recent_avg.as_secs_f64() - older_avg.as_secs_f64())
+            / older_avg.as_secs_f64())
+            * 100.0;
 
         match change_percent {
             c if c > 10.0 => PerformanceTrend::Degrading,
@@ -375,7 +383,11 @@ impl PerformanceMonitor {
     }
 
     fn calculate_overall_health(&self) -> HealthStatus {
-        let total_metrics: Vec<_> = self.metrics_history.values().flat_map(|v| v.iter()).collect();
+        let total_metrics: Vec<_> = self
+            .metrics_history
+            .values()
+            .flat_map(|v| v.iter())
+            .collect();
         if total_metrics.is_empty() {
             return HealthStatus::Unknown;
         }
@@ -472,7 +484,10 @@ mod tests {
         let analysis = monitor.analyze(&metrics);
         assert!(!analysis.violations.is_empty());
         // Score with 1 critical violation (30 penalty) = 70, which is "Fair" grade
-        assert!(matches!(analysis.grade, PerformanceGrade::Fair | PerformanceGrade::Good));
+        assert!(matches!(
+            analysis.grade,
+            PerformanceGrade::Fair | PerformanceGrade::Good
+        ));
     }
 
     #[test]

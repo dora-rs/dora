@@ -35,9 +35,13 @@ impl ContextSection {
 
     pub fn description(&self) -> &str {
         match self {
-            Self::ExecutionContext => "Current environment, terminal capabilities, and automation detection",
+            Self::ExecutionContext => {
+                "Current environment, terminal capabilities, and automation detection"
+            }
             Self::ContextPreferences => "Active preferences and adaptation rules based on context",
-            Self::BehavioralLearning => "Usage patterns, command frequency, and learning statistics",
+            Self::BehavioralLearning => {
+                "Usage patterns, command frequency, and learning statistics"
+            }
             Self::PreferenceResolution => "Preference resolution hierarchy and active overrides",
         }
     }
@@ -99,9 +103,9 @@ pub struct TerminalCapabilities {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ColorLevel {
     None,
-    Basic,      // 16 colors
-    Extended,   // 256 colors
-    TrueColor,  // 24-bit colors
+    Basic,     // 16 colors
+    Extended,  // 256 colors
+    TrueColor, // 24-bit colors
 }
 
 impl ColorLevel {
@@ -386,7 +390,10 @@ impl ContextAwarenessState {
 
     pub fn next_section(&mut self) {
         let sections = ContextSection::all();
-        let current_idx = sections.iter().position(|s| s == &self.current_section).unwrap_or(0);
+        let current_idx = sections
+            .iter()
+            .position(|s| s == &self.current_section)
+            .unwrap_or(0);
         let next_idx = (current_idx + 1) % sections.len();
         self.current_section = sections[next_idx].clone();
         self.selected_index = 0;
@@ -395,8 +402,15 @@ impl ContextAwarenessState {
 
     pub fn previous_section(&mut self) {
         let sections = ContextSection::all();
-        let current_idx = sections.iter().position(|s| s == &self.current_section).unwrap_or(0);
-        let prev_idx = if current_idx == 0 { sections.len() - 1 } else { current_idx - 1 };
+        let current_idx = sections
+            .iter()
+            .position(|s| s == &self.current_section)
+            .unwrap_or(0);
+        let prev_idx = if current_idx == 0 {
+            sections.len() - 1
+        } else {
+            current_idx - 1
+        };
         self.current_section = sections[prev_idx].clone();
         self.selected_index = 0;
         self.update_data();
@@ -404,10 +418,18 @@ impl ContextAwarenessState {
 
     pub fn update_data(&mut self) {
         self.data = match &self.current_section {
-            ContextSection::ExecutionContext => ContextData::ExecutionEnvironment(create_mock_execution_env()),
-            ContextSection::ContextPreferences => ContextData::AdaptationRules(create_mock_adaptation_rules()),
-            ContextSection::BehavioralLearning => ContextData::LearningPatterns(create_mock_learning_patterns()),
-            ContextSection::PreferenceResolution => ContextData::PreferenceLevels(create_mock_preference_levels()),
+            ContextSection::ExecutionContext => {
+                ContextData::ExecutionEnvironment(create_mock_execution_env())
+            }
+            ContextSection::ContextPreferences => {
+                ContextData::AdaptationRules(create_mock_adaptation_rules())
+            }
+            ContextSection::BehavioralLearning => {
+                ContextData::LearningPatterns(create_mock_learning_patterns())
+            }
+            ContextSection::PreferenceResolution => {
+                ContextData::PreferenceLevels(create_mock_preference_levels())
+            }
         };
     }
 
@@ -609,10 +631,7 @@ pub fn create_mock_preference_levels() -> Vec<PreferenceLevel> {
         .into_iter()
         .map(|level| {
             let (is_active, prefs) = match level {
-                ResolutionLevel::TemporaryOverride => (
-                    false,
-                    HashMap::new(),
-                ),
+                ResolutionLevel::TemporaryOverride => (false, HashMap::new()),
                 ResolutionLevel::ContextAdaptation => (
                     true,
                     HashMap::from([
@@ -632,7 +651,10 @@ pub fn create_mock_preference_levels() -> Vec<PreferenceLevel> {
                     true,
                     HashMap::from([
                         ("dataflow_path".to_string(), "./dataflows".to_string()),
-                        ("default_coordinator".to_string(), "localhost:7010".to_string()),
+                        (
+                            "default_coordinator".to_string(),
+                            "localhost:7010".to_string(),
+                        ),
                     ]),
                 ),
                 ResolutionLevel::ProjectDefault => (
@@ -676,10 +698,22 @@ mod tests {
 
     #[test]
     fn test_context_section_title() {
-        assert_eq!(ContextSection::ExecutionContext.title(), "Execution Context");
-        assert_eq!(ContextSection::ContextPreferences.title(), "Context Preferences");
-        assert_eq!(ContextSection::BehavioralLearning.title(), "Behavioral Learning");
-        assert_eq!(ContextSection::PreferenceResolution.title(), "Preference Resolution");
+        assert_eq!(
+            ContextSection::ExecutionContext.title(),
+            "Execution Context"
+        );
+        assert_eq!(
+            ContextSection::ContextPreferences.title(),
+            "Context Preferences"
+        );
+        assert_eq!(
+            ContextSection::BehavioralLearning.title(),
+            "Behavioral Learning"
+        );
+        assert_eq!(
+            ContextSection::PreferenceResolution.title(),
+            "Preference Resolution"
+        );
     }
 
     #[test]
@@ -794,17 +828,26 @@ mod tests {
         assert_eq!(levels.len(), 6);
 
         // Check priorities are in order
-        for i in 0..levels.len()-1 {
-            assert!(levels[i].level.priority() > levels[i+1].level.priority());
+        for i in 0..levels.len() - 1 {
+            assert!(levels[i].level.priority() > levels[i + 1].level.priority());
         }
     }
 
     #[test]
     fn test_adaptation_rule_type_name() {
         assert_eq!(AdaptationRuleType::TimeBased.name(), "Time-Based");
-        assert_eq!(AdaptationRuleType::EnvironmentBased.name(), "Environment-Based");
-        assert_eq!(AdaptationRuleType::ComplexityBased.name(), "Complexity-Based");
-        assert_eq!(AdaptationRuleType::UsagePatternBased.name(), "Usage Pattern-Based");
+        assert_eq!(
+            AdaptationRuleType::EnvironmentBased.name(),
+            "Environment-Based"
+        );
+        assert_eq!(
+            AdaptationRuleType::ComplexityBased.name(),
+            "Complexity-Based"
+        );
+        assert_eq!(
+            AdaptationRuleType::UsagePatternBased.name(),
+            "Usage Pattern-Based"
+        );
     }
 
     #[test]

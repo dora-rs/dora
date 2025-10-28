@@ -104,9 +104,9 @@ impl TimeRange {
     /// Get the number of data points for this range
     pub fn data_points(&self) -> usize {
         match self {
-            TimeRange::LastHour => 60,      // 1 point per minute
-            TimeRange::Last6Hours => 72,    // 1 point per 5 minutes
-            TimeRange::Last24Hours => 96,   // 1 point per 15 minutes
+            TimeRange::LastHour => 60,    // 1 point per minute
+            TimeRange::Last6Hours => 72,  // 1 point per 5 minutes
+            TimeRange::Last24Hours => 96, // 1 point per 15 minutes
         }
     }
 }
@@ -301,7 +301,10 @@ impl PerformanceAnalyzerState {
     /// Select the next metric
     pub fn next_metric(&mut self) {
         let metrics = MetricType::all();
-        let current_idx = metrics.iter().position(|m| *m == self.selected_metric).unwrap_or(0);
+        let current_idx = metrics
+            .iter()
+            .position(|m| *m == self.selected_metric)
+            .unwrap_or(0);
         let next_idx = (current_idx + 1) % metrics.len();
         self.selected_metric = metrics[next_idx];
     }
@@ -309,7 +312,10 @@ impl PerformanceAnalyzerState {
     /// Select the previous metric
     pub fn prev_metric(&mut self) {
         let metrics = MetricType::all();
-        let current_idx = metrics.iter().position(|m| *m == self.selected_metric).unwrap_or(0);
+        let current_idx = metrics
+            .iter()
+            .position(|m| *m == self.selected_metric)
+            .unwrap_or(0);
         let prev_idx = if current_idx == 0 {
             metrics.len() - 1
         } else {
@@ -493,12 +499,7 @@ mod tests {
 
     #[test]
     fn test_performance_alert_creation() {
-        let alert = PerformanceAlert::new(
-            MetricType::Cpu,
-            AlertSeverity::Warning,
-            75.0,
-            70.0,
-        );
+        let alert = PerformanceAlert::new(MetricType::Cpu, AlertSeverity::Warning, 75.0, 70.0);
 
         assert_eq!(alert.metric_type, MetricType::Cpu);
         assert_eq!(alert.severity, AlertSeverity::Warning);

@@ -1,7 +1,7 @@
 // Log Pattern Detection for Issue #20
 
 use super::types::*;
-use chrono::{DateTime, Duration, Utc};
+use chrono::{Duration, Utc};
 use eyre::Result;
 use std::collections::HashMap;
 
@@ -27,7 +27,10 @@ impl LogPatternDetector {
     }
 
     /// Analyze a new log entry and check for escalation triggers
-    pub async fn analyze_log_stream(&mut self, log_entry: &LogEntry) -> Result<Option<EscalationTrigger>> {
+    pub async fn analyze_log_stream(
+        &mut self,
+        log_entry: &LogEntry,
+    ) -> Result<Option<EscalationTrigger>> {
         // Add log to pattern buffer
         self.pattern_buffer.push(log_entry.clone());
 
@@ -44,12 +47,20 @@ impl LogPatternDetector {
         let mut detected_patterns = Vec::new();
 
         // Error spike detection
-        if let Ok(spike_patterns) = self.error_spike_detector.detect_patterns(&recent_logs).await {
+        if let Ok(spike_patterns) = self
+            .error_spike_detector
+            .detect_patterns(&recent_logs)
+            .await
+        {
             detected_patterns.extend(spike_patterns);
         }
 
         // Repeating error detection
-        if let Ok(repeat_patterns) = self.repeating_error_detector.detect_patterns(&recent_logs).await {
+        if let Ok(repeat_patterns) = self
+            .repeating_error_detector
+            .detect_patterns(&recent_logs)
+            .await
+        {
             detected_patterns.extend(repeat_patterns);
         }
 
@@ -61,7 +72,8 @@ impl LogPatternDetector {
                     severity: pattern.severity,
                     reason: format!("Critical pattern detected: {}", pattern.title),
                     detected_pattern: Some(pattern.clone()),
-                    suggested_action: "Switch to interactive analysis for detailed investigation".to_string(),
+                    suggested_action: "Switch to interactive analysis for detailed investigation"
+                        .to_string(),
                 }));
             }
         }
@@ -95,7 +107,7 @@ pub struct ErrorSpikeDetector {
 impl ErrorSpikeDetector {
     pub fn new() -> Self {
         Self {
-            spike_threshold: 3.0, // 3x baseline
+            spike_threshold: 3.0,     // 3x baseline
             baseline_error_rate: 5.0, // 5 errors per minute baseline
             window_size: Duration::minutes(1),
         }
@@ -212,7 +224,10 @@ impl RepeatingErrorDetector {
         for group in error_groups {
             if group.count >= self.frequency_threshold {
                 let pattern = DetectedPattern {
-                    pattern_id: format!("repeating-error-{}", Self::hash_signature(&group.signature)),
+                    pattern_id: format!(
+                        "repeating-error-{}",
+                        Self::hash_signature(&group.signature)
+                    ),
                     pattern_type: LogPatternType::RepeatingError,
                     severity: self.calculate_repetition_severity(group.count),
                     confidence: group.similarity_score,
@@ -228,7 +243,10 @@ impl RepeatingErrorDetector {
                     last_seen: group.last_seen,
                     suggested_actions: vec![LogAction {
                         action: "Analyze error pattern for root cause".to_string(),
-                        command: Some(format!("dora logs --search '{}' --analyze", &group.signature[..30.min(group.signature.len())])),
+                        command: Some(format!(
+                            "dora logs --search '{}' --analyze",
+                            &group.signature[..30.min(group.signature.len())]
+                        )),
                         urgency: ActionUrgency::High,
                     }],
                     escalation_trigger: group.count > self.frequency_threshold * 3,
@@ -248,7 +266,10 @@ impl RepeatingErrorDetector {
         for log in logs {
             if matches!(log.level, LogLevel::Error | LogLevel::Fatal) {
                 let signature = self.extract_error_signature(&log.message);
-                groups.entry(signature).or_insert_with(Vec::new).push(log.clone());
+                groups
+                    .entry(signature)
+                    .or_insert_with(Vec::new)
+                    .push(log.clone());
             }
         }
 
@@ -363,7 +384,11 @@ mod tests {
 
         let patterns = detector.detect_patterns(&logs).await.unwrap();
         assert!(!patterns.is_empty());
-        assert!(patterns.iter().any(|p| matches!(p.pattern_type, LogPatternType::ErrorSpike)));
+        assert!(
+            patterns
+                .iter()
+                .any(|p| matches!(p.pattern_type, LogPatternType::ErrorSpike))
+        );
     }
 
     #[tokio::test]
@@ -384,6 +409,10 @@ mod tests {
 
         let patterns = detector.detect_patterns(&logs).await.unwrap();
         assert!(!patterns.is_empty());
-        assert!(patterns.iter().any(|p| matches!(p.pattern_type, LogPatternType::RepeatingError)));
+        assert!(
+            patterns
+                .iter()
+                .any(|p| matches!(p.pattern_type, LogPatternType::RepeatingError))
+        );
     }
 }

@@ -3,7 +3,7 @@
 
 use super::types::*;
 use chrono::{DateTime, Duration, Utc};
-use eyre::{anyhow, Result};
+use eyre::{Result, anyhow};
 use std::collections::HashMap;
 use uuid::Uuid;
 
@@ -39,8 +39,12 @@ impl TutorialSystem {
     }
 
     /// Get available tutorials filtered by user expertise
-    pub async fn get_available_tutorials(&self, user_expertise: UserExpertiseLevel) -> Vec<Tutorial> {
-        self.tutorials.values()
+    pub async fn get_available_tutorials(
+        &self,
+        user_expertise: UserExpertiseLevel,
+    ) -> Vec<Tutorial> {
+        self.tutorials
+            .values()
             .filter(|tutorial| self.is_tutorial_appropriate(tutorial, user_expertise))
             .cloned()
             .collect()
@@ -48,7 +52,9 @@ impl TutorialSystem {
 
     /// Start a new tutorial session
     pub async fn start_tutorial(&mut self, tutorial_id: &str) -> Result<TutorialSession> {
-        let tutorial = self.tutorials.get(tutorial_id)
+        let tutorial = self
+            .tutorials
+            .get(tutorial_id)
             .ok_or_else(|| anyhow!("Tutorial '{}' not found", tutorial_id))?;
 
         // Initialize tutorial session
@@ -74,7 +80,9 @@ impl TutorialSystem {
         session: &mut TutorialSession,
         user_input: &TutorialUserInput,
     ) -> Result<StepExecutionResult> {
-        let tutorial = self.tutorials.get(&session.tutorial_id)
+        let tutorial = self
+            .tutorials
+            .get(&session.tutorial_id)
             .ok_or_else(|| anyhow!("Tutorial not found"))?;
 
         if session.current_step >= tutorial.steps.len() {
@@ -84,7 +92,9 @@ impl TutorialSystem {
         let current_step = &tutorial.steps[session.current_step];
 
         // Validate user input against step requirements
-        let validation_result = self.validate_step_execution(current_step, user_input).await?;
+        let validation_result = self
+            .validate_step_execution(current_step, user_input)
+            .await?;
 
         match validation_result {
             StepValidationResult::Success => {
@@ -100,7 +110,9 @@ impl TutorialSystem {
                     StepExecutionResult::TutorialCompleted {
                         completion_time: Utc::now(),
                         total_hints_used: session.hints_used.len(),
-                        completion_certificate: self.generate_completion_certificate(session, tutorial).await?,
+                        completion_certificate: self
+                            .generate_completion_certificate(session, tutorial)
+                            .await?,
                     }
                 } else {
                     StepExecutionResult::StepCompleted {
@@ -108,19 +120,24 @@ impl TutorialSystem {
                         progress: TutorialProgress {
                             completed_steps: session.completed_steps.len(),
                             total_steps: tutorial.steps.len(),
-                            percentage: (session.completed_steps.len() as f32 / tutorial.steps.len() as f32) * 100.0,
+                            percentage: (session.completed_steps.len() as f32
+                                / tutorial.steps.len() as f32)
+                                * 100.0,
                         },
                     }
                 };
 
-                self.progress_tracker.track_step_completion(session, current_step);
+                self.progress_tracker
+                    .track_step_completion(session, current_step);
                 Ok(result)
             }
 
             StepValidationResult::PartialSuccess { feedback } => {
                 Ok(StepExecutionResult::PartialSuccess {
                     feedback,
-                    suggestions: self.generate_step_suggestions(current_step, user_input).await?,
+                    suggestions: self
+                        .generate_step_suggestions(current_step, user_input)
+                        .await?,
                 })
             }
 
@@ -131,7 +148,9 @@ impl TutorialSystem {
                     step_number: session.current_step,
                 });
 
-                let hints = self.generate_contextual_hints(current_step, user_input, &reason).await?;
+                let hints = self
+                    .generate_contextual_hints(current_step, user_input, &reason)
+                    .await?;
                 Ok(StepExecutionResult::StepFailed {
                     reason,
                     hints,
@@ -143,7 +162,9 @@ impl TutorialSystem {
 
     /// Get current step for a tutorial session
     pub async fn get_current_step(&self, session: &TutorialSession) -> Result<TutorialStep> {
-        let tutorial = self.tutorials.get(&session.tutorial_id)
+        let tutorial = self
+            .tutorials
+            .get(&session.tutorial_id)
             .ok_or_else(|| anyhow!("Tutorial not found"))?;
 
         if session.current_step >= tutorial.steps.len() {
@@ -154,8 +175,14 @@ impl TutorialSystem {
     }
 
     /// Request a hint for the current step
-    pub async fn get_hint(&mut self, session: &mut TutorialSession, hint_index: usize) -> Result<String> {
-        let tutorial = self.tutorials.get(&session.tutorial_id)
+    pub async fn get_hint(
+        &mut self,
+        session: &mut TutorialSession,
+        hint_index: usize,
+    ) -> Result<String> {
+        let tutorial = self
+            .tutorials
+            .get(&session.tutorial_id)
             .ok_or_else(|| anyhow!("Tutorial not found"))?;
 
         let current_step = &tutorial.steps[session.current_step];
@@ -178,7 +205,11 @@ impl TutorialSystem {
     // Private Helper Methods
     // ========================================================================
 
-    fn is_tutorial_appropriate(&self, tutorial: &Tutorial, user_expertise: UserExpertiseLevel) -> bool {
+    fn is_tutorial_appropriate(
+        &self,
+        tutorial: &Tutorial,
+        user_expertise: UserExpertiseLevel,
+    ) -> bool {
         match (user_expertise, tutorial.difficulty) {
             (UserExpertiseLevel::Beginner, DifficultyLevel::Expert) => false,
             (UserExpertiseLevel::Beginner, DifficultyLevel::Advanced) => false,
@@ -193,19 +224,34 @@ impl TutorialSystem {
         user_input: &TutorialUserInput,
     ) -> Result<StepValidationResult> {
         match &step.validation {
-            StepValidation::CommandExecution { command, expected_result } => {
-                if let TutorialUserInput::Command { command: user_command, output } = user_input {
+            StepValidation::CommandExecution {
+                command,
+                expected_result,
+            } => {
+                if let TutorialUserInput::Command {
+                    command: user_command,
+                    output,
+                } = user_input
+                {
                     if self.normalize_command(user_command) == self.normalize_command(command) {
-                        if self.validate_command_output(output, expected_result).await? {
+                        if self
+                            .validate_command_output(output, expected_result)
+                            .await?
+                        {
                             Ok(StepValidationResult::Success)
                         } else {
                             Ok(StepValidationResult::PartialSuccess {
-                                feedback: "Command executed but output doesn't match expected result".to_string(),
+                                feedback:
+                                    "Command executed but output doesn't match expected result"
+                                        .to_string(),
                             })
                         }
                     } else {
                         Ok(StepValidationResult::Failure {
-                            reason: format!("Expected command '{}', got '{}'", command, user_command),
+                            reason: format!(
+                                "Expected command '{}', got '{}'",
+                                command, user_command
+                            ),
                         })
                     }
                 } else {
@@ -217,8 +263,7 @@ impl TutorialSystem {
 
             StepValidation::OutputContains { patterns } => {
                 if let TutorialUserInput::Command { output, .. } = user_input {
-                    let matches = patterns.iter()
-                        .all(|pattern| output.contains(pattern));
+                    let matches = patterns.iter().all(|pattern| output.contains(pattern));
 
                     if matches {
                         Ok(StepValidationResult::Success)
@@ -260,13 +305,23 @@ impl TutorialSystem {
         command.trim().to_lowercase()
     }
 
-    async fn validate_command_output(&self, output: &str, criteria: &ValidationCriteria) -> Result<bool> {
+    async fn validate_command_output(
+        &self,
+        output: &str,
+        criteria: &ValidationCriteria,
+    ) -> Result<bool> {
         // Check success patterns
-        let has_success = criteria.success_patterns.is_empty() ||
-            criteria.success_patterns.iter().any(|pattern| output.contains(pattern));
+        let has_success = criteria.success_patterns.is_empty()
+            || criteria
+                .success_patterns
+                .iter()
+                .any(|pattern| output.contains(pattern));
 
         // Check failure patterns
-        let has_failure = criteria.failure_patterns.iter().any(|pattern| output.contains(pattern));
+        let has_failure = criteria
+            .failure_patterns
+            .iter()
+            .any(|pattern| output.contains(pattern));
 
         Ok(has_success && !has_failure)
     }
@@ -304,7 +359,10 @@ impl TutorialSystem {
 
         // Add common mistake hints
         for mistake in &step.common_mistakes {
-            hints.push(format!("Common mistake: {} - {}", mistake.mistake, mistake.correction));
+            hints.push(format!(
+                "Common mistake: {} - {}",
+                mistake.mistake, mistake.correction
+            ));
         }
 
         Ok(hints)
@@ -346,7 +404,9 @@ impl TutorialSystem {
         let hint_penalty = session.hints_used.len() as f32 * 5.0;
 
         // Deduct points for failed attempts
-        let failed_attempts = session.user_actions.iter()
+        let failed_attempts = session
+            .user_actions
+            .iter()
             .filter(|action| matches!(action.action_type, TutorialActionType::StepFailed))
             .count() as f32;
         let failure_penalty = failed_attempts * 3.0;
@@ -358,7 +418,9 @@ impl TutorialSystem {
             0.0
         };
 
-        (base_score - hint_penalty - failure_penalty + completion_bonus).max(0.0).min(100.0)
+        (base_score - hint_penalty - failure_penalty + completion_bonus)
+            .max(0.0)
+            .min(100.0)
     }
 
     // ========================================================================
@@ -388,13 +450,11 @@ impl TutorialSystem {
                         "Type: dora --version".to_string(),
                         "Make sure dora is in your PATH".to_string(),
                     ],
-                    common_mistakes: vec![
-                        CommonMistake {
-                            mistake: "Command not found".to_string(),
-                            consequence: "Dora might not be installed or not in PATH".to_string(),
-                            correction: "Install Dora or add it to your PATH".to_string(),
-                        },
-                    ],
+                    common_mistakes: vec![CommonMistake {
+                        mistake: "Command not found".to_string(),
+                        consequence: "Dora might not be installed or not in PATH".to_string(),
+                        correction: "Install Dora or add it to your PATH".to_string(),
+                    }],
                     next_steps: Vec::new(),
                 },
                 TutorialStep {
@@ -430,29 +490,25 @@ impl TutorialSystem {
             difficulty: DifficultyLevel::Intermediate,
             estimated_duration: Duration::minutes(20),
             prerequisites: vec!["getting-started".to_string()],
-            steps: vec![
-                TutorialStep {
-                    step_number: 1,
-                    title: "Create a Dataflow".to_string(),
-                    description: "Learn how to create a new dataflow from a YAML file".to_string(),
-                    instruction: "Create a dataflow using 'dora start dataflow.yaml'".to_string(),
-                    expected_command: Some("dora start".to_string()),
-                    expected_output: Some("started".to_string()),
-                    validation: StepValidation::UserConfirmation,
-                    hints: vec![
-                        "Use: dora start <yaml-file>".to_string(),
-                        "Make sure you have a valid dataflow YAML file".to_string(),
-                    ],
-                    common_mistakes: vec![
-                        CommonMistake {
-                            mistake: "File not found".to_string(),
-                            consequence: "Dataflow won't start".to_string(),
-                            correction: "Check the file path and name".to_string(),
-                        },
-                    ],
-                    next_steps: Vec::new(),
-                },
-            ],
+            steps: vec![TutorialStep {
+                step_number: 1,
+                title: "Create a Dataflow".to_string(),
+                description: "Learn how to create a new dataflow from a YAML file".to_string(),
+                instruction: "Create a dataflow using 'dora start dataflow.yaml'".to_string(),
+                expected_command: Some("dora start".to_string()),
+                expected_output: Some("started".to_string()),
+                validation: StepValidation::UserConfirmation,
+                hints: vec![
+                    "Use: dora start <yaml-file>".to_string(),
+                    "Make sure you have a valid dataflow YAML file".to_string(),
+                ],
+                common_mistakes: vec![CommonMistake {
+                    mistake: "File not found".to_string(),
+                    consequence: "Dataflow won't start".to_string(),
+                    correction: "Check the file path and name".to_string(),
+                }],
+                next_steps: Vec::new(),
+            }],
             completion_criteria: CompletionCriteria {
                 all_steps_required: true,
                 minimum_score: Some(70.0),
@@ -493,7 +549,11 @@ impl TutorialProgressTracker {
     }
 
     pub fn track_tutorial_completion(&mut self, session_id: Uuid) {
-        if let Some(record) = self.session_history.iter_mut().find(|r| r.session_id == session_id) {
+        if let Some(record) = self
+            .session_history
+            .iter_mut()
+            .find(|r| r.session_id == session_id)
+        {
             record.status = TutorialSessionStatus::Completed;
         }
     }
@@ -553,7 +613,9 @@ mod tests {
     #[tokio::test]
     async fn test_get_available_tutorials() {
         let system = TutorialSystem::new();
-        let tutorials = system.get_available_tutorials(UserExpertiseLevel::Beginner).await;
+        let tutorials = system
+            .get_available_tutorials(UserExpertiseLevel::Beginner)
+            .await;
 
         assert!(!tutorials.is_empty());
         assert!(tutorials.iter().any(|t| t.id == "getting-started"));

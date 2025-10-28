@@ -92,7 +92,8 @@ impl AnalysisCliRenderer {
                 println!("  {}. {} {}", i + 1, priority_icon, insight.title);
 
                 // Wrap description to terminal width
-                let wrapped_description = self.wrap_text(&insight.description, self.terminal_width - 6);
+                let wrapped_description =
+                    self.wrap_text(&insight.description, self.terminal_width - 6);
                 for line in wrapped_description {
                     println!("     {}", line);
                 }
@@ -142,7 +143,10 @@ impl AnalysisCliRenderer {
                 TrendDirection::Decreasing => "📉",
                 _ => "➡️",
             };
-            println!("    Trend: {} {:?}", trend_icon, performance.throughput.trend);
+            println!(
+                "    Trend: {} {:?}",
+                trend_icon, performance.throughput.trend
+            );
         }
 
         // Latency summary
@@ -154,8 +158,14 @@ impl AnalysisCliRenderer {
         // Resource usage
         println!("  Resource Usage:");
         println!("    CPU: {:.1}%", performance.resource_usage.cpu_usage);
-        println!("    Memory: {:.1}%", performance.resource_usage.memory_usage);
-        println!("    Efficiency: {:.1}%", performance.resource_usage.resource_efficiency);
+        println!(
+            "    Memory: {:.1}%",
+            performance.resource_usage.memory_usage
+        );
+        println!(
+            "    Efficiency: {:.1}%",
+            performance.resource_usage.resource_efficiency
+        );
 
         // Bottlenecks
         if !performance.bottlenecks.is_empty() {
@@ -182,7 +192,10 @@ impl AnalysisCliRenderer {
         }
         println!();
 
-        println!("  Overall Health Score: {:.1}/100", health.overall_health_score);
+        println!(
+            "  Overall Health Score: {:.1}/100",
+            health.overall_health_score
+        );
         println!("  Health Trend: {:?}", health.health_trend);
         println!();
 
@@ -332,7 +345,11 @@ impl AnalysisCliRenderer {
 }
 
 /// Interactive analysis benefits calculator
-pub fn get_interactive_analysis_benefits(complexity: &super::complexity::ResultComplexity, live_mode: bool, predict: bool) -> Vec<String> {
+pub fn get_interactive_analysis_benefits(
+    complexity: &super::complexity::ResultComplexity,
+    live_mode: bool,
+    predict: bool,
+) -> Vec<String> {
     let mut benefits = Vec::new();
 
     // Always available benefits

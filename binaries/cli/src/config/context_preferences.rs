@@ -1,12 +1,11 @@
-use crate::cli::{Command, UiMode};
 use crate::cli::context::ExecutionContext;
+use crate::cli::{Command, UiMode};
 use crate::config::preferences::UserPreferences;
-use chrono::{DateTime, Local, Timelike, Utc, Weekday, Datelike};
+use chrono::{DateTime, Datelike, Local, Timelike, Utc};
 use lru::LruCache;
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 /// Context-aware preference management with caching
 #[derive(Debug)]
@@ -89,14 +88,14 @@ pub struct ComplexityRule {
 impl ContextAwarePreferences {
     pub fn new(base_preferences: Arc<Mutex<UserPreferences>>) -> Self {
         let cache_size = NonZeroUsize::new(100).unwrap();
-        
+
         Self {
             base_preferences,
             context_cache: Arc::new(Mutex::new(LruCache::new(cache_size))),
             adaptation_engine: AdaptationEngine::new(),
         }
     }
-    
+
     /// Get contextual preference for a command and context
     pub fn get_contextual_preference(
         &self,
@@ -104,7 +103,7 @@ impl ContextAwarePreferences {
         context: &ExecutionContext,
     ) -> ContextualPreferences {
         let context_key = self.create_context_key(command, context);
-        
+
         // Check cache first
         {
             let mut cache = self.context_cache.lock().unwrap();
@@ -114,25 +113,25 @@ impl ContextAwarePreferences {
                 }
             }
         }
-        
+
         // Compute contextual preferences
         let contextual_prefs = self.compute_contextual_preferences(command, context);
-        
+
         // Cache the result
         {
             let mut cache = self.context_cache.lock().unwrap();
             cache.put(context_key, contextual_prefs.clone());
         }
-        
+
         contextual_prefs
     }
-    
+
     /// Clear the preference cache
     pub fn clear_cache(&self) {
         let mut cache = self.context_cache.lock().unwrap();
         cache.clear();
     }
-    
+
     /// Update base preferences and clear cache
     pub fn update_base_preferences(&self, preferences: UserPreferences) {
         {
@@ -141,19 +140,23 @@ impl ContextAwarePreferences {
         }
         self.clear_cache();
     }
-    
+
     /// Create context key for caching
     fn create_context_key(&self, command: &Command, context: &ExecutionContext) -> ContextKey {
         let now = Local::now();
-        
+
         ContextKey {
-            environment: context.environment.ci_environment
+            environment: context
+                .environment
+                .ci_environment
                 .as_ref()
                 .map(|ci| format!("ci:{:?}", ci))
                 .unwrap_or_else(|| "local".to_string()),
             time_of_day: now.hour() as u8,
             day_of_week: now.weekday().num_days_from_sunday() as u8,
-            terminal_type: context.terminal_capabilities.terminal_type
+            terminal_type: context
+                .terminal_capabilities
+                .terminal_type
                 .clone()
                 .unwrap_or_else(|| "unknown".to_string()),
             command_category: self.get_command_category(command),
@@ -161,7 +164,7 @@ impl ContextAwarePreferences {
             is_scripted: context.is_scripted,
         }
     }
-    
+
     /// Compute contextual preferences from scratch
     fn compute_contextual_preferences(
         &self,
@@ -170,14 +173,17 @@ impl ContextAwarePreferences {
     ) -> ContextualPreferences {
         let mut preference_factors = Vec::new();
         let mut reasoning = Vec::new();
-        
+
         // Get base preferences
         let base_prefs = self.base_preferences.lock().unwrap();
         let default_mode = base_prefs.interface.default_ui_mode.clone();
-        let complexity_threshold = base_prefs.interface.complexity_thresholds.suggestion_threshold;
+        let complexity_threshold = base_prefs
+            .interface
+            .complexity_thresholds
+            .suggestion_threshold;
         let auto_launch_threshold = base_prefs.interface.auto_launch.confidence_threshold;
         drop(base_prefs);
-        
+
         // Apply time-based preferences
         let time_factors = self.adaptation_engine.apply_time_based_rules(context);
         for (mode, weight, description) in time_factors {
@@ -189,7 +195,7 @@ impl ContextAwarePreferences {
                 description,
             });
         }
-        
+
         // Apply environment-based preferences
         let env_factors = self.adaptation_engine.apply_environment_rules(context);
         for (mode, weight, description) in env_factors {
@@ -201,10 +207,12 @@ impl ContextAwarePreferences {
                 description,
             });
         }
-        
+
         // Apply complexity-based preferences
         let complexity_score = self.calculate_command_complexity(command);
-        let complexity_factors = self.adaptation_engine.apply_complexity_rules(complexity_score);
+        let complexity_factors = self
+            .adaptation_engine
+            .apply_complexity_rules(complexity_score);
         for (mode, weight, description) in complexity_factors {
             preference_factors.push((mode.clone(), weight));
             reasoning.push(PreferenceReason {
@@ -214,7 +222,7 @@ impl ContextAwarePreferences {
                 description,
             });
         }
-        
+
         // Apply context-specific overrides
         if context.is_scripted || context.environment.is_ci {
             preference_factors.push((UiMode::Minimal, 0.9));
@@ -225,7 +233,7 @@ impl ContextAwarePreferences {
                 description: "Detected automation/CI environment".to_string(),
             });
         }
-        
+
         if !context.is_tty {
             preference_factors.push((UiMode::Minimal, 0.95));
             reasoning.push(PreferenceReason {
@@ -235,7 +243,7 @@ impl ContextAwarePreferences {
                 description: "Non-TTY environment detected".to_string(),
             });
         }
-        
+
         if let Some((width, height)) = context.terminal_size {
             if width < 80 || height < 24 {
                 preference_factors.push((UiMode::Cli, 0.8));
@@ -247,13 +255,11 @@ impl ContextAwarePreferences {
                 });
             }
         }
-        
+
         // Compute weighted preference
-        let (preferred_mode, confidence) = self.compute_weighted_preference(
-            &preference_factors, 
-            default_mode
-        );
-        
+        let (preferred_mode, confidence) =
+            self.compute_weighted_preference(&preference_factors, default_mode);
+
         ContextualPreferences {
             ui_mode_preference: preferred_mode,
             complexity_threshold,
@@ -263,7 +269,7 @@ impl ContextAwarePreferences {
             reasoning,
         }
     }
-    
+
     /// Calculate command complexity score
     fn calculate_command_complexity(&self, command: &Command) -> u8 {
         match command {
@@ -292,22 +298,28 @@ impl ContextAwarePreferences {
             Command::Help(_) => 2,
         }
     }
-    
+
     /// Get command category for grouping
     fn get_command_category(&self, command: &Command) -> String {
         match command {
             Command::Ps(_) | Command::Logs(_) | Command::Monitor(_) => "monitoring".to_string(),
-            Command::Start(_) | Command::Stop(_) | Command::Up(_) | Command::Destroy(_) => "lifecycle".to_string(),
+            Command::Start(_) | Command::Stop(_) | Command::Up(_) | Command::Destroy(_) => {
+                "lifecycle".to_string()
+            }
             Command::Build(_) | Command::Check(_) | Command::New(_) => "development".to_string(),
             Command::Inspect(_) | Command::Debug(_) | Command::Analyze(_) => "analysis".to_string(),
             Command::Tui(_) | Command::Dashboard(_) => "interface".to_string(),
-            Command::System(_) | Command::Config(_) | Command::Daemon(_) |
-            Command::Runtime(_) | Command::Coordinator(_) | Command::Self_(_) => "system".to_string(),
+            Command::System(_)
+            | Command::Config(_)
+            | Command::Daemon(_)
+            | Command::Runtime(_)
+            | Command::Coordinator(_)
+            | Command::Self_(_) => "system".to_string(),
             Command::Graph(_) => "visualization".to_string(),
             Command::Help(_) => "help".to_string(),
         }
     }
-    
+
     /// Compute weighted preference from all factors
     fn compute_weighted_preference(
         &self,
@@ -317,31 +329,31 @@ impl ContextAwarePreferences {
         if factors.is_empty() {
             return (default_mode, 0.5);
         }
-        
+
         let mut mode_weights: HashMap<UiMode, f32> = HashMap::new();
         let mut total_weight = 0.0;
-        
+
         for (mode, weight) in factors {
             *mode_weights.entry(mode.clone()).or_insert(0.0) += weight;
             total_weight += weight;
         }
-        
+
         // Add default mode with base weight
         *mode_weights.entry(default_mode).or_insert(0.0) += 0.3;
         total_weight += 0.3;
-        
+
         // Find the mode with highest weighted score
         let (preferred_mode, max_weight) = mode_weights
             .into_iter()
             .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
             .unwrap_or((UiMode::Auto, 0.5));
-        
+
         let confidence = if total_weight > 0.0 {
             (max_weight / total_weight).clamp(0.0, 1.0)
         } else {
             0.5
         };
-        
+
         (preferred_mode, confidence)
     }
 }
@@ -354,15 +366,15 @@ impl AdaptationEngine {
             complexity_rules: Self::create_default_complexity_rules(),
         }
     }
-    
+
     /// Apply time-based rules
     pub fn apply_time_based_rules(&self, context: &ExecutionContext) -> Vec<(UiMode, f32, String)> {
         let now = Local::now();
         let current_hour = now.hour() as u8;
         let current_day = now.weekday().num_days_from_sunday() as u8;
-        
+
         let mut factors = Vec::new();
-        
+
         for rule in &self.time_based_rules {
             if self.time_matches(current_hour, current_day, rule) {
                 factors.push((
@@ -372,14 +384,17 @@ impl AdaptationEngine {
                 ));
             }
         }
-        
+
         factors
     }
-    
+
     /// Apply environment-based rules
-    pub fn apply_environment_rules(&self, context: &ExecutionContext) -> Vec<(UiMode, f32, String)> {
+    pub fn apply_environment_rules(
+        &self,
+        context: &ExecutionContext,
+    ) -> Vec<(UiMode, f32, String)> {
         let mut factors = Vec::new();
-        
+
         for rule in &self.environment_rules {
             if self.environment_matches(context, rule) {
                 factors.push((
@@ -389,14 +404,14 @@ impl AdaptationEngine {
                 ));
             }
         }
-        
+
         factors
     }
-    
+
     /// Apply complexity-based rules
     pub fn apply_complexity_rules(&self, complexity: u8) -> Vec<(UiMode, f32, String)> {
         let mut factors = Vec::new();
-        
+
         for rule in &self.complexity_rules {
             if complexity >= rule.min_complexity && complexity <= rule.max_complexity {
                 factors.push((
@@ -406,10 +421,10 @@ impl AdaptationEngine {
                 ));
             }
         }
-        
+
         factors
     }
-    
+
     /// Check if time matches rule
     fn time_matches(&self, hour: u8, day: u8, rule: &TimeBasedRule) -> bool {
         let hour_matches = if rule.start_hour <= rule.end_hour {
@@ -418,24 +433,22 @@ impl AdaptationEngine {
             // Handle overnight ranges (e.g., 22-6)
             hour >= rule.start_hour || hour <= rule.end_hour
         };
-        
+
         let day_matches = rule.days_of_week.is_empty() || rule.days_of_week.contains(&day);
-        
+
         hour_matches && day_matches
     }
-    
+
     /// Check if environment matches rule
     fn environment_matches(&self, context: &ExecutionContext, rule: &EnvironmentRule) -> bool {
         let env_string = format!(
             "ci:{},tty:{},scripted:{}",
-            context.environment.is_ci,
-            context.is_tty,
-            context.is_scripted
+            context.environment.is_ci, context.is_tty, context.is_scripted
         );
-        
+
         env_string.contains(&rule.environment_pattern)
     }
-    
+
     /// Create default time-based rules
     fn create_default_time_rules() -> Vec<TimeBasedRule> {
         vec![
@@ -473,7 +486,7 @@ impl AdaptationEngine {
             },
         ]
     }
-    
+
     /// Create default environment-based rules
     fn create_default_environment_rules() -> Vec<EnvironmentRule> {
         vec![
@@ -497,7 +510,7 @@ impl AdaptationEngine {
             },
         ]
     }
-    
+
     /// Create default complexity-based rules
     fn create_default_complexity_rules() -> Vec<ComplexityRule> {
         vec![
@@ -529,22 +542,24 @@ impl AdaptationEngine {
 impl ContextualPreferences {
     /// Check if TUI should be auto-launched
     pub fn should_auto_launch_tui(&self) -> bool {
-        matches!(self.ui_mode_preference, UiMode::Tui) && 
-        self.confidence >= self.auto_launch_threshold
+        matches!(self.ui_mode_preference, UiMode::Tui)
+            && self.confidence >= self.auto_launch_threshold
     }
-    
+
     /// Get human-readable reasoning
     pub fn get_reasoning_summary(&self) -> String {
         if self.reasoning.is_empty() {
             return "No specific reasoning available".to_string();
         }
-        
-        let top_reasons: Vec<_> = self.reasoning.iter()
+
+        let top_reasons: Vec<_> = self
+            .reasoning
+            .iter()
             .filter(|r| r.impact > 0.3)
             .take(3)
             .map(|r| format!("{}: {}", r.factor, r.description))
             .collect();
-        
+
         if top_reasons.is_empty() {
             "Based on default preferences".to_string()
         } else {
@@ -600,9 +615,9 @@ mod tests {
         let context_prefs = ContextAwarePreferences::new(prefs);
         let context = create_test_context();
         let command = Command::Debug(crate::cli::commands::DebugCommand::default());
-        
+
         let key = context_prefs.create_context_key(&command, &context);
-        
+
         assert_eq!(key.environment, "local");
         assert_eq!(key.command_category, "analysis");
         assert!(key.is_tty);
@@ -615,9 +630,9 @@ mod tests {
         let context_prefs = ContextAwarePreferences::new(prefs);
         let context = create_test_context();
         let command = Command::Debug(crate::cli::commands::DebugCommand::default());
-        
+
         let contextual = context_prefs.get_contextual_preference(&command, &context);
-        
+
         assert!(contextual.confidence > 0.0);
         assert!(!contextual.reasoning.is_empty());
     }
@@ -629,10 +644,10 @@ mod tests {
         let mut context = create_test_context();
         context.environment.is_ci = true;
         context.is_scripted = true;
-        
+
         let command = Command::Ps(crate::cli::commands::PsCommand::default());
         let contextual = context_prefs.get_contextual_preference(&command, &context);
-        
+
         assert_eq!(contextual.ui_mode_preference, UiMode::Minimal);
         assert!(contextual.confidence > 0.8);
     }

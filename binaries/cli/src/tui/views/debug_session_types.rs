@@ -241,11 +241,7 @@ impl DebugSessionState {
         Self {
             target_name,
             execution_state: ExecutionState::Stopped,
-            current_location: CodeLocation::new(
-                "main.rs".to_string(),
-                1,
-                "main".to_string(),
-            ),
+            current_location: CodeLocation::new("main.rs".to_string(), 1, "main".to_string()),
             active_panel: DebugPanel::Variables,
             variables: Vec::new(),
             call_stack: Vec::new(),
@@ -477,11 +473,7 @@ mod tests {
 
     #[test]
     fn test_call_stack_frame_creation() {
-        let frame = CallStackFrame::new(
-            "process_data".to_string(),
-            "processor.rs".to_string(),
-            42,
-        );
+        let frame = CallStackFrame::new("process_data".to_string(), "processor.rs".to_string(), 42);
 
         assert_eq!(frame.function_name, "process_data");
         assert_eq!(frame.file_name, "processor.rs");
@@ -550,7 +542,12 @@ mod tests {
     #[test]
     fn test_debug_session_add_variable() {
         let mut state = DebugSessionState::new("test".to_string());
-        let var = Variable::new("x".to_string(), "10".to_string(), "i32".to_string(), "local".to_string());
+        let var = Variable::new(
+            "x".to_string(),
+            "10".to_string(),
+            "i32".to_string(),
+            "local".to_string(),
+        );
 
         state.add_variable(var);
         assert_eq!(state.variables.len(), 1);
@@ -597,9 +594,24 @@ mod tests {
         let mut state = DebugSessionState::new("test".to_string());
 
         // Add test data
-        state.add_variable(Variable::new("a".to_string(), "1".to_string(), "i32".to_string(), "local".to_string()));
-        state.add_variable(Variable::new("b".to_string(), "2".to_string(), "i32".to_string(), "local".to_string()));
-        state.add_variable(Variable::new("c".to_string(), "3".to_string(), "i32".to_string(), "local".to_string()));
+        state.add_variable(Variable::new(
+            "a".to_string(),
+            "1".to_string(),
+            "i32".to_string(),
+            "local".to_string(),
+        ));
+        state.add_variable(Variable::new(
+            "b".to_string(),
+            "2".to_string(),
+            "i32".to_string(),
+            "local".to_string(),
+        ));
+        state.add_variable(Variable::new(
+            "c".to_string(),
+            "3".to_string(),
+            "i32".to_string(),
+            "local".to_string(),
+        ));
 
         assert_eq!(state.selected_variable, 0);
 
@@ -628,7 +640,12 @@ mod tests {
     fn test_debug_session_clear() {
         let mut state = DebugSessionState::new("test".to_string());
 
-        state.add_variable(Variable::new("x".to_string(), "10".to_string(), "i32".to_string(), "local".to_string()));
+        state.add_variable(Variable::new(
+            "x".to_string(),
+            "10".to_string(),
+            "i32".to_string(),
+            "local".to_string(),
+        ));
         state.add_breakpoint(Breakpoint::new(1, "main.rs".to_string(), 10));
 
         assert_eq!(state.variables.len(), 1);
@@ -646,8 +663,18 @@ mod tests {
     fn test_debug_session_current_panel_count() {
         let mut state = DebugSessionState::new("test".to_string());
 
-        state.add_variable(Variable::new("x".to_string(), "10".to_string(), "i32".to_string(), "local".to_string()));
-        state.add_variable(Variable::new("y".to_string(), "20".to_string(), "i32".to_string(), "local".to_string()));
+        state.add_variable(Variable::new(
+            "x".to_string(),
+            "10".to_string(),
+            "i32".to_string(),
+            "local".to_string(),
+        ));
+        state.add_variable(Variable::new(
+            "y".to_string(),
+            "20".to_string(),
+            "i32".to_string(),
+            "local".to_string(),
+        ));
 
         assert_eq!(state.current_panel_count(), 2);
 

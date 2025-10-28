@@ -1,12 +1,12 @@
 //! Script Context Detection
-//! 
+//!
 //! This module implements detection for various scripting environments including
 //! shell scripts, container environments, and other automation contexts.
 
 use crate::cli::context::ExecutionContext;
-use anyhow::{anyhow, Result};
-use serde::{Serialize, Deserialize};
-use std::{env, path::Path};
+use anyhow::{Result, anyhow};
+use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 pub trait ScriptContextDetector: Send + Sync + std::fmt::Debug {
     fn detect_script_context(&self, context: &ExecutionContext) -> Option<ScriptDetectionResult>;
@@ -38,54 +38,59 @@ impl ScriptContextDetector for BashScriptDetector {
     fn detect_script_context(&self, context: &ExecutionContext) -> Option<ScriptDetectionResult> {
         let mut indicators = Vec::new();
         let mut confidence = 0.0;
-        
+        let env_map = &context.environment.relevant_env_vars;
+
         // Check parent process
         if let Ok(parent_process) = Self::get_parent_process_name() {
             match parent_process.as_str() {
                 "bash" | "sh" | "zsh" | "fish" => {
                     indicators.push(format!("Parent process: {}", parent_process));
                     confidence += 0.4;
-                },
+                }
                 _ => {}
             }
         }
-        
+
         // Check environment variables
-        if env::var("BASH").is_ok() || env::var("SHELL").map_or(false, |s| s.contains("bash")) {
+        if env_map.contains_key("BASH")
+            || env_map.get("SHELL").map_or(false, |s| s.contains("bash"))
+        {
             indicators.push("Bash environment detected".to_string());
             confidence += 0.3;
         }
-        
+
         // Check if running in non-interactive mode
         if !context.is_tty {
             indicators.push("Non-interactive execution".to_string());
             confidence += 0.2;
         }
-        
+
         // Check for common script indicators
-        if env::var("TERM").map_or(false, |t| t == "dumb") {
+        if env_map.get("TERM").map_or(false, |t| t == "dumb") {
             indicators.push("TERM=dumb indicates script execution".to_string());
             confidence += 0.3;
         }
-        
+
         // Check for pipe redirection
         if context.is_piped {
             indicators.push("Output is piped".to_string());
             confidence += 0.2;
         }
-        
+
         // Check for script-specific environment variables
-        if env::var("BASH_EXECUTION_STRING").is_ok() {
+        if env_map.contains_key("BASH_EXECUTION_STRING") {
             indicators.push("Bash execution string detected".to_string());
             confidence += 0.4;
         }
-        
+
         // Check for process substitution indicators
-        if env::var("_").map_or(false, |underscore| underscore.contains("bash") || underscore.contains("sh")) {
+        if env_map.get("_").map_or(false, |underscore| {
+            underscore.contains("bash") || underscore.contains("sh")
+        }) {
             indicators.push("Script execution context detected via $_".to_string());
             confidence += 0.3;
         }
-        
+
         if confidence > 0.5 {
             Some(ScriptDetectionResult {
                 script_type: "Bash Script".to_string(),
@@ -98,7 +103,7 @@ impl ScriptContextDetector for BashScriptDetector {
             None
         }
     }
-    
+
     fn script_type(&self) -> &str {
         "Bash Script"
     }
@@ -111,7 +116,7 @@ impl BashScriptDetector {
         {
             use std::fs;
             let ppid = unsafe { libc::getppid() };
-            
+
             // Read process name from /proc filesystem
             let proc_path = format!("/proc/{}/comm", ppid);
             if let Ok(name) = fs::read_to_string(&proc_path) {
@@ -132,11 +137,13 @@ impl BashScriptDetector {
                 Err(anyhow!("Could not read parent process name"))
             }
         }
-        
+
         #[cfg(windows)]
         {
             // Windows implementation would use WMI or system APIs
-            Err(anyhow!("Parent process detection not implemented for Windows"))
+            Err(anyhow!(
+                "Parent process detection not implemented for Windows"
+            ))
         }
     }
 }
@@ -148,23 +155,24 @@ impl ScriptContextDetector for PythonScriptDetector {
     fn detect_script_context(&self, context: &ExecutionContext) -> Option<ScriptDetectionResult> {
         let mut indicators = Vec::new();
         let mut confidence = 0.0;
-        
+        let env_map = &context.environment.relevant_env_vars;
+
         // Check for Python-specific environment variables
-        if env::var("PYTHONPATH").is_ok() {
+        if env_map.contains_key("PYTHONPATH") {
             indicators.push("PYTHONPATH environment variable detected".to_string());
             confidence += 0.3;
         }
-        
-        if env::var("VIRTUAL_ENV").is_ok() {
+
+        if env_map.contains_key("VIRTUAL_ENV") {
             indicators.push("Python virtual environment detected".to_string());
             confidence += 0.4;
         }
-        
-        if env::var("CONDA_DEFAULT_ENV").is_ok() {
+
+        if env_map.contains_key("CONDA_DEFAULT_ENV") {
             indicators.push("Conda environment detected".to_string());
             confidence += 0.4;
         }
-        
+
         // Check parent process
         if let Ok(parent) = BashScriptDetector::get_parent_process_name() {
             if parent.contains("python") || parent.contains("pytest") || parent.contains("pip") {
@@ -172,9 +180,9 @@ impl ScriptContextDetector for PythonScriptDetector {
                 confidence += 0.5;
             }
         }
-        
+
         // Check for testing framework indicators
-        if env::var("PYTEST_CURRENT_TEST").is_ok() {
+        if env_map.contains_key("PYTEST_CURRENT_TEST") {
             indicators.push("Pytest execution detected".to_string());
             confidence += 0.6;
             return Some(ScriptDetectionResult {
@@ -185,19 +193,22 @@ impl ScriptContextDetector for PythonScriptDetector {
                 indicators,
             });
         }
-        
+
         // Check for non-interactive execution
         if !context.is_tty && context.is_piped {
             indicators.push("Non-interactive Python execution".to_string());
             confidence += 0.2;
         }
-        
+
         // Check for script execution context
-        if env::var("_").map_or(false, |underscore| underscore.contains("python")) {
+        if env_map
+            .get("_")
+            .map_or(false, |underscore| underscore.contains("python"))
+        {
             indicators.push("Python script execution detected".to_string());
             confidence += 0.4;
         }
-        
+
         if confidence > 0.4 {
             Some(ScriptDetectionResult {
                 script_type: "Python Script".to_string(),
@@ -210,7 +221,7 @@ impl ScriptContextDetector for PythonScriptDetector {
             None
         }
     }
-    
+
     fn script_type(&self) -> &str {
         "Python Script"
     }
@@ -223,23 +234,24 @@ impl ScriptContextDetector for NodeScriptDetector {
     fn detect_script_context(&self, context: &ExecutionContext) -> Option<ScriptDetectionResult> {
         let mut indicators = Vec::new();
         let mut confidence = 0.0;
-        
+        let env_map = &context.environment.relevant_env_vars;
+
         // Check for Node.js-specific environment variables
-        if env::var("NODE_ENV").is_ok() {
+        if env_map.contains_key("NODE_ENV") {
             indicators.push("NODE_ENV environment variable detected".to_string());
             confidence += 0.3;
         }
-        
-        if env::var("npm_config_user_config").is_ok() {
+
+        if env_map.contains_key("npm_config_user_config") {
             indicators.push("npm configuration detected".to_string());
             confidence += 0.4;
         }
-        
-        if env::var("npm_lifecycle_event").is_ok() {
+
+        if env_map.contains_key("npm_lifecycle_event") {
             indicators.push("npm script execution detected".to_string());
             confidence += 0.5;
         }
-        
+
         // Check parent process
         if let Ok(parent) = BashScriptDetector::get_parent_process_name() {
             if parent.contains("node") || parent.contains("npm") || parent.contains("yarn") {
@@ -247,9 +259,9 @@ impl ScriptContextDetector for NodeScriptDetector {
                 confidence += 0.5;
             }
         }
-        
+
         // Check for testing framework indicators
-        if env::var("JEST_WORKER_ID").is_ok() {
+        if env_map.contains_key("JEST_WORKER_ID") {
             indicators.push("Jest test execution detected".to_string());
             confidence += 0.6;
             return Some(ScriptDetectionResult {
@@ -260,13 +272,13 @@ impl ScriptContextDetector for NodeScriptDetector {
                 indicators,
             });
         }
-        
+
         // Check for non-interactive execution
         if !context.is_tty && context.is_piped {
             indicators.push("Non-interactive Node.js execution".to_string());
             confidence += 0.2;
         }
-        
+
         if confidence > 0.4 {
             Some(ScriptDetectionResult {
                 script_type: "Node Script".to_string(),
@@ -279,7 +291,7 @@ impl ScriptContextDetector for NodeScriptDetector {
             None
         }
     }
-    
+
     fn script_type(&self) -> &str {
         "Node Script"
     }
@@ -292,18 +304,19 @@ impl ScriptContextDetector for PowerShellScriptDetector {
     fn detect_script_context(&self, context: &ExecutionContext) -> Option<ScriptDetectionResult> {
         let mut indicators = Vec::new();
         let mut confidence = 0.0;
-        
+        let env_map = &context.environment.relevant_env_vars;
+
         // Check for PowerShell-specific environment variables
-        if env::var("PSModulePath").is_ok() {
+        if env_map.contains_key("PSModulePath") {
             indicators.push("PowerShell module path detected".to_string());
             confidence += 0.4;
         }
-        
-        if env::var("PSExecutionPolicyPreference").is_ok() {
+
+        if env_map.contains_key("PSExecutionPolicyPreference") {
             indicators.push("PowerShell execution policy detected".to_string());
             confidence += 0.3;
         }
-        
+
         // Check parent process (mainly for Windows)
         if let Ok(parent) = BashScriptDetector::get_parent_process_name() {
             if parent.contains("powershell") || parent.contains("pwsh") {
@@ -311,7 +324,7 @@ impl ScriptContextDetector for PowerShellScriptDetector {
                 confidence += 0.6;
             }
         }
-        
+
         // Check shell type from context
         if let Some(shell_type) = &context.environment.shell_type {
             if shell_type.contains("powershell") || shell_type.contains("pwsh") {
@@ -319,13 +332,13 @@ impl ScriptContextDetector for PowerShellScriptDetector {
                 confidence += 0.5;
             }
         }
-        
+
         // Check for non-interactive execution
         if !context.is_tty {
             indicators.push("Non-interactive PowerShell execution".to_string());
             confidence += 0.2;
         }
-        
+
         if confidence > 0.4 {
             Some(ScriptDetectionResult {
                 script_type: "PowerShell Script".to_string(),
@@ -338,7 +351,7 @@ impl ScriptContextDetector for PowerShellScriptDetector {
             None
         }
     }
-    
+
     fn script_type(&self) -> &str {
         "PowerShell Script"
     }
@@ -348,16 +361,17 @@ impl ScriptContextDetector for PowerShellScriptDetector {
 pub struct DockerContainerDetector;
 
 impl ScriptContextDetector for DockerContainerDetector {
-    fn detect_script_context(&self, _context: &ExecutionContext) -> Option<ScriptDetectionResult> {
+    fn detect_script_context(&self, context: &ExecutionContext) -> Option<ScriptDetectionResult> {
         let mut indicators = Vec::new();
         let mut confidence = 0.0;
-        
+        let env_map = &context.environment.relevant_env_vars;
+
         // Check for Docker-specific files
         if Path::new("/.dockerenv").exists() {
             indicators.push("/.dockerenv file detected".to_string());
             confidence += 0.8;
         }
-        
+
         // Check cgroup information
         if let Ok(cgroup_content) = std::fs::read_to_string("/proc/1/cgroup") {
             if cgroup_content.contains("docker") || cgroup_content.contains("containerd") {
@@ -365,16 +379,16 @@ impl ScriptContextDetector for DockerContainerDetector {
                 confidence += 0.6;
             }
         }
-        
+
         // Check for container-specific environment variables
         let container_vars = ["CONTAINER", "DOCKER_CONTAINER", "KUBERNETES_SERVICE_HOST"];
         for var in &container_vars {
-            if env::var(var).is_ok() {
+            if env_map.contains_key(*var) {
                 indicators.push(format!("Container environment variable {} detected", var));
                 confidence += 0.3;
             }
         }
-        
+
         // Check init process
         if let Ok(init_cmdline) = std::fs::read_to_string("/proc/1/cmdline") {
             if init_cmdline.contains("docker-init") || init_cmdline.contains("tini") {
@@ -382,13 +396,13 @@ impl ScriptContextDetector for DockerContainerDetector {
                 confidence += 0.4;
             }
         }
-        
+
         // Check for Kubernetes-specific indicators
-        if env::var("KUBERNETES_SERVICE_HOST").is_ok() {
+        if env_map.contains_key("KUBERNETES_SERVICE_HOST") {
             indicators.push("Kubernetes environment detected".to_string());
             confidence += 0.5;
         }
-        
+
         // Check mounted filesystems for container indicators
         if let Ok(mounts_content) = std::fs::read_to_string("/proc/mounts") {
             if mounts_content.contains("overlay") || mounts_content.contains("aufs") {
@@ -396,7 +410,7 @@ impl ScriptContextDetector for DockerContainerDetector {
                 confidence += 0.3;
             }
         }
-        
+
         if confidence > 0.6 {
             Some(ScriptDetectionResult {
                 script_type: "Docker Container".to_string(),
@@ -409,7 +423,7 @@ impl ScriptContextDetector for DockerContainerDetector {
             None
         }
     }
-    
+
     fn script_type(&self) -> &str {
         "Docker Container"
     }
@@ -419,7 +433,7 @@ impl ScriptContextDetector for DockerContainerDetector {
 mod tests {
     use super::*;
     use crate::cli::context::ExecutionContext;
-    
+
     #[test]
     fn test_bash_script_detection() {
         let mut context = ExecutionContext::detect_basic();
@@ -427,79 +441,80 @@ mod tests {
         context.is_piped = true;
         context.is_scripted = true;
         context.environment.shell_type = Some("bash".to_string());
-        
-        // Set environment to simulate script execution
-        unsafe { env::set_var("TERM", "dumb"); }
-        
+        context.environment.relevant_env_vars.clear();
+        context
+            .environment
+            .relevant_env_vars
+            .insert("TERM".to_string(), "dumb".to_string());
+
         let detector = BashScriptDetector;
         let result = detector.detect_script_context(&context);
-        
+
         assert!(result.is_some());
         let result = result.unwrap();
         assert_eq!(result.script_type, "Bash Script");
         assert!(result.confidence > 0.3);
-        
-        // Clean up
-        unsafe { env::remove_var("TERM"); }
     }
-    
+
     #[test]
     fn test_python_script_detection() {
-        let context = ExecutionContext::detect_basic();
-        
-        // Set environment to simulate Python execution
-        unsafe {
-            env::set_var("PYTHONPATH", "/usr/lib/python3.9");
-            env::set_var("VIRTUAL_ENV", "/home/user/venv");
-        }
-        
+        let mut context = ExecutionContext::detect_basic();
+        context.environment.relevant_env_vars.clear();
+        context
+            .environment
+            .relevant_env_vars
+            .insert("PYTHONPATH".to_string(), "/usr/lib/python3.9".to_string());
+        context
+            .environment
+            .relevant_env_vars
+            .insert("VIRTUAL_ENV".to_string(), "/home/user/venv".to_string());
+
         let detector = PythonScriptDetector;
         let result = detector.detect_script_context(&context);
-        
+
         assert!(result.is_some());
         let result = result.unwrap();
         assert_eq!(result.script_type, "Python Script");
         assert!(result.confidence > 0.4);
-        
-        // Clean up
-        unsafe {
-            env::remove_var("PYTHONPATH");
-            env::remove_var("VIRTUAL_ENV");
-        }
     }
-    
+
     #[test]
     fn test_docker_container_detection() {
         let context = ExecutionContext::detect_basic();
-        
+
         // This test can only pass in actual container environments
         let detector = DockerContainerDetector;
         let result = detector.detect_script_context(&context);
-        
+
         // In most test environments, this should return None
         // But the test validates the structure is correct
         if let Some(result) = result {
             assert_eq!(result.script_type, "Docker Container");
-            assert!(matches!(result.execution_environment, ExecutionEnvironment::Container));
+            assert!(matches!(
+                result.execution_environment,
+                ExecutionEnvironment::Container
+            ));
         }
     }
-    
+
     #[test]
     fn test_pytest_detection() {
-        let context = ExecutionContext::detect_basic();
-        
-        // Set environment to simulate pytest execution
-        unsafe { env::set_var("PYTEST_CURRENT_TEST", "test_example.py::test_function"); }
-        
+        let mut context = ExecutionContext::detect_basic();
+        context.environment.relevant_env_vars.clear();
+        context.environment.relevant_env_vars.insert(
+            "PYTEST_CURRENT_TEST".to_string(),
+            "test_example.py::test_function".to_string(),
+        );
+
         let detector = PythonScriptDetector;
         let result = detector.detect_script_context(&context);
-        
+
         assert!(result.is_some());
         let result = result.unwrap();
         assert_eq!(result.script_type, "Python Test Framework");
-        assert!(matches!(result.execution_environment, ExecutionEnvironment::TestFramework));
-        
-        // Clean up
-        unsafe { env::remove_var("PYTEST_CURRENT_TEST"); }
+        assert!(matches!(
+            result.execution_environment,
+            ExecutionEnvironment::TestFramework
+        ));
     }
 }

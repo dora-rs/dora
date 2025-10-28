@@ -1,25 +1,20 @@
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 /// Help Browser View implementation (Issue #31 - Phase 1)
 /// Provides interactive help content browsing with mock data.
-
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
-    Frame,
 };
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::time::Duration;
 
 use super::{
-    help_browser_types::{HelpCategory, HelpBrowserState, HelpContent},
     BaseView, View, ViewAction,
+    help_browser_types::{HelpBrowserState, HelpCategory},
 };
-use crate::tui::{
-    app::{AppState, ViewType},
-    theme::ThemeConfig,
-    Result,
-};
+use crate::tui::{Result, app::AppState, theme::ThemeConfig};
 
 /// Help Browser View - Interactive help content browser
 pub struct HelpBrowserView {
@@ -72,7 +67,9 @@ impl HelpBrowserView {
 
     /// Render topics list panel
     fn render_topics(&self, f: &mut Frame, area: Rect) {
-        let current_topics: Vec<_> = self.state.topics
+        let current_topics: Vec<_> = self
+            .state
+            .topics
             .iter()
             .filter(|t| t.category == self.state.current_category)
             .collect();
@@ -89,19 +86,22 @@ impl HelpBrowserView {
                 };
 
                 let content = vec![
-                    Line::from(vec![
-                        Span::styled(&topic.title, Style::default().add_modifier(Modifier::BOLD)),
-                    ]),
-                    Line::from(vec![
-                        Span::styled(&topic.summary, Style::default().fg(Color::Gray)),
-                    ]),
+                    Line::from(vec![Span::styled(
+                        &topic.title,
+                        Style::default().add_modifier(Modifier::BOLD),
+                    )]),
+                    Line::from(vec![Span::styled(
+                        &topic.summary,
+                        Style::default().fg(Color::Gray),
+                    )]),
                 ];
 
                 ListItem::new(content).style(style)
             })
             .collect();
 
-        let title = format!(" {} Topics ({}) ",
+        let title = format!(
+            " {} Topics ({}) ",
             self.state.current_category.name(),
             current_topics.len()
         );
@@ -123,17 +123,22 @@ impl HelpBrowserView {
             let total_lines = content.content.len();
 
             // Ensure scroll_offset is valid
-            let scroll_offset = self.state.scroll_offset.min(total_lines.saturating_sub(visible_height));
+            let scroll_offset = self
+                .state
+                .scroll_offset
+                .min(total_lines.saturating_sub(visible_height));
 
             // Get visible content lines
-            let visible_content: Vec<Line> = content.content
+            let visible_content: Vec<Line> = content
+                .content
                 .iter()
                 .skip(scroll_offset)
                 .take(visible_height)
                 .map(|line| Line::from(line.clone()))
                 .collect();
 
-            let title = format!(" {} (Line {}/{}) ",
+            let title = format!(
+                " {} (Line {}/{}) ",
                 content.title,
                 scroll_offset + 1,
                 total_lines
@@ -152,13 +157,15 @@ impl HelpBrowserView {
         } else {
             let no_content = vec![
                 Line::from(""),
-                Line::from(vec![
-                    Span::styled("No topic selected", Style::default().fg(Color::Gray)),
-                ]),
+                Line::from(vec![Span::styled(
+                    "No topic selected",
+                    Style::default().fg(Color::Gray),
+                )]),
                 Line::from(""),
-                Line::from(vec![
-                    Span::styled("Select a topic from the list to view its content", Style::default().fg(Color::DarkGray)),
-                ]),
+                Line::from(vec![Span::styled(
+                    "Select a topic from the list to view its content",
+                    Style::default().fg(Color::DarkGray),
+                )]),
             ];
 
             let block = Block::default()
@@ -176,19 +183,49 @@ impl HelpBrowserView {
     fn render_shortcuts(&self, f: &mut Frame, area: Rect) {
         let shortcuts = vec![
             Line::from(vec![
-                Span::styled("Tab", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "Tab",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::raw("  Switch Category  "),
-                Span::styled("↑/↓", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "↑/↓",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::raw("  Navigate Topics  "),
-                Span::styled("j/k", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "j/k",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::raw(" Scroll Content"),
             ]),
             Line::from(vec![
-                Span::styled("Enter", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "Enter",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::raw("  Select Topic  "),
-                Span::styled("?", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "?",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::raw("  Help  "),
-                Span::styled("q", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "q",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::raw(" Back"),
             ]),
         ];
@@ -216,8 +253,8 @@ impl View for HelpBrowserView {
         let main_chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Min(10),     // Main content
-                Constraint::Length(4),   // Shortcuts
+                Constraint::Min(10),   // Main content
+                Constraint::Length(4), // Shortcuts
             ])
             .split(area);
 
@@ -225,9 +262,9 @@ impl View for HelpBrowserView {
         let content_chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
-                Constraint::Percentage(20),  // Categories
-                Constraint::Percentage(30),  // Topics list
-                Constraint::Percentage(50),  // Content viewer
+                Constraint::Percentage(20), // Categories
+                Constraint::Percentage(30), // Topics list
+                Constraint::Percentage(50), // Content viewer
             ])
             .split(main_chunks[0]);
 
@@ -276,9 +313,7 @@ impl View for HelpBrowserView {
                 self.state.page_up();
                 Ok(ViewAction::None)
             }
-            KeyCode::Enter => {
-                self.handle_select_topic()
-            }
+            KeyCode::Enter => self.handle_select_topic(),
             KeyCode::Char('?') => Ok(ViewAction::ShowHelp),
             _ => Ok(ViewAction::None),
         }

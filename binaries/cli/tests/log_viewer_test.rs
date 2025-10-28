@@ -1,10 +1,10 @@
 /// Tests for Interactive Log Viewer (Issue #28)
 #[cfg(test)]
 mod log_viewer_tests {
-    use dora_cli::tui::views::{
-        LogLevel, LogEntry, LogFilter, LogViewerState, LogViewerView, View,
-    };
     use dora_cli::tui::theme::ThemeConfig;
+    use dora_cli::tui::views::{
+        LogEntry, LogFilter, LogLevel, LogViewerState, LogViewerView, View,
+    };
 
     // LogLevel tests
     #[test]
@@ -197,12 +197,7 @@ mod log_viewer_tests {
     #[test]
     fn test_log_viewer_state_add_log() {
         let mut state = LogViewerState::new();
-        let entry = LogEntry::new(
-            1,
-            LogLevel::Info,
-            "test".to_string(),
-            "Message".to_string(),
-        );
+        let entry = LogEntry::new(1, LogLevel::Info, "test".to_string(), "Message".to_string());
 
         state.add_log(entry);
 
@@ -340,10 +335,30 @@ mod log_viewer_tests {
         let mut state = LogViewerState::new();
 
         // Add different level logs
-        state.add_log(LogEntry::new(0, LogLevel::Error, "test".to_string(), "Error".to_string()));
-        state.add_log(LogEntry::new(1, LogLevel::Warn, "test".to_string(), "Warning".to_string()));
-        state.add_log(LogEntry::new(2, LogLevel::Info, "test".to_string(), "Info".to_string()));
-        state.add_log(LogEntry::new(3, LogLevel::Debug, "test".to_string(), "Debug".to_string()));
+        state.add_log(LogEntry::new(
+            0,
+            LogLevel::Error,
+            "test".to_string(),
+            "Error".to_string(),
+        ));
+        state.add_log(LogEntry::new(
+            1,
+            LogLevel::Warn,
+            "test".to_string(),
+            "Warning".to_string(),
+        ));
+        state.add_log(LogEntry::new(
+            2,
+            LogLevel::Info,
+            "test".to_string(),
+            "Info".to_string(),
+        ));
+        state.add_log(LogEntry::new(
+            3,
+            LogLevel::Debug,
+            "test".to_string(),
+            "Debug".to_string(),
+        ));
 
         assert_eq!(state.filtered_count(), 4);
 
@@ -364,9 +379,24 @@ mod log_viewer_tests {
     fn test_log_viewer_state_get_selected_log() {
         let mut state = LogViewerState::new();
 
-        state.add_log(LogEntry::new(0, LogLevel::Error, "test".to_string(), "E1".to_string()));
-        state.add_log(LogEntry::new(1, LogLevel::Warn, "test".to_string(), "W1".to_string()));
-        state.add_log(LogEntry::new(2, LogLevel::Info, "test".to_string(), "I1".to_string()));
+        state.add_log(LogEntry::new(
+            0,
+            LogLevel::Error,
+            "test".to_string(),
+            "E1".to_string(),
+        ));
+        state.add_log(LogEntry::new(
+            1,
+            LogLevel::Warn,
+            "test".to_string(),
+            "W1".to_string(),
+        ));
+        state.add_log(LogEntry::new(
+            2,
+            LogLevel::Info,
+            "test".to_string(),
+            "I1".to_string(),
+        ));
 
         state.selected_index = 1;
         let selected = state.get_selected_log().unwrap();
@@ -378,12 +408,42 @@ mod log_viewer_tests {
     fn test_log_stats_calculation() {
         let mut state = LogViewerState::new();
 
-        state.add_log(LogEntry::new(0, LogLevel::Error, "test".to_string(), "E1".to_string()));
-        state.add_log(LogEntry::new(1, LogLevel::Error, "test".to_string(), "E2".to_string()));
-        state.add_log(LogEntry::new(2, LogLevel::Warn, "test".to_string(), "W1".to_string()));
-        state.add_log(LogEntry::new(3, LogLevel::Info, "test".to_string(), "I1".to_string()));
-        state.add_log(LogEntry::new(4, LogLevel::Debug, "test".to_string(), "D1".to_string()));
-        state.add_log(LogEntry::new(5, LogLevel::Trace, "test".to_string(), "T1".to_string()));
+        state.add_log(LogEntry::new(
+            0,
+            LogLevel::Error,
+            "test".to_string(),
+            "E1".to_string(),
+        ));
+        state.add_log(LogEntry::new(
+            1,
+            LogLevel::Error,
+            "test".to_string(),
+            "E2".to_string(),
+        ));
+        state.add_log(LogEntry::new(
+            2,
+            LogLevel::Warn,
+            "test".to_string(),
+            "W1".to_string(),
+        ));
+        state.add_log(LogEntry::new(
+            3,
+            LogLevel::Info,
+            "test".to_string(),
+            "I1".to_string(),
+        ));
+        state.add_log(LogEntry::new(
+            4,
+            LogLevel::Debug,
+            "test".to_string(),
+            "D1".to_string(),
+        ));
+        state.add_log(LogEntry::new(
+            5,
+            LogLevel::Trace,
+            "test".to_string(),
+            "T1".to_string(),
+        ));
 
         let stats = state.stats();
 
@@ -401,15 +461,30 @@ mod log_viewer_tests {
 
         // Add 4 errors out of 10 total (40%)
         for i in 0..4 {
-            state.add_log(LogEntry::new(i, LogLevel::Error, "test".to_string(), format!("E{}", i)));
+            state.add_log(LogEntry::new(
+                i,
+                LogLevel::Error,
+                "test".to_string(),
+                format!("E{}", i),
+            ));
         }
         // Add 2 warnings out of 10 total (20%)
         for i in 4..6 {
-            state.add_log(LogEntry::new(i, LogLevel::Warn, "test".to_string(), format!("W{}", i)));
+            state.add_log(LogEntry::new(
+                i,
+                LogLevel::Warn,
+                "test".to_string(),
+                format!("W{}", i),
+            ));
         }
         // Add 4 info logs
         for i in 6..10 {
-            state.add_log(LogEntry::new(i, LogLevel::Info, "test".to_string(), format!("I{}", i)));
+            state.add_log(LogEntry::new(
+                i,
+                LogLevel::Info,
+                "test".to_string(),
+                format!("I{}", i),
+            ));
         }
 
         let stats = state.stats();
@@ -451,7 +526,12 @@ mod log_viewer_tests {
 
         // Add logs while not paused - should auto-scroll to bottom
         for i in 0..5 {
-            state.add_log(LogEntry::new(i, LogLevel::Info, "test".to_string(), "Message".to_string()));
+            state.add_log(LogEntry::new(
+                i,
+                LogLevel::Info,
+                "test".to_string(),
+                "Message".to_string(),
+            ));
         }
 
         assert_eq!(state.selected_index, 4); // Should be at last log
@@ -461,7 +541,12 @@ mod log_viewer_tests {
         state.selected_index = 2;
 
         // Add more logs while paused - should not auto-scroll
-        state.add_log(LogEntry::new(5, LogLevel::Info, "test".to_string(), "Message".to_string()));
+        state.add_log(LogEntry::new(
+            5,
+            LogLevel::Info,
+            "test".to_string(),
+            "Message".to_string(),
+        ));
 
         assert_eq!(state.selected_index, 2); // Should stay at index 2
     }
@@ -471,11 +556,36 @@ mod log_viewer_tests {
         let mut state = LogViewerState::new();
 
         // Add diverse logs
-        state.add_log(LogEntry::new(0, LogLevel::Error, "camera".to_string(), "Failed to connect".to_string()));
-        state.add_log(LogEntry::new(1, LogLevel::Warn, "camera".to_string(), "Low framerate".to_string()));
-        state.add_log(LogEntry::new(2, LogLevel::Info, "camera".to_string(), "Connected successfully".to_string()));
-        state.add_log(LogEntry::new(3, LogLevel::Error, "sensor".to_string(), "Timeout error".to_string()));
-        state.add_log(LogEntry::new(4, LogLevel::Info, "sensor".to_string(), "Reading data".to_string()));
+        state.add_log(LogEntry::new(
+            0,
+            LogLevel::Error,
+            "camera".to_string(),
+            "Failed to connect".to_string(),
+        ));
+        state.add_log(LogEntry::new(
+            1,
+            LogLevel::Warn,
+            "camera".to_string(),
+            "Low framerate".to_string(),
+        ));
+        state.add_log(LogEntry::new(
+            2,
+            LogLevel::Info,
+            "camera".to_string(),
+            "Connected successfully".to_string(),
+        ));
+        state.add_log(LogEntry::new(
+            3,
+            LogLevel::Error,
+            "sensor".to_string(),
+            "Timeout error".to_string(),
+        ));
+        state.add_log(LogEntry::new(
+            4,
+            LogLevel::Info,
+            "sensor".to_string(),
+            "Reading data".to_string(),
+        ));
 
         // Filter to only errors
         state.filter.disable_all();

@@ -1,12 +1,13 @@
+use dora_cli::tui::views::{LayoutConfig, LayoutManager};
 /// Integration tests for TUI Architecture Foundation (Issue #23)
 ///
 /// Tests the component system, layout manager, and theme manager
-
 use dora_cli::tui::{
     ComponentId, ComponentRegistry, EventDispatcher, ThemeManager,
-    components::{DataflowListComponent, MetricsChartComponent, StatusBarComponent, LogViewerComponent},
+    components::{
+        DataflowListComponent, LogViewerComponent, MetricsChartComponent, StatusBarComponent,
+    },
 };
-use dora_cli::tui::views::{LayoutManager, LayoutConfig};
 use ratatui::layout::{Constraint, Rect};
 
 // ===== Component System Tests =====
@@ -45,10 +46,13 @@ fn test_component_registry_multiple_components() {
     let id3 = ComponentId::new("status-bar");
 
     registry.register(id1.clone(), Box::new(DataflowListComponent::new()));
-    registry.register(id2.clone(), Box::new(MetricsChartComponent::new(
-        dora_cli::tui::components::metrics_chart::ChartType::CpuUsage,
-        std::time::Duration::from_secs(60)
-    )));
+    registry.register(
+        id2.clone(),
+        Box::new(MetricsChartComponent::new(
+            dora_cli::tui::components::metrics_chart::ChartType::CpuUsage,
+            std::time::Duration::from_secs(60),
+        )),
+    );
     registry.register(id3.clone(), Box::new(StatusBarComponent::new()));
 
     assert_eq!(registry.len(), 3);
@@ -101,7 +105,12 @@ fn test_layout_manager_single_layout() {
         component_id: component_id.clone(),
     });
 
-    let area = Rect { x: 0, y: 0, width: 100, height: 50 };
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 50,
+    };
     let layout = manager.calculate_layout(area);
 
     assert_eq!(layout.len(), 1);
@@ -121,7 +130,12 @@ fn test_layout_manager_vertical_layout() {
         ],
     });
 
-    let area = Rect { x: 0, y: 0, width: 100, height: 100 };
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 100,
+    };
     let layout = manager.calculate_layout(area);
 
     assert_eq!(layout.len(), 2);
@@ -146,7 +160,12 @@ fn test_layout_manager_horizontal_layout() {
         ],
     });
 
-    let area = Rect { x: 0, y: 0, width: 200, height: 100 };
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: 200,
+        height: 100,
+    };
     let layout = manager.calculate_layout(area);
 
     assert_eq!(layout.len(), 2);
@@ -178,7 +197,12 @@ fn test_layout_manager_grid_layout() {
         ],
     });
 
-    let area = Rect { x: 0, y: 0, width: 200, height: 100 };
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: 200,
+        height: 100,
+    };
     let layout = manager.calculate_layout(area);
 
     assert_eq!(layout.len(), 4);
@@ -291,10 +315,13 @@ fn test_component_and_layout_integration() {
     let metrics_id = ComponentId::new("metrics");
 
     registry.register(list_id.clone(), Box::new(DataflowListComponent::new()));
-    registry.register(metrics_id.clone(), Box::new(MetricsChartComponent::new(
-        dora_cli::tui::components::metrics_chart::ChartType::MemoryUsage,
-        std::time::Duration::from_secs(30)
-    )));
+    registry.register(
+        metrics_id.clone(),
+        Box::new(MetricsChartComponent::new(
+            dora_cli::tui::components::metrics_chart::ChartType::MemoryUsage,
+            std::time::Duration::from_secs(30),
+        )),
+    );
 
     // Set up layout
     layout_manager.set_layout(LayoutConfig::Vertical {
@@ -305,7 +332,12 @@ fn test_component_and_layout_integration() {
     });
 
     // Calculate layout
-    let area = Rect { x: 0, y: 0, width: 100, height: 100 };
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 100,
+    };
     let layout = layout_manager.calculate_layout(area);
 
     // Verify both components have areas

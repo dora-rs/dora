@@ -1,9 +1,9 @@
 // Resource Analyzer for Issue #17 - Phase 2 Implementation
 
 use super::types::*;
-use crate::cli::commands::{ResourceType, InspectionFocus};
+use crate::cli::commands::{InspectionFocus, ResourceType};
 use chrono::Utc;
-use eyre::{Result, eyre};
+use eyre::Result;
 use std::collections::HashMap;
 
 /// Main resource analyzer
@@ -65,29 +65,41 @@ impl ResourceAnalyzer {
         let (health_score, performance_metrics, error_summary) = match focus {
             Some(InspectionFocus::Performance) => {
                 let perf = self.analyze_performance(&resource, depth).await?;
-                (self.calculate_health_score_from_performance(&perf), perf, ErrorSummary::default())
-            },
+                (
+                    self.calculate_health_score_from_performance(&perf),
+                    perf,
+                    ErrorSummary::default(),
+                )
+            }
             Some(InspectionFocus::Errors) => {
                 let errors = self.analyze_errors(&resource, depth).await?;
                 let health = self.calculate_health_score_from_errors(&errors);
                 (health, PerformanceMetrics::default(), errors)
-            },
+            }
             Some(InspectionFocus::Health) => {
                 let health = self.analyze_health(&resource, depth).await?;
-                (health, PerformanceMetrics::default(), ErrorSummary::default())
-            },
+                (
+                    health,
+                    PerformanceMetrics::default(),
+                    ErrorSummary::default(),
+                )
+            }
             Some(InspectionFocus::Dependencies) => {
                 // For dependencies focus, we provide a basic analysis
                 let health = self.analyze_health(&resource, depth).await?;
-                (health, PerformanceMetrics::default(), ErrorSummary::default())
-            },
+                (
+                    health,
+                    PerformanceMetrics::default(),
+                    ErrorSummary::default(),
+                )
+            }
             Some(InspectionFocus::All) | None => {
                 // Comprehensive analysis
                 let health = self.analyze_health(&resource, depth).await?;
                 let perf = self.analyze_performance(&resource, depth).await?;
                 let errors = self.analyze_errors(&resource, depth).await?;
                 (health, perf, errors)
-            },
+            }
         };
 
         // Generate recommendations
@@ -100,11 +112,8 @@ impl ResourceAnalyzer {
         )?;
 
         // Generate suggested actions
-        let suggested_actions = self.generate_suggested_actions(
-            &health_score,
-            &performance_metrics,
-            &error_summary,
-        )?;
+        let suggested_actions =
+            self.generate_suggested_actions(&health_score, &performance_metrics, &error_summary)?;
 
         Ok(InspectionResult {
             resource,
@@ -146,7 +155,8 @@ impl ResourceAnalyzer {
 
         // Cache result
         if self.config.enable_cache && self.resource_cache.len() < self.config.max_cache_size {
-            self.resource_cache.insert(target.to_string(), resource.clone());
+            self.resource_cache
+                .insert(target.to_string(), resource.clone());
         }
 
         Ok(resource)
@@ -247,11 +257,13 @@ impl ResourceAnalyzer {
         let base_complexity = match resource.resource_type.as_str() {
             "dataflow" => {
                 // Calculate based on number of nodes
-                let node_count = resource.metadata.get("nodes")
+                let node_count = resource
+                    .metadata
+                    .get("nodes")
                     .and_then(|n| n.parse::<u32>().ok())
                     .unwrap_or(1);
                 (node_count as f32) * 10.0
-            },
+            }
             "node" => 20.0,
             "system" => 50.0,
             "network" => 30.0,
@@ -295,7 +307,11 @@ impl ResourceAnalyzer {
         if base_score < 80.0 {
             issues.push(HealthIssue {
                 component: "runtime".to_string(),
-                severity: if base_score < 50.0 { IssueSeverity::Critical } else { IssueSeverity::Medium },
+                severity: if base_score < 50.0 {
+                    IssueSeverity::Critical
+                } else {
+                    IssueSeverity::Medium
+                },
                 description: format!("Resource status: {:?}", resource.status),
             });
         }
@@ -317,16 +333,33 @@ impl ResourceAnalyzer {
     }
 
     /// Analyze performance
-    async fn analyze_performance(&self, resource: &ResolvedResource, depth: u8) -> Result<PerformanceMetrics> {
+    async fn analyze_performance(
+        &self,
+        resource: &ResolvedResource,
+        depth: u8,
+    ) -> Result<PerformanceMetrics> {
         let mut issues = Vec::new();
 
         // Mock performance metrics
-        let (cpu_usage, memory_mb, throughput, latency_ms, error_rate) = match resource.resource_type.as_str() {
-            "dataflow" => (Some(45.0), Some(256.0), Some(1000.0), Some(15.0), Some(0.01)),
-            "node" => (Some(30.0), Some(128.0), Some(500.0), Some(10.0), Some(0.005)),
-            "system" => (Some(25.0), Some(512.0), None, None, Some(0.001)),
-            _ => (Some(20.0), Some(64.0), None, Some(5.0), Some(0.0)),
-        };
+        let (cpu_usage, memory_mb, throughput, latency_ms, error_rate) =
+            match resource.resource_type.as_str() {
+                "dataflow" => (
+                    Some(45.0),
+                    Some(256.0),
+                    Some(1000.0),
+                    Some(15.0),
+                    Some(0.01),
+                ),
+                "node" => (
+                    Some(30.0),
+                    Some(128.0),
+                    Some(500.0),
+                    Some(10.0),
+                    Some(0.005),
+                ),
+                "system" => (Some(25.0), Some(512.0), None, None, Some(0.001)),
+                _ => (Some(20.0), Some(64.0), None, Some(5.0), Some(0.0)),
+            };
 
         // Generate performance issues based on depth
         if depth >= 2 {
@@ -335,7 +368,9 @@ impl ResourceAnalyzer {
                     issues.push(PerformanceIssue {
                         severity: IssueSeverity::High,
                         description: format!("High CPU usage: {:.1}%", cpu),
-                        recommendation: Some("Consider optimizing or scaling the resource".to_string()),
+                        recommendation: Some(
+                            "Consider optimizing or scaling the resource".to_string(),
+                        ),
                     });
                 }
             }
@@ -345,7 +380,9 @@ impl ResourceAnalyzer {
                     issues.push(PerformanceIssue {
                         severity: IssueSeverity::Medium,
                         description: format!("High memory usage: {:.0}MB", mem),
-                        recommendation: Some("Monitor memory usage and consider increasing limits".to_string()),
+                        recommendation: Some(
+                            "Monitor memory usage and consider increasing limits".to_string(),
+                        ),
                     });
                 }
             }
@@ -357,7 +394,9 @@ impl ResourceAnalyzer {
                     issues.push(PerformanceIssue {
                         severity: IssueSeverity::Medium,
                         description: format!("Elevated latency: {:.1}ms", latency),
-                        recommendation: Some("Investigate network or processing delays".to_string()),
+                        recommendation: Some(
+                            "Investigate network or processing delays".to_string(),
+                        ),
                     });
                 }
             }
@@ -476,7 +515,11 @@ impl ResourceAnalyzer {
         if errors.total_errors > 0 {
             issues.push(HealthIssue {
                 component: "error_tracking".to_string(),
-                severity: if errors.total_errors > 20 { IssueSeverity::Critical } else { IssueSeverity::Medium },
+                severity: if errors.total_errors > 20 {
+                    IssueSeverity::Critical
+                } else {
+                    IssueSeverity::Medium
+                },
                 description: format!("{} errors detected", errors.total_errors),
             });
         }
@@ -517,7 +560,10 @@ impl ResourceAnalyzer {
                     "Health score is {:.0}%, consider investigating and resolving issues",
                     health.overall_score
                 ),
-                suggested_command: Some(format!("dora inspect {} --focus errors --depth 3", resource.identifier)),
+                suggested_command: Some(format!(
+                    "dora inspect {} --focus errors --depth 3",
+                    resource.identifier
+                )),
                 impact: ImpactLevel::High,
             });
         }
@@ -528,8 +574,14 @@ impl ResourceAnalyzer {
                 recommendations.push(Recommendation {
                     priority: RecommendationPriority::Medium,
                     title: "High CPU Usage".to_string(),
-                    description: format!("CPU usage is {:.1}%, consider optimization or scaling", cpu),
-                    suggested_command: Some(format!("dora inspect {} --focus performance", resource.identifier)),
+                    description: format!(
+                        "CPU usage is {:.1}%, consider optimization or scaling",
+                        cpu
+                    ),
+                    suggested_command: Some(format!(
+                        "dora inspect {} --focus performance",
+                        resource.identifier
+                    )),
                     impact: ImpactLevel::Medium,
                 });
             }
@@ -540,7 +592,10 @@ impl ResourceAnalyzer {
             recommendations.push(Recommendation {
                 priority: RecommendationPriority::Critical,
                 title: "High Error Rate".to_string(),
-                description: format!("{} errors detected, immediate investigation recommended", errors.total_errors),
+                description: format!(
+                    "{} errors detected, immediate investigation recommended",
+                    errors.total_errors
+                ),
                 suggested_command: Some(format!("dora logs {} --errors-only", resource.identifier)),
                 impact: ImpactLevel::High,
             });
@@ -627,7 +682,10 @@ mod tests {
     #[tokio::test]
     async fn test_analyzer_basic() {
         let mut analyzer = ResourceAnalyzer::new();
-        let result = analyzer.analyze_resource("test-dataflow", None, 1, None).await.unwrap();
+        let result = analyzer
+            .analyze_resource("test-dataflow", None, 1, None)
+            .await
+            .unwrap();
         assert_eq!(result.analysis_depth, 1);
         assert!(result.complexity_score > 0.0);
     }
@@ -636,19 +694,37 @@ mod tests {
     async fn test_analyzer_with_depth() {
         let mut analyzer = ResourceAnalyzer::new();
 
-        let result_depth_1 = analyzer.analyze_resource("test", None, 1, None).await.unwrap();
-        let result_depth_3 = analyzer.analyze_resource("test", None, 3, None).await.unwrap();
+        let result_depth_1 = analyzer
+            .analyze_resource("test", None, 1, None)
+            .await
+            .unwrap();
+        let result_depth_3 = analyzer
+            .analyze_resource("test", None, 3, None)
+            .await
+            .unwrap();
 
-        assert!(result_depth_3.health_score.component_scores.len() >= result_depth_1.health_score.component_scores.len());
+        assert!(
+            result_depth_3.health_score.component_scores.len()
+                >= result_depth_1.health_score.component_scores.len()
+        );
     }
 
     #[tokio::test]
     async fn test_resource_type_inference() {
         let analyzer = ResourceAnalyzer::new();
 
-        assert!(matches!(analyzer.infer_resource_type("test.yaml"), ResourceType::Dataflow));
-        assert!(matches!(analyzer.infer_resource_type("my-node"), ResourceType::Node));
-        assert!(matches!(analyzer.infer_resource_type("system"), ResourceType::System));
+        assert!(matches!(
+            analyzer.infer_resource_type("test.yaml"),
+            ResourceType::Dataflow
+        ));
+        assert!(matches!(
+            analyzer.infer_resource_type("my-node"),
+            ResourceType::Node
+        ));
+        assert!(matches!(
+            analyzer.infer_resource_type("system"),
+            ResourceType::System
+        ));
     }
 
     #[tokio::test]
@@ -675,12 +751,10 @@ mod tests {
     #[tokio::test]
     async fn test_performance_focus() {
         let mut analyzer = ResourceAnalyzer::new();
-        let result = analyzer.analyze_resource(
-            "test",
-            None,
-            2,
-            Some(InspectionFocus::Performance)
-        ).await.unwrap();
+        let result = analyzer
+            .analyze_resource("test", None, 2, Some(InspectionFocus::Performance))
+            .await
+            .unwrap();
 
         assert!(result.performance_metrics.cpu_usage.is_some());
     }
@@ -688,12 +762,10 @@ mod tests {
     #[tokio::test]
     async fn test_error_focus() {
         let mut analyzer = ResourceAnalyzer::new();
-        let result = analyzer.analyze_resource(
-            "test",
-            None,
-            2,
-            Some(InspectionFocus::Errors)
-        ).await.unwrap();
+        let result = analyzer
+            .analyze_resource("test", None, 2, Some(InspectionFocus::Errors))
+            .await
+            .unwrap();
 
         assert!(result.error_summary.total_errors >= 0);
     }
@@ -701,7 +773,10 @@ mod tests {
     #[tokio::test]
     async fn test_recommendations_generated() {
         let mut analyzer = ResourceAnalyzer::new();
-        let result = analyzer.analyze_resource("test", None, 3, None).await.unwrap();
+        let result = analyzer
+            .analyze_resource("test", None, 3, None)
+            .await
+            .unwrap();
 
         // Should have at least some analysis
         assert!(result.health_score.overall_score > 0.0);
@@ -712,11 +787,17 @@ mod tests {
         let mut analyzer = ResourceAnalyzer::new();
 
         // First call
-        let result1 = analyzer.analyze_resource("cached-test", None, 1, None).await.unwrap();
+        let result1 = analyzer
+            .analyze_resource("cached-test", None, 1, None)
+            .await
+            .unwrap();
         assert_eq!(analyzer.resource_cache.len(), 1);
 
         // Second call should use cache
-        let result2 = analyzer.analyze_resource("cached-test", None, 1, None).await.unwrap();
+        let result2 = analyzer
+            .analyze_resource("cached-test", None, 1, None)
+            .await
+            .unwrap();
         assert_eq!(result1.resource.identifier, result2.resource.identifier);
     }
 }

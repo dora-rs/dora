@@ -3,14 +3,14 @@
 
 use super::collab_features_types::*;
 use super::{BaseView, View, ViewAction};
-use crate::tui::{app::AppState, theme::ThemeConfig, Result};
+use crate::tui::{Result, app::AppState, theme::ThemeConfig};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph, Row, Table},
-    Frame,
 };
 use std::time::Duration;
 
@@ -47,7 +47,11 @@ impl CollabFeaturesView {
             Line::from(vec![
                 Span::raw("Selected: "),
                 Span::styled(
-                    format!("{}/{}", self.state.selected_item + 1, self.state.get_item_count()),
+                    format!(
+                        "{}/{}",
+                        self.state.selected_item + 1,
+                        self.state.get_item_count()
+                    ),
                     Style::default().add_modifier(Modifier::BOLD),
                 ),
             ]),
@@ -92,8 +96,14 @@ impl CollabFeaturesView {
             return;
         }
 
-        let header = Row::new(vec!["Status", "Username", "Role", "Presence", "Contributions"])
-            .style(Style::default().add_modifier(Modifier::BOLD));
+        let header = Row::new(vec![
+            "Status",
+            "Username",
+            "Role",
+            "Presence",
+            "Contributions",
+        ])
+        .style(Style::default().add_modifier(Modifier::BOLD));
 
         let rows: Vec<Row> = members
             .iter()
@@ -109,7 +119,11 @@ impl CollabFeaturesView {
                     format!("{}", member.role.color_indicator()),
                     member.username.clone(),
                     member.role.label().to_string(),
-                    format!("{} {}", member.presence.indicator(), member.presence.label()),
+                    format!(
+                        "{} {}",
+                        member.presence.indicator(),
+                        member.presence.label()
+                    ),
                     format!("{}", member.contributions),
                 ])
                 .style(style)
@@ -162,7 +176,11 @@ impl CollabFeaturesView {
                 let status = if session.is_active { "🔴" } else { "⚫" };
 
                 Row::new(vec![
-                    format!("{} {}", session.session_type.icon(), session.session_type.label()),
+                    format!(
+                        "{} {}",
+                        session.session_type.icon(),
+                        session.session_type.label()
+                    ),
                     session.host.clone(),
                     format!("{} users", session.participants.len()),
                     format!("{} {}min", status, duration),
@@ -218,7 +236,11 @@ impl CollabFeaturesView {
                 };
 
                 Row::new(vec![
-                    format!("{} {}", review.status.color_indicator(), review.status.label()),
+                    format!(
+                        "{} {}",
+                        review.status.color_indicator(),
+                        review.status.label()
+                    ),
                     review.review_id.clone(),
                     title,
                     review.author.clone(),
@@ -256,8 +278,14 @@ impl CollabFeaturesView {
             return;
         }
 
-        let header = Row::new(vec!["Category", "Title", "Difficulty", "Read Time", "Engagement"])
-            .style(Style::default().add_modifier(Modifier::BOLD));
+        let header = Row::new(vec![
+            "Category",
+            "Title",
+            "Difficulty",
+            "Read Time",
+            "Engagement",
+        ])
+        .style(Style::default().add_modifier(Modifier::BOLD));
 
         let rows: Vec<Row> = articles
             .iter()
@@ -278,7 +306,11 @@ impl CollabFeaturesView {
                 Row::new(vec![
                     format!("{} {}", article.category.icon(), article.category.label()),
                     title,
-                    format!("{} {}", article.difficulty.icon(), article.difficulty.label()),
+                    format!(
+                        "{} {}",
+                        article.difficulty.icon(),
+                        article.difficulty.label()
+                    ),
                     format!("{}min", article.read_time_minutes),
                     format!("👁 {} 👍 {}", article.views, article.likes),
                 ])
@@ -313,9 +345,9 @@ impl View for CollabFeaturesView {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(6),  // Header
-                Constraint::Min(10),    // Content
-                Constraint::Length(8),  // Shortcuts
+                Constraint::Length(6), // Header
+                Constraint::Min(10),   // Content
+                Constraint::Length(8), // Shortcuts
             ])
             .split(area);
 

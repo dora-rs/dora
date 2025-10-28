@@ -300,7 +300,12 @@ impl Default for StreamingConfig {
 impl Default for LogFilterConfig {
     fn default() -> Self {
         Self {
-            levels: vec![LogLevel::Info, LogLevel::Warn, LogLevel::Error, LogLevel::Fatal],
+            levels: vec![
+                LogLevel::Info,
+                LogLevel::Warn,
+                LogLevel::Error,
+                LogLevel::Fatal,
+            ],
             include_patterns: Vec::new(),
             exclude_patterns: Vec::new(),
             smart_filtering: false,

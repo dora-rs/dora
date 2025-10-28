@@ -1,14 +1,12 @@
 // Integration tests for Performance Optimization Feature (Issue #36)
 
+use crossterm::event::{KeyCode, KeyEvent};
 use dora_cli::tui::{
     app::AppState,
     views::{
-        View, ViewAction,
-        perf_optimization::PerfOptimizationView,
-        perf_optimization_types::*,
+        View, ViewAction, perf_optimization::PerfOptimizationView, perf_optimization_types::*,
     },
 };
-use crossterm::event::{KeyCode, KeyEvent};
 
 #[tokio::test]
 async fn test_perf_optimization_view_initialization() {
@@ -28,14 +26,18 @@ async fn test_section_navigation() {
     let sections = PerfSection::all();
     for (i, expected_section) in sections.iter().enumerate() {
         if i > 0 {
-            let result = view.handle_key(KeyEvent::from(KeyCode::Tab), &mut app_state).await;
+            let result = view
+                .handle_key(KeyEvent::from(KeyCode::Tab), &mut app_state)
+                .await;
             assert!(result.is_ok());
         }
         assert_eq!(view.state.current_section, *expected_section);
     }
 
     // Wrap around
-    let result = view.handle_key(KeyEvent::from(KeyCode::Tab), &mut app_state).await;
+    let result = view
+        .handle_key(KeyEvent::from(KeyCode::Tab), &mut app_state)
+        .await;
     assert!(result.is_ok());
     assert_eq!(view.state.current_section, PerfSection::PerformanceMetrics);
 }
@@ -46,14 +48,21 @@ async fn test_section_navigation_backward() {
     let mut app_state = AppState::default();
 
     // Go backward from first section (should wrap to last)
-    let result = view.handle_key(KeyEvent::from(KeyCode::BackTab), &mut app_state).await;
+    let result = view
+        .handle_key(KeyEvent::from(KeyCode::BackTab), &mut app_state)
+        .await;
     assert!(result.is_ok());
     assert_eq!(view.state.current_section, PerfSection::ResourceAnalysis);
 
     // Go backward again
-    let result = view.handle_key(KeyEvent::from(KeyCode::BackTab), &mut app_state).await;
+    let result = view
+        .handle_key(KeyEvent::from(KeyCode::BackTab), &mut app_state)
+        .await;
     assert!(result.is_ok());
-    assert_eq!(view.state.current_section, PerfSection::OptimizationSuggestions);
+    assert_eq!(
+        view.state.current_section,
+        PerfSection::OptimizationSuggestions
+    );
 }
 
 #[tokio::test]
@@ -68,12 +77,16 @@ async fn test_item_navigation() {
     let initial_index = view.state.selected_index;
 
     // Navigate down
-    let result = view.handle_key(KeyEvent::from(KeyCode::Down), &mut app_state).await;
+    let result = view
+        .handle_key(KeyEvent::from(KeyCode::Down), &mut app_state)
+        .await;
     assert!(result.is_ok());
     assert_eq!(view.state.selected_index, initial_index + 1);
 
     // Navigate up
-    let result = view.handle_key(KeyEvent::from(KeyCode::Up), &mut app_state).await;
+    let result = view
+        .handle_key(KeyEvent::from(KeyCode::Up), &mut app_state)
+        .await;
     assert!(result.is_ok());
     assert_eq!(view.state.selected_index, initial_index);
 }
@@ -87,12 +100,16 @@ async fn test_vim_style_navigation() {
     view.state.update_data();
 
     // Test 'j' (down)
-    let result = view.handle_key(KeyEvent::from(KeyCode::Char('j')), &mut app_state).await;
+    let result = view
+        .handle_key(KeyEvent::from(KeyCode::Char('j')), &mut app_state)
+        .await;
     assert!(result.is_ok());
     assert!(view.state.selected_index > 0);
 
     // Test 'k' (up)
-    let result = view.handle_key(KeyEvent::from(KeyCode::Char('k')), &mut app_state).await;
+    let result = view
+        .handle_key(KeyEvent::from(KeyCode::Char('k')), &mut app_state)
+        .await;
     assert!(result.is_ok());
     assert_eq!(view.state.selected_index, 0);
 }
@@ -102,7 +119,9 @@ async fn test_quit_action() {
     let mut view = PerfOptimizationView::new();
     let mut app_state = AppState::default();
 
-    let result = view.handle_key(KeyEvent::from(KeyCode::Char('q')), &mut app_state).await;
+    let result = view
+        .handle_key(KeyEvent::from(KeyCode::Char('q')), &mut app_state)
+        .await;
     assert!(result.is_ok());
     assert!(matches!(result.unwrap(), ViewAction::PopView));
 }
@@ -112,7 +131,9 @@ async fn test_refresh_action() {
     let mut view = PerfOptimizationView::new();
     let mut app_state = AppState::default();
 
-    let result = view.handle_key(KeyEvent::from(KeyCode::Char('r')), &mut app_state).await;
+    let result = view
+        .handle_key(KeyEvent::from(KeyCode::Char('r')), &mut app_state)
+        .await;
     assert!(result.is_ok());
     assert!(matches!(result.unwrap(), ViewAction::None));
 }
@@ -465,7 +486,9 @@ async fn test_complete_navigation_cycle() {
     // Navigate through all sections and verify data updates
     for _ in 0..PerfSection::all().len() {
         // Navigate to next section
-        let result = view.handle_key(KeyEvent::from(KeyCode::Tab), &mut app_state).await;
+        let result = view
+            .handle_key(KeyEvent::from(KeyCode::Tab), &mut app_state)
+            .await;
         assert!(result.is_ok());
 
         // Verify selection resets

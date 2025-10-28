@@ -1,18 +1,17 @@
 /// Dataflow List Component - reusable dataflow listing widget
-
 use ratatui::{
+    Frame,
     layout::Rect,
     style::Style,
     widgets::{Block, Borders, List, ListItem, ListState},
-    Frame,
 };
 use std::time::Instant;
 
 use crate::tui::{
+    Result,
     app::{AppState, DataflowInfo},
     theme::ThemeConfig,
     views::ViewAction,
-    Result,
 };
 
 use super::{Component, ComponentEvent, ComponentType};
@@ -63,7 +62,12 @@ impl DataflowListComponent {
         self.selected_index
     }
 
-    fn render_dataflow_item(&self, dataflow: &DataflowInfo, selected: bool, theme: &ThemeConfig) -> ListItem {
+    fn render_dataflow_item(
+        &self,
+        dataflow: &DataflowInfo,
+        selected: bool,
+        theme: &ThemeConfig,
+    ) -> ListItem {
         let status_icon = match dataflow.status.as_str() {
             "running" => "🟢",
             "stopped" => "🔴",
@@ -109,8 +113,10 @@ impl Default for DataflowListComponent {
 }
 
 impl Component for DataflowListComponent {
-    fn update<'a>(&'a mut self, app_state: &'a AppState)
-        -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
+    fn update<'a>(
+        &'a mut self,
+        app_state: &'a AppState,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
         Box::pin(async move {
             // Ensure selected index is valid
             if !app_state.dataflows.is_empty() && self.selected_index >= app_state.dataflows.len() {
@@ -132,7 +138,9 @@ impl Component for DataflowListComponent {
                 Style::default().fg(theme.colors.border)
             });
 
-        let items: Vec<ListItem> = app_state.dataflows.iter()
+        let items: Vec<ListItem> = app_state
+            .dataflows
+            .iter()
             .enumerate()
             .map(|(i, dataflow)| {
                 self.render_dataflow_item(dataflow, i == self.selected_index, theme)
@@ -148,32 +156,36 @@ impl Component for DataflowListComponent {
         frame.render_stateful_widget(list, area, &mut state);
     }
 
-    fn handle_event<'a>(&'a mut self, event: ComponentEvent, app_state: &'a AppState)
-        -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<ViewAction>> + Send + 'a>> {
+    fn handle_event<'a>(
+        &'a mut self,
+        event: ComponentEvent,
+        app_state: &'a AppState,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<ViewAction>> + Send + 'a>> {
         Box::pin(async move {
             if !self.focused {
                 return Ok(ViewAction::None);
             }
 
             match event {
-                ComponentEvent::Key(key_event) => {
-                    match key_event.code {
-                        crossterm::event::KeyCode::Up | crossterm::event::KeyCode::Char('k') => {
-                            self.move_selection_up();
-                        },
-                        crossterm::event::KeyCode::Down | crossterm::event::KeyCode::Char('j') => {
-                            self.move_selection_down(app_state.dataflows.len());
-                        },
-                        crossterm::event::KeyCode::Enter => {
-                            if let Some(selected) = self.selected_dataflow(&app_state.dataflows) {
-                                return Ok(ViewAction::ShowStatus(format!("Selected dataflow: {}", selected.name)));
-                            }
-                        },
-                        crossterm::event::KeyCode::Char('r') => {
-                            return Ok(ViewAction::Refresh);
-                        },
-                        _ => {}
+                ComponentEvent::Key(key_event) => match key_event.code {
+                    crossterm::event::KeyCode::Up | crossterm::event::KeyCode::Char('k') => {
+                        self.move_selection_up();
                     }
+                    crossterm::event::KeyCode::Down | crossterm::event::KeyCode::Char('j') => {
+                        self.move_selection_down(app_state.dataflows.len());
+                    }
+                    crossterm::event::KeyCode::Enter => {
+                        if let Some(selected) = self.selected_dataflow(&app_state.dataflows) {
+                            return Ok(ViewAction::ShowStatus(format!(
+                                "Selected dataflow: {}",
+                                selected.name
+                            )));
+                        }
+                    }
+                    crossterm::event::KeyCode::Char('r') => {
+                        return Ok(ViewAction::Refresh);
+                    }
+                    _ => {}
                 },
                 _ => {}
             }

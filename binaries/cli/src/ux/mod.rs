@@ -1,7 +1,7 @@
-pub mod validation;
-pub mod performance;
 pub mod integration;
+pub mod performance;
+pub mod validation;
 
-pub use validation::*;
-pub use performance::*;
 pub use integration::*;
+pub use performance::*;
+pub use validation::*;
