@@ -1,17 +1,11 @@
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use colored::Colorize;
 use command::Executable;
-use dora_core::{
-    descriptor::{Descriptor, DescriptorExt},
-    topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT,
-};
 use eyre::{Context, eyre};
 use std::{
-    net::{IpAddr, Ipv4Addr, SocketAddr},
-    path::PathBuf,
+    net::{IpAddr, Ipv4Addr},
+    path::{Path, PathBuf},
 };
-
-use crate::command::check::check_environment;
 
 mod command;
 mod common;
@@ -145,12 +139,12 @@ pub fn run_new_cli(cli: cli::Cli) {
                 std::process::exit(1);
             }
         }
-        Some(cli::Command::Check(cmd)) => {
-            let context = cli::context::ExecutionContext::from_cli(&cli);
-            if let Err(err) = execute_check_command(cmd, &context) {
-                eprintln!("[ERROR] {err:?}");
-                std::process::exit(1);
-            }
+        Some(other) => {
+            eprintln!(
+                "`dora {}` remains a legacy CLI workflow. Invoke it without the `tui` entry point or launch the TUI with `dora tui` for interactive features.",
+                other.command_name()
+            );
+            std::process::exit(2);
         }
         _ => {
             let legacy_args = Args::parse();
@@ -159,49 +153,87 @@ pub fn run_new_cli(cli: cli::Cli) {
     }
 }
 
-fn execute_check_command(
-    cmd: crate::cli::commands::CheckCommand,
-    context: &cli::context::ExecutionContext,
-) -> eyre::Result<()> {
-    let crate::cli::commands::CheckCommand { common, dataflow } = cmd;
+trait CommandName {
+    fn command_name(&self) -> &'static str;
+}
 
-    let base_dir = common
-        .working_dir
-        .clone()
-        .map(|dir| {
-            let candidate = PathBuf::from(dir);
-            if candidate.is_relative() {
-                context.working_dir.join(candidate)
-            } else {
-                candidate
-            }
-        })
-        .unwrap_or_else(|| context.working_dir.clone());
+impl CommandName for cli::Command {
+    fn command_name(&self) -> &'static str {
+        match self {
+            cli::Command::Ps(_) => "ps",
+            cli::Command::Start(_) => "start",
+            cli::Command::Stop(_) => "stop",
+            cli::Command::Logs(_) => "logs",
+            cli::Command::Build(_) => "build",
+            cli::Command::Up(_) => "up",
+            cli::Command::Destroy(_) => "destroy",
+            cli::Command::New(_) => "new",
+            cli::Command::Check(_) => "check",
+            cli::Command::Graph(_) => "graph",
+            cli::Command::Inspect(_) => "inspect",
+            cli::Command::Debug(_) => "debug",
+            cli::Command::Analyze(_) => "analyze",
+            cli::Command::Monitor(_) => "monitor",
+            cli::Command::Help(_) => "help",
+            cli::Command::Tui(_) => "tui",
+            cli::Command::Dashboard(_) => "dashboard",
+            cli::Command::System(_) => "system",
+            cli::Command::Config(_) => "config",
+            cli::Command::Daemon(_) => "daemon",
+            cli::Command::Runtime(_) => "runtime",
+            cli::Command::Coordinator(_) => "coordinator",
+            cli::Command::Self_(_) => "self",
+        }
+    }
+}
 
-    if let Some(dataflow) = dataflow.dataflow.clone() {
-        let full_path = if dataflow.is_relative() {
-            base_dir.join(dataflow)
-        } else {
-            dataflow
-        };
+pub fn print_legacy_help_with_hint() {
+    println!("Legacy CLI (default `dora <command>`):\n");
+    if let Err(err) = Args::command().print_help() {
+        eprintln!("{err}");
+    }
+    println!("\nHint: run `dora tui --help` for interactive dashboard commands.\n");
+}
 
-        let descriptor_path = full_path
-            .canonicalize()
-            .wrap_err("failed to resolve dataflow path")?;
-
-        let working_dir = descriptor_path
-            .parent()
-            .ok_or_else(|| eyre!("dataflow path has no parent directory"))?
-            .to_path_buf();
-
-        Descriptor::blocking_read(&descriptor_path)?
-            .check(&working_dir)
-            .wrap_err("dataflow validation failed")?;
+#[allow(dead_code)]
+pub fn execute_legacy_command<'a, I>(args: I, working_dir: Option<&Path>) -> eyre::Result<()>
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    let mut argv = vec!["dora".to_string()];
+    for arg in args {
+        argv.push(arg.to_string());
     }
 
-    let coordinator_addr: SocketAddr =
-        (crate::LOCALHOST, DORA_COORDINATOR_PORT_CONTROL_DEFAULT).into();
-    check_environment(coordinator_addr)
+    let previous_dir = match working_dir {
+        Some(dir) => {
+            let current = std::env::current_dir().context("failed to read current directory")?;
+            if let Err(err) = std::env::set_current_dir(dir) {
+                eprintln!(
+                    "warning: failed to change working directory to '{}': {err}. Continuing in current directory.",
+                    dir.display()
+                );
+                None
+            } else {
+                Some(current)
+            }
+        }
+        None => None,
+    };
+
+    let parse_result = Args::try_parse_from(&argv);
+    let exec_result = match parse_result {
+        Ok(args) => args.command.execute(),
+        Err(err) => Err(eyre!(err.to_string())),
+    };
+
+    if let (Some(original_dir), Some(_)) = (previous_dir, working_dir) {
+        if let Err(err) = std::env::set_current_dir(original_dir) {
+            eprintln!("warning: failed to restore working directory: {err}");
+        }
+    }
+
+    exec_result
 }
 
 /// Launch TUI with specified initial view
