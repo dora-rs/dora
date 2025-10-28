@@ -1,10 +1,9 @@
-#include "../build/dora-node-api.h" 
+#include "../build/dora-node-api.h"
 #include <arrow/api.h>
 #include <arrow/c/bridge.h>
+#include <exception>
 #include <iostream>
-#include <memory>
 #include <string>
-#include <vector>
 
 std::shared_ptr<arrow::Array> receive_and_print_input(rust::cxxbridge1::Box<DoraEvent> event) {
     std::cout << "Received input event" << std::endl;
@@ -26,7 +25,50 @@ std::shared_ptr<arrow::Array> receive_and_print_input(rust::cxxbridge1::Box<Dora
 
     // Print input ID and metadata
     std::cout << "Input ID: " << std::string(input_info.id) << std::endl;
-    std::cout << "Metadata JSON: " << std::string(input_info.metadata_json) << std::endl;
+    auto metadata = std::move(input_info.metadata);
+    std::cout << "Metadata timestamp: " << metadata->timestamp() << std::endl;
+
+    auto keys = metadata->list_keys();
+    std::cout << "Metadata keys: [";
+    for (std::size_t i = 0; i < keys.size(); i++) {
+        if (i > 0) {
+            std::cout << ", ";
+        }
+        std::cout << std::string(keys[i]);
+    }
+    std::cout << "]" << std::endl;
+
+    for (std::size_t i = 0; i < keys.size(); i++) {
+        const std::string key = std::string(keys[i]);
+        try {
+            auto value_type = metadata->type(key);
+            switch (value_type) {
+            case MetadataValueType::Float:
+                std::cout << "Metadata[" << key << "] (float) = " << metadata->get_float(key)
+                          << std::endl;
+                break;
+            case MetadataValueType::Integer:
+                std::cout << "Metadata[" << key << "] (int) = " << metadata->get_int(key)
+                          << std::endl;
+                break;
+            case MetadataValueType::String:
+                std::cout << "Metadata[" << key << "] (string) = "
+                          << std::string(metadata->get_str(key)) << std::endl;
+                break;
+            case MetadataValueType::Bool:
+                std::cout << "Metadata[" << key << "] (bool) = "
+                          << std::string(metadata->get_json(key)) << std::endl;
+                break;
+            default:
+                std::cout << "Metadata[" << key << "] has unsupported type" << std::endl;
+                break;
+            }
+        } catch (const std::exception& err) {
+            std::cout << "Metadata[" << key << "] unavailable: " << err.what() << std::endl;
+        }
+    }
+
+    std::cout << "Metadata JSON: " << std::string(metadata->to_json()) << std::endl;
 
     auto result2 = arrow::ImportArray(&c_array, &c_schema);
     std::shared_ptr<arrow::Array> input_array = result2.ValueOrDie();
@@ -46,9 +88,13 @@ bool send_output(DoraNode& dora_node, std::shared_ptr<arrow::Array> output_array
     }
     struct ArrowArray out_c_array;
     struct ArrowSchema out_c_schema;
-    
-    arrow::ExportArray(*output_array, &out_c_array, &out_c_schema);
-    
+
+    auto export_status = arrow::ExportArray(*output_array, &out_c_array, &out_c_schema);
+    if (!export_status.ok()) {
+        std::cerr << "Failed to export Arrow array: " << export_status.ToString() << std::endl;
+        return false;
+    }
+
     auto send_result = send_arrow_output(
         dora_node.send_output,
         "counter",
@@ -61,7 +107,7 @@ bool send_output(DoraNode& dora_node, std::shared_ptr<arrow::Array> output_array
         std::cerr << "Error sending Arrow array: " << error_message << std::endl;
         return false;
     }
-    
+
     return true;
 }
 
@@ -85,16 +131,21 @@ int main() {
             }
             else if (type == DoraEventType::Input) {
                 std::shared_ptr<arrow::Array> input_array = receive_and_print_input(std::move(event));
-                
+
                 std::shared_ptr<arrow::Array> output_array;
-                
+
                 arrow::Int32Builder builder;
-                builder.Append(10);
-                builder.Append(100);
-                builder.Append(1000);
-                builder.Finish(&output_array);
+                if (!builder.Append(10).ok() || !builder.Append(100).ok() ||
+                    !builder.Append(1000).ok()) {
+                    std::cerr << "Failed to append to builder" << std::endl;
+                    return 1;
+                }
+                if (!builder.Finish(&output_array).ok()) {
+                    std::cerr << "Failed to finish builder" << std::endl;
+                    return 1;
+                }
                 std::cout << "Created new string array: " << output_array->ToString() << std::endl;
-                
+
                 //Printing Before sending
                 auto str_array = std::static_pointer_cast<arrow::Int32Array>(output_array);
                 std::cout << "Values: [";
@@ -107,7 +158,7 @@ int main() {
                 send_output(dora_node, output_array);
             }
         }
-        
+
         return 0;
     }
     catch (const std::exception& e) {
