@@ -36,6 +36,11 @@ name = "rust-ros2-example-node-service-server"
 path = "src/service_server.rs"
 required-features = ["ros2"]
 
+[[bin]]
+name = "rust-ros2-example-node-action-client"
+path = "src/action_client.rs"
+required-features = ["ros2"]
+
 [dependencies]
 dora-node-api = { workspace = true, features = ["tracing"] }
 eyre = { workspace = true }
@@ -44,4 +49,9 @@ futures-timer = "3.0.3"
 rand = "0.8.5"
 tokio = { workspace = true, features = ["rt", "macros"] }
 dora-ros2-bridge = { workspace = true }
+<<<<<<< HEAD
 serde_json = { workspace = true }
+=======
+serde_json = "1.0.99"
+futures-concurrency-dynamic = "0.2.2"
+>>>>>>> 1ab7d6df (Add rust ros2 action client example)
