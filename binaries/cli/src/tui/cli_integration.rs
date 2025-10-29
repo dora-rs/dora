@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::PathBuf};
+use std::{collections::HashMap, env, path::PathBuf};
 
 use chrono::Utc;
 use eyre::Result;
@@ -184,7 +184,11 @@ impl CommandHistory {
         self.commands.iter().filter(|entry| entry.success).collect()
     }
 
-    fn history_path() -> Result<PathBuf> {
+    pub fn history_path() -> Result<PathBuf> {
+        if let Ok(custom_dir) = env::var("DORA_CONFIG_DIR") {
+            return Ok(PathBuf::from(custom_dir).join("tui_history.json"));
+        }
+
         let config_dir = dirs::config_dir()
             .ok_or_else(|| eyre::eyre!("Could not determine config directory"))?
             .join("dora");
