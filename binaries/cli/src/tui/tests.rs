@@ -1,10 +1,23 @@
 #[cfg(test)]
-use crate::tui::{
-    app::{AppState, DoraApp, MessageLevel, ViewType},
-    cli_integration::{CliContext, CommandHistory, KeyBindings, TabCompletion},
-    theme::ThemeConfig,
-    views::{StateUpdate, View, ViewAction},
+use crate::{
+    config::preferences::UserPreferences,
+    tui::{
+        app::{AppState, DoraApp, MessageLevel, ViewType},
+        cli_integration::{CliContext, CommandHistory, KeyBindings, TabCompletion},
+        command_executor::StateUpdate as CommandStateUpdate,
+        theme::ThemeConfig,
+        views::{StateUpdate, View, ViewAction},
+    },
 };
+
+#[cfg(test)]
+use once_cell::sync::Lazy;
+
+#[cfg(test)]
+use std::{fs, path::PathBuf, sync::Mutex, time::Duration};
+
+#[cfg(test)]
+static CONFIG_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
 #[cfg(test)]
 mod app_tests {
@@ -89,6 +102,60 @@ mod app_tests {
 
         app.show_error_message("Error message".to_string());
         assert!(app.has_status_messages());
+    }
+
+    #[test]
+    fn test_user_preferences_reload() {
+        let _lock = CONFIG_LOCK.lock().unwrap();
+
+        let temp_dir =
+            std::env::temp_dir().join(format!("dora_prefs_test_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).unwrap();
+        unsafe {
+            std::env::set_var("DORA_CONFIG_DIR", &temp_dir);
+        }
+
+        let mut prefs = UserPreferences::load_or_create().unwrap();
+        prefs.interface.tui.theme = "light".to_string();
+        prefs.interface.tui.auto_refresh_interval = Duration::from_secs(7);
+        prefs.interface.hints.show_hints = false;
+        prefs.save().unwrap();
+
+        let mut app = DoraApp::new(ViewType::Dashboard);
+        assert_eq!(app.user_config().theme_name, "light");
+        assert_eq!(
+            app.user_config().auto_refresh_interval,
+            Duration::from_secs(7)
+        );
+        assert!(!app.user_config().show_system_info);
+
+        let mut prefs = UserPreferences::load_or_create().unwrap();
+        prefs.interface.tui.theme = "dark".to_string();
+        prefs.interface.tui.auto_refresh_interval = Duration::from_secs(3);
+        prefs.interface.hints.show_hints = true;
+        prefs.save().unwrap();
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            app.test_process_state_update(CommandStateUpdate::ConfigurationChanged)
+                .await
+                .unwrap();
+        });
+
+        assert_eq!(app.user_config().theme_name, "dark");
+        assert_eq!(
+            app.user_config().auto_refresh_interval,
+            Duration::from_secs(3)
+        );
+        assert!(app.user_config().show_system_info);
+
+        unsafe {
+            std::env::remove_var("DORA_CONFIG_DIR");
+        }
+        fs::remove_dir_all(&temp_dir).unwrap();
     }
 }
 
@@ -219,6 +286,30 @@ mod cli_integration_tests {
         // Remove binding
         bindings.remove_binding("x", None);
         assert_eq!(bindings.get_binding("x", None), None);
+    }
+
+    #[test]
+    fn test_command_history_persisted_to_disk() {
+        let _lock = CONFIG_LOCK.lock().unwrap();
+
+        let temp_dir =
+            std::env::temp_dir().join(format!("dora_history_test_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).unwrap();
+        unsafe {
+            std::env::set_var("DORA_CONFIG_DIR", &temp_dir);
+        }
+
+        let working_dir = PathBuf::from("/");
+        CommandHistory::record("ps example".to_string(), true, working_dir).unwrap();
+
+        let history = CommandHistory::load_or_default();
+        assert!(!history.commands.is_empty());
+        assert_eq!(history.commands[0].command, "ps example");
+
+        unsafe {
+            std::env::remove_var("DORA_CONFIG_DIR");
+        }
+        fs::remove_dir_all(&temp_dir).unwrap();
     }
 }
 

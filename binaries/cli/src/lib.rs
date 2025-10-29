@@ -102,6 +102,7 @@ pub fn hybrid_main(cli: cli::Cli) {
 
 pub fn run_new_cli(cli: cli::Cli) {
     let command_opt = cli.command.clone();
+    let context = cli::context::ExecutionContext::from_cli(&cli);
 
     match command_opt {
         Some(cli::Command::Tui(cmd)) => {
@@ -136,6 +137,94 @@ pub fn run_new_cli(cli: cli::Cli) {
 
             if let Err(e) = launch_tui(tui::ViewType::Dashboard) {
                 eprintln!("❌ Failed to launch dashboard: {}", e);
+                std::process::exit(1);
+            }
+        }
+        Some(cli::Command::Debug(cmd)) => {
+            if let Some(view) = debug_view_for_tui(&cli, &context, &cmd) {
+                if let Err(e) = launch_tui(view) {
+                    eprintln!("❌ Failed to launch debug TUI: {}", e);
+                    std::process::exit(1);
+                }
+                return;
+            }
+
+            let formatter = cli::output::OutputFormatter::new(
+                cli.output.clone(),
+                cli.ui_mode.clone(),
+                cli.no_hints,
+            );
+            let runtime = tokio::runtime::Runtime::new().unwrap_or_else(|err| {
+                eprintln!("❌ Failed to initialize async runtime: {err}");
+                std::process::exit(1);
+            });
+
+            if let Err(err) = runtime.block_on(async {
+                crate::cli::advanced::run_debug_command(&cmd, &context, &formatter).await
+            }) {
+                eprintln!("❌ Debug command failed: {err}");
+                std::process::exit(1);
+            }
+        }
+        Some(cli::Command::Analyze(cmd)) => {
+            let formatter = cli::output::OutputFormatter::new(
+                cli.output.clone(),
+                cli.ui_mode.clone(),
+                cli.no_hints,
+            );
+            let runtime = tokio::runtime::Runtime::new().unwrap_or_else(|err| {
+                eprintln!("❌ Failed to initialize async runtime: {err}");
+                std::process::exit(1);
+            });
+
+            if let Err(err) = runtime.block_on(async {
+                crate::cli::advanced::run_analyze_command(&cmd, &context, &formatter).await
+            }) {
+                eprintln!("❌ Analyze command failed: {err}");
+                std::process::exit(1);
+            }
+        }
+        Some(cli::Command::Monitor(cmd)) => {
+            if let Some(view) = monitor_view_for_tui(&cli, &context, &cmd) {
+                if let Err(e) = launch_tui(view) {
+                    eprintln!("❌ Failed to launch monitor TUI: {}", e);
+                    std::process::exit(1);
+                }
+                return;
+            }
+
+            let formatter = cli::output::OutputFormatter::new(
+                cli.output.clone(),
+                cli.ui_mode.clone(),
+                cli.no_hints,
+            );
+            let runtime = tokio::runtime::Runtime::new().unwrap_or_else(|err| {
+                eprintln!("❌ Failed to initialize async runtime: {err}");
+                std::process::exit(1);
+            });
+
+            if let Err(err) = runtime.block_on(async {
+                crate::cli::advanced::run_monitor_command(&cmd, &context, &formatter).await
+            }) {
+                eprintln!("❌ Monitor command failed: {err}");
+                std::process::exit(1);
+            }
+        }
+        Some(cli::Command::System(cmd)) => {
+            let formatter = cli::output::OutputFormatter::new(
+                cli.output.clone(),
+                cli.ui_mode.clone(),
+                cli.no_hints,
+            );
+            let runtime = tokio::runtime::Runtime::new().unwrap_or_else(|err| {
+                eprintln!("❌ Failed to initialize async runtime: {err}");
+                std::process::exit(1);
+            });
+
+            if let Err(err) = runtime.block_on(async {
+                crate::cli::advanced::run_system_command(&cmd, &context, &formatter).await
+            }) {
+                eprintln!("❌ System command failed: {err}");
                 std::process::exit(1);
             }
         }
@@ -248,6 +337,47 @@ fn launch_tui(initial_view: tui::ViewType) -> Result<(), Box<dyn std::error::Err
         // Run the TUI
         app.run().await
     })
+}
+
+fn debug_view_for_tui(
+    cli: &cli::Cli,
+    context: &cli::context::ExecutionContext,
+    cmd: &cli::commands::DebugCommand,
+) -> Option<tui::ViewType> {
+    let wants_tui = matches!(cli.ui_mode, Some(cli::UiMode::Tui))
+        || matches!(context.ui_mode, Some(cli::UiMode::Tui))
+        || (context.terminal_capabilities.tui_capable
+            && (cmd.live || matches!(context.user_preference, cli::UiMode::Tui)));
+
+    if wants_tui {
+        let dataflow_id = cmd
+            .dataflow
+            .dataflow
+            .as_ref()
+            .map(|df| df.to_string_lossy().to_string())
+            .or_else(|| cmd.dataflow.name.clone())
+            .unwrap_or_else(|| "current".to_string());
+
+        Some(tui::ViewType::DebugSession { dataflow_id })
+    } else {
+        None
+    }
+}
+
+fn monitor_view_for_tui(
+    cli: &cli::Cli,
+    context: &cli::context::ExecutionContext,
+    cmd: &cli::commands::MonitorCommand,
+) -> Option<tui::ViewType> {
+    let wants_tui = matches!(cli.ui_mode, Some(cli::UiMode::Tui))
+        || matches!(context.ui_mode, Some(cli::UiMode::Tui))
+        || (context.terminal_capabilities.tui_capable && cmd.interval.is_some());
+
+    if wants_tui {
+        Some(tui::ViewType::SystemMonitor)
+    } else {
+        None
+    }
 }
 
 // Legacy conversion will be implemented in future issues when needed

@@ -19,6 +19,14 @@ impl OutputFormatter {
         }
     }
 
+    pub fn format(&self) -> OutputFormat {
+        self.format.clone()
+    }
+
+    pub fn ui_mode(&self) -> Option<UiMode> {
+        self.ui_mode.clone()
+    }
+
     /// Render data according to the specified format
     pub fn render<T: Serialize>(&self, data: &T) -> Result<String> {
         match self.format {

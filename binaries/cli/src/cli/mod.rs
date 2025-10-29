@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
 
+pub mod advanced;
 pub mod commands;
 pub mod context;
 pub mod interface;

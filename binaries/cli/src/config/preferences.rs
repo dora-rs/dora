@@ -2,9 +2,12 @@ use crate::cli::context::ExecutionContext;
 use crate::cli::{Command, UiMode};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, VecDeque};
-use std::path::PathBuf;
-use std::time::Duration;
+use std::{
+    collections::{HashMap, VecDeque},
+    env,
+    path::PathBuf,
+    time::Duration,
+};
 
 /// Main user preferences structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -373,6 +376,10 @@ impl UserPreferences {
     }
 
     pub fn get_preferences_path() -> eyre::Result<PathBuf> {
+        if let Ok(custom_dir) = env::var("DORA_CONFIG_DIR") {
+            return Ok(PathBuf::from(custom_dir).join("preferences.toml"));
+        }
+
         let config_dir = dirs::config_dir()
             .ok_or_else(|| eyre::eyre!("Could not determine config directory"))?;
 

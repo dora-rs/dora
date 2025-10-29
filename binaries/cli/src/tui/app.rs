@@ -29,7 +29,9 @@ use eyre::WrapErr;
 use super::{
     Result,
     cli_integration::{CliContext, CommandHistory, CommandMode},
-    command_executor::{CommandModeExecutionResult, CommandModeViewAction, TuiCliExecutor},
+    command_executor::{
+        CommandModeExecutionResult, CommandModeViewAction, StateUpdate, TuiCliExecutor,
+    },
     command_mode::{CommandModeAction, CommandModeManager},
     metrics::MetricsCollector,
     theme::ThemeConfig,
@@ -768,6 +770,10 @@ impl DoraApp {
                         }
                     }
 
+                    for update in state_updates {
+                        self.process_state_update(update).await?;
+                    }
+
                     // Show execution result if requested
                     if show_output {
                         self.show_status_message(message, MessageLevel::Success);
@@ -786,6 +792,72 @@ impl DoraApp {
         }
 
         Ok(())
+    }
+
+    async fn process_state_update(&mut self, update: StateUpdate) -> Result<()> {
+        match update {
+            StateUpdate::DataflowAdded(info) => {
+                if let Some(existing) = self
+                    .state
+                    .dataflows
+                    .iter_mut()
+                    .find(|df| df.id == info.id || df.name == info.name)
+                {
+                    *existing = info;
+                } else {
+                    self.state.dataflows.push(info);
+                }
+            }
+            StateUpdate::DataflowRemoved(identifier) => {
+                self.state
+                    .dataflows
+                    .retain(|df| df.id != identifier && df.name != identifier);
+            }
+            StateUpdate::DataflowStatusChanged { name, new_status } => {
+                if let Some(df) = self
+                    .state
+                    .dataflows
+                    .iter_mut()
+                    .find(|df| df.id == name || df.name == name)
+                {
+                    df.status = new_status;
+                }
+            }
+            StateUpdate::NodeStatusChanged {
+                dataflow,
+                node,
+                status,
+            } => {
+                if let Some(df) = self
+                    .state
+                    .dataflows
+                    .iter_mut()
+                    .find(|df| df.id == dataflow || df.name == dataflow)
+                {
+                    if let Some(node_info) =
+                        df.nodes.iter_mut().find(|n| n.id == node || n.name == node)
+                    {
+                        node_info.status = status;
+                    }
+                }
+            }
+            StateUpdate::SystemMetricsUpdated => {
+                self.update_system_metrics().await?;
+            }
+            StateUpdate::ConfigurationChanged => {
+                self.apply_user_preferences();
+            }
+            StateUpdate::RefreshRequired => {
+                self.refresh_current_view_data().await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub async fn test_process_state_update(&mut self, update: StateUpdate) -> Result<()> {
+        self.process_state_update(update).await
     }
 
     async fn refresh_current_view_data(&mut self) -> Result<()> {
@@ -853,6 +925,10 @@ impl DoraApp {
         if let Some(previous_view) = self.view_stack.pop() {
             self.current_view = previous_view;
         }
+    }
+
+    pub fn user_config(&self) -> &UserConfig {
+        &self.state.user_config
     }
 
     pub fn is_in_command_mode(&self) -> bool {
