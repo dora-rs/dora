@@ -177,7 +177,7 @@ mod dataflow_explorer_phase2_tests {
     fn test_selection_reset_on_filter_change() {
         let theme = ThemeConfig::default();
         let mut view = DataflowExplorerView::new(&theme);
-        let app_state = create_test_app_state();
+        let _app_state = create_test_app_state();
 
         // Select second item
         view.selected_index = 1;

@@ -30,6 +30,7 @@ pub struct Run {
     uv: bool,
 }
 
+#[allow(dead_code)]
 #[deprecated(note = "use `run` instead")]
 pub fn run_func(dataflow: String, uv: bool) -> eyre::Result<()> {
     run(dataflow, uv)

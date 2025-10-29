@@ -8,7 +8,6 @@ mod preference_tests {
     use std::collections::HashMap;
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
-    use std::time::Duration;
 
     /// Create a test execution context
     fn create_test_context() -> ExecutionContext {
@@ -105,14 +104,14 @@ mod preference_tests {
     #[test]
     #[ignore]
     fn test_command_complexity_calculation() {
-        let prefs = UserPreferences::default();
+        let _prefs = UserPreferences::default();
 
         // Simple commands should have low complexity
-        let ps_command = Command::Ps(crate::cli::commands::PsCommand::default());
+        let _ps_command = Command::Ps(crate::cli::commands::PsCommand::default());
         // assert_eq!(prefs.calculate_command_complexity(&ps_command), 2);
 
         // Complex commands should have high complexity
-        let debug_command = Command::Debug(crate::cli::commands::DebugCommand::default());
+        let _debug_command = Command::Debug(crate::cli::commands::DebugCommand::default());
         // assert_eq!(prefs.calculate_command_complexity(&debug_command), 9);
     }
 
@@ -130,7 +129,7 @@ mod preference_tests {
     #[tokio::test]
     async fn test_behavioral_learning_engine() {
         let prefs = Arc::new(Mutex::new(UserPreferences::default()));
-        let mut engine = BehavioralLearningEngine::new(prefs.clone());
+        let engine = BehavioralLearningEngine::new(prefs.clone());
 
         let command = create_test_command();
         let context = create_test_context();
@@ -435,9 +434,9 @@ mod preference_tests {
     #[ignore]
     fn test_adaptation_weights_adjustment() {
         let prefs = Arc::new(Mutex::new(UserPreferences::default()));
-        let engine = BehavioralLearningEngine::new(prefs.clone());
+        let _engine = BehavioralLearningEngine::new(prefs.clone());
 
-        let original_weight = {
+        let _original_weight = {
             let preferences = prefs.lock().unwrap();
             preferences.behavior.adaptation_weights.behavioral_weight
         };
@@ -448,7 +447,7 @@ mod preference_tests {
         //     &SatisfactionLevel::VeryUnsatisfied,
         // );
 
-        let new_weight = {
+        let _new_weight = {
             let preferences = prefs.lock().unwrap();
             preferences.behavior.adaptation_weights.behavioral_weight
         };
@@ -465,7 +464,7 @@ mod preference_tests {
 // TODO(Issue #72): These integration tests need to be updated for the new TUI architecture
 // They reference outdated types and missing dependencies (tempfile).
 // See TESTING_STATUS.md for details and action plan.
-#[cfg(disabled)]
+#[cfg(any())]
 mod integration_tests {
     use super::*;
     use std::sync::Arc;

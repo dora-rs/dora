@@ -377,7 +377,10 @@ impl AdaptationEngine {
     }
 
     /// Apply time-based rules
-    pub fn apply_time_based_rules(&self, context: &ExecutionContext) -> Vec<(UiMode, f32, String)> {
+    pub fn apply_time_based_rules(
+        &self,
+        _context: &ExecutionContext,
+    ) -> Vec<(UiMode, f32, String)> {
         let now = Local::now();
         let current_hour = now.hour() as u8;
         let current_day = now.weekday().num_days_from_sunday() as u8;

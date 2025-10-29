@@ -82,7 +82,6 @@ pub enum CommandModeViewAction {
 pub struct StateSynchronizer {
     last_sync: Instant,
     sync_interval: Duration,
-    pending_updates: Vec<StateUpdate>,
     metrics_collector: MetricsCollector,
 }
 
@@ -481,7 +480,6 @@ impl StateSynchronizer {
         Self {
             last_sync: Instant::now(),
             sync_interval: Duration::from_millis(1000),
-            pending_updates: Vec::new(),
             metrics_collector: MetricsCollector::new(),
         }
     }
@@ -617,8 +615,7 @@ mod tests {
     }
 
     #[test]
-    fn test_state_synchronizer() {
-        let sync = StateSynchronizer::new();
-        assert!(sync.pending_updates.is_empty());
+    fn test_state_synchronizer_initializes() {
+        StateSynchronizer::new();
     }
 }

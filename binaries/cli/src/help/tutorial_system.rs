@@ -5,6 +5,7 @@ use super::types::*;
 use chrono::{DateTime, Duration, Utc};
 use eyre::{Result, anyhow};
 use std::collections::HashMap;
+use tracing::debug;
 use uuid::Uuid;
 
 // ============================================================================
@@ -52,7 +53,7 @@ impl TutorialSystem {
 
     /// Start a new tutorial session
     pub async fn start_tutorial(&mut self, tutorial_id: &str) -> Result<TutorialSession> {
-        let tutorial = self
+        let _tutorial = self
             .tutorials
             .get(tutorial_id)
             .ok_or_else(|| anyhow!("Tutorial '{}' not found", tutorial_id))?;
@@ -554,7 +555,23 @@ impl TutorialProgressTracker {
             .iter_mut()
             .find(|r| r.session_id == session_id)
         {
+            let duration = Utc::now() - record.start_time;
+            debug!(
+                tutorial_id = %record.tutorial_id,
+                elapsed_seconds = duration.num_seconds(),
+                "Tutorial session completed",
+            );
             record.status = TutorialSessionStatus::Completed;
+        }
+    }
+
+    pub fn track_session_abandoned(&mut self, session_id: Uuid) {
+        if let Some(record) = self
+            .session_history
+            .iter_mut()
+            .find(|r| r.session_id == session_id)
+        {
+            record.status = TutorialSessionStatus::Abandoned;
         }
     }
 }
@@ -619,5 +636,22 @@ mod tests {
 
         assert!(!tutorials.is_empty());
         assert!(tutorials.iter().any(|t| t.id == "getting-started"));
+    }
+
+    #[tokio::test]
+    async fn test_track_session_abandoned() {
+        let mut system = TutorialSystem::new();
+        let session = system.start_tutorial("getting-started").await.unwrap();
+        system
+            .progress_tracker
+            .track_session_abandoned(session.session_id);
+        assert!(
+            system
+                .progress_tracker
+                .session_history
+                .iter()
+                .any(|record| record.session_id == session.session_id
+                    && matches!(record.status, TutorialSessionStatus::Abandoned))
+        );
     }
 }

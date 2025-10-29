@@ -767,7 +767,10 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(result.error_summary.total_errors >= 0);
+        assert!(
+            result.error_summary.total_errors >= result.error_summary.recent_errors.len(),
+            "total_errors should be at least the number of recent error records"
+        );
     }
 
     #[tokio::test]

@@ -1,26 +1,37 @@
-// TODO(Issue #72): These tests need to be updated for the new TUI architecture
-// They reference private methods and removed types (CommandSuggestion, SuggestionType).
-// See TESTING_STATUS.md for details and action plan.
-#[cfg(disabled)]
 mod tests {
-    use super::*;
+    use crate::tui::ViewType;
     use crate::tui::app::AppState;
-    use tokio::test;
+    use crate::tui::command_mode::{
+        CommandModeAction, CommandModeManager, CommandSuggestion, CompletionEngine,
+        CompletionState, HistoryNavigation, SuggestionType,
+    };
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-    #[test]
-    fn test_command_mode_activation() {
+    #[tokio::test]
+    async fn test_command_mode_activation() {
         let mut manager = CommandModeManager::new();
         assert!(!manager.is_active());
 
         manager.activate();
         assert!(manager.is_active());
 
+        // Typing characters should keep the manager active
+        let app_state = AppState::default();
+        let action = manager
+            .handle_key_event(
+                KeyEvent::new(KeyCode::Char('p'), KeyModifiers::empty()),
+                &app_state,
+            )
+            .await
+            .unwrap();
+        assert!(matches!(action, CommandModeAction::UpdateDisplay));
+
         manager.deactivate();
         assert!(!manager.is_active());
     }
 
     #[test]
-    fn test_completion_state() {
+    fn test_completion_state_selection() {
         let mut state = CompletionState::new();
 
         state.suggestions = vec![
@@ -53,7 +64,7 @@ mod tests {
     }
 
     #[test]
-    fn test_history_navigation() {
+    fn test_history_navigation_roundtrip() {
         let mut nav = HistoryNavigation::new();
         let history = vec![
             "ps".to_string(),
@@ -79,7 +90,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_completion_engine() {
+    async fn test_completion_engine_suggestions() {
         let engine = CompletionEngine::new();
         let app_state = AppState::default();
 
@@ -92,118 +103,130 @@ mod tests {
             .unwrap();
         assert!(suggestions.iter().any(|s| s.text == "get"));
         assert!(suggestions.iter().any(|s| s.text == "set"));
-    }
-
-    #[test]
-    fn test_command_parsing() {
-        let manager = CommandModeManager::new();
-
-        if let Some(CommandModeAction::SwitchView(ViewType::Dashboard)) =
-            manager.parse_tui_command("dashboard")
-        {
-            // Expected
-        } else {
-            panic!("Expected dashboard view switch");
-        }
-
-        assert!(manager.parse_tui_command("invalid_command").is_none());
+        assert!(suggestions.iter().any(|s| s.text == "list"));
     }
 
     #[tokio::test]
-    async fn test_command_mode_key_handling() {
-        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-
+    async fn test_command_mode_executes_and_records_history() {
         let mut manager = CommandModeManager::new();
         let app_state = AppState::default();
 
-        // Test activation
         manager.activate();
-        assert!(manager.is_active());
+        type_text(&mut manager, "ps", &app_state).await;
 
-        // Test character input
-        let char_event = KeyEvent::new(KeyCode::Char('p'), KeyModifiers::empty());
-        let action = manager
-            .handle_key_event(char_event, &app_state)
-            .await
-            .unwrap();
-        assert!(matches!(action, CommandModeAction::UpdateDisplay));
+        let action = press_key(&mut manager, KeyCode::Enter, &app_state).await;
+        let history: Vec<_> = manager.get_command_history().iter().cloned().collect();
 
-        // Test enter (should execute command)
-        let enter_event = KeyEvent::new(KeyCode::Enter, KeyModifiers::empty());
-        let action = manager
-            .handle_key_event(enter_event, &app_state)
-            .await
-            .unwrap();
-        assert!(matches!(action, CommandModeAction::ExecuteCommand { .. }));
-        assert!(!manager.is_active()); // Should deactivate after execute
-
-        // Test escape cancellation
-        manager.activate();
-        let esc_event = KeyEvent::new(KeyCode::Esc, KeyModifiers::empty());
-        let action = manager
-            .handle_key_event(esc_event, &app_state)
-            .await
-            .unwrap();
-        assert!(matches!(action, CommandModeAction::Cancel));
-        assert!(!manager.is_active()); // Should deactivate after cancel
+        match action {
+            CommandModeAction::ExecuteCommand {
+                command,
+                show_output,
+            } => {
+                assert_eq!(command, "ps");
+                assert!(show_output);
+            }
+            other => panic!("expected ExecuteCommand, got {:?}", other),
+        };
+        assert_eq!(history, vec!["ps"]);
+        assert!(manager.get_last_execution_time().is_some());
     }
 
-    #[test]
-    fn test_command_history() {
+    #[tokio::test]
+    async fn test_command_mode_switch_view_shortcuts() {
         let mut manager = CommandModeManager::new();
+        let app_state = AppState::default();
 
-        // Test adding commands to history
-        manager.add_to_history("ps".to_string());
-        manager.add_to_history("start example.yaml".to_string());
-        manager.add_to_history("logs".to_string());
+        manager.activate();
+        type_text(&mut manager, "dashboard", &app_state).await;
+        let action = press_key(&mut manager, KeyCode::Enter, &app_state).await;
 
-        let history = manager.get_command_history();
-        assert_eq!(history.len(), 3);
-        assert_eq!(history[0], "ps");
-        assert_eq!(history[2], "logs");
-
-        // Test duplicate prevention
-        manager.add_to_history("logs".to_string());
-        assert_eq!(manager.get_command_history().len(), 3); // Should still be 3
+        match action {
+            CommandModeAction::SwitchView(ViewType::Dashboard) => {}
+            other => panic!("expected Dashboard switch, got {:?}", other),
+        }
+        assert!(!manager.is_active());
     }
 
-    #[test]
-    fn test_completion_context_analysis() {
-        let engine = CompletionEngine::new();
+    #[tokio::test]
+    async fn test_tab_completion_applies_suggestion() {
+        let mut manager = CommandModeManager::new();
+        let app_state = AppState::default();
 
-        // Test command completion
-        let context = engine.analyze_completion_context("p", 1);
-        assert!(matches!(context.completion_type, CompletionType::Command));
-        assert_eq!(context.prefix, "p");
+        manager.activate();
+        type_text(&mut manager, "p", &app_state).await;
 
-        // Test flag completion
-        let context = engine.analyze_completion_context("ps --", 5);
-        assert!(matches!(context.completion_type, CompletionType::Flag));
-        assert_eq!(context.prefix, "--");
+        let tab_action = press_key(&mut manager, KeyCode::Tab, &app_state).await;
+        assert!(matches!(tab_action, CommandModeAction::UpdateDisplay));
 
-        // Test value completion
-        let context = engine.analyze_completion_context("start ", 6);
-        assert!(matches!(context.completion_type, CompletionType::Value));
-        assert_eq!(context.current_command, Some("start".to_string()));
+        let execute = press_key(&mut manager, KeyCode::Enter, &app_state).await;
+        match execute {
+            CommandModeAction::ExecuteCommand { command, .. } => assert_eq!(command, "ps"),
+            other => panic!("expected ps execution, got {:?}", other),
+        }
+
+        let history: Vec<_> = manager.get_command_history().iter().cloned().collect();
+        assert_eq!(history, vec!["ps"]);
     }
 
-    #[test]
-    fn test_apply_completion() {
-        let manager = CommandModeManager::new();
+    #[tokio::test]
+    async fn test_escape_cancels_without_recording_history() {
+        let mut manager = CommandModeManager::new();
+        let app_state = AppState::default();
 
-        // Test basic completion
-        let (new_buffer, new_cursor) = manager.apply_completion("p", 1, "ps");
-        assert_eq!(new_buffer, "ps");
-        assert_eq!(new_cursor, 2);
+        manager.activate();
+        type_text(&mut manager, "logs", &app_state).await;
+        let action = press_key(&mut manager, KeyCode::Esc, &app_state).await;
 
-        // Test completion with existing text
-        let (new_buffer, new_cursor) = manager.apply_completion("sta ", 4, "start");
-        assert_eq!(new_buffer, "start ");
-        assert_eq!(new_cursor, 5);
+        assert!(matches!(action, CommandModeAction::Cancel));
+        assert!(manager.get_command_history().is_empty());
+    }
 
-        // Test mid-word completion
-        let (new_buffer, new_cursor) = manager.apply_completion("p test", 1, "ps");
-        assert_eq!(new_buffer, "ps test");
-        assert_eq!(new_cursor, 2);
+    #[tokio::test]
+    async fn test_consecutive_duplicates_are_ignored() {
+        let mut manager = CommandModeManager::new();
+        let app_state = AppState::default();
+
+        manager.activate();
+        type_text(&mut manager, "logs", &app_state).await;
+        let first = press_key(&mut manager, KeyCode::Enter, &app_state).await;
+        assert!(matches!(
+            first,
+            CommandModeAction::SwitchView(ViewType::LogViewer { .. })
+        ));
+
+        manager.activate();
+        type_text(&mut manager, "logs", &app_state).await;
+        let second = press_key(&mut manager, KeyCode::Enter, &app_state).await;
+        assert!(matches!(
+            second,
+            CommandModeAction::SwitchView(ViewType::LogViewer { .. })
+        ));
+
+        let history: Vec<_> = manager.get_command_history().iter().cloned().collect();
+        assert_eq!(history, vec!["logs"]);
+    }
+
+    async fn type_text(manager: &mut CommandModeManager, text: &str, app_state: &AppState) {
+        for ch in text.chars() {
+            let action = manager
+                .handle_key_event(
+                    KeyEvent::new(KeyCode::Char(ch), KeyModifiers::empty()),
+                    app_state,
+                )
+                .await
+                .unwrap();
+            assert!(matches!(action, CommandModeAction::UpdateDisplay));
+        }
+    }
+
+    async fn press_key(
+        manager: &mut CommandModeManager,
+        code: KeyCode,
+        app_state: &AppState,
+    ) -> CommandModeAction {
+        manager
+            .handle_key_event(KeyEvent::new(code, KeyModifiers::empty()), app_state)
+            .await
+            .unwrap()
     }
 }

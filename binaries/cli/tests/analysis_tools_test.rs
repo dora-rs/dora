@@ -151,7 +151,7 @@ async fn test_refresh_with_r_key() {
 }
 
 #[tokio::test]
-async fn test_refresh_with_R_key() {
+async fn test_refresh_with_shift_r_key() {
     let mut view = create_test_view();
     let mut app_state = create_app_state();
 

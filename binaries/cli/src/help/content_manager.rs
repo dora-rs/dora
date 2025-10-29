@@ -185,7 +185,7 @@ impl HelpContentManager {
     }
 
     /// Get list of all available topics
-    pub async fn get_topic_list(&self, user_expertise: UserExpertiseLevel) -> Result<HelpContent> {
+    pub async fn get_topic_list(&self, _user_expertise: UserExpertiseLevel) -> Result<HelpContent> {
         let mut topics_content = HelpContent::new("topics".to_string());
         topics_content.title = "Available Help Topics".to_string();
         topics_content.summary = "Browse all help topics organized by category".to_string();

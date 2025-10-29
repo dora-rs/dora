@@ -84,13 +84,13 @@ pub trait View {
     fn handle_key(
         &mut self,
         key: KeyEvent,
-        app_state: &mut AppState,
+        _app_state: &mut AppState,
     ) -> impl std::future::Future<Output = Result<ViewAction>> + Send;
 
     /// Update view state (called periodically)
     fn update(
         &mut self,
-        app_state: &mut AppState,
+        _app_state: &mut AppState,
     ) -> impl std::future::Future<Output = Result<()>> + Send;
 
     /// View-specific help text
@@ -118,7 +118,7 @@ pub trait View {
     /// Called when view is first shown
     fn on_mount(
         &mut self,
-        app_state: &mut AppState,
+        _app_state: &mut AppState,
     ) -> impl std::future::Future<Output = Result<()>> + Send {
         async { Ok(()) }
     }
@@ -289,7 +289,7 @@ impl BaseView {
     }
 
     /// Update all components
-    pub async fn update_components(&mut self, app_state: &AppState) -> Result<()> {
+    pub async fn update_components(&mut self, _app_state: &AppState) -> Result<()> {
         for component_id in self.component_registry.component_ids() {
             // Note: We can't get mutable reference to components from registry
             // This will be addressed when we implement proper component updates

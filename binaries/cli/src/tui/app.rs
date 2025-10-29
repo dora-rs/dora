@@ -15,7 +15,6 @@ use ratatui::{
 use std::{
     collections::{HashMap, VecDeque, hash_map::Entry},
     io,
-    path::PathBuf,
     time::{Duration, Instant},
 };
 
@@ -28,7 +27,7 @@ use eyre::WrapErr;
 
 use super::{
     Result,
-    cli_integration::{CliContext, CommandHistory, CommandMode},
+    cli_integration::CliContext,
     command_executor::{
         CommandModeExecutionResult, CommandModeViewAction, StateUpdate, TuiCliExecutor,
     },
@@ -292,25 +291,6 @@ pub enum MessageLevel {
     Error,
 }
 
-#[derive(Debug)]
-pub struct EventHandler {
-    last_update: Instant,
-}
-
-impl EventHandler {
-    pub fn new() -> Self {
-        Self {
-            last_update: Instant::now(),
-        }
-    }
-}
-
-impl Default for EventHandler {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl From<DataflowListEntry> for DataflowInfo {
     fn from(entry: DataflowListEntry) -> Self {
         let DataflowListEntry { id, status, nodes } = entry;
@@ -457,17 +437,11 @@ pub struct DoraApp {
     /// Global application state
     state: AppState,
 
-    /// Event handler
-    event_handler: EventHandler,
-
     /// Theme configuration
     theme: ThemeConfig,
 
     /// CLI context for command execution
     cli_context: Option<CliContext>,
-
-    /// Command mode state (legacy)
-    command_mode: CommandMode,
 
     /// Command mode manager (new implementation)
     command_mode_manager: CommandModeManager,
@@ -490,10 +464,8 @@ impl DoraApp {
             current_view: initial_view,
             view_stack: Vec::new(),
             state: AppState::default(),
-            event_handler: EventHandler::new(),
             theme: ThemeConfig::load_user_theme(),
             cli_context: None,
-            command_mode: CommandMode::Normal,
             command_mode_manager: CommandModeManager::new(),
             command_executor: None,
             metrics_collector: MetricsCollector::new(),
@@ -1084,123 +1056,6 @@ impl DoraApp {
         self.command_mode_manager.is_active()
     }
 
-    fn enter_command_mode_internal(&mut self) {
-        self.command_mode_manager.activate();
-        self.command_mode = CommandMode::Command {
-            buffer: String::new(),
-            cursor: 0,
-            history: self.load_command_history(),
-            history_index: None,
-        };
-    }
-
-    fn exit_command_mode_internal(&mut self) {
-        self.command_mode = CommandMode::Normal;
-        self.command_mode_manager.deactivate();
-    }
-
-    async fn handle_command_mode_key(&mut self, key: KeyEvent) -> Result<()> {
-        if let CommandMode::Command {
-            ref mut buffer,
-            ref mut cursor,
-            ref history,
-            ref mut history_index,
-        } = self.command_mode
-        {
-            match key.code {
-                KeyCode::Enter => {
-                    let command = buffer.clone();
-                    self.exit_command_mode_internal();
-
-                    if !command.is_empty() {
-                        self.save_command_to_history(&command);
-                        self.execute_cli_command(&command).await?;
-                    }
-                }
-
-                KeyCode::Esc => {
-                    self.exit_command_mode_internal();
-                }
-
-                KeyCode::Backspace => {
-                    if *cursor > 0 {
-                        buffer.remove(*cursor - 1);
-                        *cursor -= 1;
-                    }
-                }
-
-                KeyCode::Delete => {
-                    if *cursor < buffer.len() {
-                        buffer.remove(*cursor);
-                    }
-                }
-
-                KeyCode::Left => {
-                    if *cursor > 0 {
-                        *cursor -= 1;
-                    }
-                }
-
-                KeyCode::Right => {
-                    if *cursor < buffer.len() {
-                        *cursor += 1;
-                    }
-                }
-
-                KeyCode::Up => {
-                    if let Some(index) = history_index {
-                        if *index > 0 {
-                            *index -= 1;
-                            *buffer = history[*index].clone();
-                            *cursor = buffer.len();
-                        }
-                    } else if !history.is_empty() {
-                        *history_index = Some(history.len() - 1);
-                        *buffer = history[history.len() - 1].clone();
-                        *cursor = buffer.len();
-                    }
-                }
-
-                KeyCode::Down => {
-                    if let Some(index) = history_index {
-                        if *index < history.len() - 1 {
-                            *index += 1;
-                            *buffer = history[*index].clone();
-                            *cursor = buffer.len();
-                        } else {
-                            *history_index = None;
-                            buffer.clear();
-                            *cursor = 0;
-                        }
-                    }
-                }
-
-                KeyCode::Char(c) => {
-                    buffer.insert(*cursor, c);
-                    *cursor += 1;
-                }
-
-                _ => {}
-            }
-        }
-
-        Ok(())
-    }
-
-    async fn execute_cli_command(&mut self, command_str: &str) -> Result<()> {
-        self.show_status_message(format!("Executing: {}", command_str), MessageLevel::Info);
-
-        // For now, just show a success message
-        // In a real implementation, this would parse and execute the command
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        self.show_status_message(
-            format!("Command '{}' executed successfully", command_str),
-            MessageLevel::Success,
-        );
-
-        Ok(())
-    }
-
     async fn refresh_dataflow_list(&mut self) -> Result<()> {
         let result = tokio::task::spawn_blocking(fetch_dataflows).await;
 
@@ -1241,33 +1096,6 @@ impl DoraApp {
         }
 
         Ok(())
-    }
-
-    fn load_command_history(&self) -> Vec<String> {
-        CommandHistory::load_or_default()
-            .commands
-            .iter()
-            .map(|entry| entry.command.clone())
-            .collect()
-    }
-
-    fn save_command_to_history(&mut self, command: &str) {
-        if command.trim().is_empty() {
-            return;
-        }
-
-        let working_dir = self
-            .cli_context
-            .as_ref()
-            .map(|ctx| ctx.working_directory.clone())
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-
-        if let Err(err) = CommandHistory::record(command.to_string(), true, working_dir) {
-            self.show_status_message(
-                format!("❌ failed to persist command history: {err}"),
-                MessageLevel::Error,
-            );
-        }
     }
 
     pub fn show_status_message(&mut self, message: String, level: MessageLevel) {
@@ -1315,12 +1143,12 @@ impl DoraApp {
 
     #[cfg(test)]
     pub fn enter_command_mode(&mut self) {
-        self.enter_command_mode_internal();
+        self.command_mode_manager.activate();
     }
 
     #[cfg(test)]
     pub fn exit_command_mode(&mut self) {
-        self.exit_command_mode_internal();
+        self.command_mode_manager.deactivate();
     }
 }
 

@@ -246,7 +246,7 @@ mod tests {
 
     #[test]
     fn test_component_registry() {
-        let mut registry = ComponentRegistry::new();
+        let registry = ComponentRegistry::new();
         assert!(registry.is_empty());
         assert_eq!(registry.len(), 0);
 

@@ -312,7 +312,7 @@ impl BehavioralPatternAnalyzer {
     }
 
     fn analyze_evidence_patterns(
-        &self,
+        &mut self,
         evidence: &[AutomationEvidence],
     ) -> Option<InteractionPattern> {
         if evidence.is_empty() {
@@ -372,12 +372,24 @@ impl BehavioralPatternAnalyzer {
         let weighted_confidence = total_weight / evidence.len() as f32;
 
         if pattern_strength > 0.3 {
-            Some(InteractionPattern {
+            let pattern = InteractionPattern {
                 pattern_type: "Strong Automation Evidence".to_string(),
                 confidence: weighted_confidence,
                 indicators,
                 automation_likelihood: pattern_strength,
-            })
+            };
+
+            self.behavior_patterns.insert(
+                pattern.pattern_type.clone(),
+                BehaviorSignature {
+                    pattern_type: pattern.pattern_type.clone(),
+                    frequency: evidence.len() as f32,
+                    consistency: weighted_confidence,
+                    automation_correlation: pattern_strength,
+                },
+            );
+
+            Some(pattern)
         } else {
             None
         }

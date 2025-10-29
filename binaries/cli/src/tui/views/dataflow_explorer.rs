@@ -22,7 +22,6 @@ pub struct DataflowExplorerView {
     theme: ThemeConfig,
     /// Current explorer state
     pub state: ExplorerState,
-    list_scroll_offset: usize,
     /// Currently selected index (for testing/internal use)
     #[doc(hidden)]
     pub selected_index: usize,
@@ -38,7 +37,6 @@ impl DataflowExplorerView {
                 .with_auto_refresh(Duration::from_secs(1)), // 1-second refresh per spec
             theme: theme.clone(),
             state: ExplorerState::new(),
-            list_scroll_offset: 0,
             selected_index: 0,
             show_inspection_panel: false,
         }
@@ -1072,7 +1070,7 @@ impl View for DataflowExplorerView {
         }
     }
 
-    async fn update(&mut self, app_state: &mut AppState) -> Result<()> {
+    async fn update(&mut self, _app_state: &mut AppState) -> Result<()> {
         if self.base.needs_refresh() {
             self.state.mark_refreshed();
             self.base.mark_updated();
@@ -1113,7 +1111,7 @@ impl View for DataflowExplorerView {
         self.base.set_focused(false);
     }
 
-    async fn on_mount(&mut self, app_state: &mut AppState) -> Result<()> {
+    async fn on_mount(&mut self, _app_state: &mut AppState) -> Result<()> {
         self.state.mark_refreshed();
         self.base.mark_updated();
         Ok(())

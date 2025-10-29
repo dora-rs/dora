@@ -34,6 +34,7 @@ impl Extractor for MetadataMap<'_> {
 ///
 pub fn init_jaeger_tracing(name: &str, endpoint: &str) -> Result<sdktrace::Tracer, TraceError> {
     global::set_text_map_propagator(TraceContextPropagator::new());
+    #[allow(deprecated)]
     opentelemetry_jaeger::new_agent_pipeline()
         .with_endpoint(endpoint)
         .with_service_name(name)

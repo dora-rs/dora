@@ -90,7 +90,7 @@ impl BehavioralLearningEngine {
         command: &Command,
         context: &ExecutionContext,
         chosen_interface: UiMode,
-        decision_trigger: DecisionTrigger,
+        _decision_trigger: DecisionTrigger,
     ) -> eyre::Result<()> {
         let interface_choice = InterfaceChoice {
             command: command.name().to_string(),
