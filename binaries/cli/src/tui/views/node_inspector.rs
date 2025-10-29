@@ -954,4 +954,19 @@ mod tests {
         assert_eq!(format_uptime(90), "1m 30s");
         assert_eq!(format_uptime(3661), "1h 1m 1s");
     }
+
+    #[test]
+    fn test_format_trend() {
+        assert_eq!(format_trend(Some(0.2)), "↑ +0.20");
+        assert_eq!(format_trend(Some(-0.6)), "↓ -0.60");
+        assert_eq!(format_trend(Some(0.01)), "stable");
+        assert_eq!(format_trend(None), "collecting…");
+    }
+
+    #[test]
+    fn test_format_latency_delta() {
+        assert_eq!(format_latency_delta(Some(-1.5)), "-1.50 ms");
+        assert_eq!(format_latency_delta(Some(0.02)), "stable");
+        assert_eq!(format_latency_delta(None), "collecting…");
+    }
 }

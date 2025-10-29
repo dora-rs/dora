@@ -488,6 +488,8 @@ impl StateSynchronizer {
             }
         }
 
+        app_state.dataflow_last_refresh = Some(Instant::now());
+
         Ok(())
     }
 
