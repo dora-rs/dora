@@ -6,7 +6,6 @@ use std::{
 };
 
 use arrow::array::{Array, RecordBatch, StructArray};
-use arrow_integration_test::data_type_to_json;
 use colored::Colorize;
 use dora_core::{
     metadata::ArrowTypeInfoExt,
@@ -23,7 +22,7 @@ use eyre::{Context, ContextCompat};
 
 use crate::{
     arrow_utils::{copy_array_into_sample, required_data_size},
-    daemon_connection::json_to_arrow::{convert_arrow_json_data, read_json_value_as_arrow},
+    daemon_connection::json_to_arrow::read_json_value_as_arrow,
     event_stream::data_to_arrow_array,
 };
 
@@ -199,12 +198,6 @@ impl IntegrationTestingEvents {
                             // input is JSON data
                             read_json_value_as_arrow(&data, schema)
                                 .context("failed to read data")?
-                        }
-                        InputData::ArrowTest { data } => {
-                            convert_arrow_json_data(data, false).context("failed to read data")?
-                        }
-                        InputData::ArrowTestUnwrap { data } => {
-                            convert_arrow_json_data(data, true).context("failed to read data")?
                         }
                         InputData::ArrowFile {
                             path,
