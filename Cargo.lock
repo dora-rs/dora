@@ -1356,6 +1356,7 @@ dependencies = [
 name = "dora-cli"
 version = "0.3.13"
 dependencies = [
+ "arrow",
  "bat",
  "clap",
  "colored 2.2.0",
@@ -1394,6 +1395,7 @@ dependencies = [
  "tracing-log",
  "uuid",
  "webbrowser",
+ "zenoh",
 ]
 
 [[package]]
@@ -1440,6 +1442,7 @@ dependencies = [
  "url",
  "uuid",
  "which",
+ "zenoh",
 ]
 
 [[package]]

@@ -21,9 +21,10 @@ tracing = ["dep:dora-tracing"]
 python = ["pyo3"]
 
 [dependencies]
+arrow = { workspace = true }
 clap = { version = "4.0.3", features = ["derive"] }
 eyre = "0.6.8"
-dora-core = { workspace = true }
+dora-core = { workspace = true, features = ["zenoh"] }
 dora-message = { workspace = true }
 dora-node-api-c = { workspace = true }
 dora-operator-api-c = { workspace = true }
@@ -66,6 +67,7 @@ pyo3 = { workspace = true, features = [
 self-replace = "1.5.0"
 dunce = "1.0.5"
 git2 = { workspace = true }
+zenoh = { workspace = true }
 
 [build-dependencies]
 pyo3-build-config = "0.23"

@@ -50,6 +50,33 @@ pub(crate) fn query_running_dataflows(
     Ok(ids)
 }
 
+pub(crate) fn resolve_dataflow_identifier(
+    session: &mut TcpRequestReplyConnection,
+    name_or_uuid: Option<&str>,
+) -> eyre::Result<Uuid> {
+    if let Some(uuid) = name_or_uuid.and_then(|s| Uuid::parse_str(s).ok()) {
+        return Ok(uuid);
+    }
+
+    let list = query_running_dataflows(session).wrap_err("failed to query running dataflows")?;
+    let active: Vec<dora_message::coordinator_to_cli::DataflowIdAndName> = list.get_active();
+    if let Some(name) = name_or_uuid {
+        let Some(dataflow) = active.iter().find(|it| it.name.as_deref() == Some(name)) else {
+            bail!("No dataflow with name `{name}` is running");
+        };
+        return Ok(dataflow.uuid);
+    }
+    Ok(match &active[..] {
+        [] => bail!("No dataflows are running"),
+        [entry] => entry.uuid,
+        _ => {
+            inquire::Select::new("Choose dataflow to show logs:", active)
+                .prompt()?
+                .uuid
+        }
+    })
+}
+
 pub(crate) fn connect_to_coordinator(
     coordinator_addr: SocketAddr,
 ) -> std::io::Result<Box<TcpRequestReplyConnection>> {
