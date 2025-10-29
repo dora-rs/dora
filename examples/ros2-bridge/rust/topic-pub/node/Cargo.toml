@@ -1,5 +1,5 @@
 [package]
-name = "rust-ros2-dataflow-example-node"
+name = "rust-ros2-topic-pub-dataflow-example-node"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,7 +12,7 @@ publish = false
 ros2 = []
 
 [[bin]]
-name = "rust-ros2-dataflow-example-node"
+name = "rust-ros2-topic-pub-dataflow-example-node"
 required-features = ["ros2"]
 
 [dependencies]

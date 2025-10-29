@@ -17,7 +17,7 @@ members = [
     "examples/rust-dataflow/status-node",
     "examples/rust-dataflow/sink",
     "examples/rust-dataflow/sink-dynamic",
-    "examples/rust-ros2-dataflow/node",
+    "examples/ros2-bridge/rust/*/node",
     "examples/benchmark/node",
     "examples/benchmark/sink",
     "examples/multiple-daemons/node",
@@ -116,6 +116,7 @@ uuid = { version = "1.7", features = ["v7", "serde"] }
 tracing = "0.1.36"
 futures = "0.3.25"
 tokio-stream = "0.1.11"
+process-wrap = {version = "9.0.0", features = ["tokio1"]}
 
 [[example]]
 name = "c-dataflow"
@@ -130,8 +131,18 @@ name = "rust-dataflow-git"
 path = "examples/rust-dataflow-git/run.rs"
 
 [[example]]
-name = "rust-ros2-dataflow"
-path = "examples/rust-ros2-dataflow/run.rs"
+name = "rust-ros2-turtlebot-dataflow"
+path = "examples/ros2-bridge/rust/turtlebot/run.rs"
+required-features = ["ros2-examples"]
+
+[[example]]
+name = "rust-ros2-topic-pub-dataflow"
+path = "examples/ros2-bridge/rust/topic-pub/run.rs"
+required-features = ["ros2-examples"]
+
+[[example]]
+name = "rust-ros2-topic-sub-dataflow"
+path = "examples/ros2-bridge/rust/topic-sub/run.rs"
 required-features = ["ros2-examples"]
 
 # TODO: Fix example #192
@@ -153,7 +164,7 @@ path = "examples/python-dataflow/run.rs"
 
 [[example]]
 name = "python-ros2-dataflow"
-path = "examples/python-ros2-dataflow/run.rs"
+path = "examples/ros2-bridge/python/python-ros2-dataflow/run.rs"
 required-features = ["ros2-examples"]
 
 [[example]]
@@ -174,7 +185,7 @@ path = "examples/cmake-dataflow/run.rs"
 
 [[example]]
 name = "cxx-ros2-dataflow"
-path = "examples/c++-ros2-dataflow/run.rs"
+path = "examples/c++/c++-ros2-dataflow/run.rs"
 required-features = ["ros2-examples"]
 
 # The profile that 'dist' will build with

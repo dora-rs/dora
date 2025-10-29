@@ -1503,6 +1503,7 @@ dependencies = [
  "dunce",
  "eyre",
  "futures",
+ "process-wrap",
  "serde_yaml 0.8.26",
  "tokio",
  "tokio-stream",
@@ -4458,6 +4459,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "process-wrap"
+version = "9.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5e5fd83ab7fa55fd06f5e665e3fc52b8bca451c0486b8ea60ad649cd1c10a5da"
+dependencies = [
+ "futures",
+ "indexmap 2.12.0",
+ "nix 0.30.1",
+ "tokio",
+ "tracing",
+ "windows 0.61.3",
+]
+
+[[package]]
 name = "prost"
 version = "0.13.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5061,7 +5076,49 @@ dependencies = [
 ]
 
 [[package]]
-name = "rust-ros2-dataflow-example-node"
+name = "rust-ros2-service-client-dataflow-example-node"
+version = "0.3.13"
+dependencies = [
+ "dora-node-api",
+ "dora-ros2-bridge",
+ "eyre",
+ "futures",
+ "futures-timer",
+ "rand 0.8.5",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "rust-ros2-topic-pub-dataflow-example-node"
+version = "0.3.13"
+dependencies = [
+ "dora-node-api",
+ "dora-ros2-bridge",
+ "eyre",
+ "futures",
+ "futures-timer",
+ "rand 0.8.5",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "rust-ros2-topic-sub-dataflow-example-node"
+version = "0.3.13"
+dependencies = [
+ "dora-node-api",
+ "dora-ros2-bridge",
+ "eyre",
+ "futures",
+ "futures-timer",
+ "rand 0.8.5",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "rust-ros2-turtlebot-dataflow-example-node"
 version = "0.3.13"
 dependencies = [
  "dora-node-api",
