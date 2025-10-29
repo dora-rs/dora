@@ -2,7 +2,7 @@
 use crate::{
     config::preferences::UserPreferences,
     tui::{
-        app::{AppState, DoraApp, MessageLevel, ViewType},
+        app::{AppState, DataflowInfo, DoraApp, MessageLevel, ViewType},
         cli_integration::{CliContext, CommandHistory, KeyBindings, TabCompletion},
         command_executor::StateUpdate as CommandStateUpdate,
         theme::ThemeConfig,
@@ -156,6 +156,30 @@ mod app_tests {
             std::env::remove_var("DORA_CONFIG_DIR");
         }
         fs::remove_dir_all(&temp_dir).unwrap();
+    }
+
+    #[test]
+    fn test_dataflow_refresh_timestamp_updates() {
+        let mut app = DoraApp::new(ViewType::Dashboard);
+        assert!(app.last_dataflow_refresh().is_none());
+
+        let mut info = DataflowInfo::default();
+        info.id = "df-test".to_string();
+        info.name = "demo".to_string();
+        info.status = "running".to_string();
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        rt.block_on(async {
+            app.test_process_state_update(CommandStateUpdate::DataflowAdded(info))
+                .await
+                .unwrap();
+        });
+
+        assert!(app.last_dataflow_refresh().is_some());
     }
 }
 

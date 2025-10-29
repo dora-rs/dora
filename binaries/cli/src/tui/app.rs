@@ -69,6 +69,8 @@ pub struct AppState {
 
     /// Current dataflows
     pub dataflows: Vec<DataflowInfo>,
+    /// Last time dataflows were refreshed
+    pub dataflow_last_refresh: Option<Instant>,
 
     /// System metrics
     pub system_metrics: SystemMetrics,
@@ -370,6 +372,8 @@ pub struct DoraApp {
 }
 
 impl DoraApp {
+    const DATAFLOW_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
+
     pub fn new(initial_view: ViewType) -> Self {
         let mut app = Self {
             current_view: initial_view,
@@ -807,11 +811,13 @@ impl DoraApp {
                 } else {
                     self.state.dataflows.push(info);
                 }
+                self.state.dataflow_last_refresh = Some(Instant::now());
             }
             StateUpdate::DataflowRemoved(identifier) => {
                 self.state
                     .dataflows
                     .retain(|df| df.id != identifier && df.name != identifier);
+                self.state.dataflow_last_refresh = Some(Instant::now());
             }
             StateUpdate::DataflowStatusChanged { name, new_status } => {
                 if let Some(df) = self
@@ -840,6 +846,7 @@ impl DoraApp {
                         node_info.status = status;
                     }
                 }
+                self.state.dataflow_last_refresh = Some(Instant::now());
             }
             StateUpdate::SystemMetricsUpdated => {
                 self.update_system_metrics().await?;
@@ -881,6 +888,22 @@ impl DoraApp {
 
     async fn update(&mut self) -> Result<()> {
         let now = Instant::now();
+
+        if matches!(
+            self.current_view,
+            ViewType::Dashboard
+                | ViewType::DataflowManager
+                | ViewType::DataflowExplorer
+                | ViewType::NodeInspector { .. }
+        ) {
+            let needs_refresh = self.state.dataflow_last_refresh.map_or(true, |last| {
+                now.duration_since(last) > Self::DATAFLOW_REFRESH_INTERVAL
+            });
+
+            if needs_refresh {
+                self.refresh_dataflow_list().await?;
+            }
+        }
 
         // Auto-refresh system metrics
         if self.state.system_metrics.last_update.map_or(true, |last| {
@@ -1071,6 +1094,7 @@ impl DoraApp {
                 self.state.last_error = Some(message);
             }
         }
+        self.state.dataflow_last_refresh = Some(Instant::now());
 
         Ok(())
     }
@@ -1153,6 +1177,11 @@ impl DoraApp {
     #[cfg(test)]
     pub fn has_status_messages(&self) -> bool {
         !self.state.status_messages.is_empty()
+    }
+
+    #[cfg(test)]
+    pub fn last_dataflow_refresh(&self) -> Option<Instant> {
+        self.state.dataflow_last_refresh
     }
 
     #[cfg(test)]
