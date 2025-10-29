@@ -94,6 +94,9 @@ pub struct NodeInspectorState {
 
     /// Whether the view is in edit mode (for configuration)
     pub edit_mode: bool,
+
+    /// Last sampled metrics for trend calculations
+    pub last_metrics: Option<NodeMetrics>,
 }
 
 impl NodeInspectorState {
@@ -108,6 +111,7 @@ impl NodeInspectorState {
             last_refresh: Instant::now(),
             scroll_offset: 0,
             edit_mode: false,
+            last_metrics: None,
         }
     }
 
@@ -193,6 +197,17 @@ impl NodeInspectorState {
     /// Mark as refreshed
     pub fn mark_refreshed(&mut self) {
         self.last_refresh = Instant::now();
+    }
+
+    /// Update the cached metrics snapshot
+    pub fn record_metrics(&mut self, metrics: NodeMetrics) {
+        self.last_metrics = Some(metrics);
+        self.mark_refreshed();
+    }
+
+    /// Last recorded metrics, if any
+    pub fn last_metrics(&self) -> Option<&NodeMetrics> {
+        self.last_metrics.as_ref()
     }
 }
 
