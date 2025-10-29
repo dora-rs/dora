@@ -4,7 +4,7 @@ mod coordinator;
 mod daemon;
 mod destroy;
 mod graph;
-mod inspect;
+mod topic;
 mod list;
 mod logs;
 mod new;
@@ -25,7 +25,7 @@ use daemon::Daemon;
 use destroy::Destroy;
 use eyre::Context;
 use graph::Graph;
-use inspect::Inspect;
+use topic::Topic;
 use list::ListArgs;
 use logs::LogsArgs;
 use new::NewArgs;
@@ -62,7 +62,7 @@ pub enum Command {
     Runtime(Runtime),
     Coordinator(Coordinator),
     #[clap(subcommand)]
-    Inspect(Inspect),
+    Topic(Topic),
 
     Self_ {
         #[clap(subcommand)]
@@ -105,7 +105,7 @@ impl Executable for Command {
             Command::Daemon(args) => args.execute(),
             Command::Self_ { command } => command.execute(),
             Command::Runtime(args) => args.execute(),
-            Command::Inspect(args) => args.execute(),
+            Command::Topic(args) => args.execute(),
         }
     }
 }

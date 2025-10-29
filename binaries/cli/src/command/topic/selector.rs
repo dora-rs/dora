@@ -58,7 +58,7 @@ impl InspectSelector {
             bail!(
                 "Dataflow `{dataflow_id}` does not have `publish_all_messages_to_zenoh` enabled. You should enable it in order to inspect data.\n\
                 \n\
-                Tip; Add the following snipppet to your dataflow descriptor:\n\
+                Tip: Add the following snipppet to your dataflow descriptor:\n\
                 \n\
                 ```\n\
                 _unstable_debug:\n  publish_all_messages_to_zenoh: true\n\

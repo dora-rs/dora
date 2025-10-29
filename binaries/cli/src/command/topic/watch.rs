@@ -9,20 +9,20 @@ use dora_message::{
     id::{DataId, NodeId},
     metadata::{ArrowTypeInfo, BufferOffset},
 };
-use eyre::{eyre, Context};
+use eyre::{Context, eyre};
 use tokio::{runtime::Builder, task::JoinSet};
 use uuid::Uuid;
 
-use crate::command::{default_tracing, inspect::selector::InspectSelector, Executable};
+use crate::command::{Executable, default_tracing, topic::selector::InspectSelector};
 
-/// Inspect data in terminal.
+/// Watch topic data in terminal.
 #[derive(Debug, Args)]
-pub struct InspectData {
+pub struct Watch {
     #[clap(flatten)]
     selector: InspectSelector,
 }
 
-impl Executable for InspectData {
+impl Executable for Watch {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
 
