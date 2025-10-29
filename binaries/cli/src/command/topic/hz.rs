@@ -9,7 +9,7 @@ use eyre::{eyre, Context};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use crate::command::{default_tracing, inspect::selector::InspectSelector, Executable};
+use crate::command::{default_tracing, topic::selector::InspectSelector, Executable};
 
 #[derive(Debug, clap::Args)]
 pub struct Hz {
