@@ -3,11 +3,13 @@ use std::{any::Any, collections::BTreeMap, vec};
 use crate::ffi::MetadataValueType;
 
 use dora_node_api::{
-    self, Event, EventStream, Metadata as DoraMetadata, Parameter as DoraParameter,
+    self, Event, EventStream, Metadata as DoraMetadata,
+    MetadataParameters as DoraMetadataParameters, Parameter as DoraParameter,
     arrow::array::{AsArray, UInt8Array},
     merged::{MergeExternal, MergedEvent},
 };
 use eyre::{Result as EyreResult, bail, eyre};
+use serde::Serialize;
 use serde_json::Value as JsonValue;
 
 #[cfg(feature = "ros2-bridge")]
@@ -95,6 +97,15 @@ mod ffi {
             schema_ptr: *mut u8,
         ) -> DoraResult;
 
+        #[cxx_name = "send_arrow_output"]
+        unsafe fn send_arrow_output_with_metadata(
+            output_sender: &mut Box<OutputSender>,
+            id: String,
+            array_ptr: *mut u8,
+            schema_ptr: *mut u8,
+            metadata: Box<Metadata>,
+        ) -> DoraResult;
+
         unsafe fn event_as_arrow_input(
             event: Box<DoraEvent>,
             out_array: *mut u8,
@@ -107,6 +118,7 @@ mod ffi {
             out_schema: *mut u8,
         ) -> ArrowInputInfo;
 
+        fn new_metadata() -> Box<Metadata>;
         fn timestamp(self: &Metadata) -> u64;
         fn get_float(self: &Metadata, key: &str) -> Result<f64>;
         fn get_int(self: &Metadata, key: &str) -> Result<i64>;
@@ -114,6 +126,13 @@ mod ffi {
         fn get_json(self: &Metadata, key: &str) -> Result<String>;
         fn to_json(self: &Metadata) -> String;
         fn list_keys(self: &Metadata) -> Vec<String>;
+        fn set_bool(self: &mut Metadata, key: &str, value: bool) -> Result<()>;
+        fn set_int(self: &mut Metadata, key: &str, value: i64) -> Result<()>;
+        fn set_float(self: &mut Metadata, key: &str, value: f64) -> Result<()>;
+        fn set_string(self: &mut Metadata, key: &str, value: String) -> Result<()>;
+        fn set_list_int(self: &mut Metadata, key: &str, value: Vec<i64>) -> Result<()>;
+        fn set_list_float(self: &mut Metadata, key: &str, value: Vec<f64>) -> Result<()>;
+        fn set_list_string(self: &mut Metadata, key: &str, value: Vec<String>) -> Result<()>;
         #[cxx_name = "type"]
         fn value_type(self: &Metadata, key: &str) -> Result<MetadataValueType>;
     }
@@ -236,8 +255,10 @@ unsafe fn event_as_arrow_input(
 
     match arrow::ffi::to_ffi(&array_data.clone()) {
         Ok((ffi_array, ffi_schema)) => {
-            std::ptr::write(out_array, ffi_array);
-            std::ptr::write(out_schema, ffi_schema);
+            unsafe {
+                std::ptr::write(out_array, ffi_array);
+                std::ptr::write(out_schema, ffi_schema);
+            }
             ffi::DoraResult {
                 error: String::new(),
             }
@@ -251,17 +272,13 @@ unsafe fn event_as_arrow_input(
 pub struct Metadata {
     timestamp: u64,
     parameters: BTreeMap<String, DoraParameter>,
-    json: String,
 }
 
 impl Metadata {
     fn from_dora(metadata: DoraMetadata) -> EyreResult<Self> {
-        let json = serde_json::to_string(&metadata)
-            .map_err(|err| eyre!("failed to serialize metadata to JSON: {err}"))?;
         Ok(Self {
             timestamp: metadata.timestamp().get_time().as_u64(),
             parameters: metadata.parameters,
-            json,
         })
     }
 
@@ -269,7 +286,6 @@ impl Metadata {
         Self {
             timestamp: 0,
             parameters: BTreeMap::new(),
-            json: "{}".to_string(),
         }
     }
 
@@ -291,7 +307,7 @@ impl Metadata {
             .ok_or_else(|| eyre!("metadata missing key '{key}'"))
     }
 
-    fn parameter_to_json(parameter: &DoraParameter, key: &str) -> EyreResult<JsonValue> {
+    fn parameter_to_json(parameter: &DoraParameter, _key: &str) -> EyreResult<JsonValue> {
         match parameter {
             DoraParameter::Bool(value) => Ok(JsonValue::Bool(*value)),
             DoraParameter::Integer(value) => Ok(JsonValue::from(*value)),
@@ -357,11 +373,49 @@ impl Metadata {
     }
 
     pub fn to_json(&self) -> String {
-        self.json.clone()
+        #[derive(Serialize)]
+        struct MetadataJson<'a> {
+            timestamp: u64,
+            parameters: &'a BTreeMap<String, DoraParameter>,
+        }
+
+        serde_json::to_string(&MetadataJson {
+            timestamp: self.timestamp,
+            parameters: &self.parameters,
+        })
+        .expect("failed to serialize metadata to JSON")
     }
 
     pub fn list_keys(&self) -> Vec<String> {
         self.parameters.keys().cloned().collect()
+    }
+
+    pub fn set_bool(&mut self, key: &str, value: bool) -> EyreResult<()> {
+        self.insert_parameter(key, DoraParameter::Bool(value))
+    }
+
+    pub fn set_int(&mut self, key: &str, value: i64) -> EyreResult<()> {
+        self.insert_parameter(key, DoraParameter::Integer(value))
+    }
+
+    pub fn set_float(&mut self, key: &str, value: f64) -> EyreResult<()> {
+        self.insert_parameter(key, DoraParameter::Float(value))
+    }
+
+    pub fn set_string(&mut self, key: &str, value: String) -> EyreResult<()> {
+        self.insert_parameter(key, DoraParameter::String(value))
+    }
+
+    pub fn set_list_int(&mut self, key: &str, value: Vec<i64>) -> EyreResult<()> {
+        self.insert_parameter(key, DoraParameter::ListInt(value))
+    }
+
+    pub fn set_list_float(&mut self, key: &str, value: Vec<f64>) -> EyreResult<()> {
+        self.insert_parameter(key, DoraParameter::ListFloat(value))
+    }
+
+    pub fn set_list_string(&mut self, key: &str, value: Vec<String>) -> EyreResult<()> {
+        self.insert_parameter(key, DoraParameter::ListString(value))
     }
 
     pub fn value_type(&self, key: &str) -> EyreResult<MetadataValueType> {
@@ -380,6 +434,11 @@ impl Metadata {
             }
         };
         Ok(value_type)
+    }
+
+    fn insert_parameter(&mut self, key: &str, parameter: DoraParameter) -> EyreResult<()> {
+        self.parameters.insert(key.to_string(), parameter);
+        Ok(())
     }
 }
 
@@ -423,8 +482,10 @@ unsafe fn event_as_arrow_input_with_info(
 
     match arrow::ffi::to_ffi(&array_data) {
         Ok((ffi_array, ffi_schema)) => {
-            std::ptr::write(out_array, ffi_array);
-            std::ptr::write(out_schema, ffi_schema);
+            unsafe {
+                std::ptr::write(out_array, ffi_array);
+                std::ptr::write(out_schema, ffi_schema);
+            }
             ffi::ArrowInputInfo {
                 id: id.to_string(),
                 metadata: Box::new(prepared_metadata),
@@ -458,11 +519,35 @@ pub struct MergedEvents {
     events: Option<Box<dyn Stream<Item = MergedEvent<ExternalEvent>> + Unpin>>,
     next_id: u32,
 }
+
+fn new_metadata() -> Box<Metadata> {
+    Box::new(Metadata::empty())
+}
 unsafe fn send_arrow_output(
     sender: &mut Box<OutputSender>,
     id: String,
     array_ptr: *mut u8,
     schema_ptr: *mut u8,
+) -> ffi::DoraResult {
+    unsafe { send_arrow_output_impl(sender, id, array_ptr, schema_ptr, None) }
+}
+
+unsafe fn send_arrow_output_with_metadata(
+    sender: &mut Box<OutputSender>,
+    id: String,
+    array_ptr: *mut u8,
+    schema_ptr: *mut u8,
+    metadata: Box<Metadata>,
+) -> ffi::DoraResult {
+    unsafe { send_arrow_output_impl(sender, id, array_ptr, schema_ptr, Some(metadata)) }
+}
+
+unsafe fn send_arrow_output_impl(
+    sender: &mut Box<OutputSender>,
+    id: String,
+    array_ptr: *mut u8,
+    schema_ptr: *mut u8,
+    metadata: Option<Box<Metadata>>,
 ) -> ffi::DoraResult {
     let array_ptr = array_ptr as *mut arrow::ffi::FFI_ArrowArray;
     let schema_ptr = schema_ptr as *mut arrow::ffi::FFI_ArrowSchema;
@@ -473,18 +558,22 @@ unsafe fn send_arrow_output(
         };
     }
 
-    let array = std::ptr::read(array_ptr);
-    let schema = std::ptr::read(schema_ptr);
+    let array = unsafe { std::ptr::read(array_ptr) };
+    let schema = unsafe { std::ptr::read(schema_ptr) };
 
-    std::ptr::write(array_ptr, std::mem::zeroed());
-    std::ptr::write(schema_ptr, std::mem::zeroed());
+    unsafe {
+        std::ptr::write(array_ptr, std::mem::zeroed());
+        std::ptr::write(schema_ptr, std::mem::zeroed());
+    }
 
-    match arrow::ffi::from_ffi(array, &schema) {
+    match unsafe { arrow::ffi::from_ffi(array, &schema) } {
         Ok(array_data) => {
             let arrow_array = arrow::array::make_array(array_data);
-            let result = sender
-                .0
-                .send_output(id.into(), Default::default(), arrow_array);
+            let parameters: DoraMetadataParameters = metadata
+                .as_ref()
+                .map(|metadata| metadata.parameters.clone())
+                .unwrap_or_default();
+            let result = sender.0.send_output(id.into(), parameters, arrow_array);
             match result {
                 Ok(()) => ffi::DoraResult {
                     error: String::new(),
