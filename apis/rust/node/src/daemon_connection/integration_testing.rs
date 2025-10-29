@@ -101,7 +101,8 @@ impl IntegrationTestingEvents {
                     // integration testing doesn't use shared memory -> no drop tokens
                     let _ = drop_rx;
 
-                    let data_type_json = data_type_to_json(data_array.data_type());
+                    let data_type_json = serde_json::to_value(data_array.data_type())
+                        .context("failed to serialize data type as JSON")?;
 
                     let batch = RecordBatch::try_from_iter([("inner", data_array)])
                         .context("failed to create RecordBatch")?;
@@ -187,16 +188,16 @@ impl IntegrationTestingEvents {
             InputEvent::Input { id, metadata, data } => {
                 let (data, type_info) = if let Some(data) = data {
                     let array = match data {
-                        InputData::JsonObject { data, schema } => {
+                        InputData::JsonObject { value, schema } => {
+                            // input is JSON data
+                            let array = json_value_to_list(value);
                             let schema = match schema {
                                 Some(schema) => schema,
                                 None => arrow_json::reader::infer_json_schema_from_iterator(
-                                    std::iter::once(&data).map(Ok),
-                                )
-                                .context("failed to infer JSON schema")?,
+                                    array.iter().map(Ok),
+                                )?,
                             };
-                            // input is JSON data
-                            read_json_value_as_arrow(&data, schema)
+                            read_json_value_as_arrow(&array, schema)
                                 .context("failed to read data")?
                         }
                         InputData::ArrowFile {
@@ -258,4 +259,25 @@ impl IntegrationTestingEvents {
             timestamp,
         }))
     }
+}
+
+fn json_value_to_list(value: serde_json::Value) -> Vec<serde_json::Value> {
+    match value {
+        value @ serde_json::Value::Object(_) => {
+            vec![value]
+        }
+        serde_json::Value::Array(inner) => inner.into_iter().map(wrap_value_into_object).collect(),
+        _ => {
+            // wrap into object to allow bare values
+            let object = wrap_value_into_object(value);
+            vec![object]
+        }
+    }
+}
+
+fn wrap_value_into_object(value: serde_json::Value) -> serde_json::Value {
+    let mut map = serde_json::Map::new();
+    map.insert("inner".into(), value);
+
+    serde_json::Value::Object(map)
 }

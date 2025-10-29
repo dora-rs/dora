@@ -5,8 +5,6 @@ use std::{
     path::PathBuf,
 };
 
-use semver::Op;
-
 use crate::{
     config::Input,
     descriptor::EnvValue,
@@ -185,7 +183,6 @@ pub enum InputEvent {
     Input {
         id: DataId,
         metadata: Option<MetadataParameters>,
-        #[serde(default, flatten)]
         data: Option<InputData>,
     },
     InputClosed {
@@ -195,13 +192,13 @@ pub enum InputEvent {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, serde::Deserialize, serde::Serialize)]
-#[serde(tag = "data_format")]
+#[serde(untagged)]
 pub enum InputData {
     /// Converts the given JSON object to the closest Arrow representation.
     ///
     /// No schema is required, but not all arrow types are representable.
     JsonObject {
-        data: serde_json::Value,
+        value: serde_json::Value,
         schema: Option<arrow_schema::Schema>,
     },
     /// Use [Arrow file format](https://arrow.apache.org/docs/python/ipc.html#writing-and-reading-random-access-files)
