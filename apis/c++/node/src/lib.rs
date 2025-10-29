@@ -53,6 +53,9 @@ mod ffi {
         Integer,
         Float,
         String,
+        ListInt,
+        ListFloat,
+        ListString,
     }
 
     pub struct CombinedEvents {
@@ -83,6 +86,12 @@ mod ffi {
             output_sender: &mut Box<OutputSender>,
             id: String,
             data: &[u8],
+        ) -> DoraResult;
+        fn send_output_with_metadata(
+            output_sender: &mut Box<OutputSender>,
+            id: String,
+            data: &[u8],
+            metadata: Box<Metadata>,
         ) -> DoraResult;
 
         fn next(self: &mut CombinedEvents) -> CombinedEvent;
@@ -120,9 +129,13 @@ mod ffi {
 
         fn new_metadata() -> Box<Metadata>;
         fn timestamp(self: &Metadata) -> u64;
+        fn get_bool(self: &Metadata, key: &str) -> Result<bool>;
         fn get_float(self: &Metadata, key: &str) -> Result<f64>;
         fn get_int(self: &Metadata, key: &str) -> Result<i64>;
         fn get_str(self: &Metadata, key: &str) -> Result<String>;
+        fn get_list_int(self: &Metadata, key: &str) -> Result<Vec<i64>>;
+        fn get_list_float(self: &Metadata, key: &str) -> Result<Vec<f64>>;
+        fn get_list_string(self: &Metadata, key: &str) -> Result<Vec<String>>;
         fn get_json(self: &Metadata, key: &str) -> Result<String>;
         fn to_json(self: &Metadata) -> String;
         fn list_keys(self: &Metadata) -> Vec<String>;
@@ -332,6 +345,17 @@ impl Metadata {
         self.timestamp
     }
 
+    pub fn get_bool(&self, key: &str) -> EyreResult<bool> {
+        let parameter = self.expect_parameter(key)?;
+        match parameter {
+            DoraParameter::Bool(value) => Ok(*value),
+            other => Err(eyre!(
+                "metadata key '{key}' has type '{}', expected 'bool'",
+                Metadata::parameter_type_name(other)
+            )),
+        }
+    }
+
     pub fn get_float(&self, key: &str) -> EyreResult<f64> {
         let parameter = self.expect_parameter(key)?;
         match parameter {
@@ -360,6 +384,39 @@ impl Metadata {
             DoraParameter::String(value) => Ok(value.clone()),
             other => Err(eyre!(
                 "metadata key '{key}' has type '{}', expected 'string'",
+                Metadata::parameter_type_name(other)
+            )),
+        }
+    }
+
+    pub fn get_list_int(&self, key: &str) -> EyreResult<Vec<i64>> {
+        let parameter = self.expect_parameter(key)?;
+        match parameter {
+            DoraParameter::ListInt(values) => Ok(values.clone()),
+            other => Err(eyre!(
+                "metadata key '{key}' has type '{}', expected 'list<int>'",
+                Metadata::parameter_type_name(other)
+            )),
+        }
+    }
+
+    pub fn get_list_float(&self, key: &str) -> EyreResult<Vec<f64>> {
+        let parameter = self.expect_parameter(key)?;
+        match parameter {
+            DoraParameter::ListFloat(values) => Ok(values.clone()),
+            other => Err(eyre!(
+                "metadata key '{key}' has type '{}', expected 'list<float>'",
+                Metadata::parameter_type_name(other)
+            )),
+        }
+    }
+
+    pub fn get_list_string(&self, key: &str) -> EyreResult<Vec<String>> {
+        let parameter = self.expect_parameter(key)?;
+        match parameter {
+            DoraParameter::ListString(values) => Ok(values.clone()),
+            other => Err(eyre!(
+                "metadata key '{key}' has type '{}', expected 'list<string>'",
                 Metadata::parameter_type_name(other)
             )),
         }
@@ -425,15 +482,15 @@ impl Metadata {
             DoraParameter::Integer(_) => MetadataValueType::Integer,
             DoraParameter::Float(_) => MetadataValueType::Float,
             DoraParameter::String(_) => MetadataValueType::String,
-            DoraParameter::ListInt(_)
-            | DoraParameter::ListFloat(_)
-            | DoraParameter::ListString(_) => {
-                return Err(eyre!(
-                    "metadata key '{key}' has unsupported list value type"
-                ));
-            }
+            DoraParameter::ListInt(_) => MetadataValueType::ListInt,
+            DoraParameter::ListFloat(_) => MetadataValueType::ListFloat,
+            DoraParameter::ListString(_) => MetadataValueType::ListString,
         };
         Ok(value_type)
+    }
+
+    fn into_parameters(self) -> DoraMetadataParameters {
+        self.parameters
     }
 
     fn insert_parameter(&mut self, key: &str, parameter: DoraParameter) -> EyreResult<()> {
@@ -503,9 +560,29 @@ unsafe fn event_as_arrow_input_with_info(
 pub struct OutputSender(dora_node_api::DoraNode);
 
 fn send_output(sender: &mut Box<OutputSender>, id: String, data: &[u8]) -> ffi::DoraResult {
+    send_output_internal(sender, id, data, Default::default())
+}
+
+fn send_output_with_metadata(
+    sender: &mut Box<OutputSender>,
+    id: String,
+    data: &[u8],
+    metadata: Box<Metadata>,
+) -> ffi::DoraResult {
+    let metadata = *metadata;
+    let parameters = metadata.into_parameters();
+    send_output_internal(sender, id, data, parameters)
+}
+
+fn send_output_internal(
+    sender: &mut Box<OutputSender>,
+    id: String,
+    data: &[u8],
+    metadata: DoraMetadataParameters,
+) -> ffi::DoraResult {
     let result = sender
         .0
-        .send_output_raw(id.into(), Default::default(), data.len(), |out| {
+        .send_output_raw(id.into(), metadata, data.len(), |out| {
             out.copy_from_slice(data)
         });
     let error = match result {

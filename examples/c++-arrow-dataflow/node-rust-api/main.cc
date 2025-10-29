@@ -3,8 +3,8 @@
 #include <arrow/c/bridge.h>
 #include <cstdint>
 #include <exception>
-#include <utility>
 #include <iostream>
+#include <utility>
 #include <string>
 
 std::shared_ptr<arrow::Array> receive_and_print_input(rust::cxxbridge1::Box<DoraEvent> event) {
@@ -58,9 +58,45 @@ std::shared_ptr<arrow::Array> receive_and_print_input(rust::cxxbridge1::Box<Dora
                           << std::string(metadata->get_str(key)) << std::endl;
                 break;
             case MetadataValueType::Bool:
-                std::cout << "Metadata[" << key << "] (bool) = "
-                          << std::string(metadata->get_json(key)) << std::endl;
+                std::cout << "Metadata[" << key << "] (bool) = " << std::boolalpha
+                          << metadata->get_bool(key) << std::noboolalpha << std::endl;
                 break;
+            case MetadataValueType::ListInt: {
+                auto values = metadata->get_list_int(key);
+                std::cout << "Metadata[" << key << "] (list<int>) = [";
+                for (std::size_t j = 0; j < values.size(); j++) {
+                    if (j > 0) {
+                        std::cout << ", ";
+                    }
+                    std::cout << values[j];
+                }
+                std::cout << "]" << std::endl;
+                break;
+            }
+            case MetadataValueType::ListFloat: {
+                auto values = metadata->get_list_float(key);
+                std::cout << "Metadata[" << key << "] (list<float>) = [";
+                for (std::size_t j = 0; j < values.size(); j++) {
+                    if (j > 0) {
+                        std::cout << ", ";
+                    }
+                    std::cout << values[j];
+                }
+                std::cout << "]" << std::endl;
+                break;
+            }
+            case MetadataValueType::ListString: {
+                auto values = metadata->get_list_string(key);
+                std::cout << "Metadata[" << key << "] (list<string>) = [";
+                for (std::size_t j = 0; j < values.size(); j++) {
+                    if (j > 0) {
+                        std::cout << ", ";
+                    }
+                    std::cout << std::string(values[j]);
+                }
+                std::cout << "]" << std::endl;
+                break;
+            }
             default:
                 std::cout << "Metadata[" << key << "] has unsupported type" << std::endl;
                 break;
