@@ -9,10 +9,10 @@ use ratatui::{
 };
 use std::time::Duration;
 
-use super::{BaseView, InspectorTab, NodeInspectorState, NodeMetrics, View, ViewAction};
+use super::{BaseView, InspectorTab, NodeInspectorState, View, ViewAction};
 use crate::tui::{
     Result,
-    app::{AppState, DataflowInfo},
+    app::{AppState, DataflowInfo, NodeMetrics, NodeTelemetrySample},
     theme::ThemeConfig,
 };
 use dora_message::descriptor::CoreNodeKind;
@@ -36,7 +36,11 @@ impl NodeInspectorView {
         }
     }
 
-    fn build_node_metrics(&self, app_state: &AppState) -> NodeMetrics {
+    fn compute_node_metrics(
+        &self,
+        app_state: &AppState,
+        previous: Option<&NodeMetrics>,
+    ) -> NodeMetrics {
         use std::cmp::max;
 
         let sys = &app_state.system_metrics;
@@ -52,6 +56,7 @@ impl NodeInspectorView {
             })
             .count();
         let node_divisor = max(running_nodes, 1) as f64;
+        let node_divisor_count = max(running_nodes, 1) as u64;
 
         let mut cpu_percent = (sys.cpu_usage as f64 / node_divisor).clamp(0.0, 100.0);
         let mut memory_percent = (sys.memory.usage_percent as f64 / node_divisor).clamp(0.0, 100.0);
@@ -90,21 +95,38 @@ impl NodeInspectorView {
         }
 
         let processing_latency_ms = (1000.0 / message_rate).clamp(0.5, 250.0);
-        let uptime_seconds = sys.uptime.as_secs();
+        let uptime_seconds = (sys.uptime.as_secs() / node_divisor_count.max(1)).max(1);
         let error_count = if status == "failed" || status == "error" {
             1
         } else {
             0
         };
 
-        NodeMetrics {
+        let mut metrics = NodeMetrics {
             cpu_percent,
             memory_percent,
             message_rate,
             processing_latency_ms,
             uptime_seconds,
             error_count,
+        };
+
+        if let Some(prev) = previous {
+            metrics.cpu_percent = smooth_metric(prev.cpu_percent, metrics.cpu_percent);
+            metrics.memory_percent = smooth_metric(prev.memory_percent, metrics.memory_percent);
+            metrics.message_rate = smooth_metric(prev.message_rate, metrics.message_rate);
+            metrics.processing_latency_ms =
+                smooth_metric(prev.processing_latency_ms, metrics.processing_latency_ms);
+            if metrics.error_count == 0 {
+                metrics.error_count = prev.error_count;
+            }
         }
+
+        metrics
+    }
+
+    fn telemetry_sample<'a>(&self, app_state: &'a AppState) -> Option<&'a NodeTelemetrySample> {
+        app_state.node_telemetry_sample(&self.state.dataflow_id, &self.state.node_id)
     }
 
     /// Render tab bar
@@ -163,7 +185,10 @@ impl NodeInspectorView {
     /// Render Overview tab
     fn render_overview_tab(&self, f: &mut Frame, area: Rect, app_state: &AppState) {
         let node_info = self.find_node_info(app_state);
-        let metrics = self.build_node_metrics(app_state);
+        let telemetry = self.telemetry_sample(app_state);
+        let metrics = telemetry
+            .map(|sample| sample.current.clone())
+            .unwrap_or_else(|| self.compute_node_metrics(app_state, None));
 
         let dataflow_name = self
             .find_node(app_state)
@@ -255,6 +280,16 @@ impl NodeInspectorView {
             overview_text.push(Line::from(vec![
                 Span::styled("Errors: ", Style::default().fg(Color::Red)),
                 Span::raw(metrics.error_count.to_string()),
+            ]));
+        }
+
+        if let Some(sample) = telemetry {
+            overview_text.push(Line::from(vec![
+                Span::styled(
+                    "Metrics Updated: ",
+                    Style::default().fg(self.theme.colors.muted),
+                ),
+                Span::raw(format_elapsed(sample.last_updated.elapsed())),
             ]));
         }
 
@@ -401,15 +436,22 @@ impl NodeInspectorView {
 
     /// Render Performance tab
     fn render_performance_tab(&mut self, f: &mut Frame, area: Rect, app_state: &AppState) {
-        let previous = self.state.last_metrics().cloned();
-        let metrics = self.build_node_metrics(app_state);
+        let telemetry = self.telemetry_sample(app_state);
+        let (metrics, previous, last_updated) = if let Some(sample) = telemetry {
+            (
+                sample.current.clone(),
+                sample.previous.clone(),
+                Some(sample.last_updated),
+            )
+        } else {
+            (self.compute_node_metrics(app_state, None), None, None)
+        };
         let rate_delta = previous
             .as_ref()
             .map(|prev| metrics.message_rate - prev.message_rate);
         let latency_delta = previous
             .as_ref()
             .map(|prev| prev.processing_latency_ms - metrics.processing_latency_ms);
-        self.state.record_metrics(metrics.clone());
 
         let mut perf_text = Vec::new();
         if let Some(node) = self.find_node_info(app_state) {
@@ -476,6 +518,15 @@ impl NodeInspectorView {
             ),
             Span::raw(metrics.error_count.to_string()),
         ]));
+        if let Some(updated) = last_updated {
+            perf_text.push(Line::from(vec![
+                Span::styled(
+                    "Metrics Updated: ",
+                    Style::default().fg(self.theme.colors.muted),
+                ),
+                Span::raw(format_elapsed(updated.elapsed())),
+            ]));
+        }
 
         if self.state.show_detailed_metrics {
             let sys = &app_state.system_metrics;
@@ -915,7 +966,12 @@ impl View for NodeInspectorView {
         Ok(ViewAction::None)
     }
 
-    async fn update(&mut self, _app_state: &mut AppState) -> Result<()> {
+    async fn update(&mut self, app_state: &mut AppState) -> Result<()> {
+        let previous = app_state
+            .node_telemetry_sample(&self.state.dataflow_id, &self.state.node_id)
+            .map(|sample| &sample.current);
+        let metrics = self.compute_node_metrics(app_state, previous);
+        app_state.store_node_metrics(&self.state.dataflow_id, &self.state.node_id, metrics);
         self.state.mark_refreshed();
         Ok(())
     }
@@ -954,6 +1010,21 @@ fn format_uptime(seconds: u64) -> String {
     }
 }
 
+fn format_elapsed(duration: Duration) -> String {
+    let secs = duration.as_secs();
+    if secs < 60 {
+        format!("{secs}s ago")
+    } else if secs < 3600 {
+        let minutes = secs / 60;
+        let seconds = secs % 60;
+        format!("{minutes}m {seconds}s ago")
+    } else {
+        let hours = secs / 3600;
+        let minutes = (secs % 3600) / 60;
+        format!("{hours}h {minutes}m ago")
+    }
+}
+
 fn format_trend(delta: Option<f64>) -> String {
     match delta {
         Some(change) if change.abs() >= 0.05 => {
@@ -965,6 +1036,14 @@ fn format_trend(delta: Option<f64>) -> String {
         }
         Some(_) => "stable".to_string(),
         None => "collecting…".to_string(),
+    }
+}
+
+fn smooth_metric(previous: f64, current: f64) -> f64 {
+    if previous == 0.0 {
+        current
+    } else {
+        (previous * 0.6) + (current * 0.4)
     }
 }
 

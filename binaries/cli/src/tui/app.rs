@@ -13,7 +13,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, VecDeque, hash_map::Entry},
     io,
     path::PathBuf,
     time::{Duration, Instant},
@@ -94,6 +94,9 @@ pub struct AppState {
 
     /// Status messages
     pub status_messages: VecDeque<StatusMessage>,
+
+    /// Cached per-node telemetry samples
+    pub node_telemetry: HashMap<String, NodeTelemetrySample>,
 }
 
 impl AppState {
@@ -119,6 +122,38 @@ impl AppState {
 
     pub fn system_history_capacity() -> usize {
         Self::SYSTEM_HISTORY_CAPACITY
+    }
+
+    pub fn node_metrics_key(dataflow_id: &str, node_id: &str) -> String {
+        format!("{dataflow_id}::{node_id}")
+    }
+
+    pub fn node_telemetry_sample(
+        &self,
+        dataflow_id: &str,
+        node_id: &str,
+    ) -> Option<&NodeTelemetrySample> {
+        self.node_telemetry
+            .get(&Self::node_metrics_key(dataflow_id, node_id))
+    }
+
+    pub fn store_node_metrics(&mut self, dataflow_id: &str, node_id: &str, metrics: NodeMetrics) {
+        let key = Self::node_metrics_key(dataflow_id, node_id);
+        match self.node_telemetry.entry(key) {
+            Entry::Occupied(mut occupied) => {
+                let sample = occupied.get_mut();
+                sample.previous = Some(sample.current.clone());
+                sample.current = metrics;
+                sample.last_updated = Instant::now();
+            }
+            Entry::Vacant(vacant) => {
+                vacant.insert(NodeTelemetrySample {
+                    current: metrics,
+                    previous: None,
+                    last_updated: Instant::now(),
+                });
+            }
+        }
     }
 }
 
@@ -149,6 +184,29 @@ pub struct NodeInfo {
     pub resolved: Option<ResolvedNode>,
 }
 
+#[derive(Debug, Clone)]
+pub struct NodeMetrics {
+    pub cpu_percent: f64,
+    pub memory_percent: f64,
+    pub message_rate: f64,
+    pub processing_latency_ms: f64,
+    pub uptime_seconds: u64,
+    pub error_count: u64,
+}
+
+impl Default for NodeMetrics {
+    fn default() -> Self {
+        Self {
+            cpu_percent: 0.0,
+            memory_percent: 0.0,
+            message_rate: 0.0,
+            processing_latency_ms: 0.0,
+            uptime_seconds: 0,
+            error_count: 0,
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct SystemMetrics {
     pub cpu_usage: f32,
@@ -161,6 +219,13 @@ pub struct SystemMetrics {
     pub uptime: Duration,
     pub process_count: usize,
     pub last_update: Option<Instant>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NodeTelemetrySample {
+    pub current: NodeMetrics,
+    pub previous: Option<NodeMetrics>,
+    pub last_updated: Instant,
 }
 
 #[derive(Debug, Clone)]

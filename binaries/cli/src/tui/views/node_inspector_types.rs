@@ -96,9 +96,6 @@ pub struct NodeInspectorState {
 
     /// Whether the view is in edit mode (for configuration)
     pub edit_mode: bool,
-
-    /// Last sampled metrics for trend calculations
-    pub last_metrics: Option<NodeMetrics>,
 }
 
 impl NodeInspectorState {
@@ -114,7 +111,6 @@ impl NodeInspectorState {
             last_refresh: Instant::now(),
             scroll_offset: 0,
             edit_mode: false,
-            last_metrics: None,
         }
     }
 
@@ -201,17 +197,6 @@ impl NodeInspectorState {
     pub fn mark_refreshed(&mut self) {
         self.last_refresh = Instant::now();
     }
-
-    /// Update the cached metrics snapshot
-    pub fn record_metrics(&mut self, metrics: NodeMetrics) {
-        self.last_metrics = Some(metrics);
-        self.mark_refreshed();
-    }
-
-    /// Last recorded metrics, if any
-    pub fn last_metrics(&self) -> Option<&NodeMetrics> {
-        self.last_metrics.as_ref()
-    }
 }
 
 impl Default for NodeInspectorState {
@@ -232,33 +217,10 @@ pub struct ConnectionInfo {
     pub last_message_time: Option<Instant>,
 }
 
-/// Performance metrics for a node
-#[derive(Debug, Clone)]
-pub struct NodeMetrics {
-    pub cpu_percent: f64,
-    pub memory_percent: f64,
-    pub message_rate: f64,
-    pub processing_latency_ms: f64,
-    pub uptime_seconds: u64,
-    pub error_count: u64,
-}
-
-impl Default for NodeMetrics {
-    fn default() -> Self {
-        Self {
-            cpu_percent: 0.0,
-            memory_percent: 0.0,
-            message_rate: 0.0,
-            processing_latency_ms: 0.0,
-            uptime_seconds: 0,
-            error_count: 0,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tui::app::NodeMetrics;
 
     #[test]
     fn test_inspector_tab_all_returns_five_tabs() {
