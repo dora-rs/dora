@@ -1,7 +1,7 @@
 use super::{BaseView, View, ViewAction};
 use crate::tui::{
     Frame, Result,
-    app::{AppState, SystemMetrics},
+    app::{AppState, SystemMetrics, SystemMetricsSample},
     theme::ThemeConfig,
 };
 use crossterm::event::KeyEvent;
@@ -9,9 +9,9 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::Style,
     text::{Line, Span},
-    widgets::{Block, Borders, Gauge, Paragraph},
+    widgets::{Block, Borders, Gauge, Paragraph, Sparkline},
 };
-use std::time::Duration;
+use std::{collections::VecDeque, time::Duration};
 
 pub struct SystemMonitorView {
     base: BaseView,
@@ -42,6 +42,7 @@ impl View for SystemMonitorView {
                 Constraint::Length(5), // Memory
                 Constraint::Length(5), // Disk
                 Constraint::Length(6), // Network
+                Constraint::Length(6), // Trends
                 Constraint::Min(4),    // Load averages / uptime
             ])
             .split(inner);
@@ -50,7 +51,8 @@ impl View for SystemMonitorView {
         render_memory(f, rows[1], metrics, &self.theme);
         render_disk(f, rows[2], metrics, &self.theme);
         render_network(f, rows[3], metrics, &self.theme);
-        render_load_section(f, rows[4], metrics, &self.theme);
+        render_trends(f, rows[4], app_state.system_metrics_history(), &self.theme);
+        render_load_section(f, rows[5], metrics, &self.theme);
     }
 
     async fn handle_key(
@@ -158,6 +160,50 @@ fn render_network(f: &mut Frame, area: Rect, metrics: &SystemMetrics, theme: &Th
     f.render_widget(paragraph, inner);
 }
 
+fn render_trends(
+    f: &mut Frame,
+    area: Rect,
+    history: &VecDeque<SystemMetricsSample>,
+    theme: &ThemeConfig,
+) {
+    let block = Block::default()
+        .title("Trends")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.colors.border));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    if history.len() < 2 {
+        let paragraph =
+            Paragraph::new("Collecting metrics…").style(Style::default().fg(theme.colors.muted));
+        f.render_widget(paragraph, inner);
+        return;
+    }
+
+    let segments = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(inner);
+
+    let cpu_data = tail_map(history, 60, |sample| {
+        (sample.cpu_usage.clamp(0.0, 100.0) * 10.0).round() as u64
+    });
+    let cpu_spark = Sparkline::default()
+        .block(Block::default().title("CPU %").borders(Borders::ALL))
+        .style(Style::default().fg(theme.colors.primary))
+        .data(&cpu_data);
+    f.render_widget(cpu_spark, segments[0]);
+
+    let net_data = tail_map(history, 60, |sample| {
+        (((sample.rx_rate + sample.tx_rate) / 1024.0).max(0.0) * 10.0) as u64
+    });
+    let net_spark = Sparkline::default()
+        .block(Block::default().title("Network KB/s").borders(Borders::ALL))
+        .style(Style::default().fg(theme.colors.accent))
+        .data(&net_data);
+    f.render_widget(net_spark, segments[1]);
+}
+
 fn render_load_section(f: &mut Frame, area: Rect, metrics: &SystemMetrics, theme: &ThemeConfig) {
     let load = metrics.load_average.as_ref();
     let block = Block::default()
@@ -204,6 +250,20 @@ fn render_load_section(f: &mut Frame, area: Rect, metrics: &SystemMetrics, theme
 
     let paragraph = Paragraph::new(lines);
     f.render_widget(paragraph, inner);
+}
+
+fn tail_map<F>(history: &VecDeque<SystemMetricsSample>, limit: usize, map: F) -> Vec<u64>
+where
+    F: Fn(&SystemMetricsSample) -> u64,
+{
+    let mut values: Vec<u64> = history
+        .iter()
+        .rev()
+        .take(limit)
+        .map(|sample| map(sample))
+        .collect();
+    values.reverse();
+    values
 }
 
 fn format_bytes(bytes: u64) -> String {

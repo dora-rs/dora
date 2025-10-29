@@ -2,7 +2,7 @@
 use crate::{
     config::preferences::UserPreferences,
     tui::{
-        app::{AppState, DataflowInfo, DoraApp, MessageLevel, ViewType},
+        app::{AppState, DataflowInfo, DoraApp, MessageLevel, SystemMetrics, ViewType},
         cli_integration::{CliContext, CommandHistory, KeyBindings, TabCompletion},
         command_executor::StateUpdate as CommandStateUpdate,
         theme::ThemeConfig,
@@ -14,7 +14,12 @@ use crate::{
 use once_cell::sync::Lazy;
 
 #[cfg(test)]
-use std::{fs, path::PathBuf, sync::Mutex, time::Duration};
+use std::{
+    fs,
+    path::PathBuf,
+    sync::Mutex,
+    time::{Duration, Instant},
+};
 
 #[cfg(test)]
 static CONFIG_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
@@ -180,6 +185,23 @@ mod app_tests {
         });
 
         assert!(app.last_dataflow_refresh().is_some());
+    }
+
+    #[test]
+    fn test_system_metrics_history_limit() {
+        let mut state = AppState::default();
+
+        for i in 0..(AppState::system_history_capacity() + 25) {
+            let mut metrics = SystemMetrics::default();
+            metrics.cpu_usage = i as f32;
+            metrics.memory_usage = (i * 2) as f32;
+            metrics.network.received_per_second = (i * 10) as f64;
+            metrics.network.transmitted_per_second = (i * 5) as f64;
+            metrics.last_update = Some(Instant::now());
+            state.record_system_metrics(&metrics);
+        }
+
+        assert!(state.system_metrics_history().len() <= AppState::system_history_capacity());
     }
 }
 
