@@ -1,7 +1,9 @@
 #include "../build/dora-node-api.h"
 #include <arrow/api.h>
 #include <arrow/c/bridge.h>
+#include <cstdint>
 #include <exception>
+#include <utility>
 #include <iostream>
 #include <string>
 
@@ -81,7 +83,7 @@ std::shared_ptr<arrow::Array> receive_and_print_input(rust::cxxbridge1::Box<Dora
 }
 
 // To send output
-bool send_output(DoraNode& dora_node, std::shared_ptr<arrow::Array> output_array) {
+bool send_output(DoraNode& dora_node, std::shared_ptr<arrow::Array> output_array, int counter) {
     if (!output_array) {
         std::cerr << "Error: Attempted to send a null Arrow array" << std::endl;
         return false;
@@ -95,11 +97,33 @@ bool send_output(DoraNode& dora_node, std::shared_ptr<arrow::Array> output_array
         return false;
     }
 
+    auto metadata = new_metadata();
+    metadata->set_string("producer", "cpp-node");
+    metadata->set_int("iteration", counter);
+    metadata->set_bool("successful", true);
+
+    rust::Vec<int64_t> doubled_values;
+    doubled_values.push_back(counter);
+    doubled_values.push_back(counter * 2);
+    doubled_values.push_back(counter * 3);
+    metadata->set_list_int("multiples", std::move(doubled_values));
+
+    rust::Vec<double> weights;
+    weights.push_back(0.1);
+    weights.push_back(0.2);
+    metadata->set_list_float("weights", std::move(weights));
+
+    rust::Vec<rust::String> notes;
+    notes.push_back("generated");
+    notes.push_back("from_cpp");
+    metadata->set_list_string("notes", std::move(notes));
+
     auto send_result = send_arrow_output(
         dora_node.send_output,
         "counter",
         reinterpret_cast<uint8_t*>(&out_c_array),
-        reinterpret_cast<uint8_t*>(&out_c_schema)
+        reinterpret_cast<uint8_t*>(&out_c_schema),
+        std::move(metadata)
     );
 
     if (!send_result.error.empty()) {
@@ -144,20 +168,13 @@ int main() {
                     std::cerr << "Failed to finish builder" << std::endl;
                     return 1;
                 }
-                std::cout << "Created new string array: " << output_array->ToString() << std::endl;
 
                 //Printing Before sending
                 auto str_array = std::static_pointer_cast<arrow::Int32Array>(output_array);
-                std::cout << "Values: [";
-                for (int i = 0; i < str_array->length(); i++) {
-                    if (i > 0) std::cout << ", ";
-                    std::cout << str_array->Value(i);
-                }
-                std::cout << "]" << std::endl;
 
-                send_output(dora_node, output_array);
-            }
+            send_output(dora_node, output_array, counter);
         }
+    }
 
         return 0;
     }
