@@ -13,13 +13,13 @@ use eyre::{Context, eyre};
 use tokio::{runtime::Builder, task::JoinSet};
 use uuid::Uuid;
 
-use crate::command::{Executable, default_tracing, topic::selector::InspectSelector};
+use crate::command::{default_tracing, topic::selector::{TopicIdentifier, TopicSelector}, Executable};
 
 /// Watch topic data in terminal.
 #[derive(Debug, Args)]
 pub struct Watch {
     #[clap(flatten)]
-    selector: InspectSelector,
+    selector: TopicSelector,
 }
 
 impl Executable for Watch {
@@ -30,26 +30,25 @@ impl Executable for Watch {
     }
 }
 
-fn inspect(selector: InspectSelector) -> eyre::Result<()> {
-    let coordinator_addr = selector.coordinator_addr;
-    let outputs = selector.resolve()?;
+fn inspect(selector: TopicSelector) -> eyre::Result<()> {
+    let (_session, outputs) = selector.resolve()?;
 
     let rt = Builder::new_multi_thread()
         .enable_all()
         .build()
         .context("tokio runtime failed")?;
     rt.block_on(async move {
-        let zenoh_session = open_zenoh_session(Some(coordinator_addr))
+        let zenoh_session = open_zenoh_session(Some(selector.dataflow.coordinator_addr))
             .await
             .context("failed to open zenoh session")?;
 
         let mut join_set = JoinSet::new();
-        for (dataflow_id, node_id, output_id) in outputs {
+        for TopicIdentifier { dataflow_id, node_id, data_id } in outputs {
             join_set.spawn(log_to_terminal(
                 zenoh_session.clone(),
                 dataflow_id,
                 node_id,
-                output_id,
+                data_id,
             ));
         }
         while let Some(res) = join_set.join_next().await {

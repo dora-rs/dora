@@ -70,7 +70,7 @@ pub(crate) fn resolve_dataflow_identifier(
         [] => bail!("No dataflows are running"),
         [entry] => entry.uuid,
         _ => {
-            inquire::Select::new("Choose dataflow to show logs:", active)
+            inquire::Select::new("Choose dataflow:", active)
                 .prompt()?
                 .uuid
         }

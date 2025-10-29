@@ -4,17 +4,22 @@ use std::time::{Duration, Instant};
 
 use colored::Colorize;
 use dora_core::topics::{open_zenoh_session, zenoh_output_publish_topic};
-use dora_message::{common::Timestamped, daemon_to_daemon::InterDaemonEvent, id::{DataId, NodeId}};
-use eyre::{eyre, Context};
+use dora_message::{
+    common::Timestamped,
+    daemon_to_daemon::InterDaemonEvent,
+    id::{DataId, NodeId},
+};
+use eyre::{Context, eyre};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use crate::command::{default_tracing, topic::selector::InspectSelector, Executable};
+use crate::command::topic::selector::TopicIdentifier;
+use crate::command::{Executable, default_tracing, topic::selector::TopicSelector};
 
 #[derive(Debug, clap::Args)]
 pub struct Hz {
     #[clap(flatten)]
-    selector: InspectSelector,
+    selector: TopicSelector,
 
     /// Average window size in seconds
     #[clap(long, default_value_t = 10)]
@@ -80,11 +85,8 @@ impl HzStats {
         let min = intervals.iter().cloned().fold(f64::INFINITY, f64::min);
         let max = intervals.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
 
-        let variance = intervals
-            .iter()
-            .map(|hz| (hz - avg).powi(2))
-            .sum::<f64>()
-            / intervals.len() as f64;
+        let variance =
+            intervals.iter().map(|hz| (hz - avg).powi(2)).sum::<f64>() / intervals.len() as f64;
         let std = variance.sqrt();
 
         Some(Stats { avg, min, max, std })
@@ -99,29 +101,42 @@ struct Stats {
     std: f64,
 }
 
-fn inspect_hz(selector: InspectSelector, window: usize) -> eyre::Result<()> {
-    let coordinator_addr = selector.coordinator_addr;
-    let outputs = selector.resolve()?;
+fn inspect_hz(selector: TopicSelector, window: usize) -> eyre::Result<()> {
+    let (_session, outputs) = selector.resolve()?;
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .context("tokio runtime failed")?;
     rt.block_on(async move {
-        let zenoh_session = open_zenoh_session(Some(coordinator_addr))
+        let zenoh_session = open_zenoh_session(Some(selector.dataflow.coordinator_addr))
             .await
             .context("failed to open zenoh session")?;
 
         let (tx, mut rx) = mpsc::unbounded_channel::<(String, Instant)>();
 
         // Spawn subscribers for each output
-        for (dataflow_id, node_id, output_id) in outputs {
+        for TopicIdentifier {
+            dataflow_id,
+            node_id,
+            data_id,
+        } in outputs
+        {
             let zenoh_session = zenoh_session.clone();
             let tx = tx.clone();
-            let output_name = format!("{node_id}/{output_id}");
-            
+            let output_name = format!("{node_id}/{data_id}");
+
             tokio::spawn(async move {
-                if let Err(e) = subscribe_output(zenoh_session, dataflow_id, node_id, output_id, output_name.clone(), tx).await {
+                if let Err(e) = subscribe_output(
+                    zenoh_session,
+                    dataflow_id,
+                    node_id,
+                    data_id,
+                    output_name.clone(),
+                    tx,
+                )
+                .await
+                {
                     eprintln!("Error subscribing to {output_name}: {e}");
                 }
             });
@@ -172,11 +187,12 @@ async fn subscribe_output(
         .wrap_err_with(|| format!("failed to subscribe to {output_name}"))?;
 
     while let Ok(sample) = subscriber.recv_async().await {
-        let event = match Timestamped::deserialize_inter_daemon_event(&sample.payload().to_bytes()) {
+        let event = match Timestamped::deserialize_inter_daemon_event(&sample.payload().to_bytes())
+        {
             Ok(event) => event,
             Err(_) => continue,
         };
-        
+
         match event.inner {
             InterDaemonEvent::Output { .. } => {
                 let _ = tx.send((output_name.clone(), Instant::now()));
@@ -193,7 +209,7 @@ async fn subscribe_output(
 fn display_stats(stats_map: &HashMap<String, HzStats>) {
     // Clear screen and move cursor to top
     print!("\x1B[2J\x1B[1;1H");
-    
+
     println!("{}", "Data Output Frequency Statistics".bold().cyan());
     println!("{}", "=".repeat(80));
     println!(
