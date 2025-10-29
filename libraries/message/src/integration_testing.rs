@@ -1,6 +1,11 @@
 //! Use these types for integration testing nodes.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::PathBuf,
+};
+
+use semver::Op;
 
 use crate::{
     config::Input,
@@ -180,9 +185,8 @@ pub enum InputEvent {
     Input {
         id: DataId,
         metadata: Option<MetadataParameters>,
-        #[serde(default)]
-        data_format: InputDataFormat,
-        data: Option<serde_json::Value>,
+        #[serde(default, flatten)]
+        data: Option<InputData>,
     },
     InputClosed {
         id: DataId,
@@ -190,22 +194,33 @@ pub enum InputEvent {
     AllInputsClosed,
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy, serde::Deserialize, serde::Serialize, Default)]
-pub enum InputDataFormat {
+#[derive(Debug, PartialEq, Eq, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(tag = "data_format")]
+pub enum InputData {
     /// Converts the given JSON object to the closest Arrow representation.
     ///
     /// No schema is required, but not all arrow types are representable.
-    #[default]
-    JsonObject,
+    JsonObject {
+        data: serde_json::Value,
+        schema: Option<arrow_schema::Schema>,
+    },
     /// Use [Arrow JSON test data format](https://github.com/apache/arrow/blob/main/docs/source/format/Integration.rst#json-test-data-format)
     ///
     /// Requires specifying the exact schema. Always returns an Arrow StructArray.
-    ArrowTest,
+    ArrowTest { data: serde_json::Value },
     /// Use first column of [Arrow JSON test data format](https://github.com/apache/arrow/blob/main/docs/source/format/Integration.rst#json-test-data-format).
     ///
     /// Like [`ArrowTest`][InputDataFormat::ArrowTest], but unwraps the first column of the
     /// `StructArray`. This makes it possible to provide other Arrow array types as input.
     ///
     /// Errors if the given `RecordBatch` specifies more than one column.
-    ArrowTestUnwrap,
+    ArrowTestUnwrap { data: serde_json::Value },
+
+    /// Use [Arrow file format](https://arrow.apache.org/docs/python/ipc.html#writing-and-reading-random-access-files)
+    ArrowFile {
+        path: PathBuf,
+        #[serde(default)]
+        batch_index: usize,
+        column: Option<String>,
+    },
 }

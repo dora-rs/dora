@@ -77,9 +77,10 @@ pub fn convert_arrow_json_data(
 }
 
 /// convert the given JSON object to the closed arrow representation
-pub fn read_json_value_as_arrow(data: &serde_json::Value) -> eyre::Result<ArrayData> {
-    let schema = arrow_json::reader::infer_json_schema_from_iterator(std::iter::once(data).map(Ok))
-        .context("failed to infer JSON schema")?;
+pub fn read_json_value_as_arrow(
+    data: &serde_json::Value,
+    schema: arrow_schema::Schema,
+) -> eyre::Result<ArrayData> {
     let mut decoder = arrow_json::reader::ReaderBuilder::new(Arc::new(schema))
         .build_decoder()
         .context("failed to build JSON decoder")?;

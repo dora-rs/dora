@@ -14,14 +14,10 @@ fn main() -> eyre::Result<()> {
         };
 
         match event {
-            Event::Input {
-                id,
-                metadata,
-                data: _,
-            } => match id.as_str() {
+            Event::Input { id, metadata, data } => match id.as_str() {
                 "tick" => {
                     let random: u64 = rand::random();
-                    println!("tick {i}, sending {random:#x}");
+                    println!("tick {i} with data {data:?}, sending {random:#x}");
                     node.send_output(output.clone(), metadata.parameters, random.into_arrow())?;
                 }
                 other => eprintln!("Ignoring unexpected input `{other}`"),
