@@ -1,15 +1,17 @@
 use crate::command::{
     Executable,
-    topic::{watch::Watch, hz::Hz},
+    topic::{hz::Hz, list::List, watch::Watch},
 };
 
-mod watch;
 mod hz;
-pub mod selector;
+mod list;
+mod selector;
+mod watch;
 
 /// Topic related commands
 #[derive(Debug, clap::Subcommand)]
 pub enum Topic {
+    List(List),
     Watch(Watch),
     Hz(Hz),
 }
@@ -17,6 +19,7 @@ pub enum Topic {
 impl Executable for Topic {
     fn execute(self) -> eyre::Result<()> {
         match self {
+            Topic::List(cmd) => cmd.execute(),
             Topic::Watch(cmd) => cmd.execute(),
             Topic::Hz(cmd) => cmd.execute(),
         }
