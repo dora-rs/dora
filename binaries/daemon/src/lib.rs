@@ -327,7 +327,7 @@ impl Daemon {
 
         let zenoh_session = open_zenoh_session(coordinator_addr.map(|addr| addr.ip()))
             .await
-            .wrap_err("failed to open Zenoh session")?;
+            .wrap_err("failed to open zenoh session")?;
         let (dora_events_tx, dora_events_rx) = mpsc::channel(5);
         let daemon = Self {
             logger: Logger {

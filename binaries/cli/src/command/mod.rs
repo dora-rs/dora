@@ -61,6 +61,7 @@ pub enum Command {
     Daemon(Daemon),
     Runtime(Runtime),
     Coordinator(Coordinator),
+    #[clap(subcommand)]
     Inspect(Inspect),
 
     Self_ {
