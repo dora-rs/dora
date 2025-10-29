@@ -64,12 +64,14 @@ pub enum ControlRequest {
         grace_duration: Option<Duration>,
     },
     Logs {
-        uuid: Option<Uuid>,
-        name: Option<String>,
-        node: String,
+        uuid: Uuid,
+        node: NodeId,
     },
     Destroy,
     List,
+    Info {
+        dataflow_uuid: Uuid,
+    },
     DaemonConnected,
     ConnectedMachines,
     LogSubscribe {
