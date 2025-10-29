@@ -374,19 +374,27 @@ impl TuiCliExecutor {
             .await?;
 
         // Determine appropriate view based on resource type
-        if resource.starts_with("node_")
-            || app_state.dataflows.iter().any(|df| {
-                df.nodes
-                    .iter()
-                    .any(|n| n.id == resource || n.name == resource)
-            })
-        {
-            Ok(CommandResult::ViewSwitch(ViewType::NodeInspector {
-                node_id: resource.to_string(),
-            }))
-        } else {
-            Ok(CommandResult::ViewSwitch(ViewType::DataflowManager))
+        if let Some((dataflow, node)) = find_node_by_identifier(app_state, resource) {
+            return Ok(CommandResult::ViewSwitch(ViewType::NodeInspector {
+                dataflow_id: dataflow.id.clone(),
+                node_id: node.id.clone(),
+            }));
         }
+
+        if let Some(dataflow) = app_state
+            .dataflows
+            .iter()
+            .find(|df| df.id == resource || df.name == resource)
+        {
+            if let Some(node) = preferred_node(&dataflow.nodes) {
+                return Ok(CommandResult::ViewSwitch(ViewType::NodeInspector {
+                    dataflow_id: dataflow.id.clone(),
+                    node_id: node.id.clone(),
+                }));
+            }
+        }
+
+        Ok(CommandResult::ViewSwitch(ViewType::DataflowManager))
     }
 
     fn parse_ui_command(&self, ui_cmd: &UiCommand) -> Option<ViewType> {
@@ -444,6 +452,28 @@ impl TuiCliExecutor {
             }),
         }
     }
+}
+
+fn find_node_by_identifier<'a>(
+    app_state: &'a AppState,
+    identifier: &str,
+) -> Option<(&'a DataflowInfo, &'a NodeInfo)> {
+    app_state.dataflows.iter().find_map(|df| {
+        df.nodes
+            .iter()
+            .find(|node| node.id == identifier || node.name == identifier)
+            .map(|node| (df, node))
+    })
+}
+
+fn preferred_node<'a>(nodes: &'a [NodeInfo]) -> Option<&'a NodeInfo> {
+    nodes
+        .iter()
+        .find(|node| {
+            let status = node.status.to_ascii_lowercase();
+            status == "running" || status == "active"
+        })
+        .or_else(|| nodes.first())
 }
 
 impl StateSynchronizer {

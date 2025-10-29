@@ -23,6 +23,7 @@ fn test_view_type_enum_has_all_variants() {
             target: "all".to_string(),
         },
         ViewType::NodeInspector {
+            dataflow_id: "df1".to_string(),
             node_id: "node1".to_string(),
         },
         ViewType::RecordingAnalyzer {
@@ -67,12 +68,17 @@ fn test_view_type_with_parameters() {
     }
 
     let node_view = ViewType::NodeInspector {
+        dataflow_id: "df-detector".to_string(),
         node_id: "detector".to_string(),
     };
 
     match node_view {
-        ViewType::NodeInspector { node_id } => {
+        ViewType::NodeInspector {
+            dataflow_id,
+            node_id,
+        } => {
             assert_eq!(node_id, "detector");
+            assert_eq!(dataflow_id, "df-detector");
         }
         _ => panic!("Expected NodeInspector variant"),
     }
@@ -87,6 +93,7 @@ fn test_view_navigation_sequence() {
         ViewType::Dashboard,
         ViewType::DataflowManager,
         ViewType::NodeInspector {
+            dataflow_id: "df-camera".to_string(),
             node_id: "camera".to_string(),
         },
         ViewType::Dashboard, // Back to dashboard

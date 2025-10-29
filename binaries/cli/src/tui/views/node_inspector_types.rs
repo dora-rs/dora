@@ -76,6 +76,8 @@ pub struct NodeInspectorState {
 
     /// ID of the node being inspected
     pub node_id: String,
+    /// ID of the parent dataflow
+    pub dataflow_id: String,
 
     /// Selected input index (for Connections tab)
     pub selected_input: usize,
@@ -101,10 +103,11 @@ pub struct NodeInspectorState {
 
 impl NodeInspectorState {
     /// Create a new NodeInspectorState for the given node
-    pub fn new(node_id: String) -> Self {
+    pub fn new(dataflow_id: String, node_id: String) -> Self {
         Self {
             active_tab: InspectorTab::Overview,
             node_id,
+            dataflow_id,
             selected_input: 0,
             selected_output: 0,
             show_detailed_metrics: false,
@@ -213,7 +216,7 @@ impl NodeInspectorState {
 
 impl Default for NodeInspectorState {
     fn default() -> Self {
-        Self::new(String::new())
+        Self::new(String::new(), String::new())
     }
 }
 
@@ -325,10 +328,11 @@ mod tests {
 
     #[test]
     fn test_node_inspector_state_new() {
-        let state = NodeInspectorState::new("test-node".to_string());
+        let state = NodeInspectorState::new("df-1".to_string(), "test-node".to_string());
 
         assert_eq!(state.active_tab, InspectorTab::Overview);
         assert_eq!(state.node_id, "test-node");
+        assert_eq!(state.dataflow_id, "df-1");
         assert_eq!(state.selected_input, 0);
         assert_eq!(state.selected_output, 0);
         assert!(!state.show_detailed_metrics);
@@ -338,7 +342,7 @@ mod tests {
 
     #[test]
     fn test_node_inspector_state_switch_tab() {
-        let mut state = NodeInspectorState::new("test".to_string());
+        let mut state = NodeInspectorState::new("df".to_string(), "test".to_string());
 
         assert_eq!(state.active_tab, InspectorTab::Overview);
 
@@ -351,7 +355,7 @@ mod tests {
 
     #[test]
     fn test_node_inspector_state_next_prev_tab() {
-        let mut state = NodeInspectorState::new("test".to_string());
+        let mut state = NodeInspectorState::new("df".to_string(), "test".to_string());
 
         state.next_tab();
         assert_eq!(state.active_tab, InspectorTab::Connections);
@@ -368,7 +372,7 @@ mod tests {
 
     #[test]
     fn test_node_inspector_state_input_selection() {
-        let mut state = NodeInspectorState::new("test".to_string());
+        let mut state = NodeInspectorState::new("df".to_string(), "test".to_string());
 
         // Select next input
         state.select_next_input(3);
@@ -388,7 +392,7 @@ mod tests {
 
     #[test]
     fn test_node_inspector_state_output_selection() {
-        let mut state = NodeInspectorState::new("test".to_string());
+        let mut state = NodeInspectorState::new("df".to_string(), "test".to_string());
 
         // Select next output
         state.select_next_output(2);
@@ -405,7 +409,7 @@ mod tests {
 
     #[test]
     fn test_node_inspector_state_toggle_detailed_metrics() {
-        let mut state = NodeInspectorState::new("test".to_string());
+        let mut state = NodeInspectorState::new("df".to_string(), "test".to_string());
 
         assert!(!state.show_detailed_metrics);
 
@@ -418,7 +422,7 @@ mod tests {
 
     #[test]
     fn test_node_inspector_state_scrolling() {
-        let mut state = NodeInspectorState::new("test".to_string());
+        let mut state = NodeInspectorState::new("df".to_string(), "test".to_string());
 
         assert_eq!(state.scroll_offset, 0);
 
@@ -447,7 +451,7 @@ mod tests {
 
     #[test]
     fn test_node_inspector_state_toggle_edit_mode() {
-        let mut state = NodeInspectorState::new("test".to_string());
+        let mut state = NodeInspectorState::new("df".to_string(), "test".to_string());
 
         assert!(!state.edit_mode);
 
@@ -460,7 +464,7 @@ mod tests {
 
     #[test]
     fn test_node_inspector_state_mark_refreshed() {
-        let mut state = NodeInspectorState::new("test".to_string());
+        let mut state = NodeInspectorState::new("df".to_string(), "test".to_string());
 
         let initial_time = state.last_refresh;
 
@@ -473,7 +477,7 @@ mod tests {
 
     #[test]
     fn test_tab_switching_resets_scroll() {
-        let mut state = NodeInspectorState::new("test".to_string());
+        let mut state = NodeInspectorState::new("df".to_string(), "test".to_string());
 
         state.scroll_down(10);
         assert_eq!(state.scroll_offset, 1);

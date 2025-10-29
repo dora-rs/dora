@@ -10,7 +10,11 @@ use ratatui::{
 use std::time::Duration;
 
 use super::{BaseView, InspectorTab, NodeInspectorState, NodeMetrics, View, ViewAction};
-use crate::tui::{Result, app::AppState, theme::ThemeConfig};
+use crate::tui::{
+    Result,
+    app::{AppState, DataflowInfo},
+    theme::ThemeConfig,
+};
 use dora_message::descriptor::CoreNodeKind;
 
 /// Node Inspector View for detailed node inspection and monitoring
@@ -23,12 +27,12 @@ pub struct NodeInspectorView {
 
 impl NodeInspectorView {
     /// Create a new NodeInspectorView
-    pub fn new(theme: &ThemeConfig, node_id: String) -> Self {
+    pub fn new(theme: &ThemeConfig, dataflow_id: String, node_id: String) -> Self {
         Self {
             base: BaseView::new("Node Inspector".to_string())
                 .with_auto_refresh(Duration::from_secs(1)),
             theme: theme.clone(),
-            state: NodeInspectorState::new(node_id),
+            state: NodeInspectorState::new(dataflow_id, node_id),
         }
     }
 
@@ -36,7 +40,7 @@ impl NodeInspectorView {
         use std::cmp::max;
 
         let sys = &app_state.system_metrics;
-        let node_info = self.find_node_info(app_state);
+        let node_info = self.find_node(app_state).map(|(_, node)| node);
 
         let running_nodes = app_state
             .dataflows
@@ -161,6 +165,11 @@ impl NodeInspectorView {
         let node_info = self.find_node_info(app_state);
         let metrics = self.build_node_metrics(app_state);
 
+        let dataflow_name = self
+            .find_node(app_state)
+            .map(|(df, _)| df.name.as_str())
+            .unwrap_or("unknown");
+
         let node_name = node_info
             .map(|n| n.name.as_str())
             .unwrap_or(&self.state.node_id);
@@ -187,6 +196,10 @@ impl NodeInspectorView {
             Line::from(vec![
                 Span::styled("Status: ", Style::default().fg(self.theme.colors.muted)),
                 self.status_span(node_status),
+            ]),
+            Line::from(vec![
+                Span::styled("Dataflow: ", Style::default().fg(self.theme.colors.muted)),
+                Span::raw(dataflow_name),
             ]),
             Line::from(vec![
                 Span::styled("Kind: ", Style::default().fg(self.theme.colors.muted)),
@@ -767,15 +780,43 @@ impl NodeInspectorView {
     }
 
     /// Find node info in app state
-    fn find_node_info<'a>(&self, app_state: &'a AppState) -> Option<&'a crate::tui::app::NodeInfo> {
-        for dataflow in &app_state.dataflows {
-            for node in &dataflow.nodes {
-                if node.id == self.state.node_id {
-                    return Some(node);
-                }
+    fn find_node<'a>(
+        &self,
+        app_state: &'a AppState,
+    ) -> Option<(&'a DataflowInfo, &'a crate::tui::app::NodeInfo)> {
+        // Prefer matching by known dataflow id/name if provided.
+        if let Some(dataflow) = self.find_dataflow(app_state) {
+            if let Some(node) = dataflow.nodes.iter().find(|node| self.matches_node(node)) {
+                return Some((dataflow, node));
             }
         }
-        None
+
+        // Fallback to searching globally in case the dataflow id is stale.
+        app_state.dataflows.iter().find_map(|df| {
+            df.nodes
+                .iter()
+                .find(|node| self.matches_node(node))
+                .map(|node| (df, node))
+        })
+    }
+
+    fn find_dataflow<'a>(&self, app_state: &'a AppState) -> Option<&'a DataflowInfo> {
+        if self.state.dataflow_id.is_empty() {
+            return None;
+        }
+
+        app_state
+            .dataflows
+            .iter()
+            .find(|df| df.id == self.state.dataflow_id || df.name == self.state.dataflow_id)
+    }
+
+    fn matches_node(&self, node: &crate::tui::app::NodeInfo) -> bool {
+        node.id == self.state.node_id || node.name == self.state.node_id
+    }
+
+    fn find_node_info<'a>(&self, app_state: &'a AppState) -> Option<&'a crate::tui::app::NodeInfo> {
+        self.find_node(app_state).map(|(_, node)| node)
     }
 }
 
@@ -942,9 +983,10 @@ mod tests {
     #[test]
     fn test_node_inspector_view_creation() {
         let theme = ThemeConfig::default();
-        let view = NodeInspectorView::new(&theme, "test-node".to_string());
+        let view = NodeInspectorView::new(&theme, "df-test".to_string(), "test-node".to_string());
 
         assert_eq!(view.state.node_id, "test-node");
+        assert_eq!(view.state.dataflow_id, "df-test");
         assert_eq!(view.state.active_tab, InspectorTab::Overview);
     }
 

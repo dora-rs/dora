@@ -208,7 +208,10 @@ impl TransitionTriggerAnalyzer {
             min_complexity: 3,
             auto_trigger: false,
             suggestion_message: "Interactive inspection provides better data exploration".to_string(),
-            target_view: ViewType::NodeInspector { node_id: "auto".to_string() },
+            target_view: ViewType::NodeInspector {
+                dataflow_id: "auto".to_string(),
+                node_id: "auto".to_string(),
+            },
         });
         
         // Debug commands are complex and benefit from TUI
@@ -411,7 +414,10 @@ impl TransitionTriggerAnalyzer {
             Command::Ps(_) => ViewType::Dashboard,
             Command::Inspect(cmd) => {
                 if let Some(resource) = &cmd.resource {
-                    ViewType::NodeInspector { node_id: resource.clone() }
+                    ViewType::NodeInspector {
+                        dataflow_id: resource.clone(),
+                        node_id: resource.clone(),
+                    }
                 } else {
                     ViewType::Dashboard
                 }
@@ -626,7 +632,13 @@ mod tests {
         
         let view = analyzer.determine_view_for_command(&inspect_cmd);
         match view {
-            ViewType::NodeInspector { node_id } => assert_eq!(node_id, "test_node"),
+            ViewType::NodeInspector {
+                dataflow_id,
+                node_id,
+            } => {
+                assert_eq!(node_id, "test_node");
+                assert_eq!(dataflow_id, "test_node");
+            }
             _ => panic!("Expected NodeInspector view"),
         }
     }

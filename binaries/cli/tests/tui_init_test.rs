@@ -57,6 +57,7 @@ fn test_view_type_variants() {
             target: "test".to_string(),
         },
         ViewType::NodeInspector {
+            dataflow_id: "test_dataflow".to_string(),
             node_id: "test_node".to_string(),
         },
         ViewType::RecordingAnalyzer {

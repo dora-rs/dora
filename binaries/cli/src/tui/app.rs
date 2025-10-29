@@ -47,11 +47,20 @@ pub enum ViewType {
     Dashboard,
     DataflowManager,
     DataflowExplorer,
-    NodeInspector { node_id: String },
+    NodeInspector {
+        dataflow_id: String,
+        node_id: String,
+    },
     SystemMonitor,
-    LogViewer { target: String },
-    RecordingAnalyzer { recording_id: String },
-    DebugSession { dataflow_id: String },
+    LogViewer {
+        target: String,
+    },
+    RecordingAnalyzer {
+        recording_id: String,
+    },
+    DebugSession {
+        dataflow_id: String,
+    },
     SettingsManager,
     Help,
 }
@@ -599,8 +608,12 @@ impl DoraApp {
                 let mut view = DataflowExplorerView::new(&self.theme);
                 view.render(f, area, &self.state);
             }
-            ViewType::NodeInspector { node_id } => {
-                let mut view = NodeInspectorView::new(&self.theme, node_id.clone());
+            ViewType::NodeInspector {
+                dataflow_id,
+                node_id,
+            } => {
+                let mut view =
+                    NodeInspectorView::new(&self.theme, dataflow_id.clone(), node_id.clone());
                 view.render(f, area, &self.state);
             }
             ViewType::SystemMonitor => {
@@ -970,7 +983,10 @@ impl DoraApp {
             ViewType::Dashboard => "Dashboard".to_string(),
             ViewType::DataflowManager => "Dataflow Manager".to_string(),
             ViewType::DataflowExplorer => "Dataflow Explorer".to_string(),
-            ViewType::NodeInspector { node_id } => format!("Node Inspector: {}", node_id),
+            ViewType::NodeInspector {
+                dataflow_id,
+                node_id,
+            } => format!("Node Inspector: {} @ {}", node_id, dataflow_id),
             ViewType::SystemMonitor => "System Monitor".to_string(),
             ViewType::LogViewer { target } => format!("Logs: {}", target),
             ViewType::RecordingAnalyzer { recording_id } => format!("Recording: {}", recording_id),
