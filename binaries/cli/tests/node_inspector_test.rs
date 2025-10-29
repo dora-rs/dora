@@ -113,6 +113,7 @@ mod node_inspector_tests {
         assert!(!state.show_detailed_metrics);
         assert_eq!(state.scroll_offset, 0);
         assert!(!state.edit_mode);
+        assert!(state.last_metrics().is_none());
     }
 
     #[test]
@@ -121,6 +122,7 @@ mod node_inspector_tests {
 
         assert_eq!(state.node_id, "");
         assert_eq!(state.active_tab, InspectorTab::Overview);
+        assert!(state.last_metrics().is_none());
     }
 
     #[test]
@@ -296,6 +298,21 @@ mod node_inspector_tests {
         state.mark_refreshed();
 
         assert!(state.last_refresh > initial_time);
+    }
+
+    #[test]
+    fn test_node_inspector_state_records_metrics() {
+        let mut state = NodeInspectorState::new("node".to_string());
+        assert!(state.last_metrics().is_none());
+
+        let mut metrics = NodeMetrics::default();
+        metrics.cpu_percent = 12.5;
+        metrics.message_rate = 42.0;
+
+        state.record_metrics(metrics.clone());
+        let stored = state.last_metrics().unwrap();
+        assert!((stored.cpu_percent - 12.5).abs() < f64::EPSILON);
+        assert!((stored.message_rate - 42.0).abs() < f64::EPSILON);
     }
 
     #[test]
