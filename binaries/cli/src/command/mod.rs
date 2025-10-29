@@ -15,7 +15,7 @@ mod stop;
 mod up;
 
 pub use build::build;
-pub use run::{run, run_func};
+pub use run::run;
 
 use build::Build;
 use check::Check;

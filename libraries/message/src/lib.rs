@@ -7,6 +7,7 @@ pub use uhlc;
 
 pub mod common;
 pub mod config;
+/// Types that define Dora's dataflow descriptor schema.
 pub mod descriptor;
 pub mod id;
 pub mod metadata;

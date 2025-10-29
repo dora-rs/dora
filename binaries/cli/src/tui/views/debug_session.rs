@@ -23,13 +23,12 @@ pub struct DebugSessionView {
     base: BaseView,
     pub state: DebugSessionState,
     theme: ThemeConfig,
-    source: String,
 }
 
 impl DebugSessionView {
     /// Create a new Debug Session View
     pub fn new(source: &str, theme: &ThemeConfig) -> Self {
-        let base = BaseView::new("Debug Session".to_string())
+        let base = BaseView::new(format!("Debug Session - {}", source))
             .with_auto_refresh(Duration::from_millis(500));
 
         // Initialize state with mock data
@@ -41,7 +40,6 @@ impl DebugSessionView {
             base,
             state,
             theme: theme.clone(),
-            source: source.to_string(),
         }
     }
 
@@ -582,8 +580,7 @@ mod tests {
         let theme = ThemeConfig::default();
         let view = DebugSessionView::new("test-target", &theme);
 
-        assert_eq!(view.title(), "Debug Session");
-        assert_eq!(view.source, "test-target");
+        assert_eq!(view.title(), "Debug Session - test");
         assert_eq!(view.state.target_name, "test-target");
     }
 

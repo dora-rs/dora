@@ -87,7 +87,7 @@ impl Component for RecentActivityComponent {
                 theme.normal_border_style()
             });
 
-        let inner_area = block.inner(area);
+        let _inner_area = block.inner(area);
 
         if self.activity.activities.is_empty() {
             let empty_list = List::new(vec![ListItem::new(Line::from(Span::styled(

@@ -13,6 +13,7 @@ use std::{
     path::PathBuf,
 };
 
+/// Source identifier used when compiling operators from shell commands.
 pub const SHELL_SOURCE: &str = "shell";
 /// Set the [`Node::path`] field to this value to treat the node as a
 /// [_dynamic node_](https://docs.rs/dora-node-api/latest/dora_node_api/).
@@ -92,6 +93,7 @@ pub struct Descriptor {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+/// Deployment settings for distributing a node across machines.
 pub struct Deploy {
     /// Target machine for deployment
     pub machine: Option<String>,
@@ -100,6 +102,7 @@ pub struct Deploy {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+/// Debug configuration that controls developer-centric features.
 pub struct Debug {
     /// Whether to publish all messages to Zenoh for debugging
     #[serde(default)]
@@ -469,20 +472,28 @@ pub struct Node {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// Intermediate representation describing a node after configuration resolution.
 pub struct ResolvedNode {
+    /// Unique identifier of the node.
     pub id: NodeId,
+    /// Optional human readable name.
     pub name: Option<String>,
+    /// Optional description of the node's purpose.
     pub description: Option<String>,
+    /// Environment variables applied to the node.
     pub env: Option<BTreeMap<String, EnvValue>>,
 
+    /// Deployment overrides determined during resolution.
     #[serde(default)]
     pub deploy: Option<Deploy>,
 
+    /// Concrete node variant (runtime or custom).
     #[serde(flatten)]
     pub kind: CoreNodeKind,
 }
 
 impl ResolvedNode {
+    /// Return whether the node originates from a Git repository.
     pub fn has_git_source(&self) -> bool {
         self.kind
             .as_custom()
@@ -494,14 +505,17 @@ impl ResolvedNode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 #[allow(clippy::large_enum_variant)]
+/// Differentiates built-in runtime nodes from user-provided custom nodes.
 pub enum CoreNodeKind {
     /// Dora runtime node
     #[serde(rename = "operators")]
     Runtime(RuntimeNode),
+    /// Custom node definition supplied by the user.
     Custom(CustomNode),
 }
 
 impl CoreNodeKind {
+    /// Extract a custom node if the variant matches.
     pub fn as_custom(&self) -> Option<&CustomNode> {
         match self {
             CoreNodeKind::Runtime(_) => None,
@@ -512,28 +526,34 @@ impl CoreNodeKind {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(transparent)]
+/// Wrapper around a list of operator definitions for runtime nodes.
 pub struct RuntimeNode {
     /// List of operators running in this runtime
     pub operators: Vec<OperatorDefinition>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema, Clone)]
+/// Operator entry belonging to a runtime node.
 pub struct OperatorDefinition {
     /// Unique operator identifier within the runtime
     pub id: OperatorId,
+    /// Configuration of the concrete operator implementation.
     #[serde(flatten)]
     pub config: OperatorConfig,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema, Clone)]
+/// Representation of a single operator dataflow node.
 pub struct SingleOperatorDefinition {
     /// Operator identifier (optional for single operators)
     pub id: Option<OperatorId>,
+    /// Configuration shared with runtime operator definitions.
     #[serde(flatten)]
     pub config: OperatorConfig,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema, Clone)]
+/// Declarative configuration for an operator implementation.
 pub struct OperatorConfig {
     /// Human-readable operator name
     pub name: Option<String>,
@@ -561,25 +581,37 @@ pub struct OperatorConfig {
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema, Clone)]
 #[serde(rename_all = "kebab-case")]
+/// Supported origins for operator implementations.
 pub enum OperatorSource {
+    /// Load operator from a compiled shared library.
     SharedLibrary(String),
+    /// Run operator implemented in Python.
     Python(PythonSource),
     #[schemars(skip)]
+    /// Execute operator provided as a WebAssembly module.
     Wasm(String),
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(from = "PythonSourceDef", into = "PythonSourceDef")]
+/// Describes Python operator script path and optional environment.
 pub struct PythonSource {
+    /// Path to the Python entry script or module.
     pub source: String,
+    /// Optional name of the Conda environment to activate.
     pub conda_env: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
+/// Helper enum enabling inline or structured python source definitions.
 pub enum PythonSourceDef {
+    /// Only the script path is provided.
     SourceOnly(String),
+    /// Script path with additional configuration options.
     WithOptions {
+        /// Path to the Python entry script or module.
         source: String,
+        /// Optional name of the Conda environment to activate.
         conda_env: Option<String>,
     },
 }
@@ -610,15 +642,20 @@ impl From<PythonSourceDef> for PythonSource {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
+/// Python-specific operator configuration resolved from descriptor.
 pub struct PythonOperatorConfig {
+    /// Absolute path to the resolved Python script.
     pub path: PathBuf,
     #[serde(default)]
+    /// Input mappings used when launching the operator.
     pub inputs: BTreeMap<DataId, InputMapping>,
     #[serde(default)]
+    /// Output identifiers produced by the operator.
     pub outputs: BTreeSet<DataId>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+/// Configuration for user-supplied custom nodes.
 pub struct CustomNode {
     /// Path of the source code
     ///
@@ -631,6 +668,7 @@ pub struct CustomNode {
     ///
     /// Source can match any executable in PATH.
     pub path: String,
+    /// Location from which the node should be fetched.
     pub source: NodeSource,
     /// Args for the executable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -640,52 +678,77 @@ pub struct CustomNode {
     /// Deprecated, use outer-level `env` field instead.
     pub envs: Option<BTreeMap<String, EnvValue>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Optional build command that prepares the node binary.
     pub build: Option<String>,
     /// Send stdout and stderr to another node
     #[serde(skip_serializing_if = "Option::is_none")]
     pub send_stdout_as: Option<String>,
 
     #[serde(flatten)]
+    /// Runtime configuration (environment, restart policy, etc.).
     pub run_config: NodeRunConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+/// Supported origins for custom nodes.
 pub enum NodeSource {
+    /// Use files available locally.
     Local,
+    /// Check out the node from a Git repository.
     GitBranch {
+        /// Repository URL hosting the node.
         repo: String,
+        /// Optional revision override (branch, tag, or commit).
         rev: Option<GitRepoRev>,
     },
 }
 
 impl NodeSource {
+    /// Return true when the node is backed by a Git repository.
     pub fn is_git(&self) -> bool {
         matches!(self, Self::GitBranch { .. })
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+/// Source details for runtime after resolution.
 pub enum ResolvedNodeSource {
+    /// Local filesystem source.
     Local,
-    GitCommit { repo: String, commit_hash: String },
+    /// Resolved Git commit with pinned hash.
+    GitCommit {
+        /// Repository URL hosting the node.
+        repo: String,
+        /// Exact commit hash that was resolved.
+        commit_hash: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+/// Git revision specifiers supported by Dora.
 pub enum GitRepoRev {
+    /// Refer to a branch name.
     Branch(String),
+    /// Refer to a tag name.
     Tag(String),
+    /// Refer to an arbitrary revision string.
     Rev(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
+/// Environment variable value type used in descriptors.
 pub enum EnvValue {
+    /// Boolean value interpreted from the descriptor.
     #[serde(deserialize_with = "with_expand_envs")]
     Bool(bool),
+    /// Integer literal expanded from descriptor.
     #[serde(deserialize_with = "with_expand_envs")]
     Integer(i64),
+    /// Floating point literal expanded from descriptor.
     #[serde(deserialize_with = "with_expand_envs")]
     Float(f64),
+    /// Raw string environment value.
     #[serde(deserialize_with = "with_expand_envs")]
     String(String),
 }

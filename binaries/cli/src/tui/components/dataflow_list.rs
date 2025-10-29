@@ -104,6 +104,27 @@ impl DataflowListComponent {
             self.selected_index += 1;
         }
     }
+
+    fn build_view_list<'a>(&self, dataflows: &'a [DataflowInfo]) -> Vec<&'a DataflowInfo> {
+        let mut filtered: Vec<&DataflowInfo> = dataflows
+            .iter()
+            .filter(|df| match self.filter {
+                DataflowFilter::All => true,
+                DataflowFilter::Running => df.status.eq_ignore_ascii_case("running"),
+                DataflowFilter::Stopped => df.status.eq_ignore_ascii_case("stopped"),
+                DataflowFilter::Failed => df.status.eq_ignore_ascii_case("failed"),
+            })
+            .collect();
+
+        match self.sort_by {
+            DataflowSortBy::Name => filtered.sort_by(|a, b| a.name.cmp(&b.name)),
+            DataflowSortBy::Status => filtered.sort_by(|a, b| a.status.cmp(&b.status)),
+            DataflowSortBy::NodeCount => filtered.sort_by_key(|df| df.nodes.len()),
+            DataflowSortBy::Uptime => filtered.sort_by_key(|df| df.status.clone()),
+        }
+
+        filtered
+    }
 }
 
 impl Default for DataflowListComponent {
@@ -119,8 +140,11 @@ impl Component for DataflowListComponent {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
         Box::pin(async move {
             // Ensure selected index is valid
-            if !app_state.dataflows.is_empty() && self.selected_index >= app_state.dataflows.len() {
-                self.selected_index = app_state.dataflows.len() - 1;
+            let display = self.build_view_list(&app_state.dataflows);
+            if display.is_empty() {
+                self.selected_index = 0;
+            } else if self.selected_index >= display.len() {
+                self.selected_index = display.len() - 1;
             }
 
             self.last_update = Some(Instant::now());
@@ -138,8 +162,8 @@ impl Component for DataflowListComponent {
                 Style::default().fg(theme.colors.border)
             });
 
-        let items: Vec<ListItem> = app_state
-            .dataflows
+        let display = self.build_view_list(&app_state.dataflows);
+        let items: Vec<ListItem> = display
             .iter()
             .enumerate()
             .map(|(i, dataflow)| {

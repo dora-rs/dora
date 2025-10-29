@@ -168,18 +168,50 @@ impl UxValidator {
         }
     }
 
-    fn check_terminology(&self, _command_name: &str, output: &str) -> Vec<UxViolation> {
+    fn check_terminology(&self, command_name: &str, output: &str) -> Vec<UxViolation> {
         let mut violations = Vec::new();
 
-        // Check for inconsistent terminology
-        if output.contains("dataflows") && output.contains("data flows") {
-            violations.push(UxViolation {
-                category: ViolationCategory::InconsistentTerminology,
-                severity: Severity::Medium,
-                description: "Inconsistent terminology: 'dataflows' vs 'data flows'".to_string(),
-                location: "output text".to_string(),
-                recommendation: "Use 'dataflow' consistently throughout".to_string(),
-            });
+        for (standard, variations) in &self.terminology_rules.standard_terms {
+            let standard_present = output.contains(standard);
+            let conflicting_terms: Vec<_> = variations
+                .iter()
+                .filter(|variant| output.contains(variant.as_str()))
+                .collect();
+
+            if !conflicting_terms.is_empty() {
+                let conflicting_display = conflicting_terms
+                    .iter()
+                    .map(|term| term.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                violations.push(UxViolation {
+                    category: ViolationCategory::InconsistentTerminology,
+                    severity: Severity::Medium,
+                    description: format!(
+                        "Inconsistent terminology for '{standard}': found {}",
+                        conflicting_display
+                    ),
+                    location: command_name.to_string(),
+                    recommendation: format!(
+                        "Replace variants with the preferred term '{standard}'"
+                    ),
+                });
+            } else if !standard_present {
+                // Highlight when none of the preferred terms appear but related concept does
+                if variations.iter().any(|variant| output.contains(variant)) {
+                    violations.push(UxViolation {
+                        category: ViolationCategory::InconsistentTerminology,
+                        severity: Severity::Low,
+                        description: format!(
+                            "Output references '{standard}' variations but omits the preferred term"
+                        ),
+                        location: command_name.to_string(),
+                        recommendation: format!(
+                            "Include the canonical term '{standard}' for consistency"
+                        ),
+                    });
+                }
+            }
         }
 
         violations
@@ -188,23 +220,45 @@ impl UxValidator {
     fn check_formatting(&self, _command_name: &str, output: &str) -> Vec<UxViolation> {
         let mut violations = Vec::new();
 
-        // Check for consistent indentation (simplified check)
         let lines: Vec<&str> = output.lines().collect();
         let mut indent_patterns = HashMap::new();
+        let mut long_lines = Vec::new();
 
-        for line in lines {
+        for (idx, line) in lines.iter().enumerate() {
             let indent = line.len() - line.trim_start().len();
             *indent_patterns.entry(indent).or_insert(0) += 1;
+
+            if indent % self.formatting_rules.indent_size != 0 {
+                violations.push(UxViolation {
+                    category: ViolationCategory::InconsistentFormatting,
+                    severity: Severity::Low,
+                    description: format!(
+                        "Line {} uses indentation of {} spaces (expected multiples of {})",
+                        idx + 1,
+                        indent,
+                        self.formatting_rules.indent_size
+                    ),
+                    location: format!("line {}", idx + 1),
+                    recommendation: "Adjust indentation to match project guidelines".to_string(),
+                });
+            }
+
+            if line.len() > self.formatting_rules.max_line_length {
+                long_lines.push(idx + 1);
+            }
         }
 
-        // If too many different indent levels, flag it
-        if indent_patterns.len() > 5 {
+        if !long_lines.is_empty() {
             violations.push(UxViolation {
                 category: ViolationCategory::InconsistentFormatting,
                 severity: Severity::Low,
-                description: "Output uses inconsistent indentation patterns".to_string(),
+                description: format!(
+                    "{} lines exceed the configured maximum length of {} characters",
+                    long_lines.len(),
+                    self.formatting_rules.max_line_length
+                ),
                 location: "output formatting".to_string(),
-                recommendation: "Standardize indentation to 2 or 4 spaces".to_string(),
+                recommendation: "Wrap or truncate long lines to improve readability".to_string(),
             });
         }
 
@@ -215,7 +269,11 @@ impl UxValidator {
         let mut violations = Vec::new();
 
         // Check if errors include actionable suggestions
-        if output.contains("Error:") && !output.contains("Try:") && !output.contains("Hint:") {
+        if self.output_rules.require_error_suggestions
+            && output.contains("Error:")
+            && !output.contains("Try:")
+            && !output.contains("Hint:")
+        {
             violations.push(UxViolation {
                 category: ViolationCategory::InconsistentErrorHandling,
                 severity: Severity::Medium,
@@ -229,6 +287,9 @@ impl UxValidator {
     }
 
     fn has_hints(&self, output: &str) -> bool {
+        if !self.output_rules.require_hints {
+            return true;
+        }
         output.contains("Hint:") || output.contains("💡") || output.contains("Try:")
     }
 
@@ -239,15 +300,8 @@ impl UxValidator {
         let mut violations = Vec::new();
         let mut term_usage: HashMap<String, Vec<String>> = HashMap::new();
 
-        // Track terminology variations
-        let terms_to_check = vec![
-            ("dataflow", vec!["dataflows", "data-flow", "data flow"]),
-            ("node", vec!["nodes", "Node", "NODE"]),
-            ("operator", vec!["operators", "Operator", "OPERATOR"]),
-        ];
-
         for (cmd_name, output) in commands {
-            for (standard_term, variations) in &terms_to_check {
+            for (standard_term, variations) in &self.terminology_rules.standard_terms {
                 for variation in variations {
                     if output.contains(variation) && variation != standard_term {
                         term_usage

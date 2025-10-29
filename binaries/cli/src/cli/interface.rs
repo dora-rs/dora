@@ -70,10 +70,7 @@ pub enum HintFrequency {
 
 /// Command complexity analyzer
 #[derive(Debug)]
-pub struct CommandAnalyzer {
-    complexity_rules: ComplexityRules,
-    interaction_patterns: InteractionPatterns,
-}
+pub struct CommandAnalyzer;
 
 /// Analysis result for a command
 #[derive(Debug, Clone)]
@@ -121,27 +118,6 @@ pub struct OutputCharacteristics {
     pub has_colors: bool,
     pub is_structured: bool,
     pub requires_scrolling: bool,
-}
-
-/// Complexity scoring rules
-#[derive(Debug)]
-pub struct ComplexityRules {
-    pub base_scores: HashMap<String, u8>,
-    pub modifier_rules: Vec<ComplexityModifier>,
-}
-
-/// Interaction pattern analysis
-#[derive(Debug)]
-pub struct InteractionPatterns {
-    pub command_benefits: HashMap<String, InteractionBenefit>,
-    pub data_volume_thresholds: HashMap<String, DataVolume>,
-}
-
-/// Complexity modifier rule
-#[derive(Debug)]
-pub struct ComplexityModifier {
-    pub condition: String,
-    pub modifier: i8,
 }
 
 impl InterfaceSelector {
@@ -434,10 +410,7 @@ impl InterfaceSelector {
 impl CommandAnalyzer {
     /// Create new command analyzer
     pub fn new() -> Self {
-        Self {
-            complexity_rules: ComplexityRules::default(),
-            interaction_patterns: InteractionPatterns::default(),
-        }
+        Self
     }
 
     /// Analyze command characteristics
@@ -568,24 +541,6 @@ impl Default for HintPreferences {
             show_hints: true,
             hint_frequency: HintFrequency::OncePerSession,
             dismissed_hints: HashSet::new(),
-        }
-    }
-}
-
-impl Default for ComplexityRules {
-    fn default() -> Self {
-        Self {
-            base_scores: HashMap::new(),
-            modifier_rules: Vec::new(),
-        }
-    }
-}
-
-impl Default for InteractionPatterns {
-    fn default() -> Self {
-        Self {
-            command_benefits: HashMap::new(),
-            data_volume_thresholds: HashMap::new(),
         }
     }
 }

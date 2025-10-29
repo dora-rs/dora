@@ -5,7 +5,6 @@ use std::{
 
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
-    backend::Backend,
     layout::Rect,
     style::{Modifier, Style},
     terminal::Frame,
@@ -269,17 +268,8 @@ impl CommandModeManager {
                         if let Some(suggestion) = completion_state.get_selected_suggestion() {
                             let suggestion_text = suggestion.text.clone();
 
-                            // Apply completion inline to avoid borrow issues
-                            let before_cursor = &buffer[..*cursor_position];
-                            let after_cursor = &buffer[*cursor_position..];
-                            let word_start = before_cursor.rfind(' ').map(|i| i + 1).unwrap_or(0);
-                            let new_buffer = format!(
-                                "{}{}{}",
-                                &buffer[..word_start],
-                                suggestion_text,
-                                after_cursor
-                            );
-                            let new_cursor = word_start + suggestion_text.len();
+                            let (new_buffer, new_cursor) =
+                                Self::apply_completion(buffer, *cursor_position, &suggestion_text);
 
                             *buffer = new_buffer;
                             *cursor_position = new_cursor;
@@ -505,20 +495,13 @@ impl CommandModeManager {
         f.render_widget(list, popup_area);
     }
 
-    fn apply_completion(
-        &self,
-        buffer: &str,
-        cursor_position: usize,
-        completion: &str,
-    ) -> (String, usize) {
+    fn apply_completion(buffer: &str, cursor_position: usize, completion: &str) -> (String, usize) {
         // Find the word being completed
         let before_cursor = &buffer[..cursor_position];
         let after_cursor = &buffer[cursor_position..];
 
         // Find the start of the current word
         let word_start = before_cursor.rfind(' ').map(|i| i + 1).unwrap_or(0);
-        let word_prefix = &before_cursor[word_start..];
-
         // Replace the current word with the completion
         let new_buffer = format!(
             "{}{}{}",
@@ -715,7 +698,6 @@ impl CompletionEngine {
                 prefix,
                 current_command: None,
                 parent_command: None,
-                position_in_command: 0,
             }
         } else if parts.len() == 1 {
             // After command, might be subcommand
@@ -727,7 +709,6 @@ impl CompletionEngine {
                         prefix,
                         current_command: Some(cmd.to_string()),
                         parent_command: Some(cmd.to_string()),
-                        position_in_command: 1,
                     };
                 }
             }
@@ -739,7 +720,6 @@ impl CompletionEngine {
                     prefix,
                     current_command: Some(cmd.to_string()),
                     parent_command: None,
-                    position_in_command: 1,
                 }
             } else {
                 CompletionContext {
@@ -747,7 +727,6 @@ impl CompletionEngine {
                     prefix,
                     current_command: Some(cmd.to_string()),
                     parent_command: None,
-                    position_in_command: 1,
                 }
             }
         } else {
@@ -759,7 +738,6 @@ impl CompletionEngine {
                     prefix,
                     current_command: Some(cmd.to_string()),
                     parent_command: None,
-                    position_in_command: parts.len() - 1,
                 }
             } else {
                 CompletionContext {
@@ -767,7 +745,6 @@ impl CompletionEngine {
                     prefix,
                     current_command: Some(cmd.to_string()),
                     parent_command: None,
-                    position_in_command: parts.len() - 1,
                 }
             }
         }
@@ -903,7 +880,6 @@ struct CompletionContext {
     prefix: String,
     current_command: Option<String>,
     parent_command: Option<String>,
-    position_in_command: usize,
 }
 
 impl Default for CommandModeManager {

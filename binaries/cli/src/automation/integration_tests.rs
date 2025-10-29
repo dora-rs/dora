@@ -6,7 +6,7 @@
 #[cfg(test)]
 mod tests {
     use super::super::*;
-    use crate::cli::context::{CiEnvironment, ExecutionContext, ExecutionEnvironment};
+    use crate::cli::context::{ExecutionContext, ExecutionEnvironment};
 
     fn base_context() -> ExecutionContext {
         let mut context = ExecutionContext::detect_basic();
