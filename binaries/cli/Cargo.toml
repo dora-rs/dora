@@ -68,6 +68,7 @@ self-replace = "1.5.0"
 dunce = "1.0.5"
 git2 = { workspace = true }
 zenoh = { workspace = true }
+arrow-json.workspace = true
 
 [build-dependencies]
 pyo3-build-config = "0.23"

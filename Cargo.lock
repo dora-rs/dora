@@ -1357,6 +1357,7 @@ name = "dora-cli"
 version = "0.3.13"
 dependencies = [
  "arrow",
+ "arrow-json",
  "bat",
  "clap",
  "colored 2.2.0",
