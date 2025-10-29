@@ -14,7 +14,7 @@ use super::{
 };
 use crate::tui::{
     Result,
-    app::{AppState, ViewType},
+    app::{AppState, NodeInfo, ViewType},
     components::{Component, DataflowSummaryComponent, SystemOverviewComponent},
     theme::ThemeConfig,
 };
@@ -311,6 +311,16 @@ impl DashboardView {
     }
 }
 
+fn select_preferred_node(nodes: &[NodeInfo]) -> Option<&NodeInfo> {
+    nodes
+        .iter()
+        .find(|node| {
+            let status = node.status.to_ascii_lowercase();
+            status == "running" || status == "active"
+        })
+        .or_else(|| nodes.first())
+}
+
 fn bytes_to_megabytes(bytes: u64) -> u64 {
     bytes.saturating_div(1024 * 1024)
 }
@@ -369,9 +379,16 @@ impl View for DashboardView {
 
             KeyCode::Enter => {
                 if let Some(dataflow) = app_state.dataflows.get(self.selected_dataflow) {
-                    Ok(ViewAction::PushView(ViewType::NodeInspector {
-                        node_id: dataflow.id.clone(),
-                    }))
+                    if let Some(node) = select_preferred_node(&dataflow.nodes) {
+                        Ok(ViewAction::PushView(ViewType::NodeInspector {
+                            dataflow_id: dataflow.id.clone(),
+                            node_id: node.id.clone(),
+                        }))
+                    } else {
+                        Ok(ViewAction::ShowStatus(
+                            "Selected dataflow has no nodes to inspect".to_string(),
+                        ))
+                    }
                 } else {
                     Ok(ViewAction::None)
                 }

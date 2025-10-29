@@ -104,9 +104,10 @@ mod node_inspector_tests {
 
     #[test]
     fn test_node_inspector_state_new() {
-        let state = NodeInspectorState::new("test-node".to_string());
+        let state = NodeInspectorState::new("df-main".to_string(), "test-node".to_string());
 
         assert_eq!(state.node_id, "test-node");
+        assert_eq!(state.dataflow_id, "df-main");
         assert_eq!(state.active_tab, InspectorTab::Overview);
         assert_eq!(state.selected_input, 0);
         assert_eq!(state.selected_output, 0);
@@ -127,7 +128,7 @@ mod node_inspector_tests {
 
     #[test]
     fn test_node_inspector_state_switch_tab() {
-        let mut state = NodeInspectorState::new("test".to_string());
+        let mut state = NodeInspectorState::new("df-test".to_string(), "test".to_string());
 
         assert_eq!(state.active_tab, InspectorTab::Overview);
 
@@ -143,7 +144,7 @@ mod node_inspector_tests {
 
     #[test]
     fn test_node_inspector_state_next_prev_tab() {
-        let mut state = NodeInspectorState::new("test".to_string());
+        let mut state = NodeInspectorState::new("df-test".to_string(), "test".to_string());
 
         assert_eq!(state.active_tab, InspectorTab::Overview);
 
@@ -162,7 +163,7 @@ mod node_inspector_tests {
 
     #[test]
     fn test_node_inspector_state_input_selection() {
-        let mut state = NodeInspectorState::new("test".to_string());
+        let mut state = NodeInspectorState::new("df-test".to_string(), "test".to_string());
 
         assert_eq!(state.selected_input, 0);
 
@@ -187,7 +188,7 @@ mod node_inspector_tests {
 
     #[test]
     fn test_node_inspector_state_output_selection() {
-        let mut state = NodeInspectorState::new("test".to_string());
+        let mut state = NodeInspectorState::new("df-test".to_string(), "test".to_string());
 
         assert_eq!(state.selected_output, 0);
 
@@ -209,7 +210,7 @@ mod node_inspector_tests {
 
     #[test]
     fn test_node_inspector_state_empty_inputs_outputs() {
-        let mut state = NodeInspectorState::new("test".to_string());
+        let mut state = NodeInspectorState::new("df-test".to_string(), "test".to_string());
 
         // With 0 inputs/outputs, selection should stay at 0
         state.select_next_input(0);
@@ -227,7 +228,7 @@ mod node_inspector_tests {
 
     #[test]
     fn test_node_inspector_state_toggle_detailed_metrics() {
-        let mut state = NodeInspectorState::new("test".to_string());
+        let mut state = NodeInspectorState::new("df-test".to_string(), "test".to_string());
 
         assert!(!state.show_detailed_metrics);
 
@@ -240,7 +241,7 @@ mod node_inspector_tests {
 
     #[test]
     fn test_node_inspector_state_scrolling() {
-        let mut state = NodeInspectorState::new("test".to_string());
+        let mut state = NodeInspectorState::new("df-test".to_string(), "test".to_string());
 
         assert_eq!(state.scroll_offset, 0);
 
@@ -263,7 +264,7 @@ mod node_inspector_tests {
 
     #[test]
     fn test_node_inspector_state_max_scroll() {
-        let mut state = NodeInspectorState::new("test".to_string());
+        let mut state = NodeInspectorState::new("df-test".to_string(), "test".to_string());
 
         // Scroll to max
         for _ in 0..20 {
@@ -276,7 +277,7 @@ mod node_inspector_tests {
 
     #[test]
     fn test_node_inspector_state_toggle_edit_mode() {
-        let mut state = NodeInspectorState::new("test".to_string());
+        let mut state = NodeInspectorState::new("df-test".to_string(), "test".to_string());
 
         assert!(!state.edit_mode);
 
@@ -289,7 +290,7 @@ mod node_inspector_tests {
 
     #[test]
     fn test_node_inspector_state_mark_refreshed() {
-        let mut state = NodeInspectorState::new("test".to_string());
+        let mut state = NodeInspectorState::new("df-test".to_string(), "test".to_string());
 
         let initial_time = state.last_refresh;
 
@@ -302,7 +303,7 @@ mod node_inspector_tests {
 
     #[test]
     fn test_node_inspector_state_records_metrics() {
-        let mut state = NodeInspectorState::new("node".to_string());
+        let mut state = NodeInspectorState::new("df-node".to_string(), "node".to_string());
         assert!(state.last_metrics().is_none());
 
         let mut metrics = NodeMetrics::default();
@@ -317,7 +318,7 @@ mod node_inspector_tests {
 
     #[test]
     fn test_tab_switching_resets_scroll() {
-        let mut state = NodeInspectorState::new("test".to_string());
+        let mut state = NodeInspectorState::new("df-test".to_string(), "test".to_string());
 
         state.scroll_down(10);
         assert_eq!(state.scroll_offset, 1);
@@ -348,7 +349,7 @@ mod node_inspector_tests {
     #[test]
     fn test_node_inspector_view_creation() {
         let theme = ThemeConfig::default();
-        let view = NodeInspectorView::new(&theme, "test-node".to_string());
+        let view = NodeInspectorView::new(&theme, "df-test".to_string(), "test-node".to_string());
 
         assert_eq!(view.state.node_id, "test-node");
         assert_eq!(view.state.active_tab, InspectorTab::Overview);
@@ -356,7 +357,7 @@ mod node_inspector_tests {
 
     #[test]
     fn test_node_inspector_state_complex_workflow() {
-        let mut state = NodeInspectorState::new("my-node".to_string());
+        let mut state = NodeInspectorState::new("df-my".to_string(), "my-node".to_string());
 
         // Simulate a user workflow
         state.switch_tab(InspectorTab::Connections);
@@ -386,9 +387,9 @@ mod node_inspector_tests {
     fn test_multiple_node_inspector_instances() {
         let theme = ThemeConfig::default();
 
-        let view1 = NodeInspectorView::new(&theme, "node-1".to_string());
-        let view2 = NodeInspectorView::new(&theme, "node-2".to_string());
-        let view3 = NodeInspectorView::new(&theme, "node-3".to_string());
+        let view1 = NodeInspectorView::new(&theme, "df-1".to_string(), "node-1".to_string());
+        let view2 = NodeInspectorView::new(&theme, "df-2".to_string(), "node-2".to_string());
+        let view3 = NodeInspectorView::new(&theme, "df-3".to_string(), "node-3".to_string());
 
         assert_eq!(view1.state.node_id, "node-1");
         assert_eq!(view2.state.node_id, "node-2");
@@ -402,7 +403,8 @@ mod node_inspector_tests {
 
     #[test]
     fn test_inspector_state_preserves_node_id() {
-        let mut state = NodeInspectorState::new("critical-node".to_string());
+        let mut state =
+            NodeInspectorState::new("df-critical".to_string(), "critical-node".to_string());
 
         // Node ID should never change during state operations
         state.next_tab();

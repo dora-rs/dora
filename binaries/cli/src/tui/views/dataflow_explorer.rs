@@ -58,6 +58,34 @@ impl DataflowExplorerView {
         filtered.get(self.selected_index).copied()
     }
 
+    fn get_selected_node<'a>(
+        &self,
+        app_state: &'a AppState,
+    ) -> Option<(
+        &'a crate::tui::app::DataflowInfo,
+        &'a crate::tui::app::NodeInfo,
+    )> {
+        match self.state.active_tab {
+            ExplorerTab::Nodes => {
+                let mut remaining = self.selected_index;
+                for dataflow in &app_state.dataflows {
+                    for node in &dataflow.nodes {
+                        if remaining == 0 {
+                            return Some((dataflow, node));
+                        }
+                        remaining -= 1;
+                    }
+                }
+                None
+            }
+            _ => {
+                let dataflow = self.get_selected_dataflow(app_state)?;
+                let node = select_preferred_node(&dataflow.nodes)?;
+                Some((dataflow, node))
+            }
+        }
+    }
+
     /// Get number of selectable items in current view (internal/testing use)
     #[doc(hidden)]
     pub fn get_item_count(&self, app_state: &AppState) -> usize {
@@ -417,6 +445,12 @@ impl DataflowExplorerView {
             return;
         }
 
+        let selected_idx = if all_nodes.is_empty() {
+            None
+        } else {
+            Some(self.selected_index.min(all_nodes.len() - 1))
+        };
+
         let header_cells = ["Dataflow", "Node", "Status"]
             .iter()
             .map(|h| Cell::from(*h).style(self.theme.table_header_style()))
@@ -429,9 +463,11 @@ impl DataflowExplorerView {
 
         let rows = all_nodes
             .iter()
-            .map(|(df_name, node)| {
+            .enumerate()
+            .map(|(idx, (df_name, node))| {
                 let status_style = self.theme.status_style(&node.status);
                 let status_indicator = utils::status_indicator(&node.status);
+                let is_selected = selected_idx == Some(idx);
 
                 Row::new(vec![
                     Cell::from(df_name.clone()),
@@ -442,7 +478,7 @@ impl DataflowExplorerView {
                         Span::styled(&node.status, status_style),
                     ])),
                 ])
-                .style(Style::default().fg(self.theme.colors.text))
+                .style(self.theme.table_row_style(is_selected))
             })
             .collect::<Vec<_>>();
 
@@ -1018,12 +1054,17 @@ impl View for DataflowExplorerView {
 
             // Enter to inspect selected dataflow
             KeyCode::Enter => {
-                if let Some(dataflow) = self.get_selected_dataflow(app_state) {
+                if let Some((dataflow, node)) = self.get_selected_node(app_state) {
                     Ok(ViewAction::PushView(ViewType::NodeInspector {
-                        node_id: dataflow.id.clone(),
+                        dataflow_id: dataflow.id.clone(),
+                        node_id: node.id.clone(),
                     }))
+                } else if self.get_selected_dataflow(app_state).is_some() {
+                    Ok(ViewAction::ShowStatus(
+                        "Selected dataflow has no nodes to inspect".to_string(),
+                    ))
                 } else {
-                    Ok(ViewAction::ShowStatus("No dataflow selected".to_string()))
+                    Ok(ViewAction::ShowStatus("No node selected".to_string()))
                 }
             }
 
@@ -1077,4 +1118,16 @@ impl View for DataflowExplorerView {
         self.base.mark_updated();
         Ok(())
     }
+}
+
+fn select_preferred_node(
+    nodes: &[crate::tui::app::NodeInfo],
+) -> Option<&crate::tui::app::NodeInfo> {
+    nodes
+        .iter()
+        .find(|node| {
+            let status = node.status.to_ascii_lowercase();
+            status == "running" || status == "active"
+        })
+        .or_else(|| nodes.first())
 }

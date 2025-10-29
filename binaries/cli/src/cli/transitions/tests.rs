@@ -47,7 +47,10 @@ async fn test_tui_to_cli_transition() {
     // Create TUI state
     let tui_state = TuiState {
         current_view: ViewType::Dashboard,
-        view_stack: vec![ViewType::NodeInspector { node_id: "test".to_string() }],
+        view_stack: vec![ViewType::NodeInspector {
+            dataflow_id: "df-test".to_string(),
+            node_id: "test".to_string(),
+        }],
         view_states: HashMap::new(),
         last_refresh: Instant::now(),
     };
@@ -74,9 +77,13 @@ async fn test_tui_to_cli_transition() {
 fn test_view_switch_recording() {
     let mut manager = TransitionManager::new();
     
-    manager.record_view_switch(ViewType::Dashboard, ViewType::NodeInspector { 
-        node_id: "test".to_string() 
-    });
+    manager.record_view_switch(
+        ViewType::Dashboard,
+        ViewType::NodeInspector {
+            dataflow_id: "df-test".to_string(),
+            node_id: "test".to_string(),
+        },
+    );
     
     assert_eq!(manager.transition_history.len(), 1);
     
@@ -84,7 +91,13 @@ fn test_view_switch_recording() {
     match &transition.transition_type {
         TransitionType::TuiViewSwitch { from_view, to_view } => {
             assert_eq!(*from_view, ViewType::Dashboard);
-            assert_eq!(*to_view, ViewType::NodeInspector { node_id: "test".to_string() });
+            assert_eq!(
+                *to_view,
+                ViewType::NodeInspector {
+                    dataflow_id: "df-test".to_string(),
+                    node_id: "test".to_string(),
+                }
+            );
         },
         _ => panic!("Expected TuiViewSwitch"),
     }

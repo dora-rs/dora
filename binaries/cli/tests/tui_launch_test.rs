@@ -13,6 +13,7 @@ fn test_tui_app_can_be_created_for_all_views() {
             target: "test".to_string(),
         },
         ViewType::NodeInspector {
+            dataflow_id: "test_df".to_string(),
             node_id: "test_node".to_string(),
         },
         ViewType::RecordingAnalyzer {
