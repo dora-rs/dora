@@ -74,6 +74,8 @@ pub struct AppState {
 
     /// System metrics
     pub system_metrics: SystemMetrics,
+    /// Rolling history of system metrics for trend visualization
+    pub system_metrics_history: VecDeque<SystemMetricsSample>,
 
     /// User preferences
     pub user_config: UserConfig,
@@ -83,6 +85,32 @@ pub struct AppState {
 
     /// Status messages
     pub status_messages: VecDeque<StatusMessage>,
+}
+
+impl AppState {
+    const SYSTEM_HISTORY_CAPACITY: usize = 180;
+
+    pub fn record_system_metrics(&mut self, metrics: &SystemMetrics) {
+        self.system_metrics_history.push_back(SystemMetricsSample {
+            timestamp: metrics.last_update.unwrap_or_else(Instant::now),
+            cpu_usage: metrics.cpu_usage,
+            memory_usage: metrics.memory_usage,
+            rx_rate: metrics.network.received_per_second,
+            tx_rate: metrics.network.transmitted_per_second,
+        });
+
+        while self.system_metrics_history.len() > Self::SYSTEM_HISTORY_CAPACITY {
+            self.system_metrics_history.pop_front();
+        }
+    }
+
+    pub fn system_metrics_history(&self) -> &VecDeque<SystemMetricsSample> {
+        &self.system_metrics_history
+    }
+
+    pub fn system_history_capacity() -> usize {
+        Self::SYSTEM_HISTORY_CAPACITY
+    }
 }
 
 #[derive(Debug, Default)]
@@ -124,6 +152,15 @@ pub struct SystemMetrics {
     pub uptime: Duration,
     pub process_count: usize,
     pub last_update: Option<Instant>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SystemMetricsSample {
+    pub timestamp: Instant,
+    pub cpu_usage: f32,
+    pub memory_usage: f32,
+    pub rx_rate: f64,
+    pub tx_rate: f64,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -905,10 +942,18 @@ impl DoraApp {
             }
         }
 
-        // Auto-refresh system metrics
-        if self.state.system_metrics.last_update.map_or(true, |last| {
-            now.duration_since(last) > self.state.user_config.auto_refresh_interval
-        }) {
+        let metrics_interval = if matches!(self.current_view, ViewType::SystemMonitor) {
+            Duration::from_secs(1)
+        } else {
+            self.state.user_config.auto_refresh_interval
+        };
+
+        if self
+            .state
+            .system_metrics
+            .last_update
+            .map_or(true, |last| now.duration_since(last) > metrics_interval)
+        {
             self.update_system_metrics().await?;
         }
 
@@ -1100,15 +1145,18 @@ impl DoraApp {
     }
 
     async fn update_system_metrics(&mut self) -> Result<()> {
-        if let Err(err) = self
-            .metrics_collector
-            .collect()
-            .map(|metrics| self.state.system_metrics = metrics)
-        {
-            self.show_status_message(
-                format!("❌ failed to collect system metrics: {err}"),
-                MessageLevel::Error,
-            );
+        match self.metrics_collector.collect() {
+            Ok(metrics) => {
+                self.state.system_metrics = metrics.clone();
+                self.state.record_system_metrics(&metrics);
+                self.state.last_error = None;
+            }
+            Err(err) => {
+                self.show_status_message(
+                    format!("❌ failed to collect system metrics: {err}"),
+                    MessageLevel::Error,
+                );
+            }
         }
 
         Ok(())
