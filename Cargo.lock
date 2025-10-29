@@ -270,20 +270,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "arrow-integration-test"
-version = "54.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b41a71dbbd739f9723650799079ebca9fd574e98f9f9e5cc9b8c8d1fe0f169e7"
-dependencies = [
- "arrow",
- "arrow-buffer",
- "hex",
- "num",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "arrow-ipc"
 version = "54.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1563,7 +1549,6 @@ version = "0.3.13"
 dependencies = [
  "aligned-vec",
  "arrow",
- "arrow-integration-test",
  "arrow-json",
  "arrow-schema",
  "bincode",

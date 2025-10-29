@@ -41,4 +41,3 @@ arrow-json = { workspace = true }
 arrow-schema = { workspace = true }
 colored = "3.0.0"
 is-terminal = "0.4.16"
-arrow-integration-test = { workspace = true }

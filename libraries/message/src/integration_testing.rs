@@ -204,18 +204,6 @@ pub enum InputData {
         data: serde_json::Value,
         schema: Option<arrow_schema::Schema>,
     },
-    /// Use [Arrow JSON test data format](https://github.com/apache/arrow/blob/main/docs/source/format/Integration.rst#json-test-data-format)
-    ///
-    /// Requires specifying the exact schema. Always returns an Arrow StructArray.
-    ArrowTest { data: serde_json::Value },
-    /// Use first column of [Arrow JSON test data format](https://github.com/apache/arrow/blob/main/docs/source/format/Integration.rst#json-test-data-format).
-    ///
-    /// Like [`ArrowTest`][InputDataFormat::ArrowTest], but unwraps the first column of the
-    /// `StructArray`. This makes it possible to provide other Arrow array types as input.
-    ///
-    /// Errors if the given `RecordBatch` specifies more than one column.
-    ArrowTestUnwrap { data: serde_json::Value },
-
     /// Use [Arrow file format](https://arrow.apache.org/docs/python/ipc.html#writing-and-reading-random-access-files)
     ArrowFile {
         path: PathBuf,
