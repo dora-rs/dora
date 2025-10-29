@@ -1,5 +1,6 @@
-use std::{ptr::NonNull, sync::Arc};
+use std::{ptr::NonNull, sync::Arc, time::SystemTime};
 
+use arrow::{buffer::OffsetBuffer, datatypes::Field};
 use clap::Args;
 use colored::Colorize;
 use dora_core::topics::{open_zenoh_session, zenoh_output_publish_topic};
@@ -7,30 +8,39 @@ use dora_message::{
     common::Timestamped,
     daemon_to_daemon::InterDaemonEvent,
     id::{DataId, NodeId},
-    metadata::{ArrowTypeInfo, BufferOffset},
+    metadata::{ArrowTypeInfo, BufferOffset, Parameter},
 };
 use eyre::{Context, eyre};
 use tokio::{runtime::Builder, task::JoinSet};
 use uuid::Uuid;
 
-use crate::command::{default_tracing, topic::selector::{TopicIdentifier, TopicSelector}, Executable};
+use crate::{
+    command::{
+        Executable, default_tracing,
+        topic::selector::{TopicIdentifier, TopicSelector},
+    },
+    formatting::OutputFormat,
+};
 
 /// Watch topic data in terminal.
 #[derive(Debug, Args)]
 pub struct Watch {
     #[clap(flatten)]
     selector: TopicSelector,
+    /// Output format
+    #[clap(long, value_name = "FORMAT", default_value_t = OutputFormat::Table)]
+    pub format: OutputFormat,
 }
 
 impl Executable for Watch {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
 
-        inspect(self.selector)
+        inspect(self.selector, self.format)
     }
 }
 
-fn inspect(selector: TopicSelector) -> eyre::Result<()> {
+fn inspect(selector: TopicSelector, format: OutputFormat) -> eyre::Result<()> {
     let (_session, outputs) = selector.resolve()?;
 
     let rt = Builder::new_multi_thread()
@@ -43,12 +53,18 @@ fn inspect(selector: TopicSelector) -> eyre::Result<()> {
             .context("failed to open zenoh session")?;
 
         let mut join_set = JoinSet::new();
-        for TopicIdentifier { dataflow_id, node_id, data_id } in outputs {
+        for TopicIdentifier {
+            dataflow_id,
+            node_id,
+            data_id,
+        } in outputs
+        {
             join_set.spawn(log_to_terminal(
                 zenoh_session.clone(),
                 dataflow_id,
                 node_id,
                 data_id,
+                format,
             ));
         }
         while let Some(res) = join_set.join_next().await {
@@ -104,6 +120,7 @@ async fn log_to_terminal(
     dataflow_id: Uuid,
     node_id: NodeId,
     output_id: DataId,
+    format: OutputFormat,
 ) -> eyre::Result<()> {
     let subscribe_topic = zenoh_output_publish_topic(dataflow_id, &node_id, &output_id);
     let output_name = format!("{node_id}/{output_id}");
@@ -113,7 +130,11 @@ async fn log_to_terminal(
         .map_err(|e| eyre!(e))
         .wrap_err_with(|| format!("failed to subscribe to {output_name}"))?;
 
-    let output_name = output_name.green();
+    let output_name = match format {
+        OutputFormat::Table => output_name.green().to_string(),
+        OutputFormat::Json => serde_json::to_string(&output_name).unwrap(),
+    };
+    let mut buf = Vec::with_capacity(1024);
     while let Ok(sample) = subscriber.recv_async().await {
         let event = match Timestamped::deserialize_inter_daemon_event(&sample.payload().to_bytes())
         {
@@ -127,8 +148,12 @@ async fn log_to_terminal(
             InterDaemonEvent::Output { metadata, data, .. } => {
                 use std::fmt::Write;
 
-                let mut output = format!("{output_name}\t");
-                if let Some(data) = data {
+                let timestamp = SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis();
+
+                let data_str = if let Some(data) = data {
                     let ptr = NonNull::new(data.as_ptr() as *mut u8).unwrap();
                     let len = data.len();
                     let buffer = unsafe {
@@ -141,28 +166,74 @@ async fn log_to_terminal(
                             continue;
                         }
                     };
-                    let display = if array.is_empty() {
-                        "[]".to_owned()
-                    } else {
-                        let mut display = format!("{:?}", arrow::array::make_array(array));
-                        display = display
-                            .split_once('\n')
-                            .map(|(_, content)| content)
-                            .unwrap_or(&display)
-                            .replace("\n  ", " ");
-                        if display.ends_with(",\n]") {
-                            display.truncate(display.len() - 3);
-                            display += " ]";
-                        }
-                        display
-                    };
 
-                    write!(output, " {}={display}", "data".bold()).unwrap();
+                    let offsets = OffsetBuffer::new(vec![0, array.len() as _].into());
+                    let field = Arc::new(Field::new_list_field(array.data_type().clone(), true));
+                    let list_array = arrow::array::ListArray::new(
+                        field,
+                        offsets,
+                        arrow::array::make_array(array),
+                        None,
+                    );
+                    let batch =
+                        arrow::array::RecordBatch::try_from_iter([("", Arc::new(list_array) as _)])
+                            .unwrap();
+                    let mut writer = arrow_json::LineDelimitedWriter::new(&mut buf);
+                    writer.write(&batch).unwrap();
+                    writer.finish().unwrap();
+                    // The output looks like {"":[...]}\n
+                    std::str::from_utf8(&buf[4..buf.len() - 2]).ok()
+                } else {
+                    None
+                };
+
+                let metadata_str = if !metadata.parameters.is_empty() {
+                    let mut output = "{".to_string();
+                    for (i, (k, v)) in metadata.parameters.iter().enumerate() {
+                        if i > 0 {
+                            write!(output, ",").unwrap();
+                        }
+                        let value = match v {
+                            Parameter::Bool(value) => value.to_string(),
+                            Parameter::Integer(value) => value.to_string(),
+                            Parameter::String(value) => serde_json::to_string(value).unwrap(),
+                            Parameter::ListInt(value) => serde_json::to_string(value).unwrap(),
+                            Parameter::Float(value) => serde_json::to_string(value).unwrap(),
+                            Parameter::ListFloat(value) => serde_json::to_string(value).unwrap(),
+                            Parameter::ListString(value) => serde_json::to_string(value).unwrap(),
+                        };
+                        write!(output, "{}:{value}", serde_json::Value::String(k.clone()),)
+                            .unwrap();
+                    }
+                    write!(output, "}}").unwrap();
+                    Some(output)
+                } else {
+                    None
+                };
+
+                match format {
+                    OutputFormat::Table => {
+                        let mut output = format!("{output_name}\t");
+                        if let Some(s) = data_str {
+                            write!(output, " {}={s}", "data".bold()).unwrap();
+                        }
+                        if let Some(s) = metadata_str {
+                            write!(output, " {}={s}", "metadata".bold()).unwrap();
+                        }
+                        println!("{output}");
+                    }
+                    OutputFormat::Json => {
+                        println!(
+                            r#"{{"timestamp":{},"name":{},"data":{},"metadata":{}}}"#,
+                            timestamp,
+                            output_name,
+                            data_str.unwrap_or("null"),
+                            metadata_str.as_deref().unwrap_or("null")
+                        );
+                    }
                 }
-                if !metadata.parameters.is_empty() {
-                    write!(output, " {}={:?}", "metadata".bold(), metadata.parameters).unwrap();
-                }
-                println!("{output}");
+
+                buf.clear();
             }
             InterDaemonEvent::OutputClosed { .. } => {
                 eprintln!("Output {node_id}/{output_id} closed");
