@@ -44,6 +44,18 @@ impl ThemeConfig {
         Self::default_dark()
     }
 
+    pub fn from_name(name: &str) -> Self {
+        match name.to_lowercase().as_str() {
+            "light" => Self::default_light(),
+            other => {
+                if other != "dark" {
+                    tracing::debug!("Unknown theme '{}', falling back to dark", other);
+                }
+                Self::default_dark()
+            }
+        }
+    }
+
     pub fn default_dark() -> Self {
         Self {
             name: "dark".to_string(),

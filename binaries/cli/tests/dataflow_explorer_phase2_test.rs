@@ -19,11 +19,13 @@ mod dataflow_explorer_phase2_tests {
                         id: "node1".to_string(),
                         name: "Node 1".to_string(),
                         status: "running".to_string(),
+                        ..Default::default()
                     },
                     NodeInfo {
                         id: "node2".to_string(),
                         name: "Node 2".to_string(),
                         status: "running".to_string(),
+                        ..Default::default()
                     },
                 ],
             },
@@ -35,6 +37,7 @@ mod dataflow_explorer_phase2_tests {
                     id: "node3".to_string(),
                     name: "Node 3".to_string(),
                     status: "stopped".to_string(),
+                    ..Default::default()
                 }],
             },
         ];

@@ -35,6 +35,7 @@ impl DebugSessionView {
         // Initialize state with mock data
         let mut state = DebugSessionState::new(source.to_string());
         Self::populate_mock_data(&mut state);
+        state.set_execution_state(ExecutionState::Paused);
 
         Self {
             base,

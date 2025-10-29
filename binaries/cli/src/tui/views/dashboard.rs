@@ -57,24 +57,33 @@ impl DashboardView {
             SystemStatus::Connected
         };
 
+        let memory_total_mb = bytes_to_megabytes(metrics.memory.total_bytes);
+        let memory_used_mb = bytes_to_megabytes(metrics.memory.used_bytes);
+
+        let disk_total_gb = bytes_to_gigabytes(metrics.disk.total_bytes);
+        let disk_used_gb = bytes_to_gigabytes(metrics.disk.used_bytes);
+
+        let network_rx = metrics.network.received_per_second as u64;
+        let network_tx = metrics.network.transmitted_per_second as u64;
+
         SystemOverview {
             status,
-            uptime: Duration::from_secs(0), // TODO: Get actual uptime
+            uptime: metrics.uptime,
             version: env!("CARGO_PKG_VERSION").to_string(),
             cpu_usage: metrics.cpu_usage as f64,
             memory_usage: MemoryUsage {
-                total_mb: 8192, // TODO: Get actual system memory
-                used_mb: ((metrics.memory_usage / 100.0) * 8192.0) as u64,
+                total_mb: memory_total_mb,
+                used_mb: memory_used_mb,
                 usage_percent: metrics.memory_usage as f64,
             },
             disk_usage: DiskUsage {
-                total_gb: 500,       // TODO: Get actual disk size
-                used_gb: 250,        // TODO: Get actual disk usage
-                usage_percent: 50.0, // TODO: Calculate from actual values
+                total_gb: disk_total_gb,
+                used_gb: disk_used_gb,
+                usage_percent: metrics.disk.usage_percent as f64,
             },
             network_activity: NetworkActivity {
-                bytes_received: metrics.network_io.0,
-                bytes_transmitted: metrics.network_io.1,
+                bytes_received: network_rx,
+                bytes_transmitted: network_tx,
             },
             active_connections: app_state.dataflows.len() as u32,
         }
@@ -302,6 +311,14 @@ impl DashboardView {
     }
 }
 
+fn bytes_to_megabytes(bytes: u64) -> u64 {
+    bytes.saturating_div(1024 * 1024)
+}
+
+fn bytes_to_gigabytes(bytes: u64) -> u64 {
+    bytes.saturating_div(1024 * 1024 * 1024)
+}
+
 impl View for DashboardView {
     fn render(&mut self, f: &mut Frame, area: Rect, app_state: &AppState) {
         let chunks = Layout::default()
@@ -467,5 +484,22 @@ impl View for DashboardView {
         self.refresh_dashboard_data(app_state);
         self.base.mark_updated();
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bytes_to_megabytes_converts() {
+        assert_eq!(bytes_to_megabytes(1_048_576), 1);
+        assert_eq!(bytes_to_megabytes(0), 0);
+    }
+
+    #[test]
+    fn bytes_to_gigabytes_converts() {
+        assert_eq!(bytes_to_gigabytes(1_073_741_824), 1);
+        assert_eq!(bytes_to_gigabytes(512_000_000), 0);
     }
 }

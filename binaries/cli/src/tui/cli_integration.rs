@@ -1,5 +1,9 @@
 use std::{collections::HashMap, path::PathBuf};
 
+use chrono::Utc;
+use eyre::Result;
+use serde::{Deserialize, Serialize};
+
 use super::app::UserConfig;
 use crate::cli::{Cli, Command};
 
@@ -127,16 +131,16 @@ pub enum ActionCategory {
 }
 
 /// Command history management
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommandHistory {
     pub commands: Vec<HistoryEntry>,
     pub max_entries: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HistoryEntry {
     pub command: String,
-    pub timestamp: std::time::SystemTime,
+    pub timestamp: i64,
     pub success: bool,
     pub working_directory: PathBuf,
 }
@@ -152,7 +156,7 @@ impl CommandHistory {
     pub fn add_entry(&mut self, command: String, success: bool, working_directory: PathBuf) {
         let entry = HistoryEntry {
             command,
-            timestamp: std::time::SystemTime::now(),
+            timestamp: Utc::now().timestamp(),
             success,
             working_directory,
         };
@@ -178,6 +182,47 @@ impl CommandHistory {
 
     pub fn get_successful_commands(&self) -> Vec<&HistoryEntry> {
         self.commands.iter().filter(|entry| entry.success).collect()
+    }
+
+    fn history_path() -> Result<PathBuf> {
+        let config_dir = dirs::config_dir()
+            .ok_or_else(|| eyre::eyre!("Could not determine config directory"))?
+            .join("dora");
+        Ok(config_dir.join("tui_history.json"))
+    }
+
+    pub fn load_or_default() -> Self {
+        match Self::load() {
+            Ok(history) => history,
+            Err(_) => Self::new(),
+        }
+    }
+
+    fn load() -> Result<Self> {
+        let path = Self::history_path()?;
+        if !path.exists() {
+            return Ok(Self::new());
+        }
+        let content = std::fs::read_to_string(path)?;
+        let mut history: CommandHistory = serde_json::from_str(&content)?;
+        history.commands.truncate(history.max_entries);
+        Ok(history)
+    }
+
+    pub fn record(command: String, success: bool, working_directory: PathBuf) -> Result<()> {
+        let mut history = Self::load_or_default();
+        history.add_entry(command, success, working_directory);
+        history.save()
+    }
+
+    pub fn save(&self) -> Result<()> {
+        let path = Self::history_path()?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let content = serde_json::to_string_pretty(self)?;
+        std::fs::write(path, content)?;
+        Ok(())
     }
 }
 

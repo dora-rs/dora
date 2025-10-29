@@ -4,7 +4,6 @@ use clap::Parser;
 
 use crate::{
     cli::{Cli, Command, commands::*, context::ExecutionContext},
-    common::{connect_to_coordinator, query_running_dataflows},
     execute_legacy_command,
     tui::{
         AppState, ViewType,
@@ -12,8 +11,6 @@ use crate::{
         metrics::MetricsCollector,
     },
 };
-use dora_core::topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT;
-use eyre::WrapErr;
 
 /// Executes CLI commands within TUI environment with state synchronization
 #[derive(Debug)]
@@ -232,7 +229,19 @@ impl TuiCliExecutor {
                 }
             }
 
-            Command::Config(_) | Command::System(_) | Command::Analyze(_) | Command::Help(_) => {
+            Command::Config(_) => {
+                match self
+                    .execute_legacy_and_refresh(full_args, app_state)
+                    .await?
+                {
+                    LegacyExecution::Success => Ok(CommandResult::StateUpdate(
+                        StateUpdate::ConfigurationChanged,
+                    )),
+                    LegacyExecution::Error(err) => Ok(CommandResult::Error(err)),
+                }
+            }
+
+            Command::System(_) | Command::Analyze(_) | Command::Help(_) => {
                 match self
                     .execute_legacy_and_refresh(full_args, app_state)
                     .await?
@@ -282,6 +291,18 @@ impl TuiCliExecutor {
             .cloned()
             .collect::<Vec<_>>()
             .join(" ");
+
+        #[cfg(test)]
+        {
+            if std::env::var("DORA_TUI_RUN_REAL_COMMANDS").is_err() {
+                self.push_status_message(
+                    app_state,
+                    format!("Skipping `{display}` execution in test mode"),
+                    MessageLevel::Info,
+                );
+                return Ok(LegacyExecution::Success);
+            }
+        }
 
         self.push_status_message(
             app_state,
@@ -452,42 +473,7 @@ impl StateSynchronizer {
         &mut self,
         app_state: &mut AppState,
     ) -> crate::tui::Result<()> {
-        let coordinator_addr = (crate::LOCALHOST, DORA_COORDINATOR_PORT_CONTROL_DEFAULT).into();
-
-        let result = tokio::task::spawn_blocking(move || -> eyre::Result<Vec<DataflowInfo>> {
-            let mut session = connect_to_coordinator(coordinator_addr)
-                .with_context(|| "failed to connect to coordinator".to_string())?;
-            let list = query_running_dataflows(&mut *session)
-                .with_context(|| "failed to query running dataflows".to_string())?;
-
-            let flows = list
-                .0
-                .into_iter()
-                .map(|entry| DataflowInfo {
-                    id: entry.id.uuid.to_string(),
-                    name: entry
-                        .id
-                        .name
-                        .clone()
-                        .unwrap_or_else(|| entry.id.uuid.to_string()),
-                    status: match entry.status {
-                        dora_message::coordinator_to_cli::DataflowStatus::Running => {
-                            "running".to_string()
-                        }
-                        dora_message::coordinator_to_cli::DataflowStatus::Finished => {
-                            "finished".to_string()
-                        }
-                        dora_message::coordinator_to_cli::DataflowStatus::Failed => {
-                            "failed".to_string()
-                        }
-                    },
-                    nodes: Vec::<NodeInfo>::new(),
-                })
-                .collect();
-
-            Ok(flows)
-        })
-        .await;
+        let result = tokio::task::spawn_blocking(crate::tui::app::fetch_dataflows).await;
 
         match result {
             Ok(Ok(flows)) => {

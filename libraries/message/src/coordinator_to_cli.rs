@@ -6,7 +6,7 @@ use std::{
 use uuid::Uuid;
 
 pub use crate::common::{LogLevel, LogMessage, NodeError, NodeErrorCause, NodeExitStatus};
-use crate::{BuildId, common::DaemonId, id::NodeId};
+use crate::{BuildId, common::DaemonId, descriptor::ResolvedNode, id::NodeId};
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub enum ControlRequestReply {
@@ -81,6 +81,8 @@ impl DataflowList {
 pub struct DataflowListEntry {
     pub id: DataflowIdAndName,
     pub status: DataflowStatus,
+    #[serde(default)]
+    pub nodes: Vec<NodeRuntimeInfo>,
 }
 
 #[derive(Debug, Clone, Copy, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
@@ -88,6 +90,32 @@ pub enum DataflowStatus {
     Running,
     Finished,
     Failed,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+pub enum NodeRuntimeState {
+    Running,
+    Exited,
+    Completed,
+    Failed,
+    Unknown,
+}
+
+impl Default for NodeRuntimeState {
+    fn default() -> Self {
+        Self::Unknown
+    }
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct NodeRuntimeInfo {
+    pub node: ResolvedNode,
+    #[serde(default)]
+    pub status: NodeRuntimeState,
+    #[serde(default)]
+    pub inputs: Vec<String>,
+    #[serde(default)]
+    pub outputs: Vec<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

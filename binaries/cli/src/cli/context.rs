@@ -219,7 +219,7 @@ impl ExecutionContext {
     pub fn is_automated_context(&self) -> bool {
         self.automation_result
             .as_ref()
-            .map(|result| result.is_automated && result.confidence > 0.7)
+            .map(|result| result.is_automated && result.confidence >= 0.4)
             .unwrap_or_else(|| self.environment.is_automation)
     }
 

@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use super::{BaseView, InspectorTab, NodeInspectorState, NodeMetrics, View, ViewAction};
 use crate::tui::{Result, app::AppState, theme::ThemeConfig};
+use dora_message::descriptor::CoreNodeKind;
 
 /// Node Inspector View for detailed node inspection and monitoring
 pub struct NodeInspectorView {
@@ -98,21 +99,17 @@ impl NodeInspectorView {
 
     /// Render Overview tab
     fn render_overview_tab(&self, f: &mut Frame, area: Rect, app_state: &AppState) {
-        // Find the node in app_state
         let node_info = self.find_node_info(app_state);
 
         let node_name = node_info
-            .as_ref()
             .map(|n| n.name.as_str())
             .unwrap_or(&self.state.node_id);
+        let node_status = node_info.map(|n| n.status.as_str()).unwrap_or("unknown");
+        let node_kind = node_info.map(|n| n.kind.as_str()).unwrap_or("unknown");
+        let node_source = node_info.and_then(|n| n.source.as_deref());
+        let node_description = node_info.and_then(|n| n.description.as_deref());
 
-        let node_status = node_info
-            .as_ref()
-            .map(|n| n.status.as_str())
-            .unwrap_or("unknown");
-
-        // Create overview content
-        let overview_text = vec![
+        let mut overview_text = vec![
             Line::from(vec![
                 Span::styled(
                     "Node: ",
@@ -131,30 +128,50 @@ impl NodeInspectorView {
                 Span::styled("Status: ", Style::default().fg(self.theme.colors.muted)),
                 self.status_span(node_status),
             ]),
-            Line::from(""),
-            Line::from(vec![Span::styled(
-                "─── Metrics ───",
+            Line::from(vec![
+                Span::styled("Kind: ", Style::default().fg(self.theme.colors.muted)),
+                Span::raw(node_kind),
+            ]),
+        ];
+
+        if let Some(source) = node_source {
+            overview_text.push(Line::from(vec![
+                Span::styled("Source: ", Style::default().fg(self.theme.colors.muted)),
+                Span::raw(source),
+            ]));
+        }
+
+        if let Some(description) = node_description {
+            overview_text.push(Line::from(""));
+            overview_text.push(Line::from(vec![Span::styled(
+                "Description:",
                 Style::default()
                     .fg(self.theme.colors.primary)
                     .add_modifier(Modifier::BOLD),
-            )]),
-            Line::from(""),
-        ];
+            )]));
+            overview_text.push(Line::from(description));
+        }
+
+        overview_text.push(Line::from(""));
+        overview_text.push(Line::from(vec![Span::styled(
+            "─── Metrics ───",
+            Style::default()
+                .fg(self.theme.colors.primary)
+                .add_modifier(Modifier::BOLD),
+        )]));
+        overview_text.push(Line::from(""));
 
         let title = format!("Overview - {}", node_name);
         let paragraph = Paragraph::new(overview_text)
             .block(self.theme.styled_block(&title))
             .wrap(Wrap { trim: true });
 
-        // Split area for overview and metrics
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(10), Constraint::Min(5)])
+            .constraints([Constraint::Length(12), Constraint::Min(5)])
             .split(area);
 
         f.render_widget(paragraph, chunks[0]);
-
-        // Render metrics gauges
         self.render_metrics_gauges(f, chunks[1], app_state);
     }
 
@@ -231,54 +248,50 @@ impl NodeInspectorView {
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(area);
 
-        // Render inputs
-        let input_items: Vec<ListItem> = if let Some(_node) = node_info {
-            // TODO: Get real inputs from node info
-            vec![
-                ListItem::new(Line::from(vec![
-                    Span::styled("● ", Style::default().fg(Color::Green)),
-                    Span::raw("camera_feed"),
-                    Span::styled(" (Image)", Style::default().fg(self.theme.colors.muted)),
-                ])),
-                ListItem::new(Line::from(vec![
-                    Span::styled("● ", Style::default().fg(Color::Green)),
-                    Span::raw("control_signal"),
-                    Span::styled(" (Command)", Style::default().fg(self.theme.colors.muted)),
-                ])),
-            ]
+        let input_items: Vec<ListItem> = if let Some(node) = node_info {
+            if node.inputs.is_empty() {
+                vec![ListItem::new(Line::from("No inputs configured"))]
+            } else {
+                node.inputs
+                    .iter()
+                    .map(|input| {
+                        ListItem::new(Line::from(vec![
+                            Span::styled("● ", Style::default().fg(Color::Green)),
+                            Span::raw(input.clone()),
+                        ]))
+                    })
+                    .collect()
+            }
         } else {
-            vec![ListItem::new("No inputs")]
+            vec![ListItem::new(Line::from("Node not found"))]
         };
 
         let inputs_list = List::new(input_items)
             .block(self.theme.styled_block("Inputs"))
             .highlight_style(Style::default().add_modifier(Modifier::BOLD));
-
         f.render_widget(inputs_list, chunks[0]);
 
-        // Render outputs
-        let output_items: Vec<ListItem> = if let Some(_node) = node_info {
-            // TODO: Get real outputs from node info
-            vec![
-                ListItem::new(Line::from(vec![
-                    Span::styled("● ", Style::default().fg(Color::Green)),
-                    Span::raw("detection_result"),
-                    Span::styled(" (Detection)", Style::default().fg(self.theme.colors.muted)),
-                ])),
-                ListItem::new(Line::from(vec![
-                    Span::styled("● ", Style::default().fg(Color::Green)),
-                    Span::raw("debug_image"),
-                    Span::styled(" (Image)", Style::default().fg(self.theme.colors.muted)),
-                ])),
-            ]
+        let output_items: Vec<ListItem> = if let Some(node) = node_info {
+            if node.outputs.is_empty() {
+                vec![ListItem::new(Line::from("No outputs configured"))]
+            } else {
+                node.outputs
+                    .iter()
+                    .map(|output| {
+                        ListItem::new(Line::from(vec![
+                            Span::styled("● ", Style::default().fg(Color::Green)),
+                            Span::raw(output.clone()),
+                        ]))
+                    })
+                    .collect()
+            }
         } else {
-            vec![ListItem::new("No outputs")]
+            vec![ListItem::new(Line::from("Node not found"))]
         };
 
         let outputs_list = List::new(output_items)
             .block(self.theme.styled_block("Outputs"))
             .highlight_style(Style::default().add_modifier(Modifier::BOLD));
-
         f.render_widget(outputs_list, chunks[1]);
     }
 
@@ -286,7 +299,27 @@ impl NodeInspectorView {
     fn render_performance_tab(&self, f: &mut Frame, area: Rect, app_state: &AppState) {
         let metrics = self.build_node_metrics(app_state);
 
-        let perf_text = vec![
+        let mut perf_text = Vec::new();
+
+        if let Some(node) = self.find_node_info(app_state) {
+            perf_text.push(Line::from(vec![
+                Span::styled(
+                    "Node Status: ",
+                    Style::default().fg(self.theme.colors.muted),
+                ),
+                Span::raw(node.status.clone()),
+            ]));
+            perf_text.push(Line::from(vec![
+                Span::styled("Inputs: ", Style::default().fg(self.theme.colors.muted)),
+                Span::raw(node.inputs.len().to_string()),
+                Span::raw("   "),
+                Span::styled("Outputs: ", Style::default().fg(self.theme.colors.muted)),
+                Span::raw(node.outputs.len().to_string()),
+            ]));
+            perf_text.push(Line::from(""));
+        }
+
+        perf_text.extend([
             Line::from(vec![Span::styled(
                 "Performance Metrics",
                 Style::default()
@@ -333,10 +366,8 @@ impl NodeInspectorView {
                 Style::default().fg(self.theme.colors.primary),
             )]),
             Line::from(""),
-            Line::from("Total Messages: 1,234"),
-            Line::from("Avg Processing Time: 2.5 ms"),
-            Line::from("Peak Message Rate: 145 msg/s"),
-        ];
+            Line::from("Live message statistics are not yet available."),
+        ]);
 
         let title = format!("Performance - {}", self.state.node_id);
         let paragraph = Paragraph::new(perf_text)
@@ -347,57 +378,143 @@ impl NodeInspectorView {
     }
 
     /// Render Configuration tab
-    fn render_configuration_tab(&self, f: &mut Frame, area: Rect, _app_state: &AppState) {
-        let config_text = vec![
-            Line::from(vec![Span::styled(
+    fn render_configuration_tab(&self, f: &mut Frame, area: Rect, app_state: &AppState) {
+        let lines = if let Some(node) = self.find_node_info(app_state) {
+            let mut lines = Vec::new();
+            lines.push(Line::from(vec![Span::styled(
                 "Node Configuration",
                 Style::default()
                     .fg(self.theme.colors.primary)
                     .add_modifier(Modifier::BOLD),
-            )]),
-            Line::from(""),
-            Line::from(vec![Span::styled(
-                "node:",
-                Style::default().fg(Color::Yellow),
-            )]),
-            Line::from(vec![
-                Span::raw("  id: "),
-                Span::styled(&self.state.node_id, Style::default().fg(Color::Cyan)),
-            ]),
-            Line::from(vec![
-                Span::raw("  operator: "),
-                Span::styled("detector", Style::default().fg(Color::Cyan)),
-            ]),
-            Line::from(""),
-            Line::from(vec![Span::styled(
-                "inputs:",
-                Style::default().fg(Color::Yellow),
-            )]),
-            Line::from("  - camera_feed"),
-            Line::from("  - control_signal"),
-            Line::from(""),
-            Line::from(vec![Span::styled(
-                "outputs:",
-                Style::default().fg(Color::Yellow),
-            )]),
-            Line::from("  - detection_result"),
-            Line::from("  - debug_image"),
-            Line::from(""),
-            Line::from(vec![Span::styled(
-                "parameters:",
-                Style::default().fg(Color::Yellow),
-            )]),
-            Line::from("  confidence_threshold: 0.5"),
-            Line::from("  max_detections: 100"),
-            Line::from(""),
-            Line::from(vec![Span::styled(
-                "Press [e] to edit configuration",
-                Style::default().fg(self.theme.colors.muted),
-            )]),
-        ];
+            )]));
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                Span::styled("Node ID: ", Style::default().fg(self.theme.colors.muted)),
+                Span::raw(node.id.clone()),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("Name: ", Style::default().fg(self.theme.colors.muted)),
+                Span::raw(node.name.clone()),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("Kind: ", Style::default().fg(self.theme.colors.muted)),
+                Span::raw(node.kind.clone()),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("Status: ", Style::default().fg(self.theme.colors.muted)),
+                Span::raw(node.status.clone()),
+            ]));
+            if let Some(source) = &node.source {
+                lines.push(Line::from(vec![
+                    Span::styled("Source: ", Style::default().fg(self.theme.colors.muted)),
+                    Span::raw(source.clone()),
+                ]));
+            }
+            if let Some(description) = &node.description {
+                lines.push(Line::from(""));
+                lines.push(Line::from(vec![Span::styled(
+                    "Description:",
+                    Style::default()
+                        .fg(self.theme.colors.primary)
+                        .add_modifier(Modifier::BOLD),
+                )]));
+                lines.push(Line::from(description.clone()));
+            }
+
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![Span::styled(
+                "Inputs",
+                Style::default()
+                    .fg(self.theme.colors.primary)
+                    .add_modifier(Modifier::BOLD),
+            )]));
+            if node.inputs.is_empty() {
+                lines.push(Line::from("  (no inputs configured)"));
+            } else {
+                for input in &node.inputs {
+                    lines.push(Line::from(format!("  - {}", input)));
+                }
+            }
+
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![Span::styled(
+                "Outputs",
+                Style::default()
+                    .fg(self.theme.colors.primary)
+                    .add_modifier(Modifier::BOLD),
+            )]));
+            if node.outputs.is_empty() {
+                lines.push(Line::from("  (no outputs configured)"));
+            } else {
+                for output in &node.outputs {
+                    lines.push(Line::from(format!("  - {}", output)));
+                }
+            }
+
+            if let Some(resolved) = &node.resolved {
+                lines.push(Line::from(""));
+                match &resolved.kind {
+                    CoreNodeKind::Custom(custom) => {
+                        lines.push(Line::from(vec![Span::styled(
+                            "Executable",
+                            Style::default()
+                                .fg(self.theme.colors.primary)
+                                .add_modifier(Modifier::BOLD),
+                        )]));
+                        lines.push(Line::from(format!("  path: {}", custom.path)));
+                        if let Some(args) = &custom.args {
+                            lines.push(Line::from(format!("  args: {}", args)));
+                        }
+                        if let Some(send_stdout_as) = &custom.send_stdout_as {
+                            lines.push(Line::from(format!(
+                                "  redirect stdout as: {}",
+                                send_stdout_as
+                            )));
+                        }
+                    }
+                    CoreNodeKind::Runtime(runtime) => {
+                        lines.push(Line::from(vec![Span::styled(
+                            "Operators",
+                            Style::default()
+                                .fg(self.theme.colors.primary)
+                                .add_modifier(Modifier::BOLD),
+                        )]));
+                        if runtime.operators.is_empty() {
+                            lines.push(Line::from("  (no operators registered)"));
+                        } else {
+                            for operator in &runtime.operators {
+                                let name = operator
+                                    .config
+                                    .name
+                                    .clone()
+                                    .unwrap_or_else(|| operator.id.to_string());
+                                lines.push(Line::from(format!("  - {}", name)));
+                            }
+                        }
+                    }
+                }
+
+                if let Some(env) = &resolved.env {
+                    lines.push(Line::from(""));
+                    lines.push(Line::from(vec![Span::styled(
+                        "Environment",
+                        Style::default()
+                            .fg(self.theme.colors.primary)
+                            .add_modifier(Modifier::BOLD),
+                    )]));
+                    for (key, value) in env {
+                        lines.push(Line::from(format!("  {key}={value}")));
+                    }
+                }
+            }
+
+            lines
+        } else {
+            vec![Line::from("Node not found")]
+        };
 
         let title = format!("Configuration - {}", self.state.node_id);
-        let paragraph = Paragraph::new(config_text)
+        let paragraph = Paragraph::new(lines)
             .block(self.theme.styled_block(&title))
             .wrap(Wrap { trim: true });
 
@@ -405,8 +522,8 @@ impl NodeInspectorView {
     }
 
     /// Render Debug tab
-    fn render_debug_tab(&self, f: &mut Frame, area: Rect, _app_state: &AppState) {
-        let debug_text = vec![
+    fn render_debug_tab(&self, f: &mut Frame, area: Rect, app_state: &AppState) {
+        let mut debug_text = vec![
             Line::from(vec![Span::styled(
                 "Debug Information",
                 Style::default()
@@ -414,46 +531,78 @@ impl NodeInspectorView {
                     .add_modifier(Modifier::BOLD),
             )]),
             Line::from(""),
-            Line::from(vec![
-                Span::styled("Process ID: ", Style::default().fg(self.theme.colors.muted)),
-                Span::raw("12345"),
-            ]),
-            Line::from(vec![
-                Span::styled(
-                    "Working Directory: ",
-                    Style::default().fg(self.theme.colors.muted),
-                ),
-                Span::raw("/path/to/node"),
-            ]),
-            Line::from(vec![
-                Span::styled("Command: ", Style::default().fg(self.theme.colors.muted)),
-                Span::raw("python operator.py"),
-            ]),
-            Line::from(""),
-            Line::from(vec![Span::styled(
-                "─── Recent Logs ───",
-                Style::default().fg(self.theme.colors.primary),
-            )]),
-            Line::from(""),
-            Line::from("[INFO] Node started successfully"),
-            Line::from("[INFO] Connected to input: camera_feed"),
-            Line::from("[INFO] Processing message batch (10 items)"),
-            Line::from("[DEBUG] Detection complete in 2.3ms"),
-            Line::from("[INFO] Sent output to detection_result"),
-            Line::from(""),
-            Line::from(vec![Span::styled(
-                "─── Environment Variables ───",
-                Style::default().fg(self.theme.colors.primary),
-            )]),
-            Line::from(""),
-            Line::from("DORA_NODE_ID: detector-node"),
-            Line::from("PYTHONPATH: /usr/local/lib/python3.10"),
-            Line::from(""),
-            Line::from(vec![Span::styled(
-                "Use ↑↓ to scroll",
-                Style::default().fg(self.theme.colors.muted),
-            )]),
+            Line::from("Live log streaming is not yet available in the TUI."),
+            Line::from("Use `dora logs` for real-time output."),
         ];
+
+        if let Some(node) = self.find_node_info(app_state) {
+            if let Some(resolved) = &node.resolved {
+                match &resolved.kind {
+                    CoreNodeKind::Custom(custom) => {
+                        debug_text.push(Line::from(""));
+                        debug_text.push(Line::from(vec![Span::styled(
+                            "Executable",
+                            Style::default()
+                                .fg(self.theme.colors.primary)
+                                .add_modifier(Modifier::BOLD),
+                        )]));
+                        debug_text.push(Line::from(format!("Path: {}", custom.path)));
+                        if let Some(args) = &custom.args {
+                            debug_text.push(Line::from(format!("Args: {}", args)));
+                        }
+                    }
+                    CoreNodeKind::Runtime(runtime) => {
+                        debug_text.push(Line::from(""));
+                        debug_text.push(Line::from(vec![Span::styled(
+                            "Operators",
+                            Style::default()
+                                .fg(self.theme.colors.primary)
+                                .add_modifier(Modifier::BOLD),
+                        )]));
+                        if runtime.operators.is_empty() {
+                            debug_text.push(Line::from("  (no operators registered)"));
+                        } else {
+                            for operator in &runtime.operators {
+                                let name = operator
+                                    .config
+                                    .name
+                                    .clone()
+                                    .unwrap_or_else(|| operator.id.to_string());
+                                debug_text.push(Line::from(format!("  - {}", name)));
+                            }
+                        }
+                    }
+                }
+
+                debug_text.push(Line::from(""));
+                debug_text.push(Line::from(vec![Span::styled(
+                    "Environment Variables",
+                    Style::default()
+                        .fg(self.theme.colors.primary)
+                        .add_modifier(Modifier::BOLD),
+                )]));
+                if let Some(env) = &resolved.env {
+                    if env.is_empty() {
+                        debug_text.push(Line::from("  (none)"));
+                    } else {
+                        for (key, value) in env {
+                            debug_text.push(Line::from(format!("  {key}={value}")));
+                        }
+                    }
+                } else {
+                    debug_text.push(Line::from("  (none)"));
+                }
+            }
+        } else {
+            debug_text.push(Line::from(""));
+            debug_text.push(Line::from("Node not found."));
+        }
+
+        debug_text.push(Line::from(""));
+        debug_text.push(Line::from(vec![Span::styled(
+            "Use ↑↓ to scroll",
+            Style::default().fg(self.theme.colors.muted),
+        )]));
 
         let title = format!("Debug - {}", self.state.node_id);
         let paragraph = Paragraph::new(debug_text)
@@ -470,6 +619,8 @@ impl NodeInspectorView {
             "running" | "active" => ("● running", Color::Green),
             "stopped" | "inactive" => ("● stopped", Color::Red),
             "error" | "failed" => ("● error", Color::Red),
+            "completed" => ("● completed", Color::Blue),
+            "exited" => ("● exited", Color::Yellow),
             _ => ("○ unknown", Color::Gray),
         };
 

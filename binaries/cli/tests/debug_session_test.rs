@@ -492,7 +492,7 @@ mod debug_session_tests {
         let theme = ThemeConfig::default();
         let view = DebugSessionView::new("test", &theme);
 
-        assert_eq!(view.state.execution_state, ExecutionState::Stopped);
+        assert_eq!(view.state.execution_state, ExecutionState::Paused);
         assert_eq!(view.state.active_panel, DebugPanel::Variables);
     }
 

@@ -184,6 +184,26 @@ impl ContextAwarePreferences {
         let auto_launch_threshold = base_prefs.interface.auto_launch.confidence_threshold;
         drop(base_prefs);
 
+        // Strong override for automation environments
+        if context.is_scripted || context.environment.is_ci {
+            reasoning.push(PreferenceReason {
+                factor: "automation".to_string(),
+                impact: 0.95,
+                preference: UiMode::Minimal,
+                description: "Automation or CI environment detected - prefer minimal interface"
+                    .to_string(),
+            });
+
+            return ContextualPreferences {
+                ui_mode_preference: UiMode::Minimal,
+                complexity_threshold,
+                auto_launch_threshold,
+                confidence: 0.95,
+                last_updated: Utc::now(),
+                reasoning,
+            };
+        }
+
         // Apply time-based preferences
         let time_factors = self.adaptation_engine.apply_time_based_rules(context);
         for (mode, weight, description) in time_factors {
@@ -220,17 +240,6 @@ impl ContextAwarePreferences {
                 impact: weight,
                 preference: mode,
                 description,
-            });
-        }
-
-        // Apply context-specific overrides
-        if context.is_scripted || context.environment.is_ci {
-            preference_factors.push((UiMode::Minimal, 0.9));
-            reasoning.push(PreferenceReason {
-                factor: "automation".to_string(),
-                impact: 0.9,
-                preference: UiMode::Minimal,
-                description: "Detected automation/CI environment".to_string(),
             });
         }
 

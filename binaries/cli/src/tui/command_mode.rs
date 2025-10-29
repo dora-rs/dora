@@ -690,12 +690,23 @@ impl CompletionEngine {
     fn analyze_completion_context(&self, input: &str, cursor_position: usize) -> CompletionContext {
         let before_cursor = &input[..cursor_position.min(input.len())];
         let parts: Vec<&str> = before_cursor.split_whitespace().collect();
-
-        let prefix = before_cursor
-            .split_whitespace()
+        let is_new_token = before_cursor
+            .chars()
             .last()
-            .unwrap_or("")
-            .to_string();
+            .map(|c| c.is_whitespace())
+            .unwrap_or(false)
+            || before_cursor.is_empty();
+
+        let prefix = if is_new_token {
+            String::new()
+        } else {
+            let suffix: String = before_cursor
+                .chars()
+                .rev()
+                .take_while(|c| !c.is_whitespace())
+                .collect();
+            suffix.chars().rev().collect()
+        };
 
         if parts.is_empty() || (parts.len() == 1 && !before_cursor.ends_with(' ')) {
             // Completing command name

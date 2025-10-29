@@ -128,9 +128,15 @@ impl Component for MetricsChartComponent {
             // Add new metric value based on chart type
             let value = match self.chart_type {
                 ChartType::CpuUsage => app_state.system_metrics.cpu_usage as f64,
-                ChartType::MemoryUsage => app_state.system_metrics.memory_usage as f64,
-                ChartType::NetworkRx => app_state.system_metrics.network_io.0 as f64 / 1024.0,
-                ChartType::NetworkTx => app_state.system_metrics.network_io.1 as f64 / 1024.0,
+                ChartType::MemoryUsage => {
+                    (app_state.system_metrics.memory.used_bytes as f64) / (1024.0 * 1024.0)
+                }
+                ChartType::NetworkRx => {
+                    app_state.system_metrics.network.received_per_second / 1024.0
+                }
+                ChartType::NetworkTx => {
+                    app_state.system_metrics.network.transmitted_per_second / 1024.0
+                }
                 ChartType::Custom(_) => 0.0,
             };
 

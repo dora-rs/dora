@@ -321,7 +321,7 @@ mod node_inspector_tests {
         let metrics = NodeMetrics::default();
 
         assert_eq!(metrics.cpu_percent, 0.0);
-        assert_eq!(metrics.memory_mb, 0.0);
+        assert_eq!(metrics.memory_percent, 0.0);
         assert_eq!(metrics.message_rate, 0.0);
         assert_eq!(metrics.processing_latency_ms, 0.0);
         assert_eq!(metrics.uptime_seconds, 0);

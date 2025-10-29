@@ -180,7 +180,8 @@ impl BehavioralLearningEngine {
             .collect();
 
         if recent_choices.len() < 3 {
-            return Ok(()); // Not enough data for pattern analysis
+            self.clean_old_patterns(prefs);
+            return Ok(()); // Not enough data for pattern analysis, but still prune
         }
 
         // Analyze command patterns

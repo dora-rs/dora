@@ -15,16 +15,29 @@ use ratatui::{
 use std::{
     collections::{HashMap, VecDeque},
     io,
+    path::PathBuf,
     time::{Duration, Instant},
 };
 
+use dora_core::topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT;
+use dora_message::{
+    coordinator_to_cli::{DataflowListEntry, DataflowStatus, NodeRuntimeInfo, NodeRuntimeState},
+    descriptor::{CoreNodeKind, ResolvedNode},
+};
+use eyre::WrapErr;
+
 use super::{
     Result,
-    cli_integration::{CliContext, CommandMode},
+    cli_integration::{CliContext, CommandHistory, CommandMode},
     command_executor::{CommandModeExecutionResult, CommandModeViewAction, TuiCliExecutor},
     command_mode::{CommandModeAction, CommandModeManager},
     metrics::MetricsCollector,
     theme::ThemeConfig,
+};
+use crate::{
+    LOCALHOST,
+    common::{connect_to_coordinator, query_running_dataflows},
+    config::preferences::UserPreferences,
 };
 
 #[derive(Debug, Clone)]
@@ -87,14 +100,59 @@ pub struct NodeInfo {
     pub id: String,
     pub name: String,
     pub status: String,
+    pub kind: String,
+    pub description: Option<String>,
+    pub inputs: Vec<String>,
+    pub outputs: Vec<String>,
+    pub source: Option<String>,
+    pub resolved: Option<ResolvedNode>,
 }
 
 #[derive(Debug, Default, Clone)]
 pub struct SystemMetrics {
     pub cpu_usage: f32,
     pub memory_usage: f32,
-    pub network_io: (u64, u64), // (rx, tx)
+    pub network_io: (u64, u64),
+    pub memory: MemoryMetrics,
+    pub disk: DiskMetrics,
+    pub network: NetworkMetrics,
+    pub load_average: Option<LoadAverages>,
+    pub uptime: Duration,
+    pub process_count: usize,
     pub last_update: Option<Instant>,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct MemoryMetrics {
+    pub total_bytes: u64,
+    pub used_bytes: u64,
+    pub free_bytes: u64,
+    pub usage_percent: f32,
+    pub swap_total_bytes: u64,
+    pub swap_used_bytes: u64,
+    pub swap_usage_percent: f32,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct DiskMetrics {
+    pub total_bytes: u64,
+    pub used_bytes: u64,
+    pub usage_percent: f32,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct NetworkMetrics {
+    pub total_received: u64,
+    pub total_transmitted: u64,
+    pub received_per_second: f64,
+    pub transmitted_per_second: f64,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct LoadAverages {
+    pub one: f64,
+    pub five: f64,
+    pub fifteen: f64,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -138,6 +196,141 @@ impl Default for EventHandler {
     }
 }
 
+impl From<DataflowListEntry> for DataflowInfo {
+    fn from(entry: DataflowListEntry) -> Self {
+        let DataflowListEntry { id, status, nodes } = entry;
+        let uuid = id.uuid.to_string();
+        let name = id.name.unwrap_or_else(|| uuid.clone());
+        let status = format_dataflow_status(status);
+        let nodes = nodes.into_iter().map(NodeInfo::from).collect();
+
+        Self {
+            id: uuid,
+            name,
+            status,
+            nodes,
+        }
+    }
+}
+
+impl From<NodeRuntimeInfo> for NodeInfo {
+    fn from(mut runtime: NodeRuntimeInfo) -> Self {
+        if runtime.inputs.is_empty() && runtime.outputs.is_empty() {
+            let (inputs, outputs) = extract_node_connections(&runtime.node);
+            runtime.inputs = inputs;
+            runtime.outputs = outputs;
+        }
+
+        let status = format_node_status(runtime.status);
+        let kind = describe_node_kind(&runtime.node.kind);
+        let source = derive_node_source(&runtime.node.kind);
+        let description = runtime.node.description.clone();
+
+        Self {
+            id: runtime.node.id.to_string(),
+            name: runtime
+                .node
+                .name
+                .clone()
+                .unwrap_or_else(|| runtime.node.id.to_string()),
+            status: status.to_string(),
+            kind,
+            description,
+            inputs: runtime.inputs,
+            outputs: runtime.outputs,
+            source,
+            resolved: Some(runtime.node),
+        }
+    }
+}
+
+pub fn fetch_dataflows() -> eyre::Result<Vec<DataflowInfo>> {
+    let coordinator_addr = (LOCALHOST, DORA_COORDINATOR_PORT_CONTROL_DEFAULT).into();
+    let mut session =
+        connect_to_coordinator(coordinator_addr).wrap_err("failed to connect to coordinator")?;
+    let list =
+        query_running_dataflows(&mut *session).wrap_err("failed to query running dataflows")?;
+
+    Ok(list.0.into_iter().map(DataflowInfo::from).collect())
+}
+
+fn format_dataflow_status(status: DataflowStatus) -> String {
+    match status {
+        DataflowStatus::Running => "running",
+        DataflowStatus::Finished => "finished",
+        DataflowStatus::Failed => "failed",
+    }
+    .to_string()
+}
+
+fn format_node_status(status: NodeRuntimeState) -> &'static str {
+    match status {
+        NodeRuntimeState::Running => "running",
+        NodeRuntimeState::Exited => "exited",
+        NodeRuntimeState::Completed => "completed",
+        NodeRuntimeState::Failed => "failed",
+        NodeRuntimeState::Unknown => "unknown",
+    }
+}
+
+fn describe_node_kind(kind: &CoreNodeKind) -> String {
+    match kind {
+        CoreNodeKind::Custom(custom) => {
+            format!("custom ({})", custom.path)
+        }
+        CoreNodeKind::Runtime(runtime) => {
+            format!("runtime ({} operators)", runtime.operators.len())
+        }
+    }
+}
+
+fn derive_node_source(kind: &CoreNodeKind) -> Option<String> {
+    match kind {
+        CoreNodeKind::Custom(custom) => Some(custom.path.clone()),
+        CoreNodeKind::Runtime(_) => Some("runtime".to_string()),
+    }
+}
+
+fn extract_node_connections(node: &ResolvedNode) -> (Vec<String>, Vec<String>) {
+    match &node.kind {
+        CoreNodeKind::Custom(custom) => {
+            let inputs = custom
+                .run_config
+                .inputs
+                .iter()
+                .map(|(id, input)| format!("{id} <- {}", input.mapping))
+                .collect();
+            let outputs = custom
+                .run_config
+                .outputs
+                .iter()
+                .map(|id| id.to_string())
+                .collect();
+            (inputs, outputs)
+        }
+        CoreNodeKind::Runtime(runtime) => {
+            let mut inputs = Vec::new();
+            let mut outputs = Vec::new();
+
+            for operator in &runtime.operators {
+                let label = operator
+                    .config
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| operator.id.to_string());
+                for (input_id, input) in &operator.config.inputs {
+                    inputs.push(format!("{label}.{input_id} <- {}", input.mapping));
+                }
+                for output_id in &operator.config.outputs {
+                    outputs.push(format!("{label}.{output_id}"));
+                }
+            }
+
+            (inputs, outputs)
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct DoraApp {
     /// Current active view
@@ -167,13 +360,16 @@ pub struct DoraApp {
     /// CLI command executor for TUI
     command_executor: Option<TuiCliExecutor>,
 
+    /// System metrics collector
+    metrics_collector: MetricsCollector,
+
     /// Should quit flag
     should_quit: bool,
 }
 
 impl DoraApp {
     pub fn new(initial_view: ViewType) -> Self {
-        Self {
+        let mut app = Self {
             current_view: initial_view,
             view_stack: Vec::new(),
             state: AppState::default(),
@@ -183,8 +379,12 @@ impl DoraApp {
             command_mode: CommandMode::Normal,
             command_mode_manager: CommandModeManager::new(),
             command_executor: None,
+            metrics_collector: MetricsCollector::new(),
             should_quit: false,
-        }
+        };
+
+        app.apply_user_preferences();
+        app
     }
 
     pub fn new_with_context(initial_view: ViewType, cli_context: CliContext) -> Self {
@@ -196,6 +396,46 @@ impl DoraApp {
         app.command_executor = Some(TuiCliExecutor::new(execution_context));
 
         app
+    }
+
+    fn apply_user_preferences(&mut self) {
+        match UserPreferences::load_or_create() {
+            Ok(prefs) => {
+                self.state.user_config.theme_name = prefs.interface.tui.theme.clone();
+                self.state.user_config.auto_refresh_interval =
+                    prefs.interface.tui.auto_refresh_interval;
+                self.state.user_config.show_system_info = prefs.interface.hints.show_hints;
+
+                self.theme = ThemeConfig::from_name(&self.state.user_config.theme_name);
+
+                if let Some(view) = Self::view_from_name(&prefs.interface.tui.default_view) {
+                    self.current_view = view;
+                }
+            }
+            Err(err) => {
+                self.show_status_message(
+                    format!("❌ failed to load preferences: {err}"),
+                    MessageLevel::Error,
+                );
+                self.state.user_config.auto_refresh_interval = Duration::from_secs(5);
+                self.state.user_config.show_system_info = true;
+                self.state.user_config.theme_name = "dark".to_string();
+                self.theme = ThemeConfig::from_name(&self.state.user_config.theme_name);
+            }
+        }
+    }
+
+    fn view_from_name(name: &str) -> Option<ViewType> {
+        match name.to_lowercase().as_str() {
+            "dashboard" => Some(ViewType::Dashboard),
+            "dataflow" | "dataflow_manager" => Some(ViewType::DataflowManager),
+            "explorer" | "dataflow_explorer" => Some(ViewType::DataflowExplorer),
+            "system" | "monitor" | "system_monitor" => Some(ViewType::SystemMonitor),
+            "logs" | "log" => Some(ViewType::LogViewer {
+                target: "system".to_string(),
+            }),
+            _ => None,
+        }
     }
 
     pub async fn run(&mut self) -> Result<()> {
@@ -620,6 +860,7 @@ impl DoraApp {
     }
 
     fn enter_command_mode_internal(&mut self) {
+        self.command_mode_manager.activate();
         self.command_mode = CommandMode::Command {
             buffer: String::new(),
             cursor: 0,
@@ -630,6 +871,7 @@ impl DoraApp {
 
     fn exit_command_mode_internal(&mut self) {
         self.command_mode = CommandMode::Normal;
+        self.command_mode_manager.deactivate();
     }
 
     async fn handle_command_mode_key(&mut self, key: KeyEvent) -> Result<()> {
@@ -735,31 +977,31 @@ impl DoraApp {
     }
 
     async fn refresh_dataflow_list(&mut self) -> Result<()> {
-        // Mock dataflow data
-        self.state.dataflows = vec![DataflowInfo {
-            id: "df1".to_string(),
-            name: "example-dataflow".to_string(),
-            status: "running".to_string(),
-            nodes: vec![
-                NodeInfo {
-                    id: "node1".to_string(),
-                    name: "input-node".to_string(),
-                    status: "running".to_string(),
-                },
-                NodeInfo {
-                    id: "node2".to_string(),
-                    name: "processor-node".to_string(),
-                    status: "running".to_string(),
-                },
-            ],
-        }];
+        let result = tokio::task::spawn_blocking(fetch_dataflows).await;
+
+        match result {
+            Ok(Ok(dataflows)) => {
+                self.state.dataflows = dataflows;
+                self.state.last_error = None;
+            }
+            Ok(Err(err)) => {
+                let message = format!("failed to fetch dataflows: {err}");
+                self.show_status_message(format!("❌ {message}"), MessageLevel::Error);
+                self.state.last_error = Some(message);
+            }
+            Err(err) => {
+                let message = format!("coordinator query task failed: {err}");
+                self.show_status_message(format!("❌ {message}"), MessageLevel::Error);
+                self.state.last_error = Some(message);
+            }
+        }
 
         Ok(())
     }
 
     async fn update_system_metrics(&mut self) -> Result<()> {
-        let mut collector = MetricsCollector::new();
-        if let Err(err) = collector
+        if let Err(err) = self
+            .metrics_collector
             .collect()
             .map(|metrics| self.state.system_metrics = metrics)
         {
@@ -773,16 +1015,30 @@ impl DoraApp {
     }
 
     fn load_command_history(&self) -> Vec<String> {
-        // Mock command history
-        vec![
-            "ps".to_string(),
-            "start example.yaml".to_string(),
-            "logs node1".to_string(),
-        ]
+        CommandHistory::load_or_default()
+            .commands
+            .iter()
+            .map(|entry| entry.command.clone())
+            .collect()
     }
 
-    fn save_command_to_history(&mut self, _command: &str) {
-        // TODO: Implement command history persistence
+    fn save_command_to_history(&mut self, command: &str) {
+        if command.trim().is_empty() {
+            return;
+        }
+
+        let working_dir = self
+            .cli_context
+            .as_ref()
+            .map(|ctx| ctx.working_directory.clone())
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+
+        if let Err(err) = CommandHistory::record(command.to_string(), true, working_dir) {
+            self.show_status_message(
+                format!("❌ failed to persist command history: {err}"),
+                MessageLevel::Error,
+            );
+        }
     }
 
     pub fn show_status_message(&mut self, message: String, level: MessageLevel) {
@@ -825,17 +1081,12 @@ impl DoraApp {
 
     #[cfg(test)]
     pub fn enter_command_mode(&mut self) {
-        self.command_mode = CommandMode::Command {
-            buffer: String::new(),
-            cursor: 0,
-            history: self.load_command_history(),
-            history_index: None,
-        };
+        self.enter_command_mode_internal();
     }
 
     #[cfg(test)]
     pub fn exit_command_mode(&mut self) {
-        self.command_mode = CommandMode::Normal;
+        self.exit_command_mode_internal();
     }
 }
 

@@ -14,13 +14,13 @@ use dora_message::{
     common::{DaemonId, GitSource},
     coordinator_to_cli::{
         ControlRequestReply, DataflowIdAndName, DataflowList, DataflowListEntry, DataflowResult,
-        DataflowStatus, LogLevel, LogMessage,
+        DataflowStatus, LogLevel, LogMessage, NodeRuntimeInfo, NodeRuntimeState,
     },
     coordinator_to_daemon::{
         BuildDataflowNodes, DaemonCoordinatorEvent, RegisterResult, Timestamped,
     },
     daemon_to_coordinator::{DaemonCoordinatorReply, DataflowDaemonResult},
-    descriptor::{Descriptor, ResolvedNode},
+    descriptor::{CoreNodeKind, Descriptor, ResolvedNode},
 };
 use eyre::{ContextCompat, Result, WrapErr, bail, eyre};
 use futures::{Future, Stream, StreamExt, future::join_all, stream::FuturesUnordered};
@@ -680,12 +680,39 @@ async fn start_inner(
                             let mut dataflows: Vec<_> = running_dataflows.values().collect();
                             dataflows.sort_by_key(|d| (&d.name, d.uuid));
 
-                            let running = dataflows.into_iter().map(|d| DataflowListEntry {
-                                id: DataflowIdAndName {
-                                    uuid: d.uuid,
-                                    name: d.name.clone(),
-                                },
-                                status: DataflowStatus::Running,
+                            let running = dataflows.into_iter().map(|d| {
+                                let exited: BTreeSet<_> =
+                                    d.exited_before_subscribe.iter().cloned().collect();
+                                let nodes = d
+                                    .nodes
+                                    .iter()
+                                    .map(|(node_id, node)| {
+                                        let mut info = NodeRuntimeInfo {
+                                            node: node.clone(),
+                                            status: if exited.contains(node_id) {
+                                                NodeRuntimeState::Exited
+                                            } else {
+                                                NodeRuntimeState::Running
+                                            },
+                                            inputs: Vec::new(),
+                                            outputs: Vec::new(),
+                                        };
+                                        let (inputs, outputs) =
+                                            collect_node_connections(&info.node);
+                                        info.inputs = inputs;
+                                        info.outputs = outputs;
+                                        info
+                                    })
+                                    .collect();
+
+                                DataflowListEntry {
+                                    id: DataflowIdAndName {
+                                        uuid: d.uuid,
+                                        name: d.name.clone(),
+                                    },
+                                    status: DataflowStatus::Running,
+                                    nodes,
+                                }
                             });
                             let finished_failed =
                                 dataflow_results.iter().map(|(&uuid, results)| {
@@ -697,7 +724,18 @@ async fn start_inner(
                                     } else {
                                         DataflowStatus::Failed
                                     };
-                                    DataflowListEntry { id, status }
+                                    let default_state = match status {
+                                        DataflowStatus::Running => NodeRuntimeState::Running,
+                                        DataflowStatus::Finished => NodeRuntimeState::Completed,
+                                        DataflowStatus::Failed => NodeRuntimeState::Failed,
+                                    };
+                                    let nodes = build_archived_node_infos(
+                                        uuid,
+                                        default_state,
+                                        results,
+                                        &archived_dataflows,
+                                    );
+                                    DataflowListEntry { id, status, nodes }
                                 });
 
                             let reply = Ok(ControlRequestReply::DataflowList(DataflowList(
@@ -1106,6 +1144,97 @@ impl From<&RunningDataflow> for ArchivedDataflow {
             name: dataflow.name.clone(),
             nodes: dataflow.nodes.clone(),
         }
+    }
+}
+
+fn collect_node_connections(node: &ResolvedNode) -> (Vec<String>, Vec<String>) {
+    match &node.kind {
+        CoreNodeKind::Custom(custom) => {
+            let inputs = custom
+                .run_config
+                .inputs
+                .iter()
+                .map(|(input_id, input)| format!("{input_id} <- {}", input.mapping))
+                .collect();
+            let outputs = custom
+                .run_config
+                .outputs
+                .iter()
+                .map(|output_id| output_id.to_string())
+                .collect();
+            (inputs, outputs)
+        }
+        CoreNodeKind::Runtime(runtime) => {
+            let mut inputs = Vec::new();
+            let mut outputs = Vec::new();
+
+            for operator in &runtime.operators {
+                let label = operator
+                    .config
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| operator.id.to_string());
+                for (input_id, input) in &operator.config.inputs {
+                    inputs.push(format!("{label}.{input_id} <- {}", input.mapping));
+                }
+                for output_id in &operator.config.outputs {
+                    outputs.push(format!("{label}.{output_id}"));
+                }
+            }
+
+            (inputs, outputs)
+        }
+    }
+}
+
+fn build_archived_node_infos(
+    dataflow_id: Uuid,
+    default_state: NodeRuntimeState,
+    results: &BTreeMap<DaemonId, DataflowDaemonResult>,
+    archived_dataflows: &HashMap<Uuid, ArchivedDataflow>,
+) -> Vec<NodeRuntimeInfo> {
+    let mut node_states: BTreeMap<NodeId, NodeRuntimeState> = BTreeMap::new();
+
+    for daemon_result in results.values() {
+        for (node_id, outcome) in &daemon_result.node_results {
+            let entry = node_states
+                .entry(node_id.clone())
+                .or_insert(default_state.clone());
+            match outcome {
+                Ok(_) => {
+                    if *entry != NodeRuntimeState::Failed {
+                        *entry = NodeRuntimeState::Completed;
+                    }
+                }
+                Err(_) => {
+                    *entry = NodeRuntimeState::Failed;
+                }
+            }
+        }
+    }
+
+    if let Some(dataflow) = archived_dataflows.get(&dataflow_id) {
+        dataflow
+            .nodes
+            .iter()
+            .map(|(node_id, node)| {
+                let mut info = NodeRuntimeInfo {
+                    node: node.clone(),
+                    status: node_states
+                        .get(node_id)
+                        .cloned()
+                        .unwrap_or_else(|| default_state.clone()),
+                    inputs: Vec::new(),
+                    outputs: Vec::new(),
+                };
+                let (inputs, outputs) = collect_node_connections(&info.node);
+                info.inputs = inputs;
+                info.outputs = outputs;
+                info
+            })
+            .collect()
+    } else {
+        Vec::new()
     }
 }
 

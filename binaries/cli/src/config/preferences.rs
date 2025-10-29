@@ -500,7 +500,10 @@ impl UserPreferences {
         }
 
         // Fall back to default UI mode
-        Some(self.interface.default_ui_mode)
+        match self.interface.default_ui_mode {
+            UiMode::Auto => None,
+            ref mode => Some(mode.clone()),
+        }
     }
 
     fn get_behavioral_preference(
