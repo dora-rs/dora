@@ -45,6 +45,7 @@ use tui_interface::{
     LoadAverages as InterfaceLoadAverages, MemoryMetrics as InterfaceMemoryMetrics,
     NetworkMetrics as InterfaceNetworkMetrics, NodeSummary, PreferencesStore,
     SystemMetrics as InterfaceSystemMetrics, SystemMetricsSample as InterfaceSystemMetricsSample,
+    TelemetryService,
 };
 
 #[derive(Debug, Clone)]
@@ -387,8 +388,8 @@ pub struct DoraApp {
     /// CLI command executor for TUI
     command_executor: Option<TuiCliExecutor>,
 
-    /// System metrics collector
-    metrics_collector: MetricsCollector,
+    /// Telemetry service abstraction
+    telemetry_service: Arc<dyn TelemetryService>,
 
     /// Coordinator client abstraction
     coordinator_client: Arc<dyn CoordinatorClient>,
@@ -408,6 +409,7 @@ impl DoraApp {
             initial_view,
             Arc::new(CliPreferencesStore::default()),
             Arc::new(CliCoordinatorClient::default()),
+            Arc::new(CliTelemetryService::default()),
         )
     }
 
@@ -415,6 +417,7 @@ impl DoraApp {
         initial_view: ViewType,
         preferences_store: Arc<dyn PreferencesStore>,
         coordinator_client: Arc<dyn CoordinatorClient>,
+        telemetry_service: Arc<dyn TelemetryService>,
     ) -> Self {
         let mut app = Self {
             current_view: initial_view,
@@ -424,7 +427,7 @@ impl DoraApp {
             cli_context: None,
             command_mode_manager: CommandModeManager::new(),
             command_executor: None,
-            metrics_collector: MetricsCollector::new(),
+            telemetry_service,
             coordinator_client,
             preferences_store,
             should_quit: false,
@@ -1040,15 +1043,22 @@ impl DoraApp {
     }
 
     async fn update_system_metrics(&mut self) -> Result<()> {
-        match self.metrics_collector.collect() {
-            Ok(metrics) => {
+        let service = Arc::clone(&self.telemetry_service);
+        match tokio::task::spawn_blocking(move || service.latest_metrics()).await {
+            Ok(Ok(metrics)) => {
                 self.state.system_metrics = metrics.clone();
                 self.state.record_system_metrics(&metrics);
                 self.state.last_error = None;
             }
-            Err(err) => {
+            Ok(Err(err)) => {
                 self.show_status_message(
                     format!("❌ failed to collect system metrics: {err}"),
+                    MessageLevel::Error,
+                );
+            }
+            Err(err) => {
+                self.show_status_message(
+                    format!("❌ telemetry task failed: {err}"),
                     MessageLevel::Error,
                 );
             }
@@ -1108,6 +1118,18 @@ impl DoraApp {
     #[cfg(test)]
     pub fn exit_command_mode(&mut self) {
         self.command_mode_manager.deactivate();
+    }
+}
+
+#[derive(Default, Debug)]
+pub struct CliTelemetryService;
+
+impl TelemetryService for CliTelemetryService {
+    fn latest_metrics(&self) -> std::result::Result<SystemMetrics, InterfaceError> {
+        let mut collector = MetricsCollector::new();
+        collector
+            .collect()
+            .map_err(|err| InterfaceError::from(err.to_string()))
     }
 }
 

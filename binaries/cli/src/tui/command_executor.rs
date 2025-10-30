@@ -10,11 +10,11 @@ use crate::{
     execute_legacy_command,
     tui::{
         AppState, CliCoordinatorClient, ViewType,
-        app::{DataflowInfo, MessageLevel, NodeInfo, StatusMessage},
+        app::{CliTelemetryService, DataflowInfo, MessageLevel, NodeInfo, StatusMessage},
         metrics::MetricsCollector,
     },
 };
-use tui_interface::{CoordinatorClient, InterfaceError, LegacyCliService};
+use tui_interface::{CoordinatorClient, InterfaceError, LegacyCliService, TelemetryService};
 
 /// Executes CLI commands within TUI environment with state synchronization
 pub struct TuiCliExecutor {
@@ -87,6 +87,7 @@ pub struct StateSynchronizer {
     sync_interval: Duration,
     metrics_collector: MetricsCollector,
     coordinator_client: Arc<dyn CoordinatorClient>,
+    telemetry_service: Arc<dyn TelemetryService>,
 }
 
 /// Status levels for messages
@@ -488,6 +489,7 @@ impl StateSynchronizer {
             sync_interval: Duration::from_millis(1000),
             metrics_collector: MetricsCollector::new(),
             coordinator_client: Arc::new(CliCoordinatorClient::default()),
+            telemetry_service: Arc::new(CliTelemetryService::default()),
         }
     }
 
@@ -542,11 +544,13 @@ impl StateSynchronizer {
         &mut self,
         app_state: &mut AppState,
     ) -> crate::tui::Result<()> {
-        match self.metrics_collector.collect() {
-            Ok(metrics) => {
+        let service = Arc::clone(&self.telemetry_service);
+        match tokio::task::spawn_blocking(move || service.latest_metrics()).await {
+            Ok(Ok(metrics)) => {
                 app_state.system_metrics = metrics;
                 app_state.last_error = None;
             }
+            Ok(Err(err)) => self.capture_error(app_state, err.to_string()),
             Err(err) => self.capture_error(app_state, err.to_string()),
         }
 
