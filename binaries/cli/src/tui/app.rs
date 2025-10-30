@@ -35,11 +35,16 @@ use super::{
     metrics::MetricsCollector,
     theme::ThemeConfig,
 };
-use tui_interface::{DataflowSummary, NodeSummary};
 use crate::{
     LOCALHOST,
     common::{connect_to_coordinator, query_running_dataflows},
     config::preferences::UserPreferences,
+};
+use tui_interface::{
+    DataflowSummary, DiskMetrics as InterfaceDiskMetrics, LoadAverages as InterfaceLoadAverages,
+    MemoryMetrics as InterfaceMemoryMetrics, NetworkMetrics as InterfaceNetworkMetrics,
+    NodeSummary, SystemMetrics as InterfaceSystemMetrics,
+    SystemMetricsSample as InterfaceSystemMetricsSample,
 };
 
 #[derive(Debug, Clone)]
@@ -165,6 +170,12 @@ pub struct DataCache {
 
 pub type DataflowInfo = DataflowSummary;
 pub type NodeInfo = NodeSummary;
+pub type SystemMetrics = InterfaceSystemMetrics;
+pub type MemoryMetrics = InterfaceMemoryMetrics;
+pub type DiskMetrics = InterfaceDiskMetrics;
+pub type NetworkMetrics = InterfaceNetworkMetrics;
+pub type LoadAverages = InterfaceLoadAverages;
+pub type SystemMetricsSample = InterfaceSystemMetricsSample;
 
 #[derive(Debug, Clone)]
 pub struct NodeMetrics {
@@ -189,67 +200,11 @@ impl Default for NodeMetrics {
     }
 }
 
-#[derive(Debug, Default, Clone)]
-pub struct SystemMetrics {
-    pub cpu_usage: f32,
-    pub memory_usage: f32,
-    pub network_io: (u64, u64),
-    pub memory: MemoryMetrics,
-    pub disk: DiskMetrics,
-    pub network: NetworkMetrics,
-    pub load_average: Option<LoadAverages>,
-    pub uptime: Duration,
-    pub process_count: usize,
-    pub last_update: Option<Instant>,
-}
-
 #[derive(Debug, Clone)]
 pub struct NodeTelemetrySample {
     pub current: NodeMetrics,
     pub previous: Option<NodeMetrics>,
     pub last_updated: Instant,
-}
-
-#[derive(Debug, Clone)]
-pub struct SystemMetricsSample {
-    pub timestamp: Instant,
-    pub cpu_usage: f32,
-    pub memory_usage: f32,
-    pub rx_rate: f64,
-    pub tx_rate: f64,
-}
-
-#[derive(Debug, Default, Clone)]
-pub struct MemoryMetrics {
-    pub total_bytes: u64,
-    pub used_bytes: u64,
-    pub free_bytes: u64,
-    pub usage_percent: f32,
-    pub swap_total_bytes: u64,
-    pub swap_used_bytes: u64,
-    pub swap_usage_percent: f32,
-}
-
-#[derive(Debug, Default, Clone)]
-pub struct DiskMetrics {
-    pub total_bytes: u64,
-    pub used_bytes: u64,
-    pub usage_percent: f32,
-}
-
-#[derive(Debug, Default, Clone)]
-pub struct NetworkMetrics {
-    pub total_received: u64,
-    pub total_transmitted: u64,
-    pub received_per_second: f64,
-    pub transmitted_per_second: f64,
-}
-
-#[derive(Debug, Default, Clone)]
-pub struct LoadAverages {
-    pub one: f64,
-    pub five: f64,
-    pub fifteen: f64,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -325,11 +280,7 @@ pub fn fetch_dataflows() -> eyre::Result<Vec<DataflowInfo>> {
     let list =
         query_running_dataflows(&mut *session).wrap_err("failed to query running dataflows")?;
 
-    Ok(list
-        .0
-        .into_iter()
-        .map(dataflow_from_entry)
-        .collect())
+    Ok(list.0.into_iter().map(dataflow_from_entry).collect())
 }
 
 fn format_dataflow_status(status: DataflowStatus) -> String {
