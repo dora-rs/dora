@@ -9,3 +9,4 @@ publish = false
 
 [dependencies]
 thiserror = "1.0"
+dora-message = { workspace = true }

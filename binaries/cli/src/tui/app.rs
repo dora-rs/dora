@@ -35,6 +35,7 @@ use super::{
     metrics::MetricsCollector,
     theme::ThemeConfig,
 };
+use tui_interface::{DataflowSummary, NodeSummary};
 use crate::{
     LOCALHOST,
     common::{connect_to_coordinator, query_running_dataflows},
@@ -162,26 +163,8 @@ pub struct DataCache {
     pub cached_data: HashMap<String, serde_json::Value>,
 }
 
-#[derive(Debug, Default, Clone)]
-pub struct DataflowInfo {
-    pub id: String,
-    pub name: String,
-    pub status: String,
-    pub nodes: Vec<NodeInfo>,
-}
-
-#[derive(Debug, Default, Clone)]
-pub struct NodeInfo {
-    pub id: String,
-    pub name: String,
-    pub status: String,
-    pub kind: String,
-    pub description: Option<String>,
-    pub inputs: Vec<String>,
-    pub outputs: Vec<String>,
-    pub source: Option<String>,
-    pub resolved: Option<ResolvedNode>,
-}
+pub type DataflowInfo = DataflowSummary;
+pub type NodeInfo = NodeSummary;
 
 #[derive(Debug, Clone)]
 pub struct NodeMetrics {
@@ -291,51 +274,47 @@ pub enum MessageLevel {
     Error,
 }
 
-impl From<DataflowListEntry> for DataflowInfo {
-    fn from(entry: DataflowListEntry) -> Self {
-        let DataflowListEntry { id, status, nodes } = entry;
-        let uuid = id.uuid.to_string();
-        let name = id.name.unwrap_or_else(|| uuid.clone());
-        let status = format_dataflow_status(status);
-        let nodes = nodes.into_iter().map(NodeInfo::from).collect();
+fn dataflow_from_entry(entry: DataflowListEntry) -> DataflowSummary {
+    let DataflowListEntry { id, status, nodes } = entry;
+    let uuid = id.uuid.to_string();
+    let name = id.name.unwrap_or_else(|| uuid.clone());
+    let status = format_dataflow_status(status);
+    let nodes = nodes.into_iter().map(node_from_runtime).collect();
 
-        Self {
-            id: uuid,
-            name,
-            status,
-            nodes,
-        }
+    DataflowSummary {
+        id: uuid,
+        name,
+        status,
+        nodes,
     }
 }
 
-impl From<NodeRuntimeInfo> for NodeInfo {
-    fn from(mut runtime: NodeRuntimeInfo) -> Self {
-        if runtime.inputs.is_empty() && runtime.outputs.is_empty() {
-            let (inputs, outputs) = extract_node_connections(&runtime.node);
-            runtime.inputs = inputs;
-            runtime.outputs = outputs;
-        }
+fn node_from_runtime(mut runtime: NodeRuntimeInfo) -> NodeSummary {
+    if runtime.inputs.is_empty() && runtime.outputs.is_empty() {
+        let (inputs, outputs) = extract_node_connections(&runtime.node);
+        runtime.inputs = inputs;
+        runtime.outputs = outputs;
+    }
 
-        let status = format_node_status(runtime.status);
-        let kind = describe_node_kind(&runtime.node.kind);
-        let source = derive_node_source(&runtime.node.kind);
-        let description = runtime.node.description.clone();
+    let status = format_node_status(runtime.status);
+    let kind = describe_node_kind(&runtime.node.kind);
+    let source = derive_node_source(&runtime.node.kind);
+    let description = runtime.node.description.clone();
 
-        Self {
-            id: runtime.node.id.to_string(),
-            name: runtime
-                .node
-                .name
-                .clone()
-                .unwrap_or_else(|| runtime.node.id.to_string()),
-            status: status.to_string(),
-            kind,
-            description,
-            inputs: runtime.inputs,
-            outputs: runtime.outputs,
-            source,
-            resolved: Some(runtime.node),
-        }
+    NodeSummary {
+        id: runtime.node.id.to_string(),
+        name: runtime
+            .node
+            .name
+            .clone()
+            .unwrap_or_else(|| runtime.node.id.to_string()),
+        status: status.to_string(),
+        kind,
+        description,
+        inputs: runtime.inputs,
+        outputs: runtime.outputs,
+        source,
+        resolved: Some(runtime.node),
     }
 }
 
@@ -346,7 +325,11 @@ pub fn fetch_dataflows() -> eyre::Result<Vec<DataflowInfo>> {
     let list =
         query_running_dataflows(&mut *session).wrap_err("failed to query running dataflows")?;
 
-    Ok(list.0.into_iter().map(DataflowInfo::from).collect())
+    Ok(list
+        .0
+        .into_iter()
+        .map(dataflow_from_entry)
+        .collect())
 }
 
 fn format_dataflow_status(status: DataflowStatus) -> String {
