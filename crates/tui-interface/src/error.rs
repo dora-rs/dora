@@ -4,7 +4,7 @@
 #[derive(Debug, thiserror::Error)]
 pub enum InterfaceError {
     /// Placeholder variant until real errors are added.
-    #[error("operation not implemented yet")] 
+    #[error("operation not implemented yet")]
     Unimplemented,
     /// Wrapper for string-based errors encountered by service implementations.
     #[error("{0}")]
