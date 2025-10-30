@@ -1,6 +1,3 @@
-//! Service abstractions that the TUI depends on.
-//! Concrete implementations will live inside the Dora framework.
-
 use crate::{DataflowSummary, SystemMetrics, UserPreferencesSnapshot};
 use std::path::Path;
 
@@ -17,9 +14,8 @@ pub trait LegacyCliService: Send + Sync {
 }
 
 /// Provides system telemetry to the TUI.
-#[allow(async_fn_in_trait)]
-pub trait TelemetryService {
-    async fn latest_metrics(&self) -> Result<SystemMetrics, crate::InterfaceError>;
+pub trait TelemetryService: Send + Sync {
+    fn latest_metrics(&self) -> Result<SystemMetrics, crate::InterfaceError>;
 }
 
 /// Persists and loads user preferences relevant to the TUI.
