@@ -15,6 +15,7 @@ use ratatui::{
 use std::{
     collections::{HashMap, VecDeque, hash_map::Entry},
     io,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -33,17 +34,17 @@ use super::{
     },
     command_mode::{CommandModeAction, CommandModeManager},
     metrics::MetricsCollector,
+    preferences::CliPreferencesStore,
     theme::ThemeConfig,
 };
 use crate::{
     LOCALHOST,
     common::{connect_to_coordinator, query_running_dataflows},
-    config::preferences::UserPreferences,
 };
 use tui_interface::{
     DataflowSummary, DiskMetrics as InterfaceDiskMetrics, LoadAverages as InterfaceLoadAverages,
     MemoryMetrics as InterfaceMemoryMetrics, NetworkMetrics as InterfaceNetworkMetrics,
-    NodeSummary, SystemMetrics as InterfaceSystemMetrics,
+    NodeSummary, PreferencesStore, SystemMetrics as InterfaceSystemMetrics,
     SystemMetricsSample as InterfaceSystemMetricsSample,
 };
 
@@ -360,7 +361,6 @@ fn extract_node_connections(node: &ResolvedNode) -> (Vec<String>, Vec<String>) {
     }
 }
 
-#[derive(Debug)]
 pub struct DoraApp {
     /// Current active view
     current_view: ViewType,
@@ -386,6 +386,9 @@ pub struct DoraApp {
     /// System metrics collector
     metrics_collector: MetricsCollector,
 
+    /// Preference storage backend
+    preferences_store: Arc<dyn PreferencesStore>,
+
     /// Should quit flag
     should_quit: bool,
 }
@@ -394,6 +397,7 @@ impl DoraApp {
     const DATAFLOW_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 
     pub fn new(initial_view: ViewType) -> Self {
+        let store: Arc<dyn PreferencesStore> = Arc::new(CliPreferencesStore::default());
         let mut app = Self {
             current_view: initial_view,
             view_stack: Vec::new(),
@@ -403,6 +407,7 @@ impl DoraApp {
             command_mode_manager: CommandModeManager::new(),
             command_executor: None,
             metrics_collector: MetricsCollector::new(),
+            preferences_store: store,
             should_quit: false,
         };
 
@@ -422,17 +427,19 @@ impl DoraApp {
     }
 
     fn apply_user_preferences(&mut self) {
-        match UserPreferences::load_or_create() {
-            Ok(prefs) => {
-                self.state.user_config.theme_name = prefs.interface.tui.theme.clone();
+        match self.preferences_store.load() {
+            Ok(snapshot) => {
+                self.state.user_config.theme_name = snapshot.theme.clone();
                 self.state.user_config.auto_refresh_interval =
-                    prefs.interface.tui.auto_refresh_interval;
-                self.state.user_config.show_system_info = prefs.interface.hints.show_hints;
+                    Duration::from_secs(snapshot.auto_refresh_interval_secs.max(1));
+                self.state.user_config.show_system_info = snapshot.show_system_info;
 
                 self.theme = ThemeConfig::from_name(&self.state.user_config.theme_name);
 
-                if let Some(view) = Self::view_from_name(&prefs.interface.tui.default_view) {
-                    self.current_view = view;
+                if let Some(view_name) = snapshot.default_view.as_deref() {
+                    if let Some(view) = Self::view_from_name(view_name) {
+                        self.current_view = view;
+                    }
                 }
             }
             Err(err) => {

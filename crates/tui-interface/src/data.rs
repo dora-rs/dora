@@ -131,4 +131,5 @@ pub struct UserPreferencesSnapshot {
     pub theme: String,
     pub auto_refresh_interval_secs: u64,
     pub show_system_info: bool,
+    pub default_view: Option<String>,
 }

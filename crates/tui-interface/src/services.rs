@@ -24,8 +24,7 @@ pub trait TelemetryService {
 }
 
 /// Persists and loads user preferences relevant to the TUI.
-#[allow(async_fn_in_trait)]
-pub trait PreferencesStore {
-    async fn load(&self) -> Result<UserPreferencesSnapshot, crate::InterfaceError>;
-    async fn save(&self, prefs: &UserPreferencesSnapshot) -> Result<(), crate::InterfaceError>;
+pub trait PreferencesStore: Send + Sync {
+    fn load(&self) -> Result<UserPreferencesSnapshot, crate::InterfaceError>;
+    fn save(&self, prefs: &UserPreferencesSnapshot) -> Result<(), crate::InterfaceError>;
 }

@@ -4,6 +4,7 @@ pub mod command_executor;
 pub mod command_mode;
 pub mod components;
 pub mod metrics;
+pub mod preferences;
 pub mod theme;
 pub mod views;
 
@@ -20,6 +21,7 @@ pub use command_executor::{
     TuiCliExecutor,
 };
 pub use components::{Component, ComponentId, ComponentRegistry, ComponentType, EventDispatcher};
+pub use preferences::CliPreferencesStore;
 pub use theme::{ThemeConfig, ThemeManager};
 pub use views::{View, ViewAction};
 
