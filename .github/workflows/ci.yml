@@ -72,6 +72,12 @@ jobs:
 
       - name: "Check"
         run: cargo check --all
+      - name: "Check (tui-cli-services non-default)"
+        if: runner.os == 'Linux'
+        run: cargo check -p dora-cli --no-default-features --features "tui-cli-services,tracing"
+      - name: "Check (tui-standalone)"
+        if: runner.os == 'Linux'
+        run: cargo check -p dora-cli --no-default-features --features tui-standalone
       - name: "Build  (Without Python dep as it is build with maturin)"
         run: cargo build --all --exclude dora-node-api-python --exclude dora-operator-api-python --exclude dora-ros2-bridge-python
       - name: "Test"
