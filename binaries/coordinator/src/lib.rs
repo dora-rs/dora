@@ -215,6 +215,8 @@ async fn start_inner(
     let mut archived_dataflows: HashMap<DataflowId, ArchivedDataflow> = HashMap::new();
     let mut daemon_connections = DaemonConnections::default();
 
+    let mut shutdown_requested = false;
+
     while let Some(event) = events.next().await {
         // used below for measuring the event handling duration
         let start = Instant::now();
@@ -674,7 +676,11 @@ async fn start_inner(
                             )
                             .await
                             .map(|()| ControlRequestReply::DestroyOk);
+                            let destroy_success = reply.is_ok();
                             let _ = reply_sender.send(reply);
+                            if destroy_success {
+                                shutdown_requested = true;
+                            }
                         }
                         ControlRequest::List => {
                             let mut dataflows: Vec<_> = running_dataflows.values().collect();
@@ -859,6 +865,7 @@ async fn start_inner(
                     &clock,
                 )
                 .await?;
+                shutdown_requested = true;
             }
             Event::DaemonHeartbeat {
                 daemon_id: machine_id,
@@ -964,6 +971,10 @@ async fn start_inner(
                 "Coordinator took {}ms for handling event: {event_kind}",
                 elapsed.as_millis()
             );
+        }
+
+        if shutdown_requested {
+            break;
         }
     }
 
