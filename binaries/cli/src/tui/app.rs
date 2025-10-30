@@ -29,7 +29,8 @@ use super::{
     Result,
     cli_integration::CliContext,
     command_executor::{
-        CommandModeExecutionResult, CommandModeViewAction, StateUpdate, TuiCliExecutor,
+        CliLegacyCliService, CommandModeExecutionResult, CommandModeViewAction, StateUpdate,
+        TuiCliExecutor,
     },
     command_mode::{CommandModeAction, CommandModeManager},
     metrics::MetricsCollector,
@@ -42,10 +43,10 @@ use crate::{
 };
 use tui_interface::{
     CoordinatorClient, DataflowSummary, DiskMetrics as InterfaceDiskMetrics, InterfaceError,
-    LoadAverages as InterfaceLoadAverages, MemoryMetrics as InterfaceMemoryMetrics,
-    NetworkMetrics as InterfaceNetworkMetrics, NodeSummary, PreferencesStore,
-    SystemMetrics as InterfaceSystemMetrics, SystemMetricsSample as InterfaceSystemMetricsSample,
-    TelemetryService,
+    LegacyCliService, LoadAverages as InterfaceLoadAverages,
+    MemoryMetrics as InterfaceMemoryMetrics, NetworkMetrics as InterfaceNetworkMetrics,
+    NodeSummary, PreferencesStore, SystemMetrics as InterfaceSystemMetrics,
+    SystemMetricsSample as InterfaceSystemMetricsSample, TelemetryService,
 };
 
 #[derive(Debug, Clone)]
@@ -397,6 +398,9 @@ pub struct DoraApp {
     /// Preference storage backend
     preferences_store: Arc<dyn PreferencesStore>,
 
+    /// Legacy CLI execution facade
+    legacy_service: Arc<dyn LegacyCliService>,
+
     /// Should quit flag
     should_quit: bool,
 }
@@ -410,6 +414,7 @@ impl DoraApp {
             Arc::new(CliPreferencesStore::default()),
             Arc::new(CliCoordinatorClient::default()),
             Arc::new(CliTelemetryService::default()),
+            Arc::new(CliLegacyCliService::default()),
         )
     }
 
@@ -418,6 +423,7 @@ impl DoraApp {
         preferences_store: Arc<dyn PreferencesStore>,
         coordinator_client: Arc<dyn CoordinatorClient>,
         telemetry_service: Arc<dyn TelemetryService>,
+        legacy_service: Arc<dyn LegacyCliService>,
     ) -> Self {
         let mut app = Self {
             current_view: initial_view,
@@ -430,9 +436,11 @@ impl DoraApp {
             telemetry_service,
             coordinator_client,
             preferences_store,
+            legacy_service,
             should_quit: false,
         };
 
+        app.initialize_command_executor();
         app.apply_user_preferences();
         app
     }
@@ -441,11 +449,18 @@ impl DoraApp {
         let mut app = Self::new(initial_view);
         app.cli_context = Some(cli_context.clone());
 
-        // Initialize command executor with a default execution context
-        let execution_context = crate::cli::context::ExecutionContext::detect_basic();
-        app.command_executor = Some(TuiCliExecutor::new(execution_context));
-
+        app.initialize_command_executor();
         app
+    }
+
+    fn initialize_command_executor(&mut self) {
+        let execution_context = crate::cli::context::ExecutionContext::detect_basic();
+        self.command_executor = Some(TuiCliExecutor::with_services(
+            execution_context,
+            Arc::clone(&self.coordinator_client),
+            Arc::clone(&self.telemetry_service),
+            Arc::clone(&self.legacy_service),
+        ));
     }
 
     fn apply_user_preferences(&mut self) {

@@ -11,7 +11,6 @@ use crate::{
     tui::{
         AppState, CliCoordinatorClient, ViewType,
         app::{CliTelemetryService, DataflowInfo, MessageLevel, NodeInfo, StatusMessage},
-        metrics::MetricsCollector,
     },
 };
 use tui_interface::{CoordinatorClient, InterfaceError, LegacyCliService, TelemetryService};
@@ -85,7 +84,6 @@ pub enum CommandModeViewAction {
 pub struct StateSynchronizer {
     last_sync: Instant,
     sync_interval: Duration,
-    metrics_collector: MetricsCollector,
     coordinator_client: Arc<dyn CoordinatorClient>,
     telemetry_service: Arc<dyn TelemetryService>,
 }
@@ -101,11 +99,28 @@ pub enum StatusLevel {
 
 impl TuiCliExecutor {
     pub fn new(context: ExecutionContext) -> Self {
+        Self::with_services(
+            context,
+            Arc::new(CliCoordinatorClient::default()),
+            Arc::new(CliTelemetryService::default()),
+            Arc::new(CliLegacyCliService::default()),
+        )
+    }
+
+    pub fn with_services(
+        context: ExecutionContext,
+        coordinator_client: Arc<dyn CoordinatorClient>,
+        telemetry_service: Arc<dyn TelemetryService>,
+        legacy_service: Arc<dyn LegacyCliService>,
+    ) -> Self {
         Self {
             command_history: Vec::new(),
             execution_context: context,
-            state_synchronizer: StateSynchronizer::new(),
-            legacy_service: Arc::new(CliLegacyCliService::default()),
+            state_synchronizer: StateSynchronizer::with_services(
+                coordinator_client,
+                telemetry_service,
+            ),
+            legacy_service,
         }
     }
 
@@ -297,18 +312,6 @@ impl TuiCliExecutor {
             .collect::<Vec<_>>()
             .join(" ");
 
-        #[cfg(test)]
-        {
-            if std::env::var("DORA_TUI_RUN_REAL_COMMANDS").is_err() {
-                self.push_status_message(
-                    app_state,
-                    format!("Skipping `{display}` execution in test mode"),
-                    MessageLevel::Info,
-                );
-                return Ok(LegacyExecution::Success);
-            }
-        }
-
         self.push_status_message(
             app_state,
             format!("Running `{display}`..."),
@@ -484,12 +487,21 @@ fn preferred_node<'a>(nodes: &'a [NodeInfo]) -> Option<&'a NodeInfo> {
 
 impl StateSynchronizer {
     pub fn new() -> Self {
+        Self::with_services(
+            Arc::new(CliCoordinatorClient::default()),
+            Arc::new(CliTelemetryService::default()),
+        )
+    }
+
+    pub fn with_services(
+        coordinator_client: Arc<dyn CoordinatorClient>,
+        telemetry_service: Arc<dyn TelemetryService>,
+    ) -> Self {
         Self {
             last_sync: Instant::now(),
             sync_interval: Duration::from_millis(1000),
-            metrics_collector: MetricsCollector::new(),
-            coordinator_client: Arc::new(CliCoordinatorClient::default()),
-            telemetry_service: Arc::new(CliTelemetryService::default()),
+            coordinator_client,
+            telemetry_service,
         }
     }
 
@@ -607,6 +619,10 @@ impl LegacyCliService for CliLegacyCliService {
 mod tests {
     use super::*;
     use crate::cli::context::ExecutionContext;
+    use std::sync::Arc;
+    use tui_interface::{
+        DataflowSummary, MockCoordinatorClient, MockLegacyCliService, MockTelemetryService,
+    };
 
     #[tokio::test]
     async fn test_command_executor_creation() {
@@ -618,7 +634,22 @@ mod tests {
     #[tokio::test]
     async fn test_ps_command_execution() {
         let context = ExecutionContext::default();
-        let mut executor = TuiCliExecutor::new(context);
+        let coordinator = Arc::new(MockCoordinatorClient::new());
+        coordinator.set_response(Ok(vec![DataflowSummary {
+            id: "df-1".into(),
+            name: "example".into(),
+            status: "running".into(),
+            nodes: Vec::new(),
+        }]));
+        let telemetry = Arc::new(MockTelemetryService::new());
+        let legacy = Arc::new(MockLegacyCliService::new());
+
+        let mut executor = TuiCliExecutor::with_services(
+            context,
+            coordinator.clone(),
+            telemetry.clone(),
+            legacy.clone(),
+        );
         let mut app_state = AppState::default();
 
         let result = executor
@@ -630,12 +661,25 @@ mod tests {
             CommandResult::ViewSwitch(ViewType::Dashboard) => {}
             _ => panic!("Expected view switch to dashboard"),
         }
+
+        let calls = legacy.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, vec!["ps".to_string()]);
     }
 
     #[tokio::test]
     async fn test_config_command_execution() {
         let context = ExecutionContext::default();
-        let mut executor = TuiCliExecutor::new(context);
+        let coordinator = Arc::new(MockCoordinatorClient::new());
+        let telemetry = Arc::new(MockTelemetryService::new());
+        let legacy = Arc::new(MockLegacyCliService::new());
+
+        let mut executor = TuiCliExecutor::with_services(
+            context,
+            coordinator.clone(),
+            telemetry.clone(),
+            legacy.clone(),
+        );
         let mut app_state = AppState::default();
 
         let result = executor
@@ -645,8 +689,20 @@ mod tests {
 
         match result {
             CommandResult::StateUpdate(StateUpdate::ConfigurationChanged) => {}
-            _ => panic!("Expected configuration change"),
+            other => panic!("Expected configuration change, got {:?}", other),
         }
+
+        let calls = legacy.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0].0,
+            vec![
+                "config".to_string(),
+                "set".to_string(),
+                "theme".to_string(),
+                "dark".to_string()
+            ]
+        );
     }
 
     #[test]

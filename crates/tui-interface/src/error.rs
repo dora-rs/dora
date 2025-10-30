@@ -1,7 +1,7 @@
 //! Error types shared across TUI interface services.
 
 /// Basic error enum used by the interface crate.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum InterfaceError {
     /// Placeholder variant until real errors are added.
     #[error("operation not implemented yet")]

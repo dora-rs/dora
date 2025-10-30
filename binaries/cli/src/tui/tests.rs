@@ -1,13 +1,10 @@
 #[cfg(test)]
-use crate::{
-    config::preferences::UserPreferences,
-    tui::{
-        app::{AppState, DataflowInfo, DoraApp, MessageLevel, SystemMetrics, ViewType},
-        cli_integration::{CliContext, CommandHistory, KeyBindings, TabCompletion},
-        command_executor::StateUpdate as CommandStateUpdate,
-        theme::ThemeConfig,
-        views::{StateUpdate, View, ViewAction},
-    },
+use crate::tui::{
+    app::{AppState, DataflowInfo, DoraApp, MessageLevel, SystemMetrics, ViewType},
+    cli_integration::{CliContext, CommandHistory, KeyBindings, TabCompletion},
+    command_executor::StateUpdate as CommandStateUpdate,
+    theme::ThemeConfig,
+    views::{StateUpdate, View, ViewAction},
 };
 
 #[cfg(test)]
@@ -17,9 +14,12 @@ use once_cell::sync::Lazy;
 use std::{
     fs,
     path::PathBuf,
-    sync::Mutex,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
+
+#[cfg(test)]
+use uuid::Uuid;
 
 #[cfg(test)]
 static CONFIG_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
@@ -27,6 +27,10 @@ static CONFIG_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 #[cfg(test)]
 mod app_tests {
     use super::*;
+    use tui_interface::{
+        MockCoordinatorClient, MockLegacyCliService, MockPreferencesStore, MockTelemetryService,
+        UserPreferencesSnapshot,
+    };
 
     #[test]
     fn test_dora_app_creation() {
@@ -113,20 +117,25 @@ mod app_tests {
     fn test_user_preferences_reload() {
         let _lock = CONFIG_LOCK.lock().unwrap();
 
-        let temp_dir =
-            std::env::temp_dir().join(format!("dora_prefs_test_{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&temp_dir).unwrap();
-        unsafe {
-            std::env::set_var("DORA_CONFIG_DIR", &temp_dir);
-        }
+        let prefs_store = Arc::new(MockPreferencesStore::new());
+        let coordinator = Arc::new(MockCoordinatorClient::new());
+        let telemetry = Arc::new(MockTelemetryService::new());
+        let legacy = Arc::new(MockLegacyCliService::new());
 
-        let mut prefs = UserPreferences::load_or_create().unwrap();
-        prefs.interface.tui.theme = "light".to_string();
-        prefs.interface.tui.auto_refresh_interval = Duration::from_secs(7);
-        prefs.interface.hints.show_hints = false;
-        prefs.save().unwrap();
+        prefs_store.set_load_result(Ok(UserPreferencesSnapshot {
+            theme: "light".to_string(),
+            auto_refresh_interval_secs: 7,
+            show_system_info: false,
+            default_view: None,
+        }));
 
-        let mut app = DoraApp::new(ViewType::Dashboard);
+        let mut app = DoraApp::with_dependencies(
+            ViewType::Dashboard,
+            prefs_store.clone(),
+            coordinator.clone(),
+            telemetry.clone(),
+            legacy.clone(),
+        );
         assert_eq!(app.user_config().theme_name, "light");
         assert_eq!(
             app.user_config().auto_refresh_interval,
@@ -134,11 +143,12 @@ mod app_tests {
         );
         assert!(!app.user_config().show_system_info);
 
-        let mut prefs = UserPreferences::load_or_create().unwrap();
-        prefs.interface.tui.theme = "dark".to_string();
-        prefs.interface.tui.auto_refresh_interval = Duration::from_secs(3);
-        prefs.interface.hints.show_hints = true;
-        prefs.save().unwrap();
+        prefs_store.set_load_result(Ok(UserPreferencesSnapshot {
+            theme: "dark".to_string(),
+            auto_refresh_interval_secs: 3,
+            show_system_info: true,
+            default_view: None,
+        }));
 
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -156,11 +166,6 @@ mod app_tests {
             Duration::from_secs(3)
         );
         assert!(app.user_config().show_system_info);
-
-        unsafe {
-            std::env::remove_var("DORA_CONFIG_DIR");
-        }
-        fs::remove_dir_all(&temp_dir).unwrap();
     }
 
     #[test]
@@ -338,8 +343,7 @@ mod cli_integration_tests {
     fn test_command_history_persisted_to_disk() {
         let _lock = CONFIG_LOCK.lock().unwrap();
 
-        let temp_dir =
-            std::env::temp_dir().join(format!("dora_history_test_{}", uuid::Uuid::new_v4()));
+        let temp_dir = std::env::temp_dir().join(format!("dora_history_test_{}", Uuid::new_v4()));
         fs::create_dir_all(&temp_dir).unwrap();
         unsafe {
             std::env::set_var("DORA_CONFIG_DIR", &temp_dir);
