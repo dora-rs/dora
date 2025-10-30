@@ -24,7 +24,6 @@ use dora_message::{
     coordinator_to_cli::{DataflowListEntry, DataflowStatus, NodeRuntimeInfo, NodeRuntimeState},
     descriptor::{CoreNodeKind, ResolvedNode},
 };
-use eyre::WrapErr;
 
 use super::{
     Result,
@@ -42,10 +41,10 @@ use crate::{
     common::{connect_to_coordinator, query_running_dataflows},
 };
 use tui_interface::{
-    DataflowSummary, DiskMetrics as InterfaceDiskMetrics, LoadAverages as InterfaceLoadAverages,
-    MemoryMetrics as InterfaceMemoryMetrics, NetworkMetrics as InterfaceNetworkMetrics,
-    NodeSummary, PreferencesStore, SystemMetrics as InterfaceSystemMetrics,
-    SystemMetricsSample as InterfaceSystemMetricsSample,
+    CoordinatorClient, DataflowSummary, DiskMetrics as InterfaceDiskMetrics, InterfaceError,
+    LoadAverages as InterfaceLoadAverages, MemoryMetrics as InterfaceMemoryMetrics,
+    NetworkMetrics as InterfaceNetworkMetrics, NodeSummary, PreferencesStore,
+    SystemMetrics as InterfaceSystemMetrics, SystemMetricsSample as InterfaceSystemMetricsSample,
 };
 
 #[derive(Debug, Clone)]
@@ -274,16 +273,6 @@ fn node_from_runtime(mut runtime: NodeRuntimeInfo) -> NodeSummary {
     }
 }
 
-pub fn fetch_dataflows() -> eyre::Result<Vec<DataflowInfo>> {
-    let coordinator_addr = (LOCALHOST, DORA_COORDINATOR_PORT_CONTROL_DEFAULT).into();
-    let mut session =
-        connect_to_coordinator(coordinator_addr).wrap_err("failed to connect to coordinator")?;
-    let list =
-        query_running_dataflows(&mut *session).wrap_err("failed to query running dataflows")?;
-
-    Ok(list.0.into_iter().map(dataflow_from_entry).collect())
-}
-
 fn format_dataflow_status(status: DataflowStatus) -> String {
     match status {
         DataflowStatus::Running => "running",
@@ -361,6 +350,21 @@ fn extract_node_connections(node: &ResolvedNode) -> (Vec<String>, Vec<String>) {
     }
 }
 
+#[derive(Default, Debug)]
+pub struct CliCoordinatorClient;
+
+impl CoordinatorClient for CliCoordinatorClient {
+    fn list_dataflows(&self) -> std::result::Result<Vec<DataflowSummary>, InterfaceError> {
+        let coordinator_addr = (LOCALHOST, DORA_COORDINATOR_PORT_CONTROL_DEFAULT).into();
+        let mut session = connect_to_coordinator(coordinator_addr)
+            .map_err(|err| InterfaceError::from(err.to_string()))?;
+        let list = query_running_dataflows(&mut *session)
+            .map_err(|err| InterfaceError::from(err.to_string()))?;
+
+        Ok(list.0.into_iter().map(dataflow_from_entry).collect())
+    }
+}
+
 pub struct DoraApp {
     /// Current active view
     current_view: ViewType,
@@ -386,6 +390,9 @@ pub struct DoraApp {
     /// System metrics collector
     metrics_collector: MetricsCollector,
 
+    /// Coordinator client abstraction
+    coordinator_client: Arc<dyn CoordinatorClient>,
+
     /// Preference storage backend
     preferences_store: Arc<dyn PreferencesStore>,
 
@@ -397,7 +404,18 @@ impl DoraApp {
     const DATAFLOW_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 
     pub fn new(initial_view: ViewType) -> Self {
-        let store: Arc<dyn PreferencesStore> = Arc::new(CliPreferencesStore::default());
+        Self::with_dependencies(
+            initial_view,
+            Arc::new(CliPreferencesStore::default()),
+            Arc::new(CliCoordinatorClient::default()),
+        )
+    }
+
+    pub fn with_dependencies(
+        initial_view: ViewType,
+        preferences_store: Arc<dyn PreferencesStore>,
+        coordinator_client: Arc<dyn CoordinatorClient>,
+    ) -> Self {
         let mut app = Self {
             current_view: initial_view,
             view_stack: Vec::new(),
@@ -407,7 +425,8 @@ impl DoraApp {
             command_mode_manager: CommandModeManager::new(),
             command_executor: None,
             metrics_collector: MetricsCollector::new(),
-            preferences_store: store,
+            coordinator_client,
+            preferences_store,
             should_quit: false,
         };
 
@@ -998,9 +1017,8 @@ impl DoraApp {
     }
 
     async fn refresh_dataflow_list(&mut self) -> Result<()> {
-        let result = tokio::task::spawn_blocking(fetch_dataflows).await;
-
-        match result {
+        let client = Arc::clone(&self.coordinator_client);
+        match tokio::task::spawn_blocking(move || client.list_dataflows()).await {
             Ok(Ok(dataflows)) => {
                 self.state.dataflows = dataflows;
                 self.state.last_error = None;

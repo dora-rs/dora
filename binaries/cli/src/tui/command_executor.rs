@@ -1,4 +1,7 @@
-use std::time::{Duration, Instant};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use clap::Parser;
 
@@ -6,11 +9,12 @@ use crate::{
     cli::{Cli, Command, commands::*, context::ExecutionContext},
     execute_legacy_command,
     tui::{
-        AppState, ViewType,
+        AppState, CliCoordinatorClient, ViewType,
         app::{DataflowInfo, MessageLevel, NodeInfo, StatusMessage},
         metrics::MetricsCollector,
     },
 };
+use tui_interface::CoordinatorClient;
 
 /// Executes CLI commands within TUI environment with state synchronization
 #[derive(Debug)]
@@ -78,11 +82,11 @@ pub enum CommandModeViewAction {
 }
 
 /// Manages state synchronization between CLI and TUI
-#[derive(Debug)]
 pub struct StateSynchronizer {
     last_sync: Instant,
     sync_interval: Duration,
     metrics_collector: MetricsCollector,
+    coordinator_client: Arc<dyn CoordinatorClient>,
 }
 
 /// Status levels for messages
@@ -481,6 +485,7 @@ impl StateSynchronizer {
             last_sync: Instant::now(),
             sync_interval: Duration::from_millis(1000),
             metrics_collector: MetricsCollector::new(),
+            coordinator_client: Arc::new(CliCoordinatorClient::default()),
         }
     }
 
@@ -501,7 +506,8 @@ impl StateSynchronizer {
         &mut self,
         app_state: &mut AppState,
     ) -> crate::tui::Result<()> {
-        let result = tokio::task::spawn_blocking(crate::tui::app::fetch_dataflows).await;
+        let client = Arc::clone(&self.coordinator_client);
+        let result = tokio::task::spawn_blocking(move || client.list_dataflows()).await;
 
         match result {
             Ok(Ok(flows)) => {
@@ -559,6 +565,15 @@ impl StateSynchronizer {
             }
         }
         app_state.last_error = Some(message);
+    }
+}
+
+impl std::fmt::Debug for StateSynchronizer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StateSynchronizer")
+            .field("last_sync", &self.last_sync)
+            .field("sync_interval", &self.sync_interval)
+            .finish()
     }
 }
 

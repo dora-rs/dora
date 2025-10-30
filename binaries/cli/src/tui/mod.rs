@@ -14,7 +14,7 @@ mod tests;
 #[cfg(test)]
 mod command_mode_tests;
 
-pub use app::{AppState, DoraApp, ViewType};
+pub use app::{AppState, CliCoordinatorClient, DoraApp, ViewType};
 pub use cli_integration::{CliContext, CommandMode};
 pub use command_executor::{
     CommandModeExecutionResult, CommandModeViewAction, CommandResult, StateUpdate, StatusLevel,

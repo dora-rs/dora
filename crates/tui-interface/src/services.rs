@@ -4,10 +4,9 @@
 use crate::{DataflowSummary, SystemMetrics, UserPreferencesSnapshot};
 
 /// Abstraction over coordinator interactions.
-#[allow(async_fn_in_trait)]
-pub trait CoordinatorClient {
+pub trait CoordinatorClient: Send + Sync {
     /// Fetch the current list of dataflows.
-    async fn list_dataflows(&self) -> Result<Vec<DataflowSummary>, crate::InterfaceError>;
+    fn list_dataflows(&self) -> Result<Vec<DataflowSummary>, crate::InterfaceError>;
 }
 
 /// Bridge that lets the TUI trigger legacy CLI operations.
