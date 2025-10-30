@@ -1515,6 +1515,7 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-log",
+ "tui-interface",
  "uuid",
  "webbrowser",
 ]
@@ -6871,6 +6872,7 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 name = "tui-interface"
 version = "0.0.1"
 dependencies = [
+ "dora-message",
  "thiserror 1.0.69",
 ]
 

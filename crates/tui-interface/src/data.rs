@@ -1,45 +1,49 @@
-//! Placeholder data contracts consumed by the TUI.
-//! These will be filled as we migrate real DTOs out of the core crates.
+//! Data contracts consumed by the Dora TUI.
+//!
+//! These mirror the structures the UI needs today. The goal is to converge the
+//! rest of the codebase on these shared definitions so the boundary becomes
+//! the single source of truth.
 
-/// Stub representation of a dataflow summary.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+use dora_message::descriptor::ResolvedNode;
+
+/// Summary information about a running or archived dataflow.
+#[derive(Debug, Clone, Default)]
 pub struct DataflowSummary {
-    /// Unique identifier for the dataflow (UUID or human-readable alias).
+    /// Unique identifier (UUID string) for the dataflow.
     pub id: String,
-    /// Optional human-readable name.
-    pub name: Option<String>,
+    /// Display name (falls back to `id` when unset).
+    pub name: String,
+    /// Human-readable status string (e.g., "running", "failed").
+    pub status: String,
+    /// Details about nodes inside the dataflow.
+    pub nodes: Vec<NodeSummary>,
 }
 
-/// Stub representation of a node summary inside a dataflow.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// Details about a single node within a dataflow.
+#[derive(Debug, Clone, Default)]
 pub struct NodeSummary {
-    /// Node identifier.
     pub id: String,
-    /// Optional display name.
-    pub display_name: Option<String>,
+    pub name: String,
+    pub status: String,
+    pub kind: String,
+    pub description: Option<String>,
+    pub inputs: Vec<String>,
+    pub outputs: Vec<String>,
+    pub source: Option<String>,
+    pub resolved: Option<ResolvedNode>,
 }
 
-/// Stub for system metrics snapshot consumed by the dashboard.
-#[derive(Debug, Clone, PartialEq)]
+/// Minimal system metrics snapshot placeholder.
+#[derive(Debug, Clone, Default)]
 pub struct SystemMetrics {
-    /// CPU usage percentage.
     pub cpu_usage: f32,
-    /// Memory usage percentage.
     pub memory_usage: f32,
 }
 
-impl Default for SystemMetrics {
-    fn default() -> Self {
-        Self {
-            cpu_usage: 0.0,
-            memory_usage: 0.0,
-        }
-    }
-}
-
-/// Minimal user preference snapshot placeholder.
+/// Minimal user preference snapshot shared between CLI and TUI.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct UserPreferencesSnapshot {
-    /// Preferred theme name (e.g., "dark", "light").
     pub theme: String,
+    pub auto_refresh_interval_secs: u64,
+    pub show_system_info: bool,
 }
