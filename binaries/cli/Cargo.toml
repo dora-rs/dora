@@ -16,9 +16,11 @@ name = "dora"
 path = "src/main.rs"
 
 [features]
-default = ["tracing"]
+default = ["tracing", "tui-cli-services"]
 tracing = ["dep:dora-tracing"]
 python = ["pyo3"]
+tui-cli-services = []
+tui-standalone = ["tracing"]
 
 [dependencies]
 clap = { version = "4.4", features = ["derive", "env"] }

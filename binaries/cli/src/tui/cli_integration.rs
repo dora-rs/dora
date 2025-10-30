@@ -5,11 +5,12 @@ use eyre::Result;
 use serde::{Deserialize, Serialize};
 
 use super::app::UserConfig;
+#[cfg(feature = "tui-cli-services")]
 use crate::cli::{Cli, Command};
 
 #[derive(Debug, Clone)]
 pub struct CliContext {
-    /// Original command that launched TUI
+    #[cfg(feature = "tui-cli-services")]
     pub original_command: Option<Command>,
 
     /// Working directory
@@ -28,6 +29,7 @@ pub struct CliContext {
 impl CliContext {
     pub fn new() -> Self {
         Self {
+            #[cfg(feature = "tui-cli-services")]
             original_command: None,
             working_directory: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
             environment: std::env::vars().collect(),
@@ -36,12 +38,14 @@ impl CliContext {
         }
     }
 
+    #[cfg(feature = "tui-cli-services")]
     pub fn from_cli(cli: &Cli) -> Self {
         let mut context = Self::new();
         context.original_command = cli.command.clone();
         context
     }
 
+    #[cfg(feature = "tui-cli-services")]
     pub fn from_command(command: Command) -> Self {
         let mut context = Self::new();
         context.original_command = Some(command);
@@ -105,6 +109,7 @@ pub struct SearchResult {
 }
 
 /// Command execution results for TUI integration
+#[cfg(feature = "tui-cli-services")]
 #[derive(Debug, Clone)]
 pub struct CommandResult {
     pub success: bool,
@@ -114,6 +119,7 @@ pub struct CommandResult {
     pub suggested_actions: Vec<SuggestedAction>,
 }
 
+#[cfg(feature = "tui-cli-services")]
 #[derive(Debug, Clone)]
 pub struct SuggestedAction {
     pub description: String,
@@ -121,6 +127,7 @@ pub struct SuggestedAction {
     pub category: ActionCategory,
 }
 
+#[cfg(feature = "tui-cli-services")]
 #[derive(Debug, Clone)]
 pub enum ActionCategory {
     Navigation,
@@ -131,6 +138,7 @@ pub enum ActionCategory {
 }
 
 /// Command history management
+#[cfg_attr(not(feature = "tui-cli-services"), allow(dead_code))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommandHistory {
     pub commands: Vec<HistoryEntry>,
@@ -146,6 +154,7 @@ pub struct HistoryEntry {
 }
 
 impl CommandHistory {
+    #[cfg_attr(not(feature = "tui-cli-services"), allow(dead_code))]
     pub fn new() -> Self {
         Self {
             commands: Vec::new(),
@@ -153,6 +162,7 @@ impl CommandHistory {
         }
     }
 
+    #[cfg_attr(not(feature = "tui-cli-services"), allow(dead_code))]
     pub fn add_entry(&mut self, command: String, success: bool, working_directory: PathBuf) {
         let entry = HistoryEntry {
             command,
@@ -169,6 +179,7 @@ impl CommandHistory {
         }
     }
 
+    #[cfg_attr(not(feature = "tui-cli-services"), allow(dead_code))]
     pub fn search(&self, query: &str) -> Vec<&HistoryEntry> {
         self.commands
             .iter()
@@ -176,14 +187,17 @@ impl CommandHistory {
             .collect()
     }
 
+    #[cfg_attr(not(feature = "tui-cli-services"), allow(dead_code))]
     pub fn get_recent(&self, count: usize) -> Vec<&HistoryEntry> {
         self.commands.iter().rev().take(count).collect()
     }
 
+    #[cfg_attr(not(feature = "tui-cli-services"), allow(dead_code))]
     pub fn get_successful_commands(&self) -> Vec<&HistoryEntry> {
         self.commands.iter().filter(|entry| entry.success).collect()
     }
 
+    #[cfg_attr(not(feature = "tui-cli-services"), allow(dead_code))]
     pub fn history_path() -> Result<PathBuf> {
         if let Ok(custom_dir) = env::var("DORA_CONFIG_DIR") {
             return Ok(PathBuf::from(custom_dir).join("tui_history.json"));
@@ -195,6 +209,7 @@ impl CommandHistory {
         Ok(config_dir.join("tui_history.json"))
     }
 
+    #[cfg_attr(not(feature = "tui-cli-services"), allow(dead_code))]
     pub fn load_or_default() -> Self {
         match Self::load() {
             Ok(history) => history,
@@ -202,6 +217,7 @@ impl CommandHistory {
         }
     }
 
+    #[cfg_attr(not(feature = "tui-cli-services"), allow(dead_code))]
     fn load() -> Result<Self> {
         let path = Self::history_path()?;
         if !path.exists() {
@@ -213,12 +229,14 @@ impl CommandHistory {
         Ok(history)
     }
 
+    #[cfg_attr(not(feature = "tui-cli-services"), allow(dead_code))]
     pub fn record(command: String, success: bool, working_directory: PathBuf) -> Result<()> {
         let mut history = Self::load_or_default();
         history.add_entry(command, success, working_directory);
         history.save()
     }
 
+    #[cfg_attr(not(feature = "tui-cli-services"), allow(dead_code))]
     pub fn save(&self) -> Result<()> {
         let path = Self::history_path()?;
         if let Some(parent) = path.parent() {
@@ -237,6 +255,7 @@ impl Default for CommandHistory {
 }
 
 /// Tab completion for command mode
+#[cfg_attr(not(feature = "tui-cli-services"), allow(dead_code))]
 #[derive(Debug)]
 pub struct TabCompletion {
     pub suggestions: Vec<String>,
@@ -245,6 +264,7 @@ pub struct TabCompletion {
 }
 
 impl TabCompletion {
+    #[cfg_attr(not(feature = "tui-cli-services"), allow(dead_code))]
     pub fn new() -> Self {
         Self {
             suggestions: Vec::new(),
@@ -253,12 +273,14 @@ impl TabCompletion {
         }
     }
 
+    #[cfg_attr(not(feature = "tui-cli-services"), allow(dead_code))]
     pub fn update_suggestions(&mut self, prefix: &str) {
         self.current_prefix = prefix.to_string();
         self.suggestions = self.get_completions_for_prefix(prefix);
         self.selected_index = 0;
     }
 
+    #[cfg_attr(not(feature = "tui-cli-services"), allow(dead_code))]
     fn get_completions_for_prefix(&self, prefix: &str) -> Vec<String> {
         let mut completions = Vec::new();
 
@@ -325,12 +347,14 @@ impl TabCompletion {
         completions
     }
 
+    #[cfg_attr(not(feature = "tui-cli-services"), allow(dead_code))]
     pub fn next_suggestion(&mut self) {
         if !self.suggestions.is_empty() {
             self.selected_index = (self.selected_index + 1) % self.suggestions.len();
         }
     }
 
+    #[cfg_attr(not(feature = "tui-cli-services"), allow(dead_code))]
     pub fn previous_suggestion(&mut self) {
         if !self.suggestions.is_empty() {
             self.selected_index = if self.selected_index == 0 {
@@ -341,10 +365,12 @@ impl TabCompletion {
         }
     }
 
+    #[cfg_attr(not(feature = "tui-cli-services"), allow(dead_code))]
     pub fn get_current_suggestion(&self) -> Option<&String> {
         self.suggestions.get(self.selected_index)
     }
 
+    #[cfg_attr(not(feature = "tui-cli-services"), allow(dead_code))]
     pub fn complete_current(&self) -> Option<String> {
         self.get_current_suggestion()
             .map(|suggestion| suggestion.clone())
@@ -358,6 +384,7 @@ impl Default for TabCompletion {
 }
 
 /// Keyboard shortcuts and bindings
+#[cfg_attr(not(feature = "tui-cli-services"), allow(dead_code))]
 #[derive(Debug, Clone)]
 pub struct KeyBindings {
     pub global: HashMap<String, String>,
@@ -365,6 +392,7 @@ pub struct KeyBindings {
 }
 
 impl KeyBindings {
+    #[cfg_attr(not(feature = "tui-cli-services"), allow(dead_code))]
     pub fn default_bindings() -> Self {
         let mut global = HashMap::new();
         global.insert("q".to_string(), "quit".to_string());
@@ -417,6 +445,7 @@ impl KeyBindings {
         }
     }
 
+    #[cfg_attr(not(feature = "tui-cli-services"), allow(dead_code))]
     pub fn get_binding(&self, key: &str, view: Option<&str>) -> Option<&String> {
         // Check view-specific bindings first
         if let Some(view_name) = view {
@@ -431,6 +460,7 @@ impl KeyBindings {
         self.global.get(key)
     }
 
+    #[cfg_attr(not(feature = "tui-cli-services"), allow(dead_code))]
     pub fn add_binding(&mut self, key: String, action: String, view: Option<String>) {
         if let Some(view_name) = view {
             self.view_specific
@@ -442,6 +472,7 @@ impl KeyBindings {
         }
     }
 
+    #[cfg_attr(not(feature = "tui-cli-services"), allow(dead_code))]
     pub fn remove_binding(&mut self, key: &str, view: Option<&str>) {
         if let Some(view_name) = view {
             if let Some(view_bindings) = self.view_specific.get_mut(view_name) {
@@ -459,6 +490,7 @@ impl Default for KeyBindings {
     }
 }
 
+#[cfg(feature = "tui-cli-services")]
 /// Integration utilities for CLI command execution within TUI
 pub struct CliIntegration {
     pub context: CliContext,
@@ -467,6 +499,7 @@ pub struct CliIntegration {
     pub key_bindings: KeyBindings,
 }
 
+#[cfg(feature = "tui-cli-services")]
 impl CliIntegration {
     pub fn new(context: CliContext) -> Self {
         Self {
@@ -480,20 +513,16 @@ impl CliIntegration {
     pub async fn execute_command(&mut self, command_str: &str) -> CommandResult {
         let start_time = std::time::Instant::now();
 
-        // Parse and execute the command
-        // This is a simplified implementation
         let success = !command_str.is_empty();
         let output = format!("Executed: {}", command_str);
         let execution_time = start_time.elapsed();
 
-        // Add to history
         self.history.add_entry(
             command_str.to_string(),
             success,
             self.context.working_directory.clone(),
         );
 
-        // Generate suggested actions based on the command
         let suggested_actions = self.generate_suggested_actions(command_str);
 
         CommandResult {
@@ -575,6 +604,7 @@ impl CliIntegration {
     }
 }
 
+#[cfg(feature = "tui-cli-services")]
 impl Default for CliIntegration {
     fn default() -> Self {
         Self::new(CliContext::default())

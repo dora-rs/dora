@@ -19,7 +19,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use dora_core::topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT;
+#[cfg(feature = "tui-cli-services")]
 use dora_message::{
     coordinator_to_cli::{DataflowListEntry, DataflowStatus, NodeRuntimeInfo, NodeRuntimeState},
     descriptor::{CoreNodeKind, ResolvedNode},
@@ -29,24 +29,17 @@ use super::{
     Result,
     cli_integration::CliContext,
     command_executor::{
-        CliLegacyCliService, CommandModeExecutionResult, CommandModeViewAction, StateUpdate,
-        TuiCliExecutor,
+        CommandModeExecutionResult, CommandModeViewAction, StateUpdate, TuiCliExecutor,
     },
     command_mode::{CommandModeAction, CommandModeManager},
-    metrics::MetricsCollector,
-    preferences::CliPreferencesStore,
     theme::ThemeConfig,
 };
-use crate::{
-    LOCALHOST,
-    common::{connect_to_coordinator, query_running_dataflows},
-};
 use tui_interface::{
-    CoordinatorClient, DataflowSummary, DiskMetrics as InterfaceDiskMetrics, InterfaceError,
-    LegacyCliService, LoadAverages as InterfaceLoadAverages,
-    MemoryMetrics as InterfaceMemoryMetrics, NetworkMetrics as InterfaceNetworkMetrics,
-    NodeSummary, PreferencesStore, SystemMetrics as InterfaceSystemMetrics,
-    SystemMetricsSample as InterfaceSystemMetricsSample, TelemetryService,
+    CoordinatorClient, DataflowSummary, DiskMetrics as InterfaceDiskMetrics, LegacyCliService,
+    LoadAverages as InterfaceLoadAverages, MemoryMetrics as InterfaceMemoryMetrics,
+    NetworkMetrics as InterfaceNetworkMetrics, NodeSummary, PreferencesStore,
+    SystemMetrics as InterfaceSystemMetrics, SystemMetricsSample as InterfaceSystemMetricsSample,
+    TelemetryService,
 };
 
 #[derive(Debug, Clone)]
@@ -231,7 +224,8 @@ pub enum MessageLevel {
     Error,
 }
 
-fn dataflow_from_entry(entry: DataflowListEntry) -> DataflowSummary {
+#[cfg(feature = "tui-cli-services")]
+pub(crate) fn dataflow_from_entry(entry: DataflowListEntry) -> DataflowSummary {
     let DataflowListEntry { id, status, nodes } = entry;
     let uuid = id.uuid.to_string();
     let name = id.name.unwrap_or_else(|| uuid.clone());
@@ -246,6 +240,7 @@ fn dataflow_from_entry(entry: DataflowListEntry) -> DataflowSummary {
     }
 }
 
+#[cfg(feature = "tui-cli-services")]
 fn node_from_runtime(mut runtime: NodeRuntimeInfo) -> NodeSummary {
     if runtime.inputs.is_empty() && runtime.outputs.is_empty() {
         let (inputs, outputs) = extract_node_connections(&runtime.node);
@@ -275,6 +270,7 @@ fn node_from_runtime(mut runtime: NodeRuntimeInfo) -> NodeSummary {
     }
 }
 
+#[cfg(feature = "tui-cli-services")]
 fn format_dataflow_status(status: DataflowStatus) -> String {
     match status {
         DataflowStatus::Running => "running",
@@ -284,6 +280,7 @@ fn format_dataflow_status(status: DataflowStatus) -> String {
     .to_string()
 }
 
+#[cfg(feature = "tui-cli-services")]
 fn format_node_status(status: NodeRuntimeState) -> &'static str {
     match status {
         NodeRuntimeState::Running => "running",
@@ -294,6 +291,7 @@ fn format_node_status(status: NodeRuntimeState) -> &'static str {
     }
 }
 
+#[cfg(feature = "tui-cli-services")]
 fn describe_node_kind(kind: &CoreNodeKind) -> String {
     match kind {
         CoreNodeKind::Custom(custom) => {
@@ -305,6 +303,7 @@ fn describe_node_kind(kind: &CoreNodeKind) -> String {
     }
 }
 
+#[cfg(feature = "tui-cli-services")]
 fn derive_node_source(kind: &CoreNodeKind) -> Option<String> {
     match kind {
         CoreNodeKind::Custom(custom) => Some(custom.path.clone()),
@@ -312,6 +311,7 @@ fn derive_node_source(kind: &CoreNodeKind) -> Option<String> {
     }
 }
 
+#[cfg(feature = "tui-cli-services")]
 fn extract_node_connections(node: &ResolvedNode) -> (Vec<String>, Vec<String>) {
     match &node.kind {
         CoreNodeKind::Custom(custom) => {
@@ -349,21 +349,6 @@ fn extract_node_connections(node: &ResolvedNode) -> (Vec<String>, Vec<String>) {
 
             (inputs, outputs)
         }
-    }
-}
-
-#[derive(Default, Debug)]
-pub struct CliCoordinatorClient;
-
-impl CoordinatorClient for CliCoordinatorClient {
-    fn list_dataflows(&self) -> std::result::Result<Vec<DataflowSummary>, InterfaceError> {
-        let coordinator_addr = (LOCALHOST, DORA_COORDINATOR_PORT_CONTROL_DEFAULT).into();
-        let mut session = connect_to_coordinator(coordinator_addr)
-            .map_err(|err| InterfaceError::from(err.to_string()))?;
-        let list = query_running_dataflows(&mut *session)
-            .map_err(|err| InterfaceError::from(err.to_string()))?;
-
-        Ok(list.0.into_iter().map(dataflow_from_entry).collect())
     }
 }
 
@@ -408,14 +393,25 @@ pub struct DoraApp {
 impl DoraApp {
     const DATAFLOW_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 
+    #[cfg(feature = "tui-cli-services")]
     pub fn new(initial_view: ViewType) -> Self {
+        let bundle = crate::tui::bridge::default_service_bundle();
         Self::with_dependencies(
             initial_view,
-            Arc::new(CliPreferencesStore::default()),
-            Arc::new(CliCoordinatorClient::default()),
-            Arc::new(CliTelemetryService::default()),
-            Arc::new(CliLegacyCliService::default()),
+            bundle.preferences_store,
+            bundle.coordinator_client,
+            bundle.telemetry_service,
+            bundle.legacy_cli_service,
         )
+    }
+
+    #[cfg(not(feature = "tui-cli-services"))]
+    pub fn new(initial_view: ViewType) -> Self {
+        panic!(
+            "DoraApp::new requires the `tui-cli-services` feature. \
+             Construct the app with `with_dependencies` in standalone builds. (view: {:?})",
+            initial_view
+        );
     }
 
     pub fn with_dependencies(
@@ -1133,18 +1129,6 @@ impl DoraApp {
     #[cfg(test)]
     pub fn exit_command_mode(&mut self) {
         self.command_mode_manager.deactivate();
-    }
-}
-
-#[derive(Default, Debug)]
-pub struct CliTelemetryService;
-
-impl TelemetryService for CliTelemetryService {
-    fn latest_metrics(&self) -> std::result::Result<SystemMetrics, InterfaceError> {
-        let mut collector = MetricsCollector::new();
-        collector
-            .collect()
-            .map_err(|err| InterfaceError::from(err.to_string()))
     }
 }
 

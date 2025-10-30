@@ -152,6 +152,7 @@ pub enum FactorType {
 pub struct SystemMetrics {
     pub cpu_usage_percent: f32,
     pub memory_usage_mb: f32,
+    pub memory_usage_percent: f32,
     pub disk_io_mbps: f32,
     pub network_io_mbps: f32,
     pub active_processes: usize,

@@ -1,10 +1,14 @@
 pub mod app;
+#[cfg(feature = "tui-cli-services")]
+pub mod bridge;
+#[cfg(feature = "tui-cli-services")]
 pub mod cli_integration;
+#[cfg(not(feature = "tui-cli-services"))]
+mod cli_integration;
 pub mod command_executor;
 pub mod command_mode;
 pub mod components;
 pub mod metrics;
-pub mod preferences;
 pub mod theme;
 pub mod views;
 
@@ -14,14 +18,15 @@ mod tests;
 #[cfg(test)]
 mod command_mode_tests;
 
-pub use app::{AppState, CliCoordinatorClient, DoraApp, ViewType};
+pub use app::{AppState, DoraApp, ViewType};
+#[cfg(feature = "tui-cli-services")]
+pub use bridge::{ServiceBundle, default_service_bundle};
 pub use cli_integration::{CliContext, CommandMode};
 pub use command_executor::{
     CommandModeExecutionResult, CommandModeViewAction, CommandResult, StateUpdate, StatusLevel,
     TuiCliExecutor,
 };
 pub use components::{Component, ComponentId, ComponentRegistry, ComponentType, EventDispatcher};
-pub use preferences::CliPreferencesStore;
 pub use theme::{ThemeConfig, ThemeManager};
 pub use views::{View, ViewAction};
 

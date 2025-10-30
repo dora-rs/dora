@@ -35,7 +35,7 @@ use crate::{
         AutomaticIssueDetector, DebugComplexityAnalysis, DebugComplexityAnalyzer, DebugSession,
         DebugSessionManager, DetectedIssue, FactorType,
     },
-    tui::{cli_integration::CommandHistory, metrics::MetricsCollector},
+    tui::metrics::MetricsCollector,
 };
 
 const CONTINUOUS_MONITOR_SAMPLES: usize = 3;
@@ -584,7 +584,10 @@ fn handle_system_clean(context: &ExecutionContext, formatter: &OutputFormatter) 
         .map(|val| matches!(val.as_str(), "1" | "true" | "TRUE"))
         .unwrap_or(false);
 
-    let history_path = CommandHistory::history_path().ok();
+    #[cfg(feature = "tui-cli-services")]
+    let history_path = crate::tui::cli_integration::CommandHistory::history_path().ok();
+    #[cfg(not(feature = "tui-cli-services"))]
+    let history_path: Option<std::path::PathBuf> = None;
     let preferences_path = UserPreferences::get_preferences_path().ok();
 
     if !apply {
@@ -863,7 +866,10 @@ struct SystemInfoPayload {
 impl SystemInfoPayload {
     fn from_system(system: &sysinfo::System) -> Self {
         let config_directory = dirs::config_dir().map(|dir| dir.join("dora"));
-        let tui_history_path = CommandHistory::history_path().ok();
+        #[cfg(feature = "tui-cli-services")]
+        let tui_history_path = crate::tui::cli_integration::CommandHistory::history_path().ok();
+        #[cfg(not(feature = "tui-cli-services"))]
+        let tui_history_path = None;
         let preferences_path = UserPreferences::get_preferences_path().ok();
 
         Self {

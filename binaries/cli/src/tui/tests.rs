@@ -1,7 +1,8 @@
+#[cfg(feature = "tui-cli-services")]
+use crate::tui::cli_integration::{CliContext, CommandHistory, KeyBindings, TabCompletion};
 #[cfg(test)]
 use crate::tui::{
     app::{AppState, DataflowInfo, DoraApp, MessageLevel, SystemMetrics, ViewType},
-    cli_integration::{CliContext, CommandHistory, KeyBindings, TabCompletion},
     command_executor::StateUpdate as CommandStateUpdate,
     theme::ThemeConfig,
     views::{StateUpdate, View, ViewAction},
@@ -40,6 +41,7 @@ mod app_tests {
     }
 
     #[test]
+    #[cfg(feature = "tui-cli-services")]
     fn test_app_with_context() {
         let context = CliContext::new();
         let app = DoraApp::new_with_context(ViewType::Dashboard, context);
@@ -260,6 +262,7 @@ mod cli_integration_tests {
     use super::*;
 
     #[test]
+    #[cfg(feature = "tui-cli-services")]
     fn test_cli_context_creation() {
         let context = CliContext::new();
         assert!(context.working_directory.exists());
@@ -267,6 +270,7 @@ mod cli_integration_tests {
     }
 
     #[test]
+    #[cfg(feature = "tui-cli-services")]
     fn test_command_history() {
         let mut history = CommandHistory::new();
         assert_eq!(history.commands.len(), 0);
@@ -286,6 +290,7 @@ mod cli_integration_tests {
     }
 
     #[test]
+    #[cfg(feature = "tui-cli-services")]
     fn test_tab_completion() {
         let mut completion = TabCompletion::new();
 
@@ -300,6 +305,7 @@ mod cli_integration_tests {
     }
 
     #[test]
+    #[cfg(feature = "tui-cli-services")]
     fn test_key_bindings() {
         let bindings = KeyBindings::default_bindings();
 
@@ -324,6 +330,7 @@ mod cli_integration_tests {
     }
 
     #[test]
+    #[cfg(feature = "tui-cli-services")]
     fn test_key_bindings_modification() {
         let mut bindings = KeyBindings::default_bindings();
 
@@ -340,6 +347,7 @@ mod cli_integration_tests {
     }
 
     #[test]
+    #[cfg(feature = "tui-cli-services")]
     fn test_command_history_persisted_to_disk() {
         let _lock = CONFIG_LOCK.lock().unwrap();
 

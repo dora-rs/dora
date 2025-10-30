@@ -2,7 +2,20 @@
 
 use super::types::*;
 use chrono::Utc;
-use eyre::Result;
+use dora_core::topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT;
+use dora_message::coordinator_to_cli::{
+    DataflowListEntry, DataflowStatus, NodeRuntimeInfo, NodeRuntimeState,
+};
+use eyre::{Error, Result, WrapErr};
+use tokio::time::{Duration, sleep};
+
+use crate::{
+    LOCALHOST,
+    common::{connect_to_coordinator, query_running_dataflows},
+    tui::{app::SystemMetrics as TuiSystemMetrics, metrics::MetricsCollector},
+};
+
+const BYTES_PER_MIB: f64 = 1_048_576.0;
 
 /// Automatic issue detector that runs multiple specialized detectors
 #[derive(Debug)]
@@ -106,15 +119,14 @@ impl PerformanceIssueDetector {
     }
 
     async fn get_current_metrics(&self) -> Result<SystemMetrics> {
-        // Mock implementation - in production, this would query actual system metrics
-        Ok(SystemMetrics {
-            cpu_usage_percent: 85.0, // Simulating high CPU
-            memory_usage_mb: 512.0,
-            disk_io_mbps: 50.0,
-            network_io_mbps: 100.0,
-            active_processes: 45,
-            timestamp: Utc::now(),
-        })
+        let mut collector = MetricsCollector::new();
+        // Prime the collector so deltas (network) have a baseline.
+        let _ = collector.collect();
+        sleep(Duration::from_millis(250)).await;
+        let snapshot = collector
+            .collect()
+            .wrap_err("failed to sample system metrics")?;
+        Ok(convert_system_metrics(snapshot))
     }
 
     fn analyze_cpu_performance(
@@ -125,11 +137,11 @@ impl PerformanceIssueDetector {
         let cpu_usage = current.cpu_usage_percent;
         let baseline_cpu = baseline.average_cpu_usage;
 
-        // Detect CPU spike (>50% above baseline and >80% absolute)
-        if cpu_usage > baseline_cpu * 1.5 && cpu_usage > 80.0 {
-            let severity = if cpu_usage > 95.0 {
+        // Detect CPU spike if significantly above baseline or breaching hard thresholds.
+        if cpu_usage > baseline_cpu * 1.5 || cpu_usage >= 85.0 {
+            let severity = if cpu_usage >= 95.0 {
                 IssueSeverity::Critical
-            } else if cpu_usage > 90.0 {
+            } else if cpu_usage >= 90.0 {
                 IssueSeverity::High
             } else {
                 IssueSeverity::Medium
@@ -209,22 +221,35 @@ impl PerformanceIssueDetector {
     ) -> Option<DetectedIssue> {
         let memory_usage = current.memory_usage_mb;
         let baseline_memory = baseline.average_memory_usage;
+        let memory_percent = current.memory_usage_percent;
 
-        // Detect memory spike (>2x baseline and >1GB absolute)
-        if memory_usage > baseline_memory * 2.0 && memory_usage > 1024.0 {
+        // Detect memory spike (>2x baseline and >1GB absolute) or sustained high utilisation.
+        if (memory_usage > baseline_memory * 2.0 && memory_usage > 1024.0) || memory_percent >= 90.0
+        {
+            let severity = if memory_percent >= 95.0 {
+                IssueSeverity::Critical
+            } else if memory_percent >= 92.0 {
+                IssueSeverity::High
+            } else {
+                IssueSeverity::Medium
+            };
+
             Some(DetectedIssue {
                 issue_id: format!("memory-spike-{}", Utc::now().timestamp()),
                 issue_type: IssueType::MemoryLeak,
-                severity: IssueSeverity::High,
+                severity,
                 confidence: 0.85,
                 title: "High Memory Usage Detected".to_string(),
                 description: format!(
-                    "Memory usage is {:.0}MB, significantly above baseline of {:.0}MB",
-                    memory_usage, baseline_memory
+                    "Memory usage is {:.0}MB ({:.1}%), significantly above baseline of {:.0}MB",
+                    memory_usage, memory_percent, baseline_memory
                 ),
                 affected_components: vec!["Memory".to_string()],
                 symptoms: vec![Symptom {
-                    description: format!("Memory usage at {:.0}MB", memory_usage),
+                    description: format!(
+                        "Memory usage at {:.0}MB ({:.1}%)",
+                        memory_usage, memory_percent
+                    ),
                     metric_value: Some(memory_usage),
                     timestamp: Utc::now(),
                 }],
@@ -264,6 +289,23 @@ impl Default for PerformanceIssueDetector {
     }
 }
 
+fn convert_system_metrics(snapshot: TuiSystemMetrics) -> SystemMetrics {
+    let memory_usage_mb = snapshot.memory.used_bytes as f64 / BYTES_PER_MIB;
+    let network_rx_mib = snapshot.network.received_per_second / BYTES_PER_MIB;
+    let network_tx_mib = snapshot.network.transmitted_per_second / BYTES_PER_MIB;
+
+    SystemMetrics {
+        cpu_usage_percent: snapshot.cpu_usage,
+        memory_usage_mb: memory_usage_mb as f32,
+        memory_usage_percent: snapshot.memory_usage,
+        // TODO(issue #7): extend MetricsCollector to expose disk throughput deltas.
+        disk_io_mbps: 0.0,
+        network_io_mbps: (network_rx_mib + network_tx_mib) as f32,
+        active_processes: snapshot.process_count,
+        timestamp: Utc::now(),
+    }
+}
+
 /// Dataflow issue detector
 #[derive(Debug)]
 pub struct DataflowIssueDetector;
@@ -277,63 +319,341 @@ impl DataflowIssueDetector {
         let mut issues = Vec::new();
 
         if let DebugTarget::Dataflow(dataflow_name) = &debug_session.debug_target {
-            // Check for stalled dataflow (mock)
-            if Self::is_dataflow_stalled(dataflow_name) {
-                issues.push(DetectedIssue {
-                    issue_id: format!("dataflow-stall-{}", Utc::now().timestamp()),
-                    issue_type: IssueType::DataflowStalled,
-                    severity: IssueSeverity::Critical,
-                    confidence: 0.95,
-                    title: "Dataflow Stalled".to_string(),
-                    description: format!(
-                        "Dataflow '{}' appears to be stalled with no message flow",
-                        dataflow_name
-                    ),
-                    affected_components: vec![dataflow_name.clone()],
-                    symptoms: vec![Symptom {
-                        description: "No messages processed in last 30s".to_string(),
-                        metric_value: Some(0.0),
-                        timestamp: Utc::now(),
-                    }],
-                    possible_causes: vec![PossibleCause {
-                        description: "Deadlock in node processing".to_string(),
-                        likelihood: 0.6,
-                        investigation_steps: vec![
-                            "Check node states".to_string(),
-                            "Review inter-node dependencies".to_string(),
-                        ],
-                    }],
-                    suggested_actions: vec![SuggestedAction {
-                        action: "Inspect dataflow state interactively".to_string(),
-                        command: Some(format!("dora debug {} --tui", dataflow_name)),
-                        urgency: ActionUrgency::Critical,
-                    }],
-                    debugging_hints: vec![DebuggingHint {
-                        hint: "Interactive TUI provides real-time dataflow visualization"
-                            .to_string(),
-                        interactive_features: vec![
-                            "Dataflow graph with node states".to_string(),
-                            "Message flow visualization".to_string(),
-                        ],
-                    }],
-                    first_detected: Utc::now(),
-                    related_issues: Vec::new(),
-                });
+            match self.fetch_dataflow_snapshot(dataflow_name) {
+                Ok(Some(entry)) => {
+                    if entry.status == DataflowStatus::Failed {
+                        issues.push(dataflow_failure_issue(dataflow_name, &entry));
+                    }
+
+                    if entry.nodes.is_empty() {
+                        issues.push(empty_dataflow_issue(dataflow_name));
+                    } else {
+                        for node in entry.nodes.iter() {
+                            if matches!(node.status, NodeRuntimeState::Failed) {
+                                issues.push(node_failure_issue(dataflow_name, node));
+                            } else if matches!(node.status, NodeRuntimeState::Unknown) {
+                                issues.push(node_unknown_state_issue(dataflow_name, node));
+                            }
+                        }
+                    }
+                }
+                Ok(None) => {
+                    issues.push(dataflow_not_found_issue(dataflow_name));
+                }
+                Err(err) => {
+                    issues.push(coordinator_unreachable_issue(err));
+                }
             }
         }
 
         Ok(issues)
     }
 
-    fn is_dataflow_stalled(_name: &str) -> bool {
-        // Mock implementation - would check actual dataflow state
-        false
+    fn fetch_dataflow_snapshot(&self, target: &str) -> Result<Option<DataflowListEntry>> {
+        let coordinator_addr = (LOCALHOST, DORA_COORDINATOR_PORT_CONTROL_DEFAULT).into();
+        let mut session = connect_to_coordinator(coordinator_addr)
+            .wrap_err("failed to connect to coordinator for dataflow inspection")?;
+        let list =
+            query_running_dataflows(&mut *session).wrap_err("failed to query running dataflows")?;
+
+        Ok(list
+            .0
+            .into_iter()
+            .find(|entry| dataflow_matches(entry, target)))
     }
 }
 
 impl Default for DataflowIssueDetector {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+fn dataflow_matches(entry: &DataflowListEntry, target: &str) -> bool {
+    let target_trimmed = target.trim();
+    if target_trimmed.is_empty() {
+        return false;
+    }
+    let target_lower = target_trimmed.to_ascii_lowercase();
+
+    if target_lower == "current" && entry.status == DataflowStatus::Running {
+        return true;
+    }
+
+    if entry
+        .id
+        .uuid
+        .to_string()
+        .eq_ignore_ascii_case(target_trimmed)
+    {
+        return true;
+    }
+
+    if let Some(name) = &entry.id.name {
+        if name.eq_ignore_ascii_case(target_trimmed) {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn dataflow_identifier(entry: &DataflowListEntry) -> String {
+    entry
+        .id
+        .name
+        .clone()
+        .unwrap_or_else(|| entry.id.uuid.to_string())
+}
+
+fn node_identifier(node: &NodeRuntimeInfo) -> String {
+    node.node
+        .name
+        .clone()
+        .unwrap_or_else(|| node.node.id.to_string())
+}
+
+fn dataflow_failure_issue(dataflow_name: &str, entry: &DataflowListEntry) -> DetectedIssue {
+    let identifier = dataflow_identifier(entry);
+    DetectedIssue {
+        issue_id: format!("dataflow-failed-{}", Utc::now().timestamp()),
+        issue_type: IssueType::DataflowStalled,
+        severity: IssueSeverity::Critical,
+        confidence: 0.9,
+        title: format!("Dataflow '{identifier}' reported failure"),
+        description: format!(
+            "Coordinator reports dataflow '{}' is in a failed state. Requested target: '{}'.",
+            identifier, dataflow_name
+        ),
+        affected_components: vec![identifier.clone()],
+        symptoms: vec![Symptom {
+            description: format!("Dataflow status: {:?}", entry.status),
+            metric_value: None,
+            timestamp: Utc::now(),
+        }],
+        possible_causes: vec![PossibleCause {
+            description: "One or more nodes exited with an error".to_string(),
+            likelihood: 0.7,
+            investigation_steps: vec![
+                "Inspect node exit codes via `dora logs --tail`".to_string(),
+                "Review recent deployment changes".to_string(),
+            ],
+        }],
+        suggested_actions: vec![
+            SuggestedAction {
+                action: "View failing node logs".to_string(),
+                command: Some(format!("dora logs --dataflow {}", identifier)),
+                urgency: ActionUrgency::High,
+            },
+            SuggestedAction {
+                action: "Restart the dataflow once issues are resolved".to_string(),
+                command: Some(format!("dora start {}", identifier)),
+                urgency: ActionUrgency::Medium,
+            },
+        ],
+        debugging_hints: vec![DebuggingHint {
+            hint: "Open the TUI dashboard to inspect node state transitions".to_string(),
+            interactive_features: vec![
+                "Node status timeline".to_string(),
+                "Recent error summaries".to_string(),
+            ],
+        }],
+        first_detected: Utc::now(),
+        related_issues: Vec::new(),
+    }
+}
+
+fn empty_dataflow_issue(dataflow_name: &str) -> DetectedIssue {
+    DetectedIssue {
+        issue_id: format!("dataflow-empty-{}", Utc::now().timestamp()),
+        issue_type: IssueType::ConfigurationError,
+        severity: IssueSeverity::Medium,
+        confidence: 0.6,
+        title: "Dataflow has no active nodes".to_string(),
+        description: format!(
+            "Coordinator returned a running dataflow for '{}', but no node information was available.",
+            dataflow_name
+        ),
+        affected_components: vec![dataflow_name.to_string()],
+        symptoms: vec![Symptom {
+            description: "Coordinator response contained zero nodes".to_string(),
+            metric_value: None,
+            timestamp: Utc::now(),
+        }],
+        possible_causes: vec![PossibleCause {
+            description: "Dataflow definition failed to deploy nodes".to_string(),
+            likelihood: 0.5,
+            investigation_steps: vec![
+                "Verify the dataflow descriptor".to_string(),
+                "Check coordinator logs for deployment errors".to_string(),
+            ],
+        }],
+        suggested_actions: vec![SuggestedAction {
+            action: "Rebuild and redeploy the dataflow".to_string(),
+            command: Some("dora build && dora up".to_string()),
+            urgency: ActionUrgency::High,
+        }],
+        debugging_hints: vec![DebuggingHint {
+            hint: "Use the TUI explorer view to ensure nodes are registered correctly".to_string(),
+            interactive_features: vec!["Dataflow explorer".to_string()],
+        }],
+        first_detected: Utc::now(),
+        related_issues: Vec::new(),
+    }
+}
+
+fn node_failure_issue(dataflow_name: &str, node: &NodeRuntimeInfo) -> DetectedIssue {
+    let node_id = node_identifier(node);
+    DetectedIssue {
+        issue_id: format!("node-failed-{}-{}", node_id, Utc::now().timestamp()),
+        issue_type: IssueType::NodeCrashing,
+        severity: IssueSeverity::High,
+        confidence: 0.85,
+        title: format!("Node '{}' reported failure", node_id),
+        description: format!(
+            "Node '{}' within dataflow '{}' exited with status {:?}.",
+            node_id, dataflow_name, node.status
+        ),
+        affected_components: vec![dataflow_name.to_string(), node_id.clone()],
+        symptoms: vec![Symptom {
+            description: "Node runtime status: Failed".to_string(),
+            metric_value: None,
+            timestamp: Utc::now(),
+        }],
+        possible_causes: vec![PossibleCause {
+            description: "Runtime error within node processing loop".to_string(),
+            likelihood: 0.6,
+            investigation_steps: vec![
+                "Inspect node logs for stack traces".to_string(),
+                "Validate input payloads for unexpected formats".to_string(),
+            ],
+        }],
+        suggested_actions: vec![SuggestedAction {
+            action: "Tail node logs".to_string(),
+            command: Some(format!("dora logs --node {}", node_id)),
+            urgency: ActionUrgency::High,
+        }],
+        debugging_hints: vec![DebuggingHint {
+            hint: "Use the node inspector in the TUI to review last telemetry values".to_string(),
+            interactive_features: vec!["Node inspector".to_string()],
+        }],
+        first_detected: Utc::now(),
+        related_issues: Vec::new(),
+    }
+}
+
+fn node_unknown_state_issue(dataflow_name: &str, node: &NodeRuntimeInfo) -> DetectedIssue {
+    let node_id = node_identifier(node);
+    DetectedIssue {
+        issue_id: format!("node-unknown-{}-{}", node_id, Utc::now().timestamp()),
+        issue_type: IssueType::MessageLoss,
+        severity: IssueSeverity::Medium,
+        confidence: 0.5,
+        title: format!("Node '{}' state unknown", node_id),
+        description: format!(
+            "Coordinator returned 'Unknown' for node '{}' in dataflow '{}'.",
+            node_id, dataflow_name
+        ),
+        affected_components: vec![dataflow_name.to_string(), node_id.clone()],
+        symptoms: vec![Symptom {
+            description: "Coordinator did not provide runtime state".to_string(),
+            metric_value: None,
+            timestamp: Utc::now(),
+        }],
+        possible_causes: vec![PossibleCause {
+            description: "Node is still starting or telemetry not yet reported".to_string(),
+            likelihood: 0.5,
+            investigation_steps: vec![
+                "Wait a few seconds and re-run `dora ps`".to_string(),
+                "Ensure node registered correctly with the coordinator".to_string(),
+            ],
+        }],
+        suggested_actions: vec![SuggestedAction {
+            action: "Re-check node status after a short delay".to_string(),
+            command: Some("dora ps".to_string()),
+            urgency: ActionUrgency::Medium,
+        }],
+        debugging_hints: vec![DebuggingHint {
+            hint: "Open the dashboard view to confirm registration events".to_string(),
+            interactive_features: vec!["Dashboard status feed".to_string()],
+        }],
+        first_detected: Utc::now(),
+        related_issues: Vec::new(),
+    }
+}
+
+fn dataflow_not_found_issue(dataflow_name: &str) -> DetectedIssue {
+    DetectedIssue {
+        issue_id: format!("dataflow-missing-{}", Utc::now().timestamp()),
+        issue_type: IssueType::ConfigurationError,
+        severity: IssueSeverity::Medium,
+        confidence: 0.7,
+        title: "Dataflow not found".to_string(),
+        description: format!(
+            "No running dataflow matching '{}' was reported by the coordinator.",
+            dataflow_name
+        ),
+        affected_components: vec![dataflow_name.to_string()],
+        symptoms: vec![Symptom {
+            description: "Coordinator list does not include the requested dataflow".to_string(),
+            metric_value: None,
+            timestamp: Utc::now(),
+        }],
+        possible_causes: vec![PossibleCause {
+            description: "Dataflow has not been started or completed already".to_string(),
+            likelihood: 0.6,
+            investigation_steps: vec![
+                "Start the dataflow with `dora up` or `dora start`".to_string(),
+                "Verify the dataflow name or UUID is correct".to_string(),
+            ],
+        }],
+        suggested_actions: vec![SuggestedAction {
+            action: "Launch the dataflow".to_string(),
+            command: Some(format!("dora start {}", dataflow_name)),
+            urgency: ActionUrgency::Medium,
+        }],
+        debugging_hints: vec![DebuggingHint {
+            hint: "Use the dashboard to confirm active deployments".to_string(),
+            interactive_features: vec!["Dashboard overview".to_string()],
+        }],
+        first_detected: Utc::now(),
+        related_issues: Vec::new(),
+    }
+}
+
+fn coordinator_unreachable_issue(err: Error) -> DetectedIssue {
+    DetectedIssue {
+        issue_id: format!("coordinator-unreachable-{}", Utc::now().timestamp()),
+        issue_type: IssueType::DependencyFailure,
+        severity: IssueSeverity::High,
+        confidence: 0.5,
+        title: "Coordinator unreachable".to_string(),
+        description: format!("Failed to query the coordinator: {err}"),
+        affected_components: vec!["coordinator".to_string()],
+        symptoms: vec![Symptom {
+            description: "No response received from coordinator control port".to_string(),
+            metric_value: None,
+            timestamp: Utc::now(),
+        }],
+        possible_causes: vec![PossibleCause {
+            description: "Coordinator is not running or network connection blocked".to_string(),
+            likelihood: 0.7,
+            investigation_steps: vec![
+                "Run `dora check` to verify coordinator status".to_string(),
+                "Ensure networking allows access to the control port".to_string(),
+            ],
+        }],
+        suggested_actions: vec![SuggestedAction {
+            action: "Start the coordinator".to_string(),
+            command: Some("dora up".to_string()),
+            urgency: ActionUrgency::High,
+        }],
+        debugging_hints: vec![DebuggingHint {
+            hint: "Use `dora tui` to view live coordinator health once it is reachable".to_string(),
+            interactive_features: vec!["System monitor".to_string()],
+        }],
+        first_detected: Utc::now(),
+        related_issues: Vec::new(),
     }
 }
 
@@ -347,14 +667,88 @@ impl NetworkIssueDetector {
     }
 
     pub async fn detect_issues(&self, _debug_session: &DebugSession) -> Result<Vec<DetectedIssue>> {
-        // Mock implementation - no network issues detected for now
-        Ok(Vec::new())
+        let mut collector = MetricsCollector::new();
+        let _ = collector.collect();
+        sleep(Duration::from_millis(250)).await;
+        let snapshot = collector
+            .collect()
+            .wrap_err("failed to sample system metrics for network analysis")?;
+
+        let total_mib = ((snapshot.network.received_per_second
+            + snapshot.network.transmitted_per_second)
+            / BYTES_PER_MIB) as f32;
+
+        let mut issues = Vec::new();
+        if total_mib >= 80.0 {
+            issues.push(network_saturation_issue(total_mib));
+        }
+
+        Ok(issues)
     }
 }
 
 impl Default for NetworkIssueDetector {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+fn network_saturation_issue(total_mib: f32) -> DetectedIssue {
+    let severity = if total_mib >= 120.0 {
+        IssueSeverity::High
+    } else {
+        IssueSeverity::Medium
+    };
+    let is_high = matches!(severity, IssueSeverity::High);
+
+    DetectedIssue {
+        issue_id: format!("network-saturation-{}", Utc::now().timestamp()),
+        issue_type: IssueType::NetworkConnectivity,
+        severity,
+        confidence: 0.6,
+        title: "High network throughput detected".to_string(),
+        description: format!(
+            "Combined network throughput is {:.1} MiB/s over the last sample window.",
+            total_mib
+        ),
+        affected_components: vec!["network".to_string()],
+        symptoms: vec![Symptom {
+            description: "Sustained high inbound/outbound traffic".to_string(),
+            metric_value: Some(total_mib),
+            timestamp: Utc::now(),
+        }],
+        possible_causes: vec![
+            PossibleCause {
+                description: "Large dataflow transfers saturating bandwidth".to_string(),
+                likelihood: 0.6,
+                investigation_steps: vec![
+                    "Inspect active dataflows for large payload transfers".to_string(),
+                    "Review recent deploys that increased data volume".to_string(),
+                ],
+            },
+            PossibleCause {
+                description: "Background system activity (updates, backups)".to_string(),
+                likelihood: 0.4,
+                investigation_steps: vec![
+                    "Check system services for scheduled maintenance tasks".to_string(),
+                ],
+            },
+        ],
+        suggested_actions: vec![SuggestedAction {
+            action: "Limit dataflow throughput or scale out network resources".to_string(),
+            command: Some("dora analyze --analysis-type resources".to_string()),
+            urgency: if is_high {
+                ActionUrgency::High
+            } else {
+                ActionUrgency::Medium
+            },
+        }],
+        debugging_hints: vec![DebuggingHint {
+            hint: "Use the system monitor view in the TUI to visualise network trends".to_string(),
+            interactive_features: vec!["System monitor".to_string()],
+        }],
+        first_detected: Utc::now(),
+        related_issues: Vec::new(),
     }
 }
 
@@ -369,13 +763,11 @@ mod tests {
 
         let issues = detector.detect_issues(&debug_session).await.unwrap();
 
-        // Should detect at least the CPU issue from mock data
-        assert!(!issues.is_empty());
-        assert!(
-            issues
-                .iter()
-                .any(|i| i.issue_type == IssueType::PerformanceDegradation)
-        );
+        // Ensure issues (if any) are ordered by severity (critical first).
+        let severities: Vec<_> = issues.iter().map(|issue| issue.severity.clone()).collect();
+        let mut sorted = severities.clone();
+        sorted.sort_by(|a, b| severity_rank(b).cmp(&severity_rank(a)));
+        assert_eq!(severities, sorted);
     }
 
     #[tokio::test]
@@ -384,6 +776,7 @@ mod tests {
         let metrics = SystemMetrics {
             cpu_usage_percent: 95.0,
             memory_usage_mb: 256.0,
+            memory_usage_percent: 96.0,
             disk_io_mbps: 50.0,
             network_io_mbps: 100.0,
             active_processes: 45,
@@ -400,5 +793,14 @@ mod tests {
             issue.severity,
             IssueSeverity::Critical | IssueSeverity::High
         ));
+    }
+
+    fn severity_rank(severity: &IssueSeverity) -> u8 {
+        match severity {
+            IssueSeverity::Critical => 3,
+            IssueSeverity::High => 2,
+            IssueSeverity::Medium => 1,
+            IssueSeverity::Low => 0,
+        }
     }
 }

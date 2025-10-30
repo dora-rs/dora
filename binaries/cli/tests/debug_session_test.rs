@@ -473,7 +473,7 @@ mod debug_session_tests {
         let theme = ThemeConfig::default();
         let view = DebugSessionView::new("test-target", &theme);
 
-        assert_eq!(view.title(), "Debug Session");
+        assert_eq!(view.title(), "Debug Session - test-target");
         assert_eq!(view.state.target_name, "test-target");
     }
 

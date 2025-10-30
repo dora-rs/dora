@@ -7,13 +7,12 @@ use clap::Parser;
 
 use crate::{
     cli::{Cli, Command, commands::*, context::ExecutionContext},
-    execute_legacy_command,
     tui::{
-        AppState, CliCoordinatorClient, ViewType,
-        app::{CliTelemetryService, DataflowInfo, MessageLevel, NodeInfo, StatusMessage},
+        AppState, ViewType,
+        app::{DataflowInfo, MessageLevel, NodeInfo, StatusMessage},
     },
 };
-use tui_interface::{CoordinatorClient, InterfaceError, LegacyCliService, TelemetryService};
+use tui_interface::{CoordinatorClient, LegacyCliService, TelemetryService};
 
 /// Executes CLI commands within TUI environment with state synchronization
 pub struct TuiCliExecutor {
@@ -98,13 +97,29 @@ pub enum StatusLevel {
 }
 
 impl TuiCliExecutor {
+    #[cfg(feature = "tui-cli-services")]
     pub fn new(context: ExecutionContext) -> Self {
+        let bundle = crate::tui::bridge::default_service_bundle();
+        let crate::tui::bridge::ServiceBundle {
+            preferences_store: _,
+            coordinator_client,
+            telemetry_service,
+            legacy_cli_service,
+        } = bundle;
+
         Self::with_services(
             context,
-            Arc::new(CliCoordinatorClient::default()),
-            Arc::new(CliTelemetryService::default()),
-            Arc::new(CliLegacyCliService::default()),
+            coordinator_client,
+            telemetry_service,
+            legacy_cli_service,
         )
+    }
+
+    #[cfg(not(feature = "tui-cli-services"))]
+    pub fn new(_context: ExecutionContext) -> Self {
+        panic!(
+            "TuiCliExecutor::new requires the `tui-cli-services` feature. Use `with_services` when the bridge is unavailable."
+        );
     }
 
     pub fn with_services(
@@ -486,11 +501,24 @@ fn preferred_node<'a>(nodes: &'a [NodeInfo]) -> Option<&'a NodeInfo> {
 }
 
 impl StateSynchronizer {
+    #[cfg(feature = "tui-cli-services")]
     pub fn new() -> Self {
-        Self::with_services(
-            Arc::new(CliCoordinatorClient::default()),
-            Arc::new(CliTelemetryService::default()),
-        )
+        let bundle = crate::tui::bridge::default_service_bundle();
+        let crate::tui::bridge::ServiceBundle {
+            preferences_store: _,
+            coordinator_client,
+            telemetry_service,
+            legacy_cli_service: _,
+        } = bundle;
+
+        Self::with_services(coordinator_client, telemetry_service)
+    }
+
+    #[cfg(not(feature = "tui-cli-services"))]
+    pub fn new() -> Self {
+        panic!(
+            "StateSynchronizer::new requires the `tui-cli-services` feature. Use `with_services` in standalone builds."
+        );
     }
 
     pub fn with_services(
@@ -598,20 +626,6 @@ impl std::fmt::Debug for StateSynchronizer {
 impl Default for StateSynchronizer {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-#[derive(Default, Debug)]
-pub struct CliLegacyCliService;
-
-impl LegacyCliService for CliLegacyCliService {
-    fn execute(
-        &self,
-        argv: &[String],
-        working_dir: &std::path::Path,
-    ) -> std::result::Result<(), InterfaceError> {
-        execute_legacy_command(argv.iter().map(|s| s.as_str()), Some(working_dir))
-            .map_err(|err| InterfaceError::from(err.to_string()))
     }
 }
 
