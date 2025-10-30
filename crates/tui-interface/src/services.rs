@@ -2,6 +2,7 @@
 //! Concrete implementations will live inside the Dora framework.
 
 use crate::{DataflowSummary, SystemMetrics, UserPreferencesSnapshot};
+use std::path::Path;
 
 /// Abstraction over coordinator interactions.
 pub trait CoordinatorClient: Send + Sync {
@@ -10,10 +11,9 @@ pub trait CoordinatorClient: Send + Sync {
 }
 
 /// Bridge that lets the TUI trigger legacy CLI operations.
-#[allow(async_fn_in_trait)]
-pub trait LegacyCliService {
-    /// Execute a CLI command expressed as argv tokens.
-    async fn execute(&self, argv: &[String]) -> Result<(), crate::InterfaceError>;
+pub trait LegacyCliService: Send + Sync {
+    /// Execute a CLI command expressed as argv tokens using the given working directory.
+    fn execute(&self, argv: &[String], working_dir: &Path) -> Result<(), crate::InterfaceError>;
 }
 
 /// Provides system telemetry to the TUI.

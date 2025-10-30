@@ -14,14 +14,14 @@ use crate::{
         metrics::MetricsCollector,
     },
 };
-use tui_interface::CoordinatorClient;
+use tui_interface::{CoordinatorClient, InterfaceError, LegacyCliService};
 
 /// Executes CLI commands within TUI environment with state synchronization
-#[derive(Debug)]
 pub struct TuiCliExecutor {
     command_history: Vec<String>,
     execution_context: ExecutionContext,
     state_synchronizer: StateSynchronizer,
+    legacy_service: Arc<dyn LegacyCliService>,
 }
 
 /// Result of executing a CLI command within TUI
@@ -104,6 +104,7 @@ impl TuiCliExecutor {
             command_history: Vec::new(),
             execution_context: context,
             state_synchronizer: StateSynchronizer::new(),
+            legacy_service: Arc::new(CliLegacyCliService::default()),
         }
     }
 
@@ -315,9 +316,10 @@ impl TuiCliExecutor {
 
         let args: Vec<String> = full_args.iter().skip(1).cloned().collect();
         let working_dir = self.execution_context.working_dir.clone();
+        let legacy_service = Arc::clone(&self.legacy_service);
 
         let result = tokio::task::spawn_blocking(move || {
-            execute_legacy_command(args.iter().map(|s| s.as_str()), Some(working_dir.as_path()))
+            legacy_service.execute(&args, working_dir.as_path())
         })
         .await;
 
@@ -580,6 +582,20 @@ impl std::fmt::Debug for StateSynchronizer {
 impl Default for StateSynchronizer {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[derive(Default, Debug)]
+pub struct CliLegacyCliService;
+
+impl LegacyCliService for CliLegacyCliService {
+    fn execute(
+        &self,
+        argv: &[String],
+        working_dir: &std::path::Path,
+    ) -> std::result::Result<(), InterfaceError> {
+        execute_legacy_command(argv.iter().map(|s| s.as_str()), Some(working_dir))
+            .map_err(|err| InterfaceError::from(err.to_string()))
     }
 }
 
