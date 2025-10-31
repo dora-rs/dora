@@ -75,6 +75,27 @@ interfaces. Later, we can spin the TUI out with minimal disruption.
    - Optionally add a compile-time guard macro (e.g., `use crate::forbidden::*;` to detect leaks).
 5. Document public API in README + rustdoc; keep changelog to track interface evolution.
 
+### Extended Roadmap: Protocol Boundary
+
+To prepare for multi-client support (future standalone TUI, refreshed CLI, dashboards), we will
+introduce a network-friendly protocol between user interfaces and the core runtime. This builds on
+the `tui-interface` traits but formalises transport, versioning, and rollout.
+
+| Phase | Issue/Track | Deliverables |
+| --- | --- | --- |
+| **P0. Discovery** | (#111) Protocol Touchpoint Audit | • Catalogue all UI→core operations (list/start/stop/logs/preferences/telemetry).<br>• Identify missing coordinator endpoints or data needed to satisfy UI use cases. |
+| **P1. Protocol Design** | (#112) Protocol ADR | • Choose transport (initial proposal: JSON over HTTP/WebSocket, but gRPC is a candidate).<br>• Define message schemas, version negotiation, and auth placeholder.<br>• Decide on error codes and pagination/streaming semantics. |
+| **P2. Server Adapter** | (#113) Coordinator Gateway | • Implement protocol server inside the coordinator (or a sidecar) that fulfils the trait contracts.<br>• Add feature flag to run alongside existing RPC layer.<br>• Add contract tests (golden requests/responses). |
+| **P3. Client SDK** | (#114) Protocol Client Crate | • Generate or handwrite client bindings (Rust first).<br>• Provide async APIs mirroring `tui-interface` traits.<br>• Ship mocks/fakes for UI tests. |
+| **P4. TUI Migration** | (#115) TUI Protocol Adoption | • Swap TUI service wiring to use the protocol client by default.<br>• Keep existing in-process trait implementations as fallback (feature flag).<br>• Add integration tests that start the protocol server and run UI smoke tests. |
+| **P5. CLI Migration** | (#116) Legacy CLI Alignment | • Port `ps`, `start`, `stop`, `logs`, etc. to call through the protocol.<br>• Remove direct coordinator RPC access once parity is achieved.<br>• Update documentation and examples to reference the new API. |
+| **P6. Harden & Publish** | (#117) Backward Compatibility & Release | • Establish protocol versioning policy (semantic version, compatibility matrix).<br>• Automate compatibility tests (client vN vs server vN±1).<br>• Document rollout playbook for future clients (web UI, external tooling). |
+
+Interim milestones:
+- Coordinate with operations/UX to validate that the protocol surface covers expected workflows.
+- Ensure logging, tracing, and authentication hooks are defined even if initially no-op.
+- Provide migration guides for third-party extensions once the protocol is public.
+
 ### Testing Strategy
 
 - Mock implementations of `CoordinatorClient`, `LegacyCliService`, and `PreferencesStore` will live
@@ -104,4 +125,3 @@ interfaces. Later, we can spin the TUI out with minimal disruption.
 
 - [Touchpoints Inventory](./touchpoints.md)
 - Roadmap item “Option 2 – Gradual TUI Extraction”
-
