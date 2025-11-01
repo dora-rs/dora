@@ -68,7 +68,7 @@ impl DataVizView {
     }
 
     fn render_shortcuts(&self, frame: &mut Frame, area: Rect) {
-        let shortcuts = vec![
+        let shortcuts = [
             "Tab/Shift+Tab: Switch chart",
             "+/-: Zoom in/out",
             "0: Reset zoom",
@@ -291,7 +291,7 @@ impl DataVizView {
             Line::from(vec![
                 Span::raw("  Progress: "),
                 Span::styled(
-                    format!("{:.1}%", percentage),
+                    format!("{percentage:.1}%"),
                     Style::default().add_modifier(Modifier::BOLD),
                 ),
             ]),

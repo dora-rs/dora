@@ -175,8 +175,8 @@ impl Component for LogViewerComponent {
                 return Ok(ViewAction::None);
             }
 
-            match event {
-                ComponentEvent::Key(key_event) => match key_event.code {
+            if let ComponentEvent::Key(key_event) = event {
+                match key_event.code {
                     crossterm::event::KeyCode::Up | crossterm::event::KeyCode::Char('k') => {
                         self.scroll_up();
                     }
@@ -190,8 +190,7 @@ impl Component for LogViewerComponent {
                         self.scroll_to_bottom();
                     }
                     _ => {}
-                },
-                _ => {}
+                }
             }
 
             Ok(ViewAction::None)

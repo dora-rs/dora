@@ -44,7 +44,7 @@ impl ScriptContextDetector for BashScriptDetector {
         if let Ok(parent_process) = Self::get_parent_process_name() {
             match parent_process.as_str() {
                 "bash" | "sh" | "zsh" | "fish" => {
-                    indicators.push(format!("Parent process: {}", parent_process));
+                    indicators.push(format!("Parent process: {parent_process}"));
                     confidence += 0.4;
                 }
                 _ => {}
@@ -52,8 +52,7 @@ impl ScriptContextDetector for BashScriptDetector {
         }
 
         // Check environment variables
-        if env_map.contains_key("BASH")
-            || env_map.get("SHELL").map_or(false, |s| s.contains("bash"))
+        if env_map.contains_key("BASH") || env_map.get("SHELL").is_some_and(|s| s.contains("bash"))
         {
             indicators.push("Bash environment detected".to_string());
             confidence += 0.3;
@@ -66,7 +65,7 @@ impl ScriptContextDetector for BashScriptDetector {
         }
 
         // Check for common script indicators
-        if env_map.get("TERM").map_or(false, |t| t == "dumb") {
+        if env_map.get("TERM").is_some_and(|t| t == "dumb") {
             indicators.push("TERM=dumb indicates script execution".to_string());
             confidence += 0.3;
         }
@@ -84,9 +83,10 @@ impl ScriptContextDetector for BashScriptDetector {
         }
 
         // Check for process substitution indicators
-        if env_map.get("_").map_or(false, |underscore| {
-            underscore.contains("bash") || underscore.contains("sh")
-        }) {
+        if env_map
+            .get("_")
+            .is_some_and(|underscore| underscore.contains("bash") || underscore.contains("sh"))
+        {
             indicators.push("Script execution context detected via $_".to_string());
             confidence += 0.3;
         }
@@ -118,12 +118,12 @@ impl BashScriptDetector {
             let ppid = unsafe { libc::getppid() };
 
             // Read process name from /proc filesystem
-            let proc_path = format!("/proc/{}/comm", ppid);
+            let proc_path = format!("/proc/{ppid}/comm");
             if let Ok(name) = fs::read_to_string(&proc_path) {
                 Ok(name.trim().to_string())
             } else {
                 // Fallback: try to read from /proc/pid/stat
-                let stat_path = format!("/proc/{}/stat", ppid);
+                let stat_path = format!("/proc/{ppid}/stat");
                 if let Ok(stat_content) = fs::read_to_string(&stat_path) {
                     // Parse stat file - second field is the command name in parentheses
                     if let Some(start) = stat_content.find('(') {
@@ -176,7 +176,7 @@ impl ScriptContextDetector for PythonScriptDetector {
         // Check parent process
         if let Ok(parent) = BashScriptDetector::get_parent_process_name() {
             if parent.contains("python") || parent.contains("pytest") || parent.contains("pip") {
-                indicators.push(format!("Python parent process: {}", parent));
+                indicators.push(format!("Python parent process: {parent}"));
                 confidence += 0.5;
             }
         }
@@ -203,7 +203,7 @@ impl ScriptContextDetector for PythonScriptDetector {
         // Check for script execution context
         if env_map
             .get("_")
-            .map_or(false, |underscore| underscore.contains("python"))
+            .is_some_and(|underscore| underscore.contains("python"))
         {
             indicators.push("Python script execution detected".to_string());
             confidence += 0.4;
@@ -255,7 +255,7 @@ impl ScriptContextDetector for NodeScriptDetector {
         // Check parent process
         if let Ok(parent) = BashScriptDetector::get_parent_process_name() {
             if parent.contains("node") || parent.contains("npm") || parent.contains("yarn") {
-                indicators.push(format!("Node.js parent process: {}", parent));
+                indicators.push(format!("Node.js parent process: {parent}"));
                 confidence += 0.5;
             }
         }
@@ -320,7 +320,7 @@ impl ScriptContextDetector for PowerShellScriptDetector {
         // Check parent process (mainly for Windows)
         if let Ok(parent) = BashScriptDetector::get_parent_process_name() {
             if parent.contains("powershell") || parent.contains("pwsh") {
-                indicators.push(format!("PowerShell parent process: {}", parent));
+                indicators.push(format!("PowerShell parent process: {parent}"));
                 confidence += 0.6;
             }
         }
@@ -384,7 +384,7 @@ impl ScriptContextDetector for DockerContainerDetector {
         let container_vars = ["CONTAINER", "DOCKER_CONTAINER", "KUBERNETES_SERVICE_HOST"];
         for var in &container_vars {
             if env_map.contains_key(*var) {
-                indicators.push(format!("Container environment variable {} detected", var));
+                indicators.push(format!("Container environment variable {var} detected"));
                 confidence += 0.3;
             }
         }

@@ -116,7 +116,7 @@ impl DataflowSummaryComponent {
                 )
                 .gauge_style(theme.percentage_style(dataflow_health as f32))
                 .percent(dataflow_health.min(100.0) as u16)
-                .label(format!("{:.0}%", dataflow_health));
+                .label(format!("{dataflow_health:.0}%"));
 
             frame.render_widget(dataflow_gauge, chunks[0]);
 
@@ -126,7 +126,7 @@ impl DataflowSummaryComponent {
                 .block(Block::default().title("Node Health").borders(Borders::ALL))
                 .gauge_style(theme.percentage_style(node_health as f32))
                 .percent(node_health.min(100.0) as u16)
-                .label(format!("{:.0}%", node_health));
+                .label(format!("{node_health:.0}%"));
 
             frame.render_widget(node_gauge, chunks[1]);
         }

@@ -35,6 +35,12 @@ pub struct CompletionState {
     pub completion_type: CompletionType,
 }
 
+impl Default for CompletionState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CompletionState {
     pub fn new() -> Self {
         Self {
@@ -115,6 +121,12 @@ pub enum SuggestionType {
 pub struct HistoryNavigation {
     current_index: Option<usize>,
     original_buffer: String,
+}
+
+impl Default for HistoryNavigation {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl HistoryNavigation {
@@ -420,7 +432,7 @@ impl CommandModeManager {
         };
 
         // Create input text with cursor
-        let display_text = format!(":{}", buffer);
+        let display_text = format!(":{buffer}");
 
         // Create input widget
         let input = Paragraph::new(display_text.as_str())
@@ -565,6 +577,12 @@ pub struct CommandInfo {
     pub description: String,
     pub subcommands: Vec<String>,
     pub common_flags: Vec<String>,
+}
+
+impl Default for CompletionEngine {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl CompletionEngine {
@@ -770,7 +788,7 @@ impl CompletionEngine {
                 .filter(|subcmd| subcmd.starts_with(prefix))
                 .map(|subcmd| CommandSuggestion {
                     text: subcmd.clone(),
-                    description: format!("{} subcommand", parent_cmd),
+                    description: format!("{parent_cmd} subcommand"),
                     suggestion_type: SuggestionType::Command,
                     priority: 85,
                 })
@@ -787,7 +805,7 @@ impl CompletionEngine {
                 .filter(|flag| flag.starts_with(prefix))
                 .map(|flag| CommandSuggestion {
                     text: flag.clone(),
-                    description: format!("{} flag", cmd),
+                    description: format!("{cmd} flag"),
                     suggestion_type: SuggestionType::Flag,
                     priority: 75,
                 })

@@ -393,7 +393,7 @@ impl TrendAnalysisEngine {
         for metric in metrics {
             groups
                 .entry(metric.metric_name.clone())
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(metric);
         }
 
@@ -495,14 +495,12 @@ impl TrendAnalysisEngine {
         let mut key_findings = Vec::new();
         if increasing_trends > 0 {
             key_findings.push(format!(
-                "{} metrics showing increasing trends",
-                increasing_trends
+                "{increasing_trends} metrics showing increasing trends"
             ));
         }
         if decreasing_trends > 0 {
             key_findings.push(format!(
-                "{} metrics showing decreasing trends",
-                decreasing_trends
+                "{decreasing_trends} metrics showing decreasing trends"
             ));
         }
 

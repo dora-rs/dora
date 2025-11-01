@@ -129,8 +129,8 @@ pub enum BottleneckLocation {
 impl BottleneckLocation {
     pub fn display(&self) -> String {
         match self {
-            Self::Node { node_id } => format!("Node: {}", node_id),
-            Self::Link { from, to } => format!("Link: {} → {}", from, to),
+            Self::Node { node_id } => format!("Node: {node_id}"),
+            Self::Link { from, to } => format!("Link: {from} → {to}"),
             Self::System => "System".to_string(),
             Self::Network => "Network".to_string(),
         }

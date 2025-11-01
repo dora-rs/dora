@@ -1,6 +1,29 @@
 /// Integration test for TUI initialization
 /// Tests that all TUI components can be created and initialized
-use dora_cli::tui::{AppState, DoraApp, ThemeConfig, ViewType};
+use std::sync::Arc;
+
+use dora_cli::tui::app::DoraApp;
+use dora_cli::tui::{AppState, ThemeConfig, ViewType};
+use tui_interface::{
+    MockCoordinatorClient, MockLegacyCliService, MockPreferencesStore, MockTelemetryService,
+    UserPreferencesSnapshot,
+};
+
+fn build_app_with_view(view: ViewType) -> DoraApp {
+    let prefs = Arc::new(MockPreferencesStore::new());
+    let coordinator = Arc::new(MockCoordinatorClient::new());
+    let telemetry = Arc::new(MockTelemetryService::new());
+    let legacy = Arc::new(MockLegacyCliService::new());
+
+    prefs.set_load_result(Ok(UserPreferencesSnapshot {
+        theme: "dark".to_string(),
+        auto_refresh_interval_secs: 5,
+        show_system_info: true,
+        default_view: None,
+    }));
+
+    DoraApp::with_dependencies(view, prefs, coordinator, telemetry, legacy)
+}
 
 #[test]
 fn test_app_state_creation() {
@@ -23,32 +46,20 @@ fn test_theme_config_creation() {
 
 #[test]
 fn test_dora_app_creation() {
-    // Test creating DoraApp with different initial views
-    let app_dashboard = DoraApp::new(ViewType::Dashboard);
-    drop(app_dashboard);
-
-    let app_dataflows = DoraApp::new(ViewType::DataflowManager);
-    drop(app_dataflows);
-
-    let app_monitor = DoraApp::new(ViewType::SystemMonitor);
-    drop(app_monitor);
+    drop(build_app_with_view(ViewType::Dashboard));
+    drop(build_app_with_view(ViewType::DataflowManager));
+    drop(build_app_with_view(ViewType::SystemMonitor));
 }
 
 #[test]
 fn test_tui_components_dont_panic() {
-    // This test ensures basic TUI initialization doesn't panic
-    // even in a non-TTY environment
-
     let _state = AppState::default();
     let _theme = ThemeConfig::default();
-    let _app = DoraApp::new(ViewType::Dashboard);
-
-    // If we got here, all components initialized successfully
+    drop(build_app_with_view(ViewType::Dashboard));
 }
 
 #[test]
 fn test_view_type_variants() {
-    // Ensure all ViewType variants can be constructed
     let views = vec![
         ViewType::Dashboard,
         ViewType::DataflowManager,
@@ -71,6 +82,6 @@ fn test_view_type_variants() {
     ];
 
     for view in views {
-        let _app = DoraApp::new(view);
+        drop(build_app_with_view(view));
     }
 }

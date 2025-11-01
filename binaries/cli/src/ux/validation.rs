@@ -107,7 +107,7 @@ impl UxValidator {
             violations.push(UxViolation {
                 category: ViolationCategory::MissingHints,
                 severity: Severity::Medium,
-                description: format!("Command '{}' output lacks user hints", command_name),
+                description: format!("Command '{command_name}' output lacks user hints"),
                 location: command_name.to_string(),
                 recommendation: "Add contextual hints to guide users".to_string(),
             });
@@ -188,8 +188,7 @@ impl UxValidator {
                     category: ViolationCategory::InconsistentTerminology,
                     severity: Severity::Medium,
                     description: format!(
-                        "Inconsistent terminology for '{standard}': found {}",
-                        conflicting_display
+                        "Inconsistent terminology for '{standard}': found {conflicting_display}"
                     ),
                     location: command_name.to_string(),
                     recommendation: format!(
@@ -307,7 +306,7 @@ impl UxValidator {
                         term_usage
                             .entry(standard_term.to_string())
                             .or_default()
-                            .push(format!("{}: {}", cmd_name, variation));
+                            .push(format!("{cmd_name}: {variation}"));
                     }
                 }
             }
@@ -319,9 +318,9 @@ impl UxValidator {
                 violations.push(UxViolation {
                     category: ViolationCategory::InconsistentTerminology,
                     severity: Severity::Medium,
-                    description: format!("Inconsistent terminology for '{}' across commands", term),
+                    description: format!("Inconsistent terminology for '{term}' across commands"),
                     location: usages.join(", "),
-                    recommendation: format!("Standardize to '{}'", term),
+                    recommendation: format!("Standardize to '{term}'"),
                 });
             }
         }

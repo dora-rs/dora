@@ -64,7 +64,7 @@ impl ResultComplexityAnalyzer {
             complexity_factors.push(ComplexityFactor {
                 factor_type: FactorType::DataVolume,
                 impact: volume_complexity,
-                description: format!("Large dataset with {} data points", data_points),
+                description: format!("Large dataset with {data_points} data points"),
                 evidence: vec![format!("{} metrics analyzed", data_points)],
             });
         }
@@ -79,8 +79,7 @@ impl ResultComplexityAnalyzer {
                 factor_type: FactorType::AnalysisDimensions,
                 impact: dimension_complexity,
                 description: format!(
-                    "Multi-dimensional analysis across {} areas",
-                    analysis_dimensions
+                    "Multi-dimensional analysis across {analysis_dimensions} areas"
                 ),
                 evidence: self.get_analysis_dimension_names(results),
             });
@@ -106,10 +105,7 @@ impl ResultComplexityAnalyzer {
             complexity_factors.push(ComplexityFactor {
                 factor_type: FactorType::ProblemComplexity,
                 impact: problem_complexity,
-                description: format!(
-                    "{} anomalies and {} issues detected",
-                    anomaly_count, issue_count
-                ),
+                description: format!("{anomaly_count} anomalies and {issue_count} issues detected"),
                 evidence: vec![
                     format!("Anomalies: {}", anomaly_count),
                     format!("Issues: {}", issue_count),

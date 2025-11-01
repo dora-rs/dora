@@ -73,8 +73,9 @@ impl Default for CliContext {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum CommandMode {
+    #[default]
     Normal,
     Command {
         buffer: String,
@@ -92,12 +93,6 @@ pub enum CommandMode {
         start_line: usize,
         end_line: usize,
     },
-}
-
-impl Default for CommandMode {
-    fn default() -> Self {
-        CommandMode::Normal
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -211,10 +206,7 @@ impl CommandHistory {
 
     #[cfg_attr(not(feature = "tui-cli-services"), allow(dead_code))]
     pub fn load_or_default() -> Self {
-        match Self::load() {
-            Ok(history) => history,
-            Err(_) => Self::new(),
-        }
+        Self::load().unwrap_or_default()
     }
 
     #[cfg_attr(not(feature = "tui-cli-services"), allow(dead_code))]
@@ -372,8 +364,7 @@ impl TabCompletion {
 
     #[cfg_attr(not(feature = "tui-cli-services"), allow(dead_code))]
     pub fn complete_current(&self) -> Option<String> {
-        self.get_current_suggestion()
-            .map(|suggestion| suggestion.clone())
+        self.get_current_suggestion().cloned()
     }
 }
 
@@ -465,7 +456,7 @@ impl KeyBindings {
         if let Some(view_name) = view {
             self.view_specific
                 .entry(view_name)
-                .or_insert_with(HashMap::new)
+                .or_default()
                 .insert(key, action);
         } else {
             self.global.insert(key, action);

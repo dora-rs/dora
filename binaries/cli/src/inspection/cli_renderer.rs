@@ -157,7 +157,7 @@ impl CliRenderer {
 
         lines.push(format!("  Type:       {}", resource.resource_type));
         lines.push(format!("  Identifier: {}", resource.identifier));
-        lines.push(format!("  Status:     {}", status_display));
+        lines.push(format!("  Status:     {status_display}"));
 
         if let Some(created) = resource.created_at {
             lines.push(format!(
@@ -170,7 +170,7 @@ impl CliRenderer {
             lines.push(String::new());
             lines.push("  Metadata:".to_string());
             for (key, value) in &resource.metadata {
-                lines.push(format!("    {}: {}", key, value));
+                lines.push(format!("    {key}: {value}"));
             }
         }
 
@@ -187,14 +187,14 @@ impl CliRenderer {
             "  Overall Score: {:.0}% {} {}",
             health.overall_score, health_bar, status_display
         ));
-        lines.push(format!("  Complexity:    {:.0}", complexity));
+        lines.push(format!("  Complexity:    {complexity:.0}"));
 
         if !health.component_scores.is_empty() {
             lines.push(String::new());
             lines.push("  Component Scores:".to_string());
             for (component, score) in &health.component_scores {
                 let bar = self.render_mini_bar(*score);
-                lines.push(format!("    {:<15} {:.0}% {}", component, score, bar));
+                lines.push(format!("    {component:<15} {score:.0}% {bar}"));
             }
         }
 
@@ -218,19 +218,19 @@ impl CliRenderer {
 
         if let Some(cpu) = perf.cpu_usage {
             let cpu_bar = self.render_mini_bar(100.0 - cpu);
-            lines.push(format!("  CPU Usage:    {:.1}% {}", cpu, cpu_bar));
+            lines.push(format!("  CPU Usage:    {cpu:.1}% {cpu_bar}"));
         }
 
         if let Some(mem) = perf.memory_mb {
-            lines.push(format!("  Memory:       {:.0} MB", mem));
+            lines.push(format!("  Memory:       {mem:.0} MB"));
         }
 
         if let Some(throughput) = perf.throughput {
-            lines.push(format!("  Throughput:   {:.0} ops/s", throughput));
+            lines.push(format!("  Throughput:   {throughput:.0} ops/s"));
         }
 
         if let Some(latency) = perf.latency_ms {
-            lines.push(format!("  Latency:      {:.1} ms", latency));
+            lines.push(format!("  Latency:      {latency:.1} ms"));
         }
 
         if let Some(error_rate) = perf.error_rate {
@@ -244,7 +244,7 @@ impl CliRenderer {
                 let severity_icon = self.format_severity(&issue.severity);
                 lines.push(format!("    {} {}", severity_icon, issue.description));
                 if let Some(rec) = &issue.recommendation {
-                    lines.push(format!("      💡 {}", rec));
+                    lines.push(format!("      💡 {rec}"));
                 }
             }
         }
@@ -265,7 +265,7 @@ impl CliRenderer {
                     error.message
                 ));
                 if let Some(ctx) = &error.context {
-                    lines.push(format!("      Context: {}", ctx));
+                    lines.push(format!("      Context: {ctx}"));
                 }
             }
         }
@@ -336,7 +336,7 @@ impl CliRenderer {
         if self.config.use_colors {
             format!("▶ {}", title.bold())
         } else {
-            format!("▶ {}", title)
+            format!("▶ {title}")
         }
     }
 

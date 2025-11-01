@@ -1,7 +1,7 @@
 # ADR-001: TUI ↔ Core Interface Boundary
 
 - **Date:** 2025-02-14
-- **Status:** Proposed
+- **Status:** Accepted
 - **Related Issues:** [#101](https://github.com/heyong4725/dora/issues/101), [#103](https://github.com/heyong4725/dora/issues/103)
 - **Decision Drivers:**
   - Reduce coupling between the Dora framework and the emerging TUI so each can evolve independently.
@@ -10,9 +10,12 @@
 
 ## Context
 
-The TUI currently lives under `binaries/cli/src/tui` and reaches into many parts of the Dora CLI and
-framework (legacy command parsing, coordinator RPC helpers, user preference persistence, etc.).
-Issue #101 documented these touchpoints in [docs/tui-boundary/touchpoints.md](./touchpoints.md).
+The TUI now resides in the standalone repository
+[heyong4725/dora-tui](https://github.com/heyong4725/dora-tui) and depends on the core framework
+through published/git dependencies. Before the split it lived under `binaries/cli/src/tui` and
+reached into many parts of the Dora CLI and framework (legacy command parsing, coordinator RPC
+helpers, user preference persistence, etc.). Issue #101 documented those touchpoints in
+[docs/tui-boundary/touchpoints.md](./touchpoints.md).
 
 Without a boundary:
 - Every framework refactor risks breaking the TUI.
@@ -68,7 +71,8 @@ interfaces. Later, we can spin the TUI out with minimal disruption.
 
 1. Extract DTOs & helper logic from TUI/framework into the new crate.
 2. Implement service traits in the CLI, adapting existing helper functions.
-3. Update TUI code to use only the interface crate.
+3. Update TUI code to use only the interface crate. (Completed as part of the
+   [dora-tui](https://github.com/heyong4725/dora-tui) split.)
 4. Add dependency guardrails:
    - `#[deny(clippy::all)]` is insufficient; add custom `cargo check` script that fails if TUI code
      imports from forbidden modules.
@@ -103,6 +107,13 @@ Interim milestones:
 - The CLI integration test suite registers the real implementations and runs smoke tests to ensure
   the TUI contracts remain satisfied.
 - Long term, these mocks can move to the future TUI repo so it can test independently.
+
+## Status Updates
+
+- **2025-03-28 (Repo Split):** TUI crates now live in the [heyong4725/dora-tui](https://github.com/heyong4725/dora-tui) repository. Core crates consume them via git dependencies.
+- **2025-03-21 (P0 Audit):** `docs/tui-boundary/touchpoints.md` now includes an operation matrix and
+  explicit gaps covering lifecycle commands, log streaming, telemetry, and preferences. These
+  findings feed directly into the protocol issues #111–#117 outlined above.
 
 ## Consequences
 

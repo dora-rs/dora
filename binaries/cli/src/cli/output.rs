@@ -24,7 +24,7 @@ impl OutputFormatter {
     }
 
     pub fn ui_mode(&self) -> Option<UiMode> {
-        self.ui_mode.clone()
+        self.ui_mode
     }
 
     /// Render data according to the specified format
@@ -57,7 +57,7 @@ impl OutputFormatter {
     /// Render minimal output
     fn render_minimal<T: Serialize>(&self, data: &T) -> Result<String> {
         // Minimal output logic - will be enhanced
-        Ok(format!("{}", serde_json::to_string(data)?))
+        Ok((serde_json::to_string(data)?).to_string())
     }
 
     /// Auto-select format based on context
@@ -87,17 +87,14 @@ impl OutputFormatter {
     /// Display hints if not suppressed
     pub fn display_hint(&self, hint: &str) {
         if !self.no_hints && !self.is_ci_environment() {
-            eprintln!("💡 Hint: {}", hint);
+            eprintln!("💡 Hint: {hint}");
         }
     }
 
     /// Display TUI suggestion
     pub fn suggest_tui(&self, reason: &str) {
         if !self.no_hints && !self.is_ci_environment() {
-            eprintln!(
-                "🚀 For a better experience with {}, try: dora --ui-mode tui",
-                reason
-            );
+            eprintln!("🚀 For a better experience with {reason}, try: dora --ui-mode tui");
         }
     }
 }

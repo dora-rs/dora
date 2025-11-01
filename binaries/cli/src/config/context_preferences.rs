@@ -150,7 +150,7 @@ impl ContextAwarePreferences {
                 .environment
                 .ci_environment
                 .as_ref()
-                .map(|ci| format!("ci:{:?}", ci))
+                .map(|ci| format!("ci:{ci:?}"))
                 .unwrap_or_else(|| "local".to_string()),
             time_of_day: now.hour() as u8,
             day_of_week: now.weekday().num_days_from_sunday() as u8,
@@ -176,7 +176,7 @@ impl ContextAwarePreferences {
 
         // Get base preferences
         let base_prefs = self.base_preferences.lock().unwrap();
-        let default_mode = base_prefs.interface.default_ui_mode.clone();
+        let default_mode = base_prefs.interface.default_ui_mode;
         let complexity_threshold = base_prefs
             .interface
             .complexity_thresholds
@@ -207,7 +207,7 @@ impl ContextAwarePreferences {
         // Apply time-based preferences
         let time_factors = self.adaptation_engine.apply_time_based_rules(context);
         for (mode, weight, description) in time_factors {
-            preference_factors.push((mode.clone(), weight));
+            preference_factors.push((mode, weight));
             reasoning.push(PreferenceReason {
                 factor: "time".to_string(),
                 impact: weight,
@@ -219,7 +219,7 @@ impl ContextAwarePreferences {
         // Apply environment-based preferences
         let env_factors = self.adaptation_engine.apply_environment_rules(context);
         for (mode, weight, description) in env_factors {
-            preference_factors.push((mode.clone(), weight));
+            preference_factors.push((mode, weight));
             reasoning.push(PreferenceReason {
                 factor: "environment".to_string(),
                 impact: weight,
@@ -234,7 +234,7 @@ impl ContextAwarePreferences {
             .adaptation_engine
             .apply_complexity_rules(complexity_score);
         for (mode, weight, description) in complexity_factors {
-            preference_factors.push((mode.clone(), weight));
+            preference_factors.push((mode, weight));
             reasoning.push(PreferenceReason {
                 factor: "complexity".to_string(),
                 impact: weight,
@@ -260,7 +260,7 @@ impl ContextAwarePreferences {
                     factor: "terminal_size".to_string(),
                     impact: 0.8,
                     preference: UiMode::Cli,
-                    description: format!("Small terminal size: {}x{}", width, height),
+                    description: format!("Small terminal size: {width}x{height}"),
                 });
             }
         }
@@ -343,7 +343,7 @@ impl ContextAwarePreferences {
         let mut total_weight = 0.0;
 
         for (mode, weight) in factors {
-            *mode_weights.entry(mode.clone()).or_insert(0.0) += weight;
+            *mode_weights.entry(*mode).or_insert(0.0) += weight;
             total_weight += weight;
         }
 
@@ -364,6 +364,12 @@ impl ContextAwarePreferences {
         };
 
         (preferred_mode, confidence)
+    }
+}
+
+impl Default for AdaptationEngine {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -389,11 +395,7 @@ impl AdaptationEngine {
 
         for rule in &self.time_based_rules {
             if self.time_matches(current_hour, current_day, rule) {
-                factors.push((
-                    rule.preferred_mode.clone(),
-                    rule.weight,
-                    rule.description.clone(),
-                ));
+                factors.push((rule.preferred_mode, rule.weight, rule.description.clone()));
             }
         }
 
@@ -409,11 +411,7 @@ impl AdaptationEngine {
 
         for rule in &self.environment_rules {
             if self.environment_matches(context, rule) {
-                factors.push((
-                    rule.preferred_mode.clone(),
-                    rule.weight,
-                    rule.description.clone(),
-                ));
+                factors.push((rule.preferred_mode, rule.weight, rule.description.clone()));
             }
         }
 
@@ -426,11 +424,7 @@ impl AdaptationEngine {
 
         for rule in &self.complexity_rules {
             if complexity >= rule.min_complexity && complexity <= rule.max_complexity {
-                factors.push((
-                    rule.preferred_mode.clone(),
-                    rule.weight,
-                    rule.description.clone(),
-                ));
+                factors.push((rule.preferred_mode, rule.weight, rule.description.clone()));
             }
         }
 

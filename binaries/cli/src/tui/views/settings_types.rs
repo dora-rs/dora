@@ -113,7 +113,7 @@ impl SettingValue {
                 }
             }
             Self::Integer(i) => i.to_string(),
-            Self::Float(f) => format!("{:.2}", f),
+            Self::Float(f) => format!("{f:.2}"),
             Self::String(s) => {
                 if s.len() > 30 {
                     format!("{}...", &s[..27])
@@ -199,6 +199,12 @@ pub struct SettingsState {
     pub logging_settings: Vec<SettingItem>,
     pub selected_index: usize,
     pub last_refresh: Instant,
+}
+
+impl Default for SettingsState {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SettingsState {

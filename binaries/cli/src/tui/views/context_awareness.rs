@@ -370,7 +370,7 @@ impl ContextAwarenessView {
                 let mut content = vec![
                     Line::from(vec![
                         Span::styled(
-                            format!("{} ", priority_indicator),
+                            format!("{priority_indicator} "),
                             Style::default().fg(self.theme.colors.accent),
                         ),
                         Span::styled(level.level.name(), style),

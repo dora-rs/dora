@@ -394,8 +394,7 @@ impl WorkflowValidator {
 
         if critical_count > 0 {
             recommendations.push(format!(
-                "Address {} critical integration issues immediately",
-                critical_count
+                "Address {critical_count} critical integration issues immediately"
             ));
         }
 

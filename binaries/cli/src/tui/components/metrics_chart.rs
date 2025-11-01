@@ -177,18 +177,14 @@ impl Component for MetricsChartComponent {
                 return Ok(ViewAction::None);
             }
 
-            match event {
-                ComponentEvent::Key(key_event) => match key_event.code {
-                    crossterm::event::KeyCode::Char('a') => {
-                        self.auto_scale = !self.auto_scale;
-                        return Ok(ViewAction::ShowStatus(format!(
-                            "Auto-scale: {}",
-                            if self.auto_scale { "ON" } else { "OFF" }
-                        )));
-                    }
-                    _ => {}
-                },
-                _ => {}
+            if let ComponentEvent::Key(key_event) = event {
+                if let crossterm::event::KeyCode::Char('a') = key_event.code {
+                    self.auto_scale = !self.auto_scale;
+                    return Ok(ViewAction::ShowStatus(format!(
+                        "Auto-scale: {}",
+                        if self.auto_scale { "ON" } else { "OFF" }
+                    )));
+                }
             }
 
             Ok(ViewAction::None)

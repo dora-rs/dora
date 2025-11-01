@@ -317,7 +317,7 @@ impl ThemeManager {
             self.current_theme = theme.clone();
             Ok(())
         } else {
-            Err(format!("Theme '{}' not found", theme_name))
+            Err(format!("Theme '{theme_name}' not found"))
         }
     }
 

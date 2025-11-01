@@ -281,8 +281,7 @@ impl LogEntry {
     }
 
     pub fn matches_pattern(&self, pattern: &str) -> bool {
-        self.message.contains(pattern)
-            || self.source.as_ref().map_or(false, |s| s.contains(pattern))
+        self.message.contains(pattern) || self.source.as_ref().is_some_and(|s| s.contains(pattern))
     }
 }
 

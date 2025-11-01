@@ -7,11 +7,14 @@ use crate::tui::{
 use crossterm::event::KeyEvent;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::Style,
+    style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Gauge, Paragraph, Sparkline},
+    widgets::{Block, Borders, Gauge, Paragraph, Sparkline, Wrap},
 };
-use std::{collections::VecDeque, time::Duration};
+use std::{
+    collections::VecDeque,
+    time::{Duration, Instant},
+};
 
 pub struct SystemMonitorView {
     base: BaseView,
@@ -38,6 +41,7 @@ impl View for SystemMonitorView {
         let rows = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
+                Constraint::Length(3), // Status
                 Constraint::Length(5), // CPU
                 Constraint::Length(5), // Memory
                 Constraint::Length(5), // Disk
@@ -47,12 +51,19 @@ impl View for SystemMonitorView {
             ])
             .split(inner);
 
-        render_cpu(f, rows[0], metrics, &self.theme);
-        render_memory(f, rows[1], metrics, &self.theme);
-        render_disk(f, rows[2], metrics, &self.theme);
-        render_network(f, rows[3], metrics, &self.theme);
-        render_trends(f, rows[4], app_state.system_metrics_history(), &self.theme);
-        render_load_section(f, rows[5], metrics, &self.theme);
+        render_status(
+            f,
+            rows[0],
+            metrics,
+            app_state.system_metrics_history(),
+            &self.theme,
+        );
+        render_cpu(f, rows[1], metrics, &self.theme);
+        render_memory(f, rows[2], metrics, &self.theme);
+        render_disk(f, rows[3], metrics, &self.theme);
+        render_network(f, rows[4], metrics, &self.theme);
+        render_trends(f, rows[5], app_state.system_metrics_history(), &self.theme);
+        render_load_section(f, rows[6], metrics, &self.theme);
     }
 
     async fn handle_key(
@@ -74,6 +85,60 @@ impl View for SystemMonitorView {
     fn title(&self) -> &str {
         &self.base.title
     }
+}
+
+fn render_status(
+    f: &mut Frame,
+    area: Rect,
+    metrics: &SystemMetrics,
+    history: &VecDeque<SystemMetricsSample>,
+    theme: &ThemeConfig,
+) {
+    let block = Block::default()
+        .title("Status")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.colors.border));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let (status_label, status_style, age_text) = match metrics.last_update {
+        Some(last) => {
+            let age = Instant::now().saturating_duration_since(last);
+            let label = if age <= Duration::from_secs(3) {
+                ("Live", Style::default().fg(theme.colors.success))
+            } else if age <= Duration::from_secs(10) {
+                ("Stale", Style::default().fg(theme.colors.warning))
+            } else {
+                ("Offline", Style::default().fg(theme.colors.error))
+            };
+            (
+                label.0,
+                label.1,
+                format!("updated {} ago", format_duration_short(age)),
+            )
+        }
+        None => (
+            "Awaiting data",
+            Style::default().fg(theme.colors.muted),
+            "no samples yet".into(),
+        ),
+    };
+
+    let samples = history.len();
+    let content = vec![Line::from(vec![
+        Span::styled("Status: ", Style::default().fg(theme.colors.text)),
+        Span::styled(status_label, status_style.add_modifier(Modifier::BOLD)),
+        Span::styled(" • ", Style::default().fg(theme.colors.muted)),
+        Span::styled(age_text, Style::default().fg(theme.colors.muted)),
+        Span::styled(" • Samples: ", Style::default().fg(theme.colors.text)),
+        Span::styled(
+            samples.to_string(),
+            Style::default().fg(theme.colors.primary),
+        ),
+    ])];
+
+    let paragraph = Paragraph::new(content).wrap(Wrap { trim: true });
+    f.render_widget(paragraph, inner);
 }
 
 fn render_cpu(f: &mut Frame, area: Rect, metrics: &SystemMetrics, theme: &ThemeConfig) {
@@ -256,14 +321,33 @@ fn tail_map<F>(history: &VecDeque<SystemMetricsSample>, limit: usize, map: F) ->
 where
     F: Fn(&SystemMetricsSample) -> u64,
 {
-    let mut values: Vec<u64> = history
-        .iter()
-        .rev()
-        .take(limit)
-        .map(|sample| map(sample))
-        .collect();
+    let mut values: Vec<u64> = history.iter().rev().take(limit).map(map).collect();
     values.reverse();
     values
+}
+
+fn format_duration_short(duration: Duration) -> String {
+    if duration < Duration::from_millis(1000) {
+        format!("{}ms", duration.as_millis())
+    } else if duration < Duration::from_secs(60) {
+        format!("{:.1}s", duration.as_secs_f32())
+    } else if duration < Duration::from_secs(3_600) {
+        let minutes = duration.as_secs() / 60;
+        let seconds = duration.as_secs() % 60;
+        if seconds == 0 {
+            format!("{minutes}m")
+        } else {
+            format!("{minutes}m{seconds}s")
+        }
+    } else {
+        let hours = duration.as_secs() / 3_600;
+        let minutes = (duration.as_secs() % 3_600) / 60;
+        if minutes == 0 {
+            format!("{hours}h")
+        } else {
+            format!("{hours}h{minutes}m")
+        }
+    }
 }
 
 fn format_bytes(bytes: u64) -> String {
@@ -308,13 +392,13 @@ fn format_duration(duration: Duration) -> String {
     let seconds = total_secs % 60;
 
     if days > 0 {
-        format!("{}d {}h", days, hours)
+        format!("{days}d {hours}h")
     } else if hours > 0 {
-        format!("{}h {}m", hours, minutes)
+        format!("{hours}h {minutes}m")
     } else if minutes > 0 {
-        format!("{}m", minutes)
+        format!("{minutes}m")
     } else {
-        format!("{}s", seconds)
+        format!("{seconds}s")
     }
 }
 
@@ -333,6 +417,14 @@ mod tests {
     fn format_rate_handles_units() {
         assert_eq!(format_rate(256.0), "256 B");
         assert_eq!(format_rate(2_048.0), "2.0 KB");
+    }
+
+    #[test]
+    fn format_duration_short_handles_ranges() {
+        assert_eq!(format_duration_short(Duration::from_millis(250)), "250ms");
+        assert_eq!(format_duration_short(Duration::from_secs(2)), "2.0s");
+        assert_eq!(format_duration_short(Duration::from_secs(135)), "2m15s");
+        assert_eq!(format_duration_short(Duration::from_secs(7_200)), "2h");
     }
 
     #[test]

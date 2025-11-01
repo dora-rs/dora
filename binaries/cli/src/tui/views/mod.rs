@@ -374,7 +374,7 @@ pub mod utils {
         let total_seconds = duration.as_secs();
 
         if total_seconds < 60 {
-            format!("{}s", total_seconds)
+            format!("{total_seconds}s")
         } else if total_seconds < 3600 {
             format!("{}m {}s", total_seconds / 60, total_seconds % 60)
         } else {

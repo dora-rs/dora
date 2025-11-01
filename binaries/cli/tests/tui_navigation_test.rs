@@ -1,7 +1,30 @@
+use std::sync::Arc;
+
 use dora_cli::cli::TuiView;
 /// Integration test for TUI navigation and keyboard handling
 /// Verifies that view switching and keyboard shortcuts work correctly
 use dora_cli::tui::ViewType;
+use dora_cli::tui::app::DoraApp;
+use tui_interface::{
+    MockCoordinatorClient, MockLegacyCliService, MockPreferencesStore, MockTelemetryService,
+    UserPreferencesSnapshot,
+};
+
+fn build_app(view: ViewType) -> DoraApp {
+    let prefs = Arc::new(MockPreferencesStore::new());
+    let coordinator = Arc::new(MockCoordinatorClient::new());
+    let telemetry = Arc::new(MockTelemetryService::new());
+    let legacy = Arc::new(MockLegacyCliService::new());
+
+    prefs.set_load_result(Ok(UserPreferencesSnapshot {
+        theme: "dark".to_string(),
+        auto_refresh_interval_secs: 5,
+        show_system_info: true,
+        default_view: None,
+    }));
+
+    DoraApp::with_dependencies(view, prefs, coordinator, telemetry, legacy)
+}
 
 #[test]
 fn test_cli_view_enum_variants_exist() {
@@ -102,7 +125,7 @@ fn test_view_navigation_sequence() {
     // All transitions should be valid
     for view in views {
         // Create app with each view - simulates view switching
-        let _app = dora_cli::tui::DoraApp::new(view);
+        drop(build_app(view));
     }
 }
 

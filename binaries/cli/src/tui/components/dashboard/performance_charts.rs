@@ -61,7 +61,7 @@ impl PerformanceChartsComponent {
         let sparkline = Sparkline::default()
             .block(
                 Block::default()
-                    .title(format!("CPU Usage: {:.1}%", current_cpu))
+                    .title(format!("CPU Usage: {current_cpu:.1}%"))
                     .borders(Borders::ALL),
             )
             .data(&data)
@@ -92,7 +92,7 @@ impl PerformanceChartsComponent {
         let sparkline = Sparkline::default()
             .block(
                 Block::default()
-                    .title(format!("Memory Usage: {:.1}%", current_mem))
+                    .title(format!("Memory Usage: {current_mem:.1}%"))
                     .borders(Borders::ALL),
             )
             .data(&data)
@@ -120,14 +120,14 @@ impl PerformanceChartsComponent {
             Line::from(vec![
                 Span::styled("CPU Avg: ", Style::default().fg(theme.colors.muted)),
                 Span::styled(
-                    format!("{:.1}%", cpu_avg),
+                    format!("{cpu_avg:.1}%"),
                     Style::default().fg(theme.colors.primary),
                 ),
             ]),
             Line::from(vec![
                 Span::styled("Mem Avg: ", Style::default().fg(theme.colors.muted)),
                 Span::styled(
-                    format!("{:.1}%", mem_avg),
+                    format!("{mem_avg:.1}%"),
                     Style::default().fg(theme.colors.accent),
                 ),
             ]),

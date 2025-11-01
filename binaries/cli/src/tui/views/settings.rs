@@ -220,7 +220,7 @@ impl SettingsView {
         if let Some(setting) = self.state.get_selected_setting_mut() {
             let name = setting.display_name.clone();
             setting.reset_to_default();
-            Ok(ViewAction::ShowStatus(format!("Reset {} to default", name)))
+            Ok(ViewAction::ShowStatus(format!("Reset {name} to default")))
         } else {
             Ok(ViewAction::None)
         }

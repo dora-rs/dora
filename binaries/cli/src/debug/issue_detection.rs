@@ -154,13 +154,12 @@ impl PerformanceIssueDetector {
                 confidence: 0.9,
                 title: "High CPU Usage Detected".to_string(),
                 description: format!(
-                    "CPU usage is {:.1}%, significantly above baseline of {:.1}%",
-                    cpu_usage, baseline_cpu
+                    "CPU usage is {cpu_usage:.1}%, significantly above baseline of {baseline_cpu:.1}%"
                 ),
                 affected_components: vec!["CPU".to_string()],
                 symptoms: vec![
                     Symptom {
-                        description: format!("CPU usage at {:.1}%", cpu_usage),
+                        description: format!("CPU usage at {cpu_usage:.1}%"),
                         metric_value: Some(cpu_usage),
                         timestamp: Utc::now(),
                     }
@@ -241,14 +240,12 @@ impl PerformanceIssueDetector {
                 confidence: 0.85,
                 title: "High Memory Usage Detected".to_string(),
                 description: format!(
-                    "Memory usage is {:.0}MB ({:.1}%), significantly above baseline of {:.0}MB",
-                    memory_usage, memory_percent, baseline_memory
+                    "Memory usage is {memory_usage:.0}MB ({memory_percent:.1}%), significantly above baseline of {baseline_memory:.0}MB"
                 ),
                 affected_components: vec!["Memory".to_string()],
                 symptoms: vec![Symptom {
                     description: format!(
-                        "Memory usage at {:.0}MB ({:.1}%)",
-                        memory_usage, memory_percent
+                        "Memory usage at {memory_usage:.0}MB ({memory_percent:.1}%)"
                     ),
                     metric_value: Some(memory_usage),
                     timestamp: Utc::now(),
@@ -422,8 +419,7 @@ fn dataflow_failure_issue(dataflow_name: &str, entry: &DataflowListEntry) -> Det
         confidence: 0.9,
         title: format!("Dataflow '{identifier}' reported failure"),
         description: format!(
-            "Coordinator reports dataflow '{}' is in a failed state. Requested target: '{}'.",
-            identifier, dataflow_name
+            "Coordinator reports dataflow '{identifier}' is in a failed state. Requested target: '{dataflow_name}'."
         ),
         affected_components: vec![identifier.clone()],
         symptoms: vec![Symptom {
@@ -442,12 +438,12 @@ fn dataflow_failure_issue(dataflow_name: &str, entry: &DataflowListEntry) -> Det
         suggested_actions: vec![
             SuggestedAction {
                 action: "View failing node logs".to_string(),
-                command: Some(format!("dora logs --dataflow {}", identifier)),
+                command: Some(format!("dora logs --dataflow {identifier}")),
                 urgency: ActionUrgency::High,
             },
             SuggestedAction {
                 action: "Restart the dataflow once issues are resolved".to_string(),
-                command: Some(format!("dora start {}", identifier)),
+                command: Some(format!("dora start {identifier}")),
                 urgency: ActionUrgency::Medium,
             },
         ],
@@ -471,8 +467,7 @@ fn empty_dataflow_issue(dataflow_name: &str) -> DetectedIssue {
         confidence: 0.6,
         title: "Dataflow has no active nodes".to_string(),
         description: format!(
-            "Coordinator returned a running dataflow for '{}', but no node information was available.",
-            dataflow_name
+            "Coordinator returned a running dataflow for '{dataflow_name}', but no node information was available."
         ),
         affected_components: vec![dataflow_name.to_string()],
         symptoms: vec![Symptom {
@@ -509,7 +504,7 @@ fn node_failure_issue(dataflow_name: &str, node: &NodeRuntimeInfo) -> DetectedIs
         issue_type: IssueType::NodeCrashing,
         severity: IssueSeverity::High,
         confidence: 0.85,
-        title: format!("Node '{}' reported failure", node_id),
+        title: format!("Node '{node_id}' reported failure"),
         description: format!(
             "Node '{}' within dataflow '{}' exited with status {:?}.",
             node_id, dataflow_name, node.status
@@ -530,7 +525,7 @@ fn node_failure_issue(dataflow_name: &str, node: &NodeRuntimeInfo) -> DetectedIs
         }],
         suggested_actions: vec![SuggestedAction {
             action: "Tail node logs".to_string(),
-            command: Some(format!("dora logs --node {}", node_id)),
+            command: Some(format!("dora logs --node {node_id}")),
             urgency: ActionUrgency::High,
         }],
         debugging_hints: vec![DebuggingHint {
@@ -549,10 +544,9 @@ fn node_unknown_state_issue(dataflow_name: &str, node: &NodeRuntimeInfo) -> Dete
         issue_type: IssueType::MessageLoss,
         severity: IssueSeverity::Medium,
         confidence: 0.5,
-        title: format!("Node '{}' state unknown", node_id),
+        title: format!("Node '{node_id}' state unknown"),
         description: format!(
-            "Coordinator returned 'Unknown' for node '{}' in dataflow '{}'.",
-            node_id, dataflow_name
+            "Coordinator returned 'Unknown' for node '{node_id}' in dataflow '{dataflow_name}'."
         ),
         affected_components: vec![dataflow_name.to_string(), node_id.clone()],
         symptoms: vec![Symptom {
@@ -590,8 +584,7 @@ fn dataflow_not_found_issue(dataflow_name: &str) -> DetectedIssue {
         confidence: 0.7,
         title: "Dataflow not found".to_string(),
         description: format!(
-            "No running dataflow matching '{}' was reported by the coordinator.",
-            dataflow_name
+            "No running dataflow matching '{dataflow_name}' was reported by the coordinator."
         ),
         affected_components: vec![dataflow_name.to_string()],
         symptoms: vec![Symptom {
@@ -609,7 +602,7 @@ fn dataflow_not_found_issue(dataflow_name: &str) -> DetectedIssue {
         }],
         suggested_actions: vec![SuggestedAction {
             action: "Launch the dataflow".to_string(),
-            command: Some(format!("dora start {}", dataflow_name)),
+            command: Some(format!("dora start {dataflow_name}")),
             urgency: ActionUrgency::Medium,
         }],
         debugging_hints: vec![DebuggingHint {
@@ -708,8 +701,7 @@ fn network_saturation_issue(total_mib: f32) -> DetectedIssue {
         confidence: 0.6,
         title: "High network throughput detected".to_string(),
         description: format!(
-            "Combined network throughput is {:.1} MiB/s over the last sample window.",
-            total_mib
+            "Combined network throughput is {total_mib:.1} MiB/s over the last sample window."
         ),
         affected_components: vec!["network".to_string()],
         symptoms: vec![Symptom {

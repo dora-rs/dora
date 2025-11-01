@@ -228,7 +228,7 @@ impl PerformanceMonitor {
                     severity: ViolationSeverity::Warning,
                     actual_value: cpu as f64,
                     threshold_value: self.thresholds.max_cpu_percent as f64,
-                    description: format!("CPU usage {:.1}% is high", cpu),
+                    description: format!("CPU usage {cpu:.1}% is high"),
                     recommendation: "Optimize CPU-intensive operations".to_string(),
                 });
             }
@@ -244,7 +244,7 @@ impl PerformanceMonitor {
                     severity: ViolationSeverity::Info,
                     actual_value: cache_hit_rate as f64,
                     threshold_value: 50.0,
-                    description: format!("Cache hit rate {:.1}% is low", cache_hit_rate),
+                    description: format!("Cache hit rate {cache_hit_rate:.1}% is low"),
                     recommendation: "Improve caching strategy".to_string(),
                 });
                 suggestions.push("Low cache efficiency. Consider pre-warming caches.".to_string());

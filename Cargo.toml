@@ -33,7 +33,6 @@ members = [
     "libraries/extensions/ros2-bridge",
     "libraries/extensions/ros2-bridge/msg-gen",
     "libraries/extensions/ros2-bridge/python",
-    "crates/tui-interface",
     "tests/queue_size_latest_data_rust/receive_data",
 
 ]
@@ -74,7 +73,9 @@ dora-ros2-bridge-msg-gen = { version = "0.3.13", path = "libraries/extensions/ro
 dora-ros2-bridge-python = { path = "libraries/extensions/ros2-bridge/python" }
 # versioned independently from the other dora crates
 dora-message = { version = "0.6.0", path = "libraries/message" }
-tui-interface = { path = "crates/tui-interface" }
+dora-protocol = { git = "https://github.com/heyong4725/dora-tui.git", branch = "main", package = "dora-protocol" }
+tui-interface = { git = "https://github.com/heyong4725/dora-tui.git", branch = "main", package = "tui-interface" }
+dora-protocol-client = { git = "https://github.com/heyong4725/dora-tui.git", branch = "main", package = "dora-protocol-client" }
 arrow = { version = "54.2.1" }
 arrow-schema = { version = "54.2.1" }
 arrow-data = { version = "54.2.1" }

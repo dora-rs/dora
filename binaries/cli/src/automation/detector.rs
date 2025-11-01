@@ -48,9 +48,10 @@ pub struct AutomationResult {
     pub timestamp: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum AutomationType {
-    Interactive,           // Human user in terminal
+    #[default]
+    Interactive, // Human user in terminal
     CiCdPipeline,          // CI/CD environment
     ScriptedExecution,     // Shell script or automation script
     ApiIntegration,        // REST API or programmatic access
@@ -158,11 +159,17 @@ impl ContextKey {
                 .environment
                 .ci_environment
                 .as_ref()
-                .map(|ci| format!("{:?}", ci))
+                .map(|ci| format!("{ci:?}"))
                 .unwrap_or_default(),
             shell_type: context.environment.shell_type.clone().unwrap_or_default(),
             env_hash,
         }
+    }
+}
+
+impl Default for AutomationDetector {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -593,12 +600,6 @@ impl AutomationDetector {
         } else {
             None
         }
-    }
-}
-
-impl Default for AutomationType {
-    fn default() -> Self {
-        AutomationType::Interactive
     }
 }
 

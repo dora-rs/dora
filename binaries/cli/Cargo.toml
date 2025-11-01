@@ -16,10 +16,11 @@ name = "dora"
 path = "src/main.rs"
 
 [features]
-default = ["tracing", "tui-cli-services"]
+default = ["tracing", "tui-protocol-services"]
 tracing = ["dep:dora-tracing"]
 python = ["pyo3"]
 tui-cli-services = []
+tui-protocol-services = ["dora-protocol-client", "dora-protocol"]
 tui-standalone = ["tracing"]
 
 [dependencies]
@@ -57,6 +58,8 @@ ctrlc = "3.2.5"
 tracing = "0.1.36"
 tracing-log = "0.2.0"
 dora-tracing = { workspace = true, optional = true }
+dora-protocol-client = { workspace = true, optional = true }
+dora-protocol = { workspace = true, optional = true }
 bat = "0.24.0"
 dora-daemon = { workspace = true }
 dora-coordinator = { workspace = true }

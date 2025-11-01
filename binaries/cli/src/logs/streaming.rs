@@ -32,7 +32,7 @@ impl LogStream {
 
     fn generate_mock_logs(&mut self) {
         // Generate some mock log entries for demonstration
-        let log_levels = vec![
+        let log_levels = [
             LogLevel::Info,
             LogLevel::Info,
             LogLevel::Debug,
@@ -255,7 +255,7 @@ impl LogRenderer {
         };
 
         let source_str = if let Some(source) = &log.source {
-            format!(" {}", source)
+            format!(" {source}")
         } else {
             String::new()
         };
@@ -285,7 +285,7 @@ impl LogRenderer {
                 ];
 
                 for (key, value) in &log.fields {
-                    lines.push(format!("│  {}: {}", key, value));
+                    lines.push(format!("│  {key}: {value}"));
                 }
 
                 lines.push("└─".to_string());

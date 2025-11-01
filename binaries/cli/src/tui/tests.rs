@@ -11,15 +11,16 @@ use crate::tui::{
 #[cfg(test)]
 use once_cell::sync::Lazy;
 
+#[cfg(all(test, feature = "tui-cli-services"))]
+use std::{fs, path::PathBuf};
 #[cfg(test)]
 use std::{
-    fs,
-    path::PathBuf,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
 #[cfg(test)]
+#[cfg(feature = "tui-cli-services")]
 use uuid::Uuid;
 
 #[cfg(test)]
@@ -33,9 +34,34 @@ mod app_tests {
         UserPreferencesSnapshot,
     };
 
+    fn build_test_services() -> (
+        Arc<MockPreferencesStore>,
+        Arc<MockCoordinatorClient>,
+        Arc<MockTelemetryService>,
+        Arc<MockLegacyCliService>,
+    ) {
+        (
+            Arc::new(MockPreferencesStore::new()),
+            Arc::new(MockCoordinatorClient::new()),
+            Arc::new(MockTelemetryService::new()),
+            Arc::new(MockLegacyCliService::new()),
+        )
+    }
+
+    fn build_app() -> DoraApp {
+        let (prefs, coordinator, telemetry, legacy) = build_test_services();
+        prefs.set_load_result(Ok(UserPreferencesSnapshot {
+            theme: "dark".to_string(),
+            auto_refresh_interval_secs: 5,
+            show_system_info: true,
+            default_view: None,
+        }));
+        DoraApp::with_dependencies(ViewType::Dashboard, prefs, coordinator, telemetry, legacy)
+    }
+
     #[test]
     fn test_dora_app_creation() {
-        let app = DoraApp::new(ViewType::Dashboard);
+        let app = build_app();
         assert!(matches!(app.current_view(), &ViewType::Dashboard));
         assert!(!app.should_quit());
     }
@@ -50,7 +76,7 @@ mod app_tests {
 
     #[test]
     fn test_view_navigation() {
-        let mut app = DoraApp::new(ViewType::Dashboard);
+        let mut app = build_app();
 
         // Test push view
         app.push_view(ViewType::DataflowManager);
@@ -80,7 +106,7 @@ mod app_tests {
 
     #[test]
     fn test_view_switching() {
-        let mut app = DoraApp::new(ViewType::Dashboard);
+        let mut app = build_app();
 
         app.switch_view(ViewType::Help);
         assert!(matches!(app.current_view(), &ViewType::Help));
@@ -93,7 +119,7 @@ mod app_tests {
 
     #[test]
     fn test_command_mode() {
-        let mut app = DoraApp::new(ViewType::Dashboard);
+        let mut app = build_app();
 
         assert!(!app.is_in_command_mode());
 
@@ -106,7 +132,7 @@ mod app_tests {
 
     #[test]
     fn test_status_messages() {
-        let mut app = DoraApp::new(ViewType::Dashboard);
+        let mut app = build_app();
 
         app.show_status_message("Test message".to_string(), MessageLevel::Info);
         assert!(app.has_status_messages());
@@ -172,7 +198,7 @@ mod app_tests {
 
     #[test]
     fn test_dataflow_refresh_timestamp_updates() {
-        let mut app = DoraApp::new(ViewType::Dashboard);
+        let mut app = build_app();
         assert!(app.last_dataflow_refresh().is_none());
 
         let mut info = DataflowInfo::default();
@@ -257,7 +283,7 @@ mod theme_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "tui-cli-services"))]
 mod cli_integration_tests {
     use super::*;
 

@@ -1,5 +1,5 @@
 pub mod app;
-#[cfg(feature = "tui-cli-services")]
+#[cfg(any(feature = "tui-cli-services", feature = "tui-protocol-services"))]
 pub mod bridge;
 #[cfg(feature = "tui-cli-services")]
 pub mod cli_integration;

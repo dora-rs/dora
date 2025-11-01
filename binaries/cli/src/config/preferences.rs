@@ -412,7 +412,7 @@ impl UserPreferences {
             + self.behavior.adaptation_weights.complexity_weight
             + self.behavior.adaptation_weights.explicit_weight;
 
-        if total_weight < 0.5 || total_weight > 4.0 {
+        if !(0.5..=4.0).contains(&total_weight) {
             return Err(eyre::eyre!(
                 "Adaptation weights should sum to a reasonable value"
             ));
@@ -503,13 +503,13 @@ impl UserPreferences {
 
         // Check command-specific override
         if let Some(mode) = self.commands.command_ui_modes.get(command_name) {
-            return Some(mode.clone());
+            return Some(*mode);
         }
 
         // Fall back to default UI mode
         match self.interface.default_ui_mode {
             UiMode::Auto => None,
-            ref mode => Some(mode.clone()),
+            ref mode => Some(*mode),
         }
     }
 
@@ -532,7 +532,7 @@ impl UserPreferences {
                     .map(|(interface, count)| {
                         let confidence = *count as f32 / stats.total_uses as f32;
                         BehavioralPreference {
-                            preference: interface.clone(),
+                            preference: *interface,
                             confidence,
                         }
                     });
@@ -546,7 +546,7 @@ impl UserPreferences {
         if let Some(pattern) = self.behavior.action_patterns.get(&context_key) {
             if let Some(preferred) = &pattern.preferred_interface {
                 return Some(BehavioralPreference {
-                    preference: preferred.clone(),
+                    preference: *preferred,
                     confidence: pattern.frequency,
                 });
             }
@@ -641,6 +641,12 @@ impl UserPreferences {
     }
 }
 
+impl Default for InterfacePreferencePrediction {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl InterfacePreferencePrediction {
     pub fn new() -> Self {
         Self {
@@ -665,7 +671,7 @@ impl InterfacePreferencePrediction {
 
         for factor in &self.factors {
             let weighted_confidence = factor.weight * factor.confidence;
-            *mode_weights.entry(factor.preference.clone()).or_insert(0.0) += weighted_confidence;
+            *mode_weights.entry(factor.preference).or_insert(0.0) += weighted_confidence;
             total_weight += factor.weight;
         }
 

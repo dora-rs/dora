@@ -507,6 +507,9 @@ mod log_viewer_tests {
     #[test]
     fn test_log_viewer_view_creation() {
         let theme = ThemeConfig::default();
+        #[cfg(feature = "tui-protocol-services")]
+        let viewer = LogViewerView::new("", &theme, None);
+        #[cfg(not(feature = "tui-protocol-services"))]
         let viewer = LogViewerView::new("", &theme);
 
         assert_eq!(viewer.state.buffer_count(), 0);
@@ -515,6 +518,9 @@ mod log_viewer_tests {
     #[test]
     fn test_log_viewer_view_title() {
         let theme = ThemeConfig::default();
+        #[cfg(feature = "tui-protocol-services")]
+        let viewer = LogViewerView::new("test-source", &theme, None);
+        #[cfg(not(feature = "tui-protocol-services"))]
         let viewer = LogViewerView::new("test-source", &theme);
 
         assert_eq!(viewer.title(), "Logs: test-source");

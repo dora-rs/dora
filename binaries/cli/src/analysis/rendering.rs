@@ -95,7 +95,7 @@ impl AnalysisCliRenderer {
                 let wrapped_description =
                     self.wrap_text(&insight.description, self.terminal_width - 6);
                 for line in wrapped_description {
-                    println!("     {}", line);
+                    println!("     {line}");
                 }
 
                 if let Some(metric_change) = &insight.metric_change {
@@ -235,7 +235,7 @@ impl AnalysisCliRenderer {
             println!();
             println!("  Key Findings:");
             for finding in &trends.trend_summary.key_findings {
-                println!("    • {}", finding);
+                println!("    • {finding}");
             }
         }
 
@@ -264,7 +264,7 @@ impl AnalysisCliRenderer {
                 if !rec.action_items.is_empty() {
                     println!("     Actions:");
                     for action in &rec.action_items {
-                        println!("       • {}", action);
+                        println!("       • {action}");
                     }
                 }
                 println!();
@@ -323,11 +323,9 @@ impl AnalysisCliRenderer {
         let mut current_line = String::new();
 
         for word in text.split_whitespace() {
-            if current_line.len() + word.len() + 1 > width {
-                if !current_line.is_empty() {
-                    lines.push(current_line.clone());
-                    current_line.clear();
-                }
+            if current_line.len() + word.len() + 1 > width && !current_line.is_empty() {
+                lines.push(current_line.clone());
+                current_line.clear();
             }
 
             if !current_line.is_empty() {

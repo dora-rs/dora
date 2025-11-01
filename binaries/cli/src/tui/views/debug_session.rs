@@ -28,7 +28,7 @@ pub struct DebugSessionView {
 impl DebugSessionView {
     /// Create a new Debug Session View
     pub fn new(source: &str, theme: &ThemeConfig) -> Self {
-        let base = BaseView::new(format!("Debug Session - {}", source))
+        let base = BaseView::new(format!("Debug Session - {source}"))
             .with_auto_refresh(Duration::from_millis(500));
 
         // Initialize state with mock data

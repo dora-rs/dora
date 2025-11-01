@@ -170,7 +170,7 @@ impl PerformanceAnalyzerView {
             .labels(vec![
                 Span::raw("0"),
                 Span::raw(format!("{:.0}", y_max / 2.0)),
-                Span::raw(format!("{:.0}", y_max)),
+                Span::raw(format!("{y_max:.0}")),
             ]);
 
         let chart = Chart::new(datasets)

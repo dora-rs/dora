@@ -2,7 +2,7 @@ use crate::cli::context::ExecutionContext;
 use crate::cli::{Command, UiMode};
 use crate::config::preferences::{
     ActionPattern, ContextFactor, ContextSnapshot, InterfaceChoice, PatternType, SatisfactionLevel,
-    UsageStatistics, UserPreferences,
+    UserPreferences,
 };
 use chrono::Utc;
 use std::collections::HashMap;
@@ -95,7 +95,7 @@ impl BehavioralLearningEngine {
         let interface_choice = InterfaceChoice {
             command: command.name().to_string(),
             context: ContextSnapshot::from_context(context),
-            chosen_interface: chosen_interface.clone(),
+            chosen_interface,
             user_satisfaction: None, // Will be updated based on user feedback
             timestamp: Utc::now(),
             session_id: self.session_id.clone(),
@@ -240,12 +240,12 @@ impl BehavioralLearningEngine {
             .behavior
             .command_usage
             .entry(command_name)
-            .or_insert_with(UsageStatistics::default);
+            .or_default();
 
         stats.total_uses += 1;
         *stats
             .interface_distribution
-            .entry(chosen_interface.clone())
+            .entry(*chosen_interface)
             .or_insert(0) += 1;
         stats.last_used = Utc::now();
 
@@ -320,6 +320,12 @@ impl BehavioralLearningEngine {
     }
 }
 
+impl Default for PatternAnalyzer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PatternAnalyzer {
     pub fn new() -> Self {
         let pattern_detectors: Vec<Box<dyn PatternDetector>> = vec![
@@ -365,6 +371,12 @@ impl PatternAnalyzer {
     }
 }
 
+impl Default for CommandSequenceDetector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CommandSequenceDetector {
     pub fn new() -> Self {
         Self {
@@ -388,8 +400,7 @@ impl PatternDetector for CommandSequenceDetector {
                     .join(" -> ");
 
                 // Check if this sequence has consistent interface choices
-                let interfaces: Vec<_> =
-                    window.iter().map(|c| c.chosen_interface.clone()).collect();
+                let interfaces: Vec<_> = window.iter().map(|c| c.chosen_interface).collect();
 
                 // Calculate consistency score
                 let most_common_interface = self.most_common_interface(&interfaces);
@@ -401,7 +412,7 @@ impl PatternDetector for CommandSequenceDetector {
 
                 if consistency >= 0.7 {
                     // 70% consistency threshold
-                    let pattern_key = format!("seq:{}", sequence);
+                    let pattern_key = format!("seq:{sequence}");
                     let pattern = ActionPattern {
                         pattern_type: PatternType::CommandSequence,
                         frequency: consistency,
@@ -427,7 +438,7 @@ impl CommandSequenceDetector {
     fn most_common_interface(&self, interfaces: &[UiMode]) -> UiMode {
         let mut counts = HashMap::new();
         for interface in interfaces {
-            *counts.entry(interface.clone()).or_insert(0) += 1;
+            *counts.entry(*interface).or_insert(0) += 1;
         }
 
         counts
@@ -435,6 +446,12 @@ impl CommandSequenceDetector {
             .max_by_key(|(_, count)| *count)
             .map(|(interface, _)| interface)
             .unwrap_or(UiMode::Auto)
+    }
+}
+
+impl Default for TimeBasedPatternDetector {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -455,10 +472,7 @@ impl PatternDetector for TimeBasedPatternDetector {
 
         for choice in choices {
             let time_window = choice.context.time_of_day / self.time_window_hours;
-            time_groups
-                .entry(time_window)
-                .or_insert_with(Vec::new)
-                .push(choice);
+            time_groups.entry(time_window).or_default().push(choice);
         }
 
         // Analyze patterns within each time window
@@ -467,10 +481,7 @@ impl PatternDetector for TimeBasedPatternDetector {
                 continue;
             }
 
-            let interfaces: Vec<_> = window_choices
-                .iter()
-                .map(|c| c.chosen_interface.clone())
-                .collect();
+            let interfaces: Vec<_> = window_choices.iter().map(|c| c.chosen_interface).collect();
 
             let most_common = self.most_common_interface(&interfaces);
             let consistency = interfaces.iter().filter(|&i| i == &most_common).count() as f32
@@ -510,7 +521,7 @@ impl TimeBasedPatternDetector {
     fn most_common_interface(&self, interfaces: &[UiMode]) -> UiMode {
         let mut counts = HashMap::new();
         for interface in interfaces {
-            *counts.entry(interface.clone()).or_insert(0) += 1;
+            *counts.entry(*interface).or_insert(0) += 1;
         }
 
         counts
@@ -518,6 +529,12 @@ impl TimeBasedPatternDetector {
             .max_by_key(|(_, count)| *count)
             .map(|(interface, _)| interface)
             .unwrap_or(UiMode::Auto)
+    }
+}
+
+impl Default for ContextPatternDetector {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -539,10 +556,7 @@ impl PatternDetector for ContextPatternDetector {
                 "{}:tty{}",
                 choice.context.environment_type, choice.context.is_tty
             );
-            context_groups
-                .entry(context_key)
-                .or_insert_with(Vec::new)
-                .push(choice);
+            context_groups.entry(context_key).or_default().push(choice);
         }
 
         // Analyze patterns within each context
@@ -551,10 +565,7 @@ impl PatternDetector for ContextPatternDetector {
                 continue;
             }
 
-            let interfaces: Vec<_> = context_choices
-                .iter()
-                .map(|c| c.chosen_interface.clone())
-                .collect();
+            let interfaces: Vec<_> = context_choices.iter().map(|c| c.chosen_interface).collect();
 
             let most_common = self.most_common_interface(&interfaces);
             let consistency = interfaces.iter().filter(|&i| i == &most_common).count() as f32
@@ -562,7 +573,7 @@ impl PatternDetector for ContextPatternDetector {
 
             if consistency >= 0.8 {
                 // High consistency required for context patterns
-                let pattern_key = format!("context:{}", context_key);
+                let pattern_key = format!("context:{context_key}");
 
                 let pattern = ActionPattern {
                     pattern_type: PatternType::ContextBasedChoice,
@@ -588,7 +599,7 @@ impl ContextPatternDetector {
     fn most_common_interface(&self, interfaces: &[UiMode]) -> UiMode {
         let mut counts = HashMap::new();
         for interface in interfaces {
-            *counts.entry(interface.clone()).or_insert(0) += 1;
+            *counts.entry(*interface).or_insert(0) += 1;
         }
 
         counts

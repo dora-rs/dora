@@ -68,7 +68,7 @@ impl CollabFeaturesView {
     }
 
     fn render_shortcuts(&self, frame: &mut Frame, area: Rect) {
-        let shortcuts = vec![
+        let shortcuts = [
             "Tab/Shift+Tab: Switch section",
             "↑/↓: Select item",
             "j/k: Scroll",

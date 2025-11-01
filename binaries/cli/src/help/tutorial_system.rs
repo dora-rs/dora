@@ -19,6 +19,12 @@ pub struct TutorialSystem {
     progress_tracker: TutorialProgressTracker,
 }
 
+impl Default for TutorialSystem {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TutorialSystem {
     pub fn new() -> Self {
         let mut tutorials = HashMap::new();
@@ -249,10 +255,7 @@ impl TutorialSystem {
                         }
                     } else {
                         Ok(StepValidationResult::Failure {
-                            reason: format!(
-                                "Expected command '{}', got '{}'",
-                                command, user_command
-                            ),
+                            reason: format!("Expected command '{command}', got '{user_command}'"),
                         })
                     }
                 } else {
@@ -335,7 +338,7 @@ impl TutorialSystem {
         let mut suggestions = Vec::new();
 
         if let Some(expected_cmd) = &step.expected_command {
-            suggestions.push(format!("Try: {}", expected_cmd));
+            suggestions.push(format!("Try: {expected_cmd}"));
         }
 
         if !step.hints.is_empty() {
@@ -373,7 +376,7 @@ impl TutorialSystem {
         let mut suggestions = Vec::new();
 
         if let Some(expected_cmd) = &step.expected_command {
-            suggestions.push(format!("Expected command: {}", expected_cmd));
+            suggestions.push(format!("Expected command: {expected_cmd}"));
         }
 
         suggestions.push("Review the step instructions carefully".to_string());
@@ -527,6 +530,12 @@ impl TutorialSystem {
 #[derive(Debug)]
 pub struct TutorialProgressTracker {
     session_history: Vec<TutorialSessionRecord>,
+}
+
+impl Default for TutorialProgressTracker {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TutorialProgressTracker {

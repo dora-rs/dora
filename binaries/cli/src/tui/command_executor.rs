@@ -1,3 +1,5 @@
+#[cfg(feature = "tui-protocol-services")]
+use std::sync::Mutex;
 use std::{
     sync::Arc,
     time::{Duration, Instant},
@@ -12,6 +14,8 @@ use crate::{
         app::{DataflowInfo, MessageLevel, NodeInfo, StatusMessage},
     },
 };
+#[cfg(feature = "tui-protocol-services")]
+use tui_interface::SystemMetrics as InterfaceSystemMetrics;
 use tui_interface::{CoordinatorClient, LegacyCliService, TelemetryService};
 
 /// Executes CLI commands within TUI environment with state synchronization
@@ -85,6 +89,8 @@ pub struct StateSynchronizer {
     sync_interval: Duration,
     coordinator_client: Arc<dyn CoordinatorClient>,
     telemetry_service: Arc<dyn TelemetryService>,
+    #[cfg(feature = "tui-protocol-services")]
+    metrics_cache: Option<Arc<Mutex<Option<InterfaceSystemMetrics>>>>,
 }
 
 /// Status levels for messages
@@ -105,6 +111,10 @@ impl TuiCliExecutor {
             coordinator_client,
             telemetry_service,
             legacy_cli_service,
+            #[cfg(feature = "tui-protocol-services")]
+                protocol_clients: _,
+            #[cfg(feature = "tui-protocol-services")]
+            metrics_cache,
         } = bundle;
 
         Self::with_services(
@@ -112,6 +122,8 @@ impl TuiCliExecutor {
             coordinator_client,
             telemetry_service,
             legacy_cli_service,
+            #[cfg(feature = "tui-protocol-services")]
+            Some(metrics_cache),
         )
     }
 
@@ -127,6 +139,9 @@ impl TuiCliExecutor {
         coordinator_client: Arc<dyn CoordinatorClient>,
         telemetry_service: Arc<dyn TelemetryService>,
         legacy_service: Arc<dyn LegacyCliService>,
+        #[cfg(feature = "tui-protocol-services")] metrics_cache: Option<
+            Arc<Mutex<Option<InterfaceSystemMetrics>>>,
+        >,
     ) -> Self {
         Self {
             command_history: Vec::new(),
@@ -134,6 +149,8 @@ impl TuiCliExecutor {
             state_synchronizer: StateSynchronizer::with_services(
                 coordinator_client,
                 telemetry_service,
+                #[cfg(feature = "tui-protocol-services")]
+                metrics_cache,
             ),
             legacy_service,
         }
@@ -146,8 +163,8 @@ impl TuiCliExecutor {
         app_state: &mut AppState,
     ) -> crate::tui::Result<CommandResult> {
         // Parse command
-        let args = shell_words::split(command_str)
-            .map_err(|e| format!("Failed to parse command: {}", e))?;
+        let args =
+            shell_words::split(command_str).map_err(|e| format!("Failed to parse command: {e}"))?;
 
         if args.is_empty() {
             return Ok(CommandResult::Error("Empty command".to_string()));
@@ -161,7 +178,7 @@ impl TuiCliExecutor {
         };
 
         let cli = Cli::try_parse_from(full_args.clone())
-            .map_err(|e| format!("Failed to parse CLI args: {}", e))?;
+            .map_err(|e| format!("Failed to parse CLI args: {e}"))?;
 
         // Add to history
         self.command_history.push(command_str.to_string());
@@ -355,7 +372,7 @@ impl TuiCliExecutor {
                 let message = err.to_string();
                 self.push_status_message(
                     app_state,
-                    format!("❌ `{display}` failed: {}", message),
+                    format!("❌ `{display}` failed: {message}"),
                     MessageLevel::Error,
                 );
                 Ok(LegacyExecution::Error(message))
@@ -490,7 +507,7 @@ fn find_node_by_identifier<'a>(
     })
 }
 
-fn preferred_node<'a>(nodes: &'a [NodeInfo]) -> Option<&'a NodeInfo> {
+fn preferred_node(nodes: &[NodeInfo]) -> Option<&NodeInfo> {
     nodes
         .iter()
         .find(|node| {
@@ -501,7 +518,7 @@ fn preferred_node<'a>(nodes: &'a [NodeInfo]) -> Option<&'a NodeInfo> {
 }
 
 impl StateSynchronizer {
-    #[cfg(feature = "tui-cli-services")]
+    #[cfg(any(feature = "tui-cli-services", feature = "tui-protocol-services"))]
     pub fn new() -> Self {
         let bundle = crate::tui::bridge::default_service_bundle();
         let crate::tui::bridge::ServiceBundle {
@@ -509,27 +526,44 @@ impl StateSynchronizer {
             coordinator_client,
             telemetry_service,
             legacy_cli_service: _,
+            #[cfg(feature = "tui-protocol-services")]
+                protocol_clients: _,
+            #[cfg(feature = "tui-protocol-services")]
+            metrics_cache,
         } = bundle;
 
-        Self::with_services(coordinator_client, telemetry_service)
+        Self::with_services(
+            coordinator_client,
+            telemetry_service,
+            #[cfg(feature = "tui-protocol-services")]
+            Some(metrics_cache),
+        )
     }
 
-    #[cfg(not(feature = "tui-cli-services"))]
+    #[cfg(all(
+        not(feature = "tui-cli-services"),
+        not(feature = "tui-protocol-services")
+    ))]
     pub fn new() -> Self {
         panic!(
-            "StateSynchronizer::new requires the `tui-cli-services` feature. Use `with_services` in standalone builds."
+            "StateSynchronizer::new requires either the `tui-cli-services` or `tui-protocol-services` feature. Use `with_services` in standalone builds."
         );
     }
 
     pub fn with_services(
         coordinator_client: Arc<dyn CoordinatorClient>,
         telemetry_service: Arc<dyn TelemetryService>,
+        #[cfg(feature = "tui-protocol-services")] metrics_cache: Option<
+            Arc<Mutex<Option<InterfaceSystemMetrics>>>,
+        >,
     ) -> Self {
         Self {
             last_sync: Instant::now(),
             sync_interval: Duration::from_millis(1000),
             coordinator_client,
             telemetry_service,
+            #[cfg(feature = "tui-protocol-services")]
+            metrics_cache,
         }
     }
 
@@ -584,10 +618,17 @@ impl StateSynchronizer {
         &mut self,
         app_state: &mut AppState,
     ) -> crate::tui::Result<()> {
+        #[cfg(feature = "tui-protocol-services")]
+        if self.try_apply_cached_metrics(app_state) {
+            return Ok(());
+        }
+
         let service = Arc::clone(&self.telemetry_service);
         match tokio::task::spawn_blocking(move || service.latest_metrics()).await {
             Ok(Ok(metrics)) => {
                 app_state.system_metrics = metrics;
+                let snapshot = app_state.system_metrics.clone();
+                app_state.record_system_metrics(&snapshot);
                 app_state.last_error = None;
             }
             Ok(Err(err)) => self.capture_error(app_state, err.to_string()),
@@ -599,10 +640,32 @@ impl StateSynchronizer {
 }
 
 impl StateSynchronizer {
+    #[cfg(feature = "tui-protocol-services")]
+    fn try_apply_cached_metrics(&self, app_state: &mut AppState) -> bool {
+        if let Some(cache) = &self.metrics_cache {
+            if let Ok(guard) = cache.lock() {
+                if let Some(latest) = guard.as_ref() {
+                    if AppState::should_apply_metrics(
+                        latest.last_update,
+                        app_state.system_metrics.last_update,
+                    ) {
+                        let snapshot = latest.clone();
+                        drop(guard);
+                        app_state.system_metrics = snapshot.clone();
+                        app_state.record_system_metrics(&snapshot);
+                        app_state.last_error = None;
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
     fn capture_error(&mut self, app_state: &mut AppState, message: String) {
         if app_state.last_error.as_deref() != Some(message.as_str()) {
             app_state.status_messages.push_back(StatusMessage {
-                message: format!("❌ {}", message),
+                message: format!("❌ {message}"),
                 level: MessageLevel::Error,
                 timestamp: Instant::now(),
             });
@@ -641,7 +704,17 @@ mod tests {
     #[tokio::test]
     async fn test_command_executor_creation() {
         let context = ExecutionContext::default();
-        let executor = TuiCliExecutor::new(context);
+        let coordinator = Arc::new(MockCoordinatorClient::new());
+        let telemetry = Arc::new(MockTelemetryService::new());
+        let legacy = Arc::new(MockLegacyCliService::new());
+        let executor = TuiCliExecutor::with_services(
+            context,
+            coordinator,
+            telemetry,
+            legacy,
+            #[cfg(feature = "tui-protocol-services")]
+            None,
+        );
         assert!(executor.command_history.is_empty());
     }
 
@@ -663,6 +736,8 @@ mod tests {
             coordinator.clone(),
             telemetry.clone(),
             legacy.clone(),
+            #[cfg(feature = "tui-protocol-services")]
+            None,
         );
         let mut app_state = AppState::default();
 
@@ -693,6 +768,8 @@ mod tests {
             coordinator.clone(),
             telemetry.clone(),
             legacy.clone(),
+            #[cfg(feature = "tui-protocol-services")]
+            None,
         );
         let mut app_state = AppState::default();
 

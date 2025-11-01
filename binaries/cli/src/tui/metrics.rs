@@ -18,6 +18,12 @@ struct NetworkSample {
     transmitted: u64,
 }
 
+impl Default for MetricsCollector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MetricsCollector {
     pub fn new() -> Self {
         let mut system = System::new_all();

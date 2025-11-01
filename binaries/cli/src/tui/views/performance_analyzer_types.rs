@@ -57,8 +57,9 @@ impl AnalyzerTab {
 }
 
 /// Time range for performance data
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TimeRange {
+    #[default]
     LastHour,
     Last6Hours,
     Last24Hours,
@@ -108,12 +109,6 @@ impl TimeRange {
             TimeRange::Last6Hours => 72,  // 1 point per 5 minutes
             TimeRange::Last24Hours => 96, // 1 point per 15 minutes
         }
-    }
-}
-
-impl Default for TimeRange {
-    fn default() -> Self {
-        TimeRange::LastHour
     }
 }
 

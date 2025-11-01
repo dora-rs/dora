@@ -39,7 +39,7 @@ impl RecentActivityComponent {
     fn format_elapsed(&self, elapsed: std::time::Duration) -> String {
         let secs = elapsed.as_secs();
         if secs < 60 {
-            format!("{}s ago", secs)
+            format!("{secs}s ago")
         } else if secs < 3600 {
             format!("{}m ago", secs / 60)
         } else if secs < 86400 {
@@ -119,7 +119,7 @@ impl Component for RecentActivityComponent {
                     Span::styled(&item.description, Style::default().fg(theme.colors.text)),
                     Span::raw(" "),
                     Span::styled(
-                        format!("({})", time_str),
+                        format!("({time_str})"),
                         Style::default().fg(theme.colors.muted),
                     ),
                 ]);

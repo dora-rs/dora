@@ -477,7 +477,7 @@ fn print_monitor_snapshots(snapshots: &[MonitorSnapshot], context: &ExecutionCon
     for snapshot in snapshots {
         index += 1;
         if !context.quiet {
-            println!("\n{}", format!("📡 Sample {}", index).bold());
+            println!("\n{}", format!("📡 Sample {index}").bold());
         }
         println!(
             "Time: {} | CPU: {:>5.1}% | Memory: {:>5.1}% | Disk: {:>5.1}%",
@@ -678,7 +678,7 @@ async fn collect_analysis_data() -> Result<DataCollection> {
     let snapshot = collector.collect()?;
     let now = Utc::now();
 
-    let base_throughput = (snapshot.cpu_usage.max(10.0) as f32) * 4.0;
+    let base_throughput = snapshot.cpu_usage.max(10.0) * 4.0;
     let base_latency = 30.0 + snapshot.memory_usage / 2.0;
 
     for idx in 0..12 {

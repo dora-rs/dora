@@ -57,7 +57,7 @@ impl MachineInteractionDetector for ApiClientDetector {
 
             for pattern in &automation_patterns {
                 if user_agent_lower.contains(pattern) {
-                    api_indicators.push(format!("Automation user agent detected: {}", pattern));
+                    api_indicators.push(format!("Automation user agent detected: {pattern}"));
                     confidence += 0.4;
                     break;
                 }
@@ -80,7 +80,7 @@ impl MachineInteractionDetector for ApiClientDetector {
 
         for var in &api_vars {
             if env_map.contains_key(*var) {
-                api_indicators.push(format!("API authentication variable {} detected", var));
+                api_indicators.push(format!("API authentication variable {var} detected"));
                 confidence += 0.2;
             }
         }
@@ -94,7 +94,7 @@ impl MachineInteractionDetector for ApiClientDetector {
         // Check for JSON output preference
         if env_map
             .get("ACCEPT")
-            .map_or(false, |a| a.contains("application/json"))
+            .is_some_and(|a| a.contains("application/json"))
         {
             api_indicators.push("JSON output preference indicated".to_string());
             confidence += 0.3;
@@ -103,7 +103,7 @@ impl MachineInteractionDetector for ApiClientDetector {
         // Check for REST client indicators
         if env_map
             .get("CONTENT_TYPE")
-            .map_or(false, |ct| ct.contains("application/json"))
+            .is_some_and(|ct| ct.contains("application/json"))
         {
             api_indicators.push("JSON content type detected".to_string());
             confidence += 0.3;
@@ -118,7 +118,7 @@ impl MachineInteractionDetector for ApiClientDetector {
 
             for tool in &api_tools {
                 if parent_cmd.contains(tool) {
-                    api_indicators.push(format!("API tool execution detected: {}", tool));
+                    api_indicators.push(format!("API tool execution detected: {tool}"));
                     confidence += 0.4;
                     break;
                 }
@@ -207,7 +207,7 @@ impl MachineInteractionDetector for CurlDetector {
         // Check for curl-specific patterns
         if env_map
             .get("HTTP_USER_AGENT")
-            .map_or(false, |ua| ua.contains("curl"))
+            .is_some_and(|ua| ua.contains("curl"))
         {
             api_indicators.push("curl user agent detected".to_string());
             confidence += 0.7;
@@ -266,7 +266,7 @@ impl MachineInteractionDetector for WgetDetector {
         // Check for wget-specific patterns
         if env_map
             .get("HTTP_USER_AGENT")
-            .map_or(false, |ua| ua.contains("Wget"))
+            .is_some_and(|ua| ua.contains("Wget"))
         {
             api_indicators.push("wget user agent detected".to_string());
             confidence += 0.7;
@@ -331,7 +331,7 @@ impl MachineInteractionDetector for AutomationToolDetector {
             let has_prefix = env_map.keys().any(|key| key.starts_with(env_prefix));
 
             if has_prefix {
-                detected_tools.push(format!("{} environment detected", tool_name));
+                detected_tools.push(format!("{tool_name} environment detected"));
                 confidence += 0.7;
                 automation_tool = Some(tool_name.to_string());
 
@@ -356,7 +356,7 @@ impl MachineInteractionDetector for AutomationToolDetector {
 
         for (env_var, tool_name) in &specific_tools {
             if env_map.contains_key(*env_var) {
-                detected_tools.push(format!("{} detected via {}", tool_name, env_var));
+                detected_tools.push(format!("{tool_name} detected via {env_var}"));
                 confidence += 0.8;
                 automation_tool = Some(tool_name.to_string());
 
@@ -385,8 +385,7 @@ impl MachineInteractionDetector for AutomationToolDetector {
         for indicator in &generic_indicators {
             if env_map.keys().any(|key| key.contains(indicator)) {
                 detected_tools.push(format!(
-                    "Generic automation indicator detected: {}",
-                    indicator
+                    "Generic automation indicator detected: {indicator}"
                 ));
                 confidence += 0.4;
             }

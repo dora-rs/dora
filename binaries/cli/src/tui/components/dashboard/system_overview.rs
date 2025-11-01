@@ -128,11 +128,11 @@ impl SystemOverviewComponent {
         let minutes = (total_secs % 3600) / 60;
 
         if days > 0 {
-            format!("{}d {}h", days, hours)
+            format!("{days}d {hours}h")
         } else if hours > 0 {
-            format!("{}h {}m", hours, minutes)
+            format!("{hours}h {minutes}m")
         } else {
-            format!("{}m", minutes)
+            format!("{minutes}m")
         }
     }
 }

@@ -125,9 +125,10 @@ pub enum Command {
 }
 
 /// UI mode selection
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, ValueEnum, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, ValueEnum, Serialize, Deserialize, Default)]
 pub enum UiMode {
     /// Smart decisions based on context
+    #[default]
     Auto,
     /// Force CLI output only
     Cli,
@@ -138,9 +139,10 @@ pub enum UiMode {
 }
 
 /// Output format selection
-#[derive(Clone, Debug, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, ValueEnum, Serialize, Deserialize, Default)]
 pub enum OutputFormat {
     /// Context-appropriate formatting
+    #[default]
     Auto,
     /// Human-readable table format
     Table,
@@ -150,18 +152,6 @@ pub enum OutputFormat {
     Yaml,
     /// Minimal text output
     Minimal,
-}
-
-impl Default for UiMode {
-    fn default() -> Self {
-        UiMode::Auto
-    }
-}
-
-impl Default for OutputFormat {
-    fn default() -> Self {
-        OutputFormat::Auto
-    }
 }
 
 impl UiMode {

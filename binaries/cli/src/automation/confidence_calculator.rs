@@ -30,6 +30,12 @@ pub struct ConfidenceFactor {
     pub description: String,
 }
 
+impl Default for ConfidenceCalculator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ConfidenceCalculator {
     pub fn new() -> Self {
         let mut evidence_weights = HashMap::new();
@@ -95,7 +101,7 @@ impl ConfidenceCalculator {
         contributing_factors.push(ConfidenceFactor {
             factor_type: "Base Type Confidence".to_string(),
             weight: base_confidence,
-            description: format!("Base confidence for {:?}", automation_type),
+            description: format!("Base confidence for {automation_type:?}"),
         });
 
         // Evidence scoring
@@ -154,7 +160,7 @@ impl ConfidenceCalculator {
         for evidence_item in evidence {
             evidence_by_type
                 .entry(evidence_item.evidence_type.clone())
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(evidence_item);
         }
 
@@ -188,7 +194,7 @@ impl ConfidenceCalculator {
             total_weight += type_weight;
 
             contributing_factors.push(ConfidenceFactor {
-                factor_type: format!("{:?} Evidence", evidence_type),
+                factor_type: format!("{evidence_type:?} Evidence"),
                 weight: evidence_contribution,
                 description: format!(
                     "{} pieces of {:?} evidence (avg confidence: {:.2})",

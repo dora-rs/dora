@@ -85,7 +85,7 @@ impl LogEntry {
         let elapsed = self.timestamp.elapsed();
         let secs = elapsed.as_secs();
         let millis = elapsed.subsec_millis();
-        format!("{}.{:03}s ago", secs, millis)
+        format!("{secs}.{millis:03}s ago")
     }
 
     /// Check if this entry matches the search query (case-insensitive)

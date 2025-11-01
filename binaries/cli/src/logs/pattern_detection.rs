@@ -144,7 +144,7 @@ impl ErrorSpikeDetector {
                     pattern_type: LogPatternType::ErrorSpike,
                     severity: self.calculate_spike_severity(error_rate),
                     confidence: 0.9,
-                    title: format!("Error Spike: {} errors detected", error_count),
+                    title: format!("Error Spike: {error_count} errors detected"),
                     description: format!(
                         "Error rate ({:.1}/min) is {:.1}x higher than baseline ({:.1}/min)",
                         error_rate,
@@ -266,10 +266,7 @@ impl RepeatingErrorDetector {
         for log in logs {
             if matches!(log.level, LogLevel::Error | LogLevel::Fatal) {
                 let signature = self.extract_error_signature(&log.message);
-                groups
-                    .entry(signature)
-                    .or_insert_with(Vec::new)
-                    .push(log.clone());
+                groups.entry(signature).or_default().push(log.clone());
             }
         }
 

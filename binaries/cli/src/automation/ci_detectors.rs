@@ -52,7 +52,7 @@ impl CiEnvironmentDetector for GitHubActionsDetector {
         for var in &github_actions_vars {
             if let Some(value) = env.get(*var) {
                 found_vars.insert(var.to_string(), value.clone());
-                evidence.push(format!("Environment variable {} detected", var));
+                evidence.push(format!("Environment variable {var} detected"));
             }
         }
 
@@ -111,7 +111,7 @@ impl CiEnvironmentDetector for GitLabCiDetector {
         for var in &gitlab_vars {
             if let Some(value) = env.get(*var) {
                 found_vars.insert(var.to_string(), value.clone());
-                evidence.push(format!("GitLab CI variable {} found", var));
+                evidence.push(format!("GitLab CI variable {var} found"));
             }
         }
 
@@ -170,7 +170,7 @@ impl CiEnvironmentDetector for JenkinsDetector {
         for var in &jenkins_vars {
             if let Some(value) = env.get(*var) {
                 found_vars.insert(var.to_string(), value.clone());
-                evidence.push(format!("Jenkins variable {} detected", var));
+                evidence.push(format!("Jenkins variable {var} detected"));
             }
         }
 
@@ -229,7 +229,7 @@ impl CiEnvironmentDetector for CircleCiDetector {
         for var in &circleci_vars {
             if let Some(value) = env.get(*var) {
                 found_vars.insert(var.to_string(), value.clone());
-                evidence.push(format!("CircleCI variable {} found", var));
+                evidence.push(format!("CircleCI variable {var} found"));
             }
         }
 
@@ -286,7 +286,7 @@ impl CiEnvironmentDetector for TravisCiDetector {
         for var in &travis_vars {
             if let Some(value) = env.get(*var) {
                 found_vars.insert(var.to_string(), value.clone());
-                evidence.push(format!("Travis CI variable {} found", var));
+                evidence.push(format!("Travis CI variable {var} found"));
             }
         }
 
@@ -343,7 +343,7 @@ impl CiEnvironmentDetector for BuildkiteDetector {
         for var in &buildkite_vars {
             if let Some(value) = env.get(*var) {
                 found_vars.insert(var.to_string(), value.clone());
-                evidence.push(format!("Buildkite variable {} found", var));
+                evidence.push(format!("Buildkite variable {var} found"));
             }
         }
 
@@ -400,7 +400,7 @@ impl CiEnvironmentDetector for AzureDevOpsDetector {
         for var in &azure_vars {
             if let Some(value) = env.get(*var) {
                 found_vars.insert(var.to_string(), value.clone());
-                evidence.push(format!("Azure DevOps variable {} found", var));
+                evidence.push(format!("Azure DevOps variable {var} found"));
             }
         }
 
@@ -456,7 +456,7 @@ impl CiEnvironmentDetector for TeamCityDetector {
         for var in &teamcity_vars {
             if let Some(value) = env.get(*var) {
                 found_vars.insert(var.to_string(), value.clone());
-                evidence.push(format!("TeamCity variable {} found", var));
+                evidence.push(format!("TeamCity variable {var} found"));
             }
         }
 

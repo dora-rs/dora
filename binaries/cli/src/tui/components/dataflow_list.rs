@@ -190,8 +190,8 @@ impl Component for DataflowListComponent {
                 return Ok(ViewAction::None);
             }
 
-            match event {
-                ComponentEvent::Key(key_event) => match key_event.code {
+            if let ComponentEvent::Key(key_event) = event {
+                match key_event.code {
                     crossterm::event::KeyCode::Up | crossterm::event::KeyCode::Char('k') => {
                         self.move_selection_up();
                     }
@@ -210,8 +210,7 @@ impl Component for DataflowListComponent {
                         return Ok(ViewAction::Refresh);
                     }
                     _ => {}
-                },
-                _ => {}
+                }
             }
 
             Ok(ViewAction::None)

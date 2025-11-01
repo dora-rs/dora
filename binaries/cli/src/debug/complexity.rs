@@ -52,7 +52,7 @@ impl DebugComplexityAnalyzer {
             complexity_factors.push(ComplexityFactor {
                 factor_type: FactorType::IssueComplexity,
                 impact: 3.0,
-                description: format!("{} critical issues detected", critical_issues),
+                description: format!("{critical_issues} critical issues detected"),
                 evidence: detected_issues
                     .iter()
                     .filter(|i| matches!(i.severity, IssueSeverity::Critical))

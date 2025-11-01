@@ -674,7 +674,7 @@ pub fn create_mock_preference_levels() -> Vec<PreferenceLevel> {
             };
             PreferenceLevel {
                 level,
-                source: format!("{:?}", level),
+                source: format!("{level:?}"),
                 preferences: prefs,
                 is_active,
             }

@@ -203,8 +203,10 @@ unsafe fn event_as_arrow_input(
 
     match arrow::ffi::to_ffi(&array_data.clone()) {
         Ok((ffi_array, ffi_schema)) => {
-            std::ptr::write(out_array, ffi_array);
-            std::ptr::write(out_schema, ffi_schema);
+            unsafe {
+                std::ptr::write(out_array, ffi_array);
+                std::ptr::write(out_schema, ffi_schema);
+            }
             ffi::DoraResult {
                 error: String::new(),
             }
@@ -249,13 +251,15 @@ unsafe fn send_arrow_output(
         };
     }
 
-    let array = std::ptr::read(array_ptr);
-    let schema = std::ptr::read(schema_ptr);
+    let array = unsafe { std::ptr::read(array_ptr) };
+    let schema = unsafe { std::ptr::read(schema_ptr) };
 
-    std::ptr::write(array_ptr, std::mem::zeroed());
-    std::ptr::write(schema_ptr, std::mem::zeroed());
+    unsafe {
+        std::ptr::write(array_ptr, std::mem::zeroed());
+        std::ptr::write(schema_ptr, std::mem::zeroed());
+    }
 
-    match arrow::ffi::from_ffi(array, &schema) {
+    match unsafe { arrow::ffi::from_ffi(array, &schema) } {
         Ok(array_data) => {
             let arrow_array = arrow::array::make_array(array_data);
             let result = sender

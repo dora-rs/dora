@@ -143,14 +143,14 @@ impl ExecutionContext {
 
         // Override with CLI settings
         context.output_format = cli.output.clone();
-        context.ui_mode = cli.ui_mode.clone();
+        context.ui_mode = cli.ui_mode;
         context.no_hints = cli.no_hints;
         context.verbose = cli.verbose;
         context.quiet = cli.quiet;
 
         // Update user preference if UI mode is specified
         if let Some(ui_mode) = &cli.ui_mode {
-            context.user_preference = ui_mode.clone();
+            context.user_preference = *ui_mode;
         }
 
         context
@@ -362,7 +362,7 @@ impl ExecutionEnvironment {
             || env_vars.contains_key("ANSIBLE_INVENTORY")
             || env_vars.contains_key("PYTEST_CURRENT_TEST")
             || env_vars.contains_key("HTTP_USER_AGENT")
-            || env_vars.get("TERM").map_or(false, |t| t == "dumb");
+            || env_vars.get("TERM").is_some_and(|t| t == "dumb");
 
         Self {
             ci_environment,
@@ -380,11 +380,9 @@ impl ExecutionEnvironment {
 
     /// Comprehensive async detection
     pub async fn detect_comprehensive() -> Self {
-        let env = Self::detect();
-
         // Could add external tool checks here if needed
         // For now, synchronous detection is comprehensive enough
-        env
+        Self::detect()
     }
 
     pub fn detect_ci_environment(env_vars: &HashMap<String, String>) -> Option<CiEnvironment> {
@@ -416,7 +414,7 @@ impl ExecutionEnvironment {
     fn detect_shell_type(env_vars: &HashMap<String, String>) -> Option<String> {
         env_vars
             .get("SHELL")
-            .and_then(|shell| shell.split('/').last().map(|s| s.to_string()))
+            .and_then(|shell| shell.split('/').next_back().map(|s| s.to_string()))
             .or_else(|| {
                 // Fallback to TERM_PROGRAM for some terminals
                 env_vars.get("TERM_PROGRAM").cloned()
@@ -546,11 +544,9 @@ impl TerminalCapabilities {
 
     /// Comprehensive async detection
     pub async fn detect_comprehensive() -> Self {
-        let caps = Self::detect();
-
         // Could add async terminal capability queries here
         // For now, synchronous detection is sufficient
-        caps
+        Self::detect()
     }
 
     fn detect_color_support() -> bool {
@@ -636,7 +632,7 @@ impl TerminalCapabilities {
         term.contains("xterm")
             || term.contains("screen")
             || term.contains("tmux")
-            || std::env::var("TERM_PROGRAM").map_or(false, |prog| {
+            || std::env::var("TERM_PROGRAM").is_ok_and(|prog| {
                 prog.contains("iTerm") || prog.contains("Terminal") || prog.contains("Hyper")
             })
     }

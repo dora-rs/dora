@@ -2,7 +2,7 @@
 use std::time::{Duration, Instant};
 
 /// Complete dashboard state
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct DashboardState {
     pub system_overview: SystemOverview,
     pub dataflow_summary: DataflowSummary,
@@ -10,19 +10,6 @@ pub struct DashboardState {
     pub recent_activity: RecentActivity,
     pub alerts: Vec<Alert>,
     pub quick_stats: QuickStats,
-}
-
-impl Default for DashboardState {
-    fn default() -> Self {
-        Self {
-            system_overview: SystemOverview::default(),
-            dataflow_summary: DataflowSummary::default(),
-            performance_metrics: PerformanceMetrics::default(),
-            recent_activity: RecentActivity::default(),
-            alerts: Vec::new(),
-            quick_stats: QuickStats::default(),
-        }
-    }
 }
 
 /// System overview with comprehensive metrics
@@ -95,7 +82,7 @@ pub struct NetworkActivity {
 }
 
 /// Dataflow summary with health tracking
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct DataflowSummary {
     pub total_dataflows: u32,
     pub running_dataflows: u32,
@@ -105,21 +92,6 @@ pub struct DataflowSummary {
     pub healthy_nodes: u32,
     pub unhealthy_nodes: u32,
     pub recent_deployments: Vec<RecentDeployment>,
-}
-
-impl Default for DataflowSummary {
-    fn default() -> Self {
-        Self {
-            total_dataflows: 0,
-            running_dataflows: 0,
-            failed_dataflows: 0,
-            stopped_dataflows: 0,
-            total_nodes: 0,
-            healthy_nodes: 0,
-            unhealthy_nodes: 0,
-            recent_deployments: Vec::new(),
-        }
-    }
 }
 
 impl DataflowSummary {

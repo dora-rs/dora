@@ -50,6 +50,12 @@ struct BehaviorSignature {
     automation_correlation: f32,
 }
 
+impl Default for AutomationPatternAnalyzer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AutomationPatternAnalyzer {
     pub fn new() -> Self {
         let mut analyzer = Self {
@@ -219,7 +225,7 @@ impl TemporalPatternAnalyzer {
             .iter()
             .filter(|record| {
                 let hour = record.timestamp.hour();
-                hour < 6 || hour > 22 // Before 6 AM or after 10 PM
+                !(6..=22).contains(&hour) // Before 6 AM or after 10 PM
             })
             .count();
 
@@ -348,16 +354,14 @@ impl BehavioralPatternAnalyzer {
 
         if env_var_count > 3 {
             indicators.push(format!(
-                "{} automation environment variables detected",
-                env_var_count
+                "{env_var_count} automation environment variables detected"
             ));
             pattern_strength += 0.3;
         }
 
         if process_count > 1 {
             indicators.push(format!(
-                "{} automation process indicators detected",
-                process_count
+                "{process_count} automation process indicators detected"
             ));
             pattern_strength += 0.2;
         }

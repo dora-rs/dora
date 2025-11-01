@@ -367,7 +367,7 @@ impl ResourceAnalyzer {
                 if cpu > 80.0 {
                     issues.push(PerformanceIssue {
                         severity: IssueSeverity::High,
-                        description: format!("High CPU usage: {:.1}%", cpu),
+                        description: format!("High CPU usage: {cpu:.1}%"),
                         recommendation: Some(
                             "Consider optimizing or scaling the resource".to_string(),
                         ),
@@ -379,7 +379,7 @@ impl ResourceAnalyzer {
                 if mem > 1024.0 {
                     issues.push(PerformanceIssue {
                         severity: IssueSeverity::Medium,
-                        description: format!("High memory usage: {:.0}MB", mem),
+                        description: format!("High memory usage: {mem:.0}MB"),
                         recommendation: Some(
                             "Monitor memory usage and consider increasing limits".to_string(),
                         ),
@@ -393,7 +393,7 @@ impl ResourceAnalyzer {
                 if latency > 50.0 {
                     issues.push(PerformanceIssue {
                         severity: IssueSeverity::Medium,
-                        description: format!("Elevated latency: {:.1}ms", latency),
+                        description: format!("Elevated latency: {latency:.1}ms"),
                         recommendation: Some(
                             "Investigate network or processing delays".to_string(),
                         ),
@@ -575,8 +575,7 @@ impl ResourceAnalyzer {
                     priority: RecommendationPriority::Medium,
                     title: "High CPU Usage".to_string(),
                     description: format!(
-                        "CPU usage is {:.1}%, consider optimization or scaling",
-                        cpu
+                        "CPU usage is {cpu:.1}%, consider optimization or scaling"
                     ),
                     suggested_command: Some(format!(
                         "dora inspect {} --focus performance",
@@ -607,8 +606,7 @@ impl ResourceAnalyzer {
                 priority: RecommendationPriority::Low,
                 title: "High Complexity".to_string(),
                 description: format!(
-                    "Complexity score is {:.0}, consider using TUI for better visualization",
-                    complexity
+                    "Complexity score is {complexity:.0}, consider using TUI for better visualization"
                 ),
                 suggested_command: Some(format!("dora inspect {} --tui", resource.identifier)),
                 impact: ImpactLevel::Low,

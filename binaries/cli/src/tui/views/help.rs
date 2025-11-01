@@ -205,7 +205,7 @@ impl HelpView {
         for (section_title, entries) in sections {
             // Section header
             items.push(ListItem::new(Line::from(Span::styled(
-                format!("▼ {}", section_title),
+                format!("▼ {section_title}"),
                 Style::default()
                     .fg(self.theme.colors.primary)
                     .add_modifier(Modifier::BOLD),
@@ -216,7 +216,7 @@ impl HelpView {
                 if key.is_empty() {
                     // Tip or description without key
                     items.push(ListItem::new(Line::from(Span::styled(
-                        format!("  {}", description),
+                        format!("  {description}"),
                         Style::default().fg(self.theme.colors.text),
                     ))));
                 } else {
@@ -224,7 +224,7 @@ impl HelpView {
                     items.push(ListItem::new(Line::from(vec![
                         Span::raw("  "),
                         Span::styled(
-                            format!("{:<12}", key),
+                            format!("{key:<12}"),
                             Style::default()
                                 .fg(self.theme.colors.secondary)
                                 .add_modifier(Modifier::BOLD),

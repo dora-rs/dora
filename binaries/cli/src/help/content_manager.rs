@@ -17,6 +17,12 @@ pub struct HelpContentManager {
     personalization_engine: HelpPersonalizationEngine,
 }
 
+impl Default for HelpContentManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl HelpContentManager {
     pub fn new() -> Self {
         Self {
@@ -216,12 +222,12 @@ impl HelpContentManager {
 
     fn generate_default_topic_content(&self, topic: &str) -> HelpContent {
         let mut content = HelpContent::new(topic.to_string());
-        content.title = format!("Help: {}", topic);
-        content.summary = format!("Information about {}", topic);
+        content.title = format!("Help: {topic}");
+        content.summary = format!("Information about {topic}");
 
         content.sections.push(HelpSection {
             title: "Description".to_string(),
-            content: format!("Help content for {} is being prepared.", topic),
+            content: format!("Help content for {topic} is being prepared."),
             section_type: SectionType::Overview,
             visibility_level: DetailLevel::Normal,
             interactive_elements: Vec::new(),
@@ -328,10 +334,9 @@ impl HelpContentManager {
             .unwrap_or("DATAFLOW_NAME");
         let examples_content = format!(
             "• View dataflow status: `dora ps`\n\
-             • Inspect a specific dataflow: `dora inspect {}`\n\
-             • View logs: `dora logs {}`\n\
-             • Stop a dataflow: `dora stop {}`",
-            first_dataflow, first_dataflow, first_dataflow
+             • Inspect a specific dataflow: `dora inspect {first_dataflow}`\n\
+             • View logs: `dora logs {first_dataflow}`\n\
+             • Stop a dataflow: `dora stop {first_dataflow}`"
         );
 
         sections.push(HelpSection {
@@ -405,7 +410,7 @@ impl HelpContentManager {
         );
 
         Ok(HelpSection {
-            title: format!("{} Errors", error_type),
+            title: format!("{error_type} Errors"),
             content,
             section_type: SectionType::Troubleshooting,
             visibility_level: DetailLevel::Normal,
@@ -481,6 +486,12 @@ pub struct HelpSearchEngine {
     // Mock search engine - would use real search index
 }
 
+impl Default for HelpSearchEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl HelpSearchEngine {
     pub fn new() -> Self {
         Self {}
@@ -501,10 +512,10 @@ impl HelpSearchEngine {
             if query.to_lowercase().contains(keyword) {
                 results.push(HelpSearchResult {
                     topic: keyword.to_string(),
-                    title: format!("{} Command", keyword),
+                    title: format!("{keyword} Command"),
                     relevance_score: 0.8,
                     matched_keywords: vec![keyword.to_string()],
-                    snippet: format!("Help for {} command...", keyword),
+                    snippet: format!("Help for {keyword} command..."),
                 });
             }
         }
@@ -520,6 +531,12 @@ impl HelpSearchEngine {
 #[derive(Debug)]
 pub struct HelpPersonalizationEngine {
     // Mock personalization - would use ML in production
+}
+
+impl Default for HelpPersonalizationEngine {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl HelpPersonalizationEngine {

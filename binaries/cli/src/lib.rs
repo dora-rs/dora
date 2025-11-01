@@ -126,7 +126,7 @@ pub fn run_new_cli(cli: cli::Cli) {
             };
 
             if let Err(e) = launch_tui(initial_view) {
-                eprintln!("❌ Failed to launch TUI: {}", e);
+                eprintln!("❌ Failed to launch TUI: {e}");
                 std::process::exit(1);
             }
         }
@@ -136,24 +136,21 @@ pub fn run_new_cli(cli: cli::Cli) {
             }
 
             if let Err(e) = launch_tui(tui::ViewType::Dashboard) {
-                eprintln!("❌ Failed to launch dashboard: {}", e);
+                eprintln!("❌ Failed to launch dashboard: {e}");
                 std::process::exit(1);
             }
         }
         Some(cli::Command::Debug(cmd)) => {
             if let Some(view) = debug_view_for_tui(&cli, &context, &cmd) {
                 if let Err(e) = launch_tui(view) {
-                    eprintln!("❌ Failed to launch debug TUI: {}", e);
+                    eprintln!("❌ Failed to launch debug TUI: {e}");
                     std::process::exit(1);
                 }
                 return;
             }
 
-            let formatter = cli::output::OutputFormatter::new(
-                cli.output.clone(),
-                cli.ui_mode.clone(),
-                cli.no_hints,
-            );
+            let formatter =
+                cli::output::OutputFormatter::new(cli.output.clone(), cli.ui_mode, cli.no_hints);
             let runtime = tokio::runtime::Runtime::new().unwrap_or_else(|err| {
                 eprintln!("❌ Failed to initialize async runtime: {err}");
                 std::process::exit(1);
@@ -167,11 +164,8 @@ pub fn run_new_cli(cli: cli::Cli) {
             }
         }
         Some(cli::Command::Analyze(cmd)) => {
-            let formatter = cli::output::OutputFormatter::new(
-                cli.output.clone(),
-                cli.ui_mode.clone(),
-                cli.no_hints,
-            );
+            let formatter =
+                cli::output::OutputFormatter::new(cli.output.clone(), cli.ui_mode, cli.no_hints);
             let runtime = tokio::runtime::Runtime::new().unwrap_or_else(|err| {
                 eprintln!("❌ Failed to initialize async runtime: {err}");
                 std::process::exit(1);
@@ -187,17 +181,14 @@ pub fn run_new_cli(cli: cli::Cli) {
         Some(cli::Command::Monitor(cmd)) => {
             if let Some(view) = monitor_view_for_tui(&cli, &context, &cmd) {
                 if let Err(e) = launch_tui(view) {
-                    eprintln!("❌ Failed to launch monitor TUI: {}", e);
+                    eprintln!("❌ Failed to launch monitor TUI: {e}");
                     std::process::exit(1);
                 }
                 return;
             }
 
-            let formatter = cli::output::OutputFormatter::new(
-                cli.output.clone(),
-                cli.ui_mode.clone(),
-                cli.no_hints,
-            );
+            let formatter =
+                cli::output::OutputFormatter::new(cli.output.clone(), cli.ui_mode, cli.no_hints);
             let runtime = tokio::runtime::Runtime::new().unwrap_or_else(|err| {
                 eprintln!("❌ Failed to initialize async runtime: {err}");
                 std::process::exit(1);
@@ -211,11 +202,8 @@ pub fn run_new_cli(cli: cli::Cli) {
             }
         }
         Some(cli::Command::System(cmd)) => {
-            let formatter = cli::output::OutputFormatter::new(
-                cli.output.clone(),
-                cli.ui_mode.clone(),
-                cli.no_hints,
-            );
+            let formatter =
+                cli::output::OutputFormatter::new(cli.output.clone(), cli.ui_mode, cli.no_hints);
             let runtime = tokio::runtime::Runtime::new().unwrap_or_else(|err| {
                 eprintln!("❌ Failed to initialize async runtime: {err}");
                 std::process::exit(1);
@@ -327,16 +315,21 @@ where
 
 /// Launch TUI with specified initial view
 fn launch_tui(initial_view: tui::ViewType) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    #[cfg(any(feature = "tui-cli-services", feature = "tui-protocol-services"))]
+    let service_bundle = crate::tui::bridge::default_service_bundle();
+
+    // Build the TUI app before entering the async runtime so that any blocking
+    // protocol setup (e.g., reqwest) happens outside Tokio context.
+    #[cfg(any(feature = "tui-cli-services", feature = "tui-protocol-services"))]
+    let app = tui::DoraApp::from_service_bundle(initial_view, service_bundle);
+    #[cfg(not(any(feature = "tui-cli-services", feature = "tui-protocol-services")))]
+    let app = tui::DoraApp::new(initial_view);
+    let mut app = app;
+
     // Create tokio runtime for async TUI
     let runtime = tokio::runtime::Runtime::new()?;
 
-    runtime.block_on(async {
-        // Create TUI app
-        let mut app = tui::DoraApp::new(initial_view);
-
-        // Run the TUI
-        app.run().await
-    })
+    runtime.block_on(async move { app.run().await })
 }
 
 fn debug_view_for_tui(

@@ -146,6 +146,12 @@ pub struct HelpBrowserState {
     pub last_refresh: Instant,
 }
 
+impl Default for HelpBrowserState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl HelpBrowserState {
     /// Create new help browser state with mock data
     pub fn new() -> Self {

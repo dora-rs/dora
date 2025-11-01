@@ -15,7 +15,7 @@ use crate::tui::{
     app::{AppState, DataflowInfo, NodeMetrics, NodeTelemetrySample},
     theme::ThemeConfig,
 };
-use dora_message::descriptor::CoreNodeKind;
+use tui_interface::NodeResolvedKind;
 
 /// Node Inspector View for detailed node inspection and monitoring
 pub struct NodeInspectorView {
@@ -293,7 +293,7 @@ impl NodeInspectorView {
             ]));
         }
 
-        let title = format!("Overview - {}", node_name);
+        let title = format!("Overview - {node_name}");
         let paragraph = Paragraph::new(overview_text)
             .block(self.theme.styled_block(&title))
             .wrap(Wrap { trim: true });
@@ -635,7 +635,7 @@ impl NodeInspectorView {
                 lines.push(Line::from("  (no inputs configured)"));
             } else {
                 for input in &node.inputs {
-                    lines.push(Line::from(format!("  - {}", input)));
+                    lines.push(Line::from(format!("  - {input}")));
                 }
             }
 
@@ -650,14 +650,14 @@ impl NodeInspectorView {
                 lines.push(Line::from("  (no outputs configured)"));
             } else {
                 for output in &node.outputs {
-                    lines.push(Line::from(format!("  - {}", output)));
+                    lines.push(Line::from(format!("  - {output}")));
                 }
             }
 
-            if let Some(resolved) = &node.resolved {
+            if let Some(details) = &node.details {
                 lines.push(Line::from(""));
-                match &resolved.kind {
-                    CoreNodeKind::Custom(custom) => {
+                match &details.kind {
+                    NodeResolvedKind::Custom(custom) => {
                         lines.push(Line::from(vec![Span::styled(
                             "Executable",
                             Style::default()
@@ -666,16 +666,15 @@ impl NodeInspectorView {
                         )]));
                         lines.push(Line::from(format!("  path: {}", custom.path)));
                         if let Some(args) = &custom.args {
-                            lines.push(Line::from(format!("  args: {}", args)));
+                            lines.push(Line::from(format!("  args: {args}")));
                         }
                         if let Some(send_stdout_as) = &custom.send_stdout_as {
                             lines.push(Line::from(format!(
-                                "  redirect stdout as: {}",
-                                send_stdout_as
+                                "  redirect stdout as: {send_stdout_as}"
                             )));
                         }
                     }
-                    CoreNodeKind::Runtime(runtime) => {
+                    NodeResolvedKind::Runtime(runtime) => {
                         lines.push(Line::from(vec![Span::styled(
                             "Operators",
                             Style::default()
@@ -686,18 +685,16 @@ impl NodeInspectorView {
                             lines.push(Line::from("  (no operators registered)"));
                         } else {
                             for operator in &runtime.operators {
-                                let name = operator
-                                    .config
-                                    .name
-                                    .clone()
-                                    .unwrap_or_else(|| operator.id.to_string());
-                                lines.push(Line::from(format!("  - {}", name)));
+                                lines.push(Line::from(format!("  - {}", operator.name)));
                             }
                         }
                     }
+                    NodeResolvedKind::Unknown => {
+                        lines.push(Line::from("No resolved metadata available for this node."));
+                    }
                 }
 
-                if let Some(env) = &resolved.env {
+                if !details.env.is_empty() {
                     lines.push(Line::from(""));
                     lines.push(Line::from(vec![Span::styled(
                         "Environment",
@@ -705,7 +702,7 @@ impl NodeInspectorView {
                             .fg(self.theme.colors.primary)
                             .add_modifier(Modifier::BOLD),
                     )]));
-                    for (key, value) in env {
+                    for (key, value) in &details.env {
                         lines.push(Line::from(format!("  {key}={value}")));
                     }
                 }
@@ -739,9 +736,9 @@ impl NodeInspectorView {
         ];
 
         if let Some(node) = self.find_node_info(app_state) {
-            if let Some(resolved) = &node.resolved {
-                match &resolved.kind {
-                    CoreNodeKind::Custom(custom) => {
+            if let Some(details) = &node.details {
+                match &details.kind {
+                    NodeResolvedKind::Custom(custom) => {
                         debug_text.push(Line::from(""));
                         debug_text.push(Line::from(vec![Span::styled(
                             "Executable",
@@ -751,10 +748,10 @@ impl NodeInspectorView {
                         )]));
                         debug_text.push(Line::from(format!("Path: {}", custom.path)));
                         if let Some(args) = &custom.args {
-                            debug_text.push(Line::from(format!("Args: {}", args)));
+                            debug_text.push(Line::from(format!("Args: {args}")));
                         }
                     }
-                    CoreNodeKind::Runtime(runtime) => {
+                    NodeResolvedKind::Runtime(runtime) => {
                         debug_text.push(Line::from(""));
                         debug_text.push(Line::from(vec![Span::styled(
                             "Operators",
@@ -766,14 +763,13 @@ impl NodeInspectorView {
                             debug_text.push(Line::from("  (no operators registered)"));
                         } else {
                             for operator in &runtime.operators {
-                                let name = operator
-                                    .config
-                                    .name
-                                    .clone()
-                                    .unwrap_or_else(|| operator.id.to_string());
-                                debug_text.push(Line::from(format!("  - {}", name)));
+                                debug_text.push(Line::from(format!("  - {}", operator.name)));
                             }
                         }
+                    }
+                    NodeResolvedKind::Unknown => {
+                        debug_text.push(Line::from(""));
+                        debug_text.push(Line::from("No resolved runtime metadata available."));
                     }
                 }
 
@@ -784,16 +780,12 @@ impl NodeInspectorView {
                         .fg(self.theme.colors.primary)
                         .add_modifier(Modifier::BOLD),
                 )]));
-                if let Some(env) = &resolved.env {
-                    if env.is_empty() {
-                        debug_text.push(Line::from("  (none)"));
-                    } else {
-                        for (key, value) in env {
-                            debug_text.push(Line::from(format!("  {key}={value}")));
-                        }
-                    }
-                } else {
+                if details.env.is_empty() {
                     debug_text.push(Line::from("  (none)"));
+                } else {
+                    for (key, value) in &details.env {
+                        debug_text.push(Line::from(format!("  {key}={value}")));
+                    }
                 }
             }
         } else {
@@ -889,7 +881,7 @@ impl View for NodeInspectorView {
             .find_node_info(app_state)
             .map(|n| n.name.as_str())
             .unwrap_or(&self.state.node_id);
-        let title = format!("Node Inspector: {}", node_name);
+        let title = format!("Node Inspector: {node_name}");
         let title_paragraph = Paragraph::new(title)
             .block(self.theme.styled_block(""))
             .style(
@@ -1029,9 +1021,9 @@ fn format_trend(delta: Option<f64>) -> String {
     match delta {
         Some(change) if change.abs() >= 0.05 => {
             if change > 0.0 {
-                format!("↑ {:+.2}", change)
+                format!("↑ {change:+.2}")
             } else {
-                format!("↓ {:+.2}", change)
+                format!("↓ {change:+.2}")
             }
         }
         Some(_) => "stable".to_string(),
@@ -1049,7 +1041,7 @@ fn smooth_metric(previous: f64, current: f64) -> f64 {
 
 fn format_latency_delta(delta: Option<f64>) -> String {
     match delta {
-        Some(change) if change.abs() >= 0.05 => format!("{:+.2} ms", change),
+        Some(change) if change.abs() >= 0.05 => format!("{change:+.2} ms"),
         Some(_) => "stable".to_string(),
         None => "collecting…".to_string(),
     }

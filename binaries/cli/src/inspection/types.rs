@@ -69,7 +69,7 @@ pub enum IssueSeverity {
 }
 
 /// Performance metrics
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PerformanceMetrics {
     pub cpu_usage: Option<f32>,
     pub memory_mb: Option<f32>,
@@ -77,19 +77,6 @@ pub struct PerformanceMetrics {
     pub latency_ms: Option<f32>,
     pub error_rate: Option<f32>,
     pub issues: Vec<PerformanceIssue>,
-}
-
-impl Default for PerformanceMetrics {
-    fn default() -> Self {
-        Self {
-            cpu_usage: None,
-            memory_mb: None,
-            throughput: None,
-            latency_ms: None,
-            error_rate: None,
-            issues: Vec::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -100,21 +87,11 @@ pub struct PerformanceIssue {
 }
 
 /// Error summary
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ErrorSummary {
     pub total_errors: usize,
     pub recent_errors: Vec<ErrorRecord>,
     pub error_patterns: Vec<ErrorPattern>,
-}
-
-impl Default for ErrorSummary {
-    fn default() -> Self {
-        Self {
-            total_errors: 0,
-            recent_errors: Vec::new(),
-            error_patterns: Vec::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

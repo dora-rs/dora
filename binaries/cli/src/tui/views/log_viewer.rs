@@ -1,7 +1,13 @@
 /// Interactive Log Viewer implementation (Issue #28 - Phase 1)
 use super::{BaseView, View, ViewAction};
+#[cfg(feature = "tui-protocol-services")]
+use crate::tui::bridge::spawn_protocol_log_stream;
 use crate::tui::{Result, app::AppState, theme::ThemeConfig};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+#[cfg(feature = "tui-protocol-services")]
+use dora_protocol::{LogEvent as ProtocolLogEvent, LogLevel as ProtocolLogLevel};
+#[cfg(feature = "tui-protocol-services")]
+use dora_protocol_client::ProtocolClients;
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -9,9 +15,20 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
 };
+#[cfg(feature = "tui-protocol-services")]
+use std::sync::mpsc::TryRecvError;
+#[cfg(feature = "tui-protocol-services")]
+use std::sync::{Arc, mpsc::Receiver};
 use std::time::Duration;
+#[cfg(feature = "tui-protocol-services")]
+use std::time::Instant;
+#[cfg(feature = "tui-protocol-services")]
+use uuid::Uuid;
 
 pub use super::log_viewer_types::*;
+
+#[cfg(feature = "tui-protocol-services")]
+const STREAM_RETRY_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Interactive Log Viewer View
 pub struct LogViewerView {
@@ -21,15 +38,33 @@ pub struct LogViewerView {
     mock_log_counter: usize,
     search_mode: bool,
     search_input: String,
+    #[cfg(feature = "tui-protocol-services")]
+    target: String,
+    #[cfg(feature = "tui-protocol-services")]
+    protocol_clients: Option<Arc<ProtocolClients>>,
+    #[cfg(feature = "tui-protocol-services")]
+    log_stream: Option<Receiver<ProtocolLogEvent>>,
+    #[cfg(feature = "tui-protocol-services")]
+    stream_failed: bool,
+    #[cfg(feature = "tui-protocol-services")]
+    next_log_id: usize,
+    #[cfg(feature = "tui-protocol-services")]
+    stream_status: Option<String>,
+    #[cfg(feature = "tui-protocol-services")]
+    last_stream_attempt: Option<Instant>,
 }
 
 impl LogViewerView {
     /// Create a new log viewer view
-    pub fn new(target: &str, theme: &ThemeConfig) -> Self {
+    pub fn new(
+        target: &str,
+        theme: &ThemeConfig,
+        #[cfg(feature = "tui-protocol-services")] protocol_clients: Option<Arc<ProtocolClients>>,
+    ) -> Self {
         let title = if target.is_empty() {
             "Log Viewer".to_string()
         } else {
-            format!("Logs: {}", target)
+            format!("Logs: {target}")
         };
 
         Self {
@@ -39,12 +74,26 @@ impl LogViewerView {
             mock_log_counter: 0,
             search_mode: false,
             search_input: String::new(),
+            #[cfg(feature = "tui-protocol-services")]
+            target: target.to_string(),
+            #[cfg(feature = "tui-protocol-services")]
+            protocol_clients,
+            #[cfg(feature = "tui-protocol-services")]
+            log_stream: None,
+            #[cfg(feature = "tui-protocol-services")]
+            stream_failed: false,
+            #[cfg(feature = "tui-protocol-services")]
+            next_log_id: 0,
+            #[cfg(feature = "tui-protocol-services")]
+            stream_status: None,
+            #[cfg(feature = "tui-protocol-services")]
+            last_stream_attempt: None,
         }
     }
 
     /// Generate mock log entries for demonstration
     fn generate_mock_logs(&mut self, count: usize) {
-        let sources = vec![
+        let sources = [
             "camera-node",
             "detection-node",
             "tracking-node",
@@ -104,6 +153,175 @@ impl LogViewerView {
         }
     }
 
+    #[cfg(feature = "tui-protocol-services")]
+    fn ensure_target_selection(&mut self, app_state: &AppState) {
+        if (self.target.is_empty() || self.target == "system") && !app_state.dataflows.is_empty() {
+            if let Some(df) = app_state.dataflows.first() {
+                self.target = df.id.clone();
+            }
+        }
+    }
+
+    #[cfg(feature = "tui-protocol-services")]
+    fn refresh_title(&mut self, app_state: &AppState) {
+        let display = if let Some(df) = app_state
+            .dataflows
+            .iter()
+            .find(|df| df.id == self.target || df.name == self.target)
+        {
+            if df.name.is_empty() {
+                df.id.clone()
+            } else {
+                df.name.clone()
+            }
+        } else if self.target.is_empty() || self.target == "system" {
+            "Log Viewer".to_string()
+        } else {
+            self.target.clone()
+        };
+
+        self.base.title = if display.is_empty() {
+            "Log Viewer".to_string()
+        } else {
+            format!("Logs: {display}")
+        };
+    }
+
+    #[cfg(feature = "tui-protocol-services")]
+    fn maybe_connect_stream(&mut self, app_state: &AppState) {
+        let Some(clients) = self.protocol_clients.as_ref() else {
+            return;
+        };
+
+        if self.log_stream.is_some() {
+            return;
+        }
+
+        let now = Instant::now();
+        if let Some(last_attempt) = self.last_stream_attempt {
+            if now.duration_since(last_attempt) < STREAM_RETRY_INTERVAL {
+                return;
+            }
+        }
+        self.last_stream_attempt = Some(now);
+
+        if app_state.dataflows.is_empty() {
+            self.stream_status =
+                Some("No running dataflows detected; start one to stream logs".to_string());
+            self.stream_failed = false;
+            return;
+        }
+
+        let Some(uuid) = self.resolve_dataflow_id(app_state) else {
+            self.stream_status = Some(format!(
+                "Unable to resolve dataflow `{}` for log streaming",
+                if self.target.is_empty() {
+                    "<unspecified>"
+                } else {
+                    &self.target
+                }
+            ));
+            self.stream_failed = false;
+            return;
+        };
+
+        match spawn_protocol_log_stream(Arc::clone(clients), uuid) {
+            Some(receiver) => {
+                self.log_stream = Some(receiver);
+                self.stream_failed = false;
+                self.stream_status = Some("Connected to live log stream".to_string());
+                self.next_log_id = 0;
+            }
+            None => {
+                self.stream_failed = true;
+                self.stream_status =
+                    Some("Failed to open log stream; retrying shortly".to_string());
+            }
+        }
+    }
+
+    #[cfg(feature = "tui-protocol-services")]
+    fn drain_protocol_stream(&mut self) -> bool {
+        let mut disconnected = false;
+        let mut received = false;
+
+        enum StreamPoll {
+            Event(ProtocolLogEvent),
+            Empty,
+            Disconnected,
+        }
+
+        loop {
+            let poll = {
+                if let Some(stream) = self.log_stream.as_mut() {
+                    match stream.try_recv() {
+                        Ok(event) => StreamPoll::Event(event),
+                        Err(TryRecvError::Empty) => StreamPoll::Empty,
+                        Err(TryRecvError::Disconnected) => StreamPoll::Disconnected,
+                    }
+                } else {
+                    StreamPoll::Empty
+                }
+            };
+
+            match poll {
+                StreamPoll::Event(event) => {
+                    received = true;
+                    self.push_protocol_log(event);
+                }
+                StreamPoll::Empty => break,
+                StreamPoll::Disconnected => {
+                    disconnected = true;
+                    break;
+                }
+            }
+        }
+
+        if received {
+            self.stream_status = None;
+        }
+
+        if disconnected {
+            self.log_stream = None;
+            self.stream_failed = true;
+            self.last_stream_attempt = Some(Instant::now());
+            self.stream_status = Some("Log stream disconnected; retrying shortly".to_string());
+        }
+
+        received
+    }
+
+    #[cfg(feature = "tui-protocol-services")]
+    fn resolve_dataflow_id(&self, app_state: &AppState) -> Option<Uuid> {
+        if let Ok(uuid) = Uuid::parse_str(&self.target) {
+            return Some(uuid);
+        }
+
+        if !self.target.is_empty() {
+            if let Some(df) = app_state
+                .dataflows
+                .iter()
+                .find(|df| df.id == self.target || df.name == self.target)
+            {
+                return Uuid::parse_str(&df.id).ok();
+            }
+        }
+
+        app_state
+            .dataflows
+            .first()
+            .and_then(|df| Uuid::parse_str(&df.id).ok())
+    }
+
+    #[cfg(feature = "tui-protocol-services")]
+    fn push_protocol_log(&mut self, event: ProtocolLogEvent) {
+        let level = map_protocol_level(event.level);
+        let source = event.node.unwrap_or_else(|| "system".to_string());
+        let entry = LogEntry::new(self.next_log_id, level, source, event.line);
+        self.next_log_id = self.next_log_id.wrapping_add(1);
+        self.state.add_log(entry);
+    }
+
     /// Render the log list
     fn render_log_list(&self, f: &mut Frame, area: Rect) {
         let filtered_logs = self.state.get_filtered_logs();
@@ -158,16 +376,16 @@ impl LogViewerView {
 
         let spans = vec![
             Span::styled(
-                format!("[{}] ", timestamp),
+                format!("[{timestamp}] "),
                 Style::default().fg(Color::DarkGray),
             ),
             Span::styled(
-                format!("{:5} ", level_str),
+                format!("{level_str:5} "),
                 Style::default()
                     .fg(level_color)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(format!("{:15} ", source), Style::default().fg(Color::Cyan)),
+            Span::styled(format!("{source:15} "), Style::default().fg(Color::Cyan)),
             Span::styled(
                 message.to_string(),
                 Style::default().fg(if is_selected {
@@ -233,7 +451,8 @@ impl LogViewerView {
     fn render_stats(&self, f: &mut Frame, area: Rect) {
         let stats = self.state.stats();
 
-        let content = vec![Line::from(vec![
+        #[allow(unused_mut)]
+        let mut content = vec![Line::from(vec![
             Span::styled("Total: ", Style::default().fg(Color::Gray)),
             Span::styled(
                 format!("{}", stats.total),
@@ -271,6 +490,20 @@ impl LogViewerView {
                 Style::default().fg(Color::DarkGray),
             ),
         ])];
+
+        #[cfg(feature = "tui-protocol-services")]
+        if let Some(status) = &self.stream_status {
+            content.push(Line::from(vec![Span::styled(
+                status,
+                if self.stream_failed {
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::Gray)
+                },
+            )]));
+        }
 
         let paragraph = Paragraph::new(content).block(
             Block::default()
@@ -500,10 +733,35 @@ impl View for LogViewerView {
         }
     }
 
-    async fn update(&mut self, _app_state: &mut AppState) -> Result<()> {
-        // Generate new mock logs if not paused
+    async fn update(&mut self, app_state: &mut AppState) -> Result<()> {
+        #[cfg(feature = "tui-protocol-services")]
+        {
+            if self.protocol_clients.is_some() {
+                self.ensure_target_selection(app_state);
+                self.refresh_title(app_state);
+                self.maybe_connect_stream(app_state);
+
+                let received = self.drain_protocol_stream();
+                if received || self.log_stream.is_some() {
+                    self.state.mark_refreshed();
+                    return Ok(());
+                }
+
+                if self.stream_failed {
+                    self.state.mark_refreshed();
+                    return Ok(());
+                }
+
+                // Waiting for stream to connect; keep UI alive without generating mock logs.
+                self.state.mark_refreshed();
+                return Ok(());
+            }
+        }
+
+        #[cfg(not(feature = "tui-protocol-services"))]
+        let _ = app_state;
+
         if !self.state.paused {
-            // Generate 1-3 new logs per update
             let new_logs = (self.mock_log_counter % 3) + 1;
             self.generate_mock_logs(new_logs);
         }
@@ -533,6 +791,17 @@ impl View for LogViewerView {
     }
 }
 
+#[cfg(feature = "tui-protocol-services")]
+fn map_protocol_level(level: ProtocolLogLevel) -> LogLevel {
+    match level {
+        ProtocolLogLevel::Error => LogLevel::Error,
+        ProtocolLogLevel::Warn => LogLevel::Warn,
+        ProtocolLogLevel::Info => LogLevel::Info,
+        ProtocolLogLevel::Debug => LogLevel::Debug,
+        ProtocolLogLevel::Trace => LogLevel::Trace,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -540,6 +809,9 @@ mod tests {
     #[test]
     fn test_log_viewer_creation() {
         let theme = ThemeConfig::default();
+        #[cfg(feature = "tui-protocol-services")]
+        let viewer = LogViewerView::new("", &theme, None);
+        #[cfg(not(feature = "tui-protocol-services"))]
         let viewer = LogViewerView::new("", &theme);
 
         assert_eq!(viewer.state.buffer_count(), 0);
@@ -550,6 +822,9 @@ mod tests {
     #[test]
     fn test_mock_log_generation() {
         let theme = ThemeConfig::default();
+        #[cfg(feature = "tui-protocol-services")]
+        let mut viewer = LogViewerView::new("", &theme, None);
+        #[cfg(not(feature = "tui-protocol-services"))]
         let mut viewer = LogViewerView::new("", &theme);
 
         viewer.generate_mock_logs(10);
@@ -560,6 +835,9 @@ mod tests {
     #[test]
     fn test_view_title() {
         let theme = ThemeConfig::default();
+        #[cfg(feature = "tui-protocol-services")]
+        let viewer = LogViewerView::new("", &theme, None);
+        #[cfg(not(feature = "tui-protocol-services"))]
         let viewer = LogViewerView::new("", &theme);
 
         assert_eq!(viewer.title(), "Log Viewer");

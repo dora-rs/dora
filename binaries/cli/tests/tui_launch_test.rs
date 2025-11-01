@@ -1,6 +1,30 @@
 /// Integration test for TUI launch functionality
 /// Verifies that the TUI can be launched and initialized properly
-use dora_cli::tui::{DoraApp, ViewType};
+use std::sync::Arc;
+
+use dora_cli::cli::TuiView;
+use dora_cli::tui::ViewType;
+use dora_cli::tui::app::DoraApp;
+use tui_interface::{
+    MockCoordinatorClient, MockLegacyCliService, MockPreferencesStore, MockTelemetryService,
+    UserPreferencesSnapshot,
+};
+
+fn build_app(view: ViewType) -> DoraApp {
+    let prefs = Arc::new(MockPreferencesStore::new());
+    let coordinator = Arc::new(MockCoordinatorClient::new());
+    let telemetry = Arc::new(MockTelemetryService::new());
+    let legacy = Arc::new(MockLegacyCliService::new());
+
+    prefs.set_load_result(Ok(UserPreferencesSnapshot {
+        theme: "dark".to_string(),
+        auto_refresh_interval_secs: 5,
+        show_system_info: true,
+        default_view: None,
+    }));
+
+    DoraApp::with_dependencies(view, prefs, coordinator, telemetry, legacy)
+}
 
 #[test]
 fn test_tui_app_can_be_created_for_all_views() {
@@ -27,9 +51,7 @@ fn test_tui_app_can_be_created_for_all_views() {
     ];
 
     for view in views {
-        let app = DoraApp::new(view);
-        // If we get here without panicking, the app was created successfully
-        drop(app);
+        drop(build_app(view));
     }
 }
 
@@ -37,38 +59,23 @@ fn test_tui_app_can_be_created_for_all_views() {
 fn test_tui_launch_requires_tty() {
     // In a non-TTY environment (like this test), TUI should handle gracefully
     // This test just verifies the app can be created
-    let app = DoraApp::new(ViewType::Dashboard);
-
-    // Verify app has default state
-    // Note: We can't actually run the TUI in a test environment without a TTY
-    drop(app);
+    drop(build_app(ViewType::Dashboard));
 }
 
 #[test]
 fn test_different_initial_views() {
-    // Test dashboard view
-    let dashboard_app = DoraApp::new(ViewType::Dashboard);
-    drop(dashboard_app);
-
-    // Test dataflow manager view
-    let dataflow_app = DoraApp::new(ViewType::DataflowManager);
-    drop(dataflow_app);
-
-    // Test system monitor view
-    let monitor_app = DoraApp::new(ViewType::SystemMonitor);
-    drop(monitor_app);
-
-    // Test log viewer with target
-    let log_app = DoraApp::new(ViewType::LogViewer {
+    drop(build_app(ViewType::Dashboard));
+    drop(build_app(ViewType::DataflowManager));
+    drop(build_app(ViewType::SystemMonitor));
+    drop(build_app(ViewType::LogViewer {
         target: "all".to_string(),
-    });
-    drop(log_app);
+    }));
 }
 
 #[tokio::test]
 async fn test_tui_app_lifecycle() {
     // Test that we can create an app and it has proper initialization
-    let app = DoraApp::new(ViewType::Dashboard);
+    let app = build_app(ViewType::Dashboard);
 
     // The app should be created successfully
     // In a real TTY environment, we would call app.run().await
@@ -81,8 +88,6 @@ async fn test_tui_app_lifecycle() {
 fn test_tui_view_type_conversions() {
     // Verify TuiView command line enum maps correctly to internal ViewType
 
-    use dora_cli::cli::TuiView;
-
     // These are the mappings from CLI arguments to internal views
     let mappings = vec![
         (TuiView::Dashboard, ViewType::Dashboard),
@@ -93,7 +98,6 @@ fn test_tui_view_type_conversions() {
     for (cli_view, internal_view) in mappings {
         // Test that each CLI view maps to the correct internal view
         let _cli_view = cli_view;
-        let app = DoraApp::new(internal_view);
-        drop(app);
+        drop(build_app(internal_view));
     }
 }

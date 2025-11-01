@@ -12,6 +12,8 @@ use ratatui::{
     terminal::{Frame, Terminal},
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
+#[cfg(feature = "tui-protocol-services")]
+use std::sync::Mutex;
 use std::{
     collections::{HashMap, VecDeque, hash_map::Entry},
     io,
@@ -19,10 +21,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[cfg(feature = "tui-cli-services")]
+#[cfg(all(feature = "tui-cli-services", not(feature = "tui-protocol-services")))]
 use dora_message::{
     coordinator_to_cli::{DataflowListEntry, DataflowStatus, NodeRuntimeInfo, NodeRuntimeState},
-    descriptor::{CoreNodeKind, ResolvedNode},
+    descriptor::{CoreNodeKind, EnvValue, ResolvedNode},
 };
 
 use super::{
@@ -34,6 +36,10 @@ use super::{
     command_mode::{CommandModeAction, CommandModeManager},
     theme::ThemeConfig,
 };
+#[cfg(any(feature = "tui-cli-services", feature = "tui-protocol-services"))]
+use crate::tui::bridge::ServiceBundle;
+#[cfg(feature = "tui-protocol-services")]
+use dora_protocol_client::ProtocolClients;
 use tui_interface::{
     CoordinatorClient, DataflowSummary, DiskMetrics as InterfaceDiskMetrics, LegacyCliService,
     LoadAverages as InterfaceLoadAverages, MemoryMetrics as InterfaceMemoryMetrics,
@@ -41,9 +47,15 @@ use tui_interface::{
     SystemMetrics as InterfaceSystemMetrics, SystemMetricsSample as InterfaceSystemMetricsSample,
     TelemetryService,
 };
+#[cfg(all(feature = "tui-cli-services", not(feature = "tui-protocol-services")))]
+use tui_interface::{
+    NodeExecutableDescriptor, NodeResolvedDescriptor, NodeResolvedKind, NodeRuntimeDescriptor,
+    NodeRuntimeOperator,
+};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum ViewType {
+    #[default]
     Dashboard,
     DataflowManager,
     DataflowExplorer,
@@ -63,12 +75,6 @@ pub enum ViewType {
     },
     SettingsManager,
     Help,
-}
-
-impl Default for ViewType {
-    fn default() -> Self {
-        ViewType::Dashboard
-    }
 }
 
 #[derive(Debug, Default)]
@@ -155,6 +161,18 @@ impl AppState {
             }
         }
     }
+
+    #[cfg(feature = "tui-protocol-services")]
+    pub fn should_apply_metrics(
+        new_stamp: Option<Instant>,
+        previous_stamp: Option<Instant>,
+    ) -> bool {
+        match (new_stamp, previous_stamp) {
+            (Some(newer), Some(older)) => newer > older,
+            (Some(_), None) => true,
+            (None, _) => true,
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -224,7 +242,7 @@ pub enum MessageLevel {
     Error,
 }
 
-#[cfg(feature = "tui-cli-services")]
+#[cfg(all(feature = "tui-cli-services", not(feature = "tui-protocol-services")))]
 pub(crate) fn dataflow_from_entry(entry: DataflowListEntry) -> DataflowSummary {
     let DataflowListEntry { id, status, nodes } = entry;
     let uuid = id.uuid.to_string();
@@ -240,7 +258,7 @@ pub(crate) fn dataflow_from_entry(entry: DataflowListEntry) -> DataflowSummary {
     }
 }
 
-#[cfg(feature = "tui-cli-services")]
+#[cfg(all(feature = "tui-cli-services", not(feature = "tui-protocol-services")))]
 fn node_from_runtime(mut runtime: NodeRuntimeInfo) -> NodeSummary {
     if runtime.inputs.is_empty() && runtime.outputs.is_empty() {
         let (inputs, outputs) = extract_node_connections(&runtime.node);
@@ -266,11 +284,11 @@ fn node_from_runtime(mut runtime: NodeRuntimeInfo) -> NodeSummary {
         inputs: runtime.inputs,
         outputs: runtime.outputs,
         source,
-        resolved: Some(runtime.node),
+        details: Some(convert_resolved_node(&runtime.node)),
     }
 }
 
-#[cfg(feature = "tui-cli-services")]
+#[cfg(all(feature = "tui-cli-services", not(feature = "tui-protocol-services")))]
 fn format_dataflow_status(status: DataflowStatus) -> String {
     match status {
         DataflowStatus::Running => "running",
@@ -280,7 +298,7 @@ fn format_dataflow_status(status: DataflowStatus) -> String {
     .to_string()
 }
 
-#[cfg(feature = "tui-cli-services")]
+#[cfg(all(feature = "tui-cli-services", not(feature = "tui-protocol-services")))]
 fn format_node_status(status: NodeRuntimeState) -> &'static str {
     match status {
         NodeRuntimeState::Running => "running",
@@ -291,7 +309,7 @@ fn format_node_status(status: NodeRuntimeState) -> &'static str {
     }
 }
 
-#[cfg(feature = "tui-cli-services")]
+#[cfg(all(feature = "tui-cli-services", not(feature = "tui-protocol-services")))]
 fn describe_node_kind(kind: &CoreNodeKind) -> String {
     match kind {
         CoreNodeKind::Custom(custom) => {
@@ -303,7 +321,7 @@ fn describe_node_kind(kind: &CoreNodeKind) -> String {
     }
 }
 
-#[cfg(feature = "tui-cli-services")]
+#[cfg(all(feature = "tui-cli-services", not(feature = "tui-protocol-services")))]
 fn derive_node_source(kind: &CoreNodeKind) -> Option<String> {
     match kind {
         CoreNodeKind::Custom(custom) => Some(custom.path.clone()),
@@ -311,7 +329,7 @@ fn derive_node_source(kind: &CoreNodeKind) -> Option<String> {
     }
 }
 
-#[cfg(feature = "tui-cli-services")]
+#[cfg(all(feature = "tui-cli-services", not(feature = "tui-protocol-services")))]
 fn extract_node_connections(node: &ResolvedNode) -> (Vec<String>, Vec<String>) {
     match &node.kind {
         CoreNodeKind::Custom(custom) => {
@@ -352,6 +370,58 @@ fn extract_node_connections(node: &ResolvedNode) -> (Vec<String>, Vec<String>) {
     }
 }
 
+#[cfg(all(feature = "tui-cli-services", not(feature = "tui-protocol-services")))]
+fn convert_resolved_node(node: &ResolvedNode) -> NodeResolvedDescriptor {
+    let kind = match &node.kind {
+        CoreNodeKind::Custom(custom) => NodeResolvedKind::Custom(NodeExecutableDescriptor {
+            path: custom.path.clone(),
+            args: custom.args.clone(),
+            send_stdout_as: custom.send_stdout_as.clone(),
+        }),
+        CoreNodeKind::Runtime(runtime) => {
+            let operators = runtime
+                .operators
+                .iter()
+                .map(|operator| {
+                    let name = operator
+                        .config
+                        .name
+                        .clone()
+                        .unwrap_or_else(|| operator.id.to_string());
+                    NodeRuntimeOperator {
+                        id: operator.id.to_string(),
+                        name,
+                    }
+                })
+                .collect();
+            NodeResolvedKind::Runtime(NodeRuntimeDescriptor { operators })
+        }
+    };
+
+    let mut env = Vec::new();
+
+    if let Some(global_env) = &node.env {
+        for (key, value) in global_env {
+            env.push((key.clone(), format_env_value(value)));
+        }
+    }
+
+    if let CoreNodeKind::Custom(custom) = &node.kind {
+        if let Some(custom_envs) = &custom.envs {
+            for (key, value) in custom_envs {
+                env.push((key.clone(), format_env_value(value)));
+            }
+        }
+    }
+
+    NodeResolvedDescriptor { kind, env }
+}
+
+#[cfg(all(feature = "tui-cli-services", not(feature = "tui-protocol-services")))]
+fn format_env_value(value: &EnvValue) -> String {
+    value.to_string()
+}
+
 pub struct DoraApp {
     /// Current active view
     current_view: ViewType,
@@ -388,6 +458,10 @@ pub struct DoraApp {
 
     /// Should quit flag
     should_quit: bool,
+    #[cfg(feature = "tui-protocol-services")]
+    protocol_clients: Option<Arc<ProtocolClients>>,
+    #[cfg(feature = "tui-protocol-services")]
+    metrics_cache: Option<Arc<Mutex<Option<SystemMetrics>>>>,
 }
 
 impl DoraApp {
@@ -396,21 +470,14 @@ impl DoraApp {
     #[cfg(feature = "tui-cli-services")]
     pub fn new(initial_view: ViewType) -> Self {
         let bundle = crate::tui::bridge::default_service_bundle();
-        Self::with_dependencies(
-            initial_view,
-            bundle.preferences_store,
-            bundle.coordinator_client,
-            bundle.telemetry_service,
-            bundle.legacy_cli_service,
-        )
+        Self::from_service_bundle(initial_view, bundle)
     }
 
     #[cfg(not(feature = "tui-cli-services"))]
     pub fn new(initial_view: ViewType) -> Self {
         panic!(
             "DoraApp::new requires the `tui-cli-services` feature. \
-             Construct the app with `with_dependencies` in standalone builds. (view: {:?})",
-            initial_view
+             Construct the app with `with_dependencies` in standalone builds. (view: {initial_view:?})"
         );
     }
 
@@ -434,10 +501,46 @@ impl DoraApp {
             preferences_store,
             legacy_service,
             should_quit: false,
+            #[cfg(feature = "tui-protocol-services")]
+            protocol_clients: None,
+            #[cfg(feature = "tui-protocol-services")]
+            metrics_cache: None,
         };
 
         app.initialize_command_executor();
         app.apply_user_preferences();
+        app
+    }
+
+    #[cfg(any(feature = "tui-cli-services", feature = "tui-protocol-services"))]
+    pub fn from_service_bundle(initial_view: ViewType, bundle: ServiceBundle) -> Self {
+        let ServiceBundle {
+            preferences_store,
+            coordinator_client,
+            telemetry_service,
+            legacy_cli_service,
+            #[cfg(feature = "tui-protocol-services")]
+            protocol_clients,
+            #[cfg(feature = "tui-protocol-services")]
+            metrics_cache,
+        } = bundle;
+
+        #[cfg_attr(not(feature = "tui-protocol-services"), allow(unused_mut))]
+        let mut app = Self::with_dependencies(
+            initial_view,
+            preferences_store,
+            coordinator_client,
+            telemetry_service,
+            legacy_cli_service,
+        );
+
+        #[cfg(feature = "tui-protocol-services")]
+        {
+            app.protocol_clients = Some(protocol_clients);
+            app.metrics_cache = Some(metrics_cache);
+            app.initialize_command_executor();
+        }
+
         app
     }
 
@@ -456,6 +559,8 @@ impl DoraApp {
             Arc::clone(&self.coordinator_client),
             Arc::clone(&self.telemetry_service),
             Arc::clone(&self.legacy_service),
+            #[cfg(feature = "tui-protocol-services")]
+            self.metrics_cache.clone(),
         ));
     }
 
@@ -632,6 +737,10 @@ impl DoraApp {
                 view.render(f, area, &self.state);
             }
             ViewType::LogViewer { target } => {
+                #[cfg(feature = "tui-protocol-services")]
+                let mut view =
+                    LogViewerView::new(target, &self.theme, self.protocol_clients.clone());
+                #[cfg(not(feature = "tui-protocol-services"))]
                 let mut view = LogViewerView::new(target, &self.theme);
                 view.render(f, area, &self.state);
             }
@@ -642,8 +751,8 @@ impl DoraApp {
             _ => {
                 // Fallback for unimplemented views
                 let content = match &self.current_view {
-                    ViewType::RecordingAnalyzer { recording_id } => format!("🎬 Recording Analyzer\n\nAnalyzing recording: {}\n\nPlayback controls and data analysis tools.", recording_id),
-                    ViewType::DebugSession { dataflow_id } => format!("🐛 Debug Session\n\nDebugging dataflow: {}\n\nBreakpoints, step-through debugging, and variable inspection.", dataflow_id),
+                    ViewType::RecordingAnalyzer { recording_id } => format!("🎬 Recording Analyzer\n\nAnalyzing recording: {recording_id}\n\nPlayback controls and data analysis tools."),
+                    ViewType::DebugSession { dataflow_id } => format!("🐛 Debug Session\n\nDebugging dataflow: {dataflow_id}\n\nBreakpoints, step-through debugging, and variable inspection."),
                     ViewType::SettingsManager => "⚙️ Settings Manager\n\nConfigure Dora CLI/TUI:\n- Theme settings\n- Key bindings\n- Default behaviors\n- Performance tuning".to_string(),
                     _ => "View not implemented yet".to_string(),
                 };
@@ -950,6 +1059,11 @@ impl DoraApp {
     async fn update(&mut self) -> Result<()> {
         let now = Instant::now();
 
+        #[cfg(feature = "tui-protocol-services")]
+        let refreshed_from_stream = self.try_apply_metrics_from_cache();
+        #[cfg(not(feature = "tui-protocol-services"))]
+        let refreshed_from_stream = false;
+
         if matches!(
             self.current_view,
             ViewType::Dashboard
@@ -957,9 +1071,10 @@ impl DoraApp {
                 | ViewType::DataflowExplorer
                 | ViewType::NodeInspector { .. }
         ) {
-            let needs_refresh = self.state.dataflow_last_refresh.map_or(true, |last| {
-                now.duration_since(last) > Self::DATAFLOW_REFRESH_INTERVAL
-            });
+            let needs_refresh = self
+                .state
+                .dataflow_last_refresh
+                .is_none_or(|last| now.duration_since(last) > Self::DATAFLOW_REFRESH_INTERVAL);
 
             if needs_refresh {
                 self.refresh_dataflow_list().await?;
@@ -972,12 +1087,13 @@ impl DoraApp {
             self.state.user_config.auto_refresh_interval
         };
 
-        if self
+        let needs_poll = self
             .state
             .system_metrics
             .last_update
-            .map_or(true, |last| now.duration_since(last) > metrics_interval)
-        {
+            .is_none_or(|last| now.duration_since(last) > metrics_interval);
+
+        if needs_poll && !refreshed_from_stream {
             self.update_system_metrics().await?;
         }
 
@@ -997,11 +1113,11 @@ impl DoraApp {
             ViewType::NodeInspector {
                 dataflow_id,
                 node_id,
-            } => format!("Node Inspector: {} @ {}", node_id, dataflow_id),
+            } => format!("Node Inspector: {node_id} @ {dataflow_id}"),
             ViewType::SystemMonitor => "System Monitor".to_string(),
-            ViewType::LogViewer { target } => format!("Logs: {}", target),
-            ViewType::RecordingAnalyzer { recording_id } => format!("Recording: {}", recording_id),
-            ViewType::DebugSession { dataflow_id } => format!("Debug: {}", dataflow_id),
+            ViewType::LogViewer { target } => format!("Logs: {target}"),
+            ViewType::RecordingAnalyzer { recording_id } => format!("Recording: {recording_id}"),
+            ViewType::DebugSession { dataflow_id } => format!("Debug: {dataflow_id}"),
             ViewType::SettingsManager => "Settings".to_string(),
             ViewType::Help => "Help".to_string(),
         }
@@ -1054,6 +1170,11 @@ impl DoraApp {
     }
 
     async fn update_system_metrics(&mut self) -> Result<()> {
+        #[cfg(feature = "tui-protocol-services")]
+        if self.try_apply_metrics_from_cache() {
+            return Ok(());
+        }
+
         let service = Arc::clone(&self.telemetry_service);
         match tokio::task::spawn_blocking(move || service.latest_metrics()).await {
             Ok(Ok(metrics)) => {
@@ -1119,6 +1240,28 @@ impl DoraApp {
     #[cfg(test)]
     pub fn last_dataflow_refresh(&self) -> Option<Instant> {
         self.state.dataflow_last_refresh
+    }
+
+    #[cfg(feature = "tui-protocol-services")]
+    fn try_apply_metrics_from_cache(&mut self) -> bool {
+        if let Some(cache) = &self.metrics_cache {
+            if let Ok(guard) = cache.lock() {
+                if let Some(latest) = guard.as_ref() {
+                    if AppState::should_apply_metrics(
+                        latest.last_update,
+                        self.state.system_metrics.last_update,
+                    ) {
+                        let snapshot = latest.clone();
+                        drop(guard);
+                        self.state.system_metrics = snapshot.clone();
+                        self.state.record_system_metrics(&snapshot);
+                        self.state.last_error = None;
+                        return true;
+                    }
+                }
+            }
+        }
+        false
     }
 
     #[cfg(test)]

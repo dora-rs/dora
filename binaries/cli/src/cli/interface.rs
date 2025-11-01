@@ -149,7 +149,7 @@ impl InterfaceSelector {
         // Include relevant context and command details
         format!(
             "{}:{}:{}:{}",
-            command.name().to_string(),
+            command.name(),
             self.context.is_tty,
             self.context.is_piped,
             self.config.global_ui_mode.as_u8()
@@ -343,7 +343,7 @@ impl InterfaceSelector {
         let mut confidence: f32 = 0.8;
 
         // Increase confidence for clear cases
-        if weighted_score < 0.2 || weighted_score > 0.8 {
+        if !(0.2..=0.8).contains(&weighted_score) {
             confidence += 0.1;
         }
 
@@ -370,10 +370,7 @@ impl InterfaceSelector {
             (Command::Inspect(_), InteractionBenefit::Medium) => {
                 "Use 'dora ui inspect' for live metrics and interactive exploration".to_string()
             }
-            _ => format!(
-                "For enhanced experience, try 'dora ui {}'",
-                command.name().to_string()
-            ),
+            _ => format!("For enhanced experience, try 'dora ui {}'", command.name()),
         }
     }
 
@@ -381,7 +378,7 @@ impl InterfaceSelector {
     fn generate_tui_command(&self, command: &Command) -> String {
         match command {
             Command::Ps(_) => "dora ui".to_string(),
-            _ => format!("dora ui {}", command.name().to_string()),
+            _ => format!("dora ui {}", command.name()),
         }
     }
 
@@ -404,6 +401,12 @@ impl InterfaceSelector {
                 _ => "Interactive interface may provide a better experience".to_string(),
             },
         }
+    }
+}
+
+impl Default for CommandAnalyzer {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

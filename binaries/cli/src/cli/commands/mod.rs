@@ -333,9 +333,10 @@ pub struct DebugCommand {
     pub output_dir: Option<std::path::PathBuf>,
 }
 
-#[derive(clap::ValueEnum, Clone, Debug)]
+#[derive(clap::ValueEnum, Clone, Debug, Default)]
 pub enum DebugMode {
     Interactive,
+    #[default]
     Auto,
     Snapshot,
     Live,
@@ -344,12 +345,6 @@ pub enum DebugMode {
     Profile,
     Health,
     Network,
-}
-
-impl Default for DebugMode {
-    fn default() -> Self {
-        DebugMode::Auto
-    }
 }
 
 #[derive(clap::ValueEnum, Clone, Debug)]
@@ -588,7 +583,7 @@ impl InspectCommand {
         // Render output
         let renderer = CliRenderer::new();
         let output = renderer.render(&result, self.format.clone())?;
-        println!("{}", output);
+        println!("{output}");
 
         // Export if requested
         if let Some(export_path) = &self.export {

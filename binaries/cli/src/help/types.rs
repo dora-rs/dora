@@ -145,7 +145,7 @@ impl HelpContent {
         Self {
             topic: "not-found".to_string(),
             title: "Help Topic Not Found".to_string(),
-            summary: format!("No help found for '{}'", query),
+            summary: format!("No help found for '{query}'"),
             sections: vec![HelpSection {
                 title: "Suggestions".to_string(),
                 content: "Try searching with different keywords or use --list to see all available topics.".to_string(),
@@ -223,33 +223,23 @@ pub struct HelpExample {
 // ============================================================================
 
 /// Help output format
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum, Default)]
 pub enum HelpFormat {
+    #[default]
     Text,
     Markdown,
     Json,
     Html,
 }
 
-impl Default for HelpFormat {
-    fn default() -> Self {
-        HelpFormat::Text
-    }
-}
-
 /// Detail level for help content
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum, Default)]
 pub enum DetailLevel {
     Quick,
+    #[default]
     Normal,
     Detailed,
     Expert,
-}
-
-impl Default for DetailLevel {
-    fn default() -> Self {
-        DetailLevel::Normal
-    }
 }
 
 /// Difficulty level for content
@@ -487,6 +477,12 @@ pub struct HelpIndex {
     pub topics: HashMap<String, HelpTopicEntry>,
     pub tags: HashMap<String, Vec<String>>,
     pub categories: HashMap<String, Vec<String>>,
+}
+
+impl Default for HelpIndex {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl HelpIndex {
