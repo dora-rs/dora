@@ -1,5 +1,7 @@
+use std::path::PathBuf;
+
 use proc_macro2::Span;
-use quote::{ToTokens, quote};
+use quote::{ToTokens, format_ident, quote};
 use syn::Ident;
 
 use crate::types::{Action, Message, Service};
@@ -7,15 +9,19 @@ use crate::types::{Action, Message, Service};
 #[derive(Debug)]
 pub struct Package {
     pub name: String,
+    pub path: PathBuf,
+    pub dependencies: Vec<String>,
     pub messages: Vec<Message>,
     pub services: Vec<Service>,
     pub actions: Vec<Action>,
 }
 
 impl Package {
-    pub const fn new(name: String) -> Self {
+    pub fn new(name: String) -> Self {
         Self {
             name,
+            path: PathBuf::new(),
+            dependencies: Vec::new(),
             messages: Vec::new(),
             services: Vec::new(),
             actions: Vec::new(),
@@ -129,6 +135,19 @@ impl Package {
                     #(#items)*
                 }  // action
             }
+        }
+    }
+
+    pub fn dependencies_import_token_stream(&self) -> impl ToTokens {
+        let imports = self.dependencies.iter().map(|dep| {
+            let package_name = format_ident!("{}", dep);
+            quote! {
+                #[allow(unused_imports)]
+                use crate::messages::#package_name::ffi::*;
+            }
+        });
+        quote! {
+            #(#imports)*
         }
     }
 

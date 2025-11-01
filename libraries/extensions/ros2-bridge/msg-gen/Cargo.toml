@@ -18,3 +18,7 @@ syn = "1.0"
 thiserror = "1.0"
 glob = "0.3.1"
 tracing = "0.1.33"
+rust-format = { version = "0.3.4", features = [
+    "pretty_please",
+]}
+quick-xml = "0.38.3"

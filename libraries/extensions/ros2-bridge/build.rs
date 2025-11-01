@@ -8,11 +8,11 @@ fn main() {}
 fn main() {
     use rust_format::Formatter;
     let paths = ament_prefix_paths();
-    let generated = dora_ros2_bridge_msg_gen::generate(paths.as_slice(), false);
+    let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    let generated = dora_ros2_bridge_msg_gen::generate(paths.as_slice(), &out_dir, false);
     let generated_string = rust_format::PrettyPlease::default()
         .format_tokens(generated)
         .unwrap();
-    let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let target_file = out_dir.join("messages.rs");
     std::fs::write(&target_file, generated_string).unwrap();
     println!("cargo:rustc-env=MESSAGES_PATH={}", target_file.display());
