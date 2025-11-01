@@ -62,11 +62,11 @@ mod ros2 {
     pub fn generate() -> PathBuf {
         use rust_format::Formatter;
         let paths = ament_prefix_paths();
-        let generated = dora_ros2_bridge_msg_gen::generate(paths.as_slice(), true);
+        let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+        let generated = dora_ros2_bridge_msg_gen::generate(paths.as_slice(), &out_dir, true);
         let generated_string = rust_format::PrettyPlease::default()
             .format_tokens(generated)
             .unwrap();
-        let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
         let target_file = out_dir.join("ros2_bindings.rs");
         std::fs::write(&target_file, generated_string).unwrap();
         println!(
