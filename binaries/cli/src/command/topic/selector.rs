@@ -1,4 +1,4 @@
-use std::{borrow::Cow, collections::HashMap, net::IpAddr};
+use std::{borrow::Cow, collections::HashMap, fmt, net::IpAddr};
 
 use crate::{
     LOCALHOST,
@@ -9,6 +9,7 @@ use dora_core::{
     config::InputMapping, descriptor::Descriptor, topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT,
 };
 use dora_message::{
+    DataflowId,
     cli_to_coordinator::ControlRequest,
     coordinator_to_cli::ControlRequestReply,
     id::{DataId, NodeId},
@@ -64,15 +65,25 @@ pub struct TopicSelector {
     pub data: Vec<String>,
 }
 
-#[derive(PartialOrd, Ord, PartialEq, Eq)]
+#[derive(Clone, PartialOrd, Ord, PartialEq, Eq)]
 pub struct TopicIdentifier {
-    pub dataflow_id: Uuid,
     pub node_id: NodeId,
     pub data_id: DataId,
 }
 
+impl fmt::Display for TopicIdentifier {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}/{}", self.node_id, self.data_id)
+    }
+}
+
 impl TopicSelector {
-    pub fn resolve(&self) -> eyre::Result<(Box<TcpRequestReplyConnection>, Vec<TopicIdentifier>)> {
+    pub fn resolve(
+        &self,
+    ) -> eyre::Result<(
+        Box<TcpRequestReplyConnection>,
+        (DataflowId, Vec<TopicIdentifier>),
+    )> {
         let (session, dataflow_id, dataflow_descriptor) = self.dataflow.resolve()?;
         if !dataflow_descriptor.debug.publish_all_messages_to_zenoh {
             bail!(
@@ -97,13 +108,12 @@ impl TopicSelector {
         if self.data.is_empty() {
             data.extend(dataflow_descriptor.nodes.iter().flat_map(|node| {
                 node.outputs.iter().map(|output| TopicIdentifier {
-                    dataflow_id,
                     node_id: node.id.clone(),
                     data_id: output.clone(),
                 })
             }));
             data.sort();
-            return Ok((session, data));
+            return Ok((session, (dataflow_id, data)));
         }
 
         for s in &self.data {
@@ -120,13 +130,11 @@ impl TopicSelector {
                         .with_context(|| format!("Unknown node: `{}`", user.source))?;
                     if user.output.is_empty() {
                         data.extend(node.outputs.iter().map(|output| TopicIdentifier {
-                            dataflow_id,
                             node_id: user.source.clone(),
                             data_id: output.clone(),
                         }));
                     } else if node.outputs.contains(&user.output) {
                         data.push(TopicIdentifier {
-                            dataflow_id,
                             node_id: user.source,
                             data_id: user.output,
                         });
@@ -148,6 +156,6 @@ impl TopicSelector {
         data.sort();
         data.dedup();
 
-        Ok((session, data))
+        Ok((session, (dataflow_id, data)))
     }
 }
