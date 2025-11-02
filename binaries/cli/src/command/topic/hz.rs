@@ -1,4 +1,4 @@
-use crossterm::event::{Event, KeyCode};
+use crossterm::event::{Event, KeyCode, KeyModifiers};
 use dora_core::topics::{open_zenoh_session, zenoh_output_publish_topic};
 use dora_message::{common::Timestamped, daemon_to_daemon::InterDaemonEvent};
 use eyre::{Context, eyre};
@@ -160,7 +160,10 @@ async fn run_hz(
 
         if crossterm::event::poll(Duration::from_millis(50))? {
             if let Event::Key(key) = crossterm::event::read()? {
-                if KeyCode::Char('q') == key.code {
+                if matches!(key.code, KeyCode::Char('q') | KeyCode::Esc)
+                    || (key.modifiers.contains(KeyModifiers::CONTROL)
+                        && key.code == KeyCode::Char('c'))
+                {
                     break;
                 }
             }
