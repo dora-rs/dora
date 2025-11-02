@@ -1,4 +1,4 @@
-use std::net::IpAddr;
+use std::{borrow::Cow, collections::HashMap, net::IpAddr};
 
 use crate::{
     LOCALHOST,
@@ -13,7 +13,7 @@ use dora_message::{
     coordinator_to_cli::ControlRequestReply,
     id::{DataId, NodeId},
 };
-use eyre::{Context, bail};
+use eyre::{Context, ContextCompat, bail};
 use uuid::Uuid;
 
 #[derive(Debug, clap::Args)]
@@ -64,6 +64,7 @@ pub struct TopicSelector {
     pub data: Vec<String>,
 }
 
+#[derive(PartialOrd, Ord, PartialEq, Eq)]
 pub struct TopicIdentifier {
     pub dataflow_id: Uuid,
     pub node_id: NodeId,
@@ -85,23 +86,68 @@ impl TopicSelector {
                 "
             );
         }
-        let data = self
-            .data
+
+        let node_map = dataflow_descriptor
+            .nodes
             .iter()
-            .map(|s| {
-                match serde_json::from_value::<InputMapping>(serde_json::Value::String(s.clone())) {
-                    Ok(InputMapping::User(user)) => Ok(TopicIdentifier {
-                        dataflow_id,
-                        node_id: user.source,
-                        data_id: user.output,
-                    }),
-                    Ok(_) => {
-                        bail!("Reserved input mapping cannot be inspected")
+            .map(|node| (&node.id, node))
+            .collect::<HashMap<_, _>>();
+
+        let mut data = Vec::new();
+        if self.data.is_empty() {
+            data.extend(dataflow_descriptor.nodes.iter().flat_map(|node| {
+                node.outputs.iter().map(|output| TopicIdentifier {
+                    dataflow_id,
+                    node_id: node.id.clone(),
+                    data_id: output.clone(),
+                })
+            }));
+            data.sort();
+            return Ok((session, data));
+        }
+
+        for s in &self.data {
+            let mut s = Cow::Borrowed(s.as_str());
+            if !s.contains('/') {
+                s.to_mut().push('/');
+            }
+            match serde_json::from_value::<InputMapping>(serde_json::Value::String(
+                s.clone().into_owned(),
+            )) {
+                Ok(InputMapping::User(user)) => {
+                    let node = *node_map
+                        .get(&user.source)
+                        .with_context(|| format!("Unknown node: `{}`", user.source))?;
+                    if user.output.is_empty() {
+                        data.extend(node.outputs.iter().map(|output| TopicIdentifier {
+                            dataflow_id,
+                            node_id: user.source.clone(),
+                            data_id: output.clone(),
+                        }));
+                    } else if node.outputs.contains(&user.output) {
+                        data.push(TopicIdentifier {
+                            dataflow_id,
+                            node_id: user.source,
+                            data_id: user.output,
+                        });
+                    } else {
+                        bail!(
+                            "Node `{}` does not have output `{}`",
+                            user.source,
+                            user.output
+                        );
                     }
-                    Err(e) => bail!("Invalid output id `{s}`: {e}"),
                 }
-            })
-            .collect::<eyre::Result<Vec<_>>>()?;
+                Ok(_) => {
+                    bail!("Reserved input mapping cannot be inspected")
+                }
+                Err(e) => bail!("Invalid output id `{s}`: {e}"),
+            }
+        }
+
+        data.sort();
+        data.dedup();
+
         Ok((session, data))
     }
 }
