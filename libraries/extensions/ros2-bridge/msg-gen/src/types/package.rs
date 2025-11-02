@@ -6,11 +6,11 @@ use syn::Ident;
 
 use crate::types::{Action, Message, Service};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Package {
     pub name: String,
     pub path: PathBuf,
-    pub dependencies: Vec<String>,
+    pub dependencies: Vec<Package>,
     pub messages: Vec<Message>,
     pub services: Vec<Service>,
     pub actions: Vec<Action>,
@@ -138,9 +138,33 @@ impl Package {
         }
     }
 
+    pub fn reuse_bindings_token_stream(&self) -> impl ToTokens {
+        let mut messages = Vec::new();
+        self.dependencies.iter().for_each(|dep| {
+            let package_name = dep.name.as_str();
+            let package_ident = format_ident!("{}", package_name);
+            let package_header = format!("{}.rs.h", package_name);
+            messages.push(quote! {
+                include!(#package_header);
+            });
+            dep.messages.iter().for_each(|msg| {
+                let message_name = format_ident!("{package_name}__{}", msg.name);
+                let cxx_name = msg.name.as_str();
+                messages.push(quote! {
+                    #[namespace = #package_name]
+                    #[cxx_name = #cxx_name]
+                    type #message_name = crate::ros2::#package_ident::ffi::#message_name;
+                });
+            });
+        });
+        quote! {
+            #(#messages)*
+        }
+    }
+
     pub fn dependencies_import_token_stream(&self) -> impl ToTokens {
         let imports = self.dependencies.iter().map(|dep| {
-            let package_name = format_ident!("{}", dep);
+            let package_name = format_ident!("{}", dep.name);
             quote! {
                 #[allow(unused_imports)]
                 use crate::messages::#package_name::ffi::*;

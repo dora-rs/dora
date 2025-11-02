@@ -130,9 +130,9 @@ impl Service {
                     use futures::StreamExt as _;
 
                     let client = self.node.create_client::< #package :: service :: #self_name >(
-                        ros2_client::ServiceMapping::Enhanced,
-                        &ros2_client::Name::new(name_space, base_name).unwrap(),
-                        &ros2_client::ServiceTypeName::new(#package_name, #self_name_str),
+                        crate::ros2_client::ServiceMapping::Enhanced,
+                        &crate::ros2_client::Name::new(name_space, base_name).unwrap(),
+                        &crate::ros2_client::ServiceTypeName::new(#package_name, #self_name_str),
                         qos.clone().into(),
                         qos.into(),
                     ).map_err(|e| eyre::eyre!("{e:?}"))?;
@@ -151,9 +151,9 @@ impl Service {
 
             #[allow(non_camel_case_types)]
             pub struct #client_name {
-                client: std::sync::Arc<ros2_client::service::Client< #package :: service :: #self_name >>,
-                response_tx: std::sync::Arc<flume::Sender<eyre::Result<ffi::#res_type_raw>>>,
-                executor: std::sync::Arc<futures::executor::ThreadPool>,
+                client: std::sync::Arc<crate::ros2_client::service::Client< #package :: service :: #self_name >>,
+                response_tx: std::sync::Arc<crate::flume::Sender<eyre::Result<ffi::#res_type_raw>>>,
+                executor: std::sync::Arc<crate::futures::executor::ThreadPool>,
                 stream_id: u32,
             }
 
