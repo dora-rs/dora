@@ -155,6 +155,26 @@ impl Scheduler {
         None
     }
 
+    pub(crate) fn drain(&mut self) -> Vec<EventItem> {
+        let mut events = vec![];
+        // Retrieve message from the non input event first that have priority over input message.
+        if let Some((_size, queue)) = self
+            .event_queues
+            .get_mut(&DataId::from(NON_INPUT_EVENT.to_string()))
+        {
+            events.append(queue.drain(..).collect::<Vec<_>>().as_mut());
+        }
+
+        // Process the ID with the oldest timestamp using BTreeMap Ordering
+        for (_, id) in self.last_used.clone().iter().enumerate() {
+            if let Some((_size, queue)) = self.event_queues.get_mut(id) {
+                events.append(queue.drain(..).collect::<Vec<_>>().as_mut());
+            }
+        }
+
+        events
+    }
+
     pub(crate) fn is_empty(&self) -> bool {
         self.event_queues
             .iter()
