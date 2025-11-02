@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 fn main() {
     let mut bridge_files = vec![PathBuf::from("src/lib.rs")];
     #[cfg(feature = "ros2-bridge")]
-    bridge_files.push(ros2::generate());
+    bridge_files.extend(ros2::generate());
 
     let _build = cxx_build::bridges(&bridge_files);
     println!("cargo:rerun-if-changed=src/lib.rs");
@@ -19,7 +19,7 @@ fn main() {
     .unwrap();
 
     #[cfg(feature = "ros2-bridge")]
-    ros2::generate_ros2_message_header(bridge_files.last().unwrap());
+    ros2::generate_ros2_message_header();
 
     // to avoid unnecessary `mut` warning
     bridge_files.clear();
@@ -59,7 +59,7 @@ mod ros2 {
         path::{Component, Path, PathBuf},
     };
 
-    pub fn generate() -> PathBuf {
+    pub fn generate() -> Vec<PathBuf> {
         use rust_format::Formatter;
         let paths = ament_prefix_paths();
         let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
@@ -67,14 +67,20 @@ mod ros2 {
         let generated_string = rust_format::PrettyPlease::default()
             .format_tokens(generated)
             .unwrap();
-        let target_file = out_dir.join("ros2_bindings.rs");
+        let target_file = out_dir.join("messages.rs");
         std::fs::write(&target_file, generated_string).unwrap();
         println!(
             "cargo:rustc-env=ROS2_BINDINGS_PATH={}",
             target_file.display()
         );
-
-        target_file
+        let mut target_files: Vec<_> = out_dir
+            .join("messages_impl")
+            .read_dir()
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        target_files.push(out_dir.join("default_impl.rs"));
+        target_files
     }
 
     fn ament_prefix_paths() -> Vec<PathBuf> {
@@ -101,55 +107,48 @@ mod ros2 {
         paths
     }
 
-    pub fn generate_ros2_message_header(source_file: &Path) {
+    fn copy_dir_all(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> std::io::Result<()> {
+        std::fs::create_dir_all(&dst)?;
+        for entry in std::fs::read_dir(src)? {
+            let entry = entry?;
+            let ty = entry.file_type()?;
+            if ty.is_dir() {
+                copy_dir_all(entry.path(), dst.as_ref().join(entry.file_name()))?;
+            } else {
+                std::fs::copy(entry.path(), dst.as_ref().join(entry.file_name()))?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn generate_ros2_message_header() {
         use std::io::Write as _;
 
-        let out_dir = source_file.parent().unwrap();
-        let relative_path = local_relative_path(&source_file)
-            .ancestors()
-            .nth(2)
-            .unwrap()
-            .join("out");
-        let header_path = out_dir
+        let default_target = std::env::var("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .ancestors()
+                    .nth(3)
+                    .unwrap();
+                root.join("target")
+            });
+        let out_dir_str = std::env::var("OUT_DIR").unwrap();
+        let out_dir = PathBuf::from(&out_dir_str);
+        let relative_dir = PathBuf::from(out_dir_str.strip_prefix("/").unwrap());
+        let header_path = default_target
             .join("cxxbridge")
-            .join("include")
             .join("dora-node-api-cxx")
-            .join(&relative_path)
-            .join("ros2_bindings.rs.h");
-        let code_path = out_dir
+            .join(&relative_dir);
+
+        let target_path = default_target
             .join("cxxbridge")
-            .join("sources")
             .join("dora-node-api-cxx")
-            .join(&relative_path)
-            .join("ros2_bindings.rs.cc");
+            .join("source");
+        println!("header path: {}", header_path.display());
 
-        // copy message files to target directory
-        let target_path = origin_dir().parent().unwrap().join("dora-ros2-bindings.h");
-
-        std::fs::copy(&header_path, &target_path).unwrap();
+        copy_dir_all(&header_path, &target_path).unwrap();
         println!("cargo:rerun-if-changed={}", header_path.display());
-
-        let node_header =
-            std::fs::File::open(target_path.with_file_name("dora-node-api.h")).unwrap();
-        let mut code_file = std::fs::File::open(&code_path).unwrap();
-        println!("cargo:rerun-if-changed={}", code_path.display());
-        let mut code_target_file =
-            std::fs::File::create(target_path.with_file_name("dora-ros2-bindings.cc")).unwrap();
-
-        // copy both the node header and the code file to prevent import errors
-        let mut header_reader = {
-            let mut reader = BufReader::new(node_header);
-
-            // read first line to skip `#pragma once`, which is not allowed in main files
-            let mut first_line = String::new();
-            reader.read_line(&mut first_line).unwrap();
-            assert_eq!(first_line.trim(), "#pragma once");
-
-            reader
-        };
-        std::io::copy(&mut header_reader, &mut code_target_file).unwrap();
-        std::io::copy(&mut code_file, &mut code_target_file).unwrap();
-        code_target_file.flush().unwrap();
     }
 
     // copy from cxx-build source

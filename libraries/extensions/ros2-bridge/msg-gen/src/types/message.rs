@@ -150,6 +150,7 @@ impl Message {
     ) -> (impl ToTokens, impl ToTokens) {
         let cxx_name = format_ident!("{}", self.name);
         let struct_raw_name = format_ident!("{package_name}__{}", self.name);
+        let struct_raw_vec_name = format_ident!("{package_name}_Vec_{}", self.name);
 
         let rust_type_def_inner = self.members.iter().map(|m| m.rust_type_def(&self.package));
         let constants_def_inner = self.constants.iter().map(|c| c.token_stream());
@@ -294,6 +295,12 @@ impl Message {
                     #(#rust_type_def_inner)*
                 }
 
+                #[allow(non_camel_case_types)]
+                #[allow(dead_code)]
+                pub struct #struct_raw_vec_name {
+                    data: Vec<#struct_raw_name>
+                }
+
                 #cxx_consts
             }
         };
@@ -345,32 +352,32 @@ impl Message {
         };
 
         let topic_name = format_ident!("Topic__{package_name}__{}", self.name);
-        let cxx_topic_name = format_ident!("Topic_{}", self.name);
+        let cxx_topic_name = format!("Topic_{}", self.name);
         let create_topic = format_ident!("new__Topic__{package_name}__{}", self.name);
         let cxx_create_topic = format!("create_topic_{package_name}_{}", self.name);
 
         let publisher_name = format_ident!("Publisher__{package_name}__{}", self.name);
-        let cxx_publisher_name = format_ident!("Publisher_{}", self.name);
+        let cxx_publisher_name = format!("Publisher_{}", self.name);
         let create_publisher = format_ident!("new__Publisher__{package_name}__{}", self.name);
-        let cxx_create_publisher = format_ident!("create_publisher");
+        let cxx_create_publisher = format!("create_publisher");
 
         let struct_raw_name = format_ident!("{package_name}__{}", self.name);
         let struct_raw_name_str = struct_raw_name.to_string();
         let self_name = &self.name;
 
         let publish = format_ident!("publish__{package_name}__{}", self.name);
-        let cxx_publish = format_ident!("publish");
+        let cxx_publish = "publish";
 
         let subscription_name = format_ident!("Subscription__{package_name}__{}", self.name);
         let subscription_name_str = subscription_name.to_string();
-        let cxx_subscription_name = format_ident!("Subscription_{}", self.name);
+        let cxx_subscription_name = format!("Subscription_{}", self.name);
         let create_subscription = format_ident!("new__Subscription__{package_name}__{}", self.name);
-        let cxx_create_subscription = format_ident!("create_subscription");
+        let cxx_create_subscription = "create_subscription";
 
         let matches = format_ident!("matches__{package_name}__{}", self.name);
-        let cxx_matches = format_ident!("matches");
+        let cxx_matches = "matches";
         let downcast = format_ident!("downcast__{package_name}__{}", self.name);
-        let cxx_downcast = format_ident!("downcast");
+        let cxx_downcast = "downcast";
 
         let def = quote! {
             #[namespace = #package_name]

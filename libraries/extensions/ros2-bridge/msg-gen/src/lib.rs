@@ -9,7 +9,7 @@
 
 use std::path::Path;
 
-use quote::{format_ident, quote};
+use quote::{ToTokens, format_ident, quote};
 
 pub mod parser;
 pub mod types;
@@ -70,41 +70,67 @@ pub fn generate_package(package: &Package, create_cxx_bridge: bool) -> proc_macr
         }
     }
 
-    let dependencies = package.dependencies_import_token_stream();
     let aliases = package.aliases_token_stream();
 
-    let (attributes, extern_rust) = if create_cxx_bridge {
+    let (attributes, ffi_imports, extern_block, rust_imports) = if create_cxx_bridge {
+        let reuse_bindings = package.reuse_bindings_token_stream();
+        let rust_imports = generate_rust_imports_for_cxx();
         (
             quote! { #[cxx::bridge] },
+            quote! {},
             quote! {
                 extern "Rust" {
-                    type Ros2Context;
-                    type Ros2Node;
-                    fn init_ros2_context() -> Result<Box<Ros2Context>>;
-                    fn new_node(self: &Ros2Context, name_space: &str, base_name: &str) -> Result<Box<Ros2Node>>;
-                    fn qos_default() -> Ros2QosPolicies;
-                    fn actionqos_default() -> Ros2ActionClientQosPolicies;
-
                     #(#message_topic_defs)*
                     #(#service_creation_defs)*
                     #(#action_creation_defs)*
                 }
+                extern "C++" {
+                    type CombinedEvents = crate::ffi::CombinedEvents;
+                    type CombinedEvent = crate::ffi::CombinedEvent;
+
+                    type Ros2Context = crate::ros2::default_impl::Ros2Context;
+                    type Ros2Node = crate::ros2::default_impl::Ros2Node;
+
+                    type Ros2Durability = crate::ros2::default_impl::ffi::Ros2Durability;
+                    type Ros2Liveliness = crate::ros2::default_impl::ffi::Ros2Liveliness;
+                    type Ros2ActionClientQosPolicies = crate::ros2::default_impl::ffi::Ros2ActionClientQosPolicies;
+                    type Ros2QosPolicies = crate::ros2::default_impl::ffi::Ros2QosPolicies;
+
+                    type U16String = crate::ros2::default_impl::ffi::U16String;
+
+                    #reuse_bindings
+                }
+            },
+            quote! {
+                #rust_imports
+
+                use crate::ros2::default_impl::Ros2Node;
             },
         )
     } else {
-        (quote! {}, quote! {})
+        let dependencies = package.dependencies_import_token_stream();
+        (
+            quote! {},
+            quote! {
+                use serde::{Deserialize, Serialize};
+
+                #[allow(unused_imports)]
+                use crate::messages::default_impl::ffi::*;
+                #dependencies
+            },
+            quote! {},
+            quote! {},
+        )
     };
 
     quote! {
+        #rust_imports
+
         #attributes
-        pub(crate) mod ffi {
-            use serde::{Deserialize, Serialize};
+        pub mod ffi {
+            #ffi_imports
 
-            #[allow(unused_imports)]
-            use crate::messages::default_impl::ffi::*;
-            #dependencies
-
-            #extern_rust
+            #extern_block
             #(#shared_type_defs)*
             #(#service_defs)*
             #(#action_defs)*
@@ -165,6 +191,7 @@ where
             pub mod default_impl;
         });
     }
+
     quote! {
         #(#mod_decl)*
 
@@ -174,10 +201,13 @@ where
 
 fn generate_default_impls(create_cxx_bridge: bool) -> proc_macro2::TokenStream {
     let cxx_ros2_decl = quote! {
-        #[allow(dead_code)]
-        extern "C++" {
-            type CombinedEvents = crate::ffi::CombinedEvents;
-            type CombinedEvent = crate::ffi::CombinedEvent;
+        extern "Rust" {
+            type Ros2Context;
+            type Ros2Node;
+            fn init_ros2_context() -> Result<Box<Ros2Context>>;
+            fn new_node(self: &Ros2Context, name_space: &str, base_name: &str) -> Result<Box<Ros2Node>>;
+            fn qos_default() -> Ros2QosPolicies;
+            fn actionqos_default() -> Ros2ActionClientQosPolicies;
         }
 
         #[derive(Debug, Clone)]
@@ -218,14 +248,14 @@ fn generate_default_impls(create_cxx_bridge: bool) -> proc_macro2::TokenStream {
         }
     };
     let cxx_ros2_impl = quote! {
-        struct Ros2Context{
-            context: ros2_client::Context,
+        pub struct Ros2Context{
+            context: crate::ros2_client::Context,
             executor: std::sync::Arc<futures::executor::ThreadPool>,
         }
 
         fn init_ros2_context() -> eyre::Result<Box<Ros2Context>> {
             Ok(Box::new(Ros2Context{
-                context: ros2_client::Context::new()?,
+                context: crate::ros2_client::Context::new()?,
                 executor: std::sync::Arc::new(futures::executor::ThreadPool::new()?),
             }))
         }
@@ -235,8 +265,8 @@ fn generate_default_impls(create_cxx_bridge: bool) -> proc_macro2::TokenStream {
                 use futures::task::SpawnExt as _;
                 use eyre::WrapErr as _;
 
-                let name = ros2_client::NodeName::new(name_space, base_name).map_err(|e| eyre::eyre!(e))?;
-                let options = ros2_client::NodeOptions::new().enable_rosout(true);
+                let name = crate::ros2_client::NodeName::new(name_space, base_name).map_err(|e| eyre::eyre!(e))?;
+                let options = crate::ros2_client::NodeOptions::new().enable_rosout(true);
                 let mut node = self.context.new_node(name, options)
                     .map_err(|e| eyre::eyre!("failed to create ROS2 node: {e:?}"))?;
 
@@ -252,9 +282,19 @@ fn generate_default_impls(create_cxx_bridge: bool) -> proc_macro2::TokenStream {
             }
         }
 
-        struct Ros2Node {
-            node : ros2_client::Node,
-            executor: std::sync::Arc<futures::executor::ThreadPool>,
+        pub struct Ros2Node {
+            pub node : ros2_client::Node,
+            pub executor: std::sync::Arc<futures::executor::ThreadPool>,
+        }
+
+        unsafe impl cxx::ExternType for Ros2Node {
+            type Id = cxx::type_id!("Ros2Node");
+            type Kind = cxx::kind::Opaque;
+        }
+
+        unsafe impl cxx::ExternType for Ros2Context {
+            type Id = cxx::type_id!("Ros2Context");
+            type Kind = cxx::kind::Opaque;
         }
 
         fn qos_default() -> ffi::Ros2QosPolicies {
@@ -369,9 +409,9 @@ fn generate_default_impls(create_cxx_bridge: bool) -> proc_macro2::TokenStream {
             }
         }
 
-        impl From<ffi::Ros2ActionClientQosPolicies> for ros2_client::action::ActionClientQosPolicies {
+        impl From<ffi::Ros2ActionClientQosPolicies> for crate::ros2_client::action::ActionClientQosPolicies {
             fn from(value: ffi::Ros2ActionClientQosPolicies) -> Self {
-                ros2_client::action::ActionClientQosPolicies {
+                crate::ros2_client::action::ActionClientQosPolicies {
                     goal_service: value.goal_service.into(),
                     result_service: value.result_service.into(),
                     cancel_service: value.cancel_service.into(),
@@ -382,7 +422,6 @@ fn generate_default_impls(create_cxx_bridge: bool) -> proc_macro2::TokenStream {
         }
     };
     let u16str_decl = quote! {
-        use serde::{Deserialize, Serialize};
         #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
         pub struct U16String {
             pub chars: Vec<u16>,
@@ -405,12 +444,22 @@ fn generate_default_impls(create_cxx_bridge: bool) -> proc_macro2::TokenStream {
         }
     };
 
-    let attribute = if create_cxx_bridge {
-        quote! {
-            #[cxx::bridge]
-        }
+    let (attribute, ffi_imports, rust_imports) = if create_cxx_bridge {
+        (
+            quote! {
+                #[cxx::bridge]
+            },
+            quote! {},
+            generate_rust_imports_for_cxx(),
+        )
     } else {
-        quote! {}
+        (
+            quote! {},
+            quote! {
+                use serde::{Deserialize, Serialize};
+            },
+            quote! {},
+        )
     };
 
     let mut declares = vec![u16str_decl];
@@ -422,11 +471,21 @@ fn generate_default_impls(create_cxx_bridge: bool) -> proc_macro2::TokenStream {
     }
 
     quote! {
+        #rust_imports
+
         #attribute
         pub mod ffi {
+            #ffi_imports
             #(#declares)*
         }
 
         #(#implements)*
+    }
+}
+
+fn generate_rust_imports_for_cxx() -> proc_macro2::TokenStream {
+    quote! {
+        #[allow(unused_imports)]
+        use crate::prelude::*;
     }
 }

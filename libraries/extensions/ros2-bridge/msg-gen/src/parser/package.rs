@@ -91,17 +91,21 @@ fn get_ros_msgs_each_package<P: AsRef<Path>>(root_dirs: &[P]) -> Result<Vec<Pack
     }
 
     let mut packages = Vec::new();
-    let mut package_names = Vec::new();
-    for (pkg_name, pkg) in map {
-        packages.push(pkg);
-        package_names.push(pkg_name);
+    for (_pkg_name, pkg) in &map {
+        packages.push(pkg.clone());
     }
     for package in &mut packages {
         let xml = package.path.join("package.xml");
 
         let mut deps = parse_dependencies(xml)?;
-        deps.retain(|dep| package_names.contains(&dep));
-        package.dependencies = deps;
+        if !package.actions.is_empty() {
+            deps.push("action_msgs".to_owned());
+        }
+        deps.retain(|dep| map.contains_key(dep));
+        package.dependencies = deps
+            .iter()
+            .filter_map(|dep| map.get(dep).and_then(|pkg| Some(pkg.clone())))
+            .collect();
     }
 
     Ok(packages)
