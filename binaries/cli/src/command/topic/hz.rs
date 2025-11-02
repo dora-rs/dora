@@ -1,8 +1,4 @@
-use std::collections::{HashMap, VecDeque};
-use std::io::{self, Write};
-use std::time::{Duration, Instant};
-
-use colored::Colorize;
+use crossterm::event::{Event, KeyCode};
 use dora_core::topics::{open_zenoh_session, zenoh_output_publish_topic};
 use dora_message::{
     common::Timestamped,
@@ -10,11 +6,22 @@ use dora_message::{
     id::{DataId, NodeId},
 };
 use eyre::{Context, eyre};
-use tokio::sync::mpsc;
+use itertools::Itertools;
+use ratatui::{DefaultTerminal, prelude::*, widgets::*};
+use std::{
+    borrow::Cow,
+    collections::VecDeque,
+    iter,
+    net::IpAddr,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
 use uuid::Uuid;
 
-use crate::command::topic::selector::TopicIdentifier;
-use crate::command::{Executable, default_tracing, topic::selector::TopicSelector};
+use crate::command::{
+    Executable,
+    topic::selector::{TopicIdentifier, TopicSelector},
+};
 
 #[derive(Debug, clap::Args)]
 pub struct Hz {
@@ -28,32 +35,51 @@ pub struct Hz {
 
 impl Executable for Hz {
     fn execute(self) -> eyre::Result<()> {
-        default_tracing()?;
+        let (_session, outputs) = self.selector.resolve()?;
 
-        inspect_hz(self.selector, self.window)
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .context("tokio runtime failed")?;
+        let terminal = ratatui::init();
+        rt.block_on(async move {
+            run_hz(
+                terminal,
+                self.window,
+                outputs,
+                self.selector.dataflow.coordinator_addr,
+            )
+            .await
+        })
+        .inspect(|_| {
+            ratatui::restore();
+        })?;
+
+        Ok(())
     }
 }
 
 #[derive(Debug)]
 struct HzStats {
-    timestamps: VecDeque<Instant>,
+    timestamps: Mutex<VecDeque<Instant>>,
     window_duration: Duration,
 }
 
 impl HzStats {
     fn new(window_secs: usize) -> Self {
         Self {
-            timestamps: VecDeque::new(),
+            timestamps: Mutex::new(VecDeque::new()),
             window_duration: Duration::from_secs(window_secs as u64),
         }
     }
 
-    fn record(&mut self, now: Instant) {
-        self.timestamps.push_back(now);
+    fn record(&self, now: Instant) {
+        let mut timestamps = self.timestamps.lock().unwrap();
+        timestamps.push_back(now);
         let cutoff = now - self.window_duration;
-        while let Some(&first) = self.timestamps.front() {
+        while let Some(&first) = timestamps.front() {
             if first < cutoff {
-                self.timestamps.pop_front();
+                timestamps.pop_front();
             } else {
                 break;
             }
@@ -61,20 +87,21 @@ impl HzStats {
     }
 
     fn calculate(&self) -> Option<Stats> {
-        if self.timestamps.len() < 2 {
-            return None;
-        }
-
-        let mut intervals = Vec::new();
-        for i in 1..self.timestamps.len() {
-            let interval = self.timestamps[i]
-                .duration_since(self.timestamps[i - 1])
-                .as_secs_f64();
-            if interval > 0.0 {
-                intervals.push(1.0 / interval);
-            }
-        }
-
+        let intervals = self
+            .timestamps
+            .lock()
+            .unwrap()
+            .iter()
+            .tuple_windows()
+            .filter_map(|(a, b)| {
+                let interval = b.duration_since(*a).as_secs_f64();
+                if interval > 0.0 {
+                    Some(1.0 / interval)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
         if intervals.is_empty() {
             return None;
         }
@@ -101,74 +128,52 @@ struct Stats {
     std: f64,
 }
 
-fn inspect_hz(selector: TopicSelector, window: usize) -> eyre::Result<()> {
-    let (_session, outputs) = selector.resolve()?;
+async fn run_hz(
+    mut terminal: DefaultTerminal,
+    window: usize,
+    outputs: Vec<TopicIdentifier>,
+    coordinator_addr: IpAddr,
+) -> eyre::Result<()> {
+    let zenoh_session = open_zenoh_session(Some(coordinator_addr))
+        .await
+        .context("failed to open zenoh session")?;
 
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .context("tokio runtime failed")?;
-    rt.block_on(async move {
-        let zenoh_session = open_zenoh_session(Some(selector.dataflow.coordinator_addr))
-            .await
-            .context("failed to open zenoh session")?;
+    let mut stats: Vec<(String, Arc<HzStats>)> = Vec::with_capacity(outputs.len());
 
-        let (tx, mut rx) = mpsc::unbounded_channel::<(String, Instant)>();
+    // Spawn subscribers for each output
+    for TopicIdentifier {
+        dataflow_id,
+        node_id,
+        data_id,
+    } in outputs
+    {
+        let zenoh_session = zenoh_session.clone();
+        let output_name = format!("{node_id}/{data_id}");
+        let hz_stats = Arc::new(HzStats::new(window));
+        stats.push((output_name.clone(), hz_stats.clone()));
 
-        // Spawn subscribers for each output
-        for TopicIdentifier {
-            dataflow_id,
-            node_id,
-            data_id,
-        } in outputs
-        {
-            let zenoh_session = zenoh_session.clone();
-            let tx = tx.clone();
-            let output_name = format!("{node_id}/{data_id}");
+        tokio::spawn(async move {
+            if let Err(e) =
+                subscribe_output(zenoh_session, dataflow_id, node_id, data_id, hz_stats).await
+            {
+                eprintln!("Error subscribing to {output_name}: {e}");
+            }
+        });
+    }
 
-            tokio::spawn(async move {
-                if let Err(e) = subscribe_output(
-                    zenoh_session,
-                    dataflow_id,
-                    node_id,
-                    data_id,
-                    output_name.clone(),
-                    tx,
-                )
-                .await
-                {
-                    eprintln!("Error subscribing to {output_name}: {e}");
-                }
-            });
-        }
-        drop(tx);
-
-        let mut stats_map: HashMap<String, HzStats> = HashMap::new();
-        let mut last_update = Instant::now();
-        let update_interval = Duration::from_millis(100);
-
-        loop {
-            tokio::select! {
-                msg = rx.recv() => {
-                    match msg {
-                        Some((output_name, timestamp)) => {
-                            stats_map
-                                .entry(output_name)
-                                .or_insert_with(|| HzStats::new(window))
-                                .record(timestamp);
-                        }
-                        None => break,
-                    }
-                }
-                _ = tokio::time::sleep(update_interval.saturating_sub(last_update.elapsed())) => {
-                    display_stats(&stats_map);
-                    last_update = Instant::now();
+    loop {
+        if crossterm::event::poll(Duration::from_millis(50))? {
+            if let Event::Key(key) = crossterm::event::read()? {
+                if KeyCode::Char('q') == key.code {
+                    break;
                 }
             }
         }
 
-        Result::<_, eyre::Error>::Ok(())
-    })
+        terminal.draw(|f| ui(f, &stats))?;
+    }
+
+    Ok(())
 }
 
 async fn subscribe_output(
@@ -176,15 +181,14 @@ async fn subscribe_output(
     dataflow_id: Uuid,
     node_id: NodeId,
     output_id: DataId,
-    output_name: String,
-    tx: mpsc::UnboundedSender<(String, Instant)>,
+    hz_stats: Arc<HzStats>,
 ) -> eyre::Result<()> {
     let subscribe_topic = zenoh_output_publish_topic(dataflow_id, &node_id, &output_id);
     let subscriber = zenoh_session
         .declare_subscriber(subscribe_topic)
         .await
         .map_err(|e| eyre!(e))
-        .wrap_err_with(|| format!("failed to subscribe to {output_name}"))?;
+        .wrap_err_with(|| format!("failed to subscribe to {node_id}/{output_id}"))?;
 
     while let Ok(sample) = subscriber.recv_async().await {
         let event = match Timestamped::deserialize_inter_daemon_event(&sample.payload().to_bytes())
@@ -195,7 +199,7 @@ async fn subscribe_output(
 
         match event.inner {
             InterDaemonEvent::Output { .. } => {
-                let _ = tx.send((output_name.clone(), Instant::now()));
+                hz_stats.record(Instant::now());
             }
             InterDaemonEvent::OutputClosed { .. } => {
                 break;
@@ -206,43 +210,40 @@ async fn subscribe_output(
     Ok(())
 }
 
-fn display_stats(stats_map: &HashMap<String, HzStats>) {
-    // Clear screen and move cursor to top
-    print!("\x1B[2J\x1B[1;1H");
+fn ui(f: &mut Frame<'_>, stats: &[(String, Arc<HzStats>)]) {
+    let header = Row::new(["Output", "Avg (Hz)", "Min (Hz)", "Max (Hz)", "Std (Hz)"])
+        .style(Style::default().fg(Color::White).bg(Color::Blue).bold())
+        .height(1);
 
-    println!("{}", "Data Output Frequency Statistics".bold().cyan());
-    println!("{}", "=".repeat(80));
-    println!(
-        "{:<40} {:>10} {:>10} {:>10} {:>10}",
-        "Output".bold(),
-        "Avg (Hz)".bold(),
-        "Min (Hz)".bold(),
-        "Max (Hz)".bold(),
-        "Std (Hz)".bold()
-    );
-    println!("{}", "-".repeat(80));
-
-    let mut sorted_outputs: Vec<_> = stats_map.iter().collect();
-    sorted_outputs.sort_by_key(|(name, _)| *name);
-
-    for (output_name, hz_stats) in sorted_outputs {
+    let rows = stats.iter().map(|(output_name, hz_stats)| {
         if let Some(stats) = hz_stats.calculate() {
-            println!(
-                "{:<40} {:>10.2} {:>10.2} {:>10.2} {:>10.2}",
-                output_name.green(),
-                stats.avg,
-                stats.min,
-                stats.max,
-                stats.std
-            );
+            Row::new([
+                output_name.to_string(),
+                format!("{:.2}", stats.avg),
+                format!("{:.2}", stats.min),
+                format!("{:.2}", stats.max),
+                format!("{:.2}", stats.std),
+            ])
         } else {
-            println!(
-                "{:<40} {}",
-                output_name.green(),
-                "waiting for data...".dimmed()
-            );
+            Row::new(
+                iter::once(Cow::Owned(output_name.to_string()))
+                    .chain(iter::repeat_n(Cow::Borrowed("-"), 4)),
+            )
         }
-    }
+        .height(1)
+    });
 
-    io::stdout().flush().ok();
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Fill(1),
+            Constraint::Length(12),
+            Constraint::Length(12),
+            Constraint::Length(12),
+            Constraint::Length(12),
+        ],
+    )
+    .header(header);
+
+    f.render_widget(table, f.area());
 }
