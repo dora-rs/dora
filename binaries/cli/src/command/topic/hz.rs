@@ -1,10 +1,6 @@
 use crossterm::event::{Event, KeyCode};
 use dora_core::topics::{open_zenoh_session, zenoh_output_publish_topic};
-use dora_message::{
-    common::Timestamped,
-    daemon_to_daemon::InterDaemonEvent,
-    id::{DataId, NodeId},
-};
+use dora_message::{common::Timestamped, daemon_to_daemon::InterDaemonEvent};
 use eyre::{Context, eyre};
 use itertools::Itertools;
 use ratatui::{DefaultTerminal, prelude::*, widgets::*};
@@ -35,7 +31,7 @@ pub struct Hz {
 
 impl Executable for Hz {
     fn execute(self) -> eyre::Result<()> {
-        let (_session, outputs) = self.selector.resolve()?;
+        let (_session, (dataflow_id, topics)) = self.selector.resolve()?;
 
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -46,7 +42,8 @@ impl Executable for Hz {
             run_hz(
                 terminal,
                 self.window,
-                outputs,
+                dataflow_id,
+                topics,
                 self.selector.dataflow.coordinator_addr,
             )
             .await
@@ -131,37 +128,36 @@ struct Stats {
 async fn run_hz(
     mut terminal: DefaultTerminal,
     window: usize,
+    dataflow_id: Uuid,
     outputs: Vec<TopicIdentifier>,
     coordinator_addr: IpAddr,
 ) -> eyre::Result<()> {
+    let stats = outputs
+        .iter()
+        .map(|topic| (topic, Arc::new(HzStats::new(window))))
+        .collect::<Vec<_>>();
+
+    terminal.draw(|f| ui(f, &stats))?;
+
     let zenoh_session = open_zenoh_session(Some(coordinator_addr))
         .await
         .context("failed to open zenoh session")?;
 
-    let mut stats: Vec<(String, Arc<HzStats>)> = Vec::with_capacity(outputs.len());
-
     // Spawn subscribers for each output
-    for TopicIdentifier {
-        dataflow_id,
-        node_id,
-        data_id,
-    } in outputs
-    {
+    for (topic, hz_stats) in &stats {
         let zenoh_session = zenoh_session.clone();
-        let output_name = format!("{node_id}/{data_id}");
-        let hz_stats = Arc::new(HzStats::new(window));
-        stats.push((output_name.clone(), hz_stats.clone()));
-
+        let topic = (*topic).clone();
+        let hz_stats = hz_stats.clone();
         tokio::spawn(async move {
-            if let Err(e) =
-                subscribe_output(zenoh_session, dataflow_id, node_id, data_id, hz_stats).await
-            {
-                eprintln!("Error subscribing to {output_name}: {e}");
+            if let Err(e) = subscribe_output(zenoh_session, dataflow_id, &topic, hz_stats).await {
+                eprintln!("Error subscribing to {topic}: {e}");
             }
         });
     }
 
     loop {
+        terminal.draw(|f| ui(f, &stats))?;
+
         if crossterm::event::poll(Duration::from_millis(50))? {
             if let Event::Key(key) = crossterm::event::read()? {
                 if KeyCode::Char('q') == key.code {
@@ -169,8 +165,6 @@ async fn run_hz(
                 }
             }
         }
-
-        terminal.draw(|f| ui(f, &stats))?;
     }
 
     Ok(())
@@ -179,16 +173,15 @@ async fn run_hz(
 async fn subscribe_output(
     zenoh_session: zenoh::Session,
     dataflow_id: Uuid,
-    node_id: NodeId,
-    output_id: DataId,
+    topic: &TopicIdentifier,
     hz_stats: Arc<HzStats>,
 ) -> eyre::Result<()> {
-    let subscribe_topic = zenoh_output_publish_topic(dataflow_id, &node_id, &output_id);
+    let subscribe_topic = zenoh_output_publish_topic(dataflow_id, &topic.node_id, &topic.data_id);
     let subscriber = zenoh_session
         .declare_subscriber(subscribe_topic)
         .await
         .map_err(|e| eyre!(e))
-        .wrap_err_with(|| format!("failed to subscribe to {node_id}/{output_id}"))?;
+        .wrap_err_with(|| format!("failed to subscribe to {topic}"))?;
 
     while let Ok(sample) = subscriber.recv_async().await {
         let event = match Timestamped::deserialize_inter_daemon_event(&sample.payload().to_bytes())
@@ -210,7 +203,7 @@ async fn subscribe_output(
     Ok(())
 }
 
-fn ui(f: &mut Frame<'_>, stats: &[(String, Arc<HzStats>)]) {
+fn ui(f: &mut Frame<'_>, stats: &[(&TopicIdentifier, Arc<HzStats>)]) {
     let header = Row::new(["Output", "Avg (Hz)", "Min (Hz)", "Max (Hz)", "Std (Hz)"])
         .style(Style::default().fg(Color::White).bg(Color::Blue).bold())
         .height(1);
