@@ -4,7 +4,6 @@ mod coordinator;
 mod daemon;
 mod destroy;
 mod graph;
-mod topic;
 mod list;
 mod logs;
 mod new;
@@ -13,6 +12,7 @@ mod runtime;
 mod self_;
 mod start;
 mod stop;
+mod topic;
 mod up;
 
 pub use build::build;
@@ -25,7 +25,6 @@ use daemon::Daemon;
 use destroy::Destroy;
 use eyre::Context;
 use graph::Graph;
-use topic::Topic;
 use list::ListArgs;
 use logs::LogsArgs;
 use new::NewArgs;
@@ -34,6 +33,7 @@ use runtime::Runtime;
 use self_::SelfSubCommand;
 use start::Start;
 use stop::Stop;
+use topic::Topic;
 use up::Up;
 
 /// dora-rs cli client
