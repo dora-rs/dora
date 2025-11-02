@@ -1,4 +1,4 @@
-use super::{default_tracing, Executable};
+use super::{Executable, default_tracing};
 use crate::common::{connect_to_coordinator, resolve_dataflow_identifier};
 use bat::{Input, PrettyPrinter};
 use clap::Args;
@@ -7,7 +7,7 @@ use dora_core::topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST};
 use dora_message::{
     cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply, id::NodeId,
 };
-use eyre::{bail, Context, Result};
+use eyre::{Context, Result, bail};
 use uuid::Uuid;
 
 #[derive(Debug, Args)]

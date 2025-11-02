@@ -9,7 +9,7 @@ pub const MANUAL_STOP: &str = "dora/stop";
 
 #[cfg(feature = "zenoh")]
 pub async fn open_zenoh_session(coordinator_addr: Option<IpAddr>) -> eyre::Result<zenoh::Session> {
-    use eyre::{eyre, Context};
+    use eyre::{Context, eyre};
     use tracing::warn;
 
     let zenoh_session = match std::env::var(zenoh::Config::DEFAULT_CONFIG_PATH_ENV) {
@@ -50,7 +50,9 @@ pub async fn open_zenoh_session(coordinator_addr: Option<IpAddr>) -> eyre::Resul
                     )
                     .unwrap();
                 if cfg!(target_os = "macos") {
-                    warn!("disabling multicast on macos systems. Enable it with the ZENOH_CONFIG env variable or file");
+                    warn!(
+                        "disabling multicast on macos systems. Enable it with the ZENOH_CONFIG env variable or file"
+                    );
                     zenoh_config
                         .insert_json5("scouting/multicast", r#"{ enabled: false }"#)
                         .unwrap();
@@ -80,7 +82,9 @@ pub async fn open_zenoh_session(coordinator_addr: Option<IpAddr>) -> eyre::Resul
                         )
                         .unwrap();
                     if cfg!(target_os = "macos") {
-                        warn!("disabling multicast on macos systems. Enable it with the ZENOH_CONFIG env variable or file");
+                        warn!(
+                            "disabling multicast on macos systems. Enable it with the ZENOH_CONFIG env variable or file"
+                        );
                         zenoh_config
                             .insert_json5("scouting/multicast", r#"{ enabled: false }"#)
                             .unwrap();
