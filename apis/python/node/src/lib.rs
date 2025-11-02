@@ -106,6 +106,22 @@ impl Node {
         }
     }
 
+    #[pyo3(signature = (timeout=None))]
+    #[allow(clippy::should_implement_trait)]
+    pub fn drain(&mut self, py: Python, timeout: Option<f32>) -> PyResult<Vec<Py<PyDict>>> {
+        let events = py
+            .allow_threads(|| self.events.drain(timeout.map(Duration::from_secs_f32)))
+            .into_iter()
+            .map(|event| {
+                event
+                    .to_py_dict(py)
+                    .context("Could not convert event into a dict")
+                    .unwrap_or_else(|_| PyDict::new(py).into())
+            })
+            .collect();
+        Ok(events)
+    }
+
     /// `.recv_async()` gives you the next input that the node has received asynchronously.
     /// It does not blocks until the next event becomes available.
     /// You can use timeout in seconds to return if no input is available.
@@ -324,6 +340,20 @@ impl Events {
             EventsInner::Merged(events) => events.next().await,
         };
         event.map(|event| PyEvent { event })
+    }
+
+    fn drain(&mut self, timeout: Option<Duration>) -> Vec<PyEvent> {
+        let event = match &mut self.inner {
+            EventsInner::Dora(events) => match timeout {
+                Some(timeout) => events
+                    .drain_timeout(timeout)
+                    .into_iter()
+                    .map(MergedEvent::Dora),
+                None => events.drain().into_iter().map(MergedEvent::Dora),
+            },
+            EventsInner::Merged(events) => todo!("Draining external event is not yet implemented!"),
+        };
+        event.map(|event| PyEvent { event }).collect()
     }
 }
 
