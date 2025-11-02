@@ -280,6 +280,43 @@ impl EventStream {
         }
     }
 
+    pub fn drain(&mut self) -> Vec<Event> {
+        futures::executor::block_on(self.drain_async())
+    }
+
+    pub fn drain_timeout(&mut self, dur: Duration) -> Vec<Event> {
+        futures::executor::block_on(self.drain_async())
+    }
+
+    pub async fn drain_async_timeout(&mut self, dur: Duration) -> Vec<Event> {
+        match select(Delay::new(dur), pin!(self.drain_async())).await {
+            Either::Left((_elapsed, _)) => {
+                Self::convert_events(vec![EventItem::TimeoutError(eyre!("Receiver timed out"))])
+            }
+            Either::Right((event, _)) => event,
+        }
+    }
+
+    pub async fn drain_async(&mut self) -> Vec<Event> {
+        loop {
+            if self.scheduler.is_empty() {
+                if let Some(event) = self.receiver.next().await {
+                    self.scheduler.add_event(event);
+                } else {
+                    break;
+                }
+            } else {
+                match select(Delay::new(Duration::from_micros(300)), self.receiver.next()).await {
+                    Either::Left((_elapsed, _)) => break,
+                    Either::Right((Some(event), _)) => self.scheduler.add_event(event),
+                    Either::Right((None, _)) => break,
+                };
+            }
+        }
+        let events = self.scheduler.drain();
+        Self::convert_events(events)
+    }
+
     fn convert_event_item(item: EventItem) -> Event {
         match item {
             EventItem::NodeEvent { event, ack_channel } => match event {
@@ -307,6 +344,13 @@ impl EventStream {
                 Event::Error(format!("Timeout event stream error: {err:?}"))
             }
         }
+    }
+
+    fn convert_events(items: Vec<EventItem>) -> Vec<Event> {
+        items
+            .into_iter()
+            .map(|item| Self::convert_event_item(item))
+            .collect()
     }
 }
 
