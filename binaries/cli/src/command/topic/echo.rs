@@ -22,9 +22,9 @@ use crate::{
     formatting::OutputFormat,
 };
 
-/// Watch topic data in terminal.
+/// Echo topic data in terminal.
 #[derive(Debug, Args)]
-pub struct Watch {
+pub struct Echo {
     #[clap(flatten)]
     selector: TopicSelector,
     /// Output format
@@ -32,7 +32,7 @@ pub struct Watch {
     pub format: OutputFormat,
 }
 
-impl Executable for Watch {
+impl Executable for Echo {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
 
