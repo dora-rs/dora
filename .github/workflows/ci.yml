@@ -414,6 +414,13 @@ jobs:
           dora destroy
           sleep 5
 
+          # Run Python async
+          echo "Running CI Queue Latency Test"
+          dora run examples/python-async/dataflow.yaml --uv
+
+          # Run Python drain
+          echo "Running CI Queue Latency Test"
+          dora run examples/python-drain/dataflow.yaml --uv
 
           # Test Dora Python Dataflow builder
           uv run examples/python-dataflow-builder/simple_example.py
