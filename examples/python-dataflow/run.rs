@@ -21,8 +21,7 @@ fn main() -> eyre::Result<()> {
     uv.arg("pip")
         .arg("install")
         .arg("-e")
-        .arg("../../apis/python/node")
-        .arg("--uv");
+        .arg("../../apis/python/node");
     uv.spawn()
         .wrap_err("Unable to install develop dora-rs API")?
         .wait()
