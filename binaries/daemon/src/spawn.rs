@@ -272,8 +272,7 @@ impl Spawner {
                         Some(cmd)
                     } else {
                         let mut cmd = tokio::process::Command::new(
-                            which::which("dora")
-                                .wrap_err("failed to get current executable path")?,
+                            which::which("dora").wrap_err("failed to get dora path")?,
                         );
                         cmd.arg("runtime");
                         Some(cmd)

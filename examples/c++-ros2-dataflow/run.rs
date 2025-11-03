@@ -52,7 +52,7 @@ fn main() -> eyre::Result<()> {
     Ok(())
 }
 
-async fn build_package(package: &str, features: &[&str]) -> eyre::Result<()> {
+fn build_package(package: &str, features: &[&str]) -> eyre::Result<()> {
     let cargo = std::env::var("CARGO").unwrap();
     let mut cmd = std::process::Command::new(&cargo);
     cmd.arg("build");
@@ -66,12 +66,7 @@ async fn build_package(package: &str, features: &[&str]) -> eyre::Result<()> {
     Ok(())
 }
 
-async fn build_cxx_node(
-    root: &Path,
-    paths: &[&Path],
-    out_name: &str,
-    args: &[&str],
-) -> eyre::Result<()> {
+fn build_cxx_node(root: &Path, paths: &[&Path], out_name: &str, args: &[&str]) -> eyre::Result<()> {
     let mut clang = std::process::Command::new("clang++");
     clang.args(paths);
     clang.arg("-std=c++17");
