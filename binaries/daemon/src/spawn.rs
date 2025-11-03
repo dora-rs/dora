@@ -272,7 +272,7 @@ impl Spawner {
                         Some(cmd)
                     } else {
                         let mut cmd = tokio::process::Command::new(
-                            std::env::current_exe()
+                            which::which("dora")
                                 .wrap_err("failed to get current executable path")?,
                         );
                         cmd.arg("runtime");
@@ -281,7 +281,7 @@ impl Spawner {
                 } else {
                     bail!(
                         "Cannot spawn runtime with both Python and non-Python operators. \
-                       Please use a single operator or ensure that all operators are Python-based."
+                        Please use a single operator or ensure that all operators are Python-based."
                     );
                 };
 
