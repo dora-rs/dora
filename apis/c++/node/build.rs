@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    str::FromStr,
+};
 
 fn main() {
     let mut bridge_files = vec![PathBuf::from("src/lib.rs")];
@@ -11,6 +14,17 @@ fn main() {
     // rename header files
     let src_dir = origin_dir();
     let target_dir = src_dir.parent().unwrap();
+
+    let target_dir = if let Ok(target_path) = std::env::var("DORA_NODE_API_CXX_INSTALL") {
+        PathBuf::from_str(&target_path).unwrap()
+    } else {
+        target_dir.join("install")
+    };
+    if target_dir.exists() {
+        std::fs::remove_dir_all(&target_dir).unwrap();
+    }
+    std::fs::create_dir(&target_dir).unwrap();
+
     std::fs::copy(src_dir.join("lib.rs.h"), target_dir.join("dora-node-api.h")).unwrap();
     std::fs::copy(
         src_dir.join("lib.rs.cc"),
@@ -19,7 +33,7 @@ fn main() {
     .unwrap();
 
     #[cfg(feature = "ros2-bridge")]
-    ros2::generate_ros2_message_header();
+    ros2::generate_ros2_message_header(&target_dir);
 
     // to avoid unnecessary `mut` warning
     bridge_files.clear();
@@ -74,12 +88,12 @@ mod ros2 {
             target_file.display()
         );
         let mut target_files: Vec<_> = out_dir
-            .join("messages_impl")
+            .join("msg")
             .read_dir()
             .unwrap()
             .map(|entry| entry.unwrap().path())
             .collect();
-        target_files.push(out_dir.join("default_impl.rs"));
+        target_files.push(out_dir.join("impl.rs"));
         target_files
     }
 
@@ -115,13 +129,22 @@ mod ros2 {
             if ty.is_dir() {
                 copy_dir_all(entry.path(), dst.as_ref().join(entry.file_name()))?;
             } else {
-                std::fs::copy(entry.path(), dst.as_ref().join(entry.file_name()))?;
+                let entry_path = entry.path();
+                let entry_name = entry_path.file_name().unwrap().to_str().unwrap();
+                let entry_name = if entry_name.ends_with(".rs.cc") {
+                    entry_name.strip_suffix(".rs.cc").unwrap().to_string() + ".cc"
+                } else if entry_name.ends_with(".rs.h") {
+                    entry_name.strip_suffix(".rs.h").unwrap().to_string() + ".h"
+                } else {
+                    entry_name.to_string()
+                };
+                std::fs::copy(entry.path(), dst.as_ref().join(entry_name))?;
             }
         }
         Ok(())
     }
 
-    pub fn generate_ros2_message_header() {
+    pub fn generate_ros2_message_header(target_path: &Path) {
         use std::io::Write as _;
 
         let default_target = std::env::var("CARGO_TARGET_DIR")
@@ -141,11 +164,7 @@ mod ros2 {
             .join("dora-node-api-cxx")
             .join(&relative_dir);
 
-        let target_path = default_target
-            .join("cxxbridge")
-            .join("dora-node-api-cxx")
-            .join("source");
-        println!("header path: {}", header_path.display());
+        let target_path = target_path.join("ros2-bridge");
 
         copy_dir_all(&header_path, &target_path).unwrap();
         println!("cargo:rerun-if-changed={}", header_path.display());

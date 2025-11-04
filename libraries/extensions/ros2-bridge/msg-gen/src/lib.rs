@@ -157,7 +157,7 @@ where
     use rust_format::Formatter;
     let packages = get_packages(paths).unwrap();
     let mut mod_decl = vec![];
-    let msg_dir = out_dir.join("messages_impl");
+    let msg_dir = out_dir.join("msg");
     if !msg_dir.exists() {
         std::fs::create_dir(&msg_dir).unwrap();
     }
@@ -183,7 +183,7 @@ where
         let generated_string = rust_format::PrettyPlease::default()
             .format_tokens(generated_default_impls)
             .unwrap();
-        let file_path = out_dir.join("default_impl.rs");
+        let file_path = out_dir.join("impl.rs");
         std::fs::write(&file_path, generated_string).unwrap();
         let file_path_str = file_path.to_str().unwrap();
         mod_decl.push(quote! {
