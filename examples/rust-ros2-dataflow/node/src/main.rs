@@ -110,7 +110,9 @@ fn main() -> eyre::Result<()> {
                         let a = rand::random();
                         let b = rand::random();
                         let service_result = add_two_ints_request(&add_client, a, b);
-                        let sum = futures::executor::block_on(service_result)
+                        let sum = node
+                            .rt()
+                            .block_on(service_result)
                             .context("failed to send service request")?;
                         if sum != a.wrapping_add(b) {
                             eyre::bail!("unexpected addition result: expected {}, got {sum}", a + b)
