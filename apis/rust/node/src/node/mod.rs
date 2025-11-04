@@ -30,7 +30,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use tokio::runtime::{Handle, Runtime};
+use tokio::runtime::Handle;
 use tracing::{info, warn};
 
 #[cfg(feature = "metrics")]
@@ -58,12 +58,6 @@ mod drop_stream;
 /// TCP.
 pub const ZERO_COPY_THRESHOLD: usize = 4096;
 
-#[allow(dead_code)]
-enum TokioRuntime {
-    Runtime(Runtime),
-    Handle(Handle),
-}
-
 /// Allows sending outputs and retrieving node information.
 ///
 /// The main purpose of this struct is to send outputs via Dora. There are also functions available
@@ -81,7 +75,7 @@ pub struct DoraNode {
 
     dataflow_descriptor: serde_yaml::Result<Descriptor>,
     warned_unknown_output: BTreeSet<DataId>,
-    _rt: TokioRuntime,
+    rt: Handle,
 
     interactive: bool,
 }
@@ -339,14 +333,14 @@ impl DoraNode {
         let input_config = run_config.inputs.clone();
 
         let rt = match Handle::try_current() {
-            Ok(handle) => TokioRuntime::Handle(handle),
-            Err(_) => TokioRuntime::Runtime(
-                tokio::runtime::Builder::new_multi_thread()
+            Ok(handle) => handle,
+            Err(_) => {
+                let rt = tokio::runtime::Builder::new_multi_thread()
                     .worker_threads(2)
-                    .enable_all()
                     .build()
-                    .context("tokio runtime failed")?,
-            ),
+                    .context("tokio runtime failed")?;
+                rt.handle().clone()
+            }
         };
 
         #[cfg(feature = "metrics")]
@@ -360,10 +354,7 @@ impl DoraNode {
                     warn!("metrics monitor failed: {:#?}", e);
                 }
             };
-            match &rt {
-                TokioRuntime::Runtime(rt) => rt.spawn(monitor_task),
-                TokioRuntime::Handle(handle) => handle.spawn(monitor_task),
-            };
+            rt.spawn(monitor_task);
         }
 
         let event_stream = EventStream::init(
@@ -372,6 +363,7 @@ impl DoraNode {
             &daemon_communication,
             input_config,
             clock.clone(),
+            rt.clone(),
         )
         .wrap_err("failed to init event stream")?;
         let drop_stream =
@@ -392,7 +384,7 @@ impl DoraNode {
             cache: VecDeque::new(),
             dataflow_descriptor: serde_yaml::from_value(dataflow_descriptor),
             warned_unknown_output: BTreeSet::new(),
-            _rt: rt,
+            rt,
             interactive: false,
         };
 
@@ -631,6 +623,11 @@ impl DoraNode {
     /// Returns the input and output configuration of this node.
     pub fn node_config(&self) -> &NodeRunConfig {
         &self.node_config
+    }
+
+    /// Returns the tokio runtime handle
+    pub fn rt(&self) -> &Handle {
+        &self.rt
     }
 
     /// Allocates a [`DataSample`] of the specified size.

@@ -18,6 +18,7 @@ use futures::{
 };
 use futures_timer::Delay;
 use scheduler::{NON_INPUT_EVENT, Scheduler};
+use tokio::runtime::Handle;
 
 use self::thread::{EventItem, EventStreamThreadHandle};
 use crate::{
@@ -64,6 +65,7 @@ pub struct EventStream {
     close_channel: DaemonChannel,
     clock: Arc<uhlc::HLC>,
     scheduler: Scheduler,
+    rt: Handle,
 }
 
 impl EventStream {
@@ -74,6 +76,7 @@ impl EventStream {
         daemon_communication: &DaemonCommunication,
         input_config: BTreeMap<DataId, Input>,
         clock: Arc<uhlc::HLC>,
+        rt: Handle,
     ) -> eyre::Result<Self> {
         let channel = match daemon_communication {
             DaemonCommunication::Shmem {
@@ -137,6 +140,7 @@ impl EventStream {
             close_channel,
             clock,
             scheduler,
+            rt,
         )
     }
 
@@ -147,6 +151,7 @@ impl EventStream {
         mut close_channel: DaemonChannel,
         clock: Arc<uhlc::HLC>,
         scheduler: Scheduler,
+        rt: Handle,
     ) -> eyre::Result<Self> {
         channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;
         let reply = channel
@@ -178,6 +183,7 @@ impl EventStream {
             close_channel,
             clock,
             scheduler,
+            rt,
         })
     }
 
@@ -198,7 +204,7 @@ impl EventStream {
     /// asynchronous [`StreamExt::next`] method instead ([`EventStream`] implements the
     /// [`Stream`] trait).
     pub fn recv(&mut self) -> Option<Event> {
-        futures::executor::block_on(self.recv_async())
+        self.rt.clone().block_on(self.recv_async())
     }
 
     /// Receives the next incoming [`Event`] synchronously with a timeout.
@@ -220,7 +226,7 @@ impl EventStream {
     /// asynchronous [`StreamExt::next`] method instead ([`EventStream`] implements the
     /// [`Stream`] trait).
     pub fn recv_timeout(&mut self, dur: Duration) -> Option<Event> {
-        futures::executor::block_on(self.recv_async_timeout(dur))
+        self.rt.clone().block_on(self.recv_async_timeout(dur))
     }
 
     /// Receives the next incoming [`Event`] asynchronously, using an [`EventScheduler`] for fairness.
@@ -245,10 +251,14 @@ impl EventStream {
                     break;
                 }
             } else {
-                match select(Delay::new(Duration::from_micros(300)), self.receiver.next()).await {
-                    Either::Left((_elapsed, _)) => break,
-                    Either::Right((Some(event), _)) => self.scheduler.add_event(event),
-                    Either::Right((None, _)) => break,
+                if self.receiver.is_empty() || self.receiver.is_disconnected() {
+                    break;
+                } else {
+                    if let Some(event) = self.receiver.next().await {
+                        self.scheduler.add_event(event);
+                    } else {
+                        break;
+                    }
                 };
             }
         }
@@ -281,11 +291,11 @@ impl EventStream {
     }
 
     pub fn drain(&mut self) -> Vec<Event> {
-        futures::executor::block_on(self.drain_async())
+        self.rt.clone().block_on(self.drain_async())
     }
 
     pub fn drain_timeout(&mut self, dur: Duration) -> Vec<Event> {
-        futures::executor::block_on(self.drain_async())
+        self.rt.clone().block_on(self.drain_async())
     }
 
     pub async fn drain_async_timeout(&mut self, dur: Duration) -> Vec<Event> {

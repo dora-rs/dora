@@ -55,6 +55,7 @@ impl Node {
 
         let dataflow_id = *node.dataflow_id();
         let node_id = node.id().clone();
+        let handle = node.rt().clone();
         let node = DelayedCleanup::new(node);
         let events = events;
         let cleanup_handle = NodeCleanupHandle {
@@ -64,6 +65,7 @@ impl Node {
             events: Events {
                 inner: EventsInner::Dora(events),
                 _cleanup_handle: cleanup_handle,
+                rt: handle,
             },
             dataflow_id,
             node_id,
@@ -314,6 +316,7 @@ fn err_to_pyany(err: eyre::Report, gil: Python<'_>) -> Py<PyAny> {
 struct Events {
     inner: EventsInner,
     _cleanup_handle: NodeCleanupHandle,
+    rt: tokio::runtime::Handle,
 }
 
 impl Events {
@@ -323,7 +326,7 @@ impl Events {
                 Some(timeout) => events.recv_timeout(timeout).map(MergedEvent::Dora),
                 None => events.recv().map(MergedEvent::Dora),
             },
-            EventsInner::Merged(events) => futures::executor::block_on(events.next()),
+            EventsInner::Merged(events) => self.rt.block_on(events.next()),
         };
         event.map(|event| PyEvent { event })
     }
@@ -351,7 +354,9 @@ impl Events {
                     .map(MergedEvent::Dora),
                 None => events.drain().into_iter().map(MergedEvent::Dora),
             },
-            EventsInner::Merged(events) => todo!("Draining external event is not yet implemented!"),
+            EventsInner::Merged(_events) => {
+                todo!("Draining external event is not yet implemented!")
+            }
         };
         event.map(|event| PyEvent { event }).collect()
     }
