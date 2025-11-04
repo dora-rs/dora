@@ -257,5 +257,17 @@ fn ui(f: &mut Frame<'_>, stats: &[(&TopicIdentifier, Arc<HzStats>)]) {
     )
     .header(header);
 
-    f.render_widget(table, f.area());
+    // Reserve space for a one-line footer with shortcut hints.
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(3), Constraint::Length(1)])
+        .split(f.size());
+
+    f.render_widget(table, chunks[0]);
+
+    // Footer with key hints
+    let footer = Paragraph::new("Exit: q | Ctrl-C | Esc")
+        .style(Style::default().fg(Color::Yellow))
+        .alignment(Alignment::Center);
+    f.render_widget(footer, chunks[1]);
 }
