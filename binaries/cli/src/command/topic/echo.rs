@@ -23,6 +23,23 @@ use crate::{
 };
 
 /// Echo topic data in terminal.
+///
+/// Subscribe to one or more topic outputs and print received messages to the
+/// terminal. By default output is shown in a simple table format; use
+/// `--format json` to emit JSON lines.
+///
+/// The `DATA` argument accepts `node_id/output_id` pairs. If no `DATA` is
+/// provided, all outputs from the selected dataflow will be echoed.
+///
+/// Examples:
+/// - Echo a single topic: `dora topic echo -d my-dataflow robot1/pose`
+/// - Echo multiple topics: `dora topic echo -d my-dataflow robot1/pose robot2/vel`
+/// - Echo all topics in the dataflow: `dora topic echo -d my-dataflow`
+/// - Emit JSON lines: `dora topic echo -d my-dataflow robot1/pose --format json`
+///
+/// Note: The dataflow must enable
+/// `_unstable_debug.publish_all_messages_to_zenoh: true` for `echo` to receive
+/// runtime messages.
 #[derive(Debug, Args)]
 pub struct Echo {
     #[clap(flatten)]
