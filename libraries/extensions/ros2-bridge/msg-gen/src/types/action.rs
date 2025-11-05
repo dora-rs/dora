@@ -273,7 +273,7 @@ impl Action {
             pub fn #create_client(node: &mut Ros2Node, name_space: &str, base_name: &str, qos: ffi::Ros2ActionClientQosPolicies, events: &mut crate::ffi::CombinedEvents) -> eyre::Result<Box<#client_name>> {
                 use futures::StreamExt as _;
 
-                let client = node.node.create_action_client::< #package :: action :: #self_name >(
+                let client = node.node.create_action_client::< action :: #self_name >(
                     crate::ros2_client::ServiceMapping::Enhanced,
                     &crate::ros2_client::Name::new(name_space, base_name).unwrap(),
                     &crate::ros2_client::ActionTypeName::new(#package_name, #self_name_str),
@@ -305,7 +305,7 @@ impl Action {
 
             #[allow(non_camel_case_types)]
             pub struct #client_name {
-                client: std::sync::Arc<crate::ros2_client::action::ActionClient< #package :: action :: #self_name>>,
+                client: std::sync::Arc<crate::ros2_client::action::ActionClient< action :: #self_name>>,
                 response_tx: std::sync::Arc<crate::flume::Sender<eyre::Result<ffi::#result_type_raw>>>,
                 feedback_tx: std::sync::Arc<crate::flume::Sender<eyre::Result<ffi::#feedback_type_raw>>>,
                 status_tx: std::sync::Arc<crate::flume::Sender<eyre::Result<ffi::#status_type_raw>>>,
