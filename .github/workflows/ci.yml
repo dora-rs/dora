@@ -119,6 +119,13 @@ jobs:
           # only save caches for `main` branch
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      # CLI tests
+      - name: "Build cli and binaries"
+        timeout-minutes: 45
+        # fail-fast by using bash shell explictly
+        shell: bash
+        run: |
+          cargo install --path binaries/cli --locked
       # general examples
       - name: "Build examples"
         timeout-minutes: 30
