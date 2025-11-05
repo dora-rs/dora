@@ -21,26 +21,37 @@ use crate::command::{
 
 /// Measure topic publish frequency (Hz).
 ///
-/// Subscribe to one or more outputs and display per-topic statistics
-/// (average, min, max, stddev) over a sliding window. The `--window` flag
-/// controls the averaging window in seconds.
+/// Subscribe to one or more outputs and display per-topic statistics (average,
+/// min, max, stddev) over a sliding window.
 ///
-/// The `DATA` argument accepts `node_id/output_id` pairs. If no `DATA` is
-/// provided, the command measures all outputs in the selected dataflow.
+/// If no `DATA` is provided, all outputs from the selected dataflow will be
+/// echoed.
 ///
 /// Examples:
-/// - Measure a single topic: `dora topic hz -d my-dataflow robot1/pose`
-/// - Measure multiple topics with a short window: `dora topic hz -d my-dataflow robot1/pose robot2/vel --window 5`
-/// - Measure all topics: `dora topic hz -d my-dataflow --window 10`
 ///
-/// Note: Requires `_unstable_debug.publish_all_messages_to_zenoh: true` in the
-/// dataflow descriptor so runtime messages are available for inspection.
+/// Measure a single topic:
+///   dora topic hz -d my-dataflow robot1/pose
+///
+/// Measure multiple topics with a short window:
+///   dora topic hz -d my-dataflow robot1/pose robot2/vel --window 5
+///
+/// Measure all topics:
+///   dora topic hz -d my-dataflow --window 10
+///
+/// Note: The dataflow descriptor must include the following snippet so that
+/// runtime messages can be inspected:
+///
+/// ```
+/// _unstable_debug:
+///   publish_all_messages_to_zenoh: true
+/// ```
 #[derive(Debug, clap::Args)]
+#[clap(verbatim_doc_comment)]
 pub struct Hz {
     #[clap(flatten)]
     selector: TopicSelector,
 
-    /// Average window size in seconds
+    /// Sliding window size in seconds
     #[clap(long, default_value_t = 10)]
     window: usize,
 }
