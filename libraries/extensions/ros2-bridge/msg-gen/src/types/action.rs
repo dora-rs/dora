@@ -85,9 +85,9 @@ impl Action {
                 }
             }
 
-            pub use super::super::ffi::#goal_type_raw as #goal_type;
-            pub use super::super::ffi::#result_type_raw as #result_type;
-            pub use super::super::ffi::#feedback_type_raw as #feedback_type;
+            pub use super::ffi::#goal_type_raw as #goal_type;
+            pub use super::ffi::#result_type_raw as #result_type;
+            pub use super::ffi::#feedback_type_raw as #feedback_type;
 
         }
     }
@@ -244,7 +244,7 @@ impl Action {
             type #client_name;
 
             #[cxx_name = #cxx_create_client]
-            fn #create_client(self: &mut Ros2Node, name_space: &str, base_name: &str, qos:Ros2ActionClientQosPolicies, events: &mut CombinedEvents) -> Result<Box<#client_name>>;
+            fn #create_client(node: &mut Ros2Node, name_space: &str, base_name: &str, qos:Ros2ActionClientQosPolicies, events: &mut CombinedEvents) -> Result<Box<#client_name>>;
 
             #[namespace = #package_name]
             #[cxx_name = #cxx_send_goal]
@@ -268,40 +268,39 @@ impl Action {
         };
 
         let imp = quote! {
-            impl Ros2Node {
-                #[allow(non_snake_case)]
-                pub fn #create_client(&mut self, name_space: &str, base_name: &str, qos: ffi::Ros2ActionClientQosPolicies, events: &mut crate::ffi::CombinedEvents) -> eyre::Result<Box<#client_name>> {
-                    use futures::StreamExt as _;
 
-                    let client = self.node.create_action_client::< #package :: action :: #self_name >(
-                        crate::ros2_client::ServiceMapping::Enhanced,
-                        &crate::ros2_client::Name::new(name_space, base_name).unwrap(),
-                        &crate::ros2_client::ActionTypeName::new(#package_name, #self_name_str),
-                        qos.into(),
-                    ).map_err(|e| eyre::eyre!("{e:?}"))?;
-                    let (response_tx, response_rx) = flume::bounded(1);
-                    let response_stream = response_rx.into_stream().map(|v: eyre::Result<_>| Box::new(v) as Box<dyn std::any::Any + 'static>);
-                    let response_id = events.events.merge(Box::pin(response_stream));
+            #[allow(non_snake_case)]
+            pub fn #create_client(node: &mut Ros2Node, name_space: &str, base_name: &str, qos: ffi::Ros2ActionClientQosPolicies, events: &mut crate::ffi::CombinedEvents) -> eyre::Result<Box<#client_name>> {
+                use futures::StreamExt as _;
 
-                    let (feedback_tx, feedback_rx) = flume::bounded(1);
-                    let feedback_stream = feedback_rx.into_stream().map(|v: eyre::Result<_>| Box::new(v) as Box<dyn std::any::Any + 'static>);
-                    let feedback_id = events.events.merge(Box::pin(feedback_stream));
+                let client = node.node.create_action_client::< #package :: action :: #self_name >(
+                    crate::ros2_client::ServiceMapping::Enhanced,
+                    &crate::ros2_client::Name::new(name_space, base_name).unwrap(),
+                    &crate::ros2_client::ActionTypeName::new(#package_name, #self_name_str),
+                    qos.into(),
+                ).map_err(|e| eyre::eyre!("{e:?}"))?;
+                let (response_tx, response_rx) = flume::bounded(1);
+                let response_stream = response_rx.into_stream().map(|v: eyre::Result<_>| Box::new(v) as Box<dyn std::any::Any + 'static>);
+                let response_id = events.events.merge(Box::pin(response_stream));
 
-                    let (status_tx, status_rx) = flume::bounded(1);
-                    let status_stream = status_rx.into_stream().map(|v: eyre::Result<_>| Box::new(v) as Box<dyn std::any::Any + 'static>);
-                    let status_id = events.events.merge(Box::pin(status_stream));
+                let (feedback_tx, feedback_rx) = flume::bounded(1);
+                let feedback_stream = feedback_rx.into_stream().map(|v: eyre::Result<_>| Box::new(v) as Box<dyn std::any::Any + 'static>);
+                let feedback_id = events.events.merge(Box::pin(feedback_stream));
 
-                    Ok(Box::new(#client_name {
-                        client: std::sync::Arc::new(client),
-                        response_tx: std::sync::Arc::new(response_tx),
-                        feedback_tx: std::sync::Arc::new(feedback_tx),
-                        status_tx: std::sync::Arc::new(status_tx),
-                        executor: self.executor.clone(),
-                        response_id: response_id,
-                        feedback_id: feedback_id,
-                        status_id: status_id,
-                    }))
-                }
+                let (status_tx, status_rx) = flume::bounded(1);
+                let status_stream = status_rx.into_stream().map(|v: eyre::Result<_>| Box::new(v) as Box<dyn std::any::Any + 'static>);
+                let status_id = events.events.merge(Box::pin(status_stream));
+
+                Ok(Box::new(#client_name {
+                    client: std::sync::Arc::new(client),
+                    response_tx: std::sync::Arc::new(response_tx),
+                    feedback_tx: std::sync::Arc::new(feedback_tx),
+                    status_tx: std::sync::Arc::new(status_tx),
+                    executor: node.executor.clone(),
+                    response_id: response_id,
+                    feedback_id: feedback_id,
+                    status_id: status_id,
+                }))
             }
 
             #[allow(non_camel_case_types)]
