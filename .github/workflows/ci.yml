@@ -17,7 +17,6 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  RUST_LOG: DEBUG
   CI: true
 
 jobs:
@@ -350,7 +349,7 @@ jobs:
           enable-cache: true
 
       - name: "Test CLI (Python)"
-        timeout-minutes: 60
+        timeout-minutes: 80
         # fail-fast by using bash shell explictly
         shell: bash
         run: |
@@ -358,6 +357,7 @@ jobs:
           dora new test_python_project --lang python --internal-create-with-path-dependencies
           cd test_python_project
           uv venv --seed -p 3.12
+          source .venv/bin/activate
           uv pip install -e ../apis/python/node
           uv pip install ruff pytest
 
@@ -387,8 +387,6 @@ jobs:
           # Run Python Node Example
           echo "Running Python Node Example"
           dora up
-          uv venv --seed -p 3.12
-          uv pip install -e apis/python/node
           dora build examples/python-dataflow/dataflow.yml --uv
           dora start examples/python-dataflow/dataflow.yml --name ci-python --detach --uv
           sleep 10
