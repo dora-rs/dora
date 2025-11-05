@@ -37,26 +37,18 @@ async fn main() -> eyre::Result<()> {
     let node_cxxbridge = target
         .join("cxxbridge")
         .join("dora-node-api-cxx")
-        .join("src");
-    tokio::fs::copy(
-        node_cxxbridge.join("lib.rs.cc"),
-        build_dir.join("node-bridge.cc"),
-    )
-    .await?;
-    tokio::fs::copy(
-        node_cxxbridge.join("lib.rs.h"),
-        build_dir.join("dora-node-api.h"),
-    )
-    .await?;
+        .join("install");
 
     build_cxx_node(
         root,
         &[
             &dunce::canonicalize(Path::new("node-rust-api").join("main.cc"))?,
-            &dunce::canonicalize(build_dir.join("node-bridge.cc"))?,
+            &dunce::canonicalize(node_cxxbridge.join("dora-node-api.cc"))?,
         ],
         "node_rust_api",
         &[
+            "-I",
+            &node_cxxbridge.as_os_str().to_str().unwrap(),
             "-l",
             "dora_node_api_cxx",
             &arrow_config.cflags,
@@ -201,6 +193,7 @@ async fn build_cxx_node(
         clang.current_dir(parent);
     }
 
+    println!("Compiling C++ node...{:?}", clang);
     if !clang.status().await?.success() {
         bail!("failed to compile c++ node");
     };

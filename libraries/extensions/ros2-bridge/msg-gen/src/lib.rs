@@ -85,6 +85,8 @@ pub fn generate_package(package: &Package, create_cxx_bridge: bool) -> proc_macr
                     #(#action_creation_defs)*
                 }
                 extern "C++" {
+                    include!("ros2-bridge/impl.rs.h");
+                    include!("dora-node-api.h");
                     type CombinedEvents = crate::ffi::CombinedEvents;
                     type CombinedEvent = crate::ffi::CombinedEvent;
 

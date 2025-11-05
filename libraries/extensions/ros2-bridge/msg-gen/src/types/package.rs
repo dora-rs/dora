@@ -182,11 +182,9 @@ impl Package {
         let action_aliases = self.action_aliases(&package_name);
 
         quote! {
-            pub mod #package_name {
-                #aliases
-                #service_aliases
-                #action_aliases
-            }
+            #aliases
+            #service_aliases
+            #action_aliases
         }
     }
 
