@@ -18,22 +18,17 @@ use crate::{
     formatting::OutputFormat,
 };
 
-/// List topics.
-///
-/// Print the outputs defined in a dataflow descriptor. By default the command
-/// prints a human-friendly table with columns `Node`, `Name` and `Subscribers`.
-/// Use `--format json` to emit one JSON object per line for machine parsing.
-///
-/// Common flags (from `DataflowSelector`):
-/// - `-d, --dataflow <UUID_OR_NAME>` — select a dataflow by UUID or name
-/// - `--coordinator-addr <IP>` — address of the coordinator
-/// - `--coordinator-port <PORT>` — coordinator control port
+/// Print the outputs defined in a dataflow descriptor.
 ///
 /// Examples:
-/// - List topics in a dataflow: `dora topic list -d my-dataflow`
-/// - List topics as JSON: `dora topic list -d my-dataflow --format json`
-/// - Specify coordinator: `dora topic list -d my-dataflow --coordinator-addr 192.0.2.1`
+///
+/// List topics in a dataflow:
+///   dora topic list -d my-dataflow
+///
+/// List topics as JSON:
+///   dora topic list -d my-dataflow --format json
 #[derive(Debug, Args)]
+#[clap(verbatim_doc_comment)]
 pub struct List {
     #[clap(flatten)]
     selector: DataflowSelector,
