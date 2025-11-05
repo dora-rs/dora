@@ -13,7 +13,7 @@ use dora_message::{
 };
 pub use event::{Event, StopCause};
 use futures::{
-    Stream, StreamExt,
+    FutureExt, Stream, StreamExt,
     future::{Either, select},
 };
 use futures_timer::Delay;
@@ -59,7 +59,7 @@ mod thread;
 /// [`StopCause::Manual`] was received.
 pub struct EventStream {
     node_id: NodeId,
-    receiver: flume::Receiver<EventItem>,
+    receiver: flume::r#async::RecvStream<'static, EventItem>,
     _thread_handle: EventStreamThreadHandle,
     close_channel: DaemonChannel,
     clock: Arc<uhlc::HLC>,
@@ -173,7 +173,7 @@ impl EventStream {
 
         Ok(EventStream {
             node_id: node_id.clone(),
-            receiver: rx,
+            receiver: rx.into_stream(),
             _thread_handle: thread_handle,
             close_channel,
             clock,
@@ -239,15 +239,15 @@ impl EventStream {
     pub async fn recv_async(&mut self) -> Option<Event> {
         loop {
             if self.scheduler.is_empty() {
-                if let Ok(event) = self.receiver.recv_async().await {
+                if let Some(event) = self.receiver.next().await {
                     self.scheduler.add_event(event);
                 } else {
                     break;
                 }
             } else {
-                match self.receiver.try_recv() {
-                    Ok(event) => self.scheduler.add_event(event),
-                    Err(_) => break, // no other ready events
+                match self.receiver.next().now_or_never().flatten() {
+                    Some(event) => self.scheduler.add_event(event),
+                    None => break, // no other ready events
                 };
             }
         }
@@ -343,11 +343,10 @@ impl Stream for EventStream {
     type Item = Event;
 
     fn poll_next(
-        self: std::pin::Pin<&mut Self>,
+        mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
         self.receiver
-            .stream()
             .poll_next_unpin(cx)
             .map(|item| item.map(Self::convert_event_item))
     }
