@@ -13,7 +13,7 @@ use dora_message::{
 };
 pub use event::{Event, StopCause};
 use futures::{
-    Stream, StreamExt,
+    FutureExt, Stream, StreamExt,
     future::{Either, select},
 };
 use futures_timer::Delay;
@@ -245,10 +245,9 @@ impl EventStream {
                     break;
                 }
             } else {
-                match select(Delay::new(Duration::from_micros(300)), self.receiver.next()).await {
-                    Either::Left((_elapsed, _)) => break,
-                    Either::Right((Some(event), _)) => self.scheduler.add_event(event),
-                    Either::Right((None, _)) => break,
+                match self.receiver.next().now_or_never().flatten() {
+                    Some(event) => self.scheduler.add_event(event),
+                    None => break, // no other ready events
                 };
             }
         }
