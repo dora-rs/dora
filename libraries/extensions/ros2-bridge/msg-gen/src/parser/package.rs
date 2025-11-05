@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     path::{Path, PathBuf},
 };
 
@@ -99,7 +99,7 @@ fn get_ros_msgs_each_package<P: AsRef<Path>>(root_dirs: &[P]) -> Result<Vec<Pack
 
         let mut deps = parse_dependencies(xml)?;
         if !package.actions.is_empty() {
-            deps.push("action_msgs".to_owned());
+            deps.insert("action_msgs".to_owned());
         }
         deps.retain(|dep| map.contains_key(dep));
         package.dependencies = deps
@@ -124,9 +124,9 @@ where
     Ok(packages)
 }
 
-fn parse_dependencies(path: PathBuf) -> Result<Vec<String>> {
+fn parse_dependencies(path: PathBuf) -> Result<BTreeSet<String>> {
     use quick_xml::events::Event;
-    let mut deps = Vec::new();
+    let mut deps = BTreeSet::new();
     let file = std::fs::File::open(path)?;
     let file_reader = std::io::BufReader::new(file);
     let mut reader = quick_xml::Reader::from_reader(file_reader);
@@ -146,7 +146,7 @@ fn parse_dependencies(path: PathBuf) -> Result<Vec<String>> {
                         Ok(Event::Text(t)) => {
                             // Convert the text to a String and add it
                             if let Ok(dep) = t.decode() {
-                                deps.push(dep.into_owned());
+                                deps.insert(dep.into_owned());
                             }
                         }
                         // Continue if it's not text (e.g., a comment, CDATA)
