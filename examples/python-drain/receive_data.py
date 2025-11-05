@@ -9,7 +9,7 @@ def main():
     drained_data = node.drain()
     print("drained: ", drained_data)
     for _ in range(100):
-        event = node.recv()
+        _event = node.next()
         # print(event)
         # del event
     print("done!")
