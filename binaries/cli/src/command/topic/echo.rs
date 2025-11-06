@@ -42,7 +42,7 @@ use crate::{
 /// Note: The dataflow descriptor must include the following snippet so that
 /// runtime messages can be inspected:
 ///
-/// ```
+/// ```yaml
 /// _unstable_debug:
 ///   publish_all_messages_to_zenoh: true
 /// ```
