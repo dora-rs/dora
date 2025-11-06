@@ -1,6 +1,6 @@
 use std::{borrow::Cow, collections::HashMap, fmt};
 
-use crate::common::resolve_dataflow_identifier;
+use crate::common::resolve_dataflow_identifier_interactive;
 use communication_layer_request_reply::TcpRequestReplyConnection;
 use dora_core::{config::InputMapping, descriptor::Descriptor};
 use dora_message::{
@@ -24,7 +24,8 @@ impl DataflowSelector {
         &self,
         session: &mut TcpRequestReplyConnection,
     ) -> eyre::Result<(Uuid, Descriptor)> {
-        let dataflow_id = resolve_dataflow_identifier(&mut *session, self.dataflow.as_deref())?;
+        let dataflow_id =
+            resolve_dataflow_identifier_interactive(&mut *session, self.dataflow.as_deref())?;
         let reply_raw = session
             .request(
                 &serde_json::to_vec(&ControlRequest::Info {
