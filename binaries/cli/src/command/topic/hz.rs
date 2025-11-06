@@ -14,10 +14,13 @@ use std::{
 };
 use uuid::Uuid;
 
-use crate::{command::{
-    Executable,
-    topic::selector::{TopicIdentifier, TopicSelector},
-}, common::CoordinatorOptions};
+use crate::{
+    command::{
+        Executable,
+        topic::selector::{TopicIdentifier, TopicSelector},
+    },
+    common::CoordinatorOptions,
+};
 
 /// Measure topic publish frequency (Hz).
 ///

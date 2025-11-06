@@ -1,5 +1,5 @@
 use super::{Executable, default_tracing};
-use crate::common::{connect_to_coordinator, resolve_dataflow_identifier};
+use crate::common::{connect_to_coordinator, resolve_dataflow_identifier_interactive};
 use bat::{Input, PrettyPrinter};
 use clap::Args;
 use communication_layer_request_reply::TcpRequestReplyConnection;
@@ -34,7 +34,8 @@ impl Executable for LogsArgs {
         let mut session =
             connect_to_coordinator((self.coordinator_addr, self.coordinator_port).into())
                 .wrap_err("failed to connect to dora coordinator")?;
-        let uuid = resolve_dataflow_identifier(&mut *session, self.dataflow.as_deref())?;
+        let uuid =
+            resolve_dataflow_identifier_interactive(&mut *session, self.dataflow.as_deref())?;
         logs(&mut *session, uuid, self.node)
     }
 }

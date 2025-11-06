@@ -1,6 +1,9 @@
 use crate::{LOCALHOST, formatting::FormatDataflowError};
 use communication_layer_request_reply::{RequestReplyLayer, TcpLayer, TcpRequestReplyConnection};
-use dora_core::{descriptor::{Descriptor, source_is_url}, topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT};
+use dora_core::{
+    descriptor::{Descriptor, source_is_url},
+    topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT,
+};
 use dora_download::download_file;
 use dora_message::{
     cli_to_coordinator::ControlRequest,
@@ -50,7 +53,7 @@ pub(crate) fn query_running_dataflows(
     Ok(ids)
 }
 
-pub(crate) fn resolve_dataflow_identifier(
+pub(crate) fn resolve_dataflow_identifier_interactive(
     session: &mut TcpRequestReplyConnection,
     name_or_uuid: Option<&str>,
 ) -> eyre::Result<Uuid> {
