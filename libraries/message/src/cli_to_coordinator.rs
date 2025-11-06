@@ -64,8 +64,9 @@ pub enum ControlRequest {
         grace_duration: Option<Duration>,
     },
     Logs {
-        uuid: Uuid,
-        node: NodeId,
+        uuid: Option<Uuid>,
+        name: Option<String>,
+        node: String,
     },
     Destroy,
     List,

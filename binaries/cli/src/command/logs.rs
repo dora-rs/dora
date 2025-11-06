@@ -44,8 +44,9 @@ pub fn logs(session: &mut TcpRequestReplyConnection, uuid: Uuid, node: NodeId) -
         let reply_raw = session
             .request(
                 &serde_json::to_vec(&ControlRequest::Logs {
-                    uuid,
-                    node: node.clone(),
+                    uuid: Some(uuid),
+                    name: None,
+                    node: node.to_string(),
                 })
                 .wrap_err("")?,
             )
