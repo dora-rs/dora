@@ -6,7 +6,7 @@ use itertools::Itertools;
 use ratatui::{DefaultTerminal, prelude::*, widgets::*};
 use std::{
     borrow::Cow,
-    collections::VecDeque,
+    collections::{BTreeSet, VecDeque},
     iter,
     net::IpAddr,
     sync::{Arc, Mutex},
@@ -163,7 +163,7 @@ async fn run_hz(
     mut terminal: DefaultTerminal,
     window: usize,
     dataflow_id: Uuid,
-    outputs: Vec<TopicIdentifier>,
+    outputs: BTreeSet<TopicIdentifier>,
     coordinator_addr: IpAddr,
 ) -> eyre::Result<()> {
     let stats = outputs

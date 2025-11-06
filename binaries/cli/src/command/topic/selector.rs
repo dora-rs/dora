@@ -1,4 +1,8 @@
-use std::{borrow::Cow, collections::HashMap, fmt};
+use std::{
+    borrow::Cow,
+    collections::{BTreeSet, HashMap},
+    fmt,
+};
 
 use crate::common::resolve_dataflow_identifier_interactive;
 use communication_layer_request_reply::TcpRequestReplyConnection;
@@ -69,7 +73,7 @@ impl TopicSelector {
     pub fn resolve(
         &self,
         session: &mut TcpRequestReplyConnection,
-    ) -> eyre::Result<(DataflowId, Vec<TopicIdentifier>)> {
+    ) -> eyre::Result<(DataflowId, BTreeSet<TopicIdentifier>)> {
         let (dataflow_id, dataflow_descriptor) = self.dataflow.resolve(session)?;
         if !dataflow_descriptor.debug.publish_all_messages_to_zenoh {
             bail!(
@@ -90,7 +94,7 @@ impl TopicSelector {
             .map(|node| (&node.id, node))
             .collect::<HashMap<_, _>>();
 
-        let mut data = Vec::new();
+        let mut data = BTreeSet::new();
         if self.data.is_empty() {
             data.extend(dataflow_descriptor.nodes.iter().flat_map(|node| {
                 node.outputs.iter().map(|output| TopicIdentifier {
@@ -98,7 +102,6 @@ impl TopicSelector {
                     data_id: output.clone(),
                 })
             }));
-            data.sort();
             return Ok((dataflow_id, data));
         }
 
@@ -120,7 +123,7 @@ impl TopicSelector {
                             data_id: output.clone(),
                         }));
                     } else if node.outputs.contains(&user.output) {
-                        data.push(TopicIdentifier {
+                        data.insert(TopicIdentifier {
                             node_id: user.source,
                             data_id: user.output,
                         });
@@ -138,9 +141,6 @@ impl TopicSelector {
                 Err(e) => bail!("Invalid output id `{s}`: {e}"),
             }
         }
-
-        data.sort();
-        data.dedup();
 
         Ok((dataflow_id, data))
     }
