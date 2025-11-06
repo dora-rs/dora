@@ -19,6 +19,7 @@ use crate::{
         Executable, default_tracing,
         topic::selector::{TopicIdentifier, TopicSelector},
     },
+    common::CoordinatorOptions,
     formatting::OutputFormat,
 };
 
@@ -50,28 +51,37 @@ use crate::{
 pub struct Echo {
     #[clap(flatten)]
     selector: TopicSelector,
+
     /// Output format
     #[clap(long, value_name = "FORMAT", default_value_t = OutputFormat::Table)]
     pub format: OutputFormat,
+
+    #[clap(flatten)]
+    coordinator: CoordinatorOptions,
 }
 
 impl Executable for Echo {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
 
-        inspect(self.selector, self.format)
+        inspect(self.coordinator, self.selector, self.format)
     }
 }
 
-fn inspect(selector: TopicSelector, format: OutputFormat) -> eyre::Result<()> {
-    let (_session, (dataflow_id, topics)) = selector.resolve()?;
+fn inspect(
+    coordinator: CoordinatorOptions,
+    selector: TopicSelector,
+    format: OutputFormat,
+) -> eyre::Result<()> {
+    let mut session = coordinator.connect()?;
+    let (dataflow_id, topics) = selector.resolve(session.as_mut())?;
 
     let rt = Builder::new_multi_thread()
         .enable_all()
         .build()
         .context("tokio runtime failed")?;
     rt.block_on(async move {
-        let zenoh_session = open_zenoh_session(Some(selector.dataflow.coordinator_addr))
+        let zenoh_session = open_zenoh_session(Some(coordinator.coordinator_addr))
             .await
             .context("failed to open zenoh session")?;
 

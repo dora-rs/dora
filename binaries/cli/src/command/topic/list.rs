@@ -1,20 +1,14 @@
-use std::{
-    collections::{BTreeMap, VecDeque},
-    io::Write,
-};
+use std::{collections::BTreeMap, io::Write};
 
 use clap::Args;
 use dora_core::config::InputMapping;
 use dora_message::id::{DataId, NodeId};
 use serde::Serialize;
 use tabwriter::TabWriter;
-use tokio::runtime::Builder;
 
 use crate::{
-    command::{
-        Executable, default_tracing,
-        topic::selector::{DataflowSelector, TopicSelector},
-    },
+    command::{Executable, default_tracing, topic::selector::DataflowSelector},
+    common::CoordinatorOptions,
     formatting::OutputFormat,
 };
 
@@ -32,15 +26,19 @@ use crate::{
 pub struct List {
     #[clap(flatten)]
     selector: DataflowSelector,
+
     /// Output format
     #[clap(long, value_name = "FORMAT", default_value_t = OutputFormat::Table)]
     pub format: OutputFormat,
+
+    #[clap(flatten)]
+    coordinator: CoordinatorOptions,
 }
 impl Executable for List {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
 
-        list(self.selector, self.format)
+        list(self.coordinator, self.selector, self.format)
     }
 }
 
@@ -51,17 +49,22 @@ struct OutputEntry {
     subscribers: Vec<String>,
 }
 
-fn list(selector: DataflowSelector, format: OutputFormat) -> eyre::Result<()> {
-    let (_session, _dataflow_id, descriptor) = selector.resolve()?;
+fn list(
+    coordinator: CoordinatorOptions,
+    selector: DataflowSelector,
+    format: OutputFormat,
+) -> eyre::Result<()> {
+    let mut session = coordinator.connect()?;
+    let (_dataflow_id, descriptor) = selector.resolve(session.as_mut())?;
 
     let mut subscribers = BTreeMap::<(&NodeId, &DataId), Vec<(&NodeId, &DataId)>>::new();
     for node in &descriptor.nodes {
-        for (data, input) in &node.inputs {
+        for (input_id, input) in &node.inputs {
             if let InputMapping::User(user) = &input.mapping {
                 subscribers
                     .entry((&user.source, &user.output))
                     .or_default()
-                    .push((&node.id, data));
+                    .push((&node.id, input_id));
             }
         }
     }

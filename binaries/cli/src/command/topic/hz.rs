@@ -14,10 +14,10 @@ use std::{
 };
 use uuid::Uuid;
 
-use crate::command::{
+use crate::{command::{
     Executable,
     topic::selector::{TopicIdentifier, TopicSelector},
-};
+}, common::CoordinatorOptions};
 
 /// Measure topic publish frequency (Hz).
 ///
@@ -54,11 +54,15 @@ pub struct Hz {
     /// Sliding window size in seconds
     #[clap(long, default_value_t = 10)]
     window: usize,
+
+    #[clap(flatten)]
+    coordinator: CoordinatorOptions,
 }
 
 impl Executable for Hz {
     fn execute(self) -> eyre::Result<()> {
-        let (_session, (dataflow_id, topics)) = self.selector.resolve()?;
+        let mut session = self.coordinator.connect()?;
+        let (dataflow_id, topics) = self.selector.resolve(session.as_mut())?;
 
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -71,7 +75,7 @@ impl Executable for Hz {
                 self.window,
                 dataflow_id,
                 topics,
-                self.selector.dataflow.coordinator_addr,
+                self.coordinator.coordinator_addr,
             )
             .await
         })
@@ -272,7 +276,7 @@ fn ui(f: &mut Frame<'_>, stats: &[(&TopicIdentifier, Arc<HzStats>)]) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(3), Constraint::Length(1)])
-        .split(f.size());
+        .split(f.area());
 
     f.render_widget(table, chunks[0]);
 
