@@ -1,6 +1,6 @@
-use crate::formatting::FormatDataflowError;
+use crate::{LOCALHOST, formatting::FormatDataflowError};
 use communication_layer_request_reply::{RequestReplyLayer, TcpLayer, TcpRequestReplyConnection};
-use dora_core::descriptor::{Descriptor, source_is_url};
+use dora_core::{descriptor::{Descriptor, source_is_url}, topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT};
 use dora_download::download_file;
 use dora_message::{
     cli_to_coordinator::ControlRequest,
@@ -9,7 +9,7 @@ use dora_message::{
 use eyre::{Context, ContextCompat, bail};
 use std::{
     env::current_dir,
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
 };
 use tokio::runtime::Builder;
@@ -75,6 +75,24 @@ pub(crate) fn resolve_dataflow_identifier(
                 .uuid
         }
     })
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct CoordinatorOptions {
+    /// Address of the dora coordinator
+    #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
+    pub coordinator_addr: IpAddr,
+    /// Port number of the coordinator control server
+    #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
+    pub coordinator_port: u16,
+}
+
+impl CoordinatorOptions {
+    pub fn connect(&self) -> eyre::Result<Box<TcpRequestReplyConnection>> {
+        let session = connect_to_coordinator((self.coordinator_addr, self.coordinator_port).into())
+            .wrap_err("failed to connect to dora coordinator")?;
+        Ok(session)
+    }
 }
 
 pub(crate) fn connect_to_coordinator(
