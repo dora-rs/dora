@@ -357,7 +357,12 @@ jobs:
           dora new test_python_project --lang python --internal-create-with-path-dependencies
           cd test_python_project
           uv venv --seed -p 3.12
-          source .venv/bin/activate
+          ## If not Windows
+          if [ "$RUNNER_OS" != "Windows" ]; then
+            source .venv/bin/activate
+          else
+            source .venv/Scripts/activate
+          fi
           uv pip install -e ../apis/python/node
           uv pip install ruff pytest
 
