@@ -280,6 +280,33 @@ impl EventStream {
         }
     }
 
+    /// Receives all buffered [`Event`]s without blocking, using an [`EventScheduler`] for fairness.
+    ///
+    /// Return `Some(Vec::new())` if no events are ready.
+    /// Returns [`None`] once the event stream is closed and no events are buffered anymore.
+    ///
+    /// This method never blocks and is safe to use in asynchronous contexts.
+    ///
+    /// This method is equivalent to repeatedly calling [`try_recv`][Self::try_recv]. See its docs
+    /// for details on event reordering.
+    pub fn drain(&mut self) -> Option<Vec<Event>> {
+        let mut events = Vec::new();
+        loop {
+            match self.try_recv() {
+                Ok(event) => events.push(event),
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Closed) => {
+                    if events.is_empty() {
+                        return None;
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+        Some(events)
+    }
+
     /// Receives the next incoming [`Event`] asynchronously with a timeout.
     ///
     /// Returns a [`Event::Error`] if no event was received within the given duration.
