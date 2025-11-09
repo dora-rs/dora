@@ -13,7 +13,11 @@ use serde::Serialize;
 use serde_json::Value as JsonValue;
 
 #[cfg(feature = "ros2-bridge")]
-use dora_ros2_bridge::{_core, ros2_client};
+pub use prelude::*;
+#[cfg(feature = "ros2-bridge")]
+pub mod prelude {
+    pub use dora_ros2_bridge::prelude::*;
+}
 use futures_lite::{Stream, StreamExt, stream};
 
 #[cxx::bridge]
@@ -153,7 +157,7 @@ mod ffi {
 
 #[cfg(feature = "ros2-bridge")]
 pub mod ros2 {
-    pub use dora_ros2_bridge::*;
+    // pub use dora_ros2_bridge::*;
     include!(env!("ROS2_BINDINGS_PATH"));
 }
 
@@ -227,7 +231,7 @@ fn event_as_input(event: Box<DoraEvent>) -> eyre::Result<ffi::DoraInput> {
             vec![]
         }
         _ => {
-            todo!("dora C++ Node does not yet support higher level type of arrow. Only UInt8. 
+            todo!("dora C++ Node does not yet support higher level type of arrow. Only UInt8.
                 The ultimate solution should be based on arrow FFI interface. Feel free to contribute :)")
         }
     };

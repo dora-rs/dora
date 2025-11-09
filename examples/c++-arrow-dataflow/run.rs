@@ -27,30 +27,23 @@ fn main() -> eyre::Result<()> {
         .wrap_err("failed to set working dir")?;
 
     std::fs::create_dir_all("build")?;
-    let build_dir = Path::new("build");
 
     build_package("dora-node-api-cxx")?;
     let node_cxxbridge = target
         .join("cxxbridge")
         .join("dora-node-api-cxx")
-        .join("src");
-    std::fs::copy(
-        node_cxxbridge.join("lib.rs.cc"),
-        build_dir.join("node-bridge.cc"),
-    )?;
-    std::fs::copy(
-        node_cxxbridge.join("lib.rs.h"),
-        build_dir.join("dora-node-api.h"),
-    )?;
+        .join("install");
 
     build_cxx_node(
         root,
         &[
             &dunce::canonicalize(Path::new("node-rust-api").join("main.cc"))?,
-            &dunce::canonicalize(build_dir.join("node-bridge.cc"))?,
+            &dunce::canonicalize(node_cxxbridge.join("dora-node-api.cc"))?,
         ],
         "node_rust_api",
         &[
+            "-I",
+            &node_cxxbridge.as_os_str().to_str().unwrap(),
             "-l",
             "dora_node_api_cxx",
             &arrow_config.cflags,

@@ -1,5 +1,9 @@
-#include "../build/dora-node-api.h"
-#include "../build/dora-ros2-bindings.h"
+#include "dora-node-api.h"
+#include "ros2-bridge/impl.h"
+#include "ros2-bridge/msg/example_interfaces.h"
+#include "ros2-bridge/msg/sensor_msgs.h"
+#include "ros2-bridge/msg/geometry_msgs.h"
+#include "ros2-bridge/msg/turtlesim.h"
 
 #include <iostream>
 #include <vector>
@@ -20,10 +24,10 @@ int main()
 
     auto ros2_context = init_ros2_context();
     auto node = ros2_context->new_node("/ros2_demo", "turtle_teleop");
-    auto vel_topic = node->create_topic_geometry_msgs_Twist("/turtle1", "cmd_vel", qos);
-    auto vel_publisher = node->create_publisher(vel_topic, qos);
-    auto pose_topic = node->create_topic_turtlesim_Pose("/turtle1", "pose", qos);
-    auto pose_subscription = node->create_subscription(pose_topic, qos, merged_events);
+    auto vel_topic = create_topic_geometry_msgs_Twist(*node, "/turtle1", "cmd_vel", qos);
+    auto vel_publisher = create_publisher(*node, vel_topic, qos);
+    auto pose_topic = create_topic_turtlesim_Pose(*node, "/turtle1", "pose", qos);
+    auto pose_subscription = create_subscription(*node, pose_topic, qos, merged_events);
 
     std::random_device dev;
     std::default_random_engine gen(dev());
@@ -33,7 +37,7 @@ int main()
     service_qos.reliable = true;
     service_qos.max_blocking_time = 0.1;
     service_qos.keep_last = 1;
-    auto add_two_ints = node->create_client_example_interfaces_AddTwoInts("/", "add_two_ints", service_qos, merged_events);
+    auto add_two_ints = create_client_example_interfaces_AddTwoInts(*node, "/", "add_two_ints", service_qos, merged_events);
     add_two_ints->wait_for_service(node);
 
     auto received_ticks = 0;

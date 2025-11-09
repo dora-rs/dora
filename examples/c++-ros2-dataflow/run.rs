@@ -17,35 +17,34 @@ fn main() -> eyre::Result<()> {
     std::fs::create_dir_all("build")?;
     let build_dir = Path::new("build");
 
-    build_package("dora-node-api-cxx", &["ros2-bridge"])?;
-    let node_cxxbridge = target.join("cxxbridge").join("dora-node-api-cxx");
-    std::fs::copy(
-        node_cxxbridge.join("dora-node-api.cc"),
-        build_dir.join("dora-node-api.cc"),
-    )?;
-    std::fs::copy(
-        node_cxxbridge.join("dora-node-api.h"),
-        build_dir.join("dora-node-api.h"),
-    )?;
-    std::fs::copy(
-        node_cxxbridge.join("dora-ros2-bindings.cc"),
-        build_dir.join("dora-ros2-bindings.cc"),
-    )?;
-    std::fs::copy(
-        node_cxxbridge.join("dora-ros2-bindings.h"),
-        build_dir.join("dora-ros2-bindings.h"),
-    )?;
+    build_package("dora-node-api-cxx", &["ros2-bridge"]);
+    let node_cxxbridge = target
+        .join("cxxbridge")
+        .join("dora-node-api-cxx")
+        .join("install");
 
     build_cxx_node(
         root,
         &[
             &dunce::canonicalize(Path::new("node-rust-api").join("main.cc"))?,
-            &dunce::canonicalize(build_dir.join("dora-ros2-bindings.cc"))?,
-            &dunce::canonicalize(build_dir.join("dora-node-api.cc"))?,
+            &dunce::canonicalize(node_cxxbridge.join("dora-node-api.cc"))?,
+            &dunce::canonicalize(node_cxxbridge.join("ros2-bridge/msg/sensor_msgs.cc"))?,
+            &dunce::canonicalize(node_cxxbridge.join("ros2-bridge/msg/geometry_msgs.cc"))?,
+            &dunce::canonicalize(node_cxxbridge.join("ros2-bridge/msg/example_interfaces.cc"))?,
+            &dunce::canonicalize(node_cxxbridge.join("ros2-bridge/msg/turtlesim.cc"))?,
+            &dunce::canonicalize(node_cxxbridge.join("ros2-bridge/impl.cc"))?,
+            &dunce::canonicalize(node_cxxbridge.join("ros2-bridge/msg/action_msgs.cc"))?,
+            &dunce::canonicalize(node_cxxbridge.join("ros2-bridge/msg/builtin_interfaces.cc"))?,
+            &dunce::canonicalize(node_cxxbridge.join("ros2-bridge/msg/unique_identifier_msgs.cc"))?,
         ],
         "node_rust_api",
-        &["-l", "dora_node_api_cxx"],
-    )?;
+        &[
+            "-I",
+            node_cxxbridge.as_os_str().to_str().unwrap(),
+            "-l",
+            "dora_node_api_cxx",
+        ],
+    );
 
     dora_cli::run("dataflow.yml".to_string(), false)?;
 
