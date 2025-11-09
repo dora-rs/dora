@@ -150,6 +150,7 @@ impl Message {
     ) -> (impl ToTokens, impl ToTokens) {
         let cxx_name = format_ident!("{}", self.name);
         let struct_raw_name = format_ident!("{package_name}__{}", self.name);
+        let struct_raw_vec_name = format_ident!("{package_name}_Vec_{}", self.name);
 
         let rust_type_def_inner = self.members.iter().map(|m| m.rust_type_def(&self.package));
         let constants_def_inner = self.constants.iter().map(|c| c.token_stream());
@@ -294,6 +295,12 @@ impl Message {
                     #(#rust_type_def_inner)*
                 }
 
+                #[allow(non_camel_case_types)]
+                #[allow(dead_code)]
+                pub struct #struct_raw_vec_name {
+                    data: Vec<#struct_raw_name>
+                }
+
                 #cxx_consts
             }
         };
@@ -345,43 +352,43 @@ impl Message {
         };
 
         let topic_name = format_ident!("Topic__{package_name}__{}", self.name);
-        let cxx_topic_name = format_ident!("Topic_{}", self.name);
+        let cxx_topic_name = format!("Topic_{}", self.name);
         let create_topic = format_ident!("new__Topic__{package_name}__{}", self.name);
         let cxx_create_topic = format!("create_topic_{package_name}_{}", self.name);
 
         let publisher_name = format_ident!("Publisher__{package_name}__{}", self.name);
-        let cxx_publisher_name = format_ident!("Publisher_{}", self.name);
+        let cxx_publisher_name = format!("Publisher_{}", self.name);
         let create_publisher = format_ident!("new__Publisher__{package_name}__{}", self.name);
-        let cxx_create_publisher = format_ident!("create_publisher");
+        let cxx_create_publisher = format!("create_publisher");
 
         let struct_raw_name = format_ident!("{package_name}__{}", self.name);
         let struct_raw_name_str = struct_raw_name.to_string();
         let self_name = &self.name;
 
         let publish = format_ident!("publish__{package_name}__{}", self.name);
-        let cxx_publish = format_ident!("publish");
+        let cxx_publish = "publish";
 
         let subscription_name = format_ident!("Subscription__{package_name}__{}", self.name);
         let subscription_name_str = subscription_name.to_string();
-        let cxx_subscription_name = format_ident!("Subscription_{}", self.name);
+        let cxx_subscription_name = format!("Subscription_{}", self.name);
         let create_subscription = format_ident!("new__Subscription__{package_name}__{}", self.name);
-        let cxx_create_subscription = format_ident!("create_subscription");
+        let cxx_create_subscription = "create_subscription";
 
         let matches = format_ident!("matches__{package_name}__{}", self.name);
-        let cxx_matches = format_ident!("matches");
+        let cxx_matches = "matches";
         let downcast = format_ident!("downcast__{package_name}__{}", self.name);
-        let cxx_downcast = format_ident!("downcast");
+        let cxx_downcast = "downcast";
 
         let def = quote! {
             #[namespace = #package_name]
             #[cxx_name = #cxx_topic_name]
             type #topic_name;
             #[cxx_name = #cxx_create_topic]
-            fn #create_topic(self: &Ros2Node, name_space: &str, base_name: &str, qos: Ros2QosPolicies) -> Result<Box<#topic_name>>;
+            fn #create_topic(node: &Ros2Node, name_space: &str, base_name: &str, qos: Ros2QosPolicies) -> Result<Box<#topic_name>>;
             #[cxx_name = #cxx_create_publisher]
-            fn #create_publisher(self: &mut Ros2Node, topic: &Box<#topic_name>, qos: Ros2QosPolicies) -> Result<Box<#publisher_name>>;
+            fn #create_publisher(node: &mut Ros2Node, topic: &Box<#topic_name>, qos: Ros2QosPolicies) -> Result<Box<#publisher_name>>;
             #[cxx_name = #cxx_create_subscription]
-            fn #create_subscription(self: &mut Ros2Node, topic: &Box<#topic_name>, qos: Ros2QosPolicies, events: &mut CombinedEvents) -> Result<Box<#subscription_name>>;
+            fn #create_subscription(node: &mut Ros2Node, topic: &Box<#topic_name>, qos: Ros2QosPolicies, events: &mut CombinedEvents) -> Result<Box<#subscription_name>>;
 
             #[namespace = #package_name]
             #[cxx_name = #cxx_publisher_name]
@@ -405,33 +412,31 @@ impl Message {
             #[allow(non_camel_case_types)]
             pub struct #topic_name(rustdds::Topic);
 
-            impl Ros2Node {
-                #[allow(non_snake_case)]
-                pub fn #create_topic(&self, name_space: &str, base_name: &str, qos: ffi::Ros2QosPolicies) -> eyre::Result<Box<#topic_name>> {
-                    let name = crate::ros2_client::Name::new(name_space, base_name).map_err(|e| eyre::eyre!(e))?;
-                    let type_name = crate::ros2_client::MessageTypeName::new(#package_name, #self_name);
-                    let topic = self.node.create_topic(&name, type_name, &qos.into())?;
-                    Ok(Box::new(#topic_name(topic)))
-                }
+            #[allow(non_snake_case)]
+            pub fn #create_topic(node: &Ros2Node, name_space: &str, base_name: &str, qos: ffi::Ros2QosPolicies) -> eyre::Result<Box<#topic_name>> {
+                let name = crate::ros2_client::Name::new(name_space, base_name).map_err(|e| eyre::eyre!(e))?;
+                let type_name = crate::ros2_client::MessageTypeName::new(#package_name, #self_name);
+                let topic = node.node.create_topic(&name, type_name, &qos.into())?;
+                Ok(Box::new(#topic_name(topic)))
+            }
 
-                #[allow(non_snake_case)]
-                pub fn #create_publisher(&mut self, topic: &Box<#topic_name>, qos: ffi::Ros2QosPolicies) -> eyre::Result<Box<#publisher_name>> {
-                    let publisher = self.node.create_publisher(&topic.0, Some(qos.into()))?;
-                    Ok(Box::new(#publisher_name(publisher)))
-                }
+            #[allow(non_snake_case)]
+            pub fn #create_publisher(node: &mut Ros2Node, topic: &Box<#topic_name>, qos: ffi::Ros2QosPolicies) -> eyre::Result<Box<#publisher_name>> {
+                let publisher = node.node.create_publisher(&topic.0, Some(qos.into()))?;
+                Ok(Box::new(#publisher_name(publisher)))
+            }
 
-                #[allow(non_snake_case)]
-                pub fn #create_subscription(&mut self, topic: &Box<#topic_name>, qos: ffi::Ros2QosPolicies, events: &mut crate::ffi::CombinedEvents) -> eyre::Result<Box<#subscription_name>> {
-                    let subscription = self.node.create_subscription::<ffi::#struct_raw_name>(&topic.0, Some(qos.into()))?;
-                    let stream = futures_lite::stream::unfold(subscription, |sub| async {
-                        let item = sub.async_take().await;
-                        let item_boxed: Box<dyn std::any::Any + 'static> = Box::new(item);
-                        Some((item_boxed, sub))
-                    });
-                    let id = events.events.merge(Box::pin(stream));
+            #[allow(non_snake_case)]
+            pub fn #create_subscription(node: &mut Ros2Node, topic: &Box<#topic_name>, qos: ffi::Ros2QosPolicies, events: &mut crate::ffi::CombinedEvents) -> eyre::Result<Box<#subscription_name>> {
+                let subscription = node.node.create_subscription::<ffi::#struct_raw_name>(&topic.0, Some(qos.into()))?;
+                let stream = futures_lite::stream::unfold(subscription, |sub| async {
+                    let item = sub.async_take().await;
+                    let item_boxed: Box<dyn std::any::Any + 'static> = Box::new(item);
+                    Some((item_boxed, sub))
+                });
+                let id = events.events.merge(Box::pin(stream));
 
-                    Ok(Box::new(#subscription_name { id }))
-                }
+                Ok(Box::new(#subscription_name { id }))
             }
 
             #[allow(non_camel_case_types)]
@@ -486,7 +491,7 @@ impl Message {
             quote! {}
         } else {
             quote! {
-                pub use super::super::ffi::#struct_raw_name as #cxx_name;
+                pub use super::ffi::#struct_raw_name as #cxx_name;
             }
         }
     }

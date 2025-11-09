@@ -1,4 +1,4 @@
-#include "../build/dora-node-api.h"
+#include <dora-node-api.h>
 #include <arrow/api.h>
 #include <arrow/c/bridge.h>
 #include <cstdint>

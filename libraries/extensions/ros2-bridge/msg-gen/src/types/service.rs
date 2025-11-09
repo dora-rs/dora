@@ -71,8 +71,8 @@ impl Service {
                 }
             }
 
-            pub use super::super::ffi::#req_type_raw as #req_type;
-            pub use super::super::ffi::#res_type_raw as #res_type;
+            pub use super::ffi::#req_type_raw as #req_type;
+            pub use super::ffi::#res_type_raw as #res_type;
         }
     }
 
@@ -108,7 +108,7 @@ impl Service {
             type #client_name;
             // TODO: add `merged_streams` argument (for sending replies)
             #[cxx_name = #cxx_create_client]
-            fn #create_client(self: &mut Ros2Node, name_space: &str, base_name: &str, qos: Ros2QosPolicies, events: &mut CombinedEvents) -> Result<Box<#client_name>>;
+            fn #create_client(node: &mut Ros2Node, name_space: &str, base_name: &str, qos: Ros2QosPolicies, events: &mut CombinedEvents) -> Result<Box<#client_name>>;
 
             #[namespace = #package_name]
             #[cxx_name = #cxx_wait_for_service]
@@ -124,36 +124,35 @@ impl Service {
             fn #downcast(self: &#client_name, event: CombinedEvent) -> Result<#res_type_raw>;
         };
         let imp = quote! {
-            impl Ros2Node {
-                #[allow(non_snake_case)]
-                pub fn #create_client(&mut self, name_space: &str, base_name: &str, qos: ffi::Ros2QosPolicies, events: &mut crate::ffi::CombinedEvents) -> eyre::Result<Box<#client_name>> {
-                    use futures::StreamExt as _;
 
-                    let client = self.node.create_client::< #package :: service :: #self_name >(
-                        ros2_client::ServiceMapping::Enhanced,
-                        &ros2_client::Name::new(name_space, base_name).unwrap(),
-                        &ros2_client::ServiceTypeName::new(#package_name, #self_name_str),
-                        qos.clone().into(),
-                        qos.into(),
-                    ).map_err(|e| eyre::eyre!("{e:?}"))?;
-                    let (response_tx, response_rx) = flume::bounded(1);
-                    let stream = response_rx.into_stream().map(|v: eyre::Result<_>| Box::new(v) as Box<dyn std::any::Any + 'static>);
-                    let id = events.events.merge(Box::pin(stream));
+            #[allow(non_snake_case)]
+            pub fn #create_client(node: &mut Ros2Node, name_space: &str, base_name: &str, qos: ffi::Ros2QosPolicies, events: &mut crate::ffi::CombinedEvents) -> eyre::Result<Box<#client_name>> {
+                use futures::StreamExt as _;
 
-                    Ok(Box::new(#client_name {
-                        client: std::sync::Arc::new(client),
-                        response_tx: std::sync::Arc::new(response_tx),
-                        executor: self.executor.clone(),
-                        stream_id: id,
-                    }))
-                }
+                let client = node.node.create_client::< service :: #self_name >(
+                    crate::ros2_client::ServiceMapping::Enhanced,
+                    &crate::ros2_client::Name::new(name_space, base_name).unwrap(),
+                    &crate::ros2_client::ServiceTypeName::new(#package_name, #self_name_str),
+                    qos.clone().into(),
+                    qos.into(),
+                ).map_err(|e| eyre::eyre!("{e:?}"))?;
+                let (response_tx, response_rx) = flume::bounded(1);
+                let stream = response_rx.into_stream().map(|v: eyre::Result<_>| Box::new(v) as Box<dyn std::any::Any + 'static>);
+                let id = events.events.merge(Box::pin(stream));
+
+                Ok(Box::new(#client_name {
+                    client: std::sync::Arc::new(client),
+                    response_tx: std::sync::Arc::new(response_tx),
+                    executor: node.executor.clone(),
+                    stream_id: id,
+                }))
             }
 
             #[allow(non_camel_case_types)]
             pub struct #client_name {
-                client: std::sync::Arc<ros2_client::service::Client< #package :: service :: #self_name >>,
-                response_tx: std::sync::Arc<flume::Sender<eyre::Result<ffi::#res_type_raw>>>,
-                executor: std::sync::Arc<futures::executor::ThreadPool>,
+                client: std::sync::Arc<crate::ros2_client::service::Client< service :: #self_name >>,
+                response_tx: std::sync::Arc<crate::flume::Sender<eyre::Result<ffi::#res_type_raw>>>,
+                executor: std::sync::Arc<crate::futures::executor::ThreadPool>,
                 stream_id: u32,
             }
 
