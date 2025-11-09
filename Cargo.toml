@@ -116,7 +116,7 @@ uuid = { version = "1.7", features = ["v7", "serde"] }
 tracing = "0.1.36"
 futures = "0.3.25"
 tokio-stream = "0.1.11"
-process-wrap = {version = "9.0.0", features = ["tokio1"]}
+process-wrap = {version = "9.0.0", features = ["std"]}
 
 [[example]]
 name = "c-dataflow"
@@ -143,6 +143,11 @@ required-features = ["ros2-examples"]
 [[example]]
 name = "rust-ros2-topic-sub-dataflow"
 path = "examples/ros2-bridge/rust/topic-sub/run.rs"
+required-features = ["ros2-examples"]
+
+[[example]]
+name = "rust-ros2-service-client-dataflow"
+path = "examples/ros2-bridge/rust/service-client/run.rs"
 required-features = ["ros2-examples"]
 
 # TODO: Fix example #192

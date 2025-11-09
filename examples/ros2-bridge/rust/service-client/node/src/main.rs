@@ -15,7 +15,6 @@ use futures::task::SpawnExt;
 
 fn main() -> eyre::Result<()> {
     let mut ros_node = init_ros_node()?;
-    let client = create_service_client(&mut ros_node)?;
 
     // spawn a background spinner task that is handles service discovery (and other things)
     let pool = futures::executor::ThreadPool::new()?;
@@ -29,12 +28,11 @@ fn main() -> eyre::Result<()> {
     })
     .context("failed to spawn ros2 spinner")?;
 
-    let (mut node, dora_events) = DoraNode::init_from_env()?;
-
-    let mut events = futures::executor::block_on_stream(dora_events);
+    let client = create_service_client(&mut ros_node)?; // should be after the spiner started
+    let (mut node, mut dora_events) = DoraNode::init_from_env()?;
 
     for i in 0..20 {
-        let event = match events.next() {
+        let event = match dora_events.recv() {
             Some(input) => input,
             None => break,
         };
@@ -50,18 +48,16 @@ fn main() -> eyre::Result<()> {
                     let b = rand::random();
                     let request = AddTwoIntsRequest { a, b };
 
-                    client.send_request(request)?;
+                    println!("tick {i}, sending {request:?}");
+                    let req_id = client.send_request(request)?;
 
-                    events =
-                        futures::executor::block_on_stream(events.into_inner().merge_external(
-                            futures::stream::once(async {
-                                let response = client.async_receive_response().await?;
-                                println!("tick {i}, received {response:?}");
-                                Ok(())
-                            }),
-                        ));
-
-                    println!("tick {i}, sending {msg:?}");
+                    futures::executor::block_on(async {
+                        let response = client
+                            .async_receive_response(req_id)
+                            .await
+                            .expect("failed to receive response");
+                        println!("tick {i}, received {response:?}");
+                    });
                 }
                 other => eprintln!("Ignoring unexpected input `{other}`"),
             },
@@ -86,8 +82,8 @@ fn init_ros_node() -> eyre::Result<ros2_client::Node> {
 }
 
 fn create_service_client(
-    ros_client: &mut ros2_client::Node,
-) -> eyre::Result<ros2_client::ServiceClient<AddTwoInts>> {
+    ros_node: &mut ros2_client::Node,
+) -> eyre::Result<ros2_client::Client<AddTwoInts>> {
     // create an example service client
     let service_qos = {
         rustdds::QosPolicyBuilder::new()
@@ -126,5 +122,5 @@ fn create_service_client(
         eyre::bail!("add_two_ints service not available");
     };
     futures::executor::block_on(service_ready)?;
-    add_client
+    Ok(add_client)
 }
