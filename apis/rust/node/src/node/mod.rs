@@ -139,6 +139,7 @@ impl DoraNode {
         #[cfg(feature = "tracing")]
         {
             TracingBuilder::new(node_config.node_id.as_ref())
+                .with_stdout("info", true)
                 .build()
                 .wrap_err("failed to set up tracing subscriber")?;
         }
@@ -302,7 +303,7 @@ impl DoraNode {
         #[cfg(feature = "tracing")]
         {
             TracingBuilder::new("node")
-                .with_stdout("debug")
+                .with_stdout("debug", false)
                 .build()
                 .wrap_err("failed to set up tracing subscriber")?;
         }

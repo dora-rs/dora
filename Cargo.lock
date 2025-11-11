@@ -1515,6 +1515,7 @@ dependencies = [
  "aligned-vec",
  "async-trait",
  "bincode",
+ "chrono",
  "crossbeam",
  "crossbeam-skiplist",
  "ctrlc",
@@ -1586,6 +1587,7 @@ dependencies = [
  "arrow-data",
  "arrow-schema",
  "bincode",
+ "chrono",
  "eyre",
  "log",
  "once_cell",
@@ -1689,6 +1691,7 @@ dependencies = [
  "pythonize",
  "serde_yaml 0.9.34+deprecated",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

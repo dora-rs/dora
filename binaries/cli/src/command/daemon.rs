@@ -50,7 +50,7 @@ impl Executable for Daemon {
                 .unwrap_or(name.to_string());
             let mut builder = TracingBuilder::new(name);
             if !self.quiet {
-                builder = builder.with_stdout("info,zenoh=warn");
+                builder = builder.with_stdout("info,zenoh=warn", false);
             }
             builder = builder.with_file(filename, LevelFilter::INFO)?;
             builder
