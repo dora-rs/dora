@@ -13,7 +13,7 @@ use dora_node_api::merged::{MergeExternalSend, MergedEvent};
 use dora_node_api::{DataflowId, DoraNode, EventStream};
 use dora_operator_api_python::{DelayedCleanup, NodeCleanupHandle, PyEvent, pydict_to_metadata};
 use dora_ros2_bridge_python::Ros2Subscription;
-use eyre::Context;
+use eyre::{Context, ContextCompat};
 use futures::{Stream, StreamExt};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
@@ -106,11 +106,12 @@ impl Node {
         }
     }
 
-    #[pyo3(signature = (timeout=None))]
     #[allow(clippy::should_implement_trait)]
-    pub fn drain(&mut self, py: Python, timeout: Option<f32>) -> PyResult<Vec<Py<PyDict>>> {
-        let events = py
-            .allow_threads(|| self.events.drain(timeout.map(Duration::from_secs_f32)))
+    pub fn drain(&mut self, py: Python) -> PyResult<Vec<Py<PyDict>>> {
+        let events = self
+            .events
+            .drain()
+            .context("Could not drain events. Channel is closed")?
             .into_iter()
             .map(|event| {
                 event
@@ -342,18 +343,24 @@ impl Events {
         event.map(|event| PyEvent { event })
     }
 
-    fn drain(&mut self, timeout: Option<Duration>) -> Vec<PyEvent> {
-        let event = match &mut self.inner {
-            EventsInner::Dora(events) => match timeout {
-                Some(timeout) => events
-                    .drain_timeout(timeout)
-                    .into_iter()
-                    .map(MergedEvent::Dora),
-                None => events.drain().into_iter().map(MergedEvent::Dora),
+    fn drain(&mut self) -> Option<Vec<PyEvent>> {
+        match &mut self.inner {
+            EventsInner::Dora(events) => match events.drain() {
+                Some(items) => {
+                    return Some(
+                        items
+                            .into_iter()
+                            .map(MergedEvent::Dora)
+                            .map(|event| PyEvent { event })
+                            .collect(),
+                    );
+                }
+                None => return None,
             },
-            EventsInner::Merged(events) => todo!("Draining external event is not yet implemented!"),
+            EventsInner::Merged(_events) => {
+                todo!("Draining external event is not yet implemented!")
+            }
         };
-        event.map(|event| PyEvent { event }).collect()
     }
 }
 
