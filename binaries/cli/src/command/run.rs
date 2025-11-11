@@ -40,7 +40,7 @@ pub fn run(dataflow: String, uv: bool) -> eyre::Result<()> {
     {
         let log_level = std::env::var("RUST_LOG").ok().unwrap_or("info".to_string());
         TracingBuilder::new("run")
-            .with_stdout(log_level)
+            .with_stdout(log_level, false)
             .build()
             .wrap_err("failed to set up tracing subscriber")?;
     }

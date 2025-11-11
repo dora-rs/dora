@@ -382,6 +382,12 @@ async fn start_inner(
                                         file: None,
                                         line: None,
                                         message: "dataflow finished".into(),
+                                        timestamp: clock
+                                            .new_timestamp()
+                                            .get_time()
+                                            .to_system_time()
+                                            .into(),
+                                        fields: None,
                                     },
                                 )
                                 .await;
