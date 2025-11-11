@@ -19,6 +19,72 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
 use pyo3_special_method_derive::{Dict, Dir, Repr, Str};
 
+/// Consume a Python `logging.LogRecord` and emit a Rust `tracing::Event` instead.
+#[pyfunction]
+fn host_log<'py>(record: Bound<'py, PyAny>, node_id: String, dataflow_id: String) -> PyResult<()> {
+    let level = record.getattr("levelno")?;
+    let message = record.getattr("getMessage")?.call0()?.to_string();
+    let pathname = record.getattr("pathname")?.to_string();
+    let lineno = record.getattr("lineno")?.to_string();
+    let target = record.getattr("name")?.to_string();
+    if level.ge(40u8)? {
+        tracing::event!(tracing::Level::ERROR, file=pathname, line=lineno, %target, %message, %node_id, %dataflow_id);
+    } else if level.ge(30u8)? {
+        tracing::event!(tracing::Level::WARN, file=pathname, line=lineno, %target, %message, %node_id, %dataflow_id);
+    } else if level.ge(20u8)? {
+        tracing::event!(tracing::Level::INFO, file=pathname, line=lineno, %target, %message, %node_id, %dataflow_id);
+    } else if level.ge(10u8)? {
+        tracing::event!(tracing::Level::DEBUG, file=pathname, line=lineno, %target, %message, %node_id, %dataflow_id);
+    } else {
+        tracing::event!(tracing::Level::TRACE, file=pathname, line=lineno, %target, %message, %node_id, %dataflow_id);
+    }
+
+    Ok(())
+}
+
+/// Modifies the Python `logging` module to deliver its log messages to the host `tracing::Subscriber` by default.
+/// To achieve this goal, the following changes are made to the module:
+/// - A new builtin function `logging.host_log` transcodes `logging.LogRecord`s to `tracing::Event`s. This function
+///   is not exported in `logging.__all__`, as it is not intended to be called directly.
+/// - A new class `logging.HostHandler` provides a `logging.Handler` that delivers all records to `host_log`.
+/// - `logging.basicConfig` is changed to use `logging.HostHandler` by default.
+/// Since any call like `logging.warn(...)` sets up logging via `logging.basicConfig`, all log messages are now
+/// delivered to `crate::host_log`, which will send them to `tracing::event!`.
+pub fn setup_logging(py: Python, node_id: NodeId, dataflow_id: DataflowId) -> PyResult<()> {
+    let logging = py.import("logging")?;
+    logging.setattr("host_log", wrap_pyfunction!(host_log, &logging)?)?;
+    logging.setattr("node_id", node_id.to_string())?;
+    logging.setattr("dataflow_id", dataflow_id.to_string())?;
+    py.run(
+        cr#"
+class HostHandler(Handler):
+	def __init__(self, level=0):
+		super().__init__(level=level)
+	
+	def emit(self, record):
+		host_log(record, node_id, dataflow_id)
+
+oldBasicConfig = basicConfig
+
+def basicConfig(*pargs, **kwargs):
+	if "handlers" not in kwargs:
+		kwargs["handlers"] = [HostHandler()]
+	else:
+		kwargs["handlers"].append(HostHandler())
+	if "level" not in kwargs:
+		kwargs["level"] = 0
+
+	return oldBasicConfig(*pargs, **kwargs)
+"#,
+        Some(&logging.dict()),
+        None,
+    )?;
+
+    let all = logging.index()?;
+    all.append("HostHandler")?;
+
+    Ok(())
+}
 /// The custom node API lets you integrate `dora` into your application.
 /// It allows you to retrieve input and send output in any fashion you want.
 ///
@@ -60,6 +126,12 @@ impl Node {
         let cleanup_handle = NodeCleanupHandle {
             _handles: Arc::new(node.handle()),
         };
+
+        Python::with_gil(|py| {
+            // Extend the `logging` module to interact with tracing
+            setup_logging(py, node_id.clone(), dataflow_id)
+        })?;
+
         Ok(Node {
             events: Events {
                 inner: EventsInner::Dora(events),

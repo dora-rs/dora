@@ -18,6 +18,8 @@ pub fn print_log_message(
         file: _,
         line: _,
         message,
+        timestamp,
+        fields,
     } = log_message;
     let level = match level {
         LogLevelOrStdout::LogLevel(level) => match level {
@@ -57,6 +59,5 @@ pub fn print_log_message(
         Some(target) => format!("{target} ").dimmed(),
         None => "".normal(),
     };
-
-    println!("{node}{level} {target}{dataflow}   {message}");
+    println!("{level} {dataflow} {node}{target} {message}");
 }
