@@ -21,7 +21,7 @@ pub mod telemetry;
 /// Should **ONLY** be used in `DoraNode` implementations.
 pub fn set_up_tracing(name: &str) -> eyre::Result<()> {
     TracingBuilder::new(name)
-        .with_stdout("warn")
+        .with_stdout("warn", false)
         .build()
         .wrap_err(format!(
             "failed to set tracing global subscriber for {name}"
@@ -48,14 +48,20 @@ impl TracingBuilder {
     /// **DO NOT** use this in `DoraNode` implementations,
     /// it uses [std::io::stdout] which is synchronous
     /// and might block the logging thread.
-    pub fn with_stdout(mut self, filter: impl AsRef<str>) -> Self {
+    pub fn with_stdout(mut self, filter: impl AsRef<str>, json: bool) -> Self {
         let parsed = EnvFilter::builder().parse_lossy(filter);
         let env_filter = EnvFilter::from_default_env().or(parsed);
         let layer = tracing_subscriber::fmt::layer()
             .compact()
-            .with_writer(std::io::stdout)
-            .with_filter(env_filter);
-        self.layers.push(layer.boxed());
+            .with_writer(std::io::stdout);
+
+        if json {
+            let layer = layer.json().with_filter(env_filter);
+            self.layers.push(layer.boxed());
+        } else {
+            let layer = layer.with_filter(env_filter);
+            self.layers.push(layer.boxed());
+        };
         self
     }
 
@@ -76,6 +82,7 @@ impl TracingBuilder {
             .context("failed to create log file")?;
         let layer = tracing_subscriber::fmt::layer()
             .with_ansi(false)
+            .json()
             .with_writer(file)
             .with_filter(filter);
         self.layers.push(layer.boxed());

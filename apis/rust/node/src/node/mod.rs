@@ -161,6 +161,13 @@ impl DoraNode {
                 bail!("DORA_NODE_CONFIG env variable is not valid unicode")
             }
             Err(std::env::VarError::NotPresent) => {} // continue trying other init methods
+        };
+        #[cfg(feature = "tracing")]
+        {
+            TracingBuilder::new(node_config.node_id.as_ref())
+                .with_stdout("info", true)
+                .build()
+                .wrap_err("failed to set up tracing subscriber")?;
         }
 
         // node integration test mode
@@ -363,7 +370,7 @@ impl DoraNode {
         #[cfg(feature = "tracing")]
         {
             TracingBuilder::new("node")
-                .with_stdout("debug")
+                .with_stdout("debug", false)
                 .build()
                 .wrap_err("failed to set up tracing subscriber")?;
         }
