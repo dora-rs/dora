@@ -26,7 +26,7 @@ pub fn attach_dataflow(
     coordinator_socket: SocketAddr,
     log_level: log::LevelFilter,
 ) -> Result<(), eyre::ErrReport> {
-    let (tx, rx) = mpsc::sync_channel(2);
+    let (tx, rx) = mpsc::channel();
 
     // Generate path hashmap
     let mut node_path_lookup = HashMap::new();
@@ -110,12 +110,20 @@ pub fn attach_dataflow(
     let mut ctrlc_sent = false;
     ctrlc::set_handler(move || {
         if ctrlc_sent {
+            ctrlc_tx
+                .send(AttachEvent::Control(ControlRequest::Stop {
+                    dataflow_uuid: dataflow_id,
+                    grace_duration: None,
+                    force: true,
+                }))
+                .ok();
             std::process::abort();
         } else {
             if ctrlc_tx
                 .send(AttachEvent::Control(ControlRequest::Stop {
                     dataflow_uuid: dataflow_id,
                     grace_duration: None,
+                    force: false,
                 }))
                 .is_err()
             {
