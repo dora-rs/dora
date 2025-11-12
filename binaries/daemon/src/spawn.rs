@@ -382,7 +382,7 @@ impl PreparedNode {
                         .wrap(process_wrap::tokio::CreationFlags(
                             windows::Win32::System::Threading::CREATE_NEW_PROCESS_GROUP,
                         ))
-                        .wrap(JobObject);
+                        .wrap(process_wrap::tokio::JobObject);
                 }
 
                 command.spawn().wrap_err(self.spawn_error_msg)?

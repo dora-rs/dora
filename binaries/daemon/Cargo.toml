@@ -54,7 +54,7 @@ process-wrap = { version = "8.2.1", features = ["tokio1"] }
 shellexpand = "3.1.1"
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.60.0", features = [
+windows = { version = "0.61.3", features = [
     "Win32_System_Console",
     "Win32_System_Threading",
 ] }

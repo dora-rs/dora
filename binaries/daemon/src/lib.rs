@@ -2394,6 +2394,10 @@ impl ProcessOperation {
 
                 #[cfg(windows)]
                 unsafe {
+                    let Some(pid) = child.id() else {
+                        warn!("failed to get child process id");
+                        return;
+                    };
                     if let Err(err) = windows::Win32::System::Console::GenerateConsoleCtrlEvent(
                         windows::Win32::System::Console::CTRL_BREAK_EVENT,
                         pid,
