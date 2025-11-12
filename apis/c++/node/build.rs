@@ -190,7 +190,6 @@ mod ros2 {
         let target_path = target_path.join("ros2-bridge");
 
         copy_dir_all(&header_path, &target_path).unwrap();
-        println!("cargo:rerun-if-changed={}", header_path.display());
     }
 
     // copy from cxx-build source
