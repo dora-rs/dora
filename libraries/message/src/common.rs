@@ -1,15 +1,17 @@
 use core::fmt;
-use std::borrow::Cow;
+use std::{borrow::Cow, collections::BTreeMap};
 
 use aligned_vec::{AVec, ConstAlign};
+use chrono::{DateTime, Utc};
 use eyre::Context as _;
+use serde::{Deserialize, Deserializer};
 use uuid::Uuid;
 
 use crate::{BuildId, DataflowId, daemon_to_daemon::InterDaemonEvent, id::NodeId};
 
 pub use log::Level as LogLevel;
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 #[must_use]
 pub struct LogMessage {
     pub build_id: Option<BuildId>,
@@ -22,9 +24,91 @@ pub struct LogMessage {
     pub file: Option<String>,
     pub line: Option<u32>,
     pub message: String,
+    pub timestamp: DateTime<Utc>,
+    pub fields: Option<BTreeMap<String, String>>,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+impl<'de> Deserialize<'de> for LogMessage {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct LogMessageHelper {
+            level: LogLevelOrStdout,
+            timestamp: DateTime<Utc>,
+            target: Option<String>,
+            _name: Option<String>,
+            fields: Option<BTreeMap<String, String>>,
+        }
+
+        let helper = LogMessageHelper::deserialize(deserializer)?;
+        let fields = helper.fields.as_ref();
+        Ok(LogMessage {
+            build_id: fields
+                .and_then(|f| f.get("build_id").cloned())
+                .map(|id| BuildId(Uuid::parse_str(&id).unwrap())),
+            dataflow_id: fields
+                .and_then(|f| f.get("dataflow_id").cloned())
+                .map(|id| DataflowId::from(Uuid::parse_str(&id).unwrap())),
+            node_id: fields
+                .and_then(|f| f.get("node_id").cloned())
+                .map(|id| NodeId(id)),
+            daemon_id: fields.and_then(|f| f.get("daemon_id").cloned()).map(|id| {
+                let parts: Vec<&str> = id.splitn(2, '-').collect();
+                if parts.len() == 2 {
+                    DaemonId {
+                        machine_id: Some(parts[0].to_string()),
+                        uuid: Uuid::parse_str(parts[1]).unwrap(),
+                    }
+                } else {
+                    DaemonId {
+                        machine_id: None,
+                        uuid: Uuid::parse_str(&parts[0]).unwrap(),
+                    }
+                }
+            }),
+            level: helper.level,
+            target: fields
+                .and_then(|f| f.get("target").cloned())
+                .or(helper.target),
+            module_path: fields.and_then(|f| f.get("module_path").cloned()),
+            file: fields.and_then(|f| f.get("file").cloned()),
+            line: fields
+                .and_then(|f| f.get("line").cloned())
+                .and_then(|s| s.parse().ok()),
+            message: fields
+                .and_then(|f| f.get("message").cloned())
+                .unwrap_or_default(),
+            fields: helper.fields,
+            timestamp: helper.timestamp,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for LogLevelOrStdout {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+
+        match s.to_lowercase().as_str() {
+            "stdout" => Ok(LogLevelOrStdout::Stdout),
+            "trace" => Ok(LogLevelOrStdout::LogLevel(LogLevel::Trace)),
+            "debug" => Ok(LogLevelOrStdout::LogLevel(LogLevel::Debug)),
+            "info" => Ok(LogLevelOrStdout::LogLevel(LogLevel::Info)),
+            "warn" | "warning" => Ok(LogLevelOrStdout::LogLevel(LogLevel::Warn)),
+            "error" => Ok(LogLevelOrStdout::LogLevel(LogLevel::Error)),
+            _ => Err(serde::de::Error::custom(format!(
+                "invalid log level or stdout: '{}'. Expected one of: trace, debug, info, warn, error, stdout",
+                s
+            ))),
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LogLevelOrStdout {
     LogLevel(LogLevel),
     Stdout,

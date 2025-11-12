@@ -38,7 +38,7 @@ pub fn main() -> eyre::Result<()> {
     #[cfg(feature = "tracing")]
     {
         TracingBuilder::new(node_id.as_ref())
-            .with_stdout("warn")
+            .with_stdout("warn", false)
             .build()
             .wrap_err("failed to set up tracing subscriber")?;
     }

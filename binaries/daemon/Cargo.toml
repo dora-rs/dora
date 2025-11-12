@@ -50,5 +50,5 @@ url = "2.5.4"
 git2 = { workspace = true }
 dunce = "1.0.5"
 itertools = "0.14"
-
+chrono = { version = "0.4", features = ["serde"] }
 shellexpand = "3.1.1"
