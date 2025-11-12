@@ -520,6 +520,7 @@ impl Daemon {
                                 &mut self.coordinator_connection,
                                 &self.clock,
                                 None,
+                                false,
                                 &mut logger,
                             )
                             .await?;
@@ -881,6 +882,7 @@ impl Daemon {
             DaemonCoordinatorEvent::StopDataflow {
                 dataflow_id,
                 grace_duration,
+                force,
             } => {
                 let mut logger = self.logger.for_dataflow(dataflow_id);
                 let dataflow = self
@@ -893,6 +895,7 @@ impl Daemon {
                             &mut self.coordinator_connection,
                             &self.clock,
                             grace_duration,
+                            force,
                             &mut logger,
                         );
                         (Ok(()), Some(future))
@@ -2576,6 +2579,7 @@ impl RunningDataflow {
         coordinator_connection: &mut Option<TcpStream>,
         clock: &HLC,
         grace_duration: Option<Duration>,
+        force: bool,
         logger: &mut DataflowLogger<'_>,
     ) -> eyre::Result<()> {
         self.pending_nodes
@@ -2597,34 +2601,42 @@ impl RunningDataflow {
             .iter_mut()
             .map(|(id, n)| (id.clone(), n.process.take()))
             .collect();
-        let grace_duration_kills = self.grace_duration_kills.clone();
-        tokio::spawn(async move {
-            let duration = grace_duration.unwrap_or(Duration::from_millis(10000));
-            tokio::time::sleep(duration).await;
-
-            for (node, proc) in &running_processes {
+        if force {
+            for (_, proc) in &running_processes {
                 if let Some(proc) = proc {
-                    if proc.submit(crate::ProcessOperation::SoftKill) {
-                        grace_duration_kills.insert(node.clone());
-                    }
+                    proc.submit(crate::ProcessOperation::Kill);
                 }
             }
+        } else {
+            let grace_duration_kills = self.grace_duration_kills.clone();
+            tokio::spawn(async move {
+                let duration = grace_duration.unwrap_or(Duration::from_millis(10000));
+                tokio::time::sleep(duration).await;
 
-            let kill_duration = duration / 2;
-            tokio::time::sleep(kill_duration).await;
-
-            for (node, proc) in &running_processes {
-                if let Some(proc) = proc {
-                    if proc.submit(crate::ProcessOperation::Kill) {
-                        grace_duration_kills.insert(node.clone());
-                        warn!(
-                            "{node} was killed due to not stopping within the {:#?} grace period",
-                            duration + kill_duration
-                        );
+                for (node, proc) in &running_processes {
+                    if let Some(proc) = proc {
+                        if proc.submit(crate::ProcessOperation::SoftKill) {
+                            grace_duration_kills.insert(node.clone());
+                        }
                     }
                 }
-            }
-        });
+
+                let kill_duration = duration / 2;
+                tokio::time::sleep(kill_duration).await;
+
+                for (node, proc) in &running_processes {
+                    if let Some(proc) = proc {
+                        if proc.submit(crate::ProcessOperation::Kill) {
+                            grace_duration_kills.insert(node.clone());
+                            warn!(
+                                "{node} was killed due to not stopping within the {:#?} grace period",
+                                duration + kill_duration
+                            );
+                        }
+                    }
+                }
+            });
+        }
         self.stop_sent = true;
         Ok(())
     }
