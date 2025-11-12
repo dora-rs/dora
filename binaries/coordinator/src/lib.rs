@@ -662,6 +662,19 @@ async fn start_inner(
                                 }
                             }
                         }
+                        ControlRequest::Info { dataflow_uuid } => {
+                            if let Some(dataflow) = running_dataflows.get(&dataflow_uuid) {
+                                let _ = reply_sender.send(Ok(ControlRequestReply::DataflowInfo {
+                                    uuid: dataflow.uuid,
+                                    name: dataflow.name.clone(),
+                                    descriptor: dataflow.descriptor.clone(),
+                                }));
+                            } else {
+                                let _ = reply_sender.send(Err(eyre!(
+                                    "No running dataflow with uuid `{dataflow_uuid}`"
+                                )));
+                            }
+                        }
                         ControlRequest::Destroy => {
                             tracing::info!("Received destroy command");
 
@@ -1024,6 +1037,7 @@ struct RunningBuild {
 struct RunningDataflow {
     name: Option<String>,
     uuid: Uuid,
+    descriptor: Descriptor,
     /// The IDs of the daemons that the dataflow is running on.
     daemons: BTreeSet<DaemonId>,
     /// IDs of daemons that are waiting until all nodes are started.
@@ -1419,7 +1433,7 @@ async fn start_dataflow(
     } = spawn_dataflow(
         build_id,
         session_id,
-        dataflow,
+        dataflow.clone(),
         local_working_dir,
         daemon_connections,
         clock,
@@ -1429,6 +1443,7 @@ async fn start_dataflow(
     Ok(RunningDataflow {
         uuid,
         name,
+        descriptor: dataflow,
         pending_daemons: if daemons.len() > 1 {
             daemons.clone()
         } else {

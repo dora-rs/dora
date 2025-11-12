@@ -70,6 +70,9 @@ pub enum ControlRequest {
     },
     Destroy,
     List,
+    Info {
+        dataflow_uuid: Uuid,
+    },
     DaemonConnected,
     ConnectedMachines,
     LogSubscribe {
