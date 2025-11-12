@@ -20,6 +20,9 @@ fn main() {
     } else {
         target_dir.join("install")
     };
+    println!("cargo:rerun-if-env-changed=DORA_NODE_API_CXX_INSTALL");
+
+    // recreate target dir
     if target_dir.exists() {
         std::fs::remove_dir_all(&target_dir).unwrap();
     }
