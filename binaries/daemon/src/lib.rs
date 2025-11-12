@@ -35,6 +35,7 @@ use futures_concurrency::stream::Merge;
 use local_listener::DynamicNodeEventWrapper;
 use log::{DaemonLogger, DataflowLogger, Logger};
 use pending::PendingNodes;
+use process_wrap::tokio::TokioChildWrapper;
 use shared_memory_server::ShmemConf;
 use socket_stream_utils::socket_stream_send;
 use spawn::Spawner;
@@ -48,7 +49,6 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use sysinfo::Pid;
 use tokio::{
     fs::File,
     io::AsyncReadExt,
@@ -1937,9 +1937,7 @@ impl Daemon {
         let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
             format!("failed to get downstream nodes: no running dataflow with ID `{dataflow_id}`")
         })?;
-        if let Some(mut pid) = dataflow.running_nodes.remove(node_id).and_then(|n| n.pid) {
-            pid.mark_as_stopped()
-        }
+        dataflow.running_nodes.remove(node_id);
         if !dataflow.pending_nodes.local_nodes_pending()
             && dataflow
                 .running_nodes
@@ -2369,46 +2367,73 @@ fn close_input(
 
 #[derive(Debug)]
 pub struct RunningNode {
-    pid: Option<ProcessId>,
+    process: Option<ProcessHandle>,
     node_config: NodeConfig,
 }
 
 #[derive(Debug)]
-struct ProcessId(Option<u32>);
+enum ProcessOperation {
+    SoftKill,
+    Kill,
+}
 
-impl ProcessId {
-    pub fn new(process_id: u32) -> Self {
-        Self(Some(process_id))
-    }
+impl ProcessOperation {
+    pub fn execute(&self, child: &mut dyn TokioChildWrapper) {
+        match self {
+            Self::SoftKill => {
+                #[cfg(unix)]
+                {
+                    // Send SIGTERM
+                    if let Err(err) = child.signal(15) {
+                        warn!("failed to send SIGTERM to process {:?}: {err}", child.id());
+                    }
+                }
 
-    pub fn mark_as_stopped(&mut self) {
-        self.0 = None;
-    }
+                #[cfg(windows)]
+                unsafe {
+                    if let Err(err) = windows::Win32::System::Console::GenerateConsoleCtrlEvent(
+                        windows::Win32::System::Console::CTRL_BREAK_EVENT,
+                        pid,
+                    ) {
+                        warn!("failed to send CTRL_BREAK_EVENT to process {pid}: {err}");
+                    }
+                }
 
-    pub fn kill(&mut self) -> bool {
-        if let Some(pid) = self.0 {
-            let pid = Pid::from(pid as usize);
-            let mut system = sysinfo::System::new();
-            system.refresh_process(pid);
-
-            if let Some(process) = system.process(pid) {
-                process.kill();
-                self.mark_as_stopped();
-                return true;
+                #[cfg(not(any(unix, windows)))]
+                {
+                    warn!("killing process is not implemented on this platform");
+                }
+            }
+            Self::Kill => {
+                if let Err(err) = child.start_kill() {
+                    warn!("failed to kill child process: {err}");
+                }
             }
         }
-
-        false
     }
 }
 
-impl Drop for ProcessId {
+#[derive(Debug)]
+struct ProcessHandle {
+    op_tx: flume::Sender<ProcessOperation>,
+}
+
+impl ProcessHandle {
+    pub fn new(op_tx: flume::Sender<ProcessOperation>) -> Self {
+        Self { op_tx }
+    }
+
+    /// Returns true if the process is not finished yet and the operation is
+    /// delivered.
+    pub fn submit(&self, operation: ProcessOperation) -> bool {
+        self.op_tx.send(operation).is_ok()
+    }
+}
+
+impl Drop for ProcessHandle {
     fn drop(&mut self) {
-        // kill the process if it's still running
-        if let Some(pid) = self.0 {
-            if self.kill() {
-                warn!("process {pid} was killed on drop because it was still running")
-            }
+        if self.submit(ProcessOperation::Kill) {
+            warn!("process was killed on drop because it was still running");
         }
     }
 }
@@ -2570,21 +2595,32 @@ impl RunningDataflow {
         let running_processes: Vec<_> = self
             .running_nodes
             .iter_mut()
-            .map(|(id, n)| (id.clone(), n.pid.take()))
+            .map(|(id, n)| (id.clone(), n.process.take()))
             .collect();
         let grace_duration_kills = self.grace_duration_kills.clone();
         tokio::spawn(async move {
-            let duration = grace_duration.unwrap_or(Duration::from_millis(15000));
+            let duration = grace_duration.unwrap_or(Duration::from_millis(10000));
             tokio::time::sleep(duration).await;
 
-            for (node, pid) in running_processes {
-                if let Some(mut pid) = pid {
-                    if pid.kill() {
+            for (node, proc) in &running_processes {
+                if let Some(proc) = proc {
+                    if proc.submit(crate::ProcessOperation::SoftKill) {
+                        grace_duration_kills.insert(node.clone());
+                    }
+                }
+            }
+
+            let kill_duration = duration / 2;
+            tokio::time::sleep(kill_duration).await;
+
+            for (node, proc) in &running_processes {
+                if let Some(proc) = proc {
+                    if proc.submit(crate::ProcessOperation::Kill) {
                         grace_duration_kills.insert(node.clone());
                         warn!(
                             "{node} was killed due to not stopping within the {:#?} grace period",
-                            duration
-                        )
+                            duration + kill_duration
+                        );
                     }
                 }
             }
