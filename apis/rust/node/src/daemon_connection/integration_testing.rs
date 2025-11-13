@@ -2,10 +2,12 @@ use std::{
     fs::File,
     io::Write as _,
     path::PathBuf,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
 use arrow::array::{Array, RecordBatch, StructArray};
+use arrow_schema::{DataType, Field, Schema};
 use colored::Colorize;
 use dora_core::{
     metadata::ArrowTypeInfoExt,
@@ -14,7 +16,7 @@ use dora_core::{
 use dora_message::{
     common::{DataMessage, Timestamped},
     daemon_to_node::{DaemonReply, NodeEvent},
-    integration_testing::{InputData, InputEvent, IntegrationTestInput, TimedInputEvent},
+    integration_testing_format::{InputData, InputEvent, IntegrationTestInput, TimedInputEvent},
     metadata::{ArrowTypeInfo, Metadata},
     node_to_daemon::DaemonRequest,
 };
@@ -186,54 +188,10 @@ impl IntegrationTestingEvents {
         let converted = match event {
             InputEvent::Stop => NodeEvent::Stop,
             InputEvent::Input { id, metadata, data } => {
-                let (data, type_info) = if let Some(data) = data {
-                    let array = match data {
-                        InputData::JsonObject { value, schema } => {
-                            // input is JSON data
-                            let array = json_value_to_list(value);
-                            let schema = match schema {
-                                Some(schema) => schema,
-                                None => arrow_json::reader::infer_json_schema_from_iterator(
-                                    array.iter().map(Ok),
-                                )?,
-                            };
-                            read_json_value_as_arrow(&array, schema)
-                                .context("failed to read data")?
-                        }
-                        InputData::ArrowFile {
-                            path,
-                            batch_index,
-                            column,
-                        } => {
-                            let file = std::fs::File::open(&path).with_context(|| {
-                                format!("failed to open arrow file {}", path.display())
-                            })?;
-                            let mut reader = arrow::ipc::reader::FileReader::try_new(file, None)
-                                .context("failed to create arrow file reader")?;
-                            reader.set_index(batch_index).with_context(|| {
-                                format!(
-                                    "failed to seek to batch index {} in arrow file {}",
-                                    batch_index,
-                                    path.display()
-                                )
-                            })?;
-                            let batch = reader
-                                .next()
-                                .context("no batch at given index")?
-                                .context("failed to read batch from arrow file")?;
-                            match column {
-                                Some(name) => batch.column_by_name(&name).with_context(|| {
-                                    format!(
-                                        "failed to find column '{}' in batch at index {} of arrow file {}",
-                                        name,
-                                        batch_index,
-                                        path.display()
-                                    )
-                                })?.to_data(),
-                                None => StructArray::from(batch).to_data()
-                            }
-                        }
-                    };
+                let (data, type_info) = if let Some(data) = *data {
+                    let array = read_input_data(data).with_context(|| {
+                        format!("failed to read input event at offset {time_offset_secs}s ")
+                    })?;
 
                     let total_len = required_data_size(&array);
                     let mut buf = vec![0; total_len];
@@ -261,11 +219,70 @@ impl IntegrationTestingEvents {
     }
 }
 
+fn read_input_data(data: InputData) -> eyre::Result<arrow::array::ArrayData> {
+    Ok(match data {
+        InputData::JsonObject { data, data_type } => {
+            // input is JSON data
+            let array = json_value_to_list(data);
+            let schema = match data_type {
+                Some(ty) => data_type_to_schema(ty)?,
+                None => arrow_json::reader::infer_json_schema_from_iterator(array.iter().map(Ok))?,
+            };
+            let schema = Arc::new(schema);
+            read_json_value_as_arrow(&array, schema.clone()).with_context(|| {
+                format!(
+                    "failed to decode JSON value for data type {}",
+                    schema
+                        .fields()
+                        .first()
+                        .map(|f| f.data_type())
+                        .unwrap_or(&DataType::Null)
+                )
+            })?
+        }
+        InputData::ArrowFile {
+            path,
+            batch_index,
+            column,
+        } => {
+            let file = std::fs::File::open(&path)
+                .with_context(|| format!("failed to open arrow file {}", path.display()))?;
+            let mut reader = arrow::ipc::reader::FileReader::try_new(file, None)
+                .context("failed to create arrow file reader")?;
+            reader.set_index(batch_index).with_context(|| {
+                format!(
+                    "failed to seek to batch index {} in arrow file {}",
+                    batch_index,
+                    path.display()
+                )
+            })?;
+            let batch = reader
+                .next()
+                .context("no batch at given index")?
+                .context("failed to read batch from arrow file")?;
+            match column {
+                Some(name) => batch
+                    .column_by_name(&name)
+                    .with_context(|| {
+                        format!(
+                            "failed to find column '{}' in batch at index {} of arrow file {}",
+                            name,
+                            batch_index,
+                            path.display()
+                        )
+                    })?
+                    .to_data(),
+                None => StructArray::from(batch).to_data(),
+            }
+        }
+    })
+}
+
 fn json_value_to_list(value: serde_json::Value) -> Vec<serde_json::Value> {
     match value {
-        value @ serde_json::Value::Object(_) => {
-            vec![value]
-        }
+        // value @ serde_json::Value::Object(_) => {
+        //     vec![value]
+        // }
         serde_json::Value::Array(inner) => inner.into_iter().map(wrap_value_into_object).collect(),
         _ => {
             // wrap into object to allow bare values
@@ -273,6 +290,12 @@ fn json_value_to_list(value: serde_json::Value) -> Vec<serde_json::Value> {
             vec![object]
         }
     }
+}
+
+fn data_type_to_schema(ty: serde_json::Value) -> eyre::Result<Schema> {
+    let ty = serde_json::from_value::<DataType>(ty)
+        .context("failed to deserialize `type` field of input data")?;
+    Ok(Schema::new([Arc::new(Field::new("inner", ty, true))]))
 }
 
 fn wrap_value_into_object(value: serde_json::Value) -> serde_json::Value {

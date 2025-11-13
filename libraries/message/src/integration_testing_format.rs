@@ -183,7 +183,8 @@ pub enum InputEvent {
     Input {
         id: DataId,
         metadata: Option<MetadataParameters>,
-        data: Option<InputData>,
+        #[serde(flatten)]
+        data: Box<Option<InputData>>,
     },
     InputClosed {
         id: DataId,
@@ -196,10 +197,10 @@ pub enum InputEvent {
 pub enum InputData {
     /// Converts the given JSON object to the closest Arrow representation.
     ///
-    /// No schema is required, but not all arrow types are representable.
+    /// An optional data type can be provided to guide the conversion.
     JsonObject {
-        value: serde_json::Value,
-        schema: Option<arrow_schema::Schema>,
+        data: serde_json::Value,
+        data_type: Option<serde_json::Value>,
     },
     /// Use [Arrow file format](https://arrow.apache.org/docs/python/ipc.html#writing-and-reading-random-access-files)
     ArrowFile {
