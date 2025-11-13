@@ -41,10 +41,7 @@ pub enum ControlRequestReply {
     DestroyOk,
     DaemonConnected(bool),
     ConnectedDaemons(BTreeSet<DaemonId>),
-    Logs {
-        uuid: Uuid,
-        data: Vec<u8>,
-    },
+    Logs(Vec<u8>),
     CliAndDefaultDaemonIps {
         default_daemon: Option<IpAddr>,
         cli: Option<IpAddr>,

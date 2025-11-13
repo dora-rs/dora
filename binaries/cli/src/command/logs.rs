@@ -69,7 +69,7 @@ pub fn logs(
     follow: bool,
     coordinator_addr: SocketAddr,
 ) -> Result<()> {
-    let (uuid, logs) = {
+    let logs = {
         let reply_raw = session
             .request(
                 &serde_json::to_vec(&ControlRequest::Logs {
@@ -84,7 +84,7 @@ pub fn logs(
 
         let reply = serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
         match reply {
-            ControlRequestReply::Logs { uuid, data } => (uuid, data),
+            ControlRequestReply::Logs(data) => data,
             other => bail!("unexpected reply to daemon logs: {other:?}"),
         }
     };
