@@ -26,7 +26,12 @@ pub struct Stop {
     /// 1. Sends `Event::Stop` to all nodes of the dataflow.
     /// 2. After DURATION, performs a soft kill (sending SIGTERM, or Ctrl-Break on Windows).
     /// 3. If the dataflow is still running after DURATION * 0.5, terminates all its processes.
-    #[clap(long, value_name = "DURATION", group = "strategy", verbatim_doc_comment)]
+    #[clap(
+        long,
+        value_name = "DURATION",
+        group = "strategy",
+        verbatim_doc_comment
+    )]
     #[arg(value_parser = parse)]
     grace_duration: Option<Duration>,
     /// Force stop the dataflow by immediately terminating all its processes
