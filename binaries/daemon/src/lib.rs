@@ -8,7 +8,10 @@ use dora_core::{
         CoreNodeKind, DYNAMIC_SOURCE, Descriptor, DescriptorExt, ResolvedNode, RuntimeNode,
         read_as_descriptor,
     },
-    topics::{DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, LOCALHOST},
+    topics::{
+        DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, LOCALHOST, open_zenoh_session,
+        zenoh_output_publish_topic,
+    },
     uhlc::{self, HLC},
 };
 use dora_message::{
@@ -322,103 +325,9 @@ impl Daemon {
             None => None,
         };
 
-        let zenoh_session = match std::env::var(zenoh::Config::DEFAULT_CONFIG_PATH_ENV) {
-            Ok(path) => {
-                let zenoh_config = zenoh::Config::from_file(&path)
-                    .map_err(|e| eyre!(e))
-                    .wrap_err_with(|| format!("failed to read zenoh config from {path}"))?;
-                zenoh::open(zenoh_config)
-                    .await
-                    .map_err(|e| eyre!(e))
-                    .context("failed to open zenoh session")?
-            }
-            Err(std::env::VarError::NotPresent) => {
-                let mut zenoh_config = zenoh::Config::default();
-
-                if let Some(addr) = coordinator_addr {
-                    // Linkstate make it possible to connect two daemons on different network through a public daemon
-                    // TODO: There is currently a CI/CD Error in windows linkstate.
-                    if cfg!(not(target_os = "windows")) {
-                        zenoh_config
-                            .insert_json5("routing/peer", r#"{ mode: "linkstate" }"#)
-                            .unwrap();
-                    }
-
-                    zenoh_config
-                        .insert_json5(
-                            "connect/endpoints",
-                            &format!(
-                                r#"{{ router: ["tcp/[::]:7447"], peer: ["tcp/{}:5456"] }}"#,
-                                addr.ip()
-                            ),
-                        )
-                        .unwrap();
-                    zenoh_config
-                        .insert_json5(
-                            "listen/endpoints",
-                            r#"{ router: ["tcp/[::]:7447"], peer: ["tcp/[::]:5456"] }"#,
-                        )
-                        .unwrap();
-                    if cfg!(target_os = "macos") {
-                        warn!(
-                            "disabling multicast on macos systems. Enable it with the ZENOH_CONFIG env variable or file"
-                        );
-                        zenoh_config
-                            .insert_json5("scouting/multicast", r#"{ enabled: false }"#)
-                            .unwrap();
-                    }
-                };
-                if let Ok(zenoh_session) = zenoh::open(zenoh_config).await {
-                    zenoh_session
-                } else {
-                    warn!(
-                        "failed to open zenoh session, retrying with default config + coordinator"
-                    );
-                    let mut zenoh_config = zenoh::Config::default();
-                    // Linkstate make it possible to connect two daemons on different network through a public daemon
-                    // TODO: There is currently a CI/CD Error in windows linkstate.
-                    if cfg!(not(target_os = "windows")) {
-                        zenoh_config
-                            .insert_json5("routing/peer", r#"{ mode: "linkstate" }"#)
-                            .unwrap();
-                    }
-
-                    if let Some(addr) = coordinator_addr {
-                        zenoh_config
-                            .insert_json5(
-                                "connect/endpoints",
-                                &format!(
-                                    r#"{{ router: ["tcp/[::]:7447"], peer: ["tcp/{}:5456"] }}"#,
-                                    addr.ip()
-                                ),
-                            )
-                            .unwrap();
-                        if cfg!(target_os = "macos") {
-                            warn!(
-                                "disabling multicast on macos systems. Enable it with the ZENOH_CONFIG env variable or file"
-                            );
-                            zenoh_config
-                                .insert_json5("scouting/multicast", r#"{ enabled: false }"#)
-                                .unwrap();
-                        }
-                    }
-                    if let Ok(zenoh_session) = zenoh::open(zenoh_config).await {
-                        zenoh_session
-                    } else {
-                        warn!("failed to open zenoh session, retrying with default config");
-                        let zenoh_config = zenoh::Config::default();
-                        zenoh::open(zenoh_config)
-                            .await
-                            .map_err(|e| eyre!(e))
-                            .context("failed to open zenoh session")?
-                    }
-                }
-            }
-            Err(std::env::VarError::NotUnicode(_)) => eyre::bail!(
-                "{} env variable is not valid unicode",
-                zenoh::Config::DEFAULT_CONFIG_PATH_ENV
-            ),
-        };
+        let zenoh_session = open_zenoh_session(coordinator_addr.map(|addr| addr.ip()))
+            .await
+            .wrap_err("failed to open zenoh session")?;
         let (dora_events_tx, dora_events_rx) = mpsc::channel(5);
         let daemon = Self {
             logger: Logger {
@@ -1283,7 +1192,8 @@ impl Daemon {
                         .clone()
                         .wrap_err("no remote_daemon_events_tx channel")?;
                     let mut finished_rx = dataflow.finished_tx.subscribe();
-                    let subscribe_topic = dataflow.output_publish_topic(output_id);
+                    let subscribe_topic =
+                        zenoh_output_publish_topic(dataflow.id, &output_id.0, &output_id.1);
                     tracing::debug!("declaring subscriber on {subscribe_topic}");
                     let subscriber = self
                         .zenoh_session
@@ -1741,7 +1651,8 @@ impl Daemon {
         let publisher = match dataflow.publishers.get(output_id) {
             Some(publisher) => publisher,
             None => {
-                let publish_topic = dataflow.output_publish_topic(output_id);
+                let publish_topic =
+                    zenoh_output_publish_topic(dataflow.id, &output_id.0, &output_id.1);
                 tracing::debug!("declaring publisher on {publish_topic}");
                 let publisher = self
                     .zenoh_session
@@ -2679,13 +2590,6 @@ impl RunningDataflow {
         }
 
         Ok(())
-    }
-
-    fn output_publish_topic(&self, output_id: &OutputId) -> String {
-        let network_id = "default";
-        let dataflow_id = self.id;
-        let OutputId(node_id, output_id) = output_id;
-        format!("dora/{network_id}/{dataflow_id}/output/{node_id}/{output_id}")
     }
 }
 
