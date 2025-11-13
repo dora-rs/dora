@@ -11,7 +11,9 @@ use std::time::Duration;
 use uuid::Uuid;
 
 #[derive(Debug, clap::Args)]
-/// Stop the given dataflow UUID. If no id is provided, you will be able to choose between the running dataflows.
+/// Stop a running dataflow. If no id or name is provided, you will be able to choose between the running dataflows.
+///
+/// You could specify the strategy to stop the dataflow with `--grace-duration` or `--force`.
 pub struct Stop {
     /// UUID of the dataflow that should be stopped
     uuid: Option<Uuid>,
@@ -19,10 +21,15 @@ pub struct Stop {
     #[clap(long)]
     name: Option<String>,
     /// Kill the dataflow if it doesn't stop after the given duration
-    #[clap(long, value_name = "DURATION", group = "strategy")]
+    ///
+    /// Specifically, it does the following:
+    /// 1. Sends `Event::Stop` to all nodes of the dataflow.
+    /// 2. After DURATION, performs a soft kill (sending SIGTERM, or Ctrl-Break on Windows).
+    /// 3. If the dataflow is still running after DURATION * 0.5, terminates all its processes.
+    #[clap(long, value_name = "DURATION", group = "strategy", verbatim_doc_comment)]
     #[arg(value_parser = parse)]
     grace_duration: Option<Duration>,
-    /// Force stop the dataflow
+    /// Force stop the dataflow by immediately terminating all its processes
     #[clap(short, long, action, group = "strategy")]
     force: bool,
     /// Address of the dora coordinator
