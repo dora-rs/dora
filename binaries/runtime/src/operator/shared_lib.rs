@@ -7,19 +7,19 @@ use dora_core::{
 };
 use dora_download::download_file;
 use dora_node_api::{
-    arrow_utils::{copy_array_into_sample, required_data_size},
     Event, Parameter,
+    arrow_utils::{copy_array_into_sample, required_data_size},
 };
 use dora_operator_api_types::{
-    safer_ffi::closure::ArcDynFn1, DoraDropOperator, DoraInitOperator, DoraInitResult, DoraOnEvent,
-    DoraResult, DoraStatus, Metadata, OnEventResult, Output, SendOutput,
+    DoraDropOperator, DoraInitOperator, DoraInitResult, DoraOnEvent, DoraResult, DoraStatus,
+    Metadata, OnEventResult, Output, SendOutput, safer_ffi::closure::ArcDynFn1,
 };
-use eyre::{bail, eyre, Context, Result};
+use eyre::{Context, Result, bail, eyre};
 use libloading::Symbol;
 use std::{
     collections::BTreeMap,
     ffi::c_void,
-    panic::{catch_unwind, AssertUnwindSafe},
+    panic::{AssertUnwindSafe, catch_unwind},
     path::Path,
     sync::Arc,
 };

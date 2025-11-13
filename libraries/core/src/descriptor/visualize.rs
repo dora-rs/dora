@@ -1,5 +1,5 @@
 use dora_message::{
-    config::{format_duration, Input, InputMapping, UserInputMapping},
+    config::{Input, InputMapping, UserInputMapping, format_duration},
     descriptor::{CoreNodeKind, OperatorDefinition},
     id::{DataId, NodeId},
 };

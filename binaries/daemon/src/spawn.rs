@@ -1,7 +1,8 @@
 use crate::{
+    CoreNodeKindExt, DoraEvent, Event, OutputId, RunningNode,
     log::{self, NodeLogger},
     node_communication::spawn_listener_loop,
-    node_inputs, CoreNodeKindExt, DoraEvent, Event, OutputId, RunningNode,
+    node_inputs,
 };
 use aligned_vec::{AVec, ConstAlign};
 use crossbeam::queue::ArrayQueue;
@@ -9,26 +10,26 @@ use dora_arrow_convert::IntoArrow;
 use dora_core::{
     config::DataId,
     descriptor::{
-        resolve_path, source_is_url, Descriptor, OperatorDefinition, OperatorSource, PythonSource,
-        ResolvedNode, ResolvedNodeExt, DYNAMIC_SOURCE, SHELL_SOURCE,
+        DYNAMIC_SOURCE, Descriptor, OperatorDefinition, OperatorSource, PythonSource, ResolvedNode,
+        ResolvedNodeExt, SHELL_SOURCE, resolve_path, source_is_url,
     },
     get_python_path,
     uhlc::HLC,
 };
 use dora_download::download_file;
 use dora_message::{
+    DataflowId,
     common::{LogLevel, LogMessage},
     daemon_to_coordinator::{DataMessage, NodeExitStatus, Timestamped},
     daemon_to_node::{NodeConfig, RuntimeConfig},
     id::NodeId,
-    DataflowId,
 };
 use dora_node_api::{
+    Metadata,
     arrow::array::ArrayData,
     arrow_utils::{copy_array_into_sample, required_data_size},
-    Metadata,
 };
-use eyre::{bail, ContextCompat, WrapErr};
+use eyre::{ContextCompat, WrapErr, bail};
 use std::{
     future::Future,
     path::{Path, PathBuf},
@@ -59,7 +60,7 @@ impl Spawner {
         node_working_dir: PathBuf,
         node_stderr_most_recent: Arc<ArrayQueue<String>>,
         logger: &mut NodeLogger<'_>,
-    ) -> eyre::Result<impl Future<Output = eyre::Result<PreparedNode>>> {
+    ) -> eyre::Result<impl Future<Output = eyre::Result<PreparedNode>> + use<>> {
         let dataflow_id = self.dataflow_id;
         let node_id = node.id.clone();
         logger
@@ -121,6 +122,8 @@ impl Spawner {
         node_config: NodeConfig,
         node_stderr_most_recent: Arc<ArrayQueue<String>>,
     ) -> eyre::Result<PreparedNode> {
+        std::fs::create_dir_all(&node_working_dir)
+            .context("failed to create node working directory")?;
         let (command, error_msg) = match &node.kind {
             dora_core::descriptor::CoreNodeKind::Custom(n) => {
                 let mut command =
@@ -219,9 +222,9 @@ impl Spawner {
                             cmd.arg("run");
                             cmd.arg("python");
                             tracing::info!(
-                            "spawning: uv run python -uc import dora; dora.start_runtime() # {}",
-                            node.id
-                        );
+                                "spawning: uv run python -uc import dora; dora.start_runtime() # {}",
+                                node.id
+                            );
                             cmd
                         } else {
                             let python = get_python_path()
@@ -269,8 +272,7 @@ impl Spawner {
                         Some(cmd)
                     } else {
                         let mut cmd = tokio::process::Command::new(
-                            std::env::current_exe()
-                                .wrap_err("failed to get current executable path")?,
+                            which::which("dora").wrap_err("failed to get dora path")?,
                         );
                         cmd.arg("runtime");
                         Some(cmd)
@@ -278,7 +280,7 @@ impl Spawner {
                 } else {
                     bail!(
                         "Cannot spawn runtime with both Python and non-Python operators. \
-                       Please use a single operator or ensure that all operators are Python-based."
+                        Please use a single operator or ensure that all operators are Python-based."
                     );
                 };
 
@@ -355,12 +357,29 @@ impl PreparedNode {
 
     pub async fn spawn(mut self, logger: &mut NodeLogger<'_>) -> eyre::Result<RunningNode> {
         let mut child = match &mut self.command {
-            Some(command) => command.spawn().wrap_err(self.spawn_error_msg)?,
+            Some(command) => {
+                let std_command = command.as_std();
+                logger
+                    .log(
+                        LogLevel::Info,
+                        Some("spawner".into()),
+                        format!(
+                            "spawning `{}` in `{}`",
+                            std_command.get_program().to_string_lossy(),
+                            std_command
+                                .get_current_dir()
+                                .unwrap_or(Path::new("<unknown>"))
+                                .display(),
+                        ),
+                    )
+                    .await;
+                command.spawn().wrap_err(self.spawn_error_msg)?
+            }
             None => {
                 return Ok(RunningNode {
                     pid: None,
                     node_config: self.node_config,
-                })
+                });
             }
         };
 
@@ -632,8 +651,9 @@ async fn path_spawn_command(
                     .await
                     .wrap_err("failed to download custom node")?
             } else {
-                resolve_path(source, working_dir)
-                    .wrap_err_with(|| format!("failed to resolve node source `{}`", source))?
+                let source = shellexpand::env(source)?;
+                resolve_path(source.as_ref(), working_dir)
+                    .wrap_err_with(|| format!("failed to resolve node source `{source}`"))?
             };
 
             // If extension is .py, use python to run the script
@@ -670,13 +690,6 @@ async fn path_spawn_command(
                     cmd
                 }
                 _ => {
-                    logger
-                        .log(
-                            LogLevel::Info,
-                            Some("spawner".into()),
-                            format!("spawning: {}", resolved_path.display()),
-                        )
-                        .await;
                     if uv {
                         let mut cmd = tokio::process::Command::new("uv");
                         cmd.arg("run");

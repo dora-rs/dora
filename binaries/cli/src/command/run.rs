@@ -11,7 +11,7 @@ use crate::{
     output::print_log_message,
     session::DataflowSession,
 };
-use dora_daemon::{flume, Daemon, LogDestination};
+use dora_daemon::{Daemon, LogDestination, flume};
 use dora_tracing::TracingBuilder;
 use eyre::Context;
 use tokio::runtime::Builder;
@@ -30,7 +30,12 @@ pub struct Run {
     uv: bool,
 }
 
+#[deprecated(note = "use `run` instead")]
 pub fn run_func(dataflow: String, uv: bool) -> eyre::Result<()> {
+    run(dataflow, uv)
+}
+
+pub fn run(dataflow: String, uv: bool) -> eyre::Result<()> {
     #[cfg(feature = "tracing")]
     {
         let log_level = std::env::var("RUST_LOG").ok().unwrap_or("info".to_string());
@@ -68,6 +73,6 @@ pub fn run_func(dataflow: String, uv: bool) -> eyre::Result<()> {
 
 impl Executable for Run {
     fn execute(self) -> eyre::Result<()> {
-        run_func(self.dataflow, self.uv)
+        run(self.dataflow, self.uv)
     }
 }

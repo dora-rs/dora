@@ -1,4 +1,4 @@
-use dora_node_api::{self, dora_core::config::DataId, DoraNode, Event, IntoArrow};
+use dora_node_api::{self, DoraNode, Event, IntoArrow, dora_core::config::DataId};
 use eyre::Context;
 
 fn main() -> eyre::Result<()> {
@@ -17,10 +17,8 @@ fn main() -> eyre::Result<()> {
                 "random" => {
                     let value = u64::try_from(&data).context("unexpected data type")?;
 
-                    let output = format!(
-                        "operator received random value {value:#x} after {} ticks",
-                        ticks
-                    );
+                    let output =
+                        format!("operator received random value {value:#x} after {ticks} ticks");
                     node.send_output(
                         status_output.clone(),
                         metadata.parameters,

@@ -1,4 +1,4 @@
-use crate::{tcp_utils::tcp_receive, DaemonRequest, DataflowEvent, Event};
+use crate::{DaemonRequest, DataflowEvent, Event, tcp_utils::tcp_receive};
 use dora_core::uhlc::HLC;
 use dora_message::daemon_to_coordinator::{CoordinatorRequest, DaemonEvent, Timestamped};
 use eyre::Context;
@@ -12,7 +12,7 @@ pub async fn create_listener(bind: SocketAddr) -> eyre::Result<TcpListener> {
     let socket = match TcpListener::bind(bind).await {
         Ok(socket) => socket,
         Err(err) => {
-            return Err(eyre::Report::new(err).wrap_err("failed to create local TCP listener"))
+            return Err(eyre::Report::new(err).wrap_err("failed to create local TCP listener"));
         }
     };
     Ok(socket)

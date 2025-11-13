@@ -1,10 +1,10 @@
 use dora_core::{config::NodeId, uhlc::Timestamp};
 use dora_message::{
+    DataflowId,
     daemon_to_node::DaemonReply,
     node_to_daemon::{DaemonRequest, NodeRegisterRequest, Timestamped},
-    DataflowId,
 };
-use eyre::{bail, eyre, Context};
+use eyre::{Context, bail, eyre};
 use shared_memory_server::{ShmemClient, ShmemConf};
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
@@ -13,6 +13,9 @@ use std::{
     time::Duration,
 };
 
+use crate::daemon_connection::interactive::InteractiveEvents;
+
+mod interactive;
 mod tcp;
 #[cfg(unix)]
 mod unix_domain;
@@ -22,6 +25,7 @@ pub enum DaemonChannel {
     Tcp(TcpStream),
     #[cfg(unix)]
     UnixDomain(UnixStream),
+    Interactive(InteractiveEvents),
 }
 
 impl DaemonChannel {
@@ -81,6 +85,7 @@ impl DaemonChannel {
             DaemonChannel::Tcp(stream) => tcp::request(stream, request),
             #[cfg(unix)]
             DaemonChannel::UnixDomain(stream) => unix_domain::request(stream, request),
+            DaemonChannel::Interactive(events) => events.request(request),
         }
     }
 }

@@ -5,13 +5,17 @@ use dora_core::{
     build::{self, BuildInfo, GitManager, PrevGitSource},
     config::{DataId, Input, InputMapping, NodeId, NodeRunConfig, OperatorId},
     descriptor::{
-        read_as_descriptor, CoreNodeKind, Descriptor, DescriptorExt, ResolvedNode, RuntimeNode,
-        DYNAMIC_SOURCE,
+        CoreNodeKind, DYNAMIC_SOURCE, Descriptor, DescriptorExt, ResolvedNode, RuntimeNode,
+        read_as_descriptor,
     },
-    topics::LOCALHOST,
+    topics::{
+        DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, LOCALHOST, open_zenoh_session,
+        zenoh_output_publish_topic,
+    },
     uhlc::{self, HLC},
 };
 use dora_message::{
+    BuildId, DataflowId, SessionId,
     common::{
         DaemonId, DataMessage, DropToken, GitSource, LogLevel, NodeError, NodeErrorCause,
         NodeExitStatus,
@@ -26,11 +30,10 @@ use dora_message::{
     descriptor::NodeSource,
     metadata::{self, ArrowTypeInfo},
     node_to_daemon::{DynamicNodeEvent, Timestamped},
-    BuildId, DataflowId, SessionId,
 };
-use dora_node_api::{arrow::datatypes::DataType, Parameter};
-use eyre::{bail, eyre, Context, ContextCompat, Result};
-use futures::{future, stream, FutureExt, TryFutureExt};
+use dora_node_api::{Parameter, arrow::datatypes::DataType};
+use eyre::{Context, ContextCompat, Result, bail, eyre};
+use futures::{FutureExt, TryFutureExt, future, stream};
 use futures_concurrency::stream::Merge;
 use local_listener::DynamicNodeEventWrapper;
 use log::{DaemonLogger, DataflowLogger, Logger};
@@ -60,7 +63,7 @@ use tokio::{
         oneshot::{self, Sender},
     },
 };
-use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
+use tokio_stream::{Stream, StreamExt, wrappers::ReceiverStream};
 use tracing::{error, warn};
 use uuid::{NoContext, Timestamp, Uuid};
 
@@ -169,7 +172,7 @@ impl Daemon {
             Some(coordinator_addr),
             daemon_id,
             None,
-            clock,
+            clock.clone(),
             Some(remote_daemon_events_tx),
             Default::default(),
             log_destination,
@@ -206,6 +209,24 @@ impl Daemon {
         descriptor.check(&working_dir)?;
         let nodes = descriptor.resolve_aliases_and_set_defaults()?;
 
+        let (events_tx, events_rx) = flume::bounded(10);
+        if nodes
+            .iter()
+            .find(|(_n, resolved_nodes)| resolved_nodes.kind.dynamic())
+            .is_some()
+        {
+            // Spawn local listener for dynamic nodes
+            let _listen_port = local_listener::spawn_listener_loop(
+                (LOCALHOST, DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT).into(),
+                events_tx,
+            )
+            .await?;
+        }
+        let dynamic_node_events = events_rx.into_stream().map(|e| Timestamped {
+            inner: Event::DynamicNode(e.inner),
+            timestamp: e.timestamp,
+        });
+
         let dataflow_id = Uuid::new_v7(Timestamp::now(NoContext));
         let spawn_command = SpawnDataflowNodes {
             build_id,
@@ -238,7 +259,7 @@ impl Daemon {
                 timestamp,
             }
         });
-        let events = (coordinator_events, ctrlc_events).merge();
+        let events = (coordinator_events, ctrlc_events, dynamic_node_events).merge();
         let run_result = Self::run_general(
             Box::pin(events),
             None,
@@ -305,99 +326,9 @@ impl Daemon {
             None => None,
         };
 
-        let zenoh_session = match std::env::var(zenoh::Config::DEFAULT_CONFIG_PATH_ENV) {
-            Ok(path) => {
-                let zenoh_config = zenoh::Config::from_file(&path)
-                    .map_err(|e| eyre!(e))
-                    .wrap_err_with(|| format!("failed to read zenoh config from {path}"))?;
-                zenoh::open(zenoh_config)
-                    .await
-                    .map_err(|e| eyre!(e))
-                    .context("failed to open zenoh session")?
-            }
-            Err(std::env::VarError::NotPresent) => {
-                let mut zenoh_config = zenoh::Config::default();
-
-                if let Some(addr) = coordinator_addr {
-                    // Linkstate make it possible to connect two daemons on different network through a public daemon
-                    // TODO: There is currently a CI/CD Error in windows linkstate.
-                    if cfg!(not(target_os = "windows")) {
-                        zenoh_config
-                            .insert_json5("routing/peer", r#"{ mode: "linkstate" }"#)
-                            .unwrap();
-                    }
-
-                    zenoh_config
-                        .insert_json5(
-                            "connect/endpoints",
-                            &format!(
-                                r#"{{ router: ["tcp/[::]:7447"], peer: ["tcp/{}:5456"] }}"#,
-                                addr.ip()
-                            ),
-                        )
-                        .unwrap();
-                    zenoh_config
-                        .insert_json5(
-                            "listen/endpoints",
-                            r#"{ router: ["tcp/[::]:7447"], peer: ["tcp/[::]:5456"] }"#,
-                        )
-                        .unwrap();
-                    if cfg!(target_os = "macos") {
-                        warn!("disabling multicast on macos systems. Enable it with the ZENOH_CONFIG env variable or file");
-                        zenoh_config
-                            .insert_json5("scouting/multicast", r#"{ enabled: false }"#)
-                            .unwrap();
-                    }
-                };
-                if let Ok(zenoh_session) = zenoh::open(zenoh_config).await {
-                    zenoh_session
-                } else {
-                    warn!(
-                        "failed to open zenoh session, retrying with default config + coordinator"
-                    );
-                    let mut zenoh_config = zenoh::Config::default();
-                    // Linkstate make it possible to connect two daemons on different network through a public daemon
-                    // TODO: There is currently a CI/CD Error in windows linkstate.
-                    if cfg!(not(target_os = "windows")) {
-                        zenoh_config
-                            .insert_json5("routing/peer", r#"{ mode: "linkstate" }"#)
-                            .unwrap();
-                    }
-
-                    if let Some(addr) = coordinator_addr {
-                        zenoh_config
-                            .insert_json5(
-                                "connect/endpoints",
-                                &format!(
-                                    r#"{{ router: ["tcp/[::]:7447"], peer: ["tcp/{}:5456"] }}"#,
-                                    addr.ip()
-                                ),
-                            )
-                            .unwrap();
-                        if cfg!(target_os = "macos") {
-                            warn!("disabling multicast on macos systems. Enable it with the ZENOH_CONFIG env variable or file");
-                            zenoh_config
-                                .insert_json5("scouting/multicast", r#"{ enabled: false }"#)
-                                .unwrap();
-                        }
-                    }
-                    if let Ok(zenoh_session) = zenoh::open(zenoh_config).await {
-                        zenoh_session
-                    } else {
-                        warn!("failed to open zenoh session, retrying with default config");
-                        let zenoh_config = zenoh::Config::default();
-                        zenoh::open(zenoh_config)
-                            .await
-                            .map_err(|e| eyre!(e))
-                            .context("failed to open zenoh session")?
-                    }
-                }
-            }
-            Err(std::env::VarError::NotUnicode(_)) => eyre::bail!(
-                "{} env variable is not valid unicode",
-                zenoh::Config::DEFAULT_CONFIG_PATH_ENV
-            ),
-        };
+        let zenoh_session = open_zenoh_session(coordinator_addr.map(|addr| addr.ip()))
+            .await
+            .wrap_err("failed to open zenoh session")?;
         let (dora_events_tx, dora_events_rx) = mpsc::channel(5);
         let daemon = Self {
             logger: Logger {
@@ -525,7 +456,9 @@ impl Daemon {
                         if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
                             dataflow.running_nodes.insert(node_id, running_node);
                         } else {
-                            tracing::error!("failed to handle SpawnNodeResult: no running dataflow with ID {dataflow_id}");
+                            tracing::error!(
+                                "failed to handle SpawnNodeResult: no running dataflow with ID {dataflow_id}"
+                            );
                         }
                     }
                     Err(error) => {
@@ -1009,7 +942,7 @@ impl Daemon {
         dataflow_descriptor: Descriptor,
         local_nodes: BTreeSet<NodeId>,
         uv: bool,
-    ) -> eyre::Result<impl Future<Output = eyre::Result<BuildInfo>>> {
+    ) -> eyre::Result<impl Future<Output = eyre::Result<BuildInfo>> + use<>> {
         let builder = build::Builder {
             session_id,
             base_working_dir,
@@ -1027,7 +960,7 @@ impl Daemon {
 
             let node_id = node.id.clone();
             let mut logger = self.logger.for_node_build(build_id, node_id.clone());
-            logger.log(LogLevel::Info, "building").await;
+            logger.log(LogLevel::Debug, "building").await;
             let git_source = git_sources.get(&node_id).cloned();
             let prev_git_source = prev_git_sources.get(&node_id).cloned();
             let prev_git = prev_git_source.map(|prev_source| PrevGitSource {
@@ -1079,7 +1012,7 @@ impl Daemon {
             for task in tasks {
                 let NodeBuildTask {
                     node_id,
-                    dynamic_node,
+                    dynamic_node: _,
                     task,
                 } = task;
                 let node = task
@@ -1104,7 +1037,7 @@ impl Daemon {
         dataflow_descriptor: Descriptor,
         spawn_nodes: BTreeSet<NodeId>,
         uv: bool,
-    ) -> eyre::Result<impl Future<Output = eyre::Result<()>>> {
+    ) -> eyre::Result<impl Future<Output = eyre::Result<()>> + use<>> {
         let mut logger = self
             .logger
             .for_dataflow(dataflow_id)
@@ -1126,8 +1059,19 @@ impl Daemon {
 
         let mut stopped = Vec::new();
 
-        let node_working_dirs = build_id
-            .and_then(|build_id| self.builds.get(&build_id))
+        let build_info = build_id.and_then(|build_id| self.builds.get(&build_id));
+        let node_with_git_source = nodes.values().find(|n| n.has_git_source());
+        if let Some(git_node) = node_with_git_source {
+            if build_info.is_none() {
+                eyre::bail!(
+                    "node {} has git source, but no `dora build` was run yet\n\n\
+                    nodes with a `git` field must be built using `dora build` before starting the \
+                    dataflow",
+                    git_node.id
+                )
+            }
+        }
+        let node_working_dirs = build_info
             .map(|info| info.node_working_dirs.clone())
             .unwrap_or_default();
 
@@ -1195,12 +1139,16 @@ impl Daemon {
                     .entry(node.id.clone())
                     .or_insert_with(|| Arc::new(ArrayQueue::new(STDERR_LOG_LINES)))
                     .clone();
-                logger
-                    .log(LogLevel::Info, Some("daemon".into()), "spawning")
-                    .await;
-                let node_working_dir = node_working_dirs
-                    .get(&node_id)
-                    .cloned()
+
+                let configured_node_working_dir = node_working_dirs.get(&node_id).cloned();
+                if configured_node_working_dir.is_none() && node.has_git_source() {
+                    eyre::bail!(
+                        "node {} has git source, but no git clone directory was found for it\n\n\
+                        try running `dora build` again",
+                        node.id
+                    )
+                }
+                let node_working_dir = configured_node_working_dir
                     .or_else(|| {
                         node.deploy
                             .as_ref()
@@ -1250,7 +1198,8 @@ impl Daemon {
                         .clone()
                         .wrap_err("no remote_daemon_events_tx channel")?;
                     let mut finished_rx = dataflow.finished_tx.subscribe();
-                    let subscribe_topic = dataflow.output_publish_topic(output_id);
+                    let subscribe_topic =
+                        zenoh_output_publish_topic(dataflow.id, &output_id.0, &output_id.1);
                     tracing::debug!("declaring subscriber on {subscribe_topic}");
                     let subscriber = self
                         .zenoh_session
@@ -1264,18 +1213,20 @@ impl Daemon {
                             let finished_or_next =
                                 futures::future::select(finished, subscriber.recv_async());
                             match finished_or_next.await {
-                                future::Either::Left((finished, _)) => {
-                                    match finished {
-                                        Err(broadcast::error::RecvError::Closed) => {
-                                            tracing::debug!("dataflow finished, breaking from zenoh subscribe task");
-                                            break;
-                                        }
-                                        other => {
-                                            tracing::warn!("unexpected return value of dataflow finished_rx channel: {other:?}");
-                                            break;
-                                        }
+                                future::Either::Left((finished, _)) => match finished {
+                                    Err(broadcast::error::RecvError::Closed) => {
+                                        tracing::debug!(
+                                            "dataflow finished, breaking from zenoh subscribe task"
+                                        );
+                                        break;
                                     }
-                                }
+                                    other => {
+                                        tracing::warn!(
+                                            "unexpected return value of dataflow finished_rx channel: {other:?}"
+                                        );
+                                        break;
+                                    }
+                                },
                                 future::Either::Right((sample, f)) => {
                                     finished = f;
                                     let event = sample.map_err(|e| eyre!(e)).and_then(|s| {
@@ -1706,7 +1657,8 @@ impl Daemon {
         let publisher = match dataflow.publishers.get(output_id) {
             Some(publisher) => publisher,
             None => {
-                let publish_topic = dataflow.output_publish_topic(output_id);
+                let publish_topic =
+                    zenoh_output_publish_topic(dataflow.id, &output_id.0, &output_id.1);
                 tracing::debug!("declaring publisher on {publish_topic}");
                 let publisher = self
                     .zenoh_session
@@ -2455,7 +2407,7 @@ pub struct RunningDataflow {
     pending_drop_tokens: HashMap<DropToken, DropTokenInformation>,
 
     /// Keep handles to all timer tasks of this dataflow to cancel them on drop.
-    _timer_handles: Vec<futures::future::RemoteHandle<()>>,
+    _timer_handles: BTreeMap<Duration, futures::future::RemoteHandle<()>>,
     stop_sent: bool,
 
     /// Used in `open_inputs`.
@@ -2495,7 +2447,7 @@ impl RunningDataflow {
             dynamic_nodes: BTreeSet::new(),
             open_external_mappings: Default::default(),
             pending_drop_tokens: HashMap::new(),
-            _timer_handles: Vec::new(),
+            _timer_handles: BTreeMap::new(),
             stop_sent: false,
             empty_set: BTreeSet::new(),
             cascading_error_causes: Default::default(),
@@ -2513,6 +2465,9 @@ impl RunningDataflow {
         clock: &Arc<HLC>,
     ) -> eyre::Result<()> {
         for interval in self.timers.keys().copied() {
+            if self._timer_handles.get(&interval).is_some() {
+                continue;
+            }
             let events_tx = events_tx.clone();
             let dataflow_id = self.id;
             let clock = clock.clone();
@@ -2556,7 +2511,7 @@ impl RunningDataflow {
             };
             let (task, handle) = task.remote_handle();
             tokio::spawn(task);
-            self._timer_handles.push(handle);
+            self._timer_handles.insert(interval, handle);
         }
 
         Ok(())
@@ -2643,13 +2598,6 @@ impl RunningDataflow {
         }
 
         Ok(())
-    }
-
-    fn output_publish_topic(&self, output_id: &OutputId) -> String {
-        let network_id = "default";
-        let dataflow_id = self.id;
-        let OutputId(node_id, output_id) = output_id;
-        format!("dora/{network_id}/{dataflow_id}/output/{node_id}/{output_id}")
     }
 }
 
@@ -2740,6 +2688,7 @@ impl Event {
 }
 
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum DaemonNodeEvent {
     OutputsDone {
         reply_sender: oneshot::Sender<DaemonReply>,

@@ -27,10 +27,10 @@ const DUMMY_STRUCT_NAME: &str = "struct";
 mod tests {
     use std::path::PathBuf;
 
+    use crate::Ros2Context;
+    use crate::typed::TypeInfo;
     use crate::typed::deserialize::StructDeserializer;
     use crate::typed::serialize;
-    use crate::typed::TypeInfo;
-    use crate::Ros2Context;
 
     use arrow::array::make_array;
     use arrow::pyarrow::FromPyArrow;
@@ -47,8 +47,8 @@ mod tests {
     use pyo3::types::PyTuple;
 
     use pyo3::Python;
-    use serde::de::DeserializeSeed;
     use serde::Serialize;
+    use serde::de::DeserializeSeed;
 
     use serde_assert::Serializer;
     use serialize::TypedValue;

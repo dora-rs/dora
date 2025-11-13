@@ -1,15 +1,18 @@
-use crate::formatting::FormatDataflowError;
+use crate::{LOCALHOST, formatting::FormatDataflowError};
 use communication_layer_request_reply::{RequestReplyLayer, TcpLayer, TcpRequestReplyConnection};
-use dora_core::descriptor::{source_is_url, Descriptor};
+use dora_core::{
+    descriptor::{Descriptor, source_is_url},
+    topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT,
+};
 use dora_download::download_file;
 use dora_message::{
     cli_to_coordinator::ControlRequest,
     coordinator_to_cli::{ControlRequestReply, DataflowList, DataflowResult},
 };
-use eyre::{bail, Context, ContextCompat};
+use eyre::{Context, ContextCompat, bail};
 use std::{
     env::current_dir,
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
 };
 use tokio::runtime::Builder;
@@ -48,6 +51,51 @@ pub(crate) fn query_running_dataflows(
     };
 
     Ok(ids)
+}
+
+pub(crate) fn resolve_dataflow_identifier_interactive(
+    session: &mut TcpRequestReplyConnection,
+    name_or_uuid: Option<&str>,
+) -> eyre::Result<Uuid> {
+    if let Some(uuid) = name_or_uuid.and_then(|s| Uuid::parse_str(s).ok()) {
+        return Ok(uuid);
+    }
+
+    let list = query_running_dataflows(session).wrap_err("failed to query running dataflows")?;
+    let active: Vec<dora_message::coordinator_to_cli::DataflowIdAndName> = list.get_active();
+    if let Some(name) = name_or_uuid {
+        let Some(dataflow) = active.iter().find(|it| it.name.as_deref() == Some(name)) else {
+            bail!("No dataflow with name `{name}` is running");
+        };
+        return Ok(dataflow.uuid);
+    }
+    Ok(match &active[..] {
+        [] => bail!("No dataflows are running"),
+        [entry] => entry.uuid,
+        _ => {
+            inquire::Select::new("Choose dataflow:", active)
+                .prompt()?
+                .uuid
+        }
+    })
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct CoordinatorOptions {
+    /// Address of the dora coordinator
+    #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
+    pub coordinator_addr: IpAddr,
+    /// Port number of the coordinator control server
+    #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
+    pub coordinator_port: u16,
+}
+
+impl CoordinatorOptions {
+    pub fn connect(&self) -> eyre::Result<Box<TcpRequestReplyConnection>> {
+        let session = connect_to_coordinator((self.coordinator_addr, self.coordinator_port).into())
+            .wrap_err("failed to connect to dora coordinator")?;
+        Ok(session)
+    }
 }
 
 pub(crate) fn connect_to_coordinator(

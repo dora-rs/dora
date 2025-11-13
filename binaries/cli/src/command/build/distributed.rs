@@ -1,13 +1,13 @@
 use communication_layer_request_reply::{TcpConnection, TcpRequestReplyConnection};
 use dora_core::descriptor::Descriptor;
 use dora_message::{
+    BuildId,
     cli_to_coordinator::ControlRequest,
     common::{GitSource, LogMessage},
     coordinator_to_cli::ControlRequestReply,
     id::NodeId,
-    BuildId,
 };
-use eyre::{bail, Context};
+use eyre::{Context, bail};
 use std::{
     collections::BTreeMap,
     net::{SocketAddr, TcpStream},

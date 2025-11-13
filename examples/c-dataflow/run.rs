@@ -1,62 +1,41 @@
-use dora_tracing::set_up_tracing;
-use eyre::{bail, Context};
+use eyre::{Context, bail};
 use std::{
     env::consts::{DLL_PREFIX, DLL_SUFFIX, EXE_SUFFIX},
     path::Path,
 };
 
-#[tokio::main]
-async fn main() -> eyre::Result<()> {
-    set_up_tracing("c-dataflow-runner").wrap_err("failed to set up tracing")?;
-
+fn main() -> eyre::Result<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     std::env::set_current_dir(root.join(file!()).parent().unwrap())
         .wrap_err("failed to set working dir")?;
 
-    tokio::fs::create_dir_all("build").await?;
+    std::fs::create_dir_all("build")?;
 
-    build_package("dora-node-api-c").await?;
-    build_c_node(root, "node.c", "c_node").await?;
-    build_c_node(root, "sink.c", "c_sink").await?;
+    build_package("dora-node-api-c")?;
+    build_c_node(root, "node.c", "c_node")?;
+    build_c_node(root, "sink.c", "c_sink")?;
 
-    build_package("dora-operator-api-c").await?;
-    build_c_operator(root).await?;
+    build_package("dora-operator-api-c")?;
+    build_c_operator(root)?;
 
-    let dataflow = Path::new("dataflow.yml").to_owned();
-    run_dataflow(&dataflow).await?;
+    dora_cli::run("dataflow.yml".to_string(), false)?;
 
     Ok(())
 }
 
-async fn build_package(package: &str) -> eyre::Result<()> {
+fn build_package(package: &str) -> eyre::Result<()> {
     let cargo = std::env::var("CARGO").unwrap();
-    let mut cmd = tokio::process::Command::new(&cargo);
+    let mut cmd = std::process::Command::new(&cargo);
     cmd.arg("build");
     cmd.arg("--package").arg(package);
-    if !cmd.status().await?.success() {
+    if !cmd.status()?.success() {
         bail!("failed to build {package}");
     };
     Ok(())
 }
 
-async fn run_dataflow(dataflow: &Path) -> eyre::Result<()> {
-    let cargo = std::env::var("CARGO").unwrap();
-    let mut cmd = tokio::process::Command::new(&cargo);
-    cmd.arg("run");
-    cmd.arg("--package").arg("dora-cli");
-    cmd.arg("--release");
-    cmd.arg("--")
-        .arg("daemon")
-        .arg("--run-dataflow")
-        .arg(dataflow);
-    if !cmd.status().await?.success() {
-        bail!("failed to run dataflow");
-    };
-    Ok(())
-}
-
-async fn build_c_node(root: &Path, name: &str, out_name: &str) -> eyre::Result<()> {
-    let mut clang = tokio::process::Command::new("clang");
+fn build_c_node(root: &Path, name: &str, out_name: &str) -> eyre::Result<()> {
+    let mut clang = std::process::Command::new("clang");
     clang.arg(name);
     clang.arg("-l").arg("dora_node_api_c");
     #[cfg(target_os = "linux")]
@@ -117,24 +96,24 @@ async fn build_c_node(root: &Path, name: &str, out_name: &str) -> eyre::Result<(
     clang
         .arg("--output")
         .arg(Path::new("build").join(format!("{out_name}{EXE_SUFFIX}")));
-    if !clang.status().await?.success() {
+    if !clang.status()?.success() {
         bail!("failed to compile c node");
     };
     Ok(())
 }
 
-async fn build_c_operator(root: &Path) -> eyre::Result<()> {
-    let mut compile = tokio::process::Command::new("clang");
+fn build_c_operator(root: &Path) -> eyre::Result<()> {
+    let mut compile = std::process::Command::new("clang");
     compile.arg("-c").arg("operator.c");
     compile.arg("-o").arg("build/operator.o");
     compile.arg("-fdeclspec");
     #[cfg(unix)]
     compile.arg("-fPIC");
-    if !compile.status().await?.success() {
+    if !compile.status()?.success() {
         bail!("failed to compile c operator");
     };
 
-    let mut link = tokio::process::Command::new("clang");
+    let mut link = std::process::Command::new("clang");
     link.arg("-shared").arg("build/operator.o");
     link.arg("-L").arg(root.join("target").join("debug"));
     link.arg("-l").arg("dora_operator_api_c");
@@ -185,7 +164,7 @@ async fn build_c_operator(root: &Path) -> eyre::Result<()> {
     }
     link.arg("-o")
         .arg(Path::new("build").join(format!("{DLL_PREFIX}operator{DLL_SUFFIX}")));
-    if !link.status().await?.success() {
+    if !link.status()?.success() {
         bail!("failed to link c operator");
     };
 

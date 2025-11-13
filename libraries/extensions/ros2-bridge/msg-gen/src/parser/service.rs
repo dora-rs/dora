@@ -39,12 +39,12 @@ fn parse_service_string(pkg_name: &str, srv_name: &str, service_string: &str) ->
         name: srv_name.into(),
         request: parse_message_string(
             pkg_name,
-            &format!("{}{}", srv_name, SERVICE_REQUEST_SUFFIX),
+            &format!("{srv_name}{SERVICE_REQUEST_SUFFIX}"),
             service_blocks[0],
         )?,
         response: parse_message_string(
             pkg_name,
-            &format!("{}{}", srv_name, SERVICE_RESPONSE_SUFFIX),
+            &format!("{srv_name}{SERVICE_RESPONSE_SUFFIX}"),
             service_blocks[1],
         )?,
     })

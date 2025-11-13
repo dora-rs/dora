@@ -12,9 +12,11 @@ mod runtime;
 mod self_;
 mod start;
 mod stop;
+mod topic;
 mod up;
 
-pub use run::run_func;
+pub use build::build;
+pub use run::{run, run_func};
 
 use build::Build;
 use check::Check;
@@ -31,6 +33,7 @@ use runtime::Runtime;
 use self_::SelfSubCommand;
 use start::Start;
 use stop::Stop;
+use topic::Topic;
 use up::Up;
 
 /// dora-rs cli client
@@ -45,6 +48,7 @@ pub enum Command {
     Destroy(Destroy),
     Start(Start),
     Stop(Stop),
+    #[clap(alias = "ps")]
     List(ListArgs),
     // Planned for future releases:
     // Dashboard,
@@ -57,6 +61,8 @@ pub enum Command {
     Daemon(Daemon),
     Runtime(Runtime),
     Coordinator(Coordinator),
+    #[clap(subcommand)]
+    Topic(Topic),
 
     Self_ {
         #[clap(subcommand)]
@@ -99,6 +105,7 @@ impl Executable for Command {
             Command::Daemon(args) => args.execute(),
             Command::Self_ { command } => command.execute(),
             Command::Runtime(args) => args.execute(),
+            Command::Topic(args) => args.execute(),
         }
     }
 }

@@ -5,10 +5,10 @@ use std::{collections::BTreeMap, future::Future, path::PathBuf};
 
 use crate::descriptor::ResolvedNode;
 use dora_message::{
+    SessionId,
     common::{GitSource, LogLevel},
     descriptor::{CoreNodeKind, EnvValue},
     id::NodeId,
-    SessionId,
 };
 use eyre::Context;
 
@@ -27,14 +27,17 @@ pub struct Builder {
 }
 
 impl Builder {
-    pub async fn build_node(
+    pub async fn build_node<L>(
         self,
         node: ResolvedNode,
         git: Option<GitSource>,
         prev_git: Option<PrevGitSource>,
-        mut logger: impl BuildLogger,
+        mut logger: L,
         git_manager: &mut GitManager,
-    ) -> eyre::Result<impl Future<Output = eyre::Result<BuiltNode>>> {
+    ) -> eyre::Result<impl Future<Output = eyre::Result<BuiltNode>> + use<L>>
+    where
+        L: BuildLogger,
+    {
         let prepared_git = if let Some(GitSource { repo, commit_hash }) = git {
             let target_dir = self.base_working_dir.join("git");
             let git_folder = git_manager.choose_clone_dir(
@@ -109,24 +112,33 @@ async fn build_node(
     uv: bool,
 ) -> eyre::Result<()> {
     logger
-        .log_message(LogLevel::Info, format!("running build command: `{build}"))
+        .log_message(
+            LogLevel::Info,
+            format!(
+                "running build command: `{build}` in {}",
+                working_dir.display()
+            ),
+        )
         .await;
     let build = build.to_owned();
     let node_env = node_env.clone();
     let mut logger = logger.try_clone().await.context("failed to clone logger")?;
     let (stdout_tx, mut stdout) = tokio::sync::mpsc::channel(10);
-    let task = tokio::task::spawn_blocking(move || {
+    let task = tokio::spawn(async move {
         run_build_command(&build, &working_dir, uv, &node_env, stdout_tx)
+            .await
             .context("build command failed")
     });
-    tokio::spawn(async move {
+    let stdout_task = tokio::spawn(async move {
         while let Some(line) = stdout.recv().await {
             logger
                 .log_stdout(line.unwrap_or_else(|err| format!("io err: {}", err.kind())))
                 .await;
         }
     });
+    stdout_task.await?;
     task.await??;
+
     Ok(())
 }
 

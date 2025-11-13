@@ -3,7 +3,7 @@ use dora_message::{
     descriptor::{GitRepoRev, NodeSource},
     id::{DataId, NodeId, OperatorId},
 };
-use eyre::{bail, Context, OptionExt, Result};
+use eyre::{Context, OptionExt, Result, bail};
 use std::{
     collections::{BTreeMap, HashMap},
     env::consts::EXE_EXTENSION,
@@ -14,9 +14,9 @@ use tokio::process::Command;
 
 // reexport for compatibility
 pub use dora_message::descriptor::{
-    CoreNodeKind, CustomNode, Descriptor, Node, OperatorConfig, OperatorDefinition, OperatorSource,
-    PythonSource, ResolvedNode, RuntimeNode, SingleOperatorDefinition, DYNAMIC_SOURCE,
-    SHELL_SOURCE,
+    CoreNodeKind, CustomNode, DYNAMIC_SOURCE, Descriptor, Node, OperatorConfig, OperatorDefinition,
+    OperatorSource, PythonSource, ResolvedNode, RuntimeNode, SHELL_SOURCE,
+    SingleOperatorDefinition,
 };
 pub use validate::ResolvedNodeExt;
 pub use visualize::collect_dora_timers;
@@ -165,7 +165,9 @@ fn node_kind_mut(node: &mut Node) -> eyre::Result<NodeKindMut> {
                         (None, Some(tag), None) => Some(GitRepoRev::Tag(tag.clone())),
                         (None, None, Some(rev)) => Some(GitRepoRev::Rev(rev.clone())),
                         other @ (_, _, _) => {
-                            eyre::bail!("only one of `branch`, `tag`, and `rev` are allowed (got {other:?})")
+                            eyre::bail!(
+                                "only one of `branch`, `tag`, and `rev` are allowed (got {other:?})"
+                            )
                         }
                     };
                     NodeSource::GitBranch {

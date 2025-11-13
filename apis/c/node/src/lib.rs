@@ -1,7 +1,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use arrow_array::UInt8Array;
-use dora_node_api::{arrow::array::AsArray, DoraNode, Event, EventStream};
+use dora_node_api::{DoraNode, Event, EventStream, arrow::array::AsArray};
 use eyre::Context;
 use std::{ffi::c_void, ptr, slice};
 
@@ -21,7 +21,7 @@ struct DoraContext {
 /// needed, use the [`free_dora_context`] function.
 ///
 /// On error, a null pointer is returned.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn init_dora_context_from_env() -> *mut c_void {
     let context = || {
         let (node, events) = DoraNode::init_from_env()?;
@@ -47,7 +47,7 @@ pub extern "C" fn init_dora_context_from_env() -> *mut c_void {
 /// Only pointers created through [`init_dora_context_from_env`] are allowed
 /// as arguments. Each context pointer must be freed exactly once. After
 /// freeing, the pointer must not be used anymore.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn free_dora_context(context: *mut c_void) {
     let context: Box<DoraContext> = unsafe { Box::from_raw(context.cast()) };
     // drop all fields except for `node`
@@ -71,7 +71,7 @@ pub unsafe extern "C" fn free_dora_context(context: *mut c_void) {
 /// The `context` argument must be a dora context created through
 /// [`init_dora_context_from_env`]. The context must be still valid, i.e., not
 /// freed yet.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn dora_next_event(context: *mut c_void) -> *mut c_void {
     let context: &mut DoraContext = unsafe { &mut *context.cast() };
     match context.events.recv() {
@@ -87,7 +87,7 @@ pub unsafe extern "C" fn dora_next_event(context: *mut c_void) -> *mut c_void {
 /// The `event` argument must be a dora event received through
 /// [`dora_next_event`]. The event must be still valid, i.e., not
 /// freed yet.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn read_dora_event_type(event: *const ()) -> EventType {
     let event: &Event = unsafe { &*event.cast() };
     match event {
@@ -125,7 +125,7 @@ pub enum EventType {
 ///
 /// - Note: `Out_ptr` is not a null-terminated string. The length of the string
 ///   is given by `out_len`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn read_dora_input_id(
     event: *const (),
     out_ptr: *mut *const u8,
@@ -165,7 +165,7 @@ pub unsafe extern "C" fn read_dora_input_id(
 /// freed yet. The returned `out_ptr` must not be used after
 /// freeing the `event`, since it points directly into the event's
 /// memory.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn read_dora_input_data(
     event: *const (),
     out_ptr: *mut *const u8,
@@ -203,7 +203,7 @@ pub unsafe extern "C" fn read_dora_input_data(
 /// ## Safety
 ///
 /// Return `0` if the given event is not an input event.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn read_dora_input_timestamp(event: *const ()) -> core::ffi::c_ulonglong {
     let event: &Event = unsafe { &*event.cast() };
     match event {
@@ -221,7 +221,7 @@ pub unsafe extern "C" fn read_dora_input_timestamp(event: *const ()) -> core::ff
 /// freeing, the pointer and all derived pointers must not be used anymore.
 /// This also applies to the `read_dora_event_*` functions, which return
 /// pointers into the original event structure.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn free_dora_event(event: *mut c_void) {
     let _: Box<Event> = unsafe { Box::from_raw(event.cast()) };
 }
@@ -241,7 +241,7 @@ pub unsafe extern "C" fn free_dora_event(event: *mut c_void) {
 ///   UTF8-encoded string.
 /// - The `data_ptr` and `data_len` fields must be the start pointer and length
 ///   a byte array.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn dora_send_output(
     context: *mut c_void,
     id_ptr: *const u8,

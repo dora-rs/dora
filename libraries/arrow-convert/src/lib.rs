@@ -3,11 +3,11 @@
 #![warn(missing_docs)]
 
 use arrow::array::{
-    Array, Float32Array, Float64Array, Int16Array, Int32Array, Int64Array, Int8Array, UInt16Array,
-    UInt32Array, UInt8Array,
+    Array, Float32Array, Float64Array, Int8Array, Int16Array, Int32Array, Int64Array, UInt8Array,
+    UInt16Array, UInt32Array,
 };
 use arrow::datatypes::DataType;
-use eyre::{eyre, ContextCompat, Result};
+use eyre::{ContextCompat, Result, eyre};
 use num::NumCast;
 use std::ops::{Deref, DerefMut};
 

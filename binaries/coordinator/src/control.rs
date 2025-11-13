@@ -1,15 +1,15 @@
 use crate::{
-    tcp_utils::{tcp_receive, tcp_send},
     Event,
+    tcp_utils::{tcp_receive, tcp_send},
 };
 use dora_message::{
-    cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply, BuildId,
+    BuildId, cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply,
 };
-use eyre::{eyre, Context};
+use eyre::{Context, eyre};
 use futures::{
+    FutureExt, Stream, StreamExt,
     future::{self, Either},
     stream::FuturesUnordered,
-    FutureExt, Stream, StreamExt,
 };
 use futures_concurrency::future::Race;
 use std::{io::ErrorKind, net::SocketAddr};
@@ -24,7 +24,7 @@ use uuid::Uuid;
 pub(crate) async fn control_events(
     control_listen_addr: SocketAddr,
     tasks: &FuturesUnordered<JoinHandle<()>>,
-) -> eyre::Result<impl Stream<Item = Event>> {
+) -> eyre::Result<impl Stream<Item = Event> + use<>> {
     let (tx, rx) = mpsc::channel(10);
 
     let (finish_tx, mut finish_rx) = mpsc::channel(1);
