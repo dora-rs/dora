@@ -1,6 +1,7 @@
 use core::fmt;
 use std::{
     collections::{BTreeMap, BTreeSet},
+    str::FromStr,
     time::Duration,
 };
 
@@ -117,6 +118,56 @@ impl fmt::Display for InputMapping {
     }
 }
 
+impl FromStr for InputMapping {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (source, output) = s
+            .split_once('/')
+            .ok_or("input must start with `<source>/`")?;
+
+        let mapping = match source {
+            "dora" => match output.split_once('/') {
+                Some(("timer", output)) => {
+                    let (unit, value) = output.split_once('/').ok_or(
+                        "timer input must specify unit and value (e.g. `secs/5` or `millis/100`)",
+                    )?;
+                    let interval = match unit {
+                        "secs" => {
+                            let value = value
+                                .parse()
+                                .map_err(|_| format!("secs must be an integer (got `{value}`)"))?;
+                            Duration::from_secs(value)
+                        }
+                        "millis" => {
+                            let value = value.parse().map_err(|_| {
+                                format!("millis must be an integer (got `{value}`)")
+                            })?;
+                            Duration::from_millis(value)
+                        }
+                        other => {
+                            return Err(format!(
+                                "timer unit must be either secs or millis (got `{other}`"
+                            ));
+                        }
+                    };
+                    Self::Timer { interval }
+                }
+                Some((other, _)) => {
+                    return Err(format!("unknown dora input `{other}`"));
+                }
+                None => return Err("dora input has invalid format".into()),
+            },
+            _ => Self::User(UserInputMapping {
+                source: source.to_owned().into(),
+                output: output.to_owned().into(),
+            }),
+        };
+
+        Ok(mapping)
+    }
+}
+
 pub struct FormattedDuration(pub Duration);
 
 impl fmt::Display for FormattedDuration {
@@ -148,57 +199,7 @@ impl<'de> Deserialize<'de> for InputMapping {
         D: serde::Deserializer<'de>,
     {
         let string = String::deserialize(deserializer)?;
-        let (source, output) = string
-            .split_once('/')
-            .ok_or_else(|| serde::de::Error::custom("input must start with `<source>/`"))?;
-
-        let deserialized = match source {
-            "dora" => match output.split_once('/') {
-                Some(("timer", output)) => {
-                    let (unit, value) = output.split_once('/').ok_or_else(|| {
-                        serde::de::Error::custom(
-                            "timer input must specify unit and value (e.g. `secs/5` or `millis/100`)",
-                        )
-                    })?;
-                    let interval = match unit {
-                        "secs" => {
-                            let value = value.parse().map_err(|_| {
-                                serde::de::Error::custom(format!(
-                                    "secs must be an integer (got `{value}`)"
-                                ))
-                            })?;
-                            Duration::from_secs(value)
-                        }
-                        "millis" => {
-                            let value = value.parse().map_err(|_| {
-                                serde::de::Error::custom(format!(
-                                    "millis must be an integer (got `{value}`)"
-                                ))
-                            })?;
-                            Duration::from_millis(value)
-                        }
-                        other => {
-                            return Err(serde::de::Error::custom(format!(
-                                "timer unit must be either secs or millis (got `{other}`"
-                            )));
-                        }
-                    };
-                    Self::Timer { interval }
-                }
-                Some((other, _)) => {
-                    return Err(serde::de::Error::custom(format!(
-                        "unknown dora input `{other}`"
-                    )));
-                }
-                None => return Err(serde::de::Error::custom("dora input has invalid format")),
-            },
-            _ => Self::User(UserInputMapping {
-                source: source.to_owned().into(),
-                output: output.to_owned().into(),
-            }),
-        };
-
-        Ok(deserialized)
+        string.parse().map_err(serde::de::Error::custom)
     }
 }
 
