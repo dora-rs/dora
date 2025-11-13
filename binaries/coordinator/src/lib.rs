@@ -1243,7 +1243,7 @@ async fn retrieve_logs(
     node_id: NodeId,
     daemon_connections: &mut DaemonConnections,
     timestamp: uhlc::Timestamp,
-    tail: usize,
+    tail: Option<usize>,
 ) -> eyre::Result<Vec<u8>> {
     let nodes = if let Some(dataflow) = archived_dataflows.get(&dataflow_id) {
         dataflow.nodes.clone()

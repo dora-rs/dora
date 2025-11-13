@@ -751,11 +751,12 @@ impl Daemon {
                                             log::log_path(&working_dir, &dataflow_id, &node_id)
                                         ))?;
 
-                                let mut contents = if tail == 0 {
-                                    let mut contents = vec![];
-                                    file.read_to_end(&mut contents).await.map(|_| contents)
-                                } else {
-                                    read_last_n_lines(&mut file, tail).await
+                                let mut contents = match tail {
+                                    None | Some(0) => {
+                                        let mut contents = vec![];
+                                        file.read_to_end(&mut contents).await.map(|_| contents)
+                                    }
+                                    Some(tail) => read_last_n_lines(&mut file, tail).await,
                                 }
                                 .wrap_err("Could not read last n lines of log file")?;
                                 if !contents.ends_with(b"\n") {

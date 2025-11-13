@@ -71,7 +71,7 @@ pub enum ControlRequest {
         uuid: Option<Uuid>,
         name: Option<String>,
         node: String,
-        tail: usize,
+        tail: Option<usize>,
     },
     Destroy,
     List,
