@@ -28,10 +28,8 @@ pub struct LogsArgs {
     #[clap(value_name = "NAME")]
     pub node: NodeId,
     /// Number of lines to show from the end of the logs
-    ///
-    /// Default (`0`) is to show all lines.
-    #[clap(long, short = 'n', default_value_t = 0)]
-    pub tail: usize,
+    #[clap(long, short = 'n')]
+    pub tail: Option<usize>,
     /// Follow log output
     #[clap(long, short)]
     pub follow: bool,
@@ -67,7 +65,7 @@ pub fn logs(
     session: &mut TcpRequestReplyConnection,
     uuid: Uuid,
     node: NodeId,
-    tail: usize,
+    tail: Option<usize>,
     follow: bool,
     coordinator_addr: SocketAddr,
 ) -> Result<()> {

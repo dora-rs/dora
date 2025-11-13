@@ -53,7 +53,7 @@ pub enum DaemonCoordinatorEvent {
     Logs {
         dataflow_id: DataflowId,
         node_id: NodeId,
-        tail: usize,
+        tail: Option<usize>,
     },
     Destroy,
     Heartbeat,
