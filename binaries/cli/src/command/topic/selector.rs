@@ -110,9 +110,7 @@ impl TopicSelector {
             if !s.contains('/') {
                 s.to_mut().push('/');
             }
-            match serde_json::from_value::<InputMapping>(serde_json::Value::String(
-                s.clone().into_owned(),
-            )) {
+            match s.parse() {
                 Ok(InputMapping::User(user)) => {
                     let node = *node_map
                         .get(&user.source)
