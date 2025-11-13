@@ -664,7 +664,7 @@ async fn start_inner(
                                         tail,
                                     )
                                     .await
-                                    .map(|data| ControlRequestReply::Logs { uuid, data });
+                                    .map(ControlRequestReply::Logs);
                                     let _ = reply_sender.send(reply);
                                 }
                                 Err(err) => {
