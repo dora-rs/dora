@@ -13,7 +13,7 @@ use dora_message::{
 };
 pub use event::{Event, StopCause};
 use futures::{
-    Stream, StreamExt,
+    FutureExt, Stream, StreamExt,
     future::{Either, select},
 };
 use futures_timer::Delay;
@@ -257,15 +257,66 @@ impl EventStream {
                     break;
                 }
             } else {
-                match select(Delay::new(Duration::from_micros(300)), self.receiver.next()).await {
-                    Either::Left((_elapsed, _)) => break,
-                    Either::Right((Some(event), _)) => self.scheduler.add_event(event),
-                    Either::Right((None, _)) => break,
+                match self.receiver.next().now_or_never().flatten() {
+                    Some(event) => self.scheduler.add_event(event),
+                    None => break, // no other ready events
                 };
             }
         }
         let event = self.scheduler.next();
         event.map(Self::convert_event_item)
+    }
+
+    /// Receives the next buffered [`Event`] (if any) without blocking, using an
+    /// [`EventScheduler`] for fairness.
+    ///
+    /// Returns [`TryRecvError::Empty`] if no event is available right now.
+    /// Returns [`TryRecvError::Closed`] once the event stream is closed.
+    ///
+    /// This method never blocks and is safe to use in asynchronous contexts.
+    ///
+    /// ## Event Reordering
+    ///
+    /// This method uses an [`EventScheduler`] internally to **reorder events**. This means that the
+    /// events might be returned in a different order than they occurred. For details, check the
+    /// documentation of the [`EventScheduler`] struct.
+    ///
+    /// If you want to receive the events in their original chronological order, use the
+    /// [`StreamExt::next`] method with a custom timeout future instead
+    /// ([`EventStream`] implements the [`Stream`] trait).
+    pub fn try_recv(&mut self) -> Result<Event, TryRecvError> {
+        match self.recv_async().now_or_never() {
+            Some(Some(event)) => Ok(event),
+            Some(None) => Err(TryRecvError::Closed),
+            None => Err(TryRecvError::Empty),
+        }
+    }
+
+    /// Receives all buffered [`Event`]s without blocking, using an [`EventScheduler`] for fairness.
+    ///
+    /// Return `Some(Vec::new())` if no events are ready.
+    /// Returns [`None`] once the event stream is closed and no events are buffered anymore.
+    ///
+    /// This method never blocks and is safe to use in asynchronous contexts.
+    ///
+    /// This method is equivalent to repeatedly calling [`try_recv`][Self::try_recv]. See its docs
+    /// for details on event reordering.
+    pub fn drain(&mut self) -> Option<Vec<Event>> {
+        let mut events = Vec::new();
+        loop {
+            match self.try_recv() {
+                Ok(event) => events.push(event),
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Closed) => {
+                    if events.is_empty() {
+                        return None;
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+        Some(events)
     }
 
     /// Receives the next incoming [`Event`] asynchronously with a timeout.
@@ -320,6 +371,14 @@ impl EventStream {
             }
         }
     }
+}
+
+/// No event is available right now or the event stream has been closed.
+pub enum TryRecvError {
+    /// No new event is available right now.
+    Empty,
+    /// The event stream has been closed.
+    Closed,
 }
 
 pub fn data_to_arrow_array(

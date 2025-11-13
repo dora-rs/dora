@@ -119,6 +119,13 @@ jobs:
           # only save caches for `main` branch
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      # CLI tests
+      - name: "Build cli and binaries"
+        timeout-minutes: 45
+        # fail-fast by using bash shell explictly
+        shell: bash
+        run: |
+          cargo install --path binaries/cli --locked
       # general examples
       - name: "Build examples"
         timeout-minutes: 30
@@ -392,7 +399,7 @@ jobs:
           echo "Running Python Node Dynamic Example"
           dora build examples/python-dataflow/dataflow_dynamic.yml --uv
           dora start examples/python-dataflow/dataflow_dynamic.yml --name ci-python-dynamic --detach --uv
-          uv run opencv-plot --name plot
+          uv run opencv-plot
           sleep 10
           echo "Running dora stop"
           dora stop --name ci-python-dynamic  --grace-duration 30s

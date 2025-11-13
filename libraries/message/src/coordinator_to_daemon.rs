@@ -42,6 +42,8 @@ pub enum DaemonCoordinatorEvent {
     StopDataflow {
         dataflow_id: DataflowId,
         grace_duration: Option<Duration>,
+        #[serde(default)]
+        force: bool,
     },
     ReloadDataflow {
         dataflow_id: DataflowId,
@@ -51,6 +53,7 @@ pub enum DaemonCoordinatorEvent {
     Logs {
         dataflow_id: DataflowId,
         node_id: NodeId,
+        tail: Option<usize>,
     },
     Destroy,
     Heartbeat,
