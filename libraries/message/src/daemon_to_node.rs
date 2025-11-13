@@ -1,11 +1,14 @@
 use std::{net::SocketAddr, path::PathBuf};
 
+use tokio::sync::oneshot;
+
 use crate::{
     DataflowId,
     config::NodeRunConfig,
     descriptor::OperatorDefinition,
     id::{DataId, NodeId, OperatorId},
     metadata::Metadata,
+    node_to_daemon::DaemonRequest,
 };
 
 pub use crate::common::{DataMessage, DropToken, SharedMemoryId, Timestamped};
@@ -43,6 +46,17 @@ pub enum DaemonCommunication {
         socket_file: PathBuf,
     },
     Interactive,
+    IntegrationTest {
+        input_file: PathBuf,
+        output_file: PathBuf,
+        skip_output_time_offsets: bool,
+    },
+    IntegrationTestInitialized {
+        #[serde(skip)]
+        channel: Option<
+            tokio::sync::mpsc::Sender<(Timestamped<DaemonRequest>, oneshot::Sender<DaemonReply>)>,
+        >,
+    },
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

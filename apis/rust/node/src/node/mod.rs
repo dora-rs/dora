@@ -1,4 +1,7 @@
-use crate::{EventStream, daemon_connection::DaemonChannel};
+use crate::{
+    EventStream,
+    daemon_connection::{DaemonChannel, IntegrationTestingEvents},
+};
 
 use self::{
     arrow_utils::{copy_array_into_sample, required_data_size},
@@ -27,6 +30,7 @@ use shared_memory_extended::{Shmem, ShmemConf};
 use std::{
     collections::{BTreeSet, HashMap, VecDeque},
     ops::{Deref, DerefMut},
+    path::PathBuf,
     sync::Arc,
     time::Duration,
 };
@@ -118,32 +122,61 @@ impl DoraNode {
     }
 
     fn init_from_env_inner(fallback_to_interactive: bool) -> eyre::Result<(Self, EventStream)> {
-        let node_config: NodeConfig = match std::env::var("DORA_NODE_CONFIG") {
-            Ok(raw) => serde_yaml::from_str(&raw).context("failed to deserialize node config")?,
+        // normal execution (started by dora daemon)
+        match std::env::var("DORA_NODE_CONFIG") {
+            Ok(raw) => {
+                let node_config: NodeConfig =
+                    serde_yaml::from_str(&raw).context("failed to deserialize node config")?;
+                #[cfg(feature = "tracing")]
+                {
+                    TracingBuilder::new(node_config.node_id.as_ref())
+                        .build()
+                        .wrap_err("failed to set up tracing subscriber")?;
+                }
+
+                return Self::init(node_config);
+            }
             Err(std::env::VarError::NotUnicode(_)) => {
                 bail!("DORA_NODE_CONFIG env variable is not valid unicode")
             }
-            Err(std::env::VarError::NotPresent) => {
-                if fallback_to_interactive && std::io::stdin().is_terminal() {
-                    println!(
-                    "{}",
-                    "Starting node in interactive mode as DORA_NODE_CONFIG env variable is not set"
-                        .green()
-                );
-                    return Self::init_interactive();
-                } else {
-                    bail!("DORA_NODE_CONFIG env variable is not set")
-                }
-            }
-        };
-        #[cfg(feature = "tracing")]
-        {
-            TracingBuilder::new(node_config.node_id.as_ref())
-                .build()
-                .wrap_err("failed to set up tracing subscriber")?;
+            Err(std::env::VarError::NotPresent) => {} // continue trying other init methods
         }
 
-        Self::init(node_config)
+        // node integration test mode
+        match std::env::var("DORA_TEST_WITH_INPUTS") {
+            Ok(raw) => {
+                let input_file = PathBuf::from(raw);
+                let output_file = match std::env::var("DORA_TEST_WRITE_OUTPUTS_TO") {
+                    Ok(raw) => PathBuf::from(raw),
+                    Err(std::env::VarError::NotUnicode(_)) => {
+                        bail!("DORA_TEST_WRITE_OUTPUTS_TO env variable is not valid unicode")
+                    }
+                    Err(std::env::VarError::NotPresent) => {
+                        input_file.with_file_name("outputs.jsonl")
+                    }
+                };
+                let skip_output_time_offsets =
+                    std::env::var_os("DORA_TEST_NO_OUTPUT_TIME_OFFSET").is_some();
+                return Self::init_testing(input_file, output_file, skip_output_time_offsets);
+            }
+            Err(std::env::VarError::NotUnicode(_)) => {
+                bail!("DORA_TEST_WITH_INPUTS env variable is not valid unicode")
+            }
+            Err(std::env::VarError::NotPresent) => {} // continue trying other init methods
+        }
+
+        // interactive mode
+        if fallback_to_interactive && std::io::stdin().is_terminal() {
+            println!(
+                "{}",
+                "Starting node in interactive mode as DORA_NODE_CONFIG env variable is not set"
+                    .green()
+            );
+            return Self::init_interactive();
+        }
+
+        // no run mode applicable
+        bail!("DORA_NODE_CONFIG env variable is not set")
     }
 
     /// Initiate a node from a dataflow id and a node id.
@@ -323,6 +356,39 @@ impl DoraNode {
         Ok((node, events))
     }
 
+    fn init_testing(
+        input_file: PathBuf,
+        output_file: PathBuf,
+        skip_output_time_offsets: bool,
+    ) -> eyre::Result<(Self, EventStream)> {
+        #[cfg(feature = "tracing")]
+        {
+            TracingBuilder::new("node")
+                .with_stdout("debug")
+                .build()
+                .wrap_err("failed to set up tracing subscriber")?;
+        }
+
+        let node_config = NodeConfig {
+            dataflow_id: DataflowId::new_v4(),
+            node_id: "".parse()?,
+            run_config: NodeRunConfig {
+                inputs: Default::default(),
+                outputs: Default::default(),
+            },
+            daemon_communication: DaemonCommunication::IntegrationTest {
+                input_file,
+                output_file,
+                skip_output_time_offsets,
+            },
+            dataflow_descriptor: serde_yaml::Value::Null,
+            dynamic: false,
+        };
+        let (mut node, events) = Self::init(node_config)?;
+        node.interactive = true;
+        Ok((node, events))
+    }
+
     /// Internal initialization routine that should not be used outside of Dora.
     #[doc(hidden)]
     #[tracing::instrument]
@@ -365,6 +431,40 @@ impl DoraNode {
                 TokioRuntime::Handle(handle) => handle.spawn(monitor_task),
             };
         }
+
+        let daemon_communication =
+            match daemon_communication {
+                DaemonCommunication::IntegrationTest {
+                    input_file,
+                    output_file,
+                    skip_output_time_offsets,
+                } => {
+                    let (sender, mut receiver) = tokio::sync::mpsc::channel(5);
+                    let new_communication = DaemonCommunication::IntegrationTestInitialized {
+                        channel: Some(sender),
+                    };
+                    let mut events = IntegrationTestingEvents::new(
+                        input_file,
+                        output_file,
+                        skip_output_time_offsets,
+                    )?;
+                    std::thread::spawn(move || {
+                        while let Some((request, reply_sender)) = receiver.blocking_recv() {
+                            let reply = events.request(&request);
+                            if reply_sender
+                                .send(reply.unwrap_or_else(|err| {
+                                    DaemonReply::Result(Err(format!("{err:?}")))
+                                }))
+                                .is_err()
+                            {
+                                eprintln!("failed to send reply");
+                            }
+                        }
+                    });
+                    new_communication
+                }
+                other => other,
+            };
 
         let event_stream = EventStream::init(
             dataflow_id,
