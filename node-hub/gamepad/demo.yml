@@ -1,8 +1,0 @@
-nodes:
-  - id: gamepad
-    build: pip install -e ../../node-hub/gamepad
-    path: gamepad
-    outputs:
-      - cmd_vel
-    inputs:
-      tick: dora/timer/millis/10

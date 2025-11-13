@@ -12,7 +12,8 @@ pub mod output;
 pub mod session;
 mod template;
 
-pub use command::run_func;
+pub use command::build;
+pub use command::{run, run_func};
 
 const LOCALHOST: IpAddr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
 const LISTEN_WILDCARD: IpAddr = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0));
@@ -65,9 +66,9 @@ pub fn lib_main(args: Args) {
 use clap::Parser;
 #[cfg(feature = "python")]
 use pyo3::{
-    pyfunction, pymodule,
+    Bound, PyResult, Python, pyfunction, pymodule,
     types::{PyModule, PyModuleMethods},
-    wrap_pyfunction, Bound, PyResult, Python,
+    wrap_pyfunction,
 };
 
 #[cfg(feature = "python")]

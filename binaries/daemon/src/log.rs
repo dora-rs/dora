@@ -10,9 +10,9 @@ use dora_core::{
     uhlc,
 };
 use dora_message::{
+    BuildId,
     common::{DaemonId, LogLevel, LogMessage, Timestamped},
     daemon_to_coordinator::{CoordinatorRequest, DaemonEvent},
-    BuildId,
 };
 use eyre::Context;
 use flume::Sender;
@@ -416,7 +416,7 @@ struct Indent<'a>(&'a str);
 impl std::fmt::Display for Indent<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for line in self.0.lines() {
-            write!(f, "   {}", line)?;
+            write!(f, "   {line}")?;
         }
         Ok(())
     }

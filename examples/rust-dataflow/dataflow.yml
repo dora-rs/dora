@@ -21,10 +21,3 @@ nodes:
     path: ../../target/debug/rust-dataflow-example-sink
     inputs:
       message: rust-status-node/status
-
-  - id: dora-record
-    build: cargo build -p dora-record
-    path: ../../target/debug/dora-record
-    inputs:
-      message: rust-status-node/status
-      random: rust-node/random

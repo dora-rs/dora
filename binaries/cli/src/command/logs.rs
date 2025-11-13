@@ -3,18 +3,19 @@ use std::{
     net::{SocketAddr, TcpStream},
 };
 
-use super::{default_tracing, Executable};
+use super::{Executable, default_tracing};
 use crate::{
-    common::{connect_to_coordinator, query_running_dataflows},
+    common::{connect_to_coordinator, resolve_dataflow_identifier_interactive},
     output::print_log_message,
 };
 use clap::Args;
 use communication_layer_request_reply::{TcpConnection, TcpRequestReplyConnection};
 use dora_core::topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST};
 use dora_message::{
-    cli_to_coordinator::ControlRequest, common::LogMessage, coordinator_to_cli::ControlRequestReply,
+    cli_to_coordinator::ControlRequest, common::LogMessage,
+    coordinator_to_cli::ControlRequestReply, id::NodeId,
 };
-use eyre::{bail, Context, Result};
+use eyre::{Context, Result, bail};
 use uuid::Uuid;
 
 #[derive(Debug, Args)]
@@ -25,7 +26,7 @@ pub struct LogsArgs {
     pub dataflow: Option<String>,
     /// Show logs for the given node
     #[clap(value_name = "NAME")]
-    pub node: String,
+    pub node: NodeId,
     /// Number of lines to show from the end of the logs
     ///
     /// Default (`0`) is to show all lines.
@@ -49,29 +50,11 @@ impl Executable for LogsArgs {
         let mut session =
             connect_to_coordinator((self.coordinator_addr, self.coordinator_port).into())
                 .wrap_err("failed to connect to dora coordinator")?;
-        let list =
-            query_running_dataflows(&mut *session).wrap_err("failed to query running dataflows")?;
-        let (uuid, name) = match self.dataflow.as_ref().map(|it| Uuid::parse_str(it)) {
-            Some(Ok(uuid)) => (Some(uuid), None),
-            Some(Err(_)) => (None, self.dataflow.clone()),
-            None => {
-                let active = list.get_active();
-                let uuid = match &active[..] {
-                    [] => bail!("No dataflows are running"),
-                    [uuid] => uuid.uuid,
-                    _ => {
-                        let uuid = inquire::Select::new("Choose dataflow to show logs:", active)
-                            .prompt()?;
-                        uuid.uuid
-                    }
-                };
-                (Some(uuid), None)
-            }
-        };
+        let uuid =
+            resolve_dataflow_identifier_interactive(&mut *session, self.dataflow.as_deref())?;
         logs(
             &mut *session,
             uuid,
-            name,
             self.node,
             self.tail,
             self.follow,
@@ -82,9 +65,8 @@ impl Executable for LogsArgs {
 
 pub fn logs(
     session: &mut TcpRequestReplyConnection,
-    uuid: Option<Uuid>,
-    name: Option<String>,
-    node: String,
+    uuid: Uuid,
+    node: NodeId,
     tail: usize,
     follow: bool,
     coordinator_addr: SocketAddr,
@@ -93,9 +75,9 @@ pub fn logs(
         let reply_raw = session
             .request(
                 &serde_json::to_vec(&ControlRequest::Logs {
-                    uuid,
-                    name,
-                    node: node.clone(),
+                    uuid: Some(uuid),
+                    name: None,
+                    node: node.to_string(),
                     tail,
                 })
                 .wrap_err("")?,

@@ -6,18 +6,18 @@ use std::{
 };
 
 use dora_message::{
+    DataflowId,
     daemon_to_node::{DaemonCommunication, DaemonReply, DataMessage, NodeEvent},
     id::DataId,
     node_to_daemon::{DaemonRequest, Timestamped},
-    DataflowId,
 };
 pub use event::{Event, StopCause};
 use futures::{
-    future::{select, Either},
-    Stream, StreamExt,
+    FutureExt, Stream, StreamExt,
+    future::{Either, select},
 };
 use futures_timer::Delay;
-use scheduler::{Scheduler, NON_INPUT_EVENT};
+use scheduler::{NON_INPUT_EVENT, Scheduler};
 
 use self::thread::{EventItem, EventStreamThreadHandle};
 use crate::{
@@ -28,7 +28,7 @@ use dora_core::{
     config::{Input, NodeId},
     uhlc,
 };
-use eyre::{eyre, Context};
+use eyre::{Context, eyre};
 
 pub use scheduler::Scheduler as EventScheduler;
 
@@ -90,6 +90,7 @@ impl EventStream {
                     format!("failed to connect event stream for node `{node_id}`")
                 })?
             }
+            DaemonCommunication::Interactive => DaemonChannel::Interactive(Default::default()),
         };
 
         let close_channel = match daemon_communication {
@@ -109,6 +110,7 @@ impl EventStream {
                     format!("failed to connect event close channel for node `{node_id}`")
                 })?
             }
+            DaemonCommunication::Interactive => DaemonChannel::Interactive(Default::default()),
         };
 
         let mut queue_size_limit: HashMap<DataId, (usize, VecDeque<EventItem>)> = input_config
@@ -243,15 +245,66 @@ impl EventStream {
                     break;
                 }
             } else {
-                match select(Delay::new(Duration::from_micros(300)), self.receiver.next()).await {
-                    Either::Left((_elapsed, _)) => break,
-                    Either::Right((Some(event), _)) => self.scheduler.add_event(event),
-                    Either::Right((None, _)) => break,
+                match self.receiver.next().now_or_never().flatten() {
+                    Some(event) => self.scheduler.add_event(event),
+                    None => break, // no other ready events
                 };
             }
         }
         let event = self.scheduler.next();
         event.map(Self::convert_event_item)
+    }
+
+    /// Receives the next buffered [`Event`] (if any) without blocking, using an
+    /// [`EventScheduler`] for fairness.
+    ///
+    /// Returns [`TryRecvError::Empty`] if no event is available right now.
+    /// Returns [`TryRecvError::Closed`] once the event stream is closed.
+    ///
+    /// This method never blocks and is safe to use in asynchronous contexts.
+    ///
+    /// ## Event Reordering
+    ///
+    /// This method uses an [`EventScheduler`] internally to **reorder events**. This means that the
+    /// events might be returned in a different order than they occurred. For details, check the
+    /// documentation of the [`EventScheduler`] struct.
+    ///
+    /// If you want to receive the events in their original chronological order, use the
+    /// [`StreamExt::next`] method with a custom timeout future instead
+    /// ([`EventStream`] implements the [`Stream`] trait).
+    pub fn try_recv(&mut self) -> Result<Event, TryRecvError> {
+        match self.recv_async().now_or_never() {
+            Some(Some(event)) => Ok(event),
+            Some(None) => Err(TryRecvError::Closed),
+            None => Err(TryRecvError::Empty),
+        }
+    }
+
+    /// Receives all buffered [`Event`]s without blocking, using an [`EventScheduler`] for fairness.
+    ///
+    /// Return `Some(Vec::new())` if no events are ready.
+    /// Returns [`None`] once the event stream is closed and no events are buffered anymore.
+    ///
+    /// This method never blocks and is safe to use in asynchronous contexts.
+    ///
+    /// This method is equivalent to repeatedly calling [`try_recv`][Self::try_recv]. See its docs
+    /// for details on event reordering.
+    pub fn drain(&mut self) -> Option<Vec<Event>> {
+        let mut events = Vec::new();
+        loop {
+            match self.try_recv() {
+                Ok(event) => events.push(event),
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Closed) => {
+                    if events.is_empty() {
+                        return None;
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+        Some(events)
     }
 
     /// Receives the next incoming [`Event`] asynchronously with a timeout.
@@ -285,28 +338,7 @@ impl EventStream {
                 NodeEvent::Reload { operator_id } => Event::Reload { operator_id },
                 NodeEvent::InputClosed { id } => Event::InputClosed { id },
                 NodeEvent::Input { id, metadata, data } => {
-                    let data = match data {
-                        None => Ok(None),
-                        Some(DataMessage::Vec(v)) => Ok(Some(RawData::Vec(v))),
-                        Some(DataMessage::SharedMemory {
-                            shared_memory_id,
-                            len,
-                            drop_token: _, // handled in `event_stream_loop`
-                        }) => unsafe {
-                            MappedInputData::map(&shared_memory_id, len).map(|data| {
-                                Some(RawData::SharedMemory(SharedMemoryData {
-                                    data,
-                                    _drop: ack_channel,
-                                }))
-                            })
-                        },
-                    };
-                    let data = data.and_then(|data| {
-                        let raw_data = data.unwrap_or(RawData::Empty);
-                        raw_data
-                            .into_arrow_array(&metadata.type_info)
-                            .map(arrow::array::make_array)
-                    });
+                    let data = data_to_arrow_array(data, &metadata, ack_channel);
                     match data {
                         Ok(data) => Event::Input {
                             id,
@@ -327,6 +359,44 @@ impl EventStream {
             }
         }
     }
+}
+
+/// No event is available right now or the event stream has been closed.
+pub enum TryRecvError {
+    /// No new event is available right now.
+    Empty,
+    /// The event stream has been closed.
+    Closed,
+}
+
+pub fn data_to_arrow_array(
+    data: Option<DataMessage>,
+    metadata: &dora_message::metadata::Metadata,
+    drop_channel: flume::Sender<()>,
+) -> eyre::Result<Arc<dyn arrow::array::Array>> {
+    let data = match data {
+        None => Ok(None),
+        Some(DataMessage::Vec(v)) => Ok(Some(RawData::Vec(v))),
+        Some(DataMessage::SharedMemory {
+            shared_memory_id,
+            len,
+            drop_token: _, // handled in `event_stream_loop`
+        }) => unsafe {
+            MappedInputData::map(&shared_memory_id, len).map(|data| {
+                Some(RawData::SharedMemory(SharedMemoryData {
+                    data,
+                    _drop: drop_channel,
+                }))
+            })
+        },
+    };
+    let data = data.and_then(|data| {
+        let raw_data = data.unwrap_or(RawData::Empty);
+        raw_data
+            .into_arrow_array(&metadata.type_info)
+            .map(arrow::array::make_array)
+    });
+    data
 }
 
 impl Stream for EventStream {

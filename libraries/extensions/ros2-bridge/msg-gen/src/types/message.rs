@@ -1,7 +1,7 @@
-use quote::{format_ident, quote, ToTokens};
+use quote::{ToTokens, format_ident, quote};
 use syn::Ident;
 
-use super::{primitives::*, sequences::Array, ConstantType, MemberType};
+use super::{ConstantType, MemberType, primitives::*, sequences::Array};
 
 /// A member of a structure
 #[derive(Debug, Clone)]
@@ -150,6 +150,7 @@ impl Message {
     ) -> (impl ToTokens, impl ToTokens) {
         let cxx_name = format_ident!("{}", self.name);
         let struct_raw_name = format_ident!("{package_name}__{}", self.name);
+        let struct_raw_vec_name = format_ident!("{package_name}_Vec_{}", self.name);
 
         let rust_type_def_inner = self.members.iter().map(|m| m.rust_type_def(&self.package));
         let constants_def_inner = self.constants.iter().map(|c| c.token_stream());
@@ -178,6 +179,101 @@ impl Message {
             (quote! {}, quote! {})
         };
 
+        let msg_converter = match struct_raw_name.to_string().as_str() {
+            "action_msgs__GoalStatus" => quote! {
+                impl From<crate::ros2_client::action_msgs::GoalStatus> for ffi::action_msgs__GoalStatus {
+                    fn from(status: crate::ros2_client::action_msgs::GoalStatus) -> Self {
+                        use crate::ros2_client::action_msgs::GoalStatus;
+                        let GoalStatus {goal_info, status} = status;
+                        Self { goal_info: goal_info.into(), status: status as i8 }
+                    }
+                }
+            },
+            "action_msgs__GoalInfo" => quote! {
+                impl From<crate::ros2_client::action_msgs::GoalInfo> for ffi::action_msgs__GoalInfo {
+                    fn from(info: crate::ros2_client::action_msgs::GoalInfo) -> Self {
+                        use crate::ros2_client::action_msgs::GoalInfo;
+                        let GoalInfo {goal_id, stamp} = info;
+                        Self { goal_id: goal_id.into(), stamp: stamp.into()}
+                    }
+                }
+            },
+            "unique_identifier_msgs__UUID" => quote! {
+                impl From<crate::ros2_client::unique_identifier_msgs::UUID> for ffi::unique_identifier_msgs__UUID {
+                    fn from(uuid: crate::ros2_client::unique_identifier_msgs::UUID) -> Self {
+                        use crate::ros2_client::unique_identifier_msgs::UUID;
+                        let UUID {uuid} = uuid;
+                        let mut buf = [0u8; 16];
+                        uuid.as_simple().encode_lower(&mut buf);
+                        Self { uuid: buf }
+                    }
+                }
+            },
+            "builtin_interfaces__Time" => quote! {
+                impl From<crate::ros2_client::builtin_interfaces::Time> for ffi::builtin_interfaces__Time {
+                    fn from(time: crate::ros2_client::builtin_interfaces::Time) -> Self {
+                        let t = time.to_nanos();
+                        let quot = t / 1_000_000_000;
+                        let rem = t % 1_000_000_000;
+
+                        // https://doc.rust-lang.org/reference/expressions/operator-expr.html#arithmetic-and-logical-binary-operators
+                        // "Rust uses a remainder defined with truncating division.
+                        // Given remainder = dividend % divisor,
+                        // the remainder will have the same sign as the dividend."
+
+                        if rem >= 0 {
+                            // positive time, no surprise here
+                            // OR, negative time, but a whole number of seconds, fractional part is zero
+                            Self {
+                                // Saturate seconds to i32. This is different from C++ implementation
+                                // in rclcpp, which just uses
+                                // `ret.sec = static_cast<std::int32_t>(result.quot)`.
+                                sec: if quot > (i32::MAX as i64) {
+                                    tracing::warn!("rcl_interfaces::Time conversion overflow");
+                                    i32::MAX
+                                } else if quot < (i32::MIN as i64) {
+                                    tracing::warn!("rcl_interfaces::Time conversion underflow");
+                                    i32::MIN
+                                } else {
+                                    quot as i32
+                                },
+                                nanosec: rem as u32,
+                            }
+                        } else {
+                            // Now `t` is negative AND `rem` is non-zero.
+                            // We do some non-obvious arithmetic:
+
+                            // saturate whole seconds
+                            let quot_sat = if quot >= (i32::MIN as i64) {
+                                quot as i32
+                            } else {
+                                tracing::warn!("rcl_interfaces::Time conversion underflow");
+                                i32::MIN
+                            };
+
+                            // Now, `rem` is between -999_999_999 and -1, inclusive.
+                            // Case rem = 0 is included in the positive branch.
+                            //
+                            // Adding 1_000_000_000 will make it positive, so cast to u32 is ok.
+                            //
+                            // It is also the right thing to do, because
+                            // * 0.0 sec = 0 sec and 0 nanosec
+                            // * -0.000_000_001 sec = -1 sec and 999_999_999 nanosec
+                            // * ...
+                            // * -0.99999999999 sec = -1 sec and 000_000_001 nanosec
+                            // * -1.0           sec = -1 sec and 0 nanosec
+                            // * -1.00000000001 sec = -2 sec and 999_999_999 nanosec
+                            Self {
+                                sec: quot_sat - 1, // note -1
+                                nanosec: (1_000_000_000 + rem) as u32,
+                            }
+                        }
+                    }
+                }
+            },
+            _ => quote! {},
+        };
+
         let def = if self.members.is_empty() {
             quote! {
                 #[allow(non_camel_case_types)]
@@ -197,6 +293,12 @@ impl Message {
                 #attributes
                 pub struct #struct_raw_name {
                     #(#rust_type_def_inner)*
+                }
+
+                #[allow(non_camel_case_types)]
+                #[allow(dead_code)]
+                pub struct #struct_raw_vec_name {
+                    data: Vec<#struct_raw_name>
                 }
 
                 #cxx_consts
@@ -220,6 +322,8 @@ impl Message {
                 #(#constants_def_inner)*
 
             }
+
+            #msg_converter
 
             impl crate::_core::InternalDefault for ffi::#struct_raw_name {
                 fn _default() -> Self {
@@ -248,43 +352,43 @@ impl Message {
         };
 
         let topic_name = format_ident!("Topic__{package_name}__{}", self.name);
-        let cxx_topic_name = format_ident!("Topic_{}", self.name);
+        let cxx_topic_name = format!("Topic_{}", self.name);
         let create_topic = format_ident!("new__Topic__{package_name}__{}", self.name);
         let cxx_create_topic = format!("create_topic_{package_name}_{}", self.name);
 
         let publisher_name = format_ident!("Publisher__{package_name}__{}", self.name);
-        let cxx_publisher_name = format_ident!("Publisher_{}", self.name);
+        let cxx_publisher_name = format!("Publisher_{}", self.name);
         let create_publisher = format_ident!("new__Publisher__{package_name}__{}", self.name);
-        let cxx_create_publisher = format_ident!("create_publisher");
+        let cxx_create_publisher = format!("create_publisher");
 
         let struct_raw_name = format_ident!("{package_name}__{}", self.name);
         let struct_raw_name_str = struct_raw_name.to_string();
         let self_name = &self.name;
 
         let publish = format_ident!("publish__{package_name}__{}", self.name);
-        let cxx_publish = format_ident!("publish");
+        let cxx_publish = "publish";
 
         let subscription_name = format_ident!("Subscription__{package_name}__{}", self.name);
         let subscription_name_str = subscription_name.to_string();
-        let cxx_subscription_name = format_ident!("Subscription_{}", self.name);
+        let cxx_subscription_name = format!("Subscription_{}", self.name);
         let create_subscription = format_ident!("new__Subscription__{package_name}__{}", self.name);
-        let cxx_create_subscription = format_ident!("create_subscription");
+        let cxx_create_subscription = "create_subscription";
 
         let matches = format_ident!("matches__{package_name}__{}", self.name);
-        let cxx_matches = format_ident!("matches");
+        let cxx_matches = "matches";
         let downcast = format_ident!("downcast__{package_name}__{}", self.name);
-        let cxx_downcast = format_ident!("downcast");
+        let cxx_downcast = "downcast";
 
         let def = quote! {
             #[namespace = #package_name]
             #[cxx_name = #cxx_topic_name]
             type #topic_name;
             #[cxx_name = #cxx_create_topic]
-            fn #create_topic(self: &Ros2Node, name_space: &str, base_name: &str, qos: Ros2QosPolicies) -> Result<Box<#topic_name>>;
+            fn #create_topic(node: &Ros2Node, name_space: &str, base_name: &str, qos: Ros2QosPolicies) -> Result<Box<#topic_name>>;
             #[cxx_name = #cxx_create_publisher]
-            fn #create_publisher(self: &mut Ros2Node, topic: &Box<#topic_name>, qos: Ros2QosPolicies) -> Result<Box<#publisher_name>>;
+            fn #create_publisher(node: &mut Ros2Node, topic: &Box<#topic_name>, qos: Ros2QosPolicies) -> Result<Box<#publisher_name>>;
             #[cxx_name = #cxx_create_subscription]
-            fn #create_subscription(self: &mut Ros2Node, topic: &Box<#topic_name>, qos: Ros2QosPolicies, events: &mut CombinedEvents) -> Result<Box<#subscription_name>>;
+            fn #create_subscription(node: &mut Ros2Node, topic: &Box<#topic_name>, qos: Ros2QosPolicies, events: &mut CombinedEvents) -> Result<Box<#subscription_name>>;
 
             #[namespace = #package_name]
             #[cxx_name = #cxx_publisher_name]
@@ -308,33 +412,31 @@ impl Message {
             #[allow(non_camel_case_types)]
             pub struct #topic_name(rustdds::Topic);
 
-            impl Ros2Node {
-                #[allow(non_snake_case)]
-                pub fn #create_topic(&self, name_space: &str, base_name: &str, qos: ffi::Ros2QosPolicies) -> eyre::Result<Box<#topic_name>> {
-                    let name = crate::ros2_client::Name::new(name_space, base_name).map_err(|e| eyre::eyre!(e))?;
-                    let type_name = crate::ros2_client::MessageTypeName::new(#package_name, #self_name);
-                    let topic = self.node.create_topic(&name, type_name, &qos.into())?;
-                    Ok(Box::new(#topic_name(topic)))
-                }
+            #[allow(non_snake_case)]
+            pub fn #create_topic(node: &Ros2Node, name_space: &str, base_name: &str, qos: ffi::Ros2QosPolicies) -> eyre::Result<Box<#topic_name>> {
+                let name = crate::ros2_client::Name::new(name_space, base_name).map_err(|e| eyre::eyre!(e))?;
+                let type_name = crate::ros2_client::MessageTypeName::new(#package_name, #self_name);
+                let topic = node.node.create_topic(&name, type_name, &qos.into())?;
+                Ok(Box::new(#topic_name(topic)))
+            }
 
-                #[allow(non_snake_case)]
-                pub fn #create_publisher(&mut self, topic: &Box<#topic_name>, qos: ffi::Ros2QosPolicies) -> eyre::Result<Box<#publisher_name>> {
-                    let publisher = self.node.create_publisher(&topic.0, Some(qos.into()))?;
-                    Ok(Box::new(#publisher_name(publisher)))
-                }
+            #[allow(non_snake_case)]
+            pub fn #create_publisher(node: &mut Ros2Node, topic: &Box<#topic_name>, qos: ffi::Ros2QosPolicies) -> eyre::Result<Box<#publisher_name>> {
+                let publisher = node.node.create_publisher(&topic.0, Some(qos.into()))?;
+                Ok(Box::new(#publisher_name(publisher)))
+            }
 
-                #[allow(non_snake_case)]
-                pub fn #create_subscription(&mut self, topic: &Box<#topic_name>, qos: ffi::Ros2QosPolicies, events: &mut crate::ffi::CombinedEvents) -> eyre::Result<Box<#subscription_name>> {
-                    let subscription = self.node.create_subscription::<ffi::#struct_raw_name>(&topic.0, Some(qos.into()))?;
-                    let stream = futures_lite::stream::unfold(subscription, |sub| async {
-                        let item = sub.async_take().await;
-                        let item_boxed: Box<dyn std::any::Any + 'static> = Box::new(item);
-                        Some((item_boxed, sub))
-                    });
-                    let id = events.events.merge(Box::pin(stream));
+            #[allow(non_snake_case)]
+            pub fn #create_subscription(node: &mut Ros2Node, topic: &Box<#topic_name>, qos: ffi::Ros2QosPolicies, events: &mut crate::ffi::CombinedEvents) -> eyre::Result<Box<#subscription_name>> {
+                let subscription = node.node.create_subscription::<ffi::#struct_raw_name>(&topic.0, Some(qos.into()))?;
+                let stream = futures_lite::stream::unfold(subscription, |sub| async {
+                    let item = sub.async_take().await;
+                    let item_boxed: Box<dyn std::any::Any + 'static> = Box::new(item);
+                    Some((item_boxed, sub))
+                });
+                let id = events.events.merge(Box::pin(stream));
 
-                    Ok(Box::new(#subscription_name { id }))
-                }
+                Ok(Box::new(#subscription_name { id }))
             }
 
             #[allow(non_camel_case_types)]
@@ -381,7 +483,7 @@ impl Message {
         (def, imp)
     }
 
-    pub fn alias_token_stream(&self, package_name: &Ident) -> impl ToTokens {
+    pub fn alias_token_stream(&self, package_name: &Ident) -> impl ToTokens + use<> {
         let cxx_name = format_ident!("{}", self.name);
         let struct_raw_name = format_ident!("{package_name}__{}", self.name);
 
@@ -389,16 +491,16 @@ impl Message {
             quote! {}
         } else {
             quote! {
-                pub use super::super::ffi::#struct_raw_name as #cxx_name;
+                pub use super::ffi::#struct_raw_name as #cxx_name;
             }
         }
     }
 
-    pub fn token_stream(&self) -> impl ToTokens {
+    pub fn token_stream(&self) -> impl ToTokens + use<> {
         self.token_stream_args(false)
     }
 
-    pub fn token_stream_args(&self, gen_cxx_bridge: bool) -> impl ToTokens {
+    pub fn token_stream_args(&self, gen_cxx_bridge: bool) -> impl ToTokens + use<> {
         let rust_type = format_ident!("{}", self.name);
         let raw_type = format_ident!("{}_Raw", self.name);
         let raw_ref_type = format_ident!("{}_RawRef", self.name);

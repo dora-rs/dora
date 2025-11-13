@@ -1,4 +1,4 @@
-use dora_node_api::{self, dora_core::config::DataId, DoraNode};
+use dora_node_api::{self, DoraNode, dora_core::config::DataId};
 use eyre::Context;
 use rand::RngCore;
 use std::time::Duration;
@@ -34,7 +34,7 @@ fn main() -> eyre::Result<()> {
     for data in &data {
         for _ in 0..1 {
             node.send_output_raw(latency.clone(), Default::default(), data.len(), |out| {
-                out.copy_from_slice(&data);
+                out.copy_from_slice(data);
             })?;
 
             // sleep a bit to avoid queue buildup
@@ -49,7 +49,7 @@ fn main() -> eyre::Result<()> {
     for data in &data {
         for _ in 0..100 {
             node.send_output_raw(throughput.clone(), Default::default(), data.len(), |out| {
-                out.copy_from_slice(&data);
+                out.copy_from_slice(data);
             })?;
         }
         // notify sink that all messages have been sent

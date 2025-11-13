@@ -1,16 +1,16 @@
 use arrow::{
     array::{
-        make_array, Array, ArrayData, BooleanArray, Float32Array, Float64Array, Int16Array,
-        Int32Array, Int64Array, Int8Array, ListArray, StringArray, StructArray, UInt16Array,
-        UInt32Array, UInt64Array, UInt8Array,
+        Array, ArrayData, BooleanArray, Float32Array, Float64Array, Int8Array, Int16Array,
+        Int32Array, Int64Array, ListArray, StringArray, StructArray, UInt8Array, UInt16Array,
+        UInt32Array, UInt64Array, make_array,
     },
     buffer::{OffsetBuffer, ScalarBuffer},
     compute::concat,
     datatypes::Field,
 };
 use dora_ros2_bridge_msg_gen::types::{
-    primitives::{BasicType, NestableType},
     MemberType, Message,
+    primitives::{BasicType, NestableType},
 };
 use eyre::{Context, ContextCompat, Result};
 use std::{collections::HashMap, sync::Arc, vec};
@@ -112,51 +112,73 @@ fn default_for_nestable_type(
 fn preset_default_for_basic_type(t: &NestableType, preset: &str) -> Result<ArrayData> {
     Ok(match t {
         NestableType::BasicType(t) => match t {
-            BasicType::I8 => Int8Array::from(vec![preset
-                .parse::<i8>()
-                .context("Could not parse preset default value")?])
+            BasicType::I8 => Int8Array::from(vec![
+                preset
+                    .parse::<i8>()
+                    .context("Could not parse preset default value")?,
+            ])
             .into(),
-            BasicType::I16 => Int16Array::from(vec![preset
-                .parse::<i16>()
-                .context("Could not parse preset default value")?])
+            BasicType::I16 => Int16Array::from(vec![
+                preset
+                    .parse::<i16>()
+                    .context("Could not parse preset default value")?,
+            ])
             .into(),
-            BasicType::I32 => Int32Array::from(vec![preset
-                .parse::<i32>()
-                .context("Could not parse preset default value")?])
+            BasicType::I32 => Int32Array::from(vec![
+                preset
+                    .parse::<i32>()
+                    .context("Could not parse preset default value")?,
+            ])
             .into(),
-            BasicType::I64 => Int64Array::from(vec![preset
-                .parse::<i64>()
-                .context("Could not parse preset default value")?])
+            BasicType::I64 => Int64Array::from(vec![
+                preset
+                    .parse::<i64>()
+                    .context("Could not parse preset default value")?,
+            ])
             .into(),
-            BasicType::U8 => UInt8Array::from(vec![preset
-                .parse::<u8>()
-                .context("Could not parse preset default value")?])
+            BasicType::U8 => UInt8Array::from(vec![
+                preset
+                    .parse::<u8>()
+                    .context("Could not parse preset default value")?,
+            ])
             .into(),
-            BasicType::U16 => UInt16Array::from(vec![preset
-                .parse::<u16>()
-                .context("Could not parse preset default value")?])
+            BasicType::U16 => UInt16Array::from(vec![
+                preset
+                    .parse::<u16>()
+                    .context("Could not parse preset default value")?,
+            ])
             .into(),
-            BasicType::U32 => UInt32Array::from(vec![preset
-                .parse::<u32>()
-                .context("Could not parse preset default value")?])
+            BasicType::U32 => UInt32Array::from(vec![
+                preset
+                    .parse::<u32>()
+                    .context("Could not parse preset default value")?,
+            ])
             .into(),
-            BasicType::U64 => UInt64Array::from(vec![preset
-                .parse::<u64>()
-                .context("Could not parse preset default value")?])
+            BasicType::U64 => UInt64Array::from(vec![
+                preset
+                    .parse::<u64>()
+                    .context("Could not parse preset default value")?,
+            ])
             .into(),
-            BasicType::F32 => Float32Array::from(vec![preset
-                .parse::<f32>()
-                .context("Could not parse preset default value")?])
+            BasicType::F32 => Float32Array::from(vec![
+                preset
+                    .parse::<f32>()
+                    .context("Could not parse preset default value")?,
+            ])
             .into(),
-            BasicType::F64 => Float64Array::from(vec![preset
-                .parse::<f64>()
-                .context("Could not parse preset default value")?])
+            BasicType::F64 => Float64Array::from(vec![
+                preset
+                    .parse::<f64>()
+                    .context("Could not parse preset default value")?,
+            ])
             .into(),
             BasicType::Char => StringArray::from(vec![preset]).into(),
             BasicType::Byte => UInt8Array::from(preset.as_bytes().to_owned()).into(),
-            BasicType::Bool => BooleanArray::from(vec![preset
-                .parse::<bool>()
-                .context("could not parse preset default value")?])
+            BasicType::Bool => BooleanArray::from(vec![
+                preset
+                    .parse::<bool>()
+                    .context("could not parse preset default value")?,
+            ])
             .into(),
         },
         NestableType::GenericString(_) => StringArray::from(vec![preset]).into(),

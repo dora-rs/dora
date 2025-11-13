@@ -1,4 +1,4 @@
-use anyhow::{ensure, Result};
+use anyhow::{Result, ensure};
 use nom::{
     bytes::complete::is_not,
     character::complete::{space0, space1},
@@ -8,7 +8,7 @@ use nom::{
 };
 
 use super::{error::RclMsgError, ident, literal, types};
-use crate::types::{primitives::NestableType, Member, MemberType};
+use crate::types::{Member, MemberType, primitives::NestableType};
 
 fn nestable_type_default(nestable_type: NestableType, default: &str) -> Result<Vec<String>> {
     match nestable_type {
@@ -18,11 +18,9 @@ fn nestable_type_default(nestable_type: NestableType, default: &str) -> Result<V
             ensure!(rest.is_empty());
             Ok(vec![default])
         }
-        NestableType::NamedType(t) => {
-            Err(RclMsgError::InvalidDefaultError(format!("{}", t)).into())
-        }
+        NestableType::NamedType(t) => Err(RclMsgError::InvalidDefaultError(format!("{t}")).into()),
         NestableType::NamespacedType(t) => {
-            Err(RclMsgError::InvalidDefaultError(format!("{}", t)).into())
+            Err(RclMsgError::InvalidDefaultError(format!("{t}")).into())
         }
         NestableType::GenericString(t) => {
             let (rest, default) = literal::get_string_literal_parser(t)(default)
@@ -41,11 +39,9 @@ fn array_type_default(value_type: NestableType, default: &str) -> Result<Vec<Str
             ensure!(rest.is_empty());
             Ok(default)
         }
-        NestableType::NamedType(t) => {
-            Err(RclMsgError::InvalidDefaultError(format!("{}", t)).into())
-        }
+        NestableType::NamedType(t) => Err(RclMsgError::InvalidDefaultError(format!("{t}")).into()),
         NestableType::NamespacedType(t) => {
-            Err(RclMsgError::InvalidDefaultError(format!("{}", t)).into())
+            Err(RclMsgError::InvalidDefaultError(format!("{t}")).into())
         }
         NestableType::GenericString(_) => {
             let (rest, default) = literal::string_literal_sequence(default)

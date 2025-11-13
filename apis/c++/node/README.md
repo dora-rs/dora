@@ -70,6 +70,81 @@ Instead, use the following functions to read and destructure the event:
   - The `data` of inputs is currently of type [`rust::Vec<uint8_t>`](https://cxx.rs/binding/vec.html). Use the provided methods for reading or converting the data.
     - **Note:** In the future, we plan to change the data type to the [Apache Arrow](https://arrow.apache.org/) data format to support typed inputs.
 
+### Receiving Arrow Inputs
+
+For Arrow-based inputs, you can use the following functions to receive typed data along with metadata:
+
+- `event_as_arrow_input(event, out_array, out_schema)` - Returns only the Arrow array data (original function)
+- `event_as_arrow_input_with_info(event, out_array, out_schema)` - Returns Arrow array data plus input ID and metadata as JSON
+
+**Example using `event_as_arrow_input_with_info`:**
+
+```c++
+struct ArrowArray c_array;
+struct ArrowSchema c_schema;
+
+// Get Arrow array along with input ID and metadata
+auto input_info = event_as_arrow_input_with_info(
+    std::move(event),
+    reinterpret_cast<uint8_t*>(&c_array),
+    reinterpret_cast<uint8_t*>(&c_schema)
+);
+
+// Check for errors
+if (!input_info.error.empty()) {
+    std::cerr << "Error: " << input_info.error << std::endl;
+    return;
+}
+
+// Access input ID
+std::cout << "Input ID: " << input_info.id << std::endl;
+
+// Access metadata via the provided helper type
+auto metadata = std::move(input_info.metadata);
+std::cout << "Metadata timestamp: " << metadata->timestamp() << std::endl;
+
+auto keys = metadata->list_keys();
+for (std::size_t i = 0; i < keys.size(); i++) {
+    const std::string key(keys[i]);
+    try {
+        switch (metadata->type(key)) {
+        case MetadataValueType::Float:
+            std::cout << "Parameter " << key << " (float): "
+                      << metadata->get_float(key) << std::endl;
+            break;
+        case MetadataValueType::Integer:
+            std::cout << "Parameter " << key << " (int): "
+                      << metadata->get_int(key) << std::endl;
+            break;
+        case MetadataValueType::String:
+            std::cout << "Parameter " << key << " (string): "
+                      << std::string(metadata->get_str(key)) << std::endl;
+            break;
+        case MetadataValueType::Bool:
+            std::cout << "Parameter " << key << " (bool): "
+                      << std::string(metadata->get_json(key)) << std::endl;
+            break;
+        default:
+            std::cout << "Parameter " << key << " has unsupported type" << std::endl;
+            break;
+        }
+    } catch (const std::exception& err) {
+        std::cout << "Parameter " << key << " unavailable: " << err.what() << std::endl;
+    }
+}
+
+std::cout << "Metadata as JSON: " << std::string(metadata->to_json()) << std::endl;
+
+// Import the Arrow array for processing
+auto result = arrow::ImportArray(&c_array, &c_schema);
+std::shared_ptr<arrow::Array> input_array = result.ValueOrDie();
+```
+
+The metadata JSON contains:
+- `timestamp` - Message timestamp with `secs` and `nanos` fields
+- `type_info` - Arrow type information
+- `parameters` - Custom metadata parameters (key-value pairs)
+
 ### Sending Outputs
 
 Nodes can send outputs using the `send_output` output function and the `dora_node.send_output` field.

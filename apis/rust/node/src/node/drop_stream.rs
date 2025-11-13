@@ -3,11 +3,11 @@ use std::{sync::Arc, time::Duration};
 use crate::daemon_connection::DaemonChannel;
 use dora_core::{config::NodeId, uhlc};
 use dora_message::{
+    DataflowId,
     daemon_to_node::{DaemonCommunication, DaemonReply, NodeDropEvent},
     node_to_daemon::{DaemonRequest, DropToken, Timestamped},
-    DataflowId,
 };
-use eyre::{eyre, Context};
+use eyre::{Context, eyre};
 use flume::RecvTimeoutError;
 
 pub struct DropStream {
@@ -40,6 +40,7 @@ impl DropStream {
                     format!("failed to connect drop stream for node `{node_id}`")
                 })?
             }
+            DaemonCommunication::Interactive => DaemonChannel::Interactive(Default::default()),
         };
 
         Self::init_on_channel(dataflow_id, node_id, channel, hlc)

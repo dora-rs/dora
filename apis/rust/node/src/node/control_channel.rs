@@ -6,12 +6,12 @@ use dora_core::{
     uhlc::HLC,
 };
 use dora_message::{
+    DataflowId,
     daemon_to_node::{DaemonCommunication, DaemonReply},
     metadata::Metadata,
     node_to_daemon::{DaemonRequest, DataMessage, Timestamped},
-    DataflowId,
 };
-use eyre::{bail, eyre, Context};
+use eyre::{Context, bail, eyre};
 
 pub(crate) struct ControlChannel {
     channel: DaemonChannel,
@@ -39,6 +39,7 @@ impl ControlChannel {
                 DaemonChannel::new_unix_socket(socket_file)
                     .wrap_err("failed to connect control channel")?
             }
+            DaemonCommunication::Interactive => DaemonChannel::Interactive(Default::default()),
         };
 
         Self::init_on_channel(dataflow_id, node_id, channel, clock)
