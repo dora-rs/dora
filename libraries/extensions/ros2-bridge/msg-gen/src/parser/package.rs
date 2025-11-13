@@ -5,7 +5,6 @@ use std::{
 
 use anyhow::{Context, Result};
 use glob::glob;
-use tracing::warn;
 
 use super::{action::parse_action_file, message::parse_message_file, service::parse_service_file};
 use crate::types::Package;
@@ -19,7 +18,7 @@ fn get_ros_msgs_each_package<P: AsRef<Path>>(root_dirs: &[P]) -> Result<Vec<Pack
     for root_dir in root_dirs {
         if root_dir.as_ref() == Path::new("") {
             let empty_vec: Vec<Package> = vec![];
-            warn!("AMENT_PREFIX_PATH pointed to ''");
+            println!("cargo::warning=AMENT_PREFIX_PATH pointed to ''");
             return Ok(empty_vec);
         }
 
@@ -56,8 +55,8 @@ fn get_ros_msgs_each_package<P: AsRef<Path>>(root_dirs: &[P]) -> Result<Vec<Pack
                 if file_name == "libstatistics_collector" {
                     continue;
                 } else if visited_files.contains(&(package.clone(), file_name.clone())) {
-                    warn!(
-                        "found two versions of package: {:?}, message: {:?}. will skip the one in: {:#?}",
+                    println!(
+                        "cargo::warning=found two versions of package: {:?}, message: {:?}. will skip the one in: {:#?}",
                         package, file_name, path
                     );
                     continue;
@@ -84,10 +83,11 @@ fn get_ros_msgs_each_package<P: AsRef<Path>>(root_dirs: &[P]) -> Result<Vec<Pack
                 }
             }
         }
-        debug_assert!(
-            !map.is_empty(),
-            "it seems that no package was generated from your AMENT_PREFIX_PATH directory"
-        );
+        if map.is_empty() {
+            println!(
+                "cargo::warning=it seems that no package was generated from your AMENT_PREFIX_PATH directory"
+            );
+        }
     }
 
     let mut packages = Vec::new();
