@@ -50,7 +50,7 @@ git2 = { workspace = true }
 dunce = "1.0.5"
 itertools = "0.14"
 process-wrap = { version = "8.2.1", features = ["tokio1"] }
-
+memchr = "2.7.5"
 shellexpand = "3.1.1"
 
 [target.'cfg(windows)'.dependencies]
