@@ -20,6 +20,9 @@ fn main() {
     } else {
         target_dir.join("install")
     };
+    println!("cargo:rerun-if-env-changed=DORA_NODE_API_CXX_INSTALL");
+
+    // recreate target dir
     if target_dir.exists() {
         std::fs::remove_dir_all(&target_dir).unwrap();
     }
@@ -190,7 +193,6 @@ mod ros2 {
         let target_path = target_path.join("ros2-bridge");
 
         copy_dir_all(&header_path, &target_path).unwrap();
-        println!("cargo:rerun-if-changed={}", header_path.display());
     }
 
     // copy from cxx-build source
