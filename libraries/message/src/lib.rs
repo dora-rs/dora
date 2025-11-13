@@ -22,7 +22,7 @@ pub mod node_to_daemon;
 pub mod cli_to_coordinator;
 pub mod coordinator_to_cli;
 
-pub mod integration_testing;
+pub mod integration_testing_format;
 
 pub use arrow_data;
 pub use arrow_schema;

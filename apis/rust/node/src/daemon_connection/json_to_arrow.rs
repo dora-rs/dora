@@ -48,9 +48,9 @@ fn wrapped_quoted(data: impl BufRead) -> impl BufRead {
 /// convert the given JSON object to the closed arrow representation
 pub fn read_json_value_as_arrow(
     data: &[serde_json::Value],
-    schema: arrow_schema::Schema,
+    schema: Arc<arrow_schema::Schema>,
 ) -> eyre::Result<ArrayData> {
-    let mut decoder = arrow_json::reader::ReaderBuilder::new(Arc::new(schema))
+    let mut decoder = arrow_json::reader::ReaderBuilder::new(schema)
         .build_decoder()
         .context("failed to build JSON decoder")?;
     decoder
