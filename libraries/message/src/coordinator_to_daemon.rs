@@ -42,6 +42,8 @@ pub enum DaemonCoordinatorEvent {
     StopDataflow {
         dataflow_id: DataflowId,
         grace_duration: Option<Duration>,
+        #[serde(default)]
+        force: bool,
     },
     ReloadDataflow {
         dataflow_id: DataflowId,

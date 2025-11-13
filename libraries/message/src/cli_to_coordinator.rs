@@ -58,10 +58,14 @@ pub enum ControlRequest {
     Stop {
         dataflow_uuid: Uuid,
         grace_duration: Option<Duration>,
+        #[serde(default)]
+        force: bool,
     },
     StopByName {
         name: String,
         grace_duration: Option<Duration>,
+        #[serde(default)]
+        force: bool,
     },
     Logs {
         uuid: Option<Uuid>,
