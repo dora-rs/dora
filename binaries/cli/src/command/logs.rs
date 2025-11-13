@@ -1,10 +1,20 @@
+use std::{
+    io::Write,
+    net::{SocketAddr, TcpStream},
+};
+
 use super::{Executable, default_tracing};
-use crate::common::{connect_to_coordinator, query_running_dataflows};
-use bat::{Input, PrettyPrinter};
+use crate::{
+    common::{connect_to_coordinator, resolve_dataflow_identifier_interactive},
+    output::print_log_message,
+};
 use clap::Args;
-use communication_layer_request_reply::TcpRequestReplyConnection;
+use communication_layer_request_reply::{TcpConnection, TcpRequestReplyConnection};
 use dora_core::topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST};
-use dora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply};
+use dora_message::{
+    cli_to_coordinator::ControlRequest, common::LogMessage,
+    coordinator_to_cli::ControlRequestReply, id::NodeId,
+};
 use eyre::{Context, Result, bail};
 use uuid::Uuid;
 
@@ -16,7 +26,13 @@ pub struct LogsArgs {
     pub dataflow: Option<String>,
     /// Show logs for the given node
     #[clap(value_name = "NAME")]
-    pub node: String,
+    pub node: NodeId,
+    /// Number of lines to show from the end of the logs
+    #[clap(long, short = 'n')]
+    pub tail: Option<usize>,
+    /// Follow log output
+    #[clap(long, short)]
+    pub follow: bool,
     /// Address of the dora coordinator
     #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
     pub coordinator_addr: std::net::IpAddr,
@@ -32,37 +48,35 @@ impl Executable for LogsArgs {
         let mut session =
             connect_to_coordinator((self.coordinator_addr, self.coordinator_port).into())
                 .wrap_err("failed to connect to dora coordinator")?;
-        let list =
-            query_running_dataflows(&mut *session).wrap_err("failed to query running dataflows")?;
-        if let Some(dataflow) = self.dataflow {
-            let uuid = Uuid::parse_str(&dataflow).ok();
-            let name = if uuid.is_some() { None } else { Some(dataflow) };
-            logs(&mut *session, uuid, name, self.node)
-        } else {
-            let active = list.get_active();
-            let uuid = match &active[..] {
-                [] => bail!("No dataflows are running"),
-                [uuid] => uuid.clone(),
-                _ => inquire::Select::new("Choose dataflow to show logs:", active).prompt()?,
-            };
-            logs(&mut *session, Some(uuid.uuid), None, self.node)
-        }
+        let uuid =
+            resolve_dataflow_identifier_interactive(&mut *session, self.dataflow.as_deref())?;
+        logs(
+            &mut *session,
+            uuid,
+            self.node,
+            self.tail,
+            self.follow,
+            (self.coordinator_addr, self.coordinator_port).into(),
+        )
     }
 }
 
 pub fn logs(
     session: &mut TcpRequestReplyConnection,
-    uuid: Option<Uuid>,
-    name: Option<String>,
-    node: String,
+    uuid: Uuid,
+    node: NodeId,
+    tail: Option<usize>,
+    follow: bool,
+    coordinator_addr: SocketAddr,
 ) -> Result<()> {
     let logs = {
         let reply_raw = session
             .request(
                 &serde_json::to_vec(&ControlRequest::Logs {
-                    uuid,
-                    name,
-                    node: node.clone(),
+                    uuid: Some(uuid),
+                    name: None,
+                    node: node.to_string(),
+                    tail,
                 })
                 .wrap_err("")?,
             )
@@ -70,23 +84,50 @@ pub fn logs(
 
         let reply = serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
         match reply {
-            ControlRequestReply::Logs(logs) => logs,
+            ControlRequestReply::Logs(data) => data,
             other => bail!("unexpected reply to daemon logs: {other:?}"),
         }
     };
 
-    PrettyPrinter::new()
-        .header(false)
-        .grid(false)
-        .line_numbers(false)
-        .paging_mode(bat::PagingMode::QuitIfOneScreen)
-        .inputs(vec![
-            Input::from_bytes(&logs)
-                .name("Logs")
-                .title(format!("Logs from {node}.").as_str()),
-        ])
-        .print()
-        .wrap_err("Something went wrong with viewing log file")?;
+    std::io::stdout()
+        .write_all(&logs)
+        .expect("failed to write logs to stdout");
+
+    if !follow {
+        return Ok(());
+    }
+    let log_level = env_logger::Builder::new()
+        .filter_level(log::LevelFilter::Info)
+        .parse_default_env()
+        .build()
+        .filter();
+
+    // subscribe to log messages
+    let mut log_session = TcpConnection {
+        stream: TcpStream::connect(coordinator_addr)
+            .wrap_err("failed to connect to dora coordinator")?,
+    };
+    log_session
+        .send(
+            &serde_json::to_vec(&ControlRequest::LogSubscribe {
+                dataflow_id: uuid,
+                level: log_level,
+            })
+            .wrap_err("failed to serialize message")?,
+        )
+        .wrap_err("failed to send log subscribe request to coordinator")?;
+    while let Ok(raw) = log_session.receive() {
+        let parsed: eyre::Result<LogMessage> =
+            serde_json::from_slice(&raw).context("failed to parse log message");
+        match parsed {
+            Ok(log_message) => {
+                print_log_message(log_message, false, false);
+            }
+            Err(err) => {
+                tracing::warn!("failed to parse log message: {err:?}")
+            }
+        }
+    }
 
     Ok(())
 }

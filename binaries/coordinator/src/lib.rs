@@ -568,6 +568,7 @@ async fn start_inner(
                         ControlRequest::Stop {
                             dataflow_uuid,
                             grace_duration,
+                            force,
                         } => {
                             if let Some(result) = dataflow_results.get(&dataflow_uuid) {
                                 let reply = ControlRequestReply::DataflowStopped {
@@ -585,6 +586,7 @@ async fn start_inner(
                                 &mut daemon_connections,
                                 clock.new_timestamp(),
                                 grace_duration,
+                                force,
                             )
                             .await;
 
@@ -600,6 +602,7 @@ async fn start_inner(
                         ControlRequest::StopByName {
                             name,
                             grace_duration,
+                            force,
                         } => match resolve_name(name, &running_dataflows, &archived_dataflows) {
                             Ok(dataflow_uuid) => {
                                 if let Some(result) = dataflow_results.get(&dataflow_uuid) {
@@ -618,6 +621,7 @@ async fn start_inner(
                                     &mut daemon_connections,
                                     clock.new_timestamp(),
                                     grace_duration,
+                                    force,
                                 )
                                 .await;
 
@@ -634,7 +638,12 @@ async fn start_inner(
                                 let _ = reply_sender.send(Err(err));
                             }
                         },
-                        ControlRequest::Logs { uuid, name, node } => {
+                        ControlRequest::Logs {
+                            uuid,
+                            name,
+                            node,
+                            tail,
+                        } => {
                             let dataflow_uuid = if let Some(uuid) = uuid {
                                 Ok(uuid)
                             } else if let Some(name) = name {
@@ -652,6 +661,7 @@ async fn start_inner(
                                         node.into(),
                                         &mut daemon_connections,
                                         clock.new_timestamp(),
+                                        tail,
                                     )
                                     .await
                                     .map(ControlRequestReply::Logs);
@@ -660,6 +670,19 @@ async fn start_inner(
                                 Err(err) => {
                                     let _ = reply_sender.send(Err(err));
                                 }
+                            }
+                        }
+                        ControlRequest::Info { dataflow_uuid } => {
+                            if let Some(dataflow) = running_dataflows.get(&dataflow_uuid) {
+                                let _ = reply_sender.send(Ok(ControlRequestReply::DataflowInfo {
+                                    uuid: dataflow.uuid,
+                                    name: dataflow.name.clone(),
+                                    descriptor: dataflow.descriptor.clone(),
+                                }));
+                            } else {
+                                let _ = reply_sender.send(Err(eyre!(
+                                    "No running dataflow with uuid `{dataflow_uuid}`"
+                                )));
                             }
                         }
                         ControlRequest::Destroy => {
@@ -986,6 +1009,7 @@ async fn handle_destroy(
             daemon_connections,
             clock.new_timestamp(),
             None,
+            false,
         )
         .await?;
     }
@@ -1024,6 +1048,7 @@ struct RunningBuild {
 struct RunningDataflow {
     name: Option<String>,
     uuid: Uuid,
+    descriptor: Descriptor,
     /// The IDs of the daemons that the dataflow is running on.
     daemons: BTreeSet<DaemonId>,
     /// IDs of daemons that are waiting until all nodes are started.
@@ -1123,6 +1148,7 @@ async fn stop_dataflow<'a>(
     daemon_connections: &mut DaemonConnections,
     timestamp: uhlc::Timestamp,
     grace_duration: Option<Duration>,
+    force: bool,
 ) -> eyre::Result<&'a mut RunningDataflow> {
     let Some(dataflow) = running_dataflows.get_mut(&dataflow_uuid) else {
         bail!("no known running dataflow found with UUID `{dataflow_uuid}`")
@@ -1132,6 +1158,7 @@ async fn stop_dataflow<'a>(
         inner: DaemonCoordinatorEvent::StopDataflow {
             dataflow_id: dataflow_uuid,
             grace_duration,
+            force,
         },
         timestamp,
     })?;
@@ -1216,6 +1243,7 @@ async fn retrieve_logs(
     node_id: NodeId,
     daemon_connections: &mut DaemonConnections,
     timestamp: uhlc::Timestamp,
+    tail: Option<usize>,
 ) -> eyre::Result<Vec<u8>> {
     let nodes = if let Some(dataflow) = archived_dataflows.get(&dataflow_id) {
         dataflow.nodes.clone()
@@ -1229,6 +1257,7 @@ async fn retrieve_logs(
         inner: DaemonCoordinatorEvent::Logs {
             dataflow_id,
             node_id: node_id.clone(),
+            tail,
         },
         timestamp,
     })?;
@@ -1419,7 +1448,7 @@ async fn start_dataflow(
     } = spawn_dataflow(
         build_id,
         session_id,
-        dataflow,
+        dataflow.clone(),
         local_working_dir,
         daemon_connections,
         clock,
@@ -1429,6 +1458,7 @@ async fn start_dataflow(
     Ok(RunningDataflow {
         uuid,
         name,
+        descriptor: dataflow,
         pending_daemons: if daemons.len() > 1 {
             daemons.clone()
         } else {

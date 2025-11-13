@@ -11,7 +11,7 @@ nodes:
       IMAGE_WIDTH: 640
       IMAGE_HEIGHT: 480
 
-  - id: plot
+  - id: opencv-plot
     build: pip install "git+https://github.com/dora-rs/dora-hub.git#egg=opencv-plot&subdirectory=node-hub/opencv-plot"
     path: dynamic
     inputs:
