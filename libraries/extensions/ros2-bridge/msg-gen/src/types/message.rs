@@ -203,9 +203,7 @@ impl Message {
                     fn from(uuid: crate::ros2_client::unique_identifier_msgs::UUID) -> Self {
                         use crate::ros2_client::unique_identifier_msgs::UUID;
                         let UUID {uuid} = uuid;
-                        let mut buf = [0u8; 16];
-                        uuid.as_simple().encode_lower(&mut buf);
-                        Self { uuid: buf }
+                        Self { uuid: *uuid.as_bytes() }
                     }
                 }
             },
