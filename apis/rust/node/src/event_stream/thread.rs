@@ -7,11 +7,8 @@ use dora_message::{
     node_to_daemon::{DaemonRequest, DropToken, Timestamped},
 };
 use eyre::{Context, eyre};
-use flume::RecvTimeoutError;
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use flume::RecvError;
+use std::sync::Arc;
 
 use crate::daemon_connection::DaemonChannel;
 
@@ -68,17 +65,14 @@ impl Drop for EventStreamThreadHandle {
         //
         // In the future, we hope to fix this issue so that
         // the event stream can be properly waited for every time.
-        match self.handle.recv_timeout(Duration::from_secs(1)) {
+        match self.handle.recv() {
             Ok(Ok(())) => {
                 tracing::trace!("event stream thread finished");
             }
             Ok(Err(_)) => {
                 tracing::error!("event stream thread panicked");
             }
-            Err(RecvTimeoutError::Timeout) => {
-                tracing::warn!("timeout while waiting for event stream thread");
-            }
-            Err(RecvTimeoutError::Disconnected) => {
+            Err(RecvError::Disconnected) => {
                 tracing::warn!("event stream thread result channel closed unexpectedly");
             }
         }

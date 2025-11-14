@@ -684,13 +684,12 @@ impl DoraNode {
 
     fn handle_finished_drop_tokens(&mut self) -> eyre::Result<()> {
         loop {
-            match self.drop_stream.try_recv() {
+            match self.drop_stream.recv() {
                 Ok(token) => match self.sent_out_shared_memory.remove(&token) {
                     Some(region) => self.add_to_cache(region),
                     None => tracing::warn!("received unknown finished drop token `{token:?}`"),
                 },
-                Err(flume::TryRecvError::Empty) => break,
-                Err(flume::TryRecvError::Disconnected) => {
+                Err(flume::RecvError::Disconnected) => {
                     bail!("event stream was closed before sending all expected drop tokens")
                 }
             }
@@ -746,21 +745,13 @@ impl Drop for DoraNode {
                 );
             }
 
-            match self.drop_stream.recv_timeout(Duration::from_secs(2)) {
+            match self.drop_stream.recv() {
                 Ok(token) => {
                     self.sent_out_shared_memory.remove(&token);
                 }
-                Err(flume::RecvTimeoutError::Disconnected) => {
+                Err(flume::RecvError::Disconnected) => {
                     tracing::warn!(
                         "finished_drop_tokens channel closed while still waiting for drop tokens; \
-                        closing {} shared memory regions that might not yet been mapped.",
-                        self.sent_out_shared_memory.len()
-                    );
-                    break;
-                }
-                Err(flume::RecvTimeoutError::Timeout) => {
-                    tracing::warn!(
-                        "timeout while waiting for drop tokens; \
                         closing {} shared memory regions that might not yet been mapped.",
                         self.sent_out_shared_memory.len()
                     );
