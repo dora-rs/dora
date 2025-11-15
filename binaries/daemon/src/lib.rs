@@ -38,23 +38,24 @@ use futures_concurrency::stream::Merge;
 use local_listener::DynamicNodeEventWrapper;
 use log::{DaemonLogger, DataflowLogger, Logger};
 use pending::PendingNodes;
+use process_wrap::tokio::TokioChildWrapper;
 use shared_memory_server::ShmemConf;
 use socket_stream_utils::socket_stream_send;
 use spawn::Spawner;
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     env::current_dir,
     future::Future,
+    io,
     net::SocketAddr,
     path::{Path, PathBuf},
     pin::pin,
     sync::Arc,
     time::{Duration, Instant},
 };
-use sysinfo::Pid;
 use tokio::{
     fs::File,
-    io::AsyncReadExt,
+    io::{AsyncReadExt, AsyncSeekExt},
     net::TcpStream,
     sync::{
         broadcast,
@@ -429,6 +430,7 @@ impl Daemon {
                                 &mut self.coordinator_connection,
                                 &self.clock,
                                 None,
+                                false,
                                 &mut logger,
                             )
                             .await?;
@@ -734,6 +736,7 @@ impl Daemon {
             DaemonCoordinatorEvent::Logs {
                 dataflow_id,
                 node_id,
+                tail,
             } => {
                 match self.working_dir.get(&dataflow_id) {
                     Some(working_dir) => {
@@ -748,10 +751,18 @@ impl Daemon {
                                             log::log_path(&working_dir, &dataflow_id, &node_id)
                                         ))?;
 
-                                let mut contents = vec![];
-                                file.read_to_end(&mut contents)
-                                    .await
-                                    .wrap_err("Could not read content of log file")?;
+                                let mut contents = match tail {
+                                    None | Some(0) => {
+                                        let mut contents = vec![];
+                                        file.read_to_end(&mut contents).await.map(|_| contents)
+                                    }
+                                    Some(tail) => read_last_n_lines(&mut file, tail).await,
+                                }
+                                .wrap_err("Could not read last n lines of log file")?;
+                                if !contents.ends_with(b"\n") {
+                                    // Append newline for better readability
+                                    contents.push(b'\n');
+                                }
                                 Result::<Vec<u8>, eyre::Report>::Ok(contents)
                             }
                             .await
@@ -790,6 +801,7 @@ impl Daemon {
             DaemonCoordinatorEvent::StopDataflow {
                 dataflow_id,
                 grace_duration,
+                force,
             } => {
                 let mut logger = self.logger.for_dataflow(dataflow_id);
                 let dataflow = self
@@ -802,6 +814,7 @@ impl Daemon {
                             &mut self.coordinator_connection,
                             &self.clock,
                             grace_duration,
+                            force,
                             &mut logger,
                         );
                         (Ok(()), Some(future))
@@ -1848,9 +1861,7 @@ impl Daemon {
         let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
             format!("failed to get downstream nodes: no running dataflow with ID `{dataflow_id}`")
         })?;
-        if let Some(mut pid) = dataflow.running_nodes.remove(node_id).and_then(|n| n.pid) {
-            pid.mark_as_stopped()
-        }
+        dataflow.running_nodes.remove(node_id);
         if !dataflow.pending_nodes.local_nodes_pending()
             && dataflow
                 .running_nodes
@@ -2118,6 +2129,57 @@ impl Daemon {
     }
 }
 
+async fn read_last_n_lines(file: &mut File, mut tail: usize) -> io::Result<Vec<u8>> {
+    let mut pos = file.seek(io::SeekFrom::End(0)).await?;
+
+    let mut output = VecDeque::<u8>::new();
+    let mut extend_slice_to_start = |slice: &[u8]| {
+        output.extend(slice);
+        output.rotate_right(slice.len());
+    };
+
+    let mut buffer = vec![0; 2048];
+    let mut estimated_line_length = 0;
+    let mut at_end = true;
+    'main: while tail > 0 && pos > 0 {
+        let new_pos = pos.saturating_sub(buffer.len() as u64);
+        file.seek(io::SeekFrom::Start(new_pos)).await?;
+        let read_len = (pos - new_pos) as usize;
+        pos = new_pos;
+
+        file.read_exact(&mut buffer[..read_len]).await?;
+        let read_buf = if at_end {
+            at_end = false;
+            &buffer[..read_len].trim_ascii_end()
+        } else {
+            &buffer[..read_len]
+        };
+
+        let mut iter = memchr::memrchr_iter(b'\n', read_buf);
+        let mut lines = 1;
+        loop {
+            let Some(pos) = iter.next() else {
+                extend_slice_to_start(read_buf);
+                break;
+            };
+            lines += 1;
+            tail -= 1;
+            if tail == 0 {
+                extend_slice_to_start(&read_buf[(pos + 1)..]);
+                break 'main;
+            }
+        }
+
+        estimated_line_length = estimated_line_length.max((read_buf.len() + 1).div_ceil(lines));
+        let estimated_buffer_length = estimated_line_length * tail;
+        if estimated_buffer_length >= buffer.len() * 2 {
+            buffer.resize(buffer.len() * 2, 0);
+        }
+    }
+
+    Ok(output.into())
+}
+
 async fn set_up_event_stream(
     coordinator_addr: SocketAddr,
     machine_id: &Option<String>,
@@ -2280,46 +2342,77 @@ fn close_input(
 
 #[derive(Debug)]
 pub struct RunningNode {
-    pid: Option<ProcessId>,
+    process: Option<ProcessHandle>,
     node_config: NodeConfig,
 }
 
 #[derive(Debug)]
-struct ProcessId(Option<u32>);
+enum ProcessOperation {
+    SoftKill,
+    Kill,
+}
 
-impl ProcessId {
-    pub fn new(process_id: u32) -> Self {
-        Self(Some(process_id))
-    }
+impl ProcessOperation {
+    pub fn execute(&self, child: &mut dyn TokioChildWrapper) {
+        match self {
+            Self::SoftKill => {
+                #[cfg(unix)]
+                {
+                    // Send SIGTERM
+                    if let Err(err) = child.signal(15) {
+                        warn!("failed to send SIGTERM to process {:?}: {err}", child.id());
+                    }
+                }
 
-    pub fn mark_as_stopped(&mut self) {
-        self.0 = None;
-    }
+                #[cfg(windows)]
+                unsafe {
+                    let Some(pid) = child.id() else {
+                        warn!("failed to get child process id");
+                        return;
+                    };
+                    if let Err(err) = windows::Win32::System::Console::GenerateConsoleCtrlEvent(
+                        windows::Win32::System::Console::CTRL_BREAK_EVENT,
+                        pid,
+                    ) {
+                        warn!("failed to send CTRL_BREAK_EVENT to process {pid}: {err}");
+                    }
+                }
 
-    pub fn kill(&mut self) -> bool {
-        if let Some(pid) = self.0 {
-            let pid = Pid::from(pid as usize);
-            let mut system = sysinfo::System::new();
-            system.refresh_process(pid);
-
-            if let Some(process) = system.process(pid) {
-                process.kill();
-                self.mark_as_stopped();
-                return true;
+                #[cfg(not(any(unix, windows)))]
+                {
+                    warn!("killing process is not implemented on this platform");
+                }
+            }
+            Self::Kill => {
+                if let Err(err) = child.start_kill() {
+                    warn!("failed to kill child process: {err}");
+                }
             }
         }
-
-        false
     }
 }
 
-impl Drop for ProcessId {
+#[derive(Debug)]
+struct ProcessHandle {
+    op_tx: flume::Sender<ProcessOperation>,
+}
+
+impl ProcessHandle {
+    pub fn new(op_tx: flume::Sender<ProcessOperation>) -> Self {
+        Self { op_tx }
+    }
+
+    /// Returns true if the process is not finished yet and the operation is
+    /// delivered.
+    pub fn submit(&self, operation: ProcessOperation) -> bool {
+        self.op_tx.send(operation).is_ok()
+    }
+}
+
+impl Drop for ProcessHandle {
     fn drop(&mut self) {
-        // kill the process if it's still running
-        if let Some(pid) = self.0 {
-            if self.kill() {
-                warn!("process {pid} was killed on drop because it was still running")
-            }
+        if self.submit(ProcessOperation::Kill) {
+            warn!("process was killed on drop because it was still running");
         }
     }
 }
@@ -2462,6 +2555,7 @@ impl RunningDataflow {
         coordinator_connection: &mut Option<TcpStream>,
         clock: &HLC,
         grace_duration: Option<Duration>,
+        force: bool,
         logger: &mut DataflowLogger<'_>,
     ) -> eyre::Result<()> {
         self.pending_nodes
@@ -2481,25 +2575,44 @@ impl RunningDataflow {
         let running_processes: Vec<_> = self
             .running_nodes
             .iter_mut()
-            .map(|(id, n)| (id.clone(), n.pid.take()))
+            .map(|(id, n)| (id.clone(), n.process.take()))
             .collect();
-        let grace_duration_kills = self.grace_duration_kills.clone();
-        tokio::spawn(async move {
-            let duration = grace_duration.unwrap_or(Duration::from_millis(15000));
-            tokio::time::sleep(duration).await;
-
-            for (node, pid) in running_processes {
-                if let Some(mut pid) = pid {
-                    if pid.kill() {
-                        grace_duration_kills.insert(node.clone());
-                        warn!(
-                            "{node} was killed due to not stopping within the {:#?} grace period",
-                            duration
-                        )
-                    }
+        if force {
+            for (_, proc) in &running_processes {
+                if let Some(proc) = proc {
+                    proc.submit(crate::ProcessOperation::Kill);
                 }
             }
-        });
+        } else {
+            let grace_duration_kills = self.grace_duration_kills.clone();
+            tokio::spawn(async move {
+                let duration = grace_duration.unwrap_or(Duration::from_millis(10000));
+                tokio::time::sleep(duration).await;
+
+                for (node, proc) in &running_processes {
+                    if let Some(proc) = proc {
+                        if proc.submit(crate::ProcessOperation::SoftKill) {
+                            grace_duration_kills.insert(node.clone());
+                        }
+                    }
+                }
+
+                let kill_duration = duration / 2;
+                tokio::time::sleep(kill_duration).await;
+
+                for (node, proc) in &running_processes {
+                    if let Some(proc) = proc {
+                        if proc.submit(crate::ProcessOperation::Kill) {
+                            grace_duration_kills.insert(node.clone());
+                            warn!(
+                                "{node} was killed due to not stopping within the {:#?} grace period",
+                                duration + kill_duration
+                            );
+                        }
+                    }
+                }
+            });
+        }
         self.stop_sent = true;
         Ok(())
     }

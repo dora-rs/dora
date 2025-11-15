@@ -6,7 +6,7 @@ use itertools::Itertools;
 use ratatui::{DefaultTerminal, prelude::*, widgets::*};
 use std::{
     borrow::Cow,
-    collections::VecDeque,
+    collections::{BTreeSet, VecDeque},
     iter,
     net::IpAddr,
     sync::{Arc, Mutex},
@@ -14,9 +14,12 @@ use std::{
 };
 use uuid::Uuid;
 
-use crate::command::{
-    Executable,
-    topic::selector::{TopicIdentifier, TopicSelector},
+use crate::{
+    command::{
+        Executable,
+        topic::selector::{TopicIdentifier, TopicSelector},
+    },
+    common::CoordinatorOptions,
 };
 
 /// Measure topic publish intervals.
@@ -42,7 +45,7 @@ use crate::command::{
 /// Note: The dataflow descriptor must include the following snippet so that
 /// runtime messages can be inspected:
 ///
-/// ```
+/// ```yaml
 /// _unstable_debug:
 ///   publish_all_messages_to_zenoh: true
 /// ```
@@ -55,11 +58,15 @@ pub struct Hz {
     /// Sliding window size in seconds
     #[clap(long, default_value_t = 10)]
     window: usize,
+
+    #[clap(flatten)]
+    coordinator: CoordinatorOptions,
 }
 
 impl Executable for Hz {
     fn execute(self) -> eyre::Result<()> {
-        let (_session, (dataflow_id, topics)) = self.selector.resolve()?;
+        let mut session = self.coordinator.connect()?;
+        let (dataflow_id, topics) = self.selector.resolve(session.as_mut())?;
 
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -72,7 +79,7 @@ impl Executable for Hz {
                 self.window,
                 dataflow_id,
                 topics,
-                self.selector.dataflow.coordinator_addr,
+                self.coordinator.coordinator_addr,
             )
             .await
         })
@@ -166,7 +173,7 @@ async fn run_hz(
     mut terminal: DefaultTerminal,
     window: usize,
     dataflow_id: Uuid,
-    outputs: Vec<TopicIdentifier>,
+    outputs: BTreeSet<TopicIdentifier>,
     coordinator_addr: IpAddr,
 ) -> eyre::Result<()> {
     // Add a synthetic aggregate entry ("<ALL>") that merges all outputs
@@ -404,8 +411,13 @@ fn ui(
             Constraint::Length(12),
         ],
     )
-    .header(header)
-    .row_highlight_style(Style::default().add_modifier(Modifier::BOLD));
+    .header(header);
+
+    // Reserve space for a one-line footer with shortcut hints.
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(3), Constraint::Length(1)])
+        .split(f.area());
 
     f.render_widget(table, chunks[0]);
 

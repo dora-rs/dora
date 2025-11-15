@@ -1,13 +1,12 @@
-use std::{borrow::Cow, collections::HashMap, fmt, net::IpAddr};
+use std::{
+    borrow::Cow,
+    collections::{BTreeSet, HashMap},
+    fmt,
+};
 
-use crate::{
-    LOCALHOST,
-    common::{connect_to_coordinator, resolve_dataflow_identifier},
-};
+use crate::common::resolve_dataflow_identifier_interactive;
 use communication_layer_request_reply::TcpRequestReplyConnection;
-use dora_core::{
-    config::InputMapping, descriptor::Descriptor, topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT,
-};
+use dora_core::{config::InputMapping, descriptor::Descriptor};
 use dora_message::{
     DataflowId,
     cli_to_coordinator::ControlRequest,
@@ -22,20 +21,15 @@ pub struct DataflowSelector {
     /// Identifier of the dataflow
     #[clap(long, short, value_name = "UUID_OR_NAME")]
     pub dataflow: Option<String>,
-    /// Address of the dora coordinator
-    #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
-    pub coordinator_addr: IpAddr,
-    /// Port number of the coordinator control server
-    #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
-    pub coordinator_port: u16,
 }
 
 impl DataflowSelector {
-    pub fn resolve(&self) -> eyre::Result<(Box<TcpRequestReplyConnection>, Uuid, Descriptor)> {
-        let mut session =
-            connect_to_coordinator((self.coordinator_addr, self.coordinator_port).into())
-                .wrap_err("failed to connect to dora coordinator")?;
-        let dataflow_id = resolve_dataflow_identifier(&mut *session, self.dataflow.as_deref())?;
+    pub fn resolve(
+        &self,
+        session: &mut TcpRequestReplyConnection,
+    ) -> eyre::Result<(Uuid, Descriptor)> {
+        let dataflow_id =
+            resolve_dataflow_identifier_interactive(&mut *session, self.dataflow.as_deref())?;
         let reply_raw = session
             .request(
                 &serde_json::to_vec(&ControlRequest::Info {
@@ -47,9 +41,7 @@ impl DataflowSelector {
         let reply: ControlRequestReply =
             serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
         match reply {
-            ControlRequestReply::DataflowInfo { descriptor, .. } => {
-                Ok((session, dataflow_id, descriptor))
-            }
+            ControlRequestReply::DataflowInfo { descriptor, .. } => Ok((dataflow_id, descriptor)),
             ControlRequestReply::Error(err) => bail!("{err}"),
             other => bail!("unexpected list dataflow reply: {other:?}"),
         }
@@ -80,11 +72,9 @@ impl fmt::Display for TopicIdentifier {
 impl TopicSelector {
     pub fn resolve(
         &self,
-    ) -> eyre::Result<(
-        Box<TcpRequestReplyConnection>,
-        (DataflowId, Vec<TopicIdentifier>),
-    )> {
-        let (session, dataflow_id, dataflow_descriptor) = self.dataflow.resolve()?;
+        session: &mut TcpRequestReplyConnection,
+    ) -> eyre::Result<(DataflowId, BTreeSet<TopicIdentifier>)> {
+        let (dataflow_id, dataflow_descriptor) = self.dataflow.resolve(session)?;
         if !dataflow_descriptor.debug.publish_all_messages_to_zenoh {
             bail!(
                 "Dataflow `{dataflow_id}` does not have `publish_all_messages_to_zenoh` enabled. You should enable it in order to inspect data.\n\
@@ -104,7 +94,7 @@ impl TopicSelector {
             .map(|node| (&node.id, node))
             .collect::<HashMap<_, _>>();
 
-        let mut data = Vec::new();
+        let mut data = BTreeSet::new();
         if self.data.is_empty() {
             data.extend(dataflow_descriptor.nodes.iter().flat_map(|node| {
                 node.outputs.iter().map(|output| TopicIdentifier {
@@ -112,8 +102,7 @@ impl TopicSelector {
                     data_id: output.clone(),
                 })
             }));
-            data.sort();
-            return Ok((session, (dataflow_id, data)));
+            return Ok((dataflow_id, data));
         }
 
         for s in &self.data {
@@ -121,9 +110,7 @@ impl TopicSelector {
             if !s.contains('/') {
                 s.to_mut().push('/');
             }
-            match serde_json::from_value::<InputMapping>(serde_json::Value::String(
-                s.clone().into_owned(),
-            )) {
+            match s.parse() {
                 Ok(InputMapping::User(user)) => {
                     let node = *node_map
                         .get(&user.source)
@@ -134,7 +121,7 @@ impl TopicSelector {
                             data_id: output.clone(),
                         }));
                     } else if node.outputs.contains(&user.output) {
-                        data.push(TopicIdentifier {
+                        data.insert(TopicIdentifier {
                             node_id: user.source,
                             data_id: user.output,
                         });
@@ -153,9 +140,6 @@ impl TopicSelector {
             }
         }
 
-        data.sort();
-        data.dedup();
-
-        Ok((session, (dataflow_id, data)))
+        Ok((dataflow_id, data))
     }
 }

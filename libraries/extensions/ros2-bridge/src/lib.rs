@@ -1,11 +1,16 @@
 #![allow(clippy::missing_safety_doc)]
 
-pub use flume;
-pub use futures;
-pub use futures_timer;
-pub use ros2_client;
-pub use rustdds;
-pub use tracing;
+pub mod prelude {
+    pub use crate::_core;
+    pub use flume;
+    pub use futures;
+    pub use futures_timer;
+    pub use ros2_client;
+    pub use rustdds;
+    pub use tracing;
+}
+
+pub use prelude::*;
 
 #[cfg(feature = "generate-messages")]
 pub mod messages {

@@ -30,6 +30,7 @@ use dora_node_api::{
     arrow_utils::{copy_array_into_sample, required_data_size},
 };
 use eyre::{ContextCompat, WrapErr, bail};
+use process_wrap::tokio::TokioCommandWrap;
 use std::{
     future::Future,
     path::{Path, PathBuf},
@@ -272,8 +273,7 @@ impl Spawner {
                         Some(cmd)
                     } else {
                         let mut cmd = tokio::process::Command::new(
-                            std::env::current_exe()
-                                .wrap_err("failed to get current executable path")?,
+                            which::which("dora").wrap_err("failed to get dora path")?,
                         );
                         cmd.arg("runtime");
                         Some(cmd)
@@ -281,7 +281,7 @@ impl Spawner {
                 } else {
                     bail!(
                         "Cannot spawn runtime with both Python and non-Python operators. \
-                       Please use a single operator or ensure that all operators are Python-based."
+                        Please use a single operator or ensure that all operators are Python-based."
                     );
                 };
 
@@ -305,9 +305,6 @@ impl Spawner {
                             command.env(key, value.to_string());
                         }
                     }
-                    // Set the process group to 0 to ensure that the spawned process does not exit immediately on CTRL-C
-                    #[cfg(unix)]
-                    command.process_group(0);
 
                     command
                         .stdin(Stdio::null())
@@ -322,7 +319,7 @@ impl Spawner {
             }
         };
         Ok(PreparedNode {
-            command,
+            command: command.map(Into::into),
             spawn_error_msg: error_msg,
             node_working_dir,
             dataflow_id,
@@ -336,7 +333,7 @@ impl Spawner {
 }
 
 pub struct PreparedNode {
-    command: Option<tokio::process::Command>,
+    command: Option<TokioCommandWrap>,
     spawn_error_msg: String,
     node_working_dir: PathBuf,
     dataflow_id: DataflowId,
@@ -359,7 +356,7 @@ impl PreparedNode {
     pub async fn spawn(mut self, logger: &mut NodeLogger<'_>) -> eyre::Result<RunningNode> {
         let mut child = match &mut self.command {
             Some(command) => {
-                let std_command = command.as_std();
+                let std_command = command.command().as_std();
                 logger
                     .log(
                         LogLevel::Info,
@@ -374,24 +371,40 @@ impl PreparedNode {
                         ),
                     )
                     .await;
+
+                #[cfg(unix)]
+                {
+                    command.wrap(process_wrap::tokio::ProcessGroup::leader());
+                }
+                #[cfg(windows)]
+                {
+                    command
+                        .wrap(process_wrap::tokio::CreationFlags(
+                            windows::Win32::System::Threading::CREATE_NEW_PROCESS_GROUP,
+                        ))
+                        .wrap(process_wrap::tokio::JobObject);
+                }
+
                 command.spawn().wrap_err(self.spawn_error_msg)?
             }
             None => {
                 return Ok(RunningNode {
-                    pid: None,
+                    process: None,
                     node_config: self.node_config,
                 });
             }
         };
 
-        let pid = crate::ProcessId::new(child.id().context(
+        let (op_tx, op_rx) = flume::bounded(2);
+        let proc_handle = crate::ProcessHandle::new(op_tx);
+        let pid = child.id().context(
             "Could not get the pid for the just spawned node and indicate that there is an error",
-        )?);
+        )?;
         logger
             .log(
                 LogLevel::Debug,
                 Some("spawner".into()),
-                format!("spawned node with pid {pid:?}"),
+                format!("spawned node with pid {pid}"),
             )
             .await;
 
@@ -411,9 +424,9 @@ impl PreparedNode {
         .await
         .expect("Failed to create log file");
         let mut child_stdout =
-            tokio::io::BufReader::new(child.stdout.take().expect("failed to take stdout"));
+            tokio::io::BufReader::new(child.stdout().take().expect("failed to take stdout"));
         let running_node = RunningNode {
-            pid: Some(pid),
+            process: Some(proc_handle),
             node_config: self.node_config,
         };
         let stdout_tx = tx.clone();
@@ -460,7 +473,7 @@ impl PreparedNode {
         });
 
         let mut child_stderr =
-            tokio::io::BufReader::new(child.stderr.take().expect("failed to take stderr"));
+            tokio::io::BufReader::new(child.stderr().take().expect("failed to take stderr"));
 
         // Stderr listener stream
         let stderr_tx = tx.clone();
@@ -518,7 +531,22 @@ impl PreparedNode {
         let daemon_tx = self.daemon_tx.clone();
         let dataflow_id = self.dataflow_id;
         tokio::spawn(async move {
-            let exit_status = NodeExitStatus::from(child.wait().await);
+            let exit_status: NodeExitStatus = loop {
+                tokio::select! {
+                    status = Box::into_pin(child.wait()) => {
+                        break status.into();
+                    }
+                    result = op_rx.recv_async() => {
+                        match result {
+                            Ok(op) => op.execute(child.as_mut()),
+                            Err(_) => {
+                                // Sender dropped
+                                break Box::into_pin(child.wait()).await.into();
+                            }
+                        }
+                    }
+                }
+            };
             let _ = log_finish_rx.await;
             let event = DoraEvent::SpawnedNodeResult {
                 dataflow_id,

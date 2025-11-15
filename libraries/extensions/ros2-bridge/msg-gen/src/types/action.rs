@@ -85,9 +85,9 @@ impl Action {
                 }
             }
 
-            pub use super::super::ffi::#goal_type_raw as #goal_type;
-            pub use super::super::ffi::#result_type_raw as #result_type;
-            pub use super::super::ffi::#feedback_type_raw as #feedback_type;
+            pub use super::ffi::#goal_type_raw as #goal_type;
+            pub use super::ffi::#result_type_raw as #result_type;
+            pub use super::ffi::#feedback_type_raw as #feedback_type;
 
         }
     }
@@ -210,7 +210,7 @@ impl Action {
         package_name: &str,
     ) -> (impl ToTokens, impl ToTokens) {
         let client_name = format_ident!("Actionclient__{package_name}__{}", self.name);
-        let cxx_client_name = format_ident!("Actionclient_{}", self.name);
+        let cxx_client_name = format!("Actionclient_{}", self.name);
         let create_client = format_ident!("new_ActionClient__{package_name}__{}", self.name);
         let cxx_create_client = format!("create_action_client_{package_name}_{}", self.name);
 
@@ -222,14 +222,14 @@ impl Action {
         let cxx_send_goal = "send_goal".to_string();
 
         let response_matches = format_ident!("matches__{package_name}__{}_response", self.name);
-        let cxx_response_matches = format_ident!("matches_response");
+        let cxx_response_matches = "matches_response";
         let feedback_matches = format_ident!("matches__{package_name}__{}_feedback", self.name);
-        let cxx_feedback_matches = format_ident!("matches_feedback");
+        let cxx_feedback_matches = "matches_feedback";
         let status_matches = format_ident!("matches__{package_name}__{}_status", self.name);
-        let cxx_status_matches = format_ident!("matches_status");
+        let cxx_status_matches = "matches_status";
 
         let downcast = format_ident!("action_downcast__{package_name}__{}", self.name);
-        let cxx_downcast = format_ident!("downcast");
+        let cxx_downcast = "downcast";
 
         let goal_type_raw = format_ident!("{package_name}__{}_Goal", self.name);
         let result_type_raw = format_ident!("{package_name}__{}_Result", self.name);
@@ -244,7 +244,7 @@ impl Action {
             type #client_name;
 
             #[cxx_name = #cxx_create_client]
-            fn #create_client(self: &mut Ros2Node, name_space: &str, base_name: &str, qos:Ros2ActionClientQosPolicies, events: &mut CombinedEvents) -> Result<Box<#client_name>>;
+            fn #create_client(node: &mut Ros2Node, name_space: &str, base_name: &str, qos:Ros2ActionClientQosPolicies, events: &mut CombinedEvents) -> Result<Box<#client_name>>;
 
             #[namespace = #package_name]
             #[cxx_name = #cxx_send_goal]
@@ -268,49 +268,48 @@ impl Action {
         };
 
         let imp = quote! {
-            impl Ros2Node {
-                #[allow(non_snake_case)]
-                pub fn #create_client(&mut self, name_space: &str, base_name: &str, qos: ffi::Ros2ActionClientQosPolicies, events: &mut crate::ffi::CombinedEvents) -> eyre::Result<Box<#client_name>> {
-                    use futures::StreamExt as _;
 
-                    let client = self.node.create_action_client::< #package :: action :: #self_name >(
-                        ros2_client::ServiceMapping::Enhanced,
-                        &ros2_client::Name::new(name_space, base_name).unwrap(),
-                        &ros2_client::ActionTypeName::new(#package_name, #self_name_str),
-                        qos.into(),
-                    ).map_err(|e| eyre::eyre!("{e:?}"))?;
-                    let (response_tx, response_rx) = flume::bounded(1);
-                    let response_stream = response_rx.into_stream().map(|v: eyre::Result<_>| Box::new(v) as Box<dyn std::any::Any + 'static>);
-                    let response_id = events.events.merge(Box::pin(response_stream));
+            #[allow(non_snake_case)]
+            pub fn #create_client(node: &mut Ros2Node, name_space: &str, base_name: &str, qos: ffi::Ros2ActionClientQosPolicies, events: &mut crate::ffi::CombinedEvents) -> eyre::Result<Box<#client_name>> {
+                use futures::StreamExt as _;
 
-                    let (feedback_tx, feedback_rx) = flume::bounded(1);
-                    let feedback_stream = feedback_rx.into_stream().map(|v: eyre::Result<_>| Box::new(v) as Box<dyn std::any::Any + 'static>);
-                    let feedback_id = events.events.merge(Box::pin(feedback_stream));
+                let client = node.node.create_action_client::< action :: #self_name >(
+                    crate::ros2_client::ServiceMapping::Enhanced,
+                    &crate::ros2_client::Name::new(name_space, base_name).unwrap(),
+                    &crate::ros2_client::ActionTypeName::new(#package_name, #self_name_str),
+                    qos.into(),
+                ).map_err(|e| eyre::eyre!("{e:?}"))?;
+                let (response_tx, response_rx) = flume::bounded(1);
+                let response_stream = response_rx.into_stream().map(|v: eyre::Result<_>| Box::new(v) as Box<dyn std::any::Any + 'static>);
+                let response_id = events.events.merge(Box::pin(response_stream));
 
-                    let (status_tx, status_rx) = flume::bounded(1);
-                    let status_stream = status_rx.into_stream().map(|v: eyre::Result<_>| Box::new(v) as Box<dyn std::any::Any + 'static>);
-                    let status_id = events.events.merge(Box::pin(status_stream));
+                let (feedback_tx, feedback_rx) = flume::bounded(1);
+                let feedback_stream = feedback_rx.into_stream().map(|v: eyre::Result<_>| Box::new(v) as Box<dyn std::any::Any + 'static>);
+                let feedback_id = events.events.merge(Box::pin(feedback_stream));
 
-                    Ok(Box::new(#client_name {
-                        client: std::sync::Arc::new(client),
-                        response_tx: std::sync::Arc::new(response_tx),
-                        feedback_tx: std::sync::Arc::new(feedback_tx),
-                        status_tx: std::sync::Arc::new(status_tx),
-                        executor: self.executor.clone(),
-                        response_id: response_id,
-                        feedback_id: feedback_id,
-                        status_id: status_id,
-                    }))
-                }
+                let (status_tx, status_rx) = flume::bounded(1);
+                let status_stream = status_rx.into_stream().map(|v: eyre::Result<_>| Box::new(v) as Box<dyn std::any::Any + 'static>);
+                let status_id = events.events.merge(Box::pin(status_stream));
+
+                Ok(Box::new(#client_name {
+                    client: std::sync::Arc::new(client),
+                    response_tx: std::sync::Arc::new(response_tx),
+                    feedback_tx: std::sync::Arc::new(feedback_tx),
+                    status_tx: std::sync::Arc::new(status_tx),
+                    executor: node.executor.clone(),
+                    response_id: response_id,
+                    feedback_id: feedback_id,
+                    status_id: status_id,
+                }))
             }
 
             #[allow(non_camel_case_types)]
             pub struct #client_name {
-                client: std::sync::Arc<ros2_client::action::ActionClient< #package :: action :: #self_name>>,
-                response_tx: std::sync::Arc<flume::Sender<eyre::Result<ffi::#result_type_raw>>>,
-                feedback_tx: std::sync::Arc<flume::Sender<eyre::Result<ffi::#feedback_type_raw>>>,
-                status_tx: std::sync::Arc<flume::Sender<eyre::Result<ffi::#status_type_raw>>>,
-                executor: std::sync::Arc<futures::executor::ThreadPool>,
+                client: std::sync::Arc<crate::ros2_client::action::ActionClient< action :: #self_name>>,
+                response_tx: std::sync::Arc<crate::flume::Sender<eyre::Result<ffi::#result_type_raw>>>,
+                feedback_tx: std::sync::Arc<crate::flume::Sender<eyre::Result<ffi::#feedback_type_raw>>>,
+                status_tx: std::sync::Arc<crate::flume::Sender<eyre::Result<ffi::#status_type_raw>>>,
+                executor: std::sync::Arc<crate::futures::executor::ThreadPool>,
                 response_id: u32,
                 feedback_id: u32,
                 status_id: u32,
