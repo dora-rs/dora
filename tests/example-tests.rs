@@ -51,6 +51,8 @@ fn test(build_command: &str, exe: &Path, inputs: &Path, expected_output: &Path) 
     assert!(exit_status.success());
 
     let output = std::fs::read_to_string(outputs_file.path()).unwrap();
-    let expected_output = std::fs::read_to_string(expected_output).unwrap();
+    let expected_output = std::fs::read_to_string(expected_output)
+        .unwrap()
+        .replace("\r\n", "\n"); // normalize line endings for Windows
     assert!(output == expected_output);
 }
