@@ -234,7 +234,7 @@ pub fn convert_output_to_json(
             .map(|mut m| m.remove("inner"))
             .collect();
         output.insert("data".into(), json_data_flattened.into());
-        output.insert("type".into(), data_type_json);
+        output.insert("data_type".into(), data_type_json);
     }
     Ok(output)
 }
