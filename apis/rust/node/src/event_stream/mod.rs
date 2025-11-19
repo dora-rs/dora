@@ -67,6 +67,7 @@ pub struct EventStream {
     scheduler: Scheduler,
     write_events_to: Option<WriteEventsTo>,
     start_timestamp: uhlc::Timestamp,
+    use_scheduler: bool,
 }
 
 impl EventStream {
@@ -216,6 +217,15 @@ impl EventStream {
 
         let (tx, rx) = flume::bounded(100_000_000);
 
+        let use_scheduler = match &channel {
+            DaemonChannel::IntegrationTestChannel(_) => {
+                // don't use the scheduler for integration tests because it leads to
+                // non-deterministic event ordering
+                false
+            }
+            _ => true,
+        };
+
         let thread_handle = thread::init(node_id.clone(), tx, channel, clock.clone())?;
 
         Ok(EventStream {
@@ -227,6 +237,7 @@ impl EventStream {
             clock,
             scheduler,
             write_events_to,
+            use_scheduler,
         })
     }
 
@@ -286,6 +297,9 @@ impl EventStream {
     /// [`StreamExt::next`] method with a custom timeout future instead
     /// ([`EventStream`] implements the [`Stream`] trait).
     pub async fn recv_async(&mut self) -> Option<Event> {
+        if !self.use_scheduler {
+            return self.receiver.next().await.map(Self::convert_event_item);
+        }
         loop {
             if self.scheduler.is_empty() {
                 if let Some(event) = self.receiver.next().await {
