@@ -85,59 +85,7 @@ impl IntegrationTestingEvents {
                 output_id,
                 metadata,
                 data,
-            } => {
-                let mut output = serde_json::Map::new();
-                output.insert("id".into(), output_id.to_string().into());
-
-                if !self.skip_output_time_offsets {
-                    let time_offset = metadata
-                        .timestamp()
-                        .get_diff_duration(&self.start_timestamp);
-                    output.insert("time_offset_secs".into(), time_offset.as_secs_f64().into());
-                }
-
-                if data.is_some() {
-                    let (drop_tx, drop_rx) = flume::unbounded();
-                    let data_array = data_to_arrow_array(data.clone(), metadata, drop_tx)
-                        .context("failed to convert output to arrow array")?;
-                    // integration testing doesn't use shared memory -> no drop tokens
-                    let _ = drop_rx;
-
-                    let data_type_json = serde_json::to_value(data_array.data_type())
-                        .context("failed to serialize data type as JSON")?;
-
-                    let batch = RecordBatch::try_from_iter([("inner", data_array)])
-                        .context("failed to create RecordBatch")?;
-
-                    let mut writer = arrow_json::ArrayWriter::new(Vec::new());
-                    writer
-                        .write(&batch)
-                        .context("failed to encode data as JSON")?;
-                    writer
-                        .finish()
-                        .context("failed to finish writing JSON data")?;
-                    let json_data_encoded = writer.into_inner();
-
-                    // Reparse the string using serde_json
-                    let json_data: Vec<serde_json::Map<String, serde_json::Value>> =
-                        serde_json::from_reader(json_data_encoded.as_slice())
-                            .context("failed to parse JSON data again")?;
-                    // remove `inner` field again
-                    let json_data_flattened: Vec<_> = json_data
-                        .into_iter()
-                        .map(|mut m| m.remove("inner"))
-                        .collect();
-                    output.insert("data".into(), json_data_flattened.into());
-                    output.insert("type".into(), data_type_json);
-                }
-
-                serde_json::to_writer(&mut self.output_file, &output)
-                    .context("failed to write output as JSON")?;
-                writeln!(&mut self.output_file)
-                    .context("failed to write newline to output file")?;
-
-                DaemonReply::Empty
-            }
+            } => self.handle_output(output_id, metadata, data)?,
             DaemonRequest::CloseOutputs(data_ids) => {
                 println!("{} {data_ids:?}", "node reports closed outputs".blue());
                 DaemonReply::Result(Ok(()))
@@ -163,6 +111,28 @@ impl IntegrationTestingEvents {
             }
         };
         Ok(reply)
+    }
+
+    fn handle_output(
+        &mut self,
+        output_id: &dora_message::id::DataId,
+        metadata: &Metadata,
+        data: &Option<DataMessage>,
+    ) -> Result<DaemonReply, eyre::Error> {
+        let start_timestamp = self.start_timestamp;
+        let skip_output_time_offsets = self.skip_output_time_offsets;
+
+        let output = convert_output_to_json(
+            output_id,
+            metadata,
+            data,
+            start_timestamp,
+            skip_output_time_offsets,
+        )?;
+        serde_json::to_writer(&mut self.output_file, &output)
+            .context("failed to write output as JSON")?;
+        writeln!(&mut self.output_file).context("failed to write newline to output file")?;
+        Ok(DaemonReply::Empty)
     }
 
     fn next_event(&mut self) -> eyre::Result<Option<Timestamped<NodeEvent>>> {
@@ -217,6 +187,56 @@ impl IntegrationTestingEvents {
             timestamp,
         }))
     }
+}
+
+pub fn convert_output_to_json(
+    output_id: &dora_message::id::DataId,
+    metadata: &Metadata,
+    data: &Option<DataMessage>,
+    start_timestamp: Timestamp,
+    skip_output_time_offsets: bool,
+) -> eyre::Result<serde_json::Map<String, serde_json::Value>> {
+    let mut output = serde_json::Map::new();
+    output.insert("id".into(), output_id.to_string().into());
+    if !skip_output_time_offsets {
+        let time_offset = metadata.timestamp().get_diff_duration(&start_timestamp);
+        output.insert("time_offset_secs".into(), time_offset.as_secs_f64().into());
+    }
+    if data.is_some() {
+        let (drop_tx, drop_rx) = flume::unbounded();
+        let data_array = data_to_arrow_array(data.clone(), metadata, drop_tx)
+            .context("failed to convert output to arrow array")?;
+        // integration testing doesn't use shared memory -> no drop tokens
+        let _ = drop_rx;
+
+        let data_type_json = serde_json::to_value(data_array.data_type())
+            .context("failed to serialize data type as JSON")?;
+
+        let batch = RecordBatch::try_from_iter([("inner", data_array)])
+            .context("failed to create RecordBatch")?;
+
+        let mut writer = arrow_json::ArrayWriter::new(Vec::new());
+        writer
+            .write(&batch)
+            .context("failed to encode data as JSON")?;
+        writer
+            .finish()
+            .context("failed to finish writing JSON data")?;
+        let json_data_encoded = writer.into_inner();
+
+        // Reparse the string using serde_json
+        let json_data: Vec<serde_json::Map<String, serde_json::Value>> =
+            serde_json::from_reader(json_data_encoded.as_slice())
+                .context("failed to parse JSON data again")?;
+        // remove `inner` field again
+        let json_data_flattened: Vec<_> = json_data
+            .into_iter()
+            .map(|mut m| m.remove("inner"))
+            .collect();
+        output.insert("data".into(), json_data_flattened.into());
+        output.insert("type".into(), data_type_json);
+    }
+    Ok(output)
 }
 
 fn read_input_data(data: InputData) -> eyre::Result<arrow::array::ArrayData> {

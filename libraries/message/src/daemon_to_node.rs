@@ -28,6 +28,7 @@ pub struct NodeConfig {
     pub daemon_communication: DaemonCommunication,
     pub dataflow_descriptor: serde_yaml::Value,
     pub dynamic: bool,
+    pub write_events_to: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
