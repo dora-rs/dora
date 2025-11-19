@@ -5050,8 +5050,8 @@ version = "0.3.13"
 dependencies = [
  "dora-node-api",
  "eyre",
+ "fastrand",
  "futures",
- "rand 0.8.5",
  "tokio",
 ]
 

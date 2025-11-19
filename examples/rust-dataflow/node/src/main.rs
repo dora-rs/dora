@@ -7,6 +7,9 @@ fn main() -> eyre::Result<()> {
 
     let (mut node, mut events) = DoraNode::init_from_env()?;
 
+    // use a fixed seed for reproducibility (we use this node's output in integration tests)
+    fastrand::seed(42);
+
     for i in 0..100 {
         let event = match events.recv() {
             Some(input) => input,
@@ -16,7 +19,7 @@ fn main() -> eyre::Result<()> {
         match event {
             Event::Input { id, metadata, data } => match id.as_str() {
                 "tick" => {
-                    let random: u64 = rand::random();
+                    let random: u64 = fastrand::u64(..);
                     println!("tick {i} with data {data:?}, sending {random:#x}");
                     node.send_output(output.clone(), metadata.parameters, random.into_arrow())?;
                 }
