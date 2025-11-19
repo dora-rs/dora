@@ -147,17 +147,31 @@ impl EventStream {
         let scheduler = Scheduler::new(queue_size_limit);
 
         let write_events_to = match write_events_to {
-            Some(path) => Some(WriteEventsTo {
-                node_id: node_id.clone(),
-                file: std::fs::File::create(&path).wrap_err_with(|| {
+            Some(path) => {
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent).wrap_err_with(|| {
+                        format!(
+                            "failed to create parent directories for event output file `{}` for node `{}`",
+                            path.display(),
+                            node_id
+                        )
+                    })?;
+                }
+
+                let file = std::fs::File::create(&path).wrap_err_with(|| {
                     format!(
                         "failed to create event output file `{}` for node `{}`",
                         path.display(),
                         node_id
                     )
-                })?,
-                events_buffer: Vec::new(),
-            }),
+                })?;
+
+                Some(WriteEventsTo {
+                    node_id: node_id.clone(),
+                    file,
+                    events_buffer: Vec::new(),
+                })
+            }
             None => None,
         };
 
