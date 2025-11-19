@@ -5,11 +5,9 @@
 //!
 //! Use `dora build --local` or manual build commands to build your nodes.
 
-use std::path::PathBuf;
-
 use super::Executable;
 use crate::{
-    common::{handle_dataflow_result, resolve_dataflow},
+    common::{handle_dataflow_result, resolve_dataflow, write_events_to},
     output::print_log_message,
     session::DataflowSession,
 };
@@ -30,9 +28,6 @@ pub struct Run {
     // Use UV to run nodes.
     #[clap(long, action)]
     uv: bool,
-    /// Path to write dataflow events to as JSON lines.
-    #[clap(long)]
-    write_events_to: Option<PathBuf>,
 }
 
 #[deprecated(note = "use `run` instead")]
@@ -41,13 +36,6 @@ pub fn run_func(dataflow: String, uv: bool) -> eyre::Result<()> {
 }
 
 pub fn run(dataflow: String, uv: bool) -> eyre::Result<()> {
-    run_with_options(dataflow, uv, None)
-}
-pub fn run_with_options(
-    dataflow: String,
-    uv: bool,
-    write_events_to: Option<PathBuf>,
-) -> eyre::Result<()> {
     #[cfg(feature = "tracing")]
     {
         let log_level = std::env::var("RUST_LOG").ok().unwrap_or("info".to_string());
@@ -79,13 +67,13 @@ pub fn run_with_options(
         dataflow_session.session_id,
         uv,
         LogDestination::Channel { sender: log_tx },
-        write_events_to,
+        write_events_to(),
     ))?;
     handle_dataflow_result(result, None)
 }
 
 impl Executable for Run {
     fn execute(self) -> eyre::Result<()> {
-        run_with_options(self.dataflow, self.uv, self.write_events_to)
+        run(self.dataflow, self.uv)
     }
 }
