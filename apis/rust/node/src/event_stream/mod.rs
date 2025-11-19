@@ -575,7 +575,8 @@ impl WriteEventsTo {
         inputs_file.insert("events".into(), events_buffer.into());
         inputs_file.insert("id".into(), node_id.to_string().into());
 
-        serde_json::to_writer(file, &inputs_file).context("failed to write events to file")?;
+        serde_json::to_writer_pretty(file, &inputs_file)
+            .context("failed to write events to file")?;
         Ok(())
     }
 }
