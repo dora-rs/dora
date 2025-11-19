@@ -343,7 +343,7 @@ impl EventStream {
                             .get_diff_duration(&self.start_timestamp);
                         let event_json = serde_json::json!({
                             "type": "InputClosed",
-                            "input_id": id.to_string(),
+                            "id": id.to_string(),
                             "time_offset_secs": time_offset.as_secs_f64(),
                         });
                         Some(event_json)
