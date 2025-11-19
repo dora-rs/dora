@@ -53,6 +53,9 @@ pub struct Start {
     // Use UV to run nodes.
     #[clap(long, action)]
     uv: bool,
+    /// Path to write dataflow events to as JSON lines (for debugging).
+    #[clap(long)]
+    write_events_to: Option<PathBuf>,
 }
 
 impl Executable for Start {
@@ -60,8 +63,13 @@ impl Executable for Start {
         default_tracing()?;
         let coordinator_socket = (self.coordinator_addr, self.coordinator_port).into();
 
-        let (dataflow, dataflow_descriptor, mut session, dataflow_id) =
-            start_dataflow(self.dataflow, self.name, coordinator_socket, self.uv)?;
+        let (dataflow, dataflow_descriptor, mut session, dataflow_id) = start_dataflow(
+            self.dataflow,
+            self.name,
+            coordinator_socket,
+            self.uv,
+            self.write_events_to,
+        )?;
 
         let attach = match (self.attach, self.detach) {
             (true, true) => eyre::bail!("both `--attach` and `--detach` are given"),
@@ -108,6 +116,7 @@ fn start_dataflow(
     name: Option<String>,
     coordinator_socket: SocketAddr,
     uv: bool,
+    write_events_to: Option<PathBuf>,
 ) -> Result<(PathBuf, Descriptor, Box<TcpRequestReplyConnection>, Uuid), eyre::Error> {
     let dataflow = resolve_dataflow(dataflow).context("could not resolve dataflow")?;
     let dataflow_descriptor =
@@ -132,6 +141,7 @@ fn start_dataflow(
                     name,
                     local_working_dir,
                     uv,
+                    write_events_to,
                 })
                 .unwrap(),
             )

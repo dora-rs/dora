@@ -16,7 +16,7 @@ use std::{
 };
 use tokio::sync::oneshot;
 
-mod integration_testing;
+pub(crate) mod integration_testing;
 mod interactive;
 mod tcp;
 #[cfg(unix)]

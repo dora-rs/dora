@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
+    path::PathBuf,
     pin::pin,
     sync::Arc,
     time::Duration,
@@ -21,7 +22,7 @@ use scheduler::{NON_INPUT_EVENT, Scheduler};
 
 use self::thread::{EventItem, EventStreamThreadHandle};
 use crate::{
-    daemon_connection::DaemonChannel,
+    daemon_connection::{DaemonChannel, integration_testing::convert_output_to_json},
     event_stream::data_conversion::{MappedInputData, RawData, SharedMemoryData},
 };
 use dora_core::{
@@ -64,6 +65,8 @@ pub struct EventStream {
     close_channel: DaemonChannel,
     clock: Arc<uhlc::HLC>,
     scheduler: Scheduler,
+    write_events_to: Option<WriteEventsTo>,
+    start_timestamp: uhlc::Timestamp,
 }
 
 impl EventStream {
@@ -74,6 +77,7 @@ impl EventStream {
         daemon_communication: &DaemonCommunication,
         input_config: BTreeMap<DataId, Input>,
         clock: Arc<uhlc::HLC>,
+        write_events_to: Option<PathBuf>,
     ) -> eyre::Result<Self> {
         let channel = match daemon_communication {
             DaemonCommunication::Shmem {
@@ -142,6 +146,21 @@ impl EventStream {
 
         let scheduler = Scheduler::new(queue_size_limit);
 
+        let write_events_to = match write_events_to {
+            Some(path) => Some(WriteEventsTo {
+                node_id: node_id.clone(),
+                file: std::fs::File::create(&path).wrap_err_with(|| {
+                    format!(
+                        "failed to create event output file `{}` for node `{}`",
+                        path.display(),
+                        node_id
+                    )
+                })?,
+                events_buffer: Vec::new(),
+            }),
+            None => None,
+        };
+
         Self::init_on_channel(
             dataflow_id,
             node_id,
@@ -149,6 +168,7 @@ impl EventStream {
             close_channel,
             clock,
             scheduler,
+            write_events_to,
         )
     }
 
@@ -159,6 +179,7 @@ impl EventStream {
         mut close_channel: DaemonChannel,
         clock: Arc<uhlc::HLC>,
         scheduler: Scheduler,
+        write_events_to: Option<WriteEventsTo>,
     ) -> eyre::Result<Self> {
         channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;
         let reply = channel
@@ -188,8 +209,10 @@ impl EventStream {
             receiver: rx.into_stream(),
             _thread_handle: thread_handle,
             close_channel,
+            start_timestamp: clock.new_timestamp(),
             clock,
             scheduler,
+            write_events_to,
         })
     }
 
@@ -252,19 +275,84 @@ impl EventStream {
         loop {
             if self.scheduler.is_empty() {
                 if let Some(event) = self.receiver.next().await {
-                    self.scheduler.add_event(event);
+                    self.add_event(event);
                 } else {
                     break;
                 }
             } else {
                 match self.receiver.next().now_or_never().flatten() {
-                    Some(event) => self.scheduler.add_event(event),
+                    Some(event) => self.add_event(event),
                     None => break, // no other ready events
                 };
             }
         }
         let event = self.scheduler.next();
         event.map(Self::convert_event_item)
+    }
+
+    fn add_event(&mut self, event: EventItem) {
+        self.record_event(&event).unwrap();
+        self.scheduler.add_event(event);
+    }
+
+    fn record_event(&mut self, event: &EventItem) -> eyre::Result<()> {
+        if let Some(write_events_to) = &mut self.write_events_to {
+            let event_json = match event {
+                EventItem::NodeEvent { event, .. } => match event {
+                    NodeEvent::Stop => {
+                        let time_offset = self
+                            .clock
+                            .new_timestamp()
+                            .get_diff_duration(&self.start_timestamp);
+                        let event_json = serde_json::json!({
+                            "type": "Stop",
+                            "time_offset_secs": time_offset.as_secs_f64(),
+                        });
+                        Some(event_json)
+                    }
+                    NodeEvent::Reload { .. } => None,
+                    NodeEvent::Input { id, metadata, data } => {
+                        let mut event_json = convert_output_to_json(
+                            id,
+                            metadata,
+                            data,
+                            self.start_timestamp,
+                            false,
+                        )?;
+                        event_json.insert("type".into(), "Input".into());
+                        Some(event_json.into())
+                    }
+                    NodeEvent::InputClosed { id } => {
+                        let time_offset = self
+                            .clock
+                            .new_timestamp()
+                            .get_diff_duration(&self.start_timestamp);
+                        let event_json = serde_json::json!({
+                            "type": "InputClosed",
+                            "input_id": id.to_string(),
+                            "time_offset_secs": time_offset.as_secs_f64(),
+                        });
+                        Some(event_json)
+                    }
+                    NodeEvent::AllInputsClosed => {
+                        let time_offset = self
+                            .clock
+                            .new_timestamp()
+                            .get_diff_duration(&self.start_timestamp);
+                        let event_json = serde_json::json!({
+                            "type": "AllInputsClosed",
+                            "time_offset_secs": time_offset.as_secs_f64(),
+                        });
+                        Some(event_json)
+                    }
+                },
+                _ => None,
+            };
+            if let Some(event_json) = event_json {
+                write_events_to.events_buffer.push(event_json);
+            }
+        }
+        Ok(())
     }
 
     /// Receives the next buffered [`Event`] (if any) without blocking, using an
@@ -402,13 +490,13 @@ pub fn data_to_arrow_array(
             })
         },
     };
-    let data = data.and_then(|data| {
+
+    data.and_then(|data| {
         let raw_data = data.unwrap_or(RawData::Empty);
         raw_data
             .into_arrow_array(&metadata.type_info)
             .map(arrow::array::make_array)
-    });
-    data
+    })
 }
 
 impl Stream for EventStream {
@@ -444,5 +532,36 @@ impl Drop for EventStream {
         if let Err(err) = result {
             tracing::warn!("{err:?}")
         }
+
+        if let Some(write_events_to) = self.write_events_to.take() {
+            if let Err(err) = write_events_to.write_out() {
+                tracing::warn!(
+                    "failed to write out events for node {}: {err:?}",
+                    self.node_id
+                );
+            }
+        }
+    }
+}
+
+pub(crate) struct WriteEventsTo {
+    node_id: NodeId,
+    file: std::fs::File,
+    events_buffer: Vec<serde_json::Value>,
+}
+
+impl WriteEventsTo {
+    fn write_out(self) -> eyre::Result<()> {
+        let Self {
+            node_id,
+            file,
+            events_buffer,
+        } = self;
+        let mut inputs_file = serde_json::Map::new();
+        inputs_file.insert("events".into(), events_buffer.into());
+        inputs_file.insert("id".into(), node_id.to_string().into());
+
+        serde_json::to_writer(file, &inputs_file).context("failed to write events to file")?;
+        Ok(())
     }
 }

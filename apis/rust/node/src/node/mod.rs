@@ -350,6 +350,7 @@ impl DoraNode {
             daemon_communication: DaemonCommunication::Interactive,
             dataflow_descriptor: serde_yaml::Value::Null,
             dynamic: false,
+            write_events_to: None,
         };
         let (mut node, events) = Self::init(node_config)?;
         node.interactive = true;
@@ -383,6 +384,7 @@ impl DoraNode {
             },
             dataflow_descriptor: serde_yaml::Value::Null,
             dynamic: false,
+            write_events_to: None,
         };
         let (mut node, events) = Self::init(node_config)?;
         node.interactive = true;
@@ -400,6 +402,7 @@ impl DoraNode {
             daemon_communication,
             dataflow_descriptor,
             dynamic,
+            write_events_to,
         } = node_config;
         let clock = Arc::new(uhlc::HLC::default());
         let input_config = run_config.inputs.clone();
@@ -472,6 +475,7 @@ impl DoraNode {
             &daemon_communication,
             input_config,
             clock.clone(),
+            write_events_to,
         )
         .wrap_err("failed to init event stream")?;
         let drop_stream =

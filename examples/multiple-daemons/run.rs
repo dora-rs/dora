@@ -154,6 +154,7 @@ async fn start_dataflow(
                 local_working_dir: Some(working_dir),
                 name: None,
                 uv: false,
+                write_events_to: None,
             },
             reply_sender,
         }))
