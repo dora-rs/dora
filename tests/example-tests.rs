@@ -1,5 +1,5 @@
 use assert2::assert;
-use std::path::Path;
+use std::{env::consts::EXE_EXTENSION, path::Path};
 
 #[test]
 fn test_rust_dataflow_example_node() {
@@ -29,7 +29,7 @@ fn test(build_command: &str, exe: &Path, inputs: &Path, expected_output: &Path) 
 
     let outputs_file = tempfile::NamedTempFile::new().unwrap();
 
-    let exit_status = std::process::Command::new(exe)
+    let exit_status = std::process::Command::new(exe.with_extension(EXE_EXTENSION))
         .env("DORA_TEST_WITH_INPUTS", inputs)
         .env("DORA_TEST_NO_OUTPUT_TIME_OFFSET", "1")
         .env("DORA_TEST_WRITE_OUTPUTS_TO", outputs_file.path())
