@@ -3,7 +3,9 @@ nodes:
     build: cargo build -p rust-dataflow-example-node
     path: ../../target/debug/rust-dataflow-example-node
     inputs:
-      tick: dora/timer/millis/10
+      tick:
+        source: dora/timer/millis/10
+        queue_size: 50
     outputs:
       - random
 

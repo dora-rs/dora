@@ -10,7 +10,8 @@ fn main() -> eyre::Result<()> {
     // use a fixed seed for reproducibility (we use this node's output in integration tests)
     fastrand::seed(42);
 
-    for i in 0..100 {
+    let mut i = 0;
+    while i < 100 {
         let event = match events.recv() {
             Some(input) => input,
             None => break,
@@ -22,6 +23,7 @@ fn main() -> eyre::Result<()> {
                     let random: u64 = fastrand::u64(..);
                     println!("tick {i} with data {data:?}, sending {random:#x}");
                     node.send_output(output.clone(), metadata.parameters, random.into_arrow())?;
+                    i += 1;
                 }
                 other => eprintln!("Ignoring unexpected input `{other}`"),
             },
