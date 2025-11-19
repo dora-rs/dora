@@ -118,7 +118,7 @@ impl Scheduler {
             .entry(event_id.clone())
             .or_insert_with(|| {
                 self.last_used.push_back(event_id.clone());
-                (1, Default::default())
+                (1000, Default::default())
             });
 
         // Remove the oldest event if at limit
