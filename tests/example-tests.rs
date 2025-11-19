@@ -1,21 +1,34 @@
 use assert2::assert;
-use std::{env::consts::EXE_EXTENSION, path::Path};
+use std::{
+    env::consts::EXE_EXTENSION,
+    path::{Path, PathBuf},
+};
 
 #[test]
 fn test_rust_dataflow_example_node() {
     test(
         "cargo build -p rust-dataflow-example-node",
-        Path::new("target/debug/rust-dataflow-example-node"),
+        &target_dir()
+            .join("debug")
+            .join("rust-dataflow-example-node"),
         Path::new("tests/sample-inputs/inputs-rust-node.json"),
         Path::new("tests/sample-inputs/expected-outputs-rust-node.jsonl"),
     );
+}
+
+fn target_dir() -> PathBuf {
+    std::env::var("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("target"))
 }
 
 #[test]
 fn test_rust_dataflow_example_status_node() {
     test(
         "cargo build -p rust-dataflow-example-status-node",
-        Path::new("target/debug/rust-dataflow-example-status-node"),
+        &target_dir()
+            .join("debug")
+            .join("rust-dataflow-example-status-node"),
         Path::new("tests/sample-inputs/inputs-rust-status-node.json"),
         Path::new("tests/sample-inputs/expected-outputs-rust-status-node.jsonl"),
     );
