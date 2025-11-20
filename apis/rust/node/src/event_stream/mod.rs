@@ -22,7 +22,7 @@ use scheduler::{NON_INPUT_EVENT, Scheduler};
 
 use self::thread::{EventItem, EventStreamThreadHandle};
 use crate::{
-    daemon_connection::{DaemonChannel, integration_testing::convert_output_to_json},
+    daemon_connection::{DaemonChannel, node_integration_testing::convert_output_to_json},
     event_stream::data_conversion::{MappedInputData, RawData, SharedMemoryData},
 };
 use dora_core::{

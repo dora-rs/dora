@@ -6,7 +6,7 @@ use dora_message::{
     node_to_daemon::{DaemonRequest, NodeRegisterRequest, Timestamped},
 };
 use eyre::{Context, bail, eyre};
-pub use integration_testing::IntegrationTestingEvents;
+pub use node_integration_testing::IntegrationTestingEvents;
 use shared_memory_server::{ShmemClient, ShmemConf};
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
@@ -16,8 +16,8 @@ use std::{
 };
 use tokio::sync::oneshot;
 
-pub(crate) mod integration_testing;
 mod interactive;
+pub(crate) mod node_integration_testing;
 mod tcp;
 #[cfg(unix)]
 mod unix_domain;
