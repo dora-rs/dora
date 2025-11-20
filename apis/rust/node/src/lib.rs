@@ -77,6 +77,12 @@
 //! - As dynamic nodes are identified by their node ID, this **ID must be unique**
 //!   across all running dataflows.
 //! - For distributed dataflows, nodes need to be manually spawned on the correct machine.
+//!
+//!
+//! ## Node Integration Testing
+//!
+//! Dora provides built-in support for integration testing of nodes. See the [integration_testing]
+//! module for details.
 
 #![warn(missing_docs)]
 
