@@ -1,0 +1,7 @@
+nodes:
+    - id: rust-node
+      build: cargo build -p rust-ros2-example-node --bin rust-ros2-example-node-service-client --features ros2
+      path: ../../../../target/debug/rust-ros2-example-node-service-client
+      inputs:
+          tick: dora/timer/millis/500
+      outputs:

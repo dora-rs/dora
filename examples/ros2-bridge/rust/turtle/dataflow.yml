@@ -1,0 +1,9 @@
+nodes:
+    - id: rust-node
+      build: cargo build -p rust-ros2-example-node --bin rust-ros2-example-node-turtle --features ros2
+      path: ../../../../target/debug/rust-ros2-example-node-turtle
+      inputs:
+          tick: dora/timer/millis/500
+          service_timer: dora/timer/secs/1
+      outputs:
+          - pose
