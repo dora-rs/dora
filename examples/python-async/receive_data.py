@@ -7,8 +7,9 @@ async def main():
     node = Node()
     for _ in range(50):
         event = await node.recv_async()
-        print(event)
-        # del event
+        if event["type"] == "STOP":
+            break
+        del event
     print("done!")
 
 
