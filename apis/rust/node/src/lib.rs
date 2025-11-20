@@ -94,4 +94,5 @@ pub use node::{DataSample, DoraNode, ZERO_COPY_THRESHOLD, arrow_utils};
 
 mod daemon_connection;
 mod event_stream;
+pub mod integration_testing;
 mod node;

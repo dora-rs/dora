@@ -16,7 +16,9 @@ use dora_core::{
 use dora_message::{
     common::{DataMessage, Timestamped},
     daemon_to_node::{DaemonReply, NodeEvent},
-    integration_testing_format::{InputData, InputEvent, IntegrationTestInput, TimedInputEvent},
+    integration_testing_format::{
+        IncomingEvent, InputData, IntegrationTestInput, TimedIncomingEvent,
+    },
     metadata::{ArrowTypeInfo, Metadata},
     node_to_daemon::DaemonRequest,
 };
@@ -29,7 +31,7 @@ use crate::{
 };
 
 pub struct IntegrationTestingEvents {
-    events: std::vec::IntoIter<TimedInputEvent>,
+    events: std::vec::IntoIter<TimedIncomingEvent>,
     output_file: File,
     start_timestamp: uhlc::Timestamp,
     start_time: Instant,
@@ -140,7 +142,7 @@ impl IntegrationTestingEvents {
             return Ok(None);
         };
 
-        let TimedInputEvent {
+        let TimedIncomingEvent {
             time_offset_secs,
             event,
         } = event;
@@ -156,8 +158,8 @@ impl IntegrationTestingEvents {
         );
 
         let converted = match event {
-            InputEvent::Stop => NodeEvent::Stop,
-            InputEvent::Input { id, metadata, data } => {
+            IncomingEvent::Stop => NodeEvent::Stop,
+            IncomingEvent::Input { id, metadata, data } => {
                 let (data, type_info) = if let Some(data) = *data {
                     let array = read_input_data(data).with_context(|| {
                         format!("failed to read input event at offset {time_offset_secs}s ")
@@ -179,8 +181,8 @@ impl IntegrationTestingEvents {
                     data: data.map(|d| DataMessage::Vec(aligned_vec::AVec::from_slice(1, &d))),
                 }
             }
-            InputEvent::InputClosed { id } => NodeEvent::InputClosed { id },
-            InputEvent::AllInputsClosed => NodeEvent::AllInputsClosed,
+            IncomingEvent::InputClosed { id } => NodeEvent::InputClosed { id },
+            IncomingEvent::AllInputsClosed => NodeEvent::AllInputsClosed,
         };
         Ok(Some(Timestamped {
             inner: converted,
@@ -300,9 +302,6 @@ fn read_input_data(data: InputData) -> eyre::Result<arrow::array::ArrayData> {
 
 fn json_value_to_list(value: serde_json::Value) -> Vec<serde_json::Value> {
     match value {
-        // value @ serde_json::Value::Object(_) => {
-        //     vec![value]
-        // }
         serde_json::Value::Array(inner) => inner.into_iter().map(wrap_value_into_object).collect(),
         _ => {
             // wrap into object to allow bare values
