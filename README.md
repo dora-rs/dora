@@ -149,7 +149,7 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/dora-rs/dora/releases/l
 ### With Github release for Windows
 
 ```powershell
-powershell -ExecutionPolicy ByPass -c "irm https://github.com/dora-rs/dorareleases/latest/download/dora-cli-installer.ps1 | iex"
+powershell -ExecutionPolicy ByPass -c "irm https://github.com/dora-rs/dora/releases/latest/download/dora-cli-installer.ps1 | iex"
 ```
 
 ### With Source
