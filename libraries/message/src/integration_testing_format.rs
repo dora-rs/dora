@@ -12,6 +12,13 @@ use crate::{
     metadata::MetadataParameters,
 };
 
+/// Defines the input data and events for integration testing a node.
+///
+/// Most of the fields are similar to the fields defined in the [`Node`](crate::descriptor::Node)
+/// struct, which is used to define nodes in a dataflow YAML file.
+///
+/// For integration testing, the most important field is the [`events`](Self::events) field, which
+/// specifies the events that should be sent to the node during the test.
 #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct IntegrationTestInput {
     /// Unique node identifier. Must not contain `/` characters.
@@ -166,19 +173,29 @@ pub struct IntegrationTestInput {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub send_stdout_as: Option<String>,
 
-    pub events: Vec<TimedInputEvent>,
+    /// List of incoming events for the integration test.
+    ///
+    /// The node event stream will yield these events during the test. Once the list is exhausted,
+    /// the event stream will close itself.
+    pub events: Vec<TimedIncomingEvent>,
 }
 
+/// An incoming event with a time offset.
 #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct TimedInputEvent {
+pub struct TimedIncomingEvent {
+    /// The time offset in seconds from the start of the node.
     pub time_offset_secs: f64,
+    /// The incoming event.
     #[serde(flatten)]
-    pub event: InputEvent,
+    pub event: IncomingEvent,
 }
 
+/// An event that is sent to a node during an integration test.
+///
+/// This struct is very similar to the `Event` enum used during normal node operation.
 #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type")]
-pub enum InputEvent {
+pub enum IncomingEvent {
     Stop,
     Input {
         id: DataId,
@@ -192,6 +209,7 @@ pub enum InputEvent {
     AllInputsClosed,
 }
 
+/// Represents the data of an incoming input event for integration testing.
 #[derive(Debug, PartialEq, Eq, Clone, serde::Deserialize, serde::Serialize)]
 #[serde(untagged)]
 pub enum InputData {
@@ -199,14 +217,36 @@ pub enum InputData {
     ///
     /// An optional data type can be provided to guide the conversion.
     JsonObject {
+        /// The input data as JSON.
+        ///
+        /// This can be a JSON array, object, string, number, boolean, etc. Dora automatically
+        /// converts the JSON to an Apache Arrow array, wrapping the data if needed (e.g. wrap
+        /// bare integers into an array because Arrow requires all data to be in array form).
         data: serde_json::Value,
+        /// Specifies the arrow `DataType` of the `data` field.
+        ///
+        /// This field is optional. If not set, Dora will try to infer the data type automatically.
+        ///
+        /// Use this field if the exact data type is important (e.g. to distinguish between
+        /// different integer sizes).
         data_type: Option<serde_json::Value>,
     },
-    /// Use [Arrow file format](https://arrow.apache.org/docs/python/ipc.html#writing-and-reading-random-access-files)
+    /// Load data from an Arrow IPC file.
+    ///
+    /// The data must be in the
+    /// [Arrow IPC file format](https://arrow.apache.org/docs/python/ipc.html#writing-and-reading-random-access-files)
     ArrowFile {
+        /// The path to the Arrow IPC file.
         path: PathBuf,
+        /// The optional batch index to read from the file.
+        ///
+        /// Arrow IPC files can contain multiple record batches. Only one batch is read per input
+        /// event. This field specifies which batch to read. Defaults to `0`.
         #[serde(default)]
         batch_index: usize,
+        /// Optional column name to read from the record batch.
+        ///
+        /// If not set, the entire record batch is read and converted to an Arrow `StructArray`.
         column: Option<String>,
     },
 }
