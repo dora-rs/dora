@@ -13,7 +13,7 @@ use dora_node_api::merged::{MergeExternalSend, MergedEvent};
 use dora_node_api::{DataflowId, DoraNode, EventStream};
 use dora_operator_api_python::{DelayedCleanup, NodeCleanupHandle, PyEvent, pydict_to_metadata};
 use dora_ros2_bridge_python::Ros2Subscription;
-use eyre::Context;
+use eyre::{Context, ContextCompat};
 use futures::{Stream, StreamExt};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
@@ -104,6 +104,23 @@ impl Node {
         } else {
             Ok(None)
         }
+    }
+
+    #[allow(clippy::should_implement_trait)]
+    pub fn drain(&mut self, py: Python) -> PyResult<Vec<Py<PyDict>>> {
+        let events = self
+            .events
+            .drain()
+            .context("Could not drain events. Channel is closed")?
+            .into_iter()
+            .map(|event| {
+                event
+                    .to_py_dict(py)
+                    .context("Could not convert event into a dict")
+                    .unwrap_or_else(|_| PyDict::new(py).into())
+            })
+            .collect();
+        Ok(events)
     }
 
     /// `.recv_async()` gives you the next input that the node has received asynchronously.
@@ -324,6 +341,26 @@ impl Events {
             EventsInner::Merged(events) => events.next().await,
         };
         event.map(|event| PyEvent { event })
+    }
+
+    fn drain(&mut self) -> Option<Vec<PyEvent>> {
+        match &mut self.inner {
+            EventsInner::Dora(events) => match events.drain() {
+                Some(items) => {
+                    return Some(
+                        items
+                            .into_iter()
+                            .map(MergedEvent::Dora)
+                            .map(|event| PyEvent { event })
+                            .collect(),
+                    );
+                }
+                None => return None,
+            },
+            EventsInner::Merged(_events) => {
+                todo!("Draining external event is not yet implemented!")
+            }
+        };
     }
 }
 

@@ -5,13 +5,15 @@ from dora import Node
 
 async def main():
     node = Node()
-    for _ in range(100):
+    for _ in range(50):
         event = await node.recv_async()
-        print(event)
-        # del event
-    print('done!')
+        if event["type"] == "STOP":
+            break
+        del event
+    print("done!")
 
 
-if __name__ ==  '__main__':
-    loop = asyncio.get_event_loop()
+if __name__ == "__main__":
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     loop.run_until_complete(main())
