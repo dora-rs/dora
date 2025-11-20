@@ -87,7 +87,7 @@ pub use dora_message::{
     DataflowId,
     metadata::{Metadata, MetadataParameters, Parameter},
 };
-pub use event_stream::{Event, EventScheduler, EventStream, StopCause, merged};
+pub use event_stream::{Event, EventScheduler, EventStream, StopCause, TryRecvError, merged};
 pub use flume::Receiver;
 pub use futures;
 pub use node::{DataSample, DoraNode, ZERO_COPY_THRESHOLD, arrow_utils};
