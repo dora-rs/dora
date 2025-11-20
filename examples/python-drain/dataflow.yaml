@@ -1,0 +1,18 @@
+nodes:
+  - id: send_data
+    build: pip install asyncio
+    path: ./send_data.py
+    inputs:
+      tick:
+        source: dora/timer/millis/10
+        queue_size: 100
+    outputs:
+      - data
+
+  - id: receive_data_with_sleep
+    build: pip install numpy pyarrow
+    path: ./receive_data.py
+    inputs:
+      tick:
+        source: send_data/data
+        queue_size: 100

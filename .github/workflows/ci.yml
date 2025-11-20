@@ -17,7 +17,6 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  RUST_LOG: DEBUG
   CI: true
 
 jobs:
@@ -242,6 +241,15 @@ jobs:
         run: |
           # Reset only the turtlesim instance as it is not destroyed at the end of the previous job
           source /opt/ros/humble/setup.bash && ros2 service call /reset std_srvs/srv/Empty &
+                    uv venv --seed -p 3.12
+          ## If not Windows
+          if [ "$RUNNER_OS" != "Windows" ]; then
+            source .venv/bin/activate
+          else
+            source .venv/Scripts/activate
+          fi
+          uv pip install -e apis/python/node
+          uv pip install pyarrow
           cargo run --example python-ros2-dataflow --features="ros2-examples"
       - name: "c++-ros2-dataflow"
         timeout-minutes: 30
@@ -350,7 +358,7 @@ jobs:
           enable-cache: true
 
       - name: "Test CLI (Python)"
-        timeout-minutes: 60
+        timeout-minutes: 80
         # fail-fast by using bash shell explictly
         shell: bash
         run: |
@@ -358,6 +366,12 @@ jobs:
           dora new test_python_project --lang python --internal-create-with-path-dependencies
           cd test_python_project
           uv venv --seed -p 3.12
+          ## If not Windows
+          if [ "$RUNNER_OS" != "Windows" ]; then
+            source .venv/bin/activate
+          else
+            source .venv/Scripts/activate
+          fi
           uv pip install -e ../apis/python/node
           uv pip install ruff pytest
 
@@ -387,8 +401,6 @@ jobs:
           # Run Python Node Example
           echo "Running Python Node Example"
           dora up
-          uv venv --seed -p 3.12
-          uv pip install -e apis/python/node
           dora build examples/python-dataflow/dataflow.yml --uv
           dora start examples/python-dataflow/dataflow.yml --name ci-python --detach --uv
           sleep 10
@@ -414,6 +426,16 @@ jobs:
           dora destroy
           sleep 5
 
+          # Run Python async
+          echo "Running CI Async test"
+          ## TODO: Fix async Windows support
+          if [ "$RUNNER_OS" != "Windows" ]; then
+            dora run examples/python-async/dataflow.yaml --uv
+          fi
+
+          # Run Python drain
+          echo "Running CI Drain Test"
+          dora run examples/python-drain/dataflow.yaml --uv
 
           # Test Dora Python Dataflow builder
           uv run examples/python-dataflow-builder/simple_example.py
