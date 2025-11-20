@@ -17,7 +17,7 @@ members = [
     "examples/rust-dataflow/status-node",
     "examples/rust-dataflow/sink",
     "examples/rust-dataflow/sink-dynamic",
-    "examples/rust-ros2-dataflow/node",
+    "examples/ros2-bridge/rust/rust-ros2-example-node",
     "examples/benchmark/node",
     "examples/benchmark/sink",
     "examples/multiple-daemons/node",
@@ -130,11 +130,6 @@ path = "examples/rust-dataflow/run.rs"
 name = "rust-dataflow-git"
 path = "examples/rust-dataflow-git/run.rs"
 
-[[example]]
-name = "rust-ros2-dataflow"
-path = "examples/rust-ros2-dataflow/run.rs"
-required-features = ["ros2-examples"]
-
 # TODO: Fix example #192
 [[example]]
 name = "rust-dataflow-url"
@@ -153,11 +148,6 @@ name = "python-dataflow"
 path = "examples/python-dataflow/run.rs"
 
 [[example]]
-name = "python-ros2-dataflow"
-path = "examples/python-ros2-dataflow/run.rs"
-required-features = ["ros2-examples"]
-
-[[example]]
 name = "python-operator-dataflow"
 path = "examples/python-operator-dataflow/run.rs"
 
@@ -172,11 +162,6 @@ path = "examples/multiple-daemons/run.rs"
 [[example]]
 name = "cmake-dataflow"
 path = "examples/cmake-dataflow/run.rs"
-
-[[example]]
-name = "cxx-ros2-dataflow"
-path = "examples/c++-ros2-dataflow/run.rs"
-required-features = ["ros2-examples"]
 
 # The profile that 'dist' will build with
 [profile.dist]
