@@ -1758,6 +1758,7 @@ dependencies = [
  "dora-cli",
  "dora-daemon",
  "dora-ros2-bridge-msg-gen",
+ "dunce",
  "eyre",
  "flume 0.11.1",
  "futures",

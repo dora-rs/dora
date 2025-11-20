@@ -1,26 +1,26 @@
-use dora_cli::{build, run};
-use eyre::Context;
+use dora_cli::{build, run as dora_run};
+use eyre::WrapErr;
 use std::path::Path;
 
 use process_wrap::std::{ChildWrapper, CommandWrap, ProcessGroup};
 
 fn main() -> eyre::Result<()> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    std::env::set_current_dir(root.join("../../../").join(file!()).parent().unwrap())
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../");
+    std::env::set_current_dir(root.join(file!()).parent().unwrap())
         .wrap_err("failed to set working dir")?;
 
-    build("dataflow.yml".to_string(), None, None, false, true)?;
+    build("dataflow.yml".to_string(), None, None, true, true)?;
 
     let dataflow_task = std::thread::spawn(|| {
-        run("dataflow.yml".to_string(), false).unwrap();
+        dora_run("dataflow.yml".to_string(), true).unwrap();
     });
 
-    let mut add_service_task = run_ros_node("examples_rclcpp_minimal_service", "service_main")?;
+    // let mut add_service_task = run_ros_node("examples_rclcpp_minimal_service", "service_main")?;
     let mut turtle_task = run_ros_node("turtlesim", "turtlesim_node")?;
 
     while !dataflow_task.is_finished() {}
 
-    add_service_task.kill()?;
+    // add_service_task.kill()?;
     turtle_task.kill()?;
     Ok(())
 }

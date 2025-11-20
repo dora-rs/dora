@@ -35,6 +35,7 @@ futures-timer = "3.0.3"
 
 [dev-dependencies]
 dora-cli = { workspace = true }
+dunce = "1.0.2"
 rand = "0.8.5"
 futures = { version = "0.3.28", default-features = false }
 process-wrap = { version = "9.0.0", features = ["std"] }
@@ -72,10 +73,10 @@ required-features = ["ros2-examples"]
 
 [[example]]
 name = "python-ros2-dataflow"
-path = "examples/python-ros2-dataflow/run.rs"
+path = "../../../examples/ros2-bridge/python/turtle/run.rs"
 required-features = ["ros2-examples"]
 
 [[example]]
 name = "cxx-ros2-dataflow"
-path = "examples/c++-ros2-dataflow/run.rs"
+path = "../../../examples/ros2-bridge/c++/turtle/run.rs"
 required-features = ["ros2-examples"]
