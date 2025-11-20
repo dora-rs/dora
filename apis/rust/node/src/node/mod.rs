@@ -103,6 +103,10 @@ impl DoraNode {
     /// is a terminal (detected through
     /// [`isatty`](https://www.man7.org/linux/man-pages/man3/isatty.3.html)).
     ///
+    /// If the `DORA_NODE_CONFIG` environment variable is not set and `DORA_TEST_WITH_INPUTS` is
+    /// set, the node will be initialized in integration test mode. See the
+    /// [integration testing](crate::integration_testing) module for details.
+    ///
     /// ```no_run
     /// use dora_node_api::DoraNode;
     ///
