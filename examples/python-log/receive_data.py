@@ -10,7 +10,7 @@ def main():
         if event["type"] == "INPUT":
             logging.info(f"info {event['value'].to_numpy()}")
             log.log(logging.DEBUG, f"received {event['id']} with data")
-            print("123")
+            log.warning("THIS IS A WARNING")
         if event["type"] == "ERROR":
             log.log(logging.ERROR, f"received {event} with data")
 

@@ -11,7 +11,7 @@ use crate::{BuildId, DataflowId, daemon_to_daemon::InterDaemonEvent, id::NodeId}
 
 pub use log::Level as LogLevel;
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, PartialEq)]
 #[must_use]
 pub struct LogMessage {
     pub build_id: Option<BuildId>,
@@ -35,50 +35,62 @@ impl<'de> Deserialize<'de> for LogMessage {
     {
         #[derive(Deserialize)]
         struct LogMessageHelper {
+            build_id: Option<BuildId>,
+            dataflow_id: Option<DataflowId>,
+            node_id: Option<NodeId>,
+            daemon_id: Option<DaemonId>,
             level: LogLevelOrStdout,
-            timestamp: DateTime<Utc>,
             target: Option<String>,
-            _name: Option<String>,
+            module_path: Option<String>,
+            file: Option<String>,
+            line: Option<u32>,
+            message: Option<String>,
+            timestamp: DateTime<Utc>,
             fields: Option<BTreeMap<String, String>>,
         }
 
         let helper = LogMessageHelper::deserialize(deserializer)?;
         let fields = helper.fields.as_ref();
         Ok(LogMessage {
-            build_id: fields
+            build_id: helper.build_id.or(fields
                 .and_then(|f| f.get("build_id").cloned())
-                .map(|id| BuildId(Uuid::parse_str(&id).unwrap())),
-            dataflow_id: fields
+                .map(|id| BuildId(Uuid::parse_str(&id).unwrap()))),
+            dataflow_id: helper.dataflow_id.or(fields
                 .and_then(|f| f.get("dataflow_id").cloned())
-                .map(|id| DataflowId::from(Uuid::parse_str(&id).unwrap())),
-            node_id: fields
+                .map(|id| DataflowId::from(Uuid::parse_str(&id).unwrap()))),
+            node_id: helper.node_id.or(fields
                 .and_then(|f| f.get("node_id").cloned())
-                .map(|id| NodeId(id)),
-            daemon_id: fields.and_then(|f| f.get("daemon_id").cloned()).map(|id| {
-                let parts: Vec<&str> = id.splitn(2, '-').collect();
-                if parts.len() == 2 {
-                    DaemonId {
-                        machine_id: Some(parts[0].to_string()),
-                        uuid: Uuid::parse_str(parts[1]).unwrap(),
+                .map(|id| NodeId(id))),
+            daemon_id: helper
+                .daemon_id
+                .or(fields.and_then(|f| f.get("daemon_id").cloned()).map(|id| {
+                    let parts: Vec<&str> = id.splitn(2, '-').collect();
+                    if parts.len() == 2 {
+                        DaemonId {
+                            machine_id: Some(parts[0].to_string()),
+                            uuid: Uuid::parse_str(parts[1]).unwrap(),
+                        }
+                    } else {
+                        DaemonId {
+                            machine_id: None,
+                            uuid: Uuid::parse_str(&parts[0]).unwrap(),
+                        }
                     }
-                } else {
-                    DaemonId {
-                        machine_id: None,
-                        uuid: Uuid::parse_str(&parts[0]).unwrap(),
-                    }
-                }
-            }),
+                })),
             level: helper.level,
-            target: fields
-                .and_then(|f| f.get("target").cloned())
-                .or(helper.target),
-            module_path: fields.and_then(|f| f.get("module_path").cloned()),
-            file: fields.and_then(|f| f.get("file").cloned()),
-            line: fields
+            target: helper
+                .target
+                .or(fields.and_then(|f| f.get("target").cloned())),
+            module_path: helper
+                .module_path
+                .or(fields.and_then(|f| f.get("module_path").cloned())),
+            file: helper.file.or(fields.and_then(|f| f.get("file").cloned())),
+            line: helper.line.or(fields
                 .and_then(|f| f.get("line").cloned())
-                .and_then(|s| s.parse().ok()),
-            message: fields
-                .and_then(|f| f.get("message").cloned())
+                .and_then(|s| s.parse().ok())),
+            message: helper
+                .message
+                .or(fields.and_then(|f| f.get("message").cloned()))
                 .unwrap_or_default(),
             fields: helper.fields,
             timestamp: helper.timestamp,
@@ -344,4 +356,30 @@ impl std::fmt::Display for DaemonId {
 pub struct GitSource {
     pub repo: String,
     pub commit_hash: String,
+}
+
+// Test roundtrip serialization of LogMessage
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn test_log_message_serialization() {
+        let log_message = LogMessage {
+            build_id: Some(BuildId(Uuid::new_v4())),
+            dataflow_id: Some(DataflowId::from(Uuid::new_v4())),
+            node_id: Some(NodeId("node-1".to_string())),
+            daemon_id: Some(DaemonId::new(Some("machine-1".to_string()))),
+            level: LogLevelOrStdout::LogLevel(LogLevel::Info),
+            target: Some("target".to_string()),
+            module_path: Some("module::path".to_string()),
+            file: Some("file.rs".to_string()),
+            line: Some(42),
+            message: "This is a log message".to_string(),
+            timestamp: Utc::now(),
+            fields: Some(BTreeMap::from([("key".to_string(), "value".to_string())])),
+        };
+        let serialized = serde_yaml::to_string(&log_message).unwrap();
+        let deserialized: LogMessage = serde_yaml::from_str(&serialized).unwrap();
+        assert_eq!(log_message, deserialized);
+    }
 }
