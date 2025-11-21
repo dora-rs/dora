@@ -9,11 +9,38 @@ use dora_node_api::{
     dora_core::config::DataId,
     flume,
     integration_testing::{
-        IntegrationTestInput, TestingOptions,
+        self, IntegrationTestInput, TestingOptions,
         integration_testing_format::{IncomingEvent, TimedIncomingEvent},
     },
     serde_json,
 };
+
+#[test]
+fn test_main_function() -> eyre::Result<()> {
+    let inputs = dora_node_api::integration_testing::TestingInput::FromJsonFile(
+        "../../../tests/sample-inputs/inputs-rust-node.json".into(),
+    );
+    let mut output_file = Arc::new(tempfile::tempfile()?);
+    let testing_output =
+        dora_node_api::integration_testing::TestingOutput::ToWriter(Box::new(output_file.clone()));
+    let options = TestingOptions {
+        skip_output_time_offsets: true,
+    };
+
+    integration_testing::setup_integration_testing(inputs, testing_output, options);
+
+    crate::main()?;
+
+    let mut output = String::new();
+    output_file.seek(std::io::SeekFrom::Start(0))?;
+    output_file.read_to_string(&mut output)?;
+    let expected =
+        std::fs::read_to_string("../../../tests/sample-inputs/expected-outputs-rust-node.jsonl")?;
+
+    assert_eq!(output, expected.replace("\r\n", "\n")); // normalize line endings
+
+    Ok(())
+}
 
 #[test]
 fn test_run_function() -> eyre::Result<()> {
