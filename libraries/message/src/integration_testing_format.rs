@@ -180,6 +180,22 @@ pub struct IntegrationTestInput {
     pub events: Vec<TimedIncomingEvent>,
 }
 
+impl IntegrationTestInput {
+    pub fn new(id: NodeId, events: Vec<TimedIncomingEvent>) -> Self {
+        Self {
+            id,
+            name: None,
+            description: None,
+            args: None,
+            env: None,
+            outputs: BTreeSet::new(),
+            inputs: BTreeMap::new(),
+            send_stdout_as: None,
+            events,
+        }
+    }
+}
+
 /// An incoming event with a time offset.
 #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TimedIncomingEvent {
@@ -201,7 +217,7 @@ pub enum IncomingEvent {
         id: DataId,
         metadata: Option<MetadataParameters>,
         #[serde(flatten)]
-        data: Box<Option<InputData>>,
+        data: Option<Box<InputData>>,
     },
     InputClosed {
         id: DataId,

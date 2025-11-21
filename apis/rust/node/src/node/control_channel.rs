@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::daemon_connection::DaemonChannel;
+use crate::{DaemonCommunicationWrapper, daemon_connection::DaemonChannel};
 use dora_core::{
     config::{DataId, NodeId},
     uhlc::HLC,
@@ -23,28 +23,33 @@ impl ControlChannel {
     pub(crate) fn init(
         dataflow_id: DataflowId,
         node_id: &NodeId,
-        daemon_communication: &DaemonCommunication,
+        daemon_communication: &DaemonCommunicationWrapper,
         clock: Arc<HLC>,
     ) -> eyre::Result<Self> {
         let channel = match daemon_communication {
-            DaemonCommunication::Shmem {
-                daemon_control_region_id,
-                ..
-            } => unsafe { DaemonChannel::new_shmem(daemon_control_region_id) }
-                .wrap_err("failed to create shmem control channel")?,
-            DaemonCommunication::Tcp { socket_addr } => DaemonChannel::new_tcp(*socket_addr)
-                .wrap_err("failed to connect control channel")?,
-            #[cfg(unix)]
-            DaemonCommunication::UnixDomain { socket_file } => {
-                DaemonChannel::new_unix_socket(socket_file)
-                    .wrap_err("failed to connect control channel")?
+            DaemonCommunicationWrapper::Standard(daemon_communication) => {
+                match daemon_communication {
+                    DaemonCommunication::Shmem {
+                        daemon_control_region_id,
+                        ..
+                    } => unsafe { DaemonChannel::new_shmem(daemon_control_region_id) }
+                        .wrap_err("failed to create shmem control channel")?,
+                    DaemonCommunication::Tcp { socket_addr } => {
+                        DaemonChannel::new_tcp(*socket_addr)
+                            .wrap_err("failed to connect control channel")?
+                    }
+                    #[cfg(unix)]
+                    DaemonCommunication::UnixDomain { socket_file } => {
+                        DaemonChannel::new_unix_socket(socket_file)
+                            .wrap_err("failed to connect control channel")?
+                    }
+                    DaemonCommunication::Interactive => {
+                        DaemonChannel::Interactive(Default::default())
+                    }
+                }
             }
-            DaemonCommunication::Interactive => DaemonChannel::Interactive(Default::default()),
-            DaemonCommunication::IntegrationTest { .. } => {
-                unreachable!("integration test channel should be initialized at this point")
-            }
-            DaemonCommunication::IntegrationTestInitialized { channel } => {
-                DaemonChannel::IntegrationTestChannel(channel.clone().expect("channel is None"))
+            DaemonCommunicationWrapper::Testing { channel } => {
+                DaemonChannel::IntegrationTestChannel(channel.clone())
             }
         };
 
