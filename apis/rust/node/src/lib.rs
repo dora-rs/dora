@@ -93,12 +93,35 @@ pub use dora_message::{
     DataflowId,
     metadata::{Metadata, MetadataParameters, Parameter},
 };
+use dora_message::{
+    common::Timestamped,
+    daemon_to_node::{DaemonCommunication, DaemonReply},
+    node_to_daemon::DaemonRequest,
+};
 pub use event_stream::{Event, EventScheduler, EventStream, StopCause, TryRecvError, merged};
+pub use flume;
 pub use flume::Receiver;
 pub use futures;
 pub use node::{DataSample, DoraNode, ZERO_COPY_THRESHOLD, arrow_utils};
+pub use serde_json;
+use tokio::sync::oneshot;
 
 mod daemon_connection;
 mod event_stream;
 pub mod integration_testing;
 mod node;
+
+#[derive(Debug)]
+enum DaemonCommunicationWrapper {
+    Standard(DaemonCommunication),
+    Testing {
+        channel:
+            tokio::sync::mpsc::Sender<(Timestamped<DaemonRequest>, oneshot::Sender<DaemonReply>)>,
+    },
+}
+
+impl From<DaemonCommunication> for DaemonCommunicationWrapper {
+    fn from(value: DaemonCommunication) -> Self {
+        DaemonCommunicationWrapper::Standard(value)
+    }
+}

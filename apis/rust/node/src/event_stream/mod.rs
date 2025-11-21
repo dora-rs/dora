@@ -22,6 +22,7 @@ use scheduler::{NON_INPUT_EVENT, Scheduler};
 
 use self::thread::{EventItem, EventStreamThreadHandle};
 use crate::{
+    DaemonCommunicationWrapper,
     daemon_connection::{DaemonChannel, node_integration_testing::convert_output_to_json},
     event_stream::data_conversion::{MappedInputData, RawData, SharedMemoryData},
 };
@@ -75,58 +76,73 @@ impl EventStream {
     pub(crate) fn init(
         dataflow_id: DataflowId,
         node_id: &NodeId,
-        daemon_communication: &DaemonCommunication,
+        daemon_communication: &DaemonCommunicationWrapper,
         input_config: BTreeMap<DataId, Input>,
         clock: Arc<uhlc::HLC>,
         write_events_to: Option<PathBuf>,
     ) -> eyre::Result<Self> {
         let channel = match daemon_communication {
-            DaemonCommunication::Shmem {
-                daemon_events_region_id,
-                ..
-            } => unsafe { DaemonChannel::new_shmem(daemon_events_region_id) }.wrap_err_with(
-                || format!("failed to create shmem event stream for node `{node_id}`"),
-            )?,
-            DaemonCommunication::Tcp { socket_addr } => DaemonChannel::new_tcp(*socket_addr)
-                .wrap_err_with(|| format!("failed to connect event stream for node `{node_id}`"))?,
-            #[cfg(unix)]
-            DaemonCommunication::UnixDomain { socket_file } => {
-                DaemonChannel::new_unix_socket(socket_file).wrap_err_with(|| {
-                    format!("failed to connect event stream for node `{node_id}`")
-                })?
+            DaemonCommunicationWrapper::Standard(daemon_communication) => {
+                match daemon_communication {
+                    DaemonCommunication::Shmem {
+                        daemon_events_region_id,
+                        ..
+                    } => unsafe { DaemonChannel::new_shmem(daemon_events_region_id) }
+                        .wrap_err_with(|| {
+                            format!("failed to create shmem event stream for node `{node_id}`")
+                        })?,
+                    DaemonCommunication::Tcp { socket_addr } => {
+                        DaemonChannel::new_tcp(*socket_addr).wrap_err_with(|| {
+                            format!("failed to connect event stream for node `{node_id}`")
+                        })?
+                    }
+                    #[cfg(unix)]
+                    DaemonCommunication::UnixDomain { socket_file } => {
+                        DaemonChannel::new_unix_socket(socket_file).wrap_err_with(|| {
+                            format!("failed to connect event stream for node `{node_id}`")
+                        })?
+                    }
+                    DaemonCommunication::Interactive => {
+                        DaemonChannel::Interactive(Default::default())
+                    }
+                }
             }
-            DaemonCommunication::Interactive => DaemonChannel::Interactive(Default::default()),
-            DaemonCommunication::IntegrationTest { .. } => {
-                unreachable!("integration test channel should be initialized at this point")
-            }
-            DaemonCommunication::IntegrationTestInitialized { channel } => {
-                DaemonChannel::IntegrationTestChannel(channel.clone().expect("channel is None"))
+
+            DaemonCommunicationWrapper::Testing { channel } => {
+                DaemonChannel::IntegrationTestChannel(channel.clone())
             }
         };
 
         let close_channel = match daemon_communication {
-            DaemonCommunication::Shmem {
-                daemon_events_close_region_id,
-                ..
-            } => unsafe { DaemonChannel::new_shmem(daemon_events_close_region_id) }.wrap_err_with(
-                || format!("failed to create shmem event close channel for node `{node_id}`"),
-            )?,
-            DaemonCommunication::Tcp { socket_addr } => DaemonChannel::new_tcp(*socket_addr)
-                .wrap_err_with(|| {
-                    format!("failed to connect event close channel for node `{node_id}`")
-                })?,
-            #[cfg(unix)]
-            DaemonCommunication::UnixDomain { socket_file } => {
-                DaemonChannel::new_unix_socket(socket_file).wrap_err_with(|| {
-                    format!("failed to connect event close channel for node `{node_id}`")
-                })?
+            DaemonCommunicationWrapper::Standard(daemon_communication) => {
+                match daemon_communication {
+                    DaemonCommunication::Shmem {
+                        daemon_events_close_region_id,
+                        ..
+                    } => unsafe { DaemonChannel::new_shmem(daemon_events_close_region_id) }
+                        .wrap_err_with(|| {
+                            format!(
+                                "failed to create shmem event close channel for node `{node_id}`"
+                            )
+                        })?,
+                    DaemonCommunication::Tcp { socket_addr } => {
+                        DaemonChannel::new_tcp(*socket_addr).wrap_err_with(|| {
+                            format!("failed to connect event close channel for node `{node_id}`")
+                        })?
+                    }
+                    #[cfg(unix)]
+                    DaemonCommunication::UnixDomain { socket_file } => {
+                        DaemonChannel::new_unix_socket(socket_file).wrap_err_with(|| {
+                            format!("failed to connect event close channel for node `{node_id}`")
+                        })?
+                    }
+                    DaemonCommunication::Interactive => {
+                        DaemonChannel::Interactive(Default::default())
+                    }
+                }
             }
-            DaemonCommunication::Interactive => DaemonChannel::Interactive(Default::default()),
-            DaemonCommunication::IntegrationTest { .. } => {
-                unreachable!("integration test channel should be initialized at this point")
-            }
-            DaemonCommunication::IntegrationTestInitialized { channel } => {
-                DaemonChannel::IntegrationTestChannel(channel.clone().expect("channel is None"))
+            DaemonCommunicationWrapper::Testing { channel } => {
+                DaemonChannel::IntegrationTestChannel(channel.clone())
             }
         };
 

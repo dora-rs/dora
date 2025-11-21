@@ -1,14 +1,11 @@
 use std::{net::SocketAddr, path::PathBuf};
 
-use tokio::sync::oneshot;
-
 use crate::{
     DataflowId,
     config::NodeRunConfig,
     descriptor::OperatorDefinition,
     id::{DataId, NodeId, OperatorId},
     metadata::Metadata,
-    node_to_daemon::DaemonRequest,
 };
 
 pub use crate::common::{DataMessage, DropToken, SharedMemoryId, Timestamped};
@@ -25,7 +22,7 @@ pub struct NodeConfig {
     pub dataflow_id: DataflowId,
     pub node_id: NodeId,
     pub run_config: NodeRunConfig,
-    pub daemon_communication: DaemonCommunication,
+    pub daemon_communication: Option<DaemonCommunication>,
     pub dataflow_descriptor: serde_yaml::Value,
     pub dynamic: bool,
     pub write_events_to: Option<PathBuf>,
@@ -47,17 +44,6 @@ pub enum DaemonCommunication {
         socket_file: PathBuf,
     },
     Interactive,
-    IntegrationTest {
-        input_file: PathBuf,
-        output_file: PathBuf,
-        skip_output_time_offsets: bool,
-    },
-    IntegrationTestInitialized {
-        #[serde(skip)]
-        channel: Option<
-            tokio::sync::mpsc::Sender<(Timestamped<DaemonRequest>, oneshot::Sender<DaemonReply>)>,
-        >,
-    },
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

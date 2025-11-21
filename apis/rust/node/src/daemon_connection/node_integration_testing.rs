@@ -1,7 +1,6 @@
 use std::{
     fs::File,
-    io::Write as _,
-    path::PathBuf,
+    io::Write,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -28,29 +27,41 @@ use crate::{
     arrow_utils::{copy_array_into_sample, required_data_size},
     daemon_connection::json_to_arrow::read_json_value_as_arrow,
     event_stream::data_to_arrow_array,
+    integration_testing::{TestingInput, TestingOptions, TestingOutput},
 };
 
 pub struct IntegrationTestingEvents {
     events: std::vec::IntoIter<TimedIncomingEvent>,
-    output_file: File,
+    output_writer: OutputWriter,
     start_timestamp: uhlc::Timestamp,
     start_time: Instant,
-    skip_output_time_offsets: bool,
+    options: TestingOptions,
 }
 
 impl IntegrationTestingEvents {
     pub fn new(
-        input_file_path: PathBuf,
-        output_file_path: PathBuf,
-        skip_output_time_offsets: bool,
+        input: TestingInput,
+        output: TestingOutput,
+        options: TestingOptions,
     ) -> eyre::Result<Self> {
-        let mut node_info: IntegrationTestInput = serde_json::from_slice(
-            &std::fs::read(&input_file_path)
-                .with_context(|| format!("failed to open {}", input_file_path.display()))?,
-        )
-        .with_context(|| format!("failed to deserialize {}", input_file_path.display()))?;
-        let output_file = File::create(&output_file_path)
-            .with_context(|| format!("failed to create {}", output_file_path.display()))?;
+        let mut node_info: IntegrationTestInput = match input {
+            TestingInput::FromJsonFile(input_file_path) => serde_json::from_slice(
+                &std::fs::read(&input_file_path)
+                    .with_context(|| format!("failed to open {}", input_file_path.display()))?,
+            )
+            .with_context(|| format!("failed to deserialize {}", input_file_path.display()))?,
+            TestingInput::Input(input) => input,
+        };
+
+        let output_writer = match output {
+            TestingOutput::ToFile(output_file_path) => {
+                let file = File::create(&output_file_path)
+                    .with_context(|| format!("failed to create {}", output_file_path.display()))?;
+                OutputWriter::Writer(Box::new(file))
+            }
+            TestingOutput::ToWriter(writer) => OutputWriter::Writer(writer),
+            TestingOutput::ToChannel(sender) => OutputWriter::Channel(sender),
+        };
 
         node_info
             .events
@@ -63,10 +74,10 @@ impl IntegrationTestingEvents {
         let start_time = Instant::now();
         Ok(Self {
             events: inputs,
-            output_file,
+            output_writer,
             start_timestamp,
             start_time,
-            skip_output_time_offsets,
+            options,
         })
     }
 
@@ -122,7 +133,7 @@ impl IntegrationTestingEvents {
         data: &Option<DataMessage>,
     ) -> Result<DaemonReply, eyre::Error> {
         let start_timestamp = self.start_timestamp;
-        let skip_output_time_offsets = self.skip_output_time_offsets;
+        let skip_output_time_offsets = self.options.skip_output_time_offsets;
 
         let output = convert_output_to_json(
             output_id,
@@ -131,9 +142,18 @@ impl IntegrationTestingEvents {
             start_timestamp,
             skip_output_time_offsets,
         )?;
-        serde_json::to_writer(&mut self.output_file, &output)
-            .context("failed to write output as JSON")?;
-        writeln!(&mut self.output_file).context("failed to write newline to output file")?;
+        match &mut self.output_writer {
+            OutputWriter::Writer(writer) => {
+                serde_json::to_writer(writer.as_mut(), &output)
+                    .context("failed to write output as JSON")?;
+                writeln!(writer.as_mut()).context("failed to write newline to output file")?;
+            }
+            OutputWriter::Channel(sender) => {
+                sender
+                    .send(output)
+                    .context("failed to send output to channel")?;
+            }
+        }
         Ok(DaemonReply::Empty)
     }
 
@@ -160,8 +180,8 @@ impl IntegrationTestingEvents {
         let converted = match event {
             IncomingEvent::Stop => NodeEvent::Stop,
             IncomingEvent::Input { id, metadata, data } => {
-                let (data, type_info) = if let Some(data) = *data {
-                    let array = read_input_data(data).with_context(|| {
+                let (data, type_info) = if let Some(data) = data {
+                    let array = read_input_data(*data).with_context(|| {
                         format!("failed to read input event at offset {time_offset_secs}s ")
                     })?;
 
@@ -189,6 +209,11 @@ impl IntegrationTestingEvents {
             timestamp,
         }))
     }
+}
+
+enum OutputWriter {
+    Writer(Box<dyn Write + Send>),
+    Channel(flume::Sender<serde_json::Map<String, serde_json::Value>>),
 }
 
 pub fn convert_output_to_json(

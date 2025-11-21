@@ -1,6 +1,7 @@
 use crate::{
-    EventStream,
+    DaemonCommunicationWrapper, EventStream,
     daemon_connection::{DaemonChannel, IntegrationTestingEvents},
+    integration_testing::{TestingCommunication, TestingInput, TestingOptions, TestingOutput},
 };
 
 use self::{
@@ -161,7 +162,14 @@ impl DoraNode {
                 };
                 let skip_output_time_offsets =
                     std::env::var_os("DORA_TEST_NO_OUTPUT_TIME_OFFSET").is_some();
-                return Self::init_testing(input_file, output_file, skip_output_time_offsets);
+
+                let input = TestingInput::FromJsonFile(input_file);
+                let output = TestingOutput::ToFile(output_file);
+                let options = TestingOptions {
+                    skip_output_time_offsets,
+                };
+
+                return Self::init_testing(input, output, options);
             }
             Err(std::env::VarError::NotUnicode(_)) => {
                 bail!("DORA_TEST_WITH_INPUTS env variable is not valid unicode")
@@ -351,7 +359,7 @@ impl DoraNode {
                 inputs: Default::default(),
                 outputs: Default::default(),
             },
-            daemon_communication: DaemonCommunication::Interactive,
+            daemon_communication: Some(DaemonCommunication::Interactive),
             dataflow_descriptor: serde_yaml::Value::Null,
             dynamic: false,
             write_events_to: None,
@@ -361,19 +369,18 @@ impl DoraNode {
         Ok((node, events))
     }
 
-    fn init_testing(
-        input_file: PathBuf,
-        output_file: PathBuf,
-        skip_output_time_offsets: bool,
+    /// Initializes a node in integration test mode.
+    ///
+    /// No connection to a dora daemon is made in this mode. Instead, inputs are read from the
+    /// specified `TestingInput`, and outputs are written to the specified `TestingOutput`.
+    /// Additional options for the testing mode can be specified through `TestingOptions`.
+    ///
+    /// It is recommended to use this function only within test functions.
+    pub fn init_testing(
+        input: TestingInput,
+        output: TestingOutput,
+        options: TestingOptions,
     ) -> eyre::Result<(Self, EventStream)> {
-        #[cfg(feature = "tracing")]
-        {
-            TracingBuilder::new("node")
-                .with_stdout("debug")
-                .build()
-                .wrap_err("failed to set up tracing subscriber")?;
-        }
-
         let node_config = NodeConfig {
             dataflow_id: DataflowId::new_v4(),
             node_id: "".parse()?,
@@ -381,16 +388,17 @@ impl DoraNode {
                 inputs: Default::default(),
                 outputs: Default::default(),
             },
-            daemon_communication: DaemonCommunication::IntegrationTest {
-                input_file,
-                output_file,
-                skip_output_time_offsets,
-            },
+            daemon_communication: None,
             dataflow_descriptor: serde_yaml::Value::Null,
             dynamic: false,
             write_events_to: None,
         };
-        let (mut node, events) = Self::init(node_config)?;
+        let testing_comm = TestingCommunication {
+            input,
+            output,
+            options,
+        };
+        let (mut node, events) = Self::init_with_options(node_config, Some(testing_comm))?;
         node.interactive = true;
         Ok((node, events))
     }
@@ -399,6 +407,14 @@ impl DoraNode {
     #[doc(hidden)]
     #[tracing::instrument]
     pub fn init(node_config: NodeConfig) -> eyre::Result<(Self, EventStream)> {
+        Self::init_with_options(node_config, None)
+    }
+
+    #[tracing::instrument(skip(testing_communication))]
+    fn init_with_options(
+        node_config: NodeConfig,
+        testing_communication: Option<TestingCommunication>,
+    ) -> eyre::Result<(Self, EventStream)> {
         let NodeConfig {
             dataflow_id,
             node_id,
@@ -439,22 +455,18 @@ impl DoraNode {
             };
         }
 
-        let daemon_communication =
-            match daemon_communication {
-                DaemonCommunication::IntegrationTest {
-                    input_file,
-                    output_file,
-                    skip_output_time_offsets,
-                } => {
+        let daemon_communication = match daemon_communication {
+            Some(comm) => comm.into(),
+            None => match testing_communication {
+                Some(comm) => {
+                    let TestingCommunication {
+                        input,
+                        output,
+                        options,
+                    } = comm;
                     let (sender, mut receiver) = tokio::sync::mpsc::channel(5);
-                    let new_communication = DaemonCommunication::IntegrationTestInitialized {
-                        channel: Some(sender),
-                    };
-                    let mut events = IntegrationTestingEvents::new(
-                        input_file,
-                        output_file,
-                        skip_output_time_offsets,
-                    )?;
+                    let new_communication = DaemonCommunicationWrapper::Testing { channel: sender };
+                    let mut events = IntegrationTestingEvents::new(input, output, options)?;
                     std::thread::spawn(move || {
                         while let Some((request, reply_sender)) = receiver.blocking_recv() {
                             let reply = events.request(&request);
@@ -470,8 +482,9 @@ impl DoraNode {
                     });
                     new_communication
                 }
-                other => other,
-            };
+                None => eyre::bail!("no daemon communication method specified"),
+            },
+        };
 
         let event_stream = EventStream::init(
             dataflow_id,
