@@ -1443,6 +1443,7 @@ version = "0.3.13"
 dependencies = [
  "arrow",
  "arrow-json",
+ "chrono",
  "clap",
  "colored 2.2.0",
  "communication-layer-request-reply",
