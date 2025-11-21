@@ -37,7 +37,7 @@ fn test_run_function() -> eyre::Result<()> {
     let expected =
         std::fs::read_to_string("../../../tests/sample-inputs/expected-outputs-rust-node.jsonl")?;
 
-    assert_eq!(output, expected);
+    assert_eq!(output, expected.replace("\r\n", "\n")); // normalize line endings
 
     Ok(())
 }
