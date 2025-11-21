@@ -1,7 +1,8 @@
 use core::fmt;
-use std::borrow::Cow;
+use std::{borrow::Cow, collections::BTreeMap};
 
 use aligned_vec::{AVec, ConstAlign};
+use chrono::{DateTime, Utc};
 use eyre::Context as _;
 use uuid::Uuid;
 
@@ -9,7 +10,7 @@ use crate::{BuildId, DataflowId, daemon_to_daemon::InterDaemonEvent, id::NodeId}
 
 pub use log::Level as LogLevel;
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
 #[must_use]
 pub struct LogMessage {
     pub build_id: Option<BuildId>,
@@ -22,9 +23,14 @@ pub struct LogMessage {
     pub file: Option<String>,
     pub line: Option<u32>,
     pub message: String,
+    pub timestamp: DateTime<Utc>,
+    #[serde(flatten)]
+    pub fields: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(untagged)]
+#[serde(rename_all = "UPPERCASE")]
 pub enum LogLevelOrStdout {
     LogLevel(LogLevel),
     Stdout,
@@ -260,4 +266,30 @@ impl std::fmt::Display for DaemonId {
 pub struct GitSource {
     pub repo: String,
     pub commit_hash: String,
+}
+
+// Test roundtrip serialization of LogMessage
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn test_log_message_serialization() {
+        let log_message = LogMessage {
+            build_id: Some(BuildId(Uuid::new_v4())),
+            dataflow_id: Some(DataflowId::from(Uuid::new_v4())),
+            node_id: Some(NodeId("node-1".to_string())),
+            daemon_id: Some(DaemonId::new(Some("machine-1".to_string()))),
+            level: LogLevelOrStdout::LogLevel(LogLevel::Info),
+            target: Some("target".to_string()),
+            module_path: Some("module::path".to_string()),
+            file: Some("file.rs".to_string()),
+            line: Some(42),
+            message: "This is a log message".to_string(),
+            timestamp: Utc::now(),
+            fields: BTreeMap::from([("key".to_string(), "value".to_string())]),
+        };
+        let serialized = serde_yaml::to_string(&log_message).unwrap();
+        let deserialized: LogMessage = serde_yaml::from_str(&serialized).unwrap();
+        assert_eq!(log_message, deserialized);
+    }
 }
