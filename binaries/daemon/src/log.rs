@@ -199,7 +199,7 @@ impl DaemonLogger {
                 .to_system_time()
                 .into(),
 
-            fields: None,
+            fields: Default::default(),
         };
         self.logger.log(message).await
     }
@@ -230,7 +230,7 @@ impl DaemonLogger {
                 .get_time()
                 .to_system_time()
                 .into(),
-            fields: None,
+            fields: Default::default(),
         };
         self.logger.log(message).await
     }

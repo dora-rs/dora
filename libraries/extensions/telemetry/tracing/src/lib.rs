@@ -56,7 +56,7 @@ impl TracingBuilder {
             .with_writer(std::io::stdout);
 
         if json {
-            let layer = layer.json().with_filter(env_filter);
+            let layer = layer.json().flatten_event(true).with_filter(env_filter);
             self.layers.push(layer.boxed());
         } else {
             let layer = layer.with_filter(env_filter);
@@ -83,6 +83,7 @@ impl TracingBuilder {
         let layer = tracing_subscriber::fmt::layer()
             .with_ansi(false)
             .json()
+            .flatten_event(true)
             .with_writer(file)
             .with_filter(filter);
         self.layers.push(layer.boxed());
