@@ -1,0 +1,505 @@
+{
+  "id": "rust-node",
+  "events": [
+    {
+      "id": "tick",
+      "time_offset_secs": 0.000205039,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.010878697,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.020760629,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.030839096,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.040719509,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.050741627,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.06074303,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.0708054,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.080558281,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.09050044,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.100334651,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.110422901,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.120370373,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.130324941,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.141228031,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.150272332,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.161144692,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.171047013,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.180846303,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.190642703,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.200595956,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.210642393,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.220420844,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.230445977,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.240337397,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.251226115,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.261151436,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.271232776,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.281218174,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.290993057,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.300864756,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.310754779,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.32070655,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.330717969,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.340607721,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.350541491,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.360510911,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.370570722,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.380410611,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.390452273,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.400319501,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.410352945,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.420337945,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.431215301,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.441155854,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.451122701,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.460962694,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.470827143,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.480857834,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.490765556,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.500646095,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.510586645,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.520469095,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.530442748,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.540381759,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.551243104,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.560281828,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.571226555,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.581239327,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.591189298,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.601134307,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.611128229,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.620972789,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.63092976,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.640996169,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.65102804,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.660918269,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.67086951,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.680756963,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.690763484,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.700763553,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.710751902,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.720487564,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.730353657,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.740523375,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.750473815,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.760345418,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.770271167,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.781022995,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.791121706,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.801180407,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.811098918,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.820945147,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.830878209,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.840904287,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.850869059,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.860754687,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.87086232,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.880971118,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.89081094,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.900985021,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.910842731,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.920920539,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.930784441,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.940834023,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.950729291,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.960849363,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.970829512,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.980683382,
+      "type": "Input"
+    },
+    {
+      "id": "tick",
+      "time_offset_secs": 0.990634396,
+      "type": "Input"
+    }
+  ]
+}

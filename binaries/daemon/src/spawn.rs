@@ -60,6 +60,7 @@ impl Spawner {
         node: ResolvedNode,
         node_working_dir: PathBuf,
         node_stderr_most_recent: Arc<ArrayQueue<String>>,
+        write_events_to: Option<PathBuf>,
         logger: &mut NodeLogger<'_>,
     ) -> eyre::Result<impl Future<Output = eyre::Result<PreparedNode>> + use<>> {
         let dataflow_id = self.dataflow_id;
@@ -90,10 +91,11 @@ impl Spawner {
             dataflow_id,
             node_id: node_id.clone(),
             run_config: node.kind.run_config(),
-            daemon_communication,
+            daemon_communication: Some(daemon_communication),
             dataflow_descriptor: serde_yaml::to_value(&self.dataflow_descriptor)
                 .context("failed to serialize dataflow descriptor to YAML")?,
             dynamic: node.kind.dynamic(),
+            write_events_to,
         };
 
         let mut logger = logger

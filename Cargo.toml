@@ -34,7 +34,6 @@ members = [
     "libraries/extensions/ros2-bridge/msg-gen",
     "libraries/extensions/ros2-bridge/python",
     "tests/queue_size_latest_data_rust/receive_data",
-
 ]
 
 [workspace.package]
@@ -88,6 +87,7 @@ pythonize = "0.23"
 git2 = { version = "0.18.0", features = ["vendored-openssl"] }
 serde_yaml = "0.9.33"
 zenoh = "1.1.1"
+serde_json = "1.0.145"
 
 [package]
 name = "dora-examples"
@@ -117,6 +117,8 @@ uuid = { version = "1.7", features = ["v7", "serde"] }
 tracing = "0.1.36"
 futures = "0.3.25"
 tokio-stream = "0.1.11"
+tempfile = "3.23.0"
+assert2 = "0.3.16"
 
 [[example]]
 name = "c-dataflow"

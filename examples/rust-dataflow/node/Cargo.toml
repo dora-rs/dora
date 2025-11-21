@@ -11,5 +11,8 @@ publish = false
 dora-node-api = { workspace = true, features = ["tracing"] }
 eyre = "0.6.8"
 futures = "0.3.21"
-rand = "0.8.5"
+fastrand = "2.3.0"
 tokio = { version = "1.24.2", features = ["rt", "macros"] }
+
+[dev-dependencies]
+tempfile = "3.3.0"

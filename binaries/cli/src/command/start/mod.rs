@@ -5,7 +5,7 @@
 use super::{Executable, default_tracing};
 use crate::{
     command::start::attach::attach_dataflow,
-    common::{connect_to_coordinator, local_working_dir, resolve_dataflow},
+    common::{connect_to_coordinator, local_working_dir, resolve_dataflow, write_events_to},
     output::print_log_message,
     session::DataflowSession,
 };
@@ -132,6 +132,7 @@ fn start_dataflow(
                     name,
                     local_working_dir,
                     uv,
+                    write_events_to: write_events_to(),
                 })
                 .unwrap(),
             )

@@ -96,6 +96,12 @@ impl From<String> for DataId {
     }
 }
 
+impl From<&str> for DataId {
+    fn from(id: &str) -> Self {
+        id.to_owned().into()
+    }
+}
+
 impl std::fmt::Display for DataId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(&self.0, f)
