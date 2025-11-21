@@ -1,7 +1,10 @@
 use crate::{
     DaemonCommunicationWrapper, EventStream,
     daemon_connection::{DaemonChannel, IntegrationTestingEvents},
-    integration_testing::{TestingCommunication, TestingInput, TestingOptions, TestingOutput},
+    integration_testing::{
+        TestingCommunication, TestingInput, TestingOptions, TestingOutput,
+        take_testing_communication,
+    },
 };
 
 use self::{
@@ -108,6 +111,10 @@ impl DoraNode {
     /// set, the node will be initialized in integration test mode. See the
     /// [integration testing](crate::integration_testing) module for details.
     ///
+    /// This function will also initialize the node in integration test mode when the
+    /// [`setup_integration_testing`](crate::integration_testing::setup_integration_testing)
+    /// function was called before. This takes precedence over all environment variables.
+    ///
     /// ```no_run
     /// use dora_node_api::DoraNode;
     ///
@@ -127,6 +134,15 @@ impl DoraNode {
     }
 
     fn init_from_env_inner(fallback_to_interactive: bool) -> eyre::Result<(Self, EventStream)> {
+        if let Some(testing_comm) = take_testing_communication() {
+            let TestingCommunication {
+                input,
+                output,
+                options,
+            } = *testing_comm;
+            return Self::init_testing(input, output, options);
+        }
+
         // normal execution (started by dora daemon)
         match std::env::var("DORA_NODE_CONFIG") {
             Ok(raw) => {

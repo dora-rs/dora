@@ -1,16 +1,84 @@
+#![allow(clippy::test_attr_in_doctest)]
+
 //! This document describes how to write [integration tests] for Dora nodes.
 //!
 //! [integration tests]: https://en.wikipedia.org/wiki/Integration_testing
 //!
 //! # Usage
 //!
-//! There are currently two ways to run integration tests for Dora nodes: testing the whole
-//! executable through environment variables, or writing custom test functions within the node.
+//! There are currently three ways to run integration tests for Dora nodes:
 //!
-//! ## Testing the full executable
+//! - calling [`setup_integration_testing`] before invoking the node's `main` function
+//! - testing the compiled executable by setting environment variables
+//! - using [`DoraNode::init_testing`](crate::DoraNode::init_testing) tests independent
+//!   of the `main` function
 //!
-//! Testing the full executable ensures that the node's `main` function produces the expected
-//! outputs for a given set of inputs. To enable this, the
+//!
+//! ## Using `setup_integration_testing`
+//!
+//! The most straightforward way to write integration tests for a Dora node is to call the
+//! [`setup_integration_testing`] function in the test function and then invoke the node's `main`
+//! function. This way, the full behavior of the node (including the `main` function) is tested.
+//!
+//! This approach requires that the node's `main` function uses the
+//! [`DoraNode::init_from_env`](crate::DoraNode::init_from_env) function for initialization.
+//!
+//! See the [`setup_integration_testing`] function documentation for details.
+//!
+//! ### Example
+//! ```rust, ignore
+//! #[test]
+//! fn test_main_function() -> eyre::Result<()> {
+//!    // specify the events that should be sent to the node
+//!    let events = vec![
+//!        TimedIncomingEvent {
+//!            time_offset_secs: 0.01,
+//!            event: IncomingEvent::Input {
+//!                id: "tick".into(),
+//!                metadata: None,
+//!                data: None,
+//!            },
+//!        },
+//!        TimedIncomingEvent {
+//!            time_offset_secs: 0.055,
+//!            event: IncomingEvent::Stop,
+//!        },
+//!    ];
+//!    let inputs = dora_node_api::integration_testing::TestingInput::Input(
+//!        IntegrationTestInput::new("node_id".parse().unwrap(), events),
+//!    );
+//!
+//!    // send the node's outputs to a channel so we can verify them later
+//!    let (tx, rx) = flume::unbounded();
+//!    let outputs = dora_node_api::integration_testing::TestingOutput::ToChannel(tx);
+//!
+//!    // don't include time offsets in the outputs to make them deterministic
+//!    let options = TestingOptions {
+//!        skip_output_time_offsets: true,
+//!    };
+//!
+//!     // setup the integration testing environment -> this will make `DoraNode::init_from_env``
+//!     // initialize the node in testing mode
+//!     integration_testing::setup_integration_testing(inputs, outputs, options);
+//!
+//!     // call the node's main function
+//!     crate::main()?;
+//!
+//!     // collect the nodes's outputs and compare them
+//!     let outputs = rx.try_iter().collect::<Vec<_>>();
+//!     assert_eq!(outputs, expected_outputs);
+//!
+//!     Ok(())
+//! }
+//! ```
+//!
+//! ## Testing through Environment Variables
+//!
+//! Dora also supports testing nodes after compilation. This is the most comprehensive way to ensure
+//! that a node behaves as expected, as the testing will be done on the exact same executable as
+//! used in the dataflow.
+//!
+//! To enable this, the
 //! [`DoraNode::init_from_env`](crate::DoraNode::init_from_env) function provides
 //! built-in support for integration testing through environment variables.
 //!
@@ -39,13 +107,43 @@
 //! The input file must be a JSON file that can be deserialized to a [`IntegrationTestInput`]
 //! instance.
 //!
-//! ## Testing within a node
+//! ### Example
 //!
-//! While testing the full executable is most comprehensive (as it includes the behavior of the
-//! `main` function), it can sometimes be more convenient to write integration tests directly within
-//! the node's code. To do this, the test functions can use the
-//! [`DoraNode::init_testing`](crate::DoraNode::init_testing) function to initialize a node in
-//! integration test mode.
+//! ```bash
+//! > DORA_TEST_WITH_INPUTS=path/to/inputs.json DORA_TEST_NO_OUTPUT_TIME_OFFSET=1 cargo r -p rust-dataflow-example-status-node
+//! ```
+//!
+//! ## Using `DoraNode::init_testing`
+//!
+//! While we recommend to include the `main` function in integration tests (as described above),
+//! there might also be cases where you want to run additional tests independent of the
+//! `main` function. To make this easier, Dora provides a
+//! [`DoraNode::init_testing`](crate::DoraNode::init_testing) initialization function to initialize
+//! an integration testing environment directly.
+//!
+//! This function is roughly equivalent to calling `setup_integration_testing` followed by
+//! `DoraNode::init_from_env`, but it does not modify any global state or thread-local state.
+//! Thus, it can be even used to run multiple integration tests as part of a single test function.
+//!
+//! ### Example
+//!
+//! ```rust, ignore
+//! #[test]
+//! fn test_run_function() -> eyre::Result<()> {
+//!     // specify the events that should be sent to the node
+//!     let events = vec![...]; // see above for details
+//!     let inputs = dora_node_api::integration_testing::TestingInput::Input(
+//!          IntegrationTestInput::new("node_id".parse().unwrap(), events),
+//!     );
+//!
+//!     let outputs = dora_node_api::integration_testing::TestingOutput::ToFile(
+//!        std::path::PathBuf::from("path/to/outputs.jsonl"),
+//!     );
+//!
+//!     let (node, events) = DoraNode::init_testing(inputs, outputs, Default::default())?;
+//!     do_something_with_node_and_events(node, events)?;
+//! }
+//! ```
 //!
 //!
 //! ## Generating Input Files
@@ -65,7 +163,45 @@
 //! not recommended to use this feature with long-running dataflows or dataflows that process
 //! large amounts of data.
 
+use std::cell::Cell;
+
 pub use dora_message::integration_testing_format::{self, IntegrationTestInput};
+
+thread_local! {
+    static TESTING_ENV: Cell<Option<Box<TestingCommunication>>> = const { Cell::new(None) };
+}
+
+pub(crate) fn take_testing_communication() -> Option<Box<TestingCommunication>> {
+    TESTING_ENV.with(|env| env.take())
+}
+
+/// Sets up an integration testing environment for the current thread.
+///
+/// This overrides the default behavior of
+/// [`DoraNode::init_from_env`](crate::DoraNode::init_from_env) to initialize
+/// a testing node with the given input, output, and options.
+///
+/// ## Implementation Details
+///
+/// This function sets up thread-local state that is read by the `DoraNode::init_from_env` function.
+/// Thus, it only affects the current thread.
+///
+/// Calls to `DoraNode::init_from_env` will consume the testing environment set up by this function
+/// and reset the thread-local state afterwards. Thus, subsequent calls to `DoraNode::init_from_env`
+/// will _not_ run in testing mode unless this function is called again.
+pub fn setup_integration_testing(
+    input: TestingInput,
+    output: TestingOutput,
+    options: TestingOptions,
+) {
+    TESTING_ENV.with(|env| {
+        env.set(Some(Box::new(TestingCommunication {
+            input,
+            output,
+            options,
+        })))
+    });
+}
 
 pub(crate) struct TestingCommunication {
     pub input: TestingInput,
