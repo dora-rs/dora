@@ -387,7 +387,7 @@ async fn start_inner(
                                             .get_time()
                                             .to_system_time()
                                             .into(),
-                                        fields: None,
+                                        fields: Default::default(),
                                     },
                                 )
                                 .await;
