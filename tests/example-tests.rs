@@ -1,48 +1,30 @@
 use assert2::assert;
-use std::{
-    env::consts::EXE_EXTENSION,
-    path::{Path, PathBuf},
-};
+use std::path::Path;
 
 #[test]
 fn test_rust_dataflow_example_node() {
-    test(
-        "cargo build -p rust-dataflow-example-node",
-        &target_dir()
-            .join("debug")
-            .join("rust-dataflow-example-node"),
+    test_crate(
+        "rust-dataflow-example-node",
         Path::new("tests/sample-inputs/inputs-rust-node.json"),
         Path::new("tests/sample-inputs/expected-outputs-rust-node.jsonl"),
-    );
-}
-
-fn target_dir() -> PathBuf {
-    std::env::var("CARGO_TARGET_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("target"))
+    )
 }
 
 #[test]
 fn test_rust_dataflow_example_status_node() {
-    test(
-        "cargo build -p rust-dataflow-example-status-node",
-        &target_dir()
-            .join("debug")
-            .join("rust-dataflow-example-status-node"),
+    test_crate(
+        "rust-dataflow-example-status-node",
         Path::new("tests/sample-inputs/inputs-rust-status-node.json"),
         Path::new("tests/sample-inputs/expected-outputs-rust-status-node.jsonl"),
     );
 }
 
-fn test(build_command: &str, exe: &Path, inputs: &Path, expected_output: &Path) {
-    let mut build_args = build_command.split(' ');
-    let mut cmd = std::process::Command::new(build_args.next().unwrap());
-    cmd.args(build_args);
-    assert!(cmd.status().unwrap().success());
-
+fn test_crate(crate_name: &str, inputs: &Path, expected_output: &Path) {
     let outputs_file = tempfile::NamedTempFile::new().unwrap();
 
-    let exit_status = std::process::Command::new(exe.with_extension(EXE_EXTENSION))
+    // run the crate in integration test mode
+    let exit_status = std::process::Command::new("cargo")
+        .args(["run", "-p", crate_name])
         .env("DORA_TEST_WITH_INPUTS", inputs)
         .env("DORA_TEST_NO_OUTPUT_TIME_OFFSET", "1")
         .env("DORA_TEST_WRITE_OUTPUTS_TO", outputs_file.path())
@@ -50,6 +32,7 @@ fn test(build_command: &str, exe: &Path, inputs: &Path, expected_output: &Path) 
         .unwrap();
     assert!(exit_status.success());
 
+    // compare outputs
     let output = std::fs::read_to_string(outputs_file.path()).unwrap();
     let expected_output = std::fs::read_to_string(expected_output)
         .unwrap()
