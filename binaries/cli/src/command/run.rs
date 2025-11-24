@@ -7,7 +7,7 @@
 
 use super::Executable;
 use crate::{
-    common::{handle_dataflow_result, resolve_dataflow},
+    common::{handle_dataflow_result, resolve_dataflow, write_events_to},
     output::print_log_message,
     session::DataflowSession,
 };
@@ -67,6 +67,7 @@ pub fn run(dataflow: String, uv: bool) -> eyre::Result<()> {
         dataflow_session.session_id,
         uv,
         LogDestination::Channel { sender: log_tx },
+        write_events_to(),
     ))?;
     handle_dataflow_result(result, None)
 }

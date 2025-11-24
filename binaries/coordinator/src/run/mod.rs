@@ -29,6 +29,7 @@ pub(super) async fn spawn_dataflow(
     daemon_connections: &mut DaemonConnections,
     clock: &HLC,
     uv: bool,
+    write_events_to: Option<PathBuf>,
 ) -> eyre::Result<SpawnedDataflow> {
     let nodes = dataflow.resolve_aliases_and_set_defaults()?;
     let uuid = Uuid::new_v7(Timestamp::now(NoContext));
@@ -53,6 +54,7 @@ pub(super) async fn spawn_dataflow(
             dataflow_descriptor: dataflow.clone(),
             spawn_nodes,
             uv,
+            write_events_to: write_events_to.clone(),
         };
         let message = serde_json::to_vec(&Timestamped {
             inner: DaemonCoordinatorEvent::Spawn(spawn_command),

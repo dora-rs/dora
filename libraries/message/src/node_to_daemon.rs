@@ -8,7 +8,7 @@ use crate::{
     versions_compatible,
 };
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum DaemonRequest {
     Register(NodeRegisterRequest),
     Subscribe,
@@ -71,7 +71,7 @@ impl DaemonRequest {
     }
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct NodeRegisterRequest {
     pub dataflow_id: DataflowId,
     pub node_id: NodeId,

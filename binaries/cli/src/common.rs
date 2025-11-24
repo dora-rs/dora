@@ -163,3 +163,9 @@ pub(crate) fn cli_and_daemon_on_same_machine(
         other => bail!("unexpected start dataflow reply: {other:?}"),
     }
 }
+
+pub(crate) fn write_events_to() -> Option<PathBuf> {
+    std::env::var("DORA_WRITE_EVENTS_TO")
+        .ok()
+        .map(PathBuf::from)
+}

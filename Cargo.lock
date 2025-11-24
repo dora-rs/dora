@@ -402,6 +402,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "assert2"
+version = "0.3.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0d6c710e60d14b07d8f42d0e702b16120865eea39edb751e75cd6bf401d18f14"
+dependencies = [
+ "assert2-macros",
+ "diff",
+ "yansi",
+]
+
+[[package]]
+name = "assert2-macros"
+version = "0.3.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9008cbbba9e1d655538870b91fd93814bd82e6968f27788fc734375120ac6f57"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "rustc_version",
+ "syn 2.0.110",
+]
+
+[[package]]
 name = "async-channel"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1317,6 +1340,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ab03c107fafeb3ee9f5925686dbb7a73bc76e3932abb0d2b365cb64b169cf04c"
 
 [[package]]
+name = "diff"
+version = "0.1.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "56254986775e3233ffa9c4d7d3faaf6d36a2c09d30b20687e9f88bc8bafc16c8"
+
+[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1562,6 +1591,7 @@ dependencies = [
 name = "dora-examples"
 version = "0.0.0"
 dependencies = [
+ "assert2",
  "dora-cli",
  "dora-coordinator",
  "dora-core",
@@ -1572,6 +1602,7 @@ dependencies = [
  "eyre",
  "futures",
  "serde_yaml 0.8.26",
+ "tempfile",
  "tokio",
  "tokio-stream",
  "tracing",
@@ -1593,6 +1624,7 @@ dependencies = [
  "semver",
  "serde",
  "serde-with-expand-env",
+ "serde_json",
  "serde_yaml 0.9.34+deprecated",
  "tokio",
  "uhlc 0.5.2",
@@ -5049,8 +5081,9 @@ version = "0.3.13"
 dependencies = [
  "dora-node-api",
  "eyre",
+ "fastrand",
  "futures",
- "rand 0.8.5",
+ "tempfile",
  "tokio",
 ]
 
@@ -5588,6 +5621,7 @@ version = "1.0.145"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "402a6f66d8c709116cf22f558eab210f5a50187f702eb4d7e5ef38d9a7f1c79c"
 dependencies = [
+ "indexmap 2.12.0",
  "itoa",
  "memchr",
  "ryu",
@@ -7676,6 +7710,12 @@ checksum = "56c1936c4cc7a1c9ab21a1ebb602eb942ba868cbd44a99cb7cdc5892335e1c85"
 dependencies = [
  "linked-hash-map",
 ]
+
+[[package]]
+name = "yansi"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cfe53a6657fd280eaa890a3bc59152892ffa3e30101319d168b781ed6529b049"
 
 [[package]]
 name = "yoke"
