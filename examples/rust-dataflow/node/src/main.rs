@@ -1,11 +1,21 @@
-use dora_node_api::{self, DoraNode, Event, IntoArrow, dora_core::config::DataId};
+use dora_node_api::{self, DoraNode, Event, EventStream, IntoArrow, dora_core::config::DataId};
+
+#[cfg(test)]
+mod tests;
 
 fn main() -> eyre::Result<()> {
     println!("hello");
 
-    let output = DataId::from("random".to_owned());
+    let (node, events) = DoraNode::init_from_env()?;
 
-    let (mut node, mut events) = DoraNode::init_from_env()?;
+    run(node, events)
+}
+
+fn run(mut node: DoraNode, mut events: EventStream) -> eyre::Result<()> {
+    // use a fixed seed for reproducibility (we use this node's output in integration tests)
+    fastrand::seed(42);
+
+    let output = DataId::from("random".to_owned());
 
     for i in 0..100 {
         let event = match events.recv() {
@@ -14,14 +24,10 @@ fn main() -> eyre::Result<()> {
         };
 
         match event {
-            Event::Input {
-                id,
-                metadata,
-                data: _,
-            } => match id.as_str() {
+            Event::Input { id, metadata, data } => match id.as_str() {
                 "tick" => {
-                    let random: u64 = rand::random();
-                    println!("tick {i}, sending {random:#x}");
+                    let random: u64 = fastrand::u64(..);
+                    println!("tick {i} with data {data:?}, sending {random:#x}");
                     node.send_output(output.clone(), metadata.parameters, random.into_arrow())?;
                 }
                 other => eprintln!("Ignoring unexpected input `{other}`"),

@@ -117,13 +117,19 @@ fn event_stream_loop(
                     events
                 }
             }
+            Ok(DaemonReply::Result(Err(err))) => {
+                let err = eyre!(err).wrap_err("error in incoming event");
+                tracing::error!("{err:?}");
+                continue;
+            }
+
             Ok(other) => {
                 let err = eyre!("unexpected control reply: {other:?}");
                 tracing::warn!("{err:?}");
                 continue;
             }
             Err(err) => {
-                let err = eyre!(err).wrap_err("failed to receive incoming event");
+                let err = err.wrap_err("failed to receive incoming event");
                 tracing::warn!("{err:?}");
                 continue;
             }

@@ -1,4 +1,11 @@
-use crate::{EventStream, daemon_connection::DaemonChannel};
+use crate::{
+    DaemonCommunicationWrapper, EventStream,
+    daemon_connection::{DaemonChannel, IntegrationTestingEvents},
+    integration_testing::{
+        TestingCommunication, TestingInput, TestingOptions, TestingOutput,
+        take_testing_communication,
+    },
+};
 
 use self::{
     arrow_utils::{copy_array_into_sample, required_data_size},
@@ -27,6 +34,7 @@ use shared_memory_extended::{Shmem, ShmemConf};
 use std::{
     collections::{BTreeSet, HashMap, VecDeque},
     ops::{Deref, DerefMut},
+    path::PathBuf,
     sync::Arc,
     time::Duration,
 };
@@ -99,6 +107,14 @@ impl DoraNode {
     /// is a terminal (detected through
     /// [`isatty`](https://www.man7.org/linux/man-pages/man3/isatty.3.html)).
     ///
+    /// If the `DORA_NODE_CONFIG` environment variable is not set and `DORA_TEST_WITH_INPUTS` is
+    /// set, the node will be initialized in integration test mode. See the
+    /// [integration testing](crate::integration_testing) module for details.
+    ///
+    /// This function will also initialize the node in integration test mode when the
+    /// [`setup_integration_testing`](crate::integration_testing::setup_integration_testing)
+    /// function was called before. This takes precedence over all environment variables.
+    ///
     /// ```no_run
     /// use dora_node_api::DoraNode;
     ///
@@ -118,32 +134,77 @@ impl DoraNode {
     }
 
     fn init_from_env_inner(fallback_to_interactive: bool) -> eyre::Result<(Self, EventStream)> {
-        let node_config: NodeConfig = match std::env::var("DORA_NODE_CONFIG") {
-            Ok(raw) => serde_yaml::from_str(&raw).context("failed to deserialize node config")?,
+        if let Some(testing_comm) = take_testing_communication() {
+            let TestingCommunication {
+                input,
+                output,
+                options,
+            } = *testing_comm;
+            return Self::init_testing(input, output, options);
+        }
+
+        // normal execution (started by dora daemon)
+        match std::env::var("DORA_NODE_CONFIG") {
+            Ok(raw) => {
+                let node_config: NodeConfig =
+                    serde_yaml::from_str(&raw).context("failed to deserialize node config")?;
+                #[cfg(feature = "tracing")]
+                {
+                    TracingBuilder::new(node_config.node_id.as_ref())
+                        .build()
+                        .wrap_err("failed to set up tracing subscriber")?;
+                }
+
+                return Self::init(node_config);
+            }
             Err(std::env::VarError::NotUnicode(_)) => {
                 bail!("DORA_NODE_CONFIG env variable is not valid unicode")
             }
-            Err(std::env::VarError::NotPresent) => {
-                if fallback_to_interactive && std::io::stdin().is_terminal() {
-                    println!(
-                    "{}",
-                    "Starting node in interactive mode as DORA_NODE_CONFIG env variable is not set"
-                        .green()
-                );
-                    return Self::init_interactive();
-                } else {
-                    bail!("DORA_NODE_CONFIG env variable is not set")
-                }
-            }
-        };
-        #[cfg(feature = "tracing")]
-        {
-            TracingBuilder::new(node_config.node_id.as_ref())
-                .build()
-                .wrap_err("failed to set up tracing subscriber")?;
+            Err(std::env::VarError::NotPresent) => {} // continue trying other init methods
         }
 
-        Self::init(node_config)
+        // node integration test mode
+        match std::env::var("DORA_TEST_WITH_INPUTS") {
+            Ok(raw) => {
+                let input_file = PathBuf::from(raw);
+                let output_file = match std::env::var("DORA_TEST_WRITE_OUTPUTS_TO") {
+                    Ok(raw) => PathBuf::from(raw),
+                    Err(std::env::VarError::NotUnicode(_)) => {
+                        bail!("DORA_TEST_WRITE_OUTPUTS_TO env variable is not valid unicode")
+                    }
+                    Err(std::env::VarError::NotPresent) => {
+                        input_file.with_file_name("outputs.jsonl")
+                    }
+                };
+                let skip_output_time_offsets =
+                    std::env::var_os("DORA_TEST_NO_OUTPUT_TIME_OFFSET").is_some();
+
+                let input = TestingInput::FromJsonFile(input_file);
+                let output = TestingOutput::ToFile(output_file);
+                let options = TestingOptions {
+                    skip_output_time_offsets,
+                };
+
+                return Self::init_testing(input, output, options);
+            }
+            Err(std::env::VarError::NotUnicode(_)) => {
+                bail!("DORA_TEST_WITH_INPUTS env variable is not valid unicode")
+            }
+            Err(std::env::VarError::NotPresent) => {} // continue trying other init methods
+        }
+
+        // interactive mode
+        if fallback_to_interactive && std::io::stdin().is_terminal() {
+            println!(
+                "{}",
+                "Starting node in interactive mode as DORA_NODE_CONFIG env variable is not set"
+                    .green()
+            );
+            return Self::init_interactive();
+        }
+
+        // no run mode applicable
+        bail!("DORA_NODE_CONFIG env variable is not set")
     }
 
     /// Initiate a node from a dataflow id and a node id.
@@ -314,11 +375,46 @@ impl DoraNode {
                 inputs: Default::default(),
                 outputs: Default::default(),
             },
-            daemon_communication: DaemonCommunication::Interactive,
+            daemon_communication: Some(DaemonCommunication::Interactive),
             dataflow_descriptor: serde_yaml::Value::Null,
             dynamic: false,
+            write_events_to: None,
         };
         let (mut node, events) = Self::init(node_config)?;
+        node.interactive = true;
+        Ok((node, events))
+    }
+
+    /// Initializes a node in integration test mode.
+    ///
+    /// No connection to a dora daemon is made in this mode. Instead, inputs are read from the
+    /// specified `TestingInput`, and outputs are written to the specified `TestingOutput`.
+    /// Additional options for the testing mode can be specified through `TestingOptions`.
+    ///
+    /// It is recommended to use this function only within test functions.
+    pub fn init_testing(
+        input: TestingInput,
+        output: TestingOutput,
+        options: TestingOptions,
+    ) -> eyre::Result<(Self, EventStream)> {
+        let node_config = NodeConfig {
+            dataflow_id: DataflowId::new_v4(),
+            node_id: "".parse()?,
+            run_config: NodeRunConfig {
+                inputs: Default::default(),
+                outputs: Default::default(),
+            },
+            daemon_communication: None,
+            dataflow_descriptor: serde_yaml::Value::Null,
+            dynamic: false,
+            write_events_to: None,
+        };
+        let testing_comm = TestingCommunication {
+            input,
+            output,
+            options,
+        };
+        let (mut node, events) = Self::init_with_options(node_config, Some(testing_comm))?;
         node.interactive = true;
         Ok((node, events))
     }
@@ -327,6 +423,14 @@ impl DoraNode {
     #[doc(hidden)]
     #[tracing::instrument]
     pub fn init(node_config: NodeConfig) -> eyre::Result<(Self, EventStream)> {
+        Self::init_with_options(node_config, None)
+    }
+
+    #[tracing::instrument(skip(testing_communication))]
+    fn init_with_options(
+        node_config: NodeConfig,
+        testing_communication: Option<TestingCommunication>,
+    ) -> eyre::Result<(Self, EventStream)> {
         let NodeConfig {
             dataflow_id,
             node_id,
@@ -334,6 +438,7 @@ impl DoraNode {
             daemon_communication,
             dataflow_descriptor,
             dynamic,
+            write_events_to,
         } = node_config;
         let clock = Arc::new(uhlc::HLC::default());
         let input_config = run_config.inputs.clone();
@@ -366,12 +471,44 @@ impl DoraNode {
             };
         }
 
+        let daemon_communication = match daemon_communication {
+            Some(comm) => comm.into(),
+            None => match testing_communication {
+                Some(comm) => {
+                    let TestingCommunication {
+                        input,
+                        output,
+                        options,
+                    } = comm;
+                    let (sender, mut receiver) = tokio::sync::mpsc::channel(5);
+                    let new_communication = DaemonCommunicationWrapper::Testing { channel: sender };
+                    let mut events = IntegrationTestingEvents::new(input, output, options)?;
+                    std::thread::spawn(move || {
+                        while let Some((request, reply_sender)) = receiver.blocking_recv() {
+                            let reply = events.request(&request);
+                            if reply_sender
+                                .send(reply.unwrap_or_else(|err| {
+                                    DaemonReply::Result(Err(format!("{err:?}")))
+                                }))
+                                .is_err()
+                            {
+                                eprintln!("failed to send reply");
+                            }
+                        }
+                    });
+                    new_communication
+                }
+                None => eyre::bail!("no daemon communication method specified"),
+            },
+        };
+
         let event_stream = EventStream::init(
             dataflow_id,
             &node_id,
             &daemon_communication,
             input_config,
             clock.clone(),
+            write_events_to,
         )
         .wrap_err("failed to init event stream")?;
         let drop_stream =

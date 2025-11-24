@@ -188,6 +188,7 @@ impl Daemon {
         session_id: SessionId,
         uv: bool,
         log_destination: LogDestination,
+        write_events_to: Option<PathBuf>,
     ) -> eyre::Result<DataflowResult> {
         let working_dir = dataflow_path
             .canonicalize()
@@ -237,6 +238,7 @@ impl Daemon {
             nodes,
             dataflow_descriptor: descriptor,
             uv,
+            write_events_to,
         };
 
         let clock = Arc::new(HLC::default());
@@ -644,6 +646,7 @@ impl Daemon {
                 dataflow_descriptor,
                 spawn_nodes,
                 uv,
+                write_events_to,
             }) => {
                 match dataflow_descriptor.communication.remote {
                     dora_core::config::RemoteCommunicationConfig::Tcp => {}
@@ -660,6 +663,7 @@ impl Daemon {
                         dataflow_descriptor,
                         spawn_nodes,
                         uv,
+                        write_events_to,
                     )
                     .await;
                 let (trigger_result, result_task) = match result {
@@ -1041,6 +1045,7 @@ impl Daemon {
         dataflow_descriptor: Descriptor,
         spawn_nodes: BTreeSet<NodeId>,
         uv: bool,
+        write_events_to: Option<PathBuf>,
     ) -> eyre::Result<impl Future<Output = eyre::Result<()>> + use<>> {
         let mut logger = self
             .logger
@@ -1160,9 +1165,18 @@ impl Daemon {
                     })
                     .unwrap_or(base_working_dir.clone())
                     .clone();
+                let node_write_events_to = write_events_to
+                    .as_ref()
+                    .map(|p| p.join(format!("inputs-{}.json", node.id)));
                 match spawner
                     .clone()
-                    .spawn_node(node, node_working_dir, node_stderr_most_recent, &mut logger)
+                    .spawn_node(
+                        node,
+                        node_working_dir,
+                        node_stderr_most_recent,
+                        node_write_events_to,
+                        &mut logger,
+                    )
                     .await
                     .wrap_err_with(|| format!("failed to spawn node `{node_id}`"))
                 {

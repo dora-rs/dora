@@ -1,3 +1,4 @@
+use crate::daemon_connection::interactive::InteractiveEvents;
 use dora_core::{config::NodeId, uhlc::Timestamp};
 use dora_message::{
     DataflowId,
@@ -5,6 +6,7 @@ use dora_message::{
     node_to_daemon::{DaemonRequest, NodeRegisterRequest, Timestamped},
 };
 use eyre::{Context, bail, eyre};
+pub use node_integration_testing::IntegrationTestingEvents;
 use shared_memory_server::{ShmemClient, ShmemConf};
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
@@ -12,13 +14,15 @@ use std::{
     net::{SocketAddr, TcpStream},
     time::Duration,
 };
-
-use crate::daemon_connection::interactive::InteractiveEvents;
+use tokio::sync::oneshot;
 
 mod interactive;
+pub(crate) mod node_integration_testing;
 mod tcp;
 #[cfg(unix)]
 mod unix_domain;
+
+mod json_to_arrow;
 
 pub enum DaemonChannel {
     Shmem(ShmemClient<Timestamped<DaemonRequest>, DaemonReply>),
@@ -26,6 +30,12 @@ pub enum DaemonChannel {
     #[cfg(unix)]
     UnixDomain(UnixStream),
     Interactive(InteractiveEvents),
+    IntegrationTestChannel(
+        tokio::sync::mpsc::Sender<(
+            Timestamped<DaemonRequest>,
+            tokio::sync::oneshot::Sender<DaemonReply>,
+        )>,
+    ),
 }
 
 impl DaemonChannel {
@@ -86,6 +96,15 @@ impl DaemonChannel {
             #[cfg(unix)]
             DaemonChannel::UnixDomain(stream) => unix_domain::request(stream, request),
             DaemonChannel::Interactive(events) => events.request(request),
+            DaemonChannel::IntegrationTestChannel(channel) => {
+                let (reply_tx, reply) = oneshot::channel();
+                channel
+                    .blocking_send((request.clone(), reply_tx))
+                    .expect("failed to send request to IntegrationTestChannel");
+                reply
+                    .blocking_recv()
+                    .context("failed to receive oneshot reply")
+            }
         }
     }
 }
