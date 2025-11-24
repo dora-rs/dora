@@ -151,6 +151,7 @@ impl DoraNode {
                 #[cfg(feature = "tracing")]
                 {
                     TracingBuilder::new(node_config.node_id.as_ref())
+                        .with_stdout("info", true)
                         .build()
                         .wrap_err("failed to set up tracing subscriber")?;
                 }
@@ -162,13 +163,6 @@ impl DoraNode {
             }
             Err(std::env::VarError::NotPresent) => {} // continue trying other init methods
         };
-        #[cfg(feature = "tracing")]
-        {
-            TracingBuilder::new(node_config.node_id.as_ref())
-                .with_stdout("info", true)
-                .build()
-                .wrap_err("failed to set up tracing subscriber")?;
-        }
 
         // node integration test mode
         match std::env::var("DORA_TEST_WITH_INPUTS") {

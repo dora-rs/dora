@@ -11,7 +11,7 @@ use crate::{BuildId, DataflowId, daemon_to_daemon::InterDaemonEvent, id::NodeId}
 
 pub use log::Level as LogLevel;
 
-#[derive(Debug, Clone, serde::Serialize, PartialEq)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
 #[must_use]
 pub struct LogMessage {
     pub build_id: Option<BuildId>,
@@ -28,30 +28,26 @@ pub struct LogMessage {
     pub fields: Option<BTreeMap<String, String>>,
 }
 
-impl<'de> Deserialize<'de> for LogMessage {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        struct LogMessageHelper {
-            build_id: Option<BuildId>,
-            dataflow_id: Option<DataflowId>,
-            node_id: Option<NodeId>,
-            daemon_id: Option<DaemonId>,
-            level: LogLevelOrStdout,
-            target: Option<String>,
-            module_path: Option<String>,
-            file: Option<String>,
-            line: Option<u32>,
-            message: Option<String>,
-            timestamp: DateTime<Utc>,
-            fields: Option<BTreeMap<String, String>>,
-        }
+#[derive(Deserialize)]
+pub struct LogMessageHelper {
+    build_id: Option<BuildId>,
+    dataflow_id: Option<DataflowId>,
+    node_id: Option<NodeId>,
+    daemon_id: Option<DaemonId>,
+    level: LogLevelOrStdout,
+    target: Option<String>,
+    module_path: Option<String>,
+    file: Option<String>,
+    line: Option<u32>,
+    message: Option<String>,
+    timestamp: DateTime<Utc>,
+    fields: Option<BTreeMap<String, String>>,
+}
 
-        let helper = LogMessageHelper::deserialize(deserializer)?;
+impl From<LogMessageHelper> for LogMessage {
+    fn from(helper: LogMessageHelper) -> Self {
         let fields = helper.fields.as_ref();
-        Ok(LogMessage {
+        LogMessage {
             build_id: helper.build_id.or(fields
                 .and_then(|f| f.get("build_id").cloned())
                 .map(|id| BuildId(Uuid::parse_str(&id).unwrap()))),
@@ -94,7 +90,7 @@ impl<'de> Deserialize<'de> for LogMessage {
                 .unwrap_or_default(),
             fields: helper.fields,
             timestamp: helper.timestamp,
-        })
+        }
     }
 }
 
@@ -379,7 +375,7 @@ mod tests {
             fields: Some(BTreeMap::from([("key".to_string(), "value".to_string())])),
         };
         let serialized = serde_yaml::to_string(&log_message).unwrap();
-        let deserialized: LogMessage = serde_yaml::from_str(&serialized).unwrap();
-        assert_eq!(log_message, deserialized);
+        let deserialized: LogMessageHelper = serde_yaml::from_str(&serialized).unwrap();
+        assert_eq!(log_message, LogMessage::from(deserialized));
     }
 }

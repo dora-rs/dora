@@ -19,7 +19,7 @@ use dora_core::{
 use dora_download::download_file;
 use dora_message::{
     DataflowId,
-    common::{LogLevel, LogMessage},
+    common::{LogLevel, LogMessage, LogMessageHelper},
     daemon_to_coordinator::{DataMessage, NodeExitStatus, Timestamped},
     daemon_to_node::{NodeConfig, RuntimeConfig},
     id::NodeId,
@@ -623,11 +623,11 @@ impl PreparedNode {
                 });
 
                 if std::env::var("DORA_QUIET").is_err() {
-                    match serde_json::de::from_str::<LogMessage>(&formatted) {
+                    match serde_json::de::from_str::<LogMessageHelper>(&formatted) {
                         Ok(log_msg) => {
-                            cloned_logger.log(log_msg).await;
+                            cloned_logger.log(LogMessage::from(log_msg)).await;
                         }
-                        Err(err) => {
+                        Err(_err) => {
                             cloned_logger
                                 .log(LogMessage {
                                     daemon_id: Some(daemon_id.clone()),
