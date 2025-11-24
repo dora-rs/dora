@@ -489,8 +489,6 @@ dependencies = [
  "futures",
  "rand 0.8.5",
  "tokio",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -499,8 +497,6 @@ version = "0.3.13"
 dependencies = [
  "dora-node-api",
  "eyre",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -1447,6 +1443,7 @@ version = "0.3.13"
 dependencies = [
  "arrow",
  "arrow-json",
+ "chrono",
  "clap",
  "colored 2.2.0",
  "communication-layer-request-reply",
@@ -1544,6 +1541,7 @@ dependencies = [
  "aligned-vec",
  "async-trait",
  "bincode",
+ "chrono",
  "crossbeam",
  "crossbeam-skiplist",
  "ctrlc",
@@ -1617,6 +1615,7 @@ dependencies = [
  "arrow-data",
  "arrow-schema",
  "bincode",
+ "chrono",
  "eyre",
  "log",
  "once_cell",
@@ -1721,6 +1720,7 @@ dependencies = [
  "pythonize",
  "serde_yaml 0.9.34+deprecated",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

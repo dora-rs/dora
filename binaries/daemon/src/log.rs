@@ -191,6 +191,15 @@ impl DaemonLogger {
             file: None,
             line: None,
             message: message.into(),
+            timestamp: self
+                .logger
+                .clock
+                .new_timestamp()
+                .get_time()
+                .to_system_time()
+                .into(),
+
+            fields: None,
         };
         self.logger.log(message).await
     }
@@ -214,6 +223,14 @@ impl DaemonLogger {
             file: None,
             line: None,
             message: message.into(),
+            timestamp: self
+                .logger
+                .clock
+                .new_timestamp()
+                .get_time()
+                .to_system_time()
+                .into(),
+            fields: None,
         };
         self.logger.log(message).await
     }
