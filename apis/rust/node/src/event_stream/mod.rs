@@ -334,6 +334,11 @@ impl EventStream {
         event.map(Self::convert_event_item)
     }
 
+    /// Check if there are any buffered events in the scheduler or the receiver.
+    pub fn is_empty(&self) -> bool {
+        self.scheduler.is_empty() & self.receiver.is_empty()
+    }
+
     fn add_event(&mut self, event: EventItem) {
         self.record_event(&event).unwrap();
         self.scheduler.add_event(event);
