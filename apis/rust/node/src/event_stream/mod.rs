@@ -506,6 +506,7 @@ impl EventStream {
 }
 
 /// No event is available right now or the event stream has been closed.
+#[derive(Debug)]
 pub enum TryRecvError {
     /// No new event is available right now.
     Empty,

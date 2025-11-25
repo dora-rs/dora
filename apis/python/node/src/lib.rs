@@ -10,10 +10,11 @@ use dora_download::download_file;
 use dora_node_api::dora_core::config::NodeId;
 use dora_node_api::dora_core::descriptor::source_is_url;
 use dora_node_api::merged::{MergeExternalSend, MergedEvent};
-use dora_node_api::{DataflowId, DoraNode, EventStream};
+use dora_node_api::{DataflowId, DoraNode, EventStream, TryRecvError};
 use dora_operator_api_python::{DelayedCleanup, NodeCleanupHandle, PyEvent, pydict_to_metadata};
 use dora_ros2_bridge_python::Ros2Subscription;
 use eyre::{Context, ContextCompat};
+
 use futures::{Stream, StreamExt};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
@@ -178,6 +179,16 @@ impl Node {
         }
     }
 
+    /// `.drain()` gives you all available inputs that the node has received.
+    /// It does not block until the next event becomes available.
+    ///
+    /// ```python
+    /// events = node.drain()
+    /// for event in events:
+    ///     print(event)
+    /// ```
+    ///
+    /// :rtype: list[dict]
     #[allow(clippy::should_implement_trait)]
     pub fn drain(&mut self, py: Python) -> PyResult<Vec<Py<PyDict>>> {
         let events = self
@@ -192,6 +203,33 @@ impl Node {
                     .unwrap_or_else(|_| PyDict::new(py).into())
             })
             .collect();
+        Ok(events)
+    }
+
+    /// `.try_recv()` gives you the next input in the queue that the node has received.
+    /// It does not block until the next event becomes available.
+    ///
+    /// ```python
+    /// events = node.drain()
+    /// for event in events:
+    ///     print(event)
+    /// ```
+    ///
+    /// :rtype: list[dict]
+    #[allow(clippy::should_implement_trait)]
+    pub fn try_recv(&mut self, py: Python) -> PyResult<Py<PyDict>> {
+        let events = match self.events.try_recv() {
+            Ok(event) => event
+                .to_py_dict(py)
+                .context("Could not convert event into a dict")
+                .unwrap_or_else(|_| PyDict::new(py).into()),
+            Err(err) => {
+                return Err(PyErr::new::<pyo3::exceptions::PyException, _>(format!(
+                    "Could not receive event: {err:#?}"
+                )));
+            }
+        };
+
         Ok(events)
     }
 
@@ -397,6 +435,16 @@ impl Events {
                 None => events.recv().map(MergedEvent::Dora),
             },
             EventsInner::Merged(events) => futures::executor::block_on(events.next()),
+        };
+        event.map(|event| PyEvent { event })
+    }
+
+    fn try_recv(&mut self) -> Result<PyEvent, TryRecvError> {
+        let event = match &mut self.inner {
+            EventsInner::Dora(events) => events.try_recv().map(MergedEvent::Dora),
+            EventsInner::Merged(_events) => {
+                todo!("try_recv on external event stream is not yet implemented!")
+            }
         };
         event.map(|event| PyEvent { event })
     }
