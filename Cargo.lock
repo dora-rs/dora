@@ -730,6 +730,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a1d728cc89cf3aee9ff92b05e62b19ee65a02b5702cff7d5a377e32c6ae29d8d"
 
 [[package]]
+name = "clonable-command"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a94c477ad2f0c0b2772d1c1260972081012cf09d813f8d6ac26144658eed2bcd"
+
+[[package]]
 name = "codespan-reporting"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1542,6 +1548,7 @@ dependencies = [
  "async-trait",
  "bincode",
  "chrono",
+ "clonable-command",
  "crossbeam",
  "crossbeam-skiplist",
  "ctrlc",

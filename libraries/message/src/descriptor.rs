@@ -90,6 +90,14 @@ pub struct Descriptor {
     pub debug: Debug,
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema)]
+pub enum RestartPolicy {
+    #[default]
+    Never,
+    OnFailure,
+    Always,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Deploy {
@@ -462,6 +470,8 @@ pub struct Node {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rev: Option<String>,
 
+    pub restart_policy: RestartPolicy,
+
     /// Unstable machine deployment configuration
     #[schemars(skip)]
     #[serde(rename = "_unstable_deploy")]
@@ -644,6 +654,9 @@ pub struct CustomNode {
     /// Send stdout and stderr to another node
     #[serde(skip_serializing_if = "Option::is_none")]
     pub send_stdout_as: Option<String>,
+
+    #[serde(default)]
+    pub restart_policy: RestartPolicy,
 
     #[serde(flatten)]
     pub run_config: NodeRunConfig,
