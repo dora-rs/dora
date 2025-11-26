@@ -1,6 +1,6 @@
 mod build;
 mod check;
-mod completions;
+mod completion;
 mod coordinator;
 mod daemon;
 mod destroy;
@@ -21,7 +21,7 @@ pub use run::{run, run_func};
 
 use build::Build;
 use check::Check;
-use completions::Completions;
+use completion::Completion;
 use coordinator::Coordinator;
 use daemon::Daemon;
 use destroy::Destroy;
@@ -66,7 +66,7 @@ pub enum Command {
     #[clap(subcommand)]
     Topic(Topic),
 
-    Completions(Completions),
+    Completion(Completion),
     Self_ {
         #[clap(subcommand)]
         command: SelfSubCommand,
@@ -109,7 +109,7 @@ impl Executable for Command {
             Command::Self_ { command } => command.execute(),
             Command::Runtime(args) => args.execute(),
             Command::Topic(args) => args.execute(),
-            Command::Completions(args) => args.execute(),
+            Command::Completion(args) => args.execute(),
         }
     }
 }
