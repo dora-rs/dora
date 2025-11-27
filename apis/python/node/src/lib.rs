@@ -208,14 +208,18 @@ impl Node {
 
     /// `.try_recv()` gives you the next input in the queue that the node has received.
     /// It does not block until the next event becomes available.
+    /// It will raise an error if no input is available or if the channel is closed.
     ///
     /// ```python
-    /// events = node.drain()
-    /// for event in events:
+    ///
+    /// try:
+    ///     event = events.try_recv()
     ///     print(event)
+    /// except Exception as e:
+    ///     print(f"Error receiving event: {e}")
     /// ```
     ///
-    /// :rtype: list[dict]
+    /// :rtype: dict
     #[allow(clippy::should_implement_trait)]
     pub fn try_recv(&mut self, py: Python) -> PyResult<Py<PyDict>> {
         let events = match self.events.try_recv() {
@@ -223,9 +227,14 @@ impl Node {
                 .to_py_dict(py)
                 .context("Could not convert event into a dict")
                 .unwrap_or_else(|_| PyDict::new(py).into()),
-            Err(err) => {
+            Err(TryRecvError::Closed) => {
                 return Err(PyErr::new::<pyo3::exceptions::PyException, _>(format!(
-                    "Could not receive event: {err:#?}"
+                    "Closed: no more events will be received"
+                )));
+            }
+            Err(TryRecvError::Empty) => {
+                return Err(PyErr::new::<pyo3::exceptions::PyException, _>(format!(
+                    "Empty: no event is available right now"
                 )));
             }
         };
