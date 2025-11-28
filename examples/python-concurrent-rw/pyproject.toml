@@ -1,0 +1,11 @@
+[project]
+name = "dora-test"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "asyncio>=4.0.0",
+    "dora-rs-cli>=0.3.13",
+    "numpy>=2.3.5",
+]
