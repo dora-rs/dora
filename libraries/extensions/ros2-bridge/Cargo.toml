@@ -38,7 +38,7 @@ dora-cli = { workspace = true }
 dunce = "1.0.2"
 rand = "0.8.5"
 futures = { version = "0.3.28", default-features = false }
-process-wrap = { version = "8.2.1", features = ["std"] }
+process-wrap = { version = "8.2.1", features = ["std", "tokio1"] }
 
 [build-dependencies]
 dora-ros2-bridge-msg-gen = { workspace = true, optional = true }

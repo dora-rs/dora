@@ -17,11 +17,13 @@ fn main() -> eyre::Result<()> {
         run("dataflow.yml".to_string(), false).unwrap();
     });
 
-    let mut pub_task = run_ros_node("examples_rclcpp_minimal_subscriber", "subscriber_lambda")?;
+    let mut sub_task = run_ros_node("examples_rclcpp_minimal_subscriber", "subscriber_lambda")?;
 
-    while !dataflow_task.is_finished() {}
+    dataflow_task
+        .join()
+        .map_err(|_| eyre::eyre!("Failed to run dataflow"))?;
 
-    pub_task.kill()?;
+    sub_task.kill()?;
     Ok(())
 }
 

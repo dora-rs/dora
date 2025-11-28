@@ -2,7 +2,9 @@ use dora_cli::{build, run};
 use eyre::Context;
 use std::path::Path;
 
-use process_wrap::std::{ChildWrapper, CommandWrap, ProcessGroup};
+use process_wrap::std::{
+    ProcessGroup, StdChildWrapper as ChildWrapper, StdCommandWrap as CommandWrap,
+};
 
 fn main() -> eyre::Result<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -17,7 +19,9 @@ fn main() -> eyre::Result<()> {
 
     let mut service_task = run_ros_node("examples_rclcpp_minimal_service", "service_main")?;
 
-    while !dataflow_task.is_finished() {}
+    dataflow_task
+        .join()
+        .map_err(|_| eyre::eyre!("Failed to run dataflow"))?;
 
     service_task.kill()?;
     Ok(())
