@@ -208,38 +208,22 @@ impl Node {
 
     /// `.try_recv()` gives you the next input in the queue that the node has received.
     /// It does not block until the next event becomes available.
-    /// It will raise an error if no input is available or if the channel is closed.
     ///
     /// ```python
-    ///
-    /// try:
-    ///     event = events.try_recv()
+    /// event = events.try_recv()
     ///     print(event)
-    /// except Exception as e:
-    ///     print(f"Error receiving event: {e}")
     /// ```
     ///
     /// :rtype: dict
     #[allow(clippy::should_implement_trait)]
-    pub fn try_recv(&mut self, py: Python) -> PyResult<Py<PyDict>> {
-        let events = match self.events.try_recv() {
-            Ok(event) => event
-                .to_py_dict(py)
-                .context("Could not convert event into a dict")
-                .unwrap_or_else(|_| PyDict::new(py).into()),
-            Err(TryRecvError::Closed) => {
-                return Err(PyErr::new::<pyo3::exceptions::PyException, _>(format!(
-                    "Closed: no more events will be received"
-                )));
-            }
-            Err(TryRecvError::Empty) => {
-                return Err(PyErr::new::<pyo3::exceptions::PyException, _>(format!(
-                    "Empty: no event is available right now"
-                )));
-            }
-        };
-
-        Ok(events)
+    pub fn try_recv(&mut self, py: Python) -> Option<Py<PyDict>> {
+        match self.events.try_recv() {
+            Ok(event) => match event.to_py_dict(py) {
+                Ok(dict) => Some(dict),
+                Err(_) => None,
+            },
+            Err(_) => None,
+        }
     }
 
     /// `.recv_async()` gives you the next input that the node has received asynchronously.
