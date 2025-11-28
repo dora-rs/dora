@@ -285,7 +285,7 @@ impl Node {
     /// :rtype: None
     #[pyo3(signature = (output_id, data, metadata=None))]
     pub fn send_output(
-        &mut self,
+        &self,
         output_id: String,
         data: PyObject,
         metadata: Option<Bound<'_, PyDict>>,
@@ -317,7 +317,7 @@ impl Node {
     /// This method returns the parsed dataflow YAML file.
     ///
     /// :rtype: dict
-    pub fn dataflow_descriptor(&mut self, py: Python) -> eyre::Result<PyObject> {
+    pub fn dataflow_descriptor(&self, py: Python) -> eyre::Result<PyObject> {
         Ok(
             pythonize::pythonize(py, &self.node.get_mut().dataflow_descriptor()?)
                 .map(|x| x.unbind())?,
@@ -327,7 +327,7 @@ impl Node {
     /// Returns the node configuration.
     ///
     /// :rtype: dict
-    pub fn node_config(&mut self, py: Python) -> eyre::Result<PyObject> {
+    pub fn node_config(&self, py: Python) -> eyre::Result<PyObject> {
         Ok(pythonize::pythonize(py, &self.node.get_mut().node_config()).map(|x| x.unbind())?)
     }
 
