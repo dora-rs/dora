@@ -4,6 +4,7 @@ use std::env::current_dir;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Mutex;
 
 use arrow::pyarrow::{FromPyArrow, ToPyArrow};
 use dora_download::download_file;
@@ -134,7 +135,7 @@ impl Node {
 
         Ok(Node {
             events: Events {
-                inner: EventsInner::Dora(events),
+                inner: Mutex::new(EventsInner::Dora(events)),
                 _cleanup_handle: cleanup_handle,
             },
             dataflow_id,
@@ -166,7 +167,7 @@ impl Node {
     /// :rtype: dict
     #[pyo3(signature = (timeout=None))]
     #[allow(clippy::should_implement_trait)]
-    pub fn next(&mut self, py: Python, timeout: Option<f32>) -> PyResult<Option<Py<PyDict>>> {
+    pub fn next(&self, py: Python, timeout: Option<f32>) -> PyResult<Option<Py<PyDict>>> {
         let event = py.allow_threads(|| self.events.recv(timeout.map(Duration::from_secs_f32)));
         if let Some(event) = event {
             let dict = event
@@ -179,7 +180,7 @@ impl Node {
     }
 
     #[allow(clippy::should_implement_trait)]
-    pub fn drain(&mut self, py: Python) -> PyResult<Vec<Py<PyDict>>> {
+    pub fn drain(&self, py: Python) -> PyResult<Vec<Py<PyDict>>> {
         let events = self
             .events
             .drain()
@@ -214,7 +215,7 @@ impl Node {
     /// :rtype: dict
     #[pyo3(signature = (timeout=None))]
     #[allow(clippy::should_implement_trait)]
-    pub async fn recv_async(&mut self, timeout: Option<f32>) -> PyResult<Option<Py<PyDict>>> {
+    pub async fn recv_async(&self, timeout: Option<f32>) -> PyResult<Option<Py<PyDict>>> {
         let event = self
             .events
             .recv_async_timeout(timeout.map(Duration::from_secs_f32))
@@ -245,7 +246,7 @@ impl Node {
     /// Default behaviour is to timeout after 2 seconds.
     ///
     /// :rtype: dict
-    pub fn __next__(&mut self, py: Python) -> PyResult<Option<Py<PyDict>>> {
+    pub fn __next__(&self, py: Python) -> PyResult<Option<Py<PyDict>>> {
         self.next(py, None)
     }
 
@@ -344,7 +345,7 @@ impl Node {
     /// :type subscription: dora.Ros2Subscription
     /// :rtype: None
     pub fn merge_external_events(
-        &mut self,
+        &self,
         subscription: &mut Ros2Subscription,
     ) -> eyre::Result<()> {
         let subscription = subscription.into_stream()?;
@@ -365,12 +366,13 @@ impl Node {
         });
 
         // take out the event stream and temporarily replace it with a dummy
+        let mut inner = self.events.inner.blocking_lock();
         let events = std::mem::replace(
-            &mut self.events.inner,
+            &mut *inner,
             EventsInner::Merged(Box::new(futures::stream::empty())),
         );
         // update self.events with the merged stream
-        self.events.inner = EventsInner::Merged(events.merge_external_send(Box::pin(stream)));
+        *inner = EventsInner::Merged(events.merge_external_send(Box::pin(stream)));
 
         Ok(())
     }
@@ -385,13 +387,14 @@ fn err_to_pyany(err: eyre::Report, gil: Python<'_>) -> Py<PyAny> {
 }
 
 struct Events {
-    inner: EventsInner,
+    inner: Mutex<EventsInner>,
     _cleanup_handle: NodeCleanupHandle,
 }
 
 impl Events {
-    fn recv(&mut self, timeout: Option<Duration>) -> Option<PyEvent> {
-        let event = match &mut self.inner {
+    fn recv(&self, timeout: Option<Duration>) -> Option<PyEvent> {
+        let mut inner = self.inner.blocking_lock();
+        let event = match &mut *inner {
             EventsInner::Dora(events) => match timeout {
                 Some(timeout) => events.recv_timeout(timeout).map(MergedEvent::Dora),
                 None => events.recv().map(MergedEvent::Dora),
@@ -401,8 +404,9 @@ impl Events {
         event.map(|event| PyEvent { event })
     }
 
-    async fn recv_async_timeout(&mut self, timeout: Option<Duration>) -> Option<PyEvent> {
-        let event = match &mut self.inner {
+    async fn recv_async_timeout(&self, timeout: Option<Duration>) -> Option<PyEvent> {
+        let mut inner = self.inner.lock().await;
+        let event = match &mut *inner {
             EventsInner::Dora(events) => match timeout {
                 Some(timeout) => events
                     .recv_async_timeout(timeout)
@@ -415,8 +419,9 @@ impl Events {
         event.map(|event| PyEvent { event })
     }
 
-    fn drain(&mut self) -> Option<Vec<PyEvent>> {
-        match &mut self.inner {
+    fn drain(&self) -> Option<Vec<PyEvent>> {
+        let mut inner = self.inner.blocking_lock();
+        match &mut *inner {
             EventsInner::Dora(events) => match events.drain() {
                 Some(items) => {
                     return Some(
