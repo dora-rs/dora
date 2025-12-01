@@ -470,6 +470,7 @@ pub struct Node {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rev: Option<String>,
 
+    #[serde(default)]
     pub restart_policy: RestartPolicy,
 
     /// Unstable machine deployment configuration
