@@ -136,7 +136,7 @@ impl Node {
 
         Ok(Node {
             events: Events {
-                inner: Mutex::new(EventsInner::Dora(events)),
+                inner: Arc::new(Mutex::new(EventsInner::Dora(events))),
                 _cleanup_handle: cleanup_handle,
             },
             dataflow_id,
@@ -265,7 +265,8 @@ impl Node {
                 let dict = event
                     .to_py_dict(py)
                     .context("Could not convert event into a dict")?;
-                Ok(Some(dict))
+              
+                    Ok(Some(dict))
             })
         } else {
             Ok(None)
@@ -423,7 +424,7 @@ fn err_to_pyany(err: eyre::Report, gil: Python<'_>) -> Py<PyAny> {
 }
 
 struct Events {
-    inner: Mutex<EventsInner>,
+    inner: Arc<Mutex<EventsInner>>,
     _cleanup_handle: NodeCleanupHandle,
 }
 
