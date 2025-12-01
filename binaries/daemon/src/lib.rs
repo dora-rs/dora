@@ -1365,8 +1365,13 @@ impl Daemon {
             for node in prepared_nodes {
                 let node_id = node.node_id().clone();
                 let dynamic_node = node.dynamic();
-                let mut logger = logger.reborrow().for_node(node_id.clone());
-                let result = node.spawn(&mut logger).await;
+                let logger = logger
+                    .reborrow()
+                    .for_node(node_id.clone())
+                    .try_clone()
+                    .await
+                    .context("failed to clone NodeLogger")?;
+                let result = node.spawn(logger).await;
                 let node_spawn_result = match result {
                     Ok(node) => Ok(node),
                     Err(err) => {
