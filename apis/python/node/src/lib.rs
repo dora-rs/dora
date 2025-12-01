@@ -226,6 +226,14 @@ impl Node {
         }
     }
 
+    /// Check if there are any buffered events in the event stream.
+    ///
+    /// :rtype: bool
+    #[allow(clippy::should_implement_trait)]
+    pub fn is_empty(&self) -> bool {
+        self.events.is_empty()
+    }
+
     /// `.recv_async()` gives you the next input that the node has received asynchronously.
     /// It does not blocks until the next event becomes available.
     /// You can use timeout in seconds to return if no input is available.
@@ -474,6 +482,15 @@ impl Events {
                 todo!("Draining external event is not yet implemented!")
             }
         };
+    }
+
+    fn is_empty(&self) -> bool {
+        match &self.inner {
+            EventsInner::Dora(events) => events.is_empty(),
+            EventsInner::Merged(_events) => {
+                todo!("is_empty on external event stream is not yet implemented!")
+            }
+        }
     }
 }
 
