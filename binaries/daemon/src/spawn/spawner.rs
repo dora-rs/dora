@@ -300,7 +300,7 @@ impl Spawner {
             }
         };
         Ok(PreparedNode {
-            command: command.map(Into::into),
+            command,
             spawn_error_msg: error_msg,
             node_working_dir,
             dataflow_id,
