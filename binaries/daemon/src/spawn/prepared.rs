@@ -1,5 +1,5 @@
 use crate::{
-    CoreNodeKindExt, DoraEvent, Event, OutputId, RunningNode,
+    CoreNodeKindExt, DoraEvent, Event, OutputId, ProcessOperation, RunningNode,
     log::{self, NodeLogger},
 };
 use aligned_vec::{AVec, ConstAlign};
@@ -58,7 +58,103 @@ impl PreparedNode {
         self.node.kind.dynamic()
     }
 
-    pub async fn spawn(mut self, logger: &mut NodeLogger<'_>) -> eyre::Result<RunningNode> {
+    pub async fn spawn(self, mut logger: NodeLogger<'static>) -> eyre::Result<RunningNode> {
+        let (op_tx, op_rx) = flume::bounded(2);
+        let (finished_tx, finished_rx) = oneshot::channel();
+        let kind = self
+            .clone()
+            .spawn_inner(&mut logger, op_rx, finished_tx)
+            .await?;
+
+        let running_node = RunningNode {
+            process: match kind {
+                NodeKind::Dynamic => None,
+                NodeKind::Spawned => Some(crate::ProcessHandle::new(op_tx)),
+            },
+            node_config: self.node_config.clone(),
+        };
+
+        tokio::spawn(self.restart_loop(logger, finished_rx));
+
+        Ok(running_node)
+    }
+
+    async fn restart_loop(
+        self,
+        mut logger: NodeLogger<'static>,
+        mut finished_rx: oneshot::Receiver<NodeProcessFinished>,
+    ) {
+        let dataflow_id = self.dataflow_id;
+        let node_id = self.node.id.clone();
+
+        let restart_policy = match &self.node.kind {
+            dora_core::descriptor::CoreNodeKind::Custom(n) => n.restart_policy,
+            dora_core::descriptor::CoreNodeKind::Runtime(_) => RestartPolicy::Never,
+        };
+
+        loop {
+            let Ok(NodeProcessFinished { exit_status, op_rx }) = finished_rx.await else {
+                tracing::error!(
+                    "failed to receive finished signal for node {dataflow_id}/{node_id}"
+                );
+                break;
+            };
+
+            let restart = match restart_policy {
+                RestartPolicy::Always => true,
+                RestartPolicy::OnFailure if exit_status.is_success() => false,
+                RestartPolicy::OnFailure => true,
+                RestartPolicy::Never => false,
+            };
+
+            if restart {
+                if exit_status.is_success() {
+                    tracing::info!("restarting node {dataflow_id}/{node_id} after successful exit");
+                } else {
+                    tracing::warn!("restarting node {dataflow_id}/{node_id} after failed exit");
+                }
+                let (finished_tx, finished_rx_new) = oneshot::channel();
+                let result = self
+                    .clone()
+                    .spawn_inner(&mut logger, op_rx, finished_tx)
+                    .await;
+                match result {
+                    Ok(NodeKind::Spawned) => {
+                        finished_rx = finished_rx_new;
+                    }
+                    Ok(NodeKind::Dynamic) => {
+                        tracing::error!("cannot restart dynamic node {dataflow_id}/{node_id}");
+                        break;
+                    }
+                    Err(err) => {
+                        tracing::error!("failed to restart node {dataflow_id}/{node_id}: {err:?}");
+                        break;
+                    }
+                }
+            } else {
+                let event = DoraEvent::SpawnedNodeResult {
+                    dataflow_id: self.dataflow_id,
+                    node_id: self.node.id.clone(),
+                    exit_status,
+                    dynamic_node: self.node.kind.dynamic(),
+                }
+                .into();
+                let event = Timestamped {
+                    inner: event,
+                    timestamp: self.clock.clone().new_timestamp(),
+                };
+                let _ = self.daemon_tx.clone().send(event).await;
+                break;
+            }
+        }
+    }
+
+    async fn spawn_inner(
+        mut self,
+        logger: &mut NodeLogger<'_>,
+        op_rx: flume::Receiver<ProcessOperation>,
+        finished_tx: oneshot::Sender<NodeProcessFinished>,
+    ) -> eyre::Result<NodeKind> {
         let mut child = match &mut self.command {
             Some(command) => {
                 let std_command = command.to_std();
@@ -98,15 +194,10 @@ impl PreparedNode {
                 command.spawn().wrap_err(self.spawn_error_msg)?
             }
             None => {
-                return Ok(RunningNode {
-                    process: None,
-                    node_config: self.node_config,
-                });
+                return Ok(NodeKind::Dynamic);
             }
         };
 
-        let (op_tx, op_rx) = flume::bounded(2);
-        let proc_handle = crate::ProcessHandle::new(op_tx);
         let pid = child.id().context(
             "Could not get the pid for the just spawned node and indicate that there is an error",
         )?;
@@ -135,10 +226,6 @@ impl PreparedNode {
         .expect("Failed to create log file");
         let mut child_stdout =
             tokio::io::BufReader::new(child.stdout().take().expect("failed to take stdout"));
-        let running_node = RunningNode {
-            process: Some(proc_handle),
-            node_config: self.node_config,
-        };
         let stdout_tx = tx.clone();
         let node_id = self.node.id.clone();
         // Stdout listener stream
@@ -188,7 +275,6 @@ impl PreparedNode {
         // Stderr listener stream
         let stderr_tx = tx.clone();
         let node_id = self.node.id.clone();
-        let uhlc = self.clock.clone();
         let daemon_tx_log = self.daemon_tx.clone();
         tokio::spawn(async move {
             let mut buffer = String::new();
@@ -234,16 +320,9 @@ impl PreparedNode {
             }
         });
 
-        let node_id = self.node.id.clone();
-        let dynamic_node = self.node.kind.dynamic();
         let (log_finish_tx, log_finish_rx) = oneshot::channel();
-        let uhlc = self.clock.clone();
-        let daemon_tx = self.daemon_tx.clone();
         let dataflow_id = self.dataflow_id;
-        let restart_policy = match &self.node.kind {
-            dora_core::descriptor::CoreNodeKind::Custom(n) => n.restart_policy,
-            dora_core::descriptor::CoreNodeKind::Runtime(n) => RestartPolicy::Never,
-        };
+
         tokio::spawn(async move {
             let exit_status: NodeExitStatus = loop {
                 tokio::select! {
@@ -262,32 +341,8 @@ impl PreparedNode {
                 }
             };
 
-            let restart = match restart_policy {
-                RestartPolicy::Always => true,
-                RestartPolicy::OnFailure if exit_status.is_success() => false,
-                RestartPolicy::OnFailure => true,
-                RestartPolicy::Never => false,
-            };
-
-            if restart {
-                // reuse op_rx
-                let op_rx = op_rx;
-                todo!();
-            } else {
-                let _ = log_finish_rx.await;
-                let event = DoraEvent::SpawnedNodeResult {
-                    dataflow_id,
-                    node_id,
-                    exit_status,
-                    dynamic_node,
-                }
-                .into();
-                let event = Timestamped {
-                    inner: event,
-                    timestamp: uhlc.new_timestamp(),
-                };
-                let _ = daemon_tx.send(event).await;
-            }
+            let _ = log_finish_rx.await;
+            let _ = finished_tx.send(NodeProcessFinished { exit_status, op_rx });
         });
 
         let node_id = self.node.id.clone();
@@ -391,6 +446,17 @@ impl PreparedNode {
                 .send(())
                 .map_err(|_| error!("Could not inform that log file thread finished"));
         });
-        Ok(running_node)
+        Ok(NodeKind::Spawned)
     }
+}
+
+#[must_use]
+enum NodeKind {
+    Dynamic,
+    Spawned,
+}
+
+struct NodeProcessFinished {
+    exit_status: NodeExitStatus,
+    op_rx: flume::Receiver<ProcessOperation>,
 }
