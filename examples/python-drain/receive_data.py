@@ -9,9 +9,10 @@ def main():
     drained_data = node.drain()
     print("drained: ", drained_data)
     for _ in range(100):
-        _event = node.next()
-        # print(event)
-        # del event
+        try:
+            _event = node.try_recv()
+        except Exception as e:
+            print("Error receiving event:", e)
     print("done!")
 
 

@@ -79,7 +79,7 @@ fn main() -> eyre::Result<()> {
     let merged = dora_events.merge_external(Box::pin(turtle_pose_reader.async_stream()));
     let mut events = futures::executor::block_on_stream(merged);
 
-    for i in 0..1000 {
+    for i in 0..600 {
         let event = match events.next() {
             Some(input) => input,
             None => break,
@@ -118,7 +118,10 @@ fn main() -> eyre::Result<()> {
                     }
                     other => eprintln!("Ignoring unexpected input `{other}`"),
                 },
-                Event::Stop(_) => println!("Received stop"),
+                Event::Stop(_) => {
+                    println!("Received stop");
+                    break;
+                }
                 other => eprintln!("Received unexpected input: {other:?}"),
             },
             MergedEvent::External(pose) => {
