@@ -1798,12 +1798,15 @@ name = "dora-ros2-bridge"
 version = "0.3.13"
 dependencies = [
  "array-init",
+ "dora-cli",
  "dora-daemon",
  "dora-ros2-bridge-msg-gen",
+ "dunce",
  "eyre",
  "flume 0.11.1",
  "futures",
  "futures-timer",
+ "process-wrap",
  "rand 0.8.5",
  "ros2-client",
  "rust-format",
@@ -5143,7 +5146,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "rust-ros2-dataflow-example-node"
+name = "rust-ros2-example-node"
 version = "0.3.13"
 dependencies = [
  "dora-node-api",

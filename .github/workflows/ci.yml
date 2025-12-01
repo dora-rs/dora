@@ -223,9 +223,8 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
-          source /opt/ros/humble/setup.bash && ros2 run turtlesim turtlesim_node &
-          source /opt/ros/humble/setup.bash && ros2 run examples_rclcpp_minimal_service service_main &
-          cargo run --example rust-ros2-dataflow --features="ros2-examples"
+          source /opt/ros/humble/setup.bash &&
+          cargo run -p dora-ros2-bridge --example rust-ros2-dataflow --features="ros2-examples"
       - uses: actions/setup-python@v5
         if: runner.os != 'Windows'
         with:
@@ -239,9 +238,8 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
-          # Reset only the turtlesim instance as it is not destroyed at the end of the previous job
-          source /opt/ros/humble/setup.bash && ros2 service call /reset std_srvs/srv/Empty &
-                    uv venv --seed -p 3.12
+          source /opt/ros/humble/setup.bash &&
+          uv venv --seed -p 3.12
           ## If not Windows
           if [ "$RUNNER_OS" != "Windows" ]; then
             source .venv/bin/activate
@@ -250,15 +248,14 @@ jobs:
           fi
           uv pip install -e apis/python/node
           uv pip install pyarrow
-          cargo run --example python-ros2-dataflow --features="ros2-examples"
+          cargo run -p dora-ros2-bridge --example python-ros2-dataflow --features="ros2-examples"
       - name: "c++-ros2-dataflow"
         timeout-minutes: 30
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
-          # Reset only the turtlesim instance as it is not destroyed at the end of the previous job
-          source /opt/ros/humble/setup.bash && ros2 service call /reset std_srvs/srv/Empty &
-          cargo run --example cxx-ros2-dataflow --features="ros2-examples"
+          source /opt/ros/humble/setup.bash &&
+          cargo run -p dora-ros2-bridge --example cxx-ros2-dataflow --features="ros2-examples"
 
   bench:
     name: "Bench"
