@@ -1,9 +1,0 @@
-nodes:
-  - id: rust-node
-    build: cargo build -p rust-ros2-dataflow-example-node --features ros2
-    path: ../../target/debug/rust-ros2-dataflow-example-node
-    inputs:
-      tick: dora/timer/millis/500
-      service_timer: dora/timer/secs/1
-    outputs:
-      - pose
