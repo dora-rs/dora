@@ -440,8 +440,9 @@ impl Events {
         event.map(|event| PyEvent { event })
     }
 
-    fn try_recv(&mut self) -> Result<PyEvent, TryRecvError> {
-        let event = match &mut self.inner {
+    fn try_recv(&self) -> Result<PyEvent, TryRecvError> {
+        let mut inner = self.inner.blocking_lock();
+        let event = match &mut *inner {
             EventsInner::Dora(events) => events.try_recv().map(MergedEvent::Dora),
             EventsInner::Merged(_events) => {
                 todo!("try_recv on external event stream is not yet implemented!")
@@ -450,7 +451,7 @@ impl Events {
         event.map(|event| PyEvent { event })
     }
 
-    async fn recv_async_timeout(&mut self, timeout: Option<Duration>) -> Option<PyEvent> {
+    async fn recv_async_timeout(&self, timeout: Option<Duration>) -> Option<PyEvent> {
         let mut inner = self.inner.lock().await;
         let event = match &mut *inner {
             EventsInner::Dora(events) => match timeout {
@@ -487,7 +488,8 @@ impl Events {
     }
 
     fn is_empty(&self) -> bool {
-        match &self.inner {
+        let inner = self.inner.blocking_lock();
+        match &*inner {
             EventsInner::Dora(events) => events.is_empty(),
             EventsInner::Merged(_events) => {
                 todo!("is_empty on external event stream is not yet implemented!")
