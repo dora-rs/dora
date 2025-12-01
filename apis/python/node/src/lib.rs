@@ -265,8 +265,8 @@ impl Node {
                 let dict = event
                     .to_py_dict(py)
                     .context("Could not convert event into a dict")?;
-              
-                    Ok(Some(dict))
+
+                Ok(Some(dict))
             })
         } else {
             Ok(None)
