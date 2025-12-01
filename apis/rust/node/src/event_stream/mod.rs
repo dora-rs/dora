@@ -334,6 +334,11 @@ impl EventStream {
         event.map(Self::convert_event_item)
     }
 
+    /// Check if there are any buffered events in the scheduler or the receiver.
+    pub fn is_empty(&self) -> bool {
+        self.scheduler.is_empty() & self.receiver.is_empty()
+    }
+
     fn add_event(&mut self, event: EventItem) {
         self.record_event(&event).unwrap();
         self.scheduler.add_event(event);
@@ -506,6 +511,7 @@ impl EventStream {
 }
 
 /// No event is available right now or the event stream has been closed.
+#[derive(Debug)]
 pub enum TryRecvError {
     /// No new event is available right now.
     Empty,

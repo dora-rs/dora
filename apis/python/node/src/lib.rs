@@ -11,10 +11,11 @@ use dora_download::download_file;
 use dora_node_api::dora_core::config::NodeId;
 use dora_node_api::dora_core::descriptor::source_is_url;
 use dora_node_api::merged::{MergeExternalSend, MergedEvent};
-use dora_node_api::{DataflowId, DoraNode, EventStream};
+use dora_node_api::{DataflowId, DoraNode, EventStream, TryRecvError};
 use dora_operator_api_python::{DelayedCleanup, NodeCleanupHandle, PyEvent, pydict_to_metadata};
 use dora_ros2_bridge_python::Ros2Subscription;
 use eyre::{Context, ContextCompat};
+
 use futures::{Stream, StreamExt};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
@@ -179,6 +180,16 @@ impl Node {
         }
     }
 
+    /// `.drain()` gives you all available inputs that the node has received.
+    /// It does not block until the next event becomes available.
+    ///
+    /// ```python
+    /// events = node.drain()
+    /// for event in events:
+    ///     print(event)
+    /// ```
+    ///
+    /// :rtype: list[dict]
     #[allow(clippy::should_implement_trait)]
     pub fn drain(&self, py: Python) -> PyResult<Vec<Py<PyDict>>> {
         let events = self
@@ -194,6 +205,34 @@ impl Node {
             })
             .collect();
         Ok(events)
+    }
+
+    /// `.try_recv()` gives you the next input in the queue that the node has received.
+    /// It does not block until the next event becomes available.
+    ///
+    /// ```python
+    /// event = events.try_recv()
+    ///     print(event)
+    /// ```
+    ///
+    /// :rtype: dict
+    #[allow(clippy::should_implement_trait)]
+    pub fn try_recv(&mut self, py: Python) -> Option<Py<PyDict>> {
+        match self.events.try_recv() {
+            Ok(event) => match event.to_py_dict(py) {
+                Ok(dict) => Some(dict),
+                Err(_) => None,
+            },
+            Err(_) => None,
+        }
+    }
+
+    /// Check if there are any buffered events in the event stream.
+    ///
+    /// :rtype: bool
+    #[allow(clippy::should_implement_trait)]
+    pub fn is_empty(&self) -> bool {
+        self.events.is_empty()
     }
 
     /// `.recv_async()` gives you the next input that the node has received asynchronously.
@@ -401,7 +440,17 @@ impl Events {
         event.map(|event| PyEvent { event })
     }
 
-    async fn recv_async_timeout(&self, timeout: Option<Duration>) -> Option<PyEvent> {
+    fn try_recv(&mut self) -> Result<PyEvent, TryRecvError> {
+        let event = match &mut self.inner {
+            EventsInner::Dora(events) => events.try_recv().map(MergedEvent::Dora),
+            EventsInner::Merged(_events) => {
+                todo!("try_recv on external event stream is not yet implemented!")
+            }
+        };
+        event.map(|event| PyEvent { event })
+    }
+
+    async fn recv_async_timeout(&mut self, timeout: Option<Duration>) -> Option<PyEvent> {
         let mut inner = self.inner.lock().await;
         let event = match &mut *inner {
             EventsInner::Dora(events) => match timeout {
@@ -435,6 +484,15 @@ impl Events {
                 todo!("Draining external event is not yet implemented!")
             }
         };
+    }
+
+    fn is_empty(&self) -> bool {
+        match &self.inner {
+            EventsInner::Dora(events) => events.is_empty(),
+            EventsInner::Merged(_events) => {
+                todo!("is_empty on external event stream is not yet implemented!")
+            }
+        }
     }
 }
 
