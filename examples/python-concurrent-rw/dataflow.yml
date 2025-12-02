@@ -1,0 +1,14 @@
+nodes:
+  - id: node1
+    path: ./receive_data.py
+    inputs:
+      data: node2/data
+    outputs:
+      - data
+
+  - id: node2
+    path: ./receive_data.py
+    inputs:
+      data: node1/data
+    outputs:
+      - data
