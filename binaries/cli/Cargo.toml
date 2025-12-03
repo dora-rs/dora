@@ -23,6 +23,7 @@ python = ["pyo3"]
 [dependencies]
 arrow = { workspace = true }
 clap = { version = "4.0.3", features = ["derive"] }
+clap_complete = "4.5.61"
 eyre = "0.6.8"
 dora-core = { workspace = true, features = ["zenoh"] }
 dora-message = { workspace = true }
@@ -55,6 +56,7 @@ colored = "2.1.0"
 crossterm = "0.29.0"
 ratatui = "0.29.0"
 itertools = "0.14"
+sysinfo = "0.36.1"
 
 env_logger = "0.11.3"
 self_update = { version = "0.42.0", features = [
@@ -72,6 +74,7 @@ dunce = "1.0.5"
 git2 = { workspace = true }
 zenoh = { workspace = true }
 arrow-json.workspace = true
+chrono = "0.4.42"
 
 [build-dependencies]
 pyo3-build-config = "0.23"

@@ -38,7 +38,7 @@ impl Executable for Coordinator {
             let name = "dora-coordinator";
             let mut builder = TracingBuilder::new(name);
             if !self.quiet {
-                builder = builder.with_stdout("info");
+                builder = builder.with_stdout("info", false);
             }
             builder = builder.with_file(name, LevelFilter::INFO)?;
             builder

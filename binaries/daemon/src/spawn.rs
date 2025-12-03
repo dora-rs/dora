@@ -19,7 +19,7 @@ use dora_core::{
 use dora_download::download_file;
 use dora_message::{
     DataflowId,
-    common::{LogLevel, LogMessage},
+    common::{LogLevel, LogMessage, LogMessageHelper},
     daemon_to_coordinator::{DataMessage, NodeExitStatus, Timestamped},
     daemon_to_node::{NodeConfig, RuntimeConfig},
     id::NodeId,
@@ -60,6 +60,7 @@ impl Spawner {
         node: ResolvedNode,
         node_working_dir: PathBuf,
         node_stderr_most_recent: Arc<ArrayQueue<String>>,
+        write_events_to: Option<PathBuf>,
         logger: &mut NodeLogger<'_>,
     ) -> eyre::Result<impl Future<Output = eyre::Result<PreparedNode>> + use<>> {
         let dataflow_id = self.dataflow_id;
@@ -90,10 +91,11 @@ impl Spawner {
             dataflow_id,
             node_id: node_id.clone(),
             run_config: node.kind.run_config(),
-            daemon_communication,
+            daemon_communication: Some(daemon_communication),
             dataflow_descriptor: serde_yaml::to_value(&self.dataflow_descriptor)
                 .context("failed to serialize dataflow descriptor to YAML")?,
             dynamic: node.kind.dynamic(),
+            write_events_to,
         };
 
         let mut logger = logger
@@ -527,7 +529,7 @@ impl PreparedNode {
         let node_id = self.node.id.clone();
         let dynamic_node = self.node.kind.dynamic();
         let (log_finish_tx, log_finish_rx) = oneshot::channel();
-        let clock = self.clock.clone();
+        let uhlc = self.clock.clone();
         let daemon_tx = self.daemon_tx.clone();
         let dataflow_id = self.dataflow_id;
         tokio::spawn(async move {
@@ -557,7 +559,7 @@ impl PreparedNode {
             .into();
             let event = Timestamped {
                 inner: event,
-                timestamp: clock.new_timestamp(),
+                timestamp: uhlc.new_timestamp(),
             };
             let _ = daemon_tx.send(event).await;
         });
@@ -576,7 +578,7 @@ impl PreparedNode {
             .node
             .send_stdout_as()
             .context("Could not resolve `send_stdout_as` configuration")?;
-
+        let uhlc = self.clock.clone();
         // Log to file stream.
         tokio::spawn(async move {
             while let Some(message) = rx.recv().await {
@@ -619,21 +621,35 @@ impl PreparedNode {
                     output.push_str(line);
                     output
                 });
+
                 if std::env::var("DORA_QUIET").is_err() {
-                    cloned_logger
-                        .log(LogMessage {
-                            daemon_id: Some(daemon_id.clone()),
-                            dataflow_id: Some(dataflow_id),
-                            build_id: None,
-                            level: dora_core::build::LogLevelOrStdout::Stdout,
-                            node_id: Some(node_id.clone()),
-                            target: None,
-                            message: formatted,
-                            file: None,
-                            line: None,
-                            module_path: None,
-                        })
-                        .await;
+                    match serde_json::de::from_str::<LogMessageHelper>(&formatted) {
+                        Ok(log_msg) => {
+                            cloned_logger.log(LogMessage::from(log_msg)).await;
+                        }
+                        Err(_err) => {
+                            cloned_logger
+                                .log(LogMessage {
+                                    daemon_id: Some(daemon_id.clone()),
+                                    dataflow_id: Some(dataflow_id),
+                                    build_id: None,
+                                    level: dora_core::build::LogLevelOrStdout::Stdout,
+                                    node_id: Some(node_id.clone()),
+                                    target: None,
+                                    message: formatted,
+                                    file: None,
+                                    line: None,
+                                    module_path: None,
+                                    timestamp: uhlc
+                                        .new_timestamp()
+                                        .get_time()
+                                        .to_system_time()
+                                        .into(),
+                                    fields: None,
+                                })
+                                .await;
+                        }
+                    }
                 }
                 // Make sure that all data has been synced to disk.
                 let _ = file

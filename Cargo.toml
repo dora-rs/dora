@@ -17,7 +17,7 @@ members = [
     "examples/rust-dataflow/status-node",
     "examples/rust-dataflow/sink",
     "examples/rust-dataflow/sink-dynamic",
-    "examples/rust-ros2-dataflow/node",
+    "examples/ros2-bridge/rust/rust-ros2-example-node",
     "examples/benchmark/node",
     "examples/benchmark/sink",
     "examples/multiple-daemons/node",
@@ -34,7 +34,6 @@ members = [
     "libraries/extensions/ros2-bridge/msg-gen",
     "libraries/extensions/ros2-bridge/python",
     "tests/queue_size_latest_data_rust/receive_data",
-
 ]
 
 [workspace.package]
@@ -88,6 +87,7 @@ pythonize = "0.23"
 git2 = { version = "0.18.0", features = ["vendored-openssl"] }
 serde_yaml = "0.9.33"
 zenoh = "1.1.1"
+serde_json = "1.0.145"
 
 [package]
 name = "dora-examples"
@@ -117,6 +117,8 @@ uuid = { version = "1.7", features = ["v7", "serde"] }
 tracing = "0.1.36"
 futures = "0.3.25"
 tokio-stream = "0.1.11"
+tempfile = "3.23.0"
+assert2 = "0.3.16"
 
 [[example]]
 name = "c-dataflow"
@@ -129,11 +131,6 @@ path = "examples/rust-dataflow/run.rs"
 [[example]]
 name = "rust-dataflow-git"
 path = "examples/rust-dataflow-git/run.rs"
-
-[[example]]
-name = "rust-ros2-dataflow"
-path = "examples/rust-ros2-dataflow/run.rs"
-required-features = ["ros2-examples"]
 
 # TODO: Fix example #192
 [[example]]
@@ -153,11 +150,6 @@ name = "python-dataflow"
 path = "examples/python-dataflow/run.rs"
 
 [[example]]
-name = "python-ros2-dataflow"
-path = "examples/python-ros2-dataflow/run.rs"
-required-features = ["ros2-examples"]
-
-[[example]]
 name = "python-operator-dataflow"
 path = "examples/python-operator-dataflow/run.rs"
 
@@ -172,11 +164,6 @@ path = "examples/multiple-daemons/run.rs"
 [[example]]
 name = "cmake-dataflow"
 path = "examples/cmake-dataflow/run.rs"
-
-[[example]]
-name = "cxx-ros2-dataflow"
-path = "examples/c++-ros2-dataflow/run.rs"
-required-features = ["ros2-examples"]
 
 # The profile that 'dist' will build with
 [profile.dist]

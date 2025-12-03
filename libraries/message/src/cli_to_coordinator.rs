@@ -43,6 +43,7 @@ pub enum ControlRequest {
         /// the base working dir.
         local_working_dir: Option<PathBuf>,
         uv: bool,
+        write_events_to: Option<PathBuf>,
     },
     WaitForSpawn {
         dataflow_id: Uuid,

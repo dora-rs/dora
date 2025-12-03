@@ -31,7 +31,7 @@ use uuid::Uuid;
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
     TracingBuilder::new("multiple-daemon-runner")
-        .with_stdout("debug")
+        .with_stdout("debug", false)
         .build()?;
 
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -154,6 +154,7 @@ async fn start_dataflow(
                 local_working_dir: Some(working_dir),
                 name: None,
                 uv: false,
+                write_events_to: None,
             },
             reply_sender,
         }))

@@ -677,7 +677,7 @@ pub enum GitRepoRev {
     Rev(String),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum EnvValue {
     #[serde(deserialize_with = "with_expand_envs")]

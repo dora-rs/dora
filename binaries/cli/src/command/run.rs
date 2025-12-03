@@ -7,7 +7,7 @@
 
 use super::Executable;
 use crate::{
-    common::{handle_dataflow_result, resolve_dataflow},
+    common::{handle_dataflow_result, resolve_dataflow, write_events_to},
     output::print_log_message,
     session::DataflowSession,
 };
@@ -40,7 +40,7 @@ pub fn run(dataflow: String, uv: bool) -> eyre::Result<()> {
     {
         let log_level = std::env::var("RUST_LOG").ok().unwrap_or("info".to_string());
         TracingBuilder::new("run")
-            .with_stdout(log_level)
+            .with_stdout(log_level, false)
             .build()
             .wrap_err("failed to set up tracing subscriber")?;
     }
@@ -67,6 +67,7 @@ pub fn run(dataflow: String, uv: bool) -> eyre::Result<()> {
         dataflow_session.session_id,
         uv,
         LogDestination::Channel { sender: log_tx },
+        write_events_to(),
     ))?;
     handle_dataflow_result(result, None)
 }

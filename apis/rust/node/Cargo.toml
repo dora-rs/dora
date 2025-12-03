@@ -32,7 +32,7 @@ futures-concurrency = "7.3.0"
 futures-timer = "3.0.2"
 dora-arrow-convert = { workspace = true }
 aligned-vec = "0.5.0"
-serde_json = "1.0.86"
+serde_json = { version = "1.0.86", features = ["preserve_order"] }
 tokio = { version = "1.24.2", features = ["rt", "rt-multi-thread"] }
 inquire = { version = "0.7.5", default-features = false, features = [
     "console",

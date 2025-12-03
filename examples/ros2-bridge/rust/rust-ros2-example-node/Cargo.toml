@@ -1,5 +1,5 @@
 [package]
-name = "rust-ros2-dataflow-example-node"
+name = "rust-ros2-example-node"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,7 +12,28 @@ publish = false
 ros2 = []
 
 [[bin]]
-name = "rust-ros2-dataflow-example-node"
+name = "rust-ros2-example-node-turtle"
+path = "src/turtle.rs"
+required-features = ["ros2"]
+
+[[bin]]
+name = "rust-ros2-example-node-topic-sub"
+path = "src/topic_sub.rs"
+required-features = ["ros2"]
+
+[[bin]]
+name = "rust-ros2-example-node-topic-pub"
+path = "src/topic_pub.rs"
+required-features = ["ros2"]
+
+[[bin]]
+name = "rust-ros2-example-node-service-client"
+path = "src/service_client.rs"
+required-features = ["ros2"]
+
+[[bin]]
+name = "rust-ros2-example-node-service-server"
+path = "src/service_server.rs"
 required-features = ["ros2"]
 
 [dependencies]
