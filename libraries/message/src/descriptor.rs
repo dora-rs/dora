@@ -91,6 +91,7 @@ pub struct Descriptor {
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
 pub enum RestartPolicy {
     #[default]
     Never,
