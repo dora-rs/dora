@@ -50,7 +50,10 @@ use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
     pin::pin,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{self, AtomicBool},
+    },
     time::{Duration, Instant},
 };
 use tokio::{
@@ -1888,12 +1891,18 @@ impl Daemon {
             );
         }
         if dataflow.open_inputs(&node_id).is_empty() {
+            if let Some(node) = dataflow.running_nodes.get_mut(&node_id) {
+                node.disable_restart();
+            }
             let _ = send_with_timestamp(&event_sender, NodeEvent::AllInputsClosed, clock);
         }
 
         // if a stop event was already sent for the dataflow, send it to
         // the newly connected node too
         if dataflow.stop_sent {
+            if let Some(node) = dataflow.running_nodes.get_mut(&node_id) {
+                node.disable_restart();
+            }
             let _ = send_with_timestamp(&event_sender, NodeEvent::Stop, clock);
         }
 
@@ -2464,6 +2473,9 @@ fn close_input(
         );
 
         if dataflow.open_inputs(receiver_id).is_empty() {
+            if let Some(node) = dataflow.running_nodes.get_mut(receiver_id) {
+                node.disable_restart();
+            }
             let _ = send_with_timestamp(channel, NodeEvent::AllInputsClosed, clock);
         }
     }
@@ -2473,7 +2485,21 @@ fn close_input(
 pub struct RunningNode {
     process: Option<ProcessHandle>,
     node_config: NodeConfig,
-    pid: Option<u32>,
+    /// Don't restart the node even if the restart policy says so.
+    ///
+    /// This flag is set when all inputs of the node were closed and when a manual stop command
+    /// was sent.
+    disable_restart: Arc<AtomicBool>,
+}
+
+impl RunningNode {
+    pub fn restarts_disabled(&self) -> bool {
+        self.disable_restart.load(atomic::Ordering::Acquire)
+    }
+
+    pub fn disable_restart(&mut self) {
+        self.disable_restart.store(true, atomic::Ordering::Release);
+    }
 }
 
 #[derive(Debug)]
@@ -2697,6 +2723,10 @@ impl RunningDataflow {
                 logger,
             )
             .await?;
+
+        for node in self.running_nodes.values_mut() {
+            node.disable_restart();
+        }
 
         for (_node_id, channel) in self.subscribe_channels.drain() {
             let _ = send_with_timestamp(&channel, NodeEvent::Stop, clock);

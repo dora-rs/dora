@@ -27,7 +27,10 @@ use eyre::{ContextCompat, WrapErr};
 use process_wrap::tokio::TokioCommandWrap;
 use std::{
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{self, AtomicBool},
+    },
 };
 use tokio::{
     fs::File,
@@ -66,15 +69,17 @@ impl PreparedNode {
             .spawn_inner(&mut logger, op_rx, finished_tx)
             .await?;
 
+        let disable_restart = Arc::new(AtomicBool::new(false));
         let running_node = RunningNode {
             process: match kind {
                 NodeKind::Dynamic => None,
                 NodeKind::Spawned => Some(crate::ProcessHandle::new(op_tx)),
             },
             node_config: self.node_config.clone(),
+            disable_restart: disable_restart.clone(),
         };
 
-        tokio::spawn(self.restart_loop(logger, finished_rx));
+        tokio::spawn(self.restart_loop(logger, finished_rx, disable_restart));
 
         Ok(running_node)
     }
@@ -83,6 +88,7 @@ impl PreparedNode {
         self,
         mut logger: NodeLogger<'static>,
         mut finished_rx: oneshot::Receiver<NodeProcessFinished>,
+        disable_restart: Arc<AtomicBool>,
     ) {
         let dataflow_id = self.dataflow_id;
         let node_id = self.node.id.clone();
@@ -107,7 +113,14 @@ impl PreparedNode {
                 RestartPolicy::Never => false,
             };
 
-            if restart {
+            let restart_disabled = disable_restart.load(atomic::Ordering::Acquire);
+            if restart && restart_disabled {
+                tracing::info!(
+                    "not restarting node {dataflow_id}/{node_id} because all inputs are already closed"
+                );
+            }
+
+            if restart && !restart_disabled {
                 if exit_status.is_success() {
                     tracing::info!("restarting node {dataflow_id}/{node_id} after successful exit");
                 } else {
