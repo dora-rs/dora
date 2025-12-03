@@ -13,7 +13,7 @@ pub mod session;
 mod template;
 
 pub use command::build;
-pub use command::run;
+pub use command::{run, run_func};
 
 const LOCALHOST: IpAddr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
 const LISTEN_WILDCARD: IpAddr = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0));

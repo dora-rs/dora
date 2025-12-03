@@ -17,7 +17,7 @@ mod topic;
 mod up;
 
 pub use build::build;
-pub use run::run;
+pub use run::{run, run_func};
 
 use build::Build;
 use check::Check;
