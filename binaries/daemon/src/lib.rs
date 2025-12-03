@@ -1615,7 +1615,7 @@ impl Daemon {
                             )
                             .await?;
                         match status {
-                            DataflowStatus::AllNodesReady => {
+                            DataflowStatus::AllNodesReady if !dataflow.dataflow_started => {
                                 logger
                                     .log(
                                         LogLevel::Info,
@@ -1625,8 +1625,9 @@ impl Daemon {
                                     )
                                     .await;
                                 dataflow.start(&self.events_tx, &self.clock).await?;
+                                dataflow.dataflow_started = true;
                             }
-                            DataflowStatus::Pending => {}
+                            _ => {}
                         }
                     }
                 }
@@ -2578,6 +2579,8 @@ pub struct RunningDataflow {
     /// Local nodes that are not started yet
     pending_nodes: PendingNodes,
 
+    dataflow_started: bool,
+
     subscribe_channels: HashMap<NodeId, UnboundedSender<Timestamped<NodeEvent>>>,
     drop_channels: HashMap<NodeId, UnboundedSender<Timestamped<NodeDropEvent>>>,
     mappings: HashMap<OutputId, BTreeSet<InputId>>,
@@ -2627,6 +2630,7 @@ impl RunningDataflow {
         Self {
             id: dataflow_id,
             pending_nodes: PendingNodes::new(dataflow_id, daemon_id),
+            dataflow_started: false,
             subscribe_channels: HashMap::new(),
             drop_channels: HashMap::new(),
             mappings: HashMap::new(),
