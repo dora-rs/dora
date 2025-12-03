@@ -24,6 +24,7 @@ python = ["pyo3"]
 arrow = { workspace = true }
 clap = { version = "4.0.3", features = ["derive"] }
 clap_complete = "4.5.61"
+enum_dispatch = "0.3.13"
 eyre = "0.6.8"
 dora-core = { workspace = true, features = ["zenoh"] }
 dora-message = { workspace = true }
