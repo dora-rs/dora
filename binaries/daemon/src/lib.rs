@@ -1671,9 +1671,7 @@ impl Daemon {
                     }
                     Ok(dataflow) => {
                         // Update health status
-                        dataflow
-                            .node_health_status
-                            .insert(node_id.clone(), status.clone());
+                        dataflow.node_health_status.insert(node_id.clone(), status);
 
                         tracing::info!(
                             "Node {}/{} health status changed to: {:?}",
@@ -1688,7 +1686,7 @@ impl Daemon {
                             &node_id,
                             NodeEvent::PeerHealthChanged {
                                 node_id: node_id.clone(),
-                                status: status.clone(),
+                                status,
                             },
                             &self.clock,
                         );

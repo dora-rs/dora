@@ -6,7 +6,6 @@ use dora_core::topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT;
 use dora_message::{
     cli_to_coordinator::ControlRequest,
     coordinator_to_cli::{ControlRequestReply, DataflowStatus, NodeHealthEntry},
-    id::NodeId,
 };
 use eyre::eyre;
 use serde::Serialize;

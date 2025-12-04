@@ -36,7 +36,7 @@ use std::{
     ops::{Deref, DerefMut},
     path::PathBuf,
     sync::Arc,
-    time::{Duration, Instant},
+    time::Duration,
 };
 use tokio::runtime::{Handle, Runtime};
 use tracing::{info, warn};
@@ -798,7 +798,8 @@ impl DoraNode {
     /// # Ok::<(), eyre::Report>(())
     /// ```
     pub fn subscribe_node_events(&mut self, node_ids: &[NodeId]) -> eyre::Result<()> {
-        self.control_channel
+        let _ = self
+            .control_channel
             .request(&Timestamped {
                 inner: DaemonRequest::SubscribeNodeEvents {
                     node_ids: node_ids.to_vec(),

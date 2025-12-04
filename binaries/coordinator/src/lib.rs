@@ -773,7 +773,7 @@ async fn start_inner(
                                 },
                             ));
                         }
-                        ControlRequest::NodeHealth { dataflow_uuid } => {
+                        ControlRequest::NodeHealth { dataflow_uuid: _ } => {
                             // For now, return empty list as we need to track node health in coordinator
                             // This would require storing node health status from daemon events
                             let reply = Ok(ControlRequestReply::NodeHealthList(
@@ -782,7 +782,7 @@ async fn start_inner(
                             let _ = reply_sender.send(reply);
                         }
                         ControlRequest::NodeDeps {
-                            dataflow_uuid,
+                            dataflow_uuid: _,
                             node_id,
                         } => {
                             // For now, return empty deps as we need to track node dependencies
