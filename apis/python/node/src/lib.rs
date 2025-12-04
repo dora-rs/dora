@@ -16,6 +16,11 @@ use dora_operator_api_python::{DelayedCleanup, NodeCleanupHandle, PyEvent, pydic
 use dora_ros2_bridge_python::Ros2Subscription;
 use eyre::{Context, ContextCompat};
 
+// Import health status types
+mod health_types {
+    pub use dora_message::common::HealthStatus;
+}
+
 use futures::{Stream, StreamExt};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
@@ -412,6 +417,82 @@ impl Node {
         *inner = EventsInner::Merged(events.merge_external_send(Box::pin(stream)));
 
         Ok(())
+    }
+
+    /// Subscribe to lifecycle events of other nodes.
+    ///
+    /// :type node_ids: list[str]
+    /// :rtype: None
+    pub fn subscribe_node_events(&self, node_ids: Vec<String>) -> eyre::Result<()> {
+        let node_ids: Vec<NodeId> = node_ids.into_iter().map(NodeId::from).collect();
+        self.node
+            .get_mut()
+            .subscribe_node_events(&node_ids)
+            .context("failed to subscribe to node events")
+    }
+
+    /// Set this node's health status.
+    ///
+    /// :type status: str (one of: "Healthy", "Degraded", "Failing", "Unknown")
+    /// :rtype: None
+    pub fn set_health_status(&self, status: String) -> eyre::Result<()> {
+        let health_status = match status.as_str() {
+            "Healthy" => health_types::HealthStatus::Healthy,
+            "Degraded" => health_types::HealthStatus::Degraded,
+            "Failing" => health_types::HealthStatus::Failing,
+            "Unknown" => health_types::HealthStatus::Unknown,
+            _ => eyre::bail!("Invalid health status: {}. Must be one of: Healthy, Degraded, Failing, Unknown", status),
+        };
+        self.node
+            .get_mut()
+            .set_health_status(health_status)
+            .context("failed to set health status")
+    }
+
+    /// Send an error event to downstream nodes.
+    ///
+    /// :type output_id: str
+    /// :type error: str
+    /// :rtype: None
+    pub fn send_error(&self, output_id: String, error: String) -> eyre::Result<()> {
+        self.node
+            .get_mut()
+            .send_error(output_id.into(), error)
+            .context("failed to send error")
+    }
+
+    /// Query the health status of an input.
+    ///
+    /// :type input_id: str
+    /// :rtype: str (one of: "Healthy", "Degraded", "Failing", "Unknown")
+    pub fn query_input_health(&self, input_id: String) -> eyre::Result<String> {
+        let health = self
+            .node
+            .get_mut()
+            .query_input_health(&input_id.into())
+            .context("failed to query input health")?;
+        Ok(format!("{:?}", health))
+    }
+
+    /// Check if an input is still alive (receiving data).
+    ///
+    /// :type input_id: str
+    /// :rtype: bool
+    pub fn input_is_alive(&self, input_id: String) -> bool {
+        self.node.get_mut().input_is_alive(&input_id.into())
+    }
+
+    /// Get the time elapsed since the last data was received on an input.
+    ///
+    /// Returns None if no data has been received yet.
+    ///
+    /// :type input_id: str
+    /// :rtype: float | None (seconds since last received)
+    pub fn input_last_received_elapsed(&self, input_id: String) -> Option<f64> {
+        self.node
+            .get_mut()
+            .input_last_received_time(&input_id.into())
+            .map(|instant| instant.elapsed().as_secs_f64())
     }
 }
 

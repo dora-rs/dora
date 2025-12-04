@@ -36,7 +36,7 @@ use std::{
     ops::{Deref, DerefMut},
     path::PathBuf,
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::runtime::{Handle, Runtime};
 use tracing::{info, warn};
@@ -92,6 +92,10 @@ pub struct DoraNode {
     _rt: TokioRuntime,
 
     interactive: bool,
+    
+    // Health observability tracking
+    input_last_received: HashMap<DataId, std::time::Instant>,
+    input_closed: BTreeSet<DataId>,
 }
 
 impl DoraNode {
@@ -532,6 +536,8 @@ impl DoraNode {
             warned_unknown_output: BTreeSet::new(),
             _rt: rt,
             interactive: false,
+            input_last_received: HashMap::new(),
+            input_closed: BTreeSet::new(),
         };
 
         if dynamic {
@@ -895,6 +901,67 @@ impl DoraNode {
             }
             _ => bail!("unexpected reply from daemon: expected InputHealth"),
         }
+    }
+
+    /// Check if an input is still alive (receiving data).
+    ///
+    /// Returns `true` if the input has received data and hasn't been closed.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use dora_node_api::DoraNode;
+    /// use dora_core::config::DataId;
+    ///
+    /// let (mut node, mut events) = DoraNode::init_from_env()?;
+    /// let input_id = DataId::from("image".to_string());
+    /// if !node.input_is_alive(&input_id) {
+    ///     println!("Input is no longer active");
+    /// }
+    /// # Ok::<(), eyre::Report>(())
+    /// ```
+    pub fn input_is_alive(&self, input_id: &DataId) -> bool {
+        !self.input_closed.contains(input_id) && self.input_last_received.contains_key(input_id)
+    }
+
+    /// Get the last time data was received on an input.
+    ///
+    /// Returns `None` if no data has been received yet.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use dora_node_api::DoraNode;
+    /// use dora_core::config::DataId;
+    /// use std::time::Duration;
+    ///
+    /// let (mut node, mut events) = DoraNode::init_from_env()?;
+    /// let input_id = DataId::from("image".to_string());
+    /// if let Some(last_time) = node.input_last_received_time(&input_id) {
+    ///     if last_time.elapsed() > Duration::from_secs(5) {
+    ///         println!("Input timeout detected!");
+    ///     }
+    /// }
+    /// # Ok::<(), eyre::Report>(())
+    /// ```
+    pub fn input_last_received_time(&self, input_id: &DataId) -> Option<std::time::Instant> {
+        self.input_last_received.get(input_id).copied()
+    }
+
+    /// Update input tracking when data is received (internal use).
+    ///
+    /// This should be called by the event stream when input data arrives.
+    #[doc(hidden)]
+    pub fn _update_input_received(&mut self, input_id: &DataId) {
+        self.input_last_received.insert(input_id.clone(), std::time::Instant::now());
+    }
+
+    /// Mark an input as closed (internal use).
+    ///
+    /// This should be called by the event stream when an input is closed.
+    #[doc(hidden)]
+    pub fn _mark_input_closed(&mut self, input_id: &DataId) {
+        self.input_closed.insert(input_id.clone());
     }
 
     /// Allocates a [`DataSample`] of the specified size.
