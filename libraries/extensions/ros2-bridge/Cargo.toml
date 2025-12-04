@@ -85,3 +85,8 @@ required-features = ["ros2-examples"]
 name = "cxx-ros2-dataflow"
 path = "../../../examples/ros2-bridge/c++/turtle/run.rs"
 required-features = ["ros2-examples"]
+
+[[example]]
+name = "cxx-ros2-dataflow-action-client"
+path = "../../../examples/ros2-bridge/c++/action-client/run.rs"
+required-features = ["ros2-examples"]

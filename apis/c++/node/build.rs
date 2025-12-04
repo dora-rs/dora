@@ -35,6 +35,8 @@ fn main() {
     )
     .unwrap();
 
+    std::fs::copy(src_dir.join("../../rust/cxx.h"), target_dir.join("cxx.h")).unwrap();
+
     #[cfg(feature = "ros2-bridge")]
     ros2::generate_ros2_message_header(&target_dir);
 
