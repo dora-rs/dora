@@ -104,8 +104,6 @@ fn main() -> eyre::Result<()> {
                                     }
                                 }
                             });
-
-                            // sent = true;
                         }
                     }
                     other => eprintln!("Ignoring unexpected input `{other}`"),

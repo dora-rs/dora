@@ -72,11 +72,7 @@ fn origin_dir() -> PathBuf {
 
 #[cfg(feature = "ros2-bridge")]
 mod ros2 {
-    use super::origin_dir;
-    use std::{
-        io::{BufRead, BufReader},
-        path::{Component, Path, PathBuf},
-    };
+    use std::path::{Path, PathBuf};
 
     pub fn generate() -> Vec<PathBuf> {
         use rust_format::Formatter;
@@ -173,8 +169,6 @@ mod ros2 {
     }
 
     pub fn generate_ros2_message_header(target_path: &Path) {
-        use std::io::Write as _;
-
         let default_target = std::env::var("CARGO_TARGET_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|_| {
@@ -185,7 +179,6 @@ mod ros2 {
                 root.join("target")
             });
         let out_dir_str = std::env::var("OUT_DIR").unwrap();
-        let out_dir = PathBuf::from(&out_dir_str);
         let relative_dir = PathBuf::from(out_dir_str.strip_prefix("/").unwrap());
         let header_path = default_target
             .join("cxxbridge")
@@ -195,18 +188,5 @@ mod ros2 {
         let target_path = target_path.join("ros2-bridge");
 
         copy_dir_all(&header_path, &target_path).unwrap();
-    }
-
-    // copy from cxx-build source
-    fn local_relative_path(path: &Path) -> PathBuf {
-        let mut rel_path = PathBuf::new();
-        for component in path.components() {
-            match component {
-                Component::Prefix(_) | Component::RootDir | Component::CurDir => {}
-                Component::ParentDir => drop(rel_path.pop()), // noop if empty
-                Component::Normal(name) => rel_path.push(name),
-            }
-        }
-        rel_path
     }
 }
