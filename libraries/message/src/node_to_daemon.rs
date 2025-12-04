@@ -33,6 +33,23 @@ pub enum DaemonRequest {
     NodeConfig {
         node_id: NodeId,
     },
+    /// Subscribe to lifecycle events of other nodes
+    SubscribeNodeEvents {
+        node_ids: Vec<NodeId>,
+    },
+    /// Update this node's health status
+    SetHealthStatus {
+        status: crate::common::HealthStatus,
+    },
+    /// Send an error event to downstream nodes
+    SendError {
+        output_id: DataId,
+        error: String,
+    },
+    /// Query health status of an input
+    QueryInputHealth {
+        input_id: DataId,
+    },
 }
 
 impl DaemonRequest {
@@ -41,7 +58,9 @@ impl DaemonRequest {
         match self {
             DaemonRequest::SendMessage { .. }
             | DaemonRequest::NodeConfig { .. }
-            | DaemonRequest::ReportDropTokens { .. } => false,
+            | DaemonRequest::ReportDropTokens { .. }
+            | DaemonRequest::SetHealthStatus { .. }
+            | DaemonRequest::SendError { .. } => false,
             DaemonRequest::Register(NodeRegisterRequest { .. })
             | DaemonRequest::Subscribe
             | DaemonRequest::CloseOutputs(_)
@@ -49,14 +68,17 @@ impl DaemonRequest {
             | DaemonRequest::NextEvent { .. }
             | DaemonRequest::SubscribeDrop
             | DaemonRequest::NextFinishedDropTokens
-            | DaemonRequest::EventStreamDropped => true,
+            | DaemonRequest::EventStreamDropped
+            | DaemonRequest::SubscribeNodeEvents { .. }
+            | DaemonRequest::QueryInputHealth { .. } => true,
         }
     }
 
     pub fn expects_tcp_json_reply(&self) -> bool {
         #[allow(clippy::match_like_matches_macro)]
         match self {
-            DaemonRequest::NodeConfig { .. } => true,
+            DaemonRequest::NodeConfig { .. }
+            | DaemonRequest::QueryInputHealth { .. } => true,
             DaemonRequest::Register(NodeRegisterRequest { .. })
             | DaemonRequest::Subscribe
             | DaemonRequest::CloseOutputs(_)
@@ -66,7 +88,10 @@ impl DaemonRequest {
             | DaemonRequest::NextFinishedDropTokens
             | DaemonRequest::ReportDropTokens { .. }
             | DaemonRequest::SendMessage { .. }
-            | DaemonRequest::EventStreamDropped => false,
+            | DaemonRequest::EventStreamDropped
+            | DaemonRequest::SubscribeNodeEvents { .. }
+            | DaemonRequest::SetHealthStatus { .. }
+            | DaemonRequest::SendError { .. } => false,
         }
     }
 }

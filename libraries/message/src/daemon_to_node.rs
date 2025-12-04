@@ -55,6 +55,9 @@ pub enum DaemonReply {
     NextEvents(Vec<Timestamped<NodeEvent>>),
     NextDropEvents(Vec<Timestamped<NodeDropEvent>>),
     NodeConfig { result: Result<NodeConfig, String> },
+    InputHealth { 
+        result: Result<crate::common::HealthStatus, String> 
+    },
     Empty,
 }
 
@@ -74,6 +77,25 @@ pub enum NodeEvent {
         id: DataId,
     },
     AllInputsClosed,
+    /// A peer node has started
+    PeerStarted {
+        node_id: NodeId,
+    },
+    /// A peer node has stopped
+    PeerStopped {
+        node_id: NodeId,
+        reason: crate::common::NodeStopReason,
+    },
+    /// A peer node's health status changed
+    PeerHealthChanged {
+        node_id: NodeId,
+        status: crate::common::HealthStatus,
+    },
+    /// An error event from an upstream node
+    InputError {
+        id: DataId,
+        error: String,
+    },
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

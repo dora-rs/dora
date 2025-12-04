@@ -125,4 +125,23 @@ impl ControlChannel {
             other => bail!("unexpected SendMessage reply: {other:?}"),
         }
     }
+
+    /// Send a request to the daemon and return the reply
+    pub fn request(&mut self, request: &Timestamped<DaemonRequest>) -> eyre::Result<DaemonReply> {
+        self.channel
+            .request(request)
+            .wrap_err("failed to send request to dora-daemon")
+    }
+
+    /// Send a one-way message to the daemon (no reply expected)
+    pub fn send(&mut self, request: &Timestamped<DaemonRequest>) -> eyre::Result<()> {
+        let reply = self
+            .channel
+            .request(request)
+            .wrap_err("failed to send request to dora-daemon")?;
+        match reply {
+            DaemonReply::Empty => Ok(()),
+            other => bail!("unexpected reply: {other:?}"),
+        }
+    }
 }

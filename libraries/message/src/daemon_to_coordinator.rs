@@ -67,6 +67,23 @@ pub enum DaemonEvent {
     Heartbeat,
     Log(LogMessage),
     Exit,
+    /// Node health status changed
+    NodeHealthChanged {
+        dataflow_id: DataflowId,
+        node_id: NodeId,
+        status: crate::common::HealthStatus,
+    },
+    /// Node started
+    NodeStarted {
+        dataflow_id: DataflowId,
+        node_id: NodeId,
+    },
+    /// Node stopped
+    NodeStopped {
+        dataflow_id: DataflowId,
+        node_id: NodeId,
+        reason: crate::common::NodeStopReason,
+    },
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]

@@ -1,0 +1,11 @@
+nodes:
+  - id: producer
+    path: producer
+    outputs:
+      - data
+      
+  - id: consumer
+    path: consumer
+    inputs:
+      data: producer/data
+

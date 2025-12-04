@@ -354,6 +354,60 @@ pub struct GitSource {
     pub commit_hash: String,
 }
 
+/// Health status of a node
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum HealthStatus {
+    /// Node is operating normally
+    Healthy,
+    /// Node is experiencing issues but still operational (e.g., high latency, degraded performance)
+    Degraded,
+    /// Node is failing or about to fail
+    Failing,
+    /// Node status is unknown
+    Unknown,
+}
+
+impl Default for HealthStatus {
+    fn default() -> Self {
+        Self::Healthy
+    }
+}
+
+impl std::fmt::Display for HealthStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HealthStatus::Healthy => write!(f, "Healthy"),
+            HealthStatus::Degraded => write!(f, "Degraded"),
+            HealthStatus::Failing => write!(f, "Failing"),
+            HealthStatus::Unknown => write!(f, "Unknown"),
+        }
+    }
+}
+
+/// Reason for node lifecycle event
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub enum NodeStopReason {
+    /// Node stopped normally
+    Normal,
+    /// Node crashed unexpectedly
+    Crashed,
+    /// Node was manually stopped
+    Manual,
+    /// Node stopped due to error
+    Error(String),
+}
+
+impl std::fmt::Display for NodeStopReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NodeStopReason::Normal => write!(f, "normal"),
+            NodeStopReason::Crashed => write!(f, "crashed"),
+            NodeStopReason::Manual => write!(f, "manual"),
+            NodeStopReason::Error(err) => write!(f, "error: {}", err),
+        }
+    }
+}
+
 // Test roundtrip serialization of LogMessage
 #[cfg(test)]
 mod tests {

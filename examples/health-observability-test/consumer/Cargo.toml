@@ -1,0 +1,11 @@
+[package]
+name = "health-test-consumer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dora-node-api = { path = "../../../apis/rust/node" }
+dora-core = { path = "../../../libraries/core" }
+dora-message = { path = "../../../libraries/message" }
+eyre = "0.6"
+

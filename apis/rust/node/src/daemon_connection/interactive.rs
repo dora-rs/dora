@@ -85,6 +85,25 @@ impl InteractiveEvents {
             DaemonRequest::NodeConfig { .. } => {
                 eyre::bail!("unexpected NodeConfig in interactive mode")
             }
+            DaemonRequest::SubscribeNodeEvents { node_ids } => {
+                println!("{} {node_ids:?}", "node subscribes to node events".blue());
+                DaemonReply::Result(Ok(()))
+            }
+            DaemonRequest::SetHealthStatus { status } => {
+                println!("{} {:?}", "node sets health status".blue(), status);
+                DaemonReply::Empty
+            }
+            DaemonRequest::SendError { output_id, error } => {
+                println!("{} {} error: {}", "node sends error".blue(), output_id, error);
+                DaemonReply::Empty
+            }
+            DaemonRequest::QueryInputHealth { input_id } => {
+                println!("{} {}", "node queries input health".blue(), input_id);
+                // Return healthy status by default in interactive mode
+                DaemonReply::InputHealth { 
+                    result: Ok(dora_message::common::HealthStatus::Healthy) 
+                }
+            }
         };
         Ok(reply)
     }

@@ -135,6 +135,40 @@ pub async fn handle_connection(
                         break;
                     }
                 }
+                DaemonEvent::NodeHealthChanged {
+                    dataflow_id,
+                    node_id,
+                    status,
+                } => {
+                    // Log health status change for now
+                    tracing::info!(
+                        "Node {}/{} health changed to: {:?}",
+                        dataflow_id,
+                        node_id,
+                        status
+                    );
+                    // Future: propagate to CLI or store for queries
+                }
+                DaemonEvent::NodeStarted {
+                    dataflow_id,
+                    node_id,
+                } => {
+                    tracing::info!("Node {}/{} started", dataflow_id, node_id);
+                    // Future: propagate to subscribed nodes
+                }
+                DaemonEvent::NodeStopped {
+                    dataflow_id,
+                    node_id,
+                    reason,
+                } => {
+                    tracing::info!(
+                        "Node {}/{} stopped: {}",
+                        dataflow_id,
+                        node_id,
+                        reason
+                    );
+                    // Future: propagate to subscribed nodes
+                }
             },
         };
     }

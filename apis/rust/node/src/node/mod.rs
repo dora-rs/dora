@@ -28,7 +28,7 @@ use dora_message::{
     metadata::{ArrowTypeInfo, Metadata, MetadataParameters},
     node_to_daemon::{DaemonRequest, DataMessage, DropToken, Timestamped},
 };
-use eyre::{WrapErr, bail};
+use eyre::{WrapErr, bail, eyre};
 use is_terminal::IsTerminal;
 use shared_memory_extended::{Shmem, ShmemConf};
 use std::{
@@ -769,6 +769,132 @@ impl DoraNode {
     /// Returns the input and output configuration of this node.
     pub fn node_config(&self) -> &NodeRunConfig {
         &self.node_config
+    }
+
+    /// Subscribe to lifecycle events of other nodes.
+    ///
+    /// After subscribing, the node will receive [`Event::PeerStarted`], [`Event::PeerStopped`],
+    /// and [`Event::PeerHealthChanged`] events for the specified nodes.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use dora_node_api::DoraNode;
+    /// use dora_core::config::NodeId;
+    ///
+    /// let (mut node, mut events) = DoraNode::init_from_env()?;
+    /// node.subscribe_node_events(&[
+    ///     NodeId::from("camera_node".to_string()),
+    ///     NodeId::from("detector_node".to_string()),
+    /// ])?;
+    /// # Ok::<(), eyre::Report>(())
+    /// ```
+    pub fn subscribe_node_events(&mut self, node_ids: &[NodeId]) -> eyre::Result<()> {
+        self.control_channel
+            .request(&Timestamped {
+                inner: DaemonRequest::SubscribeNodeEvents {
+                    node_ids: node_ids.to_vec(),
+                },
+                timestamp: self.clock.new_timestamp(),
+            })
+            .wrap_err("failed to subscribe to node events")?;
+        Ok(())
+    }
+
+    /// Set this node's health status.
+    ///
+    /// This allows nodes to actively declare their health status to the framework.
+    /// Other nodes that have subscribed to this node's lifecycle events will be notified.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use dora_node_api::DoraNode;
+    /// use dora_message::common::HealthStatus;
+    ///
+    /// let (mut node, mut events) = DoraNode::init_from_env()?;
+    /// // Declare degraded status due to high latency
+    /// node.set_health_status(HealthStatus::Degraded)?;
+    /// # Ok::<(), eyre::Report>(())
+    /// ```
+    pub fn set_health_status(&mut self, status: dora_message::common::HealthStatus) -> eyre::Result<()> {
+        self.control_channel
+            .send(&Timestamped {
+                inner: DaemonRequest::SetHealthStatus { status },
+                timestamp: self.clock.new_timestamp(),
+            })
+            .wrap_err("failed to set health status")?;
+        Ok(())
+    }
+
+    /// Send an error event to downstream nodes instead of crashing.
+    ///
+    /// This allows nodes to propagate errors gracefully without terminating,
+    /// giving downstream nodes a chance to handle the error.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use dora_node_api::DoraNode;
+    /// use dora_core::config::DataId;
+    ///
+    /// let (mut node, mut events) = DoraNode::init_from_env()?;
+    /// let output_id = DataId::from("result".to_string());
+    /// node.send_error(output_id, "Processing failed: invalid input")?;
+    /// # Ok::<(), eyre::Report>(())
+    /// ```
+    pub fn send_error(&mut self, output_id: DataId, error: impl Into<String>) -> eyre::Result<()> {
+        if !self.validate_output(&output_id) {
+            return Ok(());
+        }
+
+        self.control_channel
+            .send(&Timestamped {
+                inner: DaemonRequest::SendError {
+                    output_id,
+                    error: error.into(),
+                },
+                timestamp: self.clock.new_timestamp(),
+            })
+            .wrap_err("failed to send error event")?;
+        Ok(())
+    }
+
+    /// Query the health status of an input.
+    ///
+    /// This can be used to check if an upstream node is still healthy and sending data.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use dora_node_api::DoraNode;
+    /// use dora_core::config::DataId;
+    /// use dora_message::common::HealthStatus;
+    ///
+    /// let (mut node, mut events) = DoraNode::init_from_env()?;
+    /// let input_id = DataId::from("image".to_string());
+    /// let health = node.query_input_health(&input_id)?;
+    /// if health == HealthStatus::Degraded {
+    ///     println!("Input is degraded, using cached data");
+    /// }
+    /// # Ok::<(), eyre::Report>(())
+    /// ```
+    pub fn query_input_health(&mut self, input_id: &DataId) -> eyre::Result<dora_message::common::HealthStatus> {
+        let reply = self.control_channel
+            .request(&Timestamped {
+                inner: DaemonRequest::QueryInputHealth {
+                    input_id: input_id.clone(),
+                },
+                timestamp: self.clock.new_timestamp(),
+            })
+            .wrap_err("failed to query input health")?;
+
+        match reply {
+            DaemonReply::InputHealth { result } => {
+                result.map_err(|e| eyre!("failed to get input health status: {}", e))
+            }
+            _ => bail!("unexpected reply from daemon: expected InputHealth"),
+        }
     }
 
     /// Allocates a [`DataSample`] of the specified size.

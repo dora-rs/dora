@@ -1,0 +1,9 @@
+[package]
+name = "health-test-producer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dora-node-api = { path = "../../../apis/rust/node" }
+eyre = "0.6"
+

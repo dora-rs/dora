@@ -1,6 +1,7 @@
 use dora_arrow_convert::ArrowData;
-use dora_core::config::{DataId, OperatorId};
+use dora_core::config::{DataId, NodeId, OperatorId};
 use dora_message::metadata::Metadata;
+use dora_message::common::{HealthStatus, NodeStopReason};
 
 /// Represents an incoming Dora event.
 ///
@@ -71,6 +72,44 @@ pub enum Event {
     ///
     /// It's a good idea to output or log this error for debugging.
     Error(String),
+    /// A peer node has started.
+    ///
+    /// This event is sent to nodes that have subscribed to lifecycle events
+    /// of other nodes using [`DoraNode::subscribe_node_events`].
+    PeerStarted {
+        /// The ID of the node that started.
+        node_id: NodeId,
+    },
+    /// A peer node has stopped.
+    ///
+    /// This event is sent to nodes that have subscribed to lifecycle events
+    /// of other nodes using [`DoraNode::subscribe_node_events`].
+    PeerStopped {
+        /// The ID of the node that stopped.
+        node_id: NodeId,
+        /// The reason why the node stopped.
+        reason: NodeStopReason,
+    },
+    /// A peer node's health status has changed.
+    ///
+    /// This event is sent to nodes that have subscribed to lifecycle events
+    /// of other nodes using [`DoraNode::subscribe_node_events`].
+    PeerHealthChanged {
+        /// The ID of the node whose health changed.
+        node_id: NodeId,
+        /// The new health status.
+        status: HealthStatus,
+    },
+    /// An error event from an upstream node.
+    ///
+    /// Instead of crashing, upstream nodes can send error events to notify
+    /// downstream nodes of issues.
+    InputError {
+        /// The input ID where the error occurred.
+        id: DataId,
+        /// The error message.
+        error: String,
+    },
 }
 
 /// The reason for closing the event stream.

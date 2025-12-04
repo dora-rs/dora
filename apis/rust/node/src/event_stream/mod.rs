@@ -394,6 +394,57 @@ impl EventStream {
                         });
                         Some(event_json)
                     }
+                    NodeEvent::PeerStarted { node_id } => {
+                        let time_offset = self
+                            .clock
+                            .new_timestamp()
+                            .get_diff_duration(&self.start_timestamp);
+                        let event_json = serde_json::json!({
+                            "type": "PeerStarted",
+                            "node_id": node_id.to_string(),
+                            "time_offset_secs": time_offset.as_secs_f64(),
+                        });
+                        Some(event_json)
+                    }
+                    NodeEvent::PeerStopped { node_id, reason } => {
+                        let time_offset = self
+                            .clock
+                            .new_timestamp()
+                            .get_diff_duration(&self.start_timestamp);
+                        let event_json = serde_json::json!({
+                            "type": "PeerStopped",
+                            "node_id": node_id.to_string(),
+                            "reason": reason.to_string(),
+                            "time_offset_secs": time_offset.as_secs_f64(),
+                        });
+                        Some(event_json)
+                    }
+                    NodeEvent::PeerHealthChanged { node_id, status } => {
+                        let time_offset = self
+                            .clock
+                            .new_timestamp()
+                            .get_diff_duration(&self.start_timestamp);
+                        let event_json = serde_json::json!({
+                            "type": "PeerHealthChanged",
+                            "node_id": node_id.to_string(),
+                            "status": status.to_string(),
+                            "time_offset_secs": time_offset.as_secs_f64(),
+                        });
+                        Some(event_json)
+                    }
+                    NodeEvent::InputError { id, error } => {
+                        let time_offset = self
+                            .clock
+                            .new_timestamp()
+                            .get_diff_duration(&self.start_timestamp);
+                        let event_json = serde_json::json!({
+                            "type": "InputError",
+                            "id": id.to_string(),
+                            "error": error,
+                            "time_offset_secs": time_offset.as_secs_f64(),
+                        });
+                        Some(event_json)
+                    }
                 },
                 _ => None,
             };
@@ -498,6 +549,12 @@ impl EventStream {
                     }
                 }
                 NodeEvent::AllInputsClosed => Event::Stop(event::StopCause::AllInputsClosed),
+                NodeEvent::PeerStarted { node_id } => Event::PeerStarted { node_id },
+                NodeEvent::PeerStopped { node_id, reason } => Event::PeerStopped { node_id, reason },
+                NodeEvent::PeerHealthChanged { node_id, status } => {
+                    Event::PeerHealthChanged { node_id, status }
+                }
+                NodeEvent::InputError { id, error } => Event::InputError { id, error },
             },
 
             EventItem::FatalError(err) => {
