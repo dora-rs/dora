@@ -1,5 +1,4 @@
 use heck::SnakeCase;
-use nom::error::FromExternalError;
 use quote::{format_ident, quote, ToTokens};
 use syn::Ident;
 
@@ -391,7 +390,7 @@ impl Action {
                 events: &mut crate::ffi::CombinedEvents
             ) -> eyre::Result<Box<#client_name>> {
                 use futures::StreamExt as _;
-                use std::sync::{Arc, Mutex};
+                use std::sync::Arc;
 
                 let client = node.node.create_action_client::< action :: #self_name >(
                     crate::ros2_client::ServiceMapping:: #ros_service_mapping,
@@ -409,6 +408,9 @@ impl Action {
                 let feedback_id = {
                     let stream = futures_lite::stream::unfold(Arc::clone(&client), |client| async {
                         // SAFETY:
+                        // The ros2_client crate only provides &mut access to the feedback subscription, but
+                        // the mutable permission is not required at all.
+                        // There is no other position that will access the feedback subscription.
                         // There is no modification on the feedback_subscription.
                         // The Arc ensures the client is not dropped while the stream is active.
                         // The async_take() method only requires immutable access to the subscription struct.
@@ -434,7 +436,7 @@ impl Action {
                 let status_id = {
                     let client = Arc::clone(&client);
                     let stream = futures_lite::stream::unfold(client, |client| async {
-                        Some((client.async_receive_status().await , client))
+                        Some((client.async_receive_status().await, client))
                     }).filter_map(|status_res| async {
                         if let Ok(status_arr) = status_res {
                             Some(futures::stream::iter(status_arr.status_list.into_iter().map(|goal_status| {
@@ -452,12 +454,12 @@ impl Action {
                 };
 
                 Ok(Box::new(#client_name {
-                    client: client,
+                    client,
                     result_tx: Arc::new(result_tx),
                     executor: node.executor.clone(),
-                    result_id: result_id,
-                    feedback_id: feedback_id,
-                    status_id: status_id,
+                    result_id,
+                    feedback_id,
+                    status_id,
                 }))
             }
 
@@ -543,11 +545,6 @@ impl Action {
                     } else {
                         Some(core::time::Duration::from_nanos(timeout))
                     };
-                    use eyre::WrapErr;
-                    use futures::task::SpawnExt as _;
-                    use futures::stream::StreamExt;
-                    use futures::executor::block_on;
-                    use std::sync::Arc;
 
                     let client_ref = &self.client;
                     let send_goal_fut = async move {
@@ -576,7 +573,11 @@ impl Action {
                 #[allow(non_snake_case)]
                 fn #wait_for_action(&self, node: &Box<Ros2Node>) -> eyre::Result<()> {
                     // SAFETY:
-                    // There is no modification on the goal_client.
+                    // The ros2_client crate only provides &mut access to the goal service client, but
+                    // the mutable permission is not required at all.
+                    // There is no modification on the goal service client.
+                    // The other method will access the goal service client is send_goal() which is not required
+                    // mutable access as well.
                     // The wait_for_service() method only requires immutable access to the subscription struct.
                     let service_client = unsafe {
                         let ptr = std::sync::Arc::as_ptr(&self.client)
@@ -607,6 +608,7 @@ impl Action {
                 fn #request_result(&self, goal_id: &Box<ActionGoalId>) -> eyre::Result<()> {
                     use eyre::WrapErr;
                     use futures::task::SpawnExt as _;
+
                     let request_result_handle = {
                         let client_ref = std::sync::Arc::clone(&self.client);
                         let result_tx = self.result_tx.clone();
@@ -626,7 +628,8 @@ impl Action {
                             }
                         }
                     };
-                    self.executor.spawn(request_result_handle).context("failed to spawn response task").map_err(|e| eyre::eyre!("{e:?}"))?;
+                    self.executor.spawn(request_result_handle)
+                        .context("failed to spawn response task").map_err(|e| eyre::eyre!("{e:?}"))?;
                     Ok(())
                 }
 
@@ -656,12 +659,12 @@ impl Action {
 
                 #[allow(non_snake_case)]
                 fn #downcast_result(&self, event: crate::ffi::CombinedEvent) -> eyre::Result<Box<#result_event_name>> {
-                    use eyre::WrapErr;
+                    use eyre::WrapErr as _;
 
                     match (*event.event).0 {
                         Some(crate::MergedEvent::External(event)) if event.id == self.result_id => {
                             let result = event.event.downcast::<eyre::Result<#result_event_name>>()
-                            .map_err(|_| eyre::eyre!("downcast to {} failed", #result_type_raw_str))?;
+                                .map_err(|_| eyre::eyre!("downcast to {} failed", #result_type_raw_str))?;
 
                             let data = result.with_context(|| format!("failed to receive {} response", #self_name_str))
                                 .map_err(|e| eyre::eyre!("{e:?}"))?;
@@ -680,7 +683,7 @@ impl Action {
                             let result = event.event.downcast::<eyre::Result<Box<#feedback_event_name>>>()
                                 .map_err(|e| eyre::eyre!("downcast to {} failed: {:?}", #feedback_type_raw_str, e))?;
 
-                            let data = result.with_context(|| format!("failed to receive {} response", #self_name_str))
+                            let data = result.with_context(|| format!("failed to receive {} feedback", #self_name_str))
                                 .map_err(|e| eyre::eyre!("{e:?}"))?;
                             Ok(data)
                         },
@@ -690,16 +693,14 @@ impl Action {
 
                 #[allow(non_snake_case)]
                 fn #downcast_status(self: &mut #client_name, event: crate::ffi::CombinedEvent) -> eyre::Result<Box<#status_event_name>> {
-                    use eyre::WrapErr;
-
                     match (*event.event).0 {
                         Some(crate::MergedEvent::External(event)) if event.id == self.status_id => {
                             let result = event.event.downcast::<#status_event_name>()
                                 .map_err(|_| eyre::eyre!("downcast to {} failed", "action_msgs__GoalStatus"))?;
 
-                           Ok(result)
+                            Ok(result)
                         },
-                        _ => eyre::bail!("not a {} feedback event", #self_name_str),
+                        _ => eyre::bail!("not a {} status event", #self_name_str),
                     }
                 }
             }

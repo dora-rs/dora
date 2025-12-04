@@ -16,17 +16,17 @@ int main()
     auto dora_node = init_dora_node();
     auto merged_events = dora_events_into_combined(std::move(dora_node.events));
 
-    auto servie_qos = qos_default();
-    servie_qos.durability = Ros2Durability::Volatile;
-    servie_qos.liveliness = Ros2Liveliness::Automatic;
-    servie_qos.reliable = true;
-    servie_qos.max_blocking_time = 0.1;
+    auto service_qos = qos_default();
+    service_qos.durability = Ros2Durability::Volatile;
+    service_qos.liveliness = Ros2Liveliness::Automatic;
+    service_qos.reliable = true;
+    service_qos.max_blocking_time = 0.1;
     auto qos = actionqos_default();
-    qos.goal_service = servie_qos;
-    qos.result_service = servie_qos;
-    qos.cancel_service = servie_qos;
-    qos.feedback_subscription = servie_qos;
-    qos.status_subscription = servie_qos;
+    qos.goal_service = service_qos;
+    qos.result_service = service_qos;
+    qos.cancel_service = service_qos;
+    qos.feedback_subscription = service_qos;
+    qos.status_subscription = service_qos;
 
     auto ros2_context = init_ros2_context();
     auto node = ros2_context->new_node("/dora_ros2_bridge", "action_client");
@@ -88,7 +88,7 @@ int main()
 
             auto feedback_event = client->downcast_feedback(std::move(event));
 
-            if (!feedback_event->matches_goal(*goal_id)) { // if
+            if (!feedback_event->matches_goal(*goal_id)) { // skip if the goal id does not match
                 std::cout << "Feedback not belongs to current requesting goal" << std::endl;
                 continue;
             }

@@ -19,7 +19,6 @@ fn main() -> eyre::Result<()> {
         .wrap_err("failed to set working dir")?;
 
     std::fs::create_dir_all("build")?;
-    let build_dir = Path::new("build");
 
     build_package("dora-node-api-cxx", &["ros2-bridge"])?;
     let node_cxxbridge = target
