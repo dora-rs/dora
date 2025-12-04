@@ -102,7 +102,7 @@ fn list_with_health(
         };
         let health = format!("{:?}", entry.health);
         let uptime = format_duration(entry.uptime);
-        
+
         HealthOutputEntry {
             node: entry.node_id.to_string(),
             status: status.to_string(),
@@ -117,8 +117,11 @@ fn list_with_health(
             tw.write_all(b"NODE\tSTATUS\tHEALTH\tUPTIME\n")?;
             for entry in entries {
                 tw.write_all(
-                    format!("{}\t{}\t{}\t{}\n", entry.node, entry.status, entry.health, entry.uptime)
-                        .as_bytes(),
+                    format!(
+                        "{}\t{}\t{}\t{}\n",
+                        entry.node, entry.status, entry.health, entry.uptime
+                    )
+                    .as_bytes(),
                 )?;
             }
             tw.flush()?;
@@ -177,4 +180,3 @@ fn format_duration(duration: std::time::Duration) -> String {
     let seconds = secs % 60;
     format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
 }
-

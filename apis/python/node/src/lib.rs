@@ -441,7 +441,10 @@ impl Node {
             "Degraded" => health_types::HealthStatus::Degraded,
             "Failing" => health_types::HealthStatus::Failing,
             "Unknown" => health_types::HealthStatus::Unknown,
-            _ => eyre::bail!("Invalid health status: {}. Must be one of: Healthy, Degraded, Failing, Unknown", status),
+            _ => eyre::bail!(
+                "Invalid health status: {}. Must be one of: Healthy, Degraded, Failing, Unknown",
+                status
+            ),
         };
         self.node
             .get_mut()

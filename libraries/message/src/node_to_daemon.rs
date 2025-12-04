@@ -77,8 +77,7 @@ impl DaemonRequest {
     pub fn expects_tcp_json_reply(&self) -> bool {
         #[allow(clippy::match_like_matches_macro)]
         match self {
-            DaemonRequest::NodeConfig { .. }
-            | DaemonRequest::QueryInputHealth { .. } => true,
+            DaemonRequest::NodeConfig { .. } | DaemonRequest::QueryInputHealth { .. } => true,
             DaemonRequest::Register(NodeRegisterRequest { .. })
             | DaemonRequest::Subscribe
             | DaemonRequest::CloseOutputs(_)

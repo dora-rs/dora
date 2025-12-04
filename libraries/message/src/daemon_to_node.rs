@@ -55,9 +55,7 @@ pub enum DaemonReply {
     NextEvents(Vec<Timestamped<NodeEvent>>),
     NextDropEvents(Vec<Timestamped<NodeDropEvent>>),
     NodeConfig { result: Result<NodeConfig, String> },
-    InputHealth { 
-        result: Result<InputHealth, String> 
-    },
+    InputHealth { result: Result<InputHealth, String> },
     Empty,
 }
 

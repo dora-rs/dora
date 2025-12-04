@@ -92,7 +92,7 @@ pub struct DoraNode {
     _rt: TokioRuntime,
 
     interactive: bool,
-    
+
     // Health observability tracking
     input_last_received: HashMap<DataId, std::time::Instant>,
     input_closed: BTreeSet<DataId>,
@@ -825,7 +825,10 @@ impl DoraNode {
     /// node.set_health_status(HealthStatus::Degraded)?;
     /// # Ok::<(), eyre::Report>(())
     /// ```
-    pub fn set_health_status(&mut self, status: dora_message::common::HealthStatus) -> eyre::Result<()> {
+    pub fn set_health_status(
+        &mut self,
+        status: dora_message::common::HealthStatus,
+    ) -> eyre::Result<()> {
         self.control_channel
             .send(&Timestamped {
                 inner: DaemonRequest::SetHealthStatus { status },
@@ -887,8 +890,12 @@ impl DoraNode {
     /// }
     /// # Ok::<(), eyre::Report>(())
     /// ```
-    pub fn query_input_health(&mut self, input_id: &DataId) -> eyre::Result<dora_message::daemon_to_node::InputHealth> {
-        let reply = self.control_channel
+    pub fn query_input_health(
+        &mut self,
+        input_id: &DataId,
+    ) -> eyre::Result<dora_message::daemon_to_node::InputHealth> {
+        let reply = self
+            .control_channel
             .request(&Timestamped {
                 inner: DaemonRequest::QueryInputHealth {
                     input_id: input_id.clone(),
@@ -964,7 +971,7 @@ impl DoraNode {
     ///
     /// let (mut node, mut events) = DoraNode::init_from_env()?;
     /// let input_id = DataId::from("camera".to_string());
-    /// 
+    ///
     /// node.set_input_timeout(input_id.clone(), Duration::from_secs(5), || {
     ///     eprintln!("Camera feed timeout! Switching to backup...");
     /// });
@@ -974,7 +981,8 @@ impl DoraNode {
     where
         F: Fn() + Send + Sync + 'static,
     {
-        self.input_timeout_callbacks.insert(input_id, (duration, Arc::new(callback)));
+        self.input_timeout_callbacks
+            .insert(input_id, (duration, Arc::new(callback)));
     }
 
     /// Check and invoke timeout callbacks for inputs that haven't received data.
@@ -997,7 +1005,8 @@ impl DoraNode {
     /// This should be called by the event stream when input data arrives.
     #[doc(hidden)]
     pub fn _update_input_received(&mut self, input_id: &DataId) {
-        self.input_last_received.insert(input_id.clone(), std::time::Instant::now());
+        self.input_last_received
+            .insert(input_id.clone(), std::time::Instant::now());
     }
 
     /// Mark an input as closed (internal use).

@@ -17,4 +17,3 @@ impl Executable for Node {
         }
     }
 }
-

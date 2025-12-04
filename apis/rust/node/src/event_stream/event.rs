@@ -1,7 +1,7 @@
 use dora_arrow_convert::ArrowData;
 use dora_core::config::{DataId, NodeId, OperatorId};
-use dora_message::metadata::Metadata;
 use dora_message::common::{HealthStatus, NodeStopReason};
+use dora_message::metadata::Metadata;
 
 /// Represents an incoming Dora event.
 ///

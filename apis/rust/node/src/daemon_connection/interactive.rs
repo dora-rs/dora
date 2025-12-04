@@ -94,14 +94,19 @@ impl InteractiveEvents {
                 DaemonReply::Empty
             }
             DaemonRequest::SendError { output_id, error } => {
-                println!("{} {} error: {}", "node sends error".blue(), output_id, error);
+                println!(
+                    "{} {} error: {}",
+                    "node sends error".blue(),
+                    output_id,
+                    error
+                );
                 DaemonReply::Empty
             }
             DaemonRequest::QueryInputHealth { input_id } => {
                 println!("{} {}", "node queries input health".blue(), input_id);
                 // Return healthy status by default in interactive mode
-                DaemonReply::InputHealth { 
-                    result: Ok(dora_message::daemon_to_node::InputHealth::Healthy) 
+                DaemonReply::InputHealth {
+                    result: Ok(dora_message::daemon_to_node::InputHealth::Healthy),
                 }
             }
         };

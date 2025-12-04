@@ -161,12 +161,7 @@ pub async fn handle_connection(
                     node_id,
                     reason,
                 } => {
-                    tracing::info!(
-                        "Node {}/{} stopped: {}",
-                        dataflow_id,
-                        node_id,
-                        reason
-                    );
+                    tracing::info!("Node {}/{} stopped: {}", dataflow_id, node_id, reason);
                     // Future: propagate to subscribed nodes
                 }
             },

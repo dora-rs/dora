@@ -1506,7 +1506,8 @@ impl Daemon {
                                     },
                                 },
                                 timestamp: self.clock.new_timestamp(),
-                            }).ok();
+                            })
+                            .ok();
                             if let Some(msg) = msg {
                                 let _ = socket_stream_send(coordinator, &msg).await;
                             }
@@ -1630,7 +1631,9 @@ impl Daemon {
                 reply_sender,
             } => {
                 let dataflow = self.running.get_mut(&dataflow_id).ok_or_else(|| {
-                    format!("subscribe node events failed: no running dataflow with ID `{dataflow_id}`")
+                    format!(
+                        "subscribe node events failed: no running dataflow with ID `{dataflow_id}`"
+                    )
                 });
 
                 match dataflow {
@@ -1639,15 +1642,17 @@ impl Daemon {
                     }
                     Ok(dataflow) => {
                         // Store the subscription
-                        dataflow.node_event_subscriptions.insert(node_id.clone(), node_ids.clone());
-                        
+                        dataflow
+                            .node_event_subscriptions
+                            .insert(node_id.clone(), node_ids.clone());
+
                         tracing::info!(
                             "Node {}/{} subscribed to events from: {:?}",
                             dataflow_id,
                             node_id,
                             node_ids
                         );
-                        
+
                         let _ = reply_sender.send(DaemonReply::Result(Ok(())));
                     }
                 }
@@ -1666,8 +1671,10 @@ impl Daemon {
                     }
                     Ok(dataflow) => {
                         // Update health status
-                        dataflow.node_health_status.insert(node_id.clone(), status.clone());
-                        
+                        dataflow
+                            .node_health_status
+                            .insert(node_id.clone(), status.clone());
+
                         tracing::info!(
                             "Node {}/{} health status changed to: {:?}",
                             dataflow_id,
@@ -1698,7 +1705,8 @@ impl Daemon {
                                     },
                                 },
                                 timestamp: self.clock.new_timestamp(),
-                            }).ok();
+                            })
+                            .ok();
                             if let Some(msg) = msg {
                                 let _ = socket_stream_send(coordinator, &msg).await;
                             }
@@ -1734,7 +1742,9 @@ impl Daemon {
                         let output_key = OutputId(node_id.clone(), output_id.clone());
                         if let Some(receivers) = dataflow.mappings.get(&output_key) {
                             for (receiver_node_id, input_id) in receivers {
-                                if let Some(channel) = dataflow.subscribe_channels.get(receiver_node_id) {
+                                if let Some(channel) =
+                                    dataflow.subscribe_channels.get(receiver_node_id)
+                                {
                                     let event = NodeEvent::InputError {
                                         id: input_id.clone(),
                                         error: error.clone(),
@@ -1753,14 +1763,14 @@ impl Daemon {
                 reply_sender,
             } => {
                 let dataflow = self.running.get(&dataflow_id).ok_or_else(|| {
-                    format!("query input health failed: no running dataflow with ID `{dataflow_id}`")
+                    format!(
+                        "query input health failed: no running dataflow with ID `{dataflow_id}`"
+                    )
                 });
 
                 match dataflow {
                     Err(err) => {
-                        let _ = reply_sender.send(DaemonReply::InputHealth {
-                            result: Err(err),
-                        });
+                        let _ = reply_sender.send(DaemonReply::InputHealth { result: Err(err) });
                     }
                     Ok(dataflow) => {
                         // Check if input is still open
@@ -1789,9 +1799,7 @@ impl Daemon {
                             }
                         };
 
-                        let _ = reply_sender.send(DaemonReply::InputHealth {
-                            result: Ok(health),
-                        });
+                        let _ = reply_sender.send(DaemonReply::InputHealth { result: Ok(health) });
                     }
                 }
             }
@@ -2102,7 +2110,9 @@ impl Daemon {
         // Propagate node stopped event to subscribed nodes
         {
             let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
-                format!("failed to get downstream nodes: no running dataflow with ID `{dataflow_id}`")
+                format!(
+                    "failed to get downstream nodes: no running dataflow with ID `{dataflow_id}`"
+                )
             })?;
             dataflow.running_nodes.remove(node_id);
 
@@ -2130,7 +2140,8 @@ impl Daemon {
                     },
                 },
                 timestamp: self.clock.new_timestamp(),
-            }).ok();
+            })
+            .ok();
             if let Some(msg) = msg {
                 let _ = socket_stream_send(coordinator, &msg).await;
             }

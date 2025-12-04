@@ -550,7 +550,9 @@ impl EventStream {
                 }
                 NodeEvent::AllInputsClosed => Event::Stop(event::StopCause::AllInputsClosed),
                 NodeEvent::PeerStarted { node_id } => Event::PeerStarted { node_id },
-                NodeEvent::PeerStopped { node_id, reason } => Event::PeerStopped { node_id, reason },
+                NodeEvent::PeerStopped { node_id, reason } => {
+                    Event::PeerStopped { node_id, reason }
+                }
                 NodeEvent::PeerHealthChanged { node_id, status } => {
                     Event::PeerHealthChanged { node_id, status }
                 }
