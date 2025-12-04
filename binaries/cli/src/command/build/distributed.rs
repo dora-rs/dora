@@ -13,7 +13,7 @@ use std::{
     net::{SocketAddr, TcpStream},
 };
 
-use crate::{output::print_log_message, session::DataflowSession};
+use crate::{output::print_log_message, progress::ProgressBar, session::DataflowSession};
 
 pub fn build_distributed_dataflow(
     session: &mut TcpRequestReplyConnection,
@@ -23,6 +23,8 @@ pub fn build_distributed_dataflow(
     local_working_dir: Option<std::path::PathBuf>,
     uv: bool,
 ) -> eyre::Result<BuildId> {
+    let pb = ProgressBar::new_spinner("Triggering distributed build...");
+
     let build_id = {
         let reply_raw = session
             .request(
@@ -42,11 +44,17 @@ pub fn build_distributed_dataflow(
             serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
         match result {
             ControlRequestReply::DataflowBuildTriggered { build_id } => {
-                eprintln!("dataflow build triggered: {build_id}");
+                pb.finish_with_message(format!("Dataflow build triggered: {}", build_id));
                 build_id
             }
-            ControlRequestReply::Error(err) => bail!("{err}"),
-            other => bail!("unexpected start dataflow reply: {other:?}"),
+            ControlRequestReply::Error(err) => {
+                pb.fail_with_message("Failed to trigger build");
+                bail!("{err}")
+            }
+            other => {
+                pb.fail_with_message("Unexpected response");
+                bail!("unexpected start dataflow reply: {other:?}")
+            }
         }
     };
     Ok(build_id)
@@ -58,6 +66,8 @@ pub fn wait_until_dataflow_built(
     coordinator_socket: SocketAddr,
     log_level: log::LevelFilter,
 ) -> eyre::Result<BuildId> {
+    let pb = ProgressBar::new_spinner("Building dataflow on remote machines...");
+
     // subscribe to log messages
     let mut log_session = TcpConnection {
         stream: TcpStream::connect(coordinator_socket)
@@ -72,12 +82,21 @@ pub fn wait_until_dataflow_built(
             .wrap_err("failed to serialize message")?,
         )
         .wrap_err("failed to send build log subscribe request to coordinator")?;
+
+    let pb_clone = ProgressBar::new_spinner("Processing build logs...");
     std::thread::spawn(move || {
         while let Ok(raw) = log_session.receive() {
             let parsed: eyre::Result<LogMessage> =
                 serde_json::from_slice(&raw).context("failed to parse log message");
             match parsed {
                 Ok(log_message) => {
+                    // Update progress bar with log info
+                    if let Some(node_id) = &log_message.node_id {
+                        let msg = format!("{}: {}", node_id, log_message.message);
+                        pb_clone.set_message(msg);
+                    } else {
+                        pb_clone.set_message(log_message.message.clone());
+                    }
                     print_log_message(log_message, false, true);
                 }
                 Err(err) => {
@@ -85,6 +104,7 @@ pub fn wait_until_dataflow_built(
                 }
             }
         }
+        pb_clone.finish_and_clear();
     });
 
     let reply_raw = session
@@ -96,12 +116,21 @@ pub fn wait_until_dataflow_built(
     match result {
         ControlRequestReply::DataflowBuildFinished { build_id, result } => match result {
             Ok(()) => {
-                eprintln!("dataflow build finished successfully");
+                pb.finish_with_message("Dataflow build finished successfully");
                 Ok(build_id)
             }
-            Err(err) => bail!("{err}"),
+            Err(err) => {
+                pb.fail_with_message("Build failed");
+                bail!("{err}")
+            }
         },
-        ControlRequestReply::Error(err) => bail!("{err}"),
-        other => bail!("unexpected start dataflow reply: {other:?}"),
+        ControlRequestReply::Error(err) => {
+            pb.fail_with_message("Build error");
+            bail!("{err}")
+        }
+        other => {
+            pb.fail_with_message("Unexpected response");
+            bail!("unexpected start dataflow reply: {other:?}")
+        }
     }
 }
