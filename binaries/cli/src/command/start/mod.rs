@@ -7,6 +7,7 @@ use crate::{
     command::start::attach::attach_dataflow,
     common::{connect_to_coordinator, local_working_dir, resolve_dataflow, write_events_to},
     output::print_log_message,
+    progress::ProgressBar,
     session::DataflowSession,
 };
 use communication_layer_request_reply::{TcpConnection, TcpRequestReplyConnection};
@@ -109,17 +110,21 @@ fn start_dataflow(
     coordinator_socket: SocketAddr,
     uv: bool,
 ) -> Result<(PathBuf, Descriptor, Box<TcpRequestReplyConnection>, Uuid), eyre::Error> {
+    let pb = ProgressBar::new_spinner("Starting dataflow...");
+
     let dataflow = resolve_dataflow(dataflow).context("could not resolve dataflow")?;
     let dataflow_descriptor =
         Descriptor::blocking_read(&dataflow).wrap_err("Failed to read yaml dataflow")?;
     let dataflow_session =
         DataflowSession::read_session(&dataflow).context("failed to read DataflowSession")?;
 
+    pb.set_message("Connecting to coordinator...");
     let mut session = connect_to_coordinator(coordinator_socket)
         .wrap_err("failed to connect to dora coordinator")?;
 
     let local_working_dir = local_working_dir(&dataflow, &dataflow_descriptor, &mut *session)?;
 
+    pb.set_message("Triggering dataflow start...");
     let dataflow_id = {
         let dataflow = dataflow_descriptor.clone();
         let session: &mut TcpRequestReplyConnection = &mut *session;
@@ -142,11 +147,17 @@ fn start_dataflow(
             serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
         match result {
             ControlRequestReply::DataflowStartTriggered { uuid } => {
-                eprintln!("dataflow start triggered: {uuid}");
+                pb.finish_with_message(format!("Dataflow start triggered: {}", uuid));
                 uuid
             }
-            ControlRequestReply::Error(err) => bail!("{err}"),
-            other => bail!("unexpected start dataflow reply: {other:?}"),
+            ControlRequestReply::Error(err) => {
+                pb.fail_with_message("Failed to trigger dataflow start");
+                bail!("{err}")
+            }
+            other => {
+                pb.fail_with_message("Unexpected response");
+                bail!("unexpected start dataflow reply: {other:?}")
+            }
         }
     };
     Ok((dataflow, dataflow_descriptor, session, dataflow_id))
@@ -159,6 +170,8 @@ fn wait_until_dataflow_started(
     log_level: log::LevelFilter,
     print_daemon_id: bool,
 ) -> eyre::Result<()> {
+    let pb = ProgressBar::new_spinner("Waiting for dataflow to spawn...");
+
     // subscribe to log messages
     let mut log_session = TcpConnection {
         stream: TcpStream::connect(coordinator_addr)
@@ -173,12 +186,17 @@ fn wait_until_dataflow_started(
             .wrap_err("failed to serialize message")?,
         )
         .wrap_err("failed to send log subscribe request to coordinator")?;
+
+    let pb_clone = ProgressBar::new_spinner("Processing logs...");
     std::thread::spawn(move || {
         while let Ok(raw) = log_session.receive() {
             let parsed: eyre::Result<LogMessage> =
                 serde_json::from_slice(&raw).context("failed to parse log message");
             match parsed {
                 Ok(log_message) => {
+                    if let Some(node_id) = &log_message.node_id {
+                        pb_clone.set_message(format!("{}: {}", node_id, log_message.message));
+                    }
                     print_log_message(log_message, false, print_daemon_id);
                 }
                 Err(err) => {
@@ -186,6 +204,7 @@ fn wait_until_dataflow_started(
                 }
             }
         }
+        pb_clone.finish_and_clear();
     });
 
     let reply_raw = session
@@ -196,10 +215,16 @@ fn wait_until_dataflow_started(
         serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
     match result {
         ControlRequestReply::DataflowSpawned { uuid } => {
-            eprintln!("dataflow started: {uuid}");
+            pb.finish_with_message(format!("Dataflow started: {}", uuid));
         }
-        ControlRequestReply::Error(err) => bail!("{err}"),
-        other => bail!("unexpected start dataflow reply: {other:?}"),
+        ControlRequestReply::Error(err) => {
+            pb.fail_with_message("Failed to start dataflow");
+            bail!("{err}")
+        }
+        other => {
+            pb.fail_with_message("Unexpected response");
+            bail!("unexpected start dataflow reply: {other:?}")
+        }
     }
     Ok(())
 }
