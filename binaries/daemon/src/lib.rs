@@ -1485,6 +1485,33 @@ impl Daemon {
                     Ok(dataflow) => {
                         Self::subscribe(dataflow, node_id.clone(), event_sender, &self.clock).await;
 
+                        // Propagate node started event to subscribed nodes
+                        Self::propagate_health_event(
+                            dataflow,
+                            &node_id,
+                            NodeEvent::PeerStarted {
+                                node_id: node_id.clone(),
+                            },
+                            &self.clock,
+                        );
+
+                        // Send event to coordinator
+                        if let Some(coordinator) = &mut self.coordinator_connection {
+                            let msg = serde_json::to_vec(&Timestamped {
+                                inner: CoordinatorRequest::Event {
+                                    daemon_id: self.daemon_id.clone(),
+                                    event: DaemonEvent::NodeStarted {
+                                        dataflow_id,
+                                        node_id: node_id.clone(),
+                                    },
+                                },
+                                timestamp: self.clock.new_timestamp(),
+                            }).ok();
+                            if let Some(msg) = msg {
+                                let _ = socket_stream_send(coordinator, &msg).await;
+                            }
+                        }
+
                         let status = dataflow
                             .pending_nodes
                             .handle_node_subscription(
@@ -1598,6 +1625,176 @@ impl Daemon {
                 let reply = inner.await.map_err(|err| format!("{err:?}"));
                 let _ = reply_sender.send(DaemonReply::Result(reply));
             }
+            DaemonNodeEvent::SubscribeNodeEvents {
+                node_ids,
+                reply_sender,
+            } => {
+                let dataflow = self.running.get_mut(&dataflow_id).ok_or_else(|| {
+                    format!("subscribe node events failed: no running dataflow with ID `{dataflow_id}`")
+                });
+
+                match dataflow {
+                    Err(err) => {
+                        let _ = reply_sender.send(DaemonReply::Result(Err(err)));
+                    }
+                    Ok(dataflow) => {
+                        // Store the subscription
+                        dataflow.node_event_subscriptions.insert(node_id.clone(), node_ids.clone());
+                        
+                        tracing::info!(
+                            "Node {}/{} subscribed to events from: {:?}",
+                            dataflow_id,
+                            node_id,
+                            node_ids
+                        );
+                        
+                        let _ = reply_sender.send(DaemonReply::Result(Ok(())));
+                    }
+                }
+            }
+            DaemonNodeEvent::SetHealthStatus {
+                status,
+                reply_sender,
+            } => {
+                let dataflow = self.running.get_mut(&dataflow_id).ok_or_else(|| {
+                    format!("set health status failed: no running dataflow with ID `{dataflow_id}`")
+                });
+
+                match dataflow {
+                    Err(err) => {
+                        let _ = reply_sender.send(DaemonReply::Result(Err(err)));
+                    }
+                    Ok(dataflow) => {
+                        // Update health status
+                        dataflow.node_health_status.insert(node_id.clone(), status.clone());
+                        
+                        tracing::info!(
+                            "Node {}/{} health status changed to: {:?}",
+                            dataflow_id,
+                            node_id,
+                            status
+                        );
+
+                        // Propagate health change event to subscribed nodes
+                        Self::propagate_health_event(
+                            dataflow,
+                            &node_id,
+                            NodeEvent::PeerHealthChanged {
+                                node_id: node_id.clone(),
+                                status: status.clone(),
+                            },
+                            &self.clock,
+                        );
+
+                        // Send event to coordinator
+                        if let Some(coordinator) = &mut self.coordinator_connection {
+                            let msg = serde_json::to_vec(&Timestamped {
+                                inner: CoordinatorRequest::Event {
+                                    daemon_id: self.daemon_id.clone(),
+                                    event: DaemonEvent::NodeHealthChanged {
+                                        dataflow_id,
+                                        node_id: node_id.clone(),
+                                        status,
+                                    },
+                                },
+                                timestamp: self.clock.new_timestamp(),
+                            }).ok();
+                            if let Some(msg) = msg {
+                                let _ = socket_stream_send(coordinator, &msg).await;
+                            }
+                        }
+
+                        let _ = reply_sender.send(DaemonReply::Empty);
+                    }
+                }
+            }
+            DaemonNodeEvent::SendError {
+                output_id,
+                error,
+                reply_sender,
+            } => {
+                let dataflow = self.running.get_mut(&dataflow_id).ok_or_else(|| {
+                    format!("send error failed: no running dataflow with ID `{dataflow_id}`")
+                });
+
+                match dataflow {
+                    Err(err) => {
+                        let _ = reply_sender.send(DaemonReply::Result(Err(err)));
+                    }
+                    Ok(dataflow) => {
+                        tracing::warn!(
+                            "Node {}/{} sent error on output {}: {}",
+                            dataflow_id,
+                            node_id,
+                            output_id,
+                            error
+                        );
+
+                        // Find downstream nodes that consume this output
+                        let output_key = OutputId(node_id.clone(), output_id.clone());
+                        if let Some(receivers) = dataflow.mappings.get(&output_key) {
+                            for (receiver_node_id, input_id) in receivers {
+                                if let Some(channel) = dataflow.subscribe_channels.get(receiver_node_id) {
+                                    let event = NodeEvent::InputError {
+                                        id: input_id.clone(),
+                                        error: error.clone(),
+                                    };
+                                    let _ = send_with_timestamp(channel, event, &self.clock);
+                                }
+                            }
+                        }
+
+                        let _ = reply_sender.send(DaemonReply::Empty);
+                    }
+                }
+            }
+            DaemonNodeEvent::QueryInputHealth {
+                input_id,
+                reply_sender,
+            } => {
+                let dataflow = self.running.get(&dataflow_id).ok_or_else(|| {
+                    format!("query input health failed: no running dataflow with ID `{dataflow_id}`")
+                });
+
+                match dataflow {
+                    Err(err) => {
+                        let _ = reply_sender.send(DaemonReply::InputHealth {
+                            result: Err(err),
+                        });
+                    }
+                    Ok(dataflow) => {
+                        // Check if input is still open
+                        let is_open = dataflow
+                            .open_inputs
+                            .get(&node_id)
+                            .map(|inputs| inputs.contains(&input_id))
+                            .unwrap_or(false);
+
+                        use dora_message::daemon_to_node::InputHealth;
+                        let health = if !is_open {
+                            InputHealth::Disconnected
+                        } else {
+                            // Check last activity time
+                            let key = (node_id.clone(), input_id.clone());
+                            match dataflow.input_last_activity.get(&key) {
+                                Some(last_time) => {
+                                    let elapsed = last_time.elapsed();
+                                    if elapsed > std::time::Duration::from_secs(5) {
+                                        InputHealth::Timeout
+                                    } else {
+                                        InputHealth::Healthy
+                                    }
+                                }
+                                None => InputHealth::Unknown,
+                            }
+                        };
+
+                        let _ = reply_sender.send(DaemonReply::InputHealth {
+                            result: Ok(health),
+                        });
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -1620,6 +1817,37 @@ impl Daemon {
             }
         }
         Ok(())
+    }
+
+    /// Propagate a node event to all nodes that have subscribed to events from the source node
+    fn propagate_health_event(
+        dataflow: &mut RunningDataflow,
+        source_node_id: &NodeId,
+        event: NodeEvent,
+        clock: &HLC,
+    ) {
+        // Find all nodes that subscribed to events from this source node
+        for (subscriber_id, subscribed_nodes) in &dataflow.node_event_subscriptions {
+            if subscribed_nodes.contains(source_node_id) {
+                if let Some(channel) = dataflow.subscribe_channels.get(subscriber_id) {
+                    match send_with_timestamp(channel, event.clone(), clock) {
+                        Ok(()) => {
+                            tracing::debug!(
+                                "Propagated event to node {}: {:?}",
+                                subscriber_id,
+                                event
+                            );
+                        }
+                        Err(_) => {
+                            tracing::warn!(
+                                "Failed to send event to node {}, channel closed",
+                                subscriber_id
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 
     async fn send_out(
@@ -1871,11 +2099,47 @@ impl Daemon {
 
         self.handle_outputs_done(dataflow_id, node_id).await?;
 
+        // Propagate node stopped event to subscribed nodes
+        {
+            let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
+                format!("failed to get downstream nodes: no running dataflow with ID `{dataflow_id}`")
+            })?;
+            dataflow.running_nodes.remove(node_id);
+
+            let clock = self.clock.clone();
+            Self::propagate_health_event(
+                dataflow,
+                node_id,
+                NodeEvent::PeerStopped {
+                    node_id: node_id.clone(),
+                    reason: dora_message::common::NodeStopReason::Normal,
+                },
+                &clock,
+            );
+        }
+
+        // Send event to coordinator
+        if let Some(coordinator) = &mut self.coordinator_connection {
+            let msg = serde_json::to_vec(&Timestamped {
+                inner: CoordinatorRequest::Event {
+                    daemon_id: self.daemon_id.clone(),
+                    event: DaemonEvent::NodeStopped {
+                        dataflow_id,
+                        node_id: node_id.clone(),
+                        reason: dora_message::common::NodeStopReason::Normal,
+                    },
+                },
+                timestamp: self.clock.new_timestamp(),
+            }).ok();
+            if let Some(msg) = msg {
+                let _ = socket_stream_send(coordinator, &msg).await;
+            }
+        }
+
         let mut logger = self.logger.for_dataflow(dataflow_id);
         let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
             format!("failed to get downstream nodes: no running dataflow with ID `{dataflow_id}`")
         })?;
-        dataflow.running_nodes.remove(node_id);
         if !dataflow.pending_nodes.local_nodes_pending()
             && dataflow
                 .running_nodes
@@ -2269,6 +2533,12 @@ async fn send_output_to_local_receivers(
                 timestamp,
             }) {
                 Ok(()) => {
+                    // Track input activity for health monitoring
+                    dataflow.input_last_activity.insert(
+                        (receiver_id.clone(), input_id.clone()),
+                        std::time::Instant::now(),
+                    );
+
                     if let Some(token) = data.as_ref().and_then(|d| d.drop_token()) {
                         dataflow
                             .pending_drop_tokens
@@ -2473,6 +2743,13 @@ pub struct RunningDataflow {
     finished_tx: broadcast::Sender<()>,
 
     publish_all_messages_to_zenoh: bool,
+
+    /// Track node health status for health observability
+    node_health_status: BTreeMap<NodeId, dora_message::common::HealthStatus>,
+    /// Track which nodes are subscribed to events from other nodes
+    node_event_subscriptions: BTreeMap<NodeId, Vec<NodeId>>,
+    /// Track input health (last received time, timeout status)
+    input_last_activity: BTreeMap<(NodeId, DataId), std::time::Instant>,
 }
 
 impl RunningDataflow {
@@ -2503,6 +2780,9 @@ impl RunningDataflow {
             publishers: Default::default(),
             finished_tx,
             publish_all_messages_to_zenoh: dataflow_descriptor.debug.publish_all_messages_to_zenoh,
+            node_health_status: BTreeMap::new(),
+            node_event_subscriptions: BTreeMap::new(),
+            input_last_activity: BTreeMap::new(),
         }
     }
 
@@ -2781,6 +3061,23 @@ pub enum DaemonNodeEvent {
         tokens: Vec<DropToken>,
     },
     EventStreamDropped {
+        reply_sender: oneshot::Sender<DaemonReply>,
+    },
+    SubscribeNodeEvents {
+        node_ids: Vec<NodeId>,
+        reply_sender: oneshot::Sender<DaemonReply>,
+    },
+    SetHealthStatus {
+        status: dora_message::common::HealthStatus,
+        reply_sender: oneshot::Sender<DaemonReply>,
+    },
+    SendError {
+        output_id: DataId,
+        error: String,
+        reply_sender: oneshot::Sender<DaemonReply>,
+    },
+    QueryInputHealth {
+        input_id: DataId,
         reply_sender: oneshot::Sender<DaemonReply>,
     },
 }

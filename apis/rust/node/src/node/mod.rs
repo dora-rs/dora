@@ -885,7 +885,7 @@ impl DoraNode {
     /// }
     /// # Ok::<(), eyre::Report>(())
     /// ```
-    pub fn query_input_health(&mut self, input_id: &DataId) -> eyre::Result<dora_message::common::HealthStatus> {
+    pub fn query_input_health(&mut self, input_id: &DataId) -> eyre::Result<dora_message::daemon_to_node::InputHealth> {
         let reply = self.control_channel
             .request(&Timestamped {
                 inner: DaemonRequest::QueryInputHealth {

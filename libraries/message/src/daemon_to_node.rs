@@ -56,9 +56,17 @@ pub enum DaemonReply {
     NextDropEvents(Vec<Timestamped<NodeDropEvent>>),
     NodeConfig { result: Result<NodeConfig, String> },
     InputHealth { 
-        result: Result<crate::common::HealthStatus, String> 
+        result: Result<InputHealth, String> 
     },
     Empty,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub enum InputHealth {
+    Healthy,
+    Timeout,
+    Disconnected,
+    Unknown,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

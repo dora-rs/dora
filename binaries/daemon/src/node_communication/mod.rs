@@ -458,61 +458,53 @@ impl Listener {
                 .await?;
             }
             DaemonRequest::SubscribeNodeEvents { node_ids } => {
-                // For now, just acknowledge the subscription
-                // Full implementation would track subscriptions and send events
-                tracing::info!(
-                    "Node {}/{} subscribing to events from: {:?}",
-                    self.dataflow_id,
-                    self.node_id,
-                    node_ids
-                );
-                let reply = DaemonReply::Result(Ok(()));
-                self.send_reply(reply, connection)
-                    .await
-                    .wrap_err("failed to send SubscribeNodeEvents reply")?;
+                let (reply_sender, reply) = oneshot::channel();
+                self.process_daemon_event(
+                    DaemonNodeEvent::SubscribeNodeEvents {
+                        node_ids,
+                        reply_sender,
+                    },
+                    Some(reply),
+                    connection,
+                )
+                .await?
             }
             DaemonRequest::SetHealthStatus { status } => {
-                // Log health status change
-                tracing::info!(
-                    "Node {}/{} health status: {:?}",
-                    self.dataflow_id,
-                    self.node_id,
-                    status
-                );
-                // Send empty reply (no response expected)
-                self.send_reply(DaemonReply::Empty, connection)
-                    .await
-                    .wrap_err("failed to send SetHealthStatus reply")?;
+                let (reply_sender, reply) = oneshot::channel();
+                self.process_daemon_event(
+                    DaemonNodeEvent::SetHealthStatus {
+                        status,
+                        reply_sender,
+                    },
+                    Some(reply),
+                    connection,
+                )
+                .await?
             }
             DaemonRequest::SendError { output_id, error } => {
-                // Log error event
-                tracing::warn!(
-                    "Node {}/{} sent error on output {}: {}",
-                    self.dataflow_id,
-                    self.node_id,
-                    output_id,
-                    error
-                );
-                // Send empty reply (no response expected)
-                self.send_reply(DaemonReply::Empty, connection)
-                    .await
-                    .wrap_err("failed to send SendError reply")?;
+                let (reply_sender, reply) = oneshot::channel();
+                self.process_daemon_event(
+                    DaemonNodeEvent::SendError {
+                        output_id,
+                        error,
+                        reply_sender,
+                    },
+                    Some(reply),
+                    connection,
+                )
+                .await?
             }
             DaemonRequest::QueryInputHealth { input_id } => {
-                // For now, return Healthy status
-                // Full implementation would track actual input health
-                tracing::trace!(
-                    "Node {}/{} querying health of input: {}",
-                    self.dataflow_id,
-                    self.node_id,
-                    input_id
-                );
-                let reply = DaemonReply::InputHealth {
-                    result: Ok(dora_message::common::HealthStatus::Healthy),
-                };
-                self.send_reply(reply, connection)
-                    .await
-                    .wrap_err("failed to send QueryInputHealth reply")?;
+                let (reply_sender, reply) = oneshot::channel();
+                self.process_daemon_event(
+                    DaemonNodeEvent::QueryInputHealth {
+                        input_id,
+                        reply_sender,
+                    },
+                    Some(reply),
+                    connection,
+                )
+                .await?
             }
         }
         Ok(())
