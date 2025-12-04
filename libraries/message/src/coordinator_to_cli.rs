@@ -46,6 +46,8 @@ pub enum ControlRequestReply {
         default_daemon: Option<IpAddr>,
         cli: Option<IpAddr>,
     },
+    NodeHealthList(NodeHealthList),
+    NodeDepsInfo(NodeDepsInfo),
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -109,4 +111,36 @@ impl std::fmt::Display for DataflowIdAndName {
             write!(f, "[<unnamed>] {}", self.uuid)
         }
     }
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct NodeHealthList(pub Vec<NodeHealthEntry>);
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct NodeHealthEntry {
+    pub node_id: NodeId,
+    pub status: DataflowStatus,
+    pub health: crate::common::HealthStatus,
+    pub uptime: std::time::Duration,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct NodeDepsInfo {
+    pub node_id: NodeId,
+    pub inputs: Vec<NodeInputInfo>,
+    pub outputs: Vec<NodeOutputInfo>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct NodeInputInfo {
+    pub source_node: NodeId,
+    pub input_id: crate::id::DataId,
+    pub active: bool,
+    pub last_received: Option<std::time::Duration>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct NodeOutputInfo {
+    pub output_id: crate::id::DataId,
+    pub subscribers: Vec<NodeId>,
 }

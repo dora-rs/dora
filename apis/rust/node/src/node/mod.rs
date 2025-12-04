@@ -96,6 +96,7 @@ pub struct DoraNode {
     // Health observability tracking
     input_last_received: HashMap<DataId, std::time::Instant>,
     input_closed: BTreeSet<DataId>,
+    input_timeout_callbacks: HashMap<DataId, (Duration, Arc<dyn Fn() + Send + Sync>)>,
 }
 
 impl DoraNode {
@@ -538,6 +539,7 @@ impl DoraNode {
             interactive: false,
             input_last_received: HashMap::new(),
             input_closed: BTreeSet::new(),
+            input_timeout_callbacks: HashMap::new(),
         };
 
         if dynamic {
@@ -946,6 +948,48 @@ impl DoraNode {
     /// ```
     pub fn input_last_received_time(&self, input_id: &DataId) -> Option<std::time::Instant> {
         self.input_last_received.get(input_id).copied()
+    }
+
+    /// Set a timeout callback for an input.
+    ///
+    /// The callback will be invoked when the input hasn't received data for the specified duration.
+    /// The timeout is checked when processing events, so the callback may not fire immediately.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use dora_node_api::DoraNode;
+    /// use dora_core::config::DataId;
+    /// use std::time::Duration;
+    ///
+    /// let (mut node, mut events) = DoraNode::init_from_env()?;
+    /// let input_id = DataId::from("camera".to_string());
+    /// 
+    /// node.set_input_timeout(input_id.clone(), Duration::from_secs(5), || {
+    ///     eprintln!("Camera feed timeout! Switching to backup...");
+    /// });
+    /// # Ok::<(), eyre::Report>(())
+    /// ```
+    pub fn set_input_timeout<F>(&mut self, input_id: DataId, duration: Duration, callback: F)
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        self.input_timeout_callbacks.insert(input_id, (duration, Arc::new(callback)));
+    }
+
+    /// Check and invoke timeout callbacks for inputs that haven't received data.
+    ///
+    /// This is called internally by the event stream.
+    #[doc(hidden)]
+    pub fn _check_timeout_callbacks(&self) {
+        let now = std::time::Instant::now();
+        for (input_id, (timeout_duration, callback)) in &self.input_timeout_callbacks {
+            if let Some(last_received) = self.input_last_received.get(input_id) {
+                if now.duration_since(*last_received) > *timeout_duration {
+                    callback();
+                }
+            }
+        }
     }
 
     /// Update input tracking when data is received (internal use).

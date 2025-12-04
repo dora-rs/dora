@@ -90,4 +90,11 @@ pub enum ControlRequest {
         level: log::LevelFilter,
     },
     CliAndDefaultDaemonOnSameMachine,
+    NodeHealth {
+        dataflow_uuid: Uuid,
+    },
+    NodeDeps {
+        dataflow_uuid: Uuid,
+        node_id: NodeId,
+    },
 }

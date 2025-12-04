@@ -773,6 +773,26 @@ async fn start_inner(
                                 },
                             ));
                         }
+                        ControlRequest::NodeHealth { dataflow_uuid } => {
+                            // For now, return empty list as we need to track node health in coordinator
+                            // This would require storing node health status from daemon events
+                            let reply = Ok(ControlRequestReply::NodeHealthList(
+                                dora_message::coordinator_to_cli::NodeHealthList(vec![])
+                            ));
+                            let _ = reply_sender.send(reply);
+                        }
+                        ControlRequest::NodeDeps { dataflow_uuid, node_id } => {
+                            // For now, return empty deps as we need to track node dependencies
+                            // This would require analyzing the dataflow descriptor
+                            let reply = Ok(ControlRequestReply::NodeDepsInfo(
+                                dora_message::coordinator_to_cli::NodeDepsInfo {
+                                    node_id,
+                                    inputs: vec![],
+                                    outputs: vec![],
+                                }
+                            ));
+                            let _ = reply_sender.send(reply);
+                        }
                     }
                 }
                 ControlEvent::Error(err) => tracing::error!("{err:?}"),
