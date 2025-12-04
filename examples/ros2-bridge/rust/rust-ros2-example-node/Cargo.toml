@@ -36,6 +36,11 @@ name = "rust-ros2-example-node-service-server"
 path = "src/service_server.rs"
 required-features = ["ros2"]
 
+[[bin]]
+name = "rust-ros2-example-node-action-client"
+path = "src/action_client.rs"
+required-features = ["ros2"]
+
 [dependencies]
 dora-node-api = { workspace = true, features = ["tracing"] }
 eyre = "0.6.8"
@@ -45,3 +50,4 @@ rand = "0.8.5"
 tokio = { version = "1.24.2", features = ["rt", "macros"] }
 dora-ros2-bridge = { workspace = true }
 serde_json = "1.0.99"
+futures-concurrency-dynamic = "0.2.2"
