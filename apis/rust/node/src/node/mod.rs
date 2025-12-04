@@ -877,13 +877,13 @@ impl DoraNode {
     /// ```no_run
     /// use dora_node_api::DoraNode;
     /// use dora_core::config::DataId;
-    /// use dora_message::common::HealthStatus;
+    /// use dora_message::daemon_to_node::InputHealth;
     ///
     /// let (mut node, mut events) = DoraNode::init_from_env()?;
     /// let input_id = DataId::from("image".to_string());
     /// let health = node.query_input_health(&input_id)?;
-    /// if health == HealthStatus::Degraded {
-    ///     println!("Input is degraded, using cached data");
+    /// if health == InputHealth::Timeout {
+    ///     println!("Input has timed out, using cached data");
     /// }
     /// # Ok::<(), eyre::Report>(())
     /// ```
