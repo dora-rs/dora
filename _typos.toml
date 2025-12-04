@@ -2,3 +2,4 @@
 # *sigh* this just isn't worth the cost of fixing
 DeviceNDArray = "DeviceNDArray"
 Feedforward_2nd_Gain = "Feedforward_2nd_Gain"
+clonable_command = "clonable_command"
