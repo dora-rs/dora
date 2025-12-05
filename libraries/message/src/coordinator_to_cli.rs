@@ -55,6 +55,22 @@ pub struct NodeInfo {
     pub dataflow_name: Option<String>,
     pub node_id: NodeId,
     pub daemon_id: DaemonId,
+    pub metrics: Option<NodeMetricsInfo>,
+}
+
+/// Resource metrics for a node (from daemon)
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct NodeMetricsInfo {
+    /// Process ID
+    pub pid: u32,
+    /// CPU usage percentage (0-100 per core)
+    pub cpu_usage: f32,
+    /// Memory usage in megabytes
+    pub memory_mb: f64,
+    /// Disk read MB/s (if available)
+    pub disk_read_mb_s: Option<f64>,
+    /// Disk write MB/s (if available)
+    pub disk_write_mb_s: Option<f64>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]

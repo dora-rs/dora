@@ -32,9 +32,8 @@ use super::super::{Executable, default_tracing};
 
 /// Real-time monitor node resource usage (similar to Linux top)
 ///
-/// Note: Process metrics (CPU/Memory) are only available for nodes running
-/// on the same machine as the CLI. For distributed dataflows, only node
-/// information (name, dataflow, daemon) will be displayed.
+/// Metrics are collected by daemons and reported to the coordinator,
+/// so this works for distributed dataflows across multiple machines.
 #[derive(Debug, Args)]
 pub struct Top {
     /// Address of the dora coordinator
@@ -101,6 +100,7 @@ struct App {
 
 #[derive(Debug, Clone)]
 struct NodeStats {
+    #[allow(dead_code)]
     dataflow_id: Uuid,
     dataflow_name: String,
     node_id: NodeId,
@@ -206,45 +206,16 @@ impl App {
         }
     }
 
-    fn update_stats(&mut self, node_infos: Vec<NodeInfo>, system: &System) {
+    fn update_stats(&mut self, node_infos: Vec<NodeInfo>, _system: &System) {
         self.node_stats.clear();
 
-        // Build a map of process info for efficient lookup
-        // Note: This heuristic matching only works for local nodes where the
-        // executable path or name might contain the node ID. It will not work
-        // for distributed nodes or nodes with different executable names.
-        let mut process_map: std::collections::HashMap<String, (u32, f32, f64)> =
-            std::collections::HashMap::new();
-
-        for (process_pid, process) in system.processes() {
-            // Build searchable string from process name (cmd() requires admin on Windows)
-            let name = process.name().to_string_lossy().to_string();
-
-            // Store process metrics
-            let pid = process_pid.as_u32();
-            let cpu = process.cpu_usage();
-            let mem = process.memory() as f64 / 1024.0 / 1024.0;
-
-            process_map.insert(name, (pid, cpu, mem));
-        }
-
-        // Match nodes to processes
+        // Use daemon-provided metrics (works for distributed nodes!)
         for node_info in node_infos {
-            let node_id_str = node_info.node_id.as_ref();
-            let mut pid = None;
-            let mut cpu_usage = 0.0;
-            let mut memory_mb = 0.0;
-
-            // Try to find a matching process
-            // This is a best-effort heuristic that may not work for all cases
-            for (proc_name, &(proc_pid, proc_cpu, proc_mem)) in &process_map {
-                if proc_name.contains(node_id_str) {
-                    pid = Some(proc_pid);
-                    cpu_usage = proc_cpu;
-                    memory_mb = proc_mem;
-                    break;
-                }
-            }
+            let (pid, cpu_usage, memory_mb) = if let Some(metrics) = &node_info.metrics {
+                (Some(metrics.pid), metrics.cpu_usage, metrics.memory_mb)
+            } else {
+                (None, 0.0, 0.0)
+            };
 
             self.node_stats.push(NodeStats {
                 dataflow_id: node_info.dataflow_id,
@@ -287,17 +258,15 @@ fn run_app<B: Backend>(
     let reply: ControlRequestReply =
         serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
 
-    match reply {
-        ControlRequestReply::NodeInfoList(infos) => {
-            node_infos = infos;
-        }
+    node_infos = match reply {
+        ControlRequestReply::NodeInfoList(infos) => infos,
         ControlRequestReply::Error(err) => {
             return Err(eyre!("coordinator error: {err}"));
         }
         _ => {
             return Err(eyre!("unexpected reply from coordinator"));
         }
-    }
+    };
 
     loop {
         terminal.draw(|f| ui(f, &mut app, refresh_duration))?;

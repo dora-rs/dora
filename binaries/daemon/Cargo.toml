@@ -53,6 +53,7 @@ process-wrap = { version = "8.2.1", features = ["tokio1"] }
 memchr = "2.7.5"
 chrono = { version = "0.4", features = ["serde"] }
 shellexpand = "3.1.1"
+sysinfo = "0.36.1"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61.3", features = [

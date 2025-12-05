@@ -67,6 +67,25 @@ pub enum DaemonEvent {
     Heartbeat,
     Log(LogMessage),
     Exit,
+    NodeMetrics {
+        dataflow_id: DataflowId,
+        metrics: BTreeMap<NodeId, NodeMetrics>,
+    },
+}
+
+/// Resource metrics for a node process
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct NodeMetrics {
+    /// Process ID
+    pub pid: u32,
+    /// CPU usage percentage (0-100 per core)
+    pub cpu_usage: f32,
+    /// Memory usage in bytes
+    pub memory_bytes: u64,
+    /// Disk read bytes per second (if available)
+    pub disk_read_bytes: Option<u64>,
+    /// Disk write bytes per second (if available)
+    pub disk_write_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]

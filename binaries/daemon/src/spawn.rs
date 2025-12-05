@@ -393,6 +393,7 @@ impl PreparedNode {
                 return Ok(RunningNode {
                     process: None,
                     node_config: self.node_config,
+                    pid: None,
                 });
             }
         };
@@ -430,6 +431,7 @@ impl PreparedNode {
         let running_node = RunningNode {
             process: Some(proc_handle),
             node_config: self.node_config,
+            pid: Some(pid),
         };
         let stdout_tx = tx.clone();
         let node_id = self.node.id.clone();
