@@ -754,6 +754,43 @@ impl DoraNode {
         Ok(())
     }
 
+    /// Send an error event to downstream nodes instead of crashing.
+    ///
+    /// This allows nodes to propagate errors gracefully without terminating,
+    /// giving downstream nodes a chance to handle the error. Downstream nodes
+    /// will receive an `Event::InputError` with the error message and can decide
+    /// how to handle it (e.g., use cached data, switch to backup source, log and continue).
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use dora_node_api::DoraNode;
+    /// use dora_core::config::DataId;
+    ///
+    /// fn process_data() -> Result<(), String> { Ok(()) }
+    ///
+    /// # fn main() -> eyre::Result<()> {
+    /// let (mut node, mut events) = DoraNode::init_from_env()?;
+    /// let output_id = DataId::from("result".to_string());
+    ///
+    /// // Instead of panicking on error, send error event to downstream
+    /// if let Err(e) = process_data() {
+    ///     node.send_error(output_id, format!("Processing failed: {}", e))?;
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn send_error(&mut self, output_id: DataId, error: impl Into<String>) -> eyre::Result<()> {
+        if !self.validate_output(&output_id) {
+            return Ok(());
+        }
+
+        self.control_channel
+            .send_error(output_id, error.into())
+            .wrap_err("failed to send error event")?;
+        Ok(())
+    }
+
     /// Returns the ID of the node as specified in the dataflow configuration file.
     pub fn id(&self) -> &NodeId {
         &self.id

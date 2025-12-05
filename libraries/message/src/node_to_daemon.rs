@@ -17,6 +17,10 @@ pub enum DaemonRequest {
         metadata: Metadata,
         data: Option<DataMessage>,
     },
+    SendError {
+        output_id: DataId,
+        error: String,
+    },
     CloseOutputs(Vec<DataId>),
     /// Signals that the node is finished sending outputs and that it received all
     /// required drop tokens.
@@ -40,6 +44,7 @@ impl DaemonRequest {
         #[allow(clippy::match_like_matches_macro)]
         match self {
             DaemonRequest::SendMessage { .. }
+            | DaemonRequest::SendError { .. }
             | DaemonRequest::NodeConfig { .. }
             | DaemonRequest::ReportDropTokens { .. } => false,
             DaemonRequest::Register(NodeRegisterRequest { .. })
@@ -66,6 +71,7 @@ impl DaemonRequest {
             | DaemonRequest::NextFinishedDropTokens
             | DaemonRequest::ReportDropTokens { .. }
             | DaemonRequest::SendMessage { .. }
+            | DaemonRequest::SendError { .. }
             | DaemonRequest::EventStreamDropped => false,
         }
     }

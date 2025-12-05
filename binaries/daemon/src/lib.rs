@@ -1557,6 +1557,10 @@ impl Daemon {
                 .send_out(dataflow_id, node_id, output_id, metadata, data)
                 .await
                 .context("failed to send out")?,
+            DaemonNodeEvent::SendError { output_id, error } => self
+                .send_error(dataflow_id, node_id, output_id, error)
+                .await
+                .context("failed to send error")?,
             DaemonNodeEvent::ReportDrop { tokens } => {
                 let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
                     format!(
@@ -1656,6 +1660,43 @@ impl Daemon {
             };
             self.send_to_remote_receivers(dataflow_id, &output_id, event)
                 .await?;
+        }
+
+        Ok(())
+    }
+
+    async fn send_error(
+        &mut self,
+        dataflow_id: Uuid,
+        source_node_id: NodeId,
+        output_id: DataId,
+        error: String,
+    ) -> Result<(), eyre::ErrReport> {
+        let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
+            format!("send error failed: no running dataflow with ID `{dataflow_id}`")
+        })?;
+
+        tracing::warn!(
+            "Node {}/{} sent error on output {}: {}",
+            dataflow_id,
+            source_node_id,
+            output_id,
+            error
+        );
+
+        // Find downstream nodes that consume this output
+        let output_key = OutputId(source_node_id.clone(), output_id.clone());
+        if let Some(receivers) = dataflow.mappings.get(&output_key) {
+            for (receiver_node_id, input_id) in receivers {
+                if let Some(channel) = dataflow.subscribe_channels.get(receiver_node_id) {
+                    let event = NodeEvent::InputError {
+                        id: input_id.clone(),
+                        error: error.clone(),
+                        source_node_id: source_node_id.clone(),
+                    };
+                    let _ = send_with_timestamp(channel, event, &self.clock);
+                }
+            }
         }
 
         Ok(())
@@ -2776,6 +2817,10 @@ pub enum DaemonNodeEvent {
         output_id: DataId,
         metadata: metadata::Metadata,
         data: Option<DataMessage>,
+    },
+    SendError {
+        output_id: DataId,
+        error: String,
     },
     ReportDrop {
         tokens: Vec<DropToken>,
