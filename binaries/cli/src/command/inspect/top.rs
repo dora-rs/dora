@@ -31,6 +31,10 @@ use crate::{LOCALHOST, common::connect_to_coordinator};
 use super::super::{Executable, default_tracing};
 
 /// Real-time monitor node resource usage (similar to Linux top)
+///
+/// Note: Process metrics (CPU/Memory) are only available for nodes running
+/// on the same machine as the CLI. For distributed dataflows, only node
+/// information (name, dataflow, daemon) will be displayed.
 #[derive(Debug, Args)]
 pub struct Top {
     /// Address of the dora coordinator
@@ -205,29 +209,39 @@ impl App {
     fn update_stats(&mut self, node_infos: Vec<NodeInfo>, system: &System) {
         self.node_stats.clear();
 
+        // Build a map of process info for efficient lookup
+        // Note: This heuristic matching only works for local nodes where the
+        // executable path or name might contain the node ID. It will not work
+        // for distributed nodes or nodes with different executable names.
+        let mut process_map: std::collections::HashMap<String, (u32, f32, f64)> =
+            std::collections::HashMap::new();
+
+        for (process_pid, process) in system.processes() {
+            // Build searchable string from process name (cmd() requires admin on Windows)
+            let name = process.name().to_string_lossy().to_string();
+
+            // Store process metrics
+            let pid = process_pid.as_u32();
+            let cpu = process.cpu_usage();
+            let mem = process.memory() as f64 / 1024.0 / 1024.0;
+
+            process_map.insert(name, (pid, cpu, mem));
+        }
+
+        // Match nodes to processes
         for node_info in node_infos {
-            // Try to find process by searching for the node_id in command line
+            let node_id_str = node_info.node_id.as_ref();
             let mut pid = None;
             let mut cpu_usage = 0.0;
             let mut memory_mb = 0.0;
 
-            // Search for process that might be this node
-            for (process_pid, process) in system.processes() {
-                let cmd = process
-                    .cmd()
-                    .iter()
-                    .map(|s| s.to_string_lossy())
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                let name = process.name().to_string_lossy();
-
-                // Check if this process is related to this node
-                if cmd.contains(node_info.node_id.as_ref())
-                    || name.contains(node_info.node_id.as_ref())
-                {
-                    pid = Some(process_pid.as_u32());
-                    cpu_usage = process.cpu_usage();
-                    memory_mb = process.memory() as f64 / 1024.0 / 1024.0;
+            // Try to find a matching process
+            // This is a best-effort heuristic that may not work for all cases
+            for (proc_name, &(proc_pid, proc_cpu, proc_mem)) in &process_map {
+                if proc_name.contains(node_id_str) {
+                    pid = Some(proc_pid);
+                    cpu_usage = proc_cpu;
+                    memory_mb = proc_mem;
                     break;
                 }
             }
@@ -256,7 +270,34 @@ fn run_app<B: Backend>(
 ) -> eyre::Result<()> {
     let mut app = App::new();
     let mut last_update = Instant::now();
+    let mut last_node_query = Instant::now();
     let mut system = System::new_all();
+    let mut node_infos: Vec<NodeInfo> = Vec::new();
+
+    // Reuse coordinator connection
+    let mut session = connect_to_coordinator((coordinator_addr, coordinator_port).into())
+        .wrap_err("Failed to connect to coordinator")?;
+
+    // Query node info once initially
+    let request = ControlRequest::GetNodeInfo;
+    let reply_raw = session
+        .request(&serde_json::to_vec(&request).unwrap())
+        .wrap_err("failed to send initial request to coordinator")?;
+
+    let reply: ControlRequestReply =
+        serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
+
+    match reply {
+        ControlRequestReply::NodeInfoList(infos) => {
+            node_infos = infos;
+        }
+        ControlRequestReply::Error(err) => {
+            return Err(eyre!("coordinator error: {err}"));
+        }
+        _ => {
+            return Err(eyre!("unexpected reply from coordinator"));
+        }
+    }
 
     loop {
         terminal.draw(|f| ui(f, &mut app, refresh_duration))?;
@@ -287,6 +328,12 @@ fn run_app<B: Backend>(
                         KeyCode::Char('m') => {
                             app.toggle_sort(SortColumn::Memory);
                         }
+                        KeyCode::Char('r') => {
+                            // Force refresh node list
+                            last_node_query = Instant::now()
+                                .checked_sub(Duration::from_secs(60))
+                                .unwrap_or(Instant::now());
+                        }
                         _ => {}
                     }
                 }
@@ -295,33 +342,37 @@ fn run_app<B: Backend>(
 
         // Update data if refresh interval has passed
         if last_update.elapsed() >= refresh_duration {
-            // Refresh system info
+            // Refresh system info (process metrics)
             system.refresh_all();
 
-            // Get node info from coordinator
-            let mut session = connect_to_coordinator((coordinator_addr, coordinator_port).into())
-                .wrap_err("Failed to connect to coordinator")?;
+            // Re-query node info periodically (every 30 seconds) or on demand
+            // Node list changes less frequently than metrics
+            if last_node_query.elapsed() >= Duration::from_secs(30) {
+                let request = ControlRequest::GetNodeInfo;
+                let reply_raw = session
+                    .request(&serde_json::to_vec(&request).unwrap())
+                    .wrap_err("failed to send request to coordinator")?;
 
-            let request = ControlRequest::GetNodeInfo;
-            let reply_raw = session
-                .request(&serde_json::to_vec(&request).unwrap())
-                .wrap_err("failed to send request to coordinator")?;
+                let reply: ControlRequestReply =
+                    serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
 
-            let reply: ControlRequestReply =
-                serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
+                match reply {
+                    ControlRequestReply::NodeInfoList(infos) => {
+                        node_infos = infos;
+                    }
+                    ControlRequestReply::Error(err) => {
+                        return Err(eyre!("coordinator error: {err}"));
+                    }
+                    _ => {
+                        return Err(eyre!("unexpected reply from coordinator"));
+                    }
+                }
 
-            match reply {
-                ControlRequestReply::NodeInfoList(node_infos) => {
-                    app.update_stats(node_infos, &system);
-                }
-                ControlRequestReply::Error(err) => {
-                    return Err(eyre!("coordinator error: {err}"));
-                }
-                _ => {
-                    return Err(eyre!("unexpected reply from coordinator"));
-                }
+                last_node_query = Instant::now();
             }
 
+            // Update stats with current node info and fresh system metrics
+            app.update_stats(node_infos.clone(), &system);
             last_update = Instant::now();
         }
     }
@@ -383,7 +434,7 @@ fn ui(f: &mut Frame, app: &mut App, refresh_duration: Duration) {
     ];
 
     let title = format!(
-        " Dora Inspect Top - Refreshing every {}s (Press 'q' to quit, 'n'/'c'/'m' to sort) ",
+        " Dora Inspect Top - Refreshing every {}s (q: quit, n/c/m: sort, r: refresh nodes) ",
         refresh_duration.as_secs()
     );
 

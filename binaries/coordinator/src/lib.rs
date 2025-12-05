@@ -779,8 +779,8 @@ async fn start_inner(
                             let mut node_infos = Vec::new();
                             for dataflow in running_dataflows.values() {
                                 for (node_id, _node) in &dataflow.nodes {
-                                    // Find which daemon this node is running on
-                                    for daemon_id in &dataflow.daemons {
+                                    // Get the specific daemon this node is running on
+                                    if let Some(daemon_id) = dataflow.node_to_daemon.get(node_id) {
                                         node_infos.push(NodeInfo {
                                             dataflow_id: dataflow.uuid,
                                             dataflow_name: dataflow.name.clone(),
@@ -1083,6 +1083,8 @@ struct RunningDataflow {
     pending_daemons: BTreeSet<DaemonId>,
     exited_before_subscribe: Vec<NodeId>,
     nodes: BTreeMap<NodeId, ResolvedNode>,
+    /// Maps each node to the daemon it's running on
+    node_to_daemon: BTreeMap<NodeId, DaemonId>,
 
     spawn_result: CachedResult,
     stop_reply_senders: Vec<tokio::sync::oneshot::Sender<eyre::Result<ControlRequestReply>>>,
@@ -1474,6 +1476,7 @@ async fn start_dataflow(
         uuid,
         daemons,
         nodes,
+        node_to_daemon,
     } = spawn_dataflow(
         build_id,
         session_id,
@@ -1497,6 +1500,7 @@ async fn start_dataflow(
         exited_before_subscribe: Default::default(),
         daemons: daemons.clone(),
         nodes,
+        node_to_daemon,
         spawn_result: CachedResult::default(),
         stop_reply_senders: Vec::new(),
         buffered_log_messages: Vec::new(),
