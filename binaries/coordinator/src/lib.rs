@@ -773,6 +773,26 @@ async fn start_inner(
                                 },
                             ));
                         }
+                        ControlRequest::GetNodeInfo => {
+                            use dora_message::coordinator_to_cli::NodeInfo;
+
+                            let mut node_infos = Vec::new();
+                            for dataflow in running_dataflows.values() {
+                                for (node_id, _node) in &dataflow.nodes {
+                                    // Find which daemon this node is running on
+                                    for daemon_id in &dataflow.daemons {
+                                        node_infos.push(NodeInfo {
+                                            dataflow_id: dataflow.uuid,
+                                            dataflow_name: dataflow.name.clone(),
+                                            node_id: node_id.clone(),
+                                            daemon_id: daemon_id.clone(),
+                                        });
+                                    }
+                                }
+                            }
+                            let _ = reply_sender
+                                .send(Ok(ControlRequestReply::NodeInfoList(node_infos)));
+                        }
                     }
                 }
                 ControlEvent::Error(err) => tracing::error!("{err:?}"),

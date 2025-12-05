@@ -46,6 +46,15 @@ pub enum ControlRequestReply {
         default_daemon: Option<IpAddr>,
         cli: Option<IpAddr>,
     },
+    NodeInfoList(Vec<NodeInfo>),
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct NodeInfo {
+    pub dataflow_id: Uuid,
+    pub dataflow_name: Option<String>,
+    pub node_id: NodeId,
+    pub daemon_id: DaemonId,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
