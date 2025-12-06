@@ -2088,43 +2088,54 @@ impl Daemon {
                             .map(|d| d.grace_duration_kills.contains(&node_id))
                             .unwrap_or_default();
 
-                        let cause = match caused_by_node {
-                            Some(caused_by_node) => {
-                                logger
-                                    .log(
-                                        LogLevel::Info,
-                                        Some("daemon".into()),
-                                        format!("marking `{node_id}` as cascading error caused by `{caused_by_node}`")
-                                    )
-                                    .await;
+                        // Nodes killed by grace duration during stop are not errors
+                        if grace_duration_kill {
+                            logger
+                                .log(
+                                    LogLevel::Debug,
+                                    Some("daemon".into()),
+                                    format!("node `{node_id}` was stopped by grace duration (not an error)"),
+                                )
+                                .await;
+                            Ok(())
+                        } else {
+                            let cause = match caused_by_node {
+                                Some(caused_by_node) => {
+                                    logger
+                                        .log(
+                                            LogLevel::Info,
+                                            Some("daemon".into()),
+                                            format!("marking `{node_id}` as cascading error caused by `{caused_by_node}`")
+                                        )
+                                        .await;
 
-                                NodeErrorCause::Cascading { caused_by_node }
-                            }
-                            None if grace_duration_kill => NodeErrorCause::GraceDuration,
-                            None => {
-                                let cause = dataflow
-                                    .and_then(|d| d.node_stderr_most_recent.get(&node_id))
-                                    .map(|queue| {
-                                        let mut s = if queue.is_full() {
-                                            "[...]".into()
-                                        } else {
-                                            String::new()
-                                        };
-                                        while let Some(line) = queue.pop() {
-                                            s += &line;
-                                        }
-                                        s
-                                    })
-                                    .unwrap_or_default();
+                                    NodeErrorCause::Cascading { caused_by_node }
+                                }
+                                None => {
+                                    let cause = dataflow
+                                        .and_then(|d| d.node_stderr_most_recent.get(&node_id))
+                                        .map(|queue| {
+                                            let mut s = if queue.is_full() {
+                                                "[...]".into()
+                                            } else {
+                                                String::new()
+                                            };
+                                            while let Some(line) = queue.pop() {
+                                                s += &line;
+                                            }
+                                            s
+                                        })
+                                        .unwrap_or_default();
 
-                                NodeErrorCause::Other { stderr: cause }
-                            }
-                        };
-                        Err(NodeError {
-                            timestamp: self.clock.new_timestamp(),
-                            cause,
-                            exit_status,
-                        })
+                                    NodeErrorCause::Other { stderr: cause }
+                                }
+                            };
+                            Err(NodeError {
+                                timestamp: self.clock.new_timestamp(),
+                                cause,
+                                exit_status,
+                            })
+                        }
                     }
                 };
 
