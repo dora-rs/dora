@@ -1,5 +1,5 @@
 use dora_arrow_convert::ArrowData;
-use dora_core::config::{DataId, OperatorId};
+use dora_core::config::{DataId, NodeId, OperatorId};
 use dora_message::metadata::Metadata;
 
 /// Represents an incoming Dora event.
@@ -40,6 +40,19 @@ pub enum Event {
         /// Note that this is not the output ID of the sender, but the ID
         /// assigned to the input in the YAML file.
         id: DataId,
+    },
+    /// An error occurred in an upstream node.
+    ///
+    /// Instead of crashing, the upstream node sent an error event to allow
+    /// downstream nodes to handle the error gracefully (e.g., use cached data,
+    /// switch to backup source, log and continue).
+    InputError {
+        /// The ID of the input that had an error, as specified in the YAML file.
+        id: DataId,
+        /// The error message from the upstream node.
+        error: String,
+        /// The ID of the node that sent the error.
+        source_node_id: NodeId,
     },
     /// Notification that the event stream is about to close.
     ///

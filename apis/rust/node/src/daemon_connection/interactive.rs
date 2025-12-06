@@ -62,6 +62,15 @@ impl InteractiveEvents {
                 );
                 DaemonReply::Empty
             }
+            DaemonRequest::SendError { output_id, error } => {
+                println!(
+                    "{} {} error: {}",
+                    "node sends error".red(),
+                    output_id.bright_blue().bold(),
+                    error
+                );
+                DaemonReply::Empty
+            }
             DaemonRequest::CloseOutputs(data_ids) => {
                 println!("{} {data_ids:?}", "node reports closed outputs".blue());
                 DaemonReply::Result(Ok(()))

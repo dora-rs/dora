@@ -99,6 +99,15 @@ impl IntegrationTestingEvents {
                 metadata,
                 data,
             } => self.handle_output(output_id, metadata, data)?,
+            DaemonRequest::SendError { output_id, error } => {
+                println!(
+                    "{} {} error: {}",
+                    "node sends error".red(),
+                    output_id,
+                    error
+                );
+                DaemonReply::Empty
+            }
             DaemonRequest::CloseOutputs(data_ids) => {
                 println!("{} {data_ids:?}", "node reports closed outputs".blue());
                 DaemonReply::Result(Ok(()))
