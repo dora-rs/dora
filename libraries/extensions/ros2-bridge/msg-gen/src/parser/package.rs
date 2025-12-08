@@ -83,14 +83,16 @@ fn get_ros_msgs_each_package<P: AsRef<Path>>(root_dirs: &[P]) -> Result<Vec<Pack
                 }
             }
         }
-        if map.is_empty() {
-            println!(
-                "cargo::warning=it seems that no package was generated from your AMENT_PREFIX_PATH directory"
-            );
-        }
+    }
+
+    if map.is_empty() {
+        println!(
+            "cargo::warning=it seems that no package was generated from your AMENT_PREFIX_PATH directory"
+        );
     }
 
     let mut packages = Vec::new();
+    let mut dependencies = HashMap::<String, BTreeSet<String>>::new();
     for (_pkg_name, pkg) in &map {
         packages.push(pkg.clone());
     }
@@ -102,13 +104,61 @@ fn get_ros_msgs_each_package<P: AsRef<Path>>(root_dirs: &[P]) -> Result<Vec<Pack
             deps.insert("action_msgs".to_owned());
         }
         deps.retain(|dep| map.contains_key(dep));
-        package.dependencies = deps
+        dependencies.insert(package.name.clone(), deps);
+    }
+
+    // flatten the dependencies
+    let dependencies = {
+        let mut flattened_dependencies = HashMap::<String, BTreeSet<String>>::new();
+        let mut finished_set: BTreeSet<String> = dependencies.keys().cloned().collect();
+        while let Some(first) = finished_set.first().cloned() {
+            dfs_collect(
+                &first,
+                &dependencies,
+                &mut flattened_dependencies,
+                &mut finished_set,
+            );
+        }
+        flattened_dependencies
+    };
+
+    for package in &mut packages {
+        package.dependencies = dependencies
+            .get(&package.name)
+            .unwrap()
             .iter()
-            .filter_map(|dep| map.get(dep).and_then(|pkg| Some(pkg.clone())))
+            .filter_map(|dep| map.get(dep).map(|pkg| pkg.clone()))
             .collect();
     }
 
     Ok(packages)
+}
+
+fn dfs_collect(
+    name: &String,
+    dependencies: &HashMap<String, BTreeSet<String>>,
+    flattened_dependencies: &mut HashMap<String, BTreeSet<String>>,
+    finished_set: &mut BTreeSet<String>,
+) -> BTreeSet<String> {
+    if let Some(add_deps) = flattened_dependencies.get(name) {
+        return add_deps.clone();
+    }
+
+    let mut add_deps = BTreeSet::new();
+    let direct_deps: BTreeSet<String> = dependencies.get(name).unwrap().iter().cloned().collect();
+    for dep_name in &direct_deps {
+        let indirect_deps = dfs_collect(
+            &dep_name,
+            dependencies,
+            flattened_dependencies,
+            finished_set,
+        );
+        add_deps.extend(indirect_deps);
+    }
+    add_deps.extend(direct_deps);
+    flattened_dependencies.insert(name.clone(), add_deps.clone());
+    finished_set.remove(name);
+    add_deps
 }
 
 pub fn get_packages<P>(paths: &[P]) -> Result<Vec<Package>>
@@ -140,7 +190,11 @@ fn parse_dependencies(path: PathBuf) -> Result<BTreeSet<String>> {
             Ok(Event::Start(e)) => {
                 let name = e.name();
                 let name = name.as_ref();
-                if name == b"depend" || name == b"exec_depend" {
+                if name == b"depend"
+                    || name == b"exec_depend"
+                    || name == b"buildtool_depend"
+                    || name == b"build_depend"
+                {
                     // Read the next event to get the inner text
                     match reader.read_event_into(&mut buf) {
                         Ok(Event::Text(t)) => {
