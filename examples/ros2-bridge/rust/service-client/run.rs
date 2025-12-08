@@ -19,12 +19,13 @@ fn main() -> eyre::Result<()> {
 
     let mut service_task = run_ros_node("examples_rclcpp_minimal_service", "service_main")?;
 
-    dataflow_task
+    let dataflow_result = dataflow_task
         .join()
-        .map_err(|_| eyre::eyre!("Failed to run dataflow"))?;
+        .map_err(|_| eyre::eyre!("Failed to run dataflow"));
 
     service_task.kill()?;
-    Ok(())
+
+    dataflow_result
 }
 
 fn run_ros_node(package: &str, node: &str) -> eyre::Result<Box<dyn ChildWrapper>> {
