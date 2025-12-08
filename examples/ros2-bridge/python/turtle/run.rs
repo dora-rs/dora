@@ -2,9 +2,7 @@ use dora_cli::{build, run as dora_run};
 use eyre::WrapErr;
 use std::path::Path;
 
-use process_wrap::std::{
-    ProcessGroup, StdChildWrapper as ChildWrapper, StdCommandWrap as CommandWrap,
-};
+use process_wrap::std::{StdChildWrapper as ChildWrapper, StdCommandWrap as CommandWrap};
 
 fn main() -> eyre::Result<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../");
@@ -35,7 +33,10 @@ fn run_ros_node(package: &str, node: &str) -> eyre::Result<Box<dyn ChildWrapper>
         cmd.arg("run");
         cmd.arg(package).arg(node);
     });
-    command.wrap(ProcessGroup::leader());
+    #[cfg(unix)]
+    command.wrap(process_wrap::std::ProcessGroup::leader());
+    #[cfg(windows)]
+    command.wrap(process_wrap::std::JobObject);
     command
         .spawn()
         .map_err(|e| eyre::eyre!("failed to spawn ros node: {}", e))
