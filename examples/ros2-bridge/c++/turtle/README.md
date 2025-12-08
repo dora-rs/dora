@@ -10,52 +10,46 @@ This examples requires a sourced ROS2 installation.
 - Don't forget to [source the ROS2 setup files](https://docs.ros.org/en/iron/Tutorials/Beginner-CLI-Tools/Configuring-ROS2-Environment.html#source-the-setup-files)
 - Follow tasks 1 and 2 of the [ROS2 turtlesim tutorial](https://docs.ros.org/en/iron/Tutorials/Beginner-CLI-Tools/Introducing-Turtlesim/Introducing-Turtlesim.html#id3)
   - Install the turtlesim package
-  - Start the turtlesim node through `ros2 run turtlesim turtlesim_node`
+  - Install the examples-rclcpp-minimal-service package 
+  
+## Run example
 
-## Running pub/sub example
+> [!NOTE]
+> Please replace the `<ros-distro>` with the actual ROS2 distribution you are using.
 
-A ROS2 client to publish turtlesim ROS2 messages and a DORA node can subscribe and visualize it.
-
-From terminal 1 , sourcing the ROS2 installation and start ROS2 turtlesim window
+```bash
+source /opt/ros/<ros-distro>/setup.bash
+export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+cargo run --package dora-ros2-bridge --example cxx-ros2-dataflow
 ```
-source /opt/ros/galactic/setup.bash
+
+## Alternative (manual)
+Not recommended, because manually build c++ is heavy job.
+
+### Build the example
+Please refer to the `run.rs` file in the same directory with this `README.md` file.
+
+### Run
+
+1. From terminal 1, source ROS2 and start ROS2 turtlesim window
+```bash
+source /opt/ros/<ros-distro>/setup.bash
 export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 ros2 run turtlesim turtlesim_node
 ```
 
-From terminal 2 from dora folder. Note the source command here is necessary as this allow ROS2 message types to be found and compile dynamically.
-```
+2. From terminal 2, source ROS2 and start the add two ints service node.
+```bash
+source /opt/ros/<ros-distro>/setup.bash
 export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
-source /opt/ros/galactic/setup.bash
-cargo run --example cxx-ros2-dataflow --features ros2-examples
-```
-And you will see the turtle move a few steps.
-
-## Running service example
-The current service code example is a service client. To test with service server we can test with either ROS2 demo or ros2-client
-- if using ROS2 demo the the command line is:
-```
-export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
-ros2 run demo_nodes_cpp add_two_ints_server
+ros2 run examples_rclcpp_minimal_service service_main
 ```
 
-start DORA service client from another terminal
-```
+3. From terminal 3 in the folder of dora repository. Note the source command here is necessary as this allows ROS2 message types to be found and compile dynamically.
+```bash
 export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
-cargo run --example cxx-ros2-dataflow --features ros2-examples
-```
-
-- if using ros2-client the command line is:
-```
-export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
-cargo run --example=ros2_service_server
-```
-
-then start DORA service client from another terminal
-```
-export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
-cargo run --example cxx-ros2-dataflow --features ros2-examples
+source /opt/ros/<ros-distro>/setup.bash
+dora run dataflow.yml
 ```
 
 You can also put export RMW_IMPLEMENTATION=rmw_fastrtps_cpp into .bashrc
-
