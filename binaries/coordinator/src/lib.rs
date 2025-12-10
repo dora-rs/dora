@@ -786,13 +786,14 @@ async fn start_inner(
                                             NodeMetricsInfo {
                                                 pid: m.pid,
                                                 cpu_usage: m.cpu_usage,
-                                                memory_mb: m.memory_bytes as f64 / 1024.0 / 1024.0,
+                                                // Use 1000 for MB (megabytes) instead of 1024 (mebibytes)
+                                                memory_mb: m.memory_bytes as f64 / 1000.0 / 1000.0,
                                                 disk_read_mb_s: m
                                                     .disk_read_bytes
-                                                    .map(|b| b as f64 / 1024.0 / 1024.0),
+                                                    .map(|b| b as f64 / 1000.0 / 1000.0),
                                                 disk_write_mb_s: m
                                                     .disk_write_bytes
-                                                    .map(|b| b as f64 / 1024.0 / 1024.0),
+                                                    .map(|b| b as f64 / 1000.0 / 1000.0),
                                             }
                                         });
 

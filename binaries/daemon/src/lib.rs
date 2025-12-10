@@ -114,6 +114,8 @@ pub struct Daemon {
     sessions: BTreeMap<SessionId, BuildId>,
     builds: BTreeMap<BuildId, BuildInfo>,
     git_manager: GitManager,
+    /// System instance for metrics collection (reused across calls)
+    metrics_system: Option<sysinfo::System>,
 }
 
 type DaemonRunResult = BTreeMap<Uuid, BTreeMap<NodeId, Result<(), NodeError>>>;
@@ -354,6 +356,7 @@ impl Daemon {
             git_manager: Default::default(),
             builds,
             sessions: Default::default(),
+            metrics_system: Some(sysinfo::System::new()),
         };
 
         let dora_events = ReceiverStream::new(dora_events_rx);
@@ -882,14 +885,19 @@ impl Daemon {
 
     async fn collect_and_send_metrics(&mut self) -> eyre::Result<()> {
         use dora_message::daemon_to_coordinator::NodeMetrics;
-        use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+        use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate};
 
         if self.coordinator_connection.is_none() {
             return Ok(());
         }
 
-        // Create system instance for metrics collection
-        let mut system = System::new();
+        // Reuse system instance for metrics collection
+        let system = self.metrics_system.as_mut().ok_or_else(|| {
+            eyre::eyre!("metrics_system not initialized")
+        })?;
+
+        // Metrics are collected every 2 seconds (metrics_interval)
+        const METRICS_INTERVAL_SECS: f64 = 2.0;
 
         // Collect metrics for all running dataflows
         for (dataflow_id, dataflow) in &self.running {
@@ -903,11 +911,15 @@ impl Daemon {
                 .collect();
 
             if !pids.is_empty() {
-                // Refresh all processes at once
+                // Refresh process metrics (cpu, memory, disk)
+                // Note: We need cpu, memory, and disk_usage. ProcessRefreshKind::everything()
+                // includes these along with other metrics. In sysinfo 0.36, there's no API
+                // to selectively enable only specific refresh kinds, so we use everything().
+                let refresh_kind = ProcessRefreshKind::everything();
                 system.refresh_processes_specifics(
                     ProcessesToUpdate::Some(&pids),
                     true,
-                    ProcessRefreshKind::everything(),
+                    refresh_kind,
                 );
 
                 // Collect metrics for each node
@@ -916,14 +928,19 @@ impl Daemon {
                         let sys_pid = Pid::from_u32(pid);
                         if let Some(process) = system.process(sys_pid) {
                             let disk_usage = process.disk_usage();
+                            // Divide by metrics_interval to get per-second averages
                             metrics.insert(
                                 node_id.clone(),
                                 NodeMetrics {
                                     pid,
                                     cpu_usage: process.cpu_usage(),
                                     memory_bytes: process.memory(),
-                                    disk_read_bytes: Some(disk_usage.read_bytes),
-                                    disk_write_bytes: Some(disk_usage.written_bytes),
+                                    disk_read_bytes: Some(
+                                        (disk_usage.read_bytes as f64 / METRICS_INTERVAL_SECS) as u64,
+                                    ),
+                                    disk_write_bytes: Some(
+                                        (disk_usage.written_bytes as f64 / METRICS_INTERVAL_SECS) as u64,
+                                    ),
                                 },
                             );
                         }

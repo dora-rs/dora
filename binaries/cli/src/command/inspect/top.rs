@@ -23,7 +23,6 @@ use ratatui::{
     style::{Color, Modifier, Style},
     widgets::{Block, Borders, Cell, Row, Table, TableState},
 };
-use sysinfo::System;
 use uuid::Uuid;
 
 use crate::{LOCALHOST, common::connect_to_coordinator};
@@ -34,6 +33,11 @@ use super::super::{Executable, default_tracing};
 ///
 /// Metrics are collected by daemons and reported to the coordinator,
 /// so this works for distributed dataflows across multiple machines.
+///
+/// Note:
+/// - Values are averaged over the last refresh period
+/// - CPU percentage is of a single core (values can add to more than 100% if multiple cores are used)
+/// - Nodes can run on different machines with potentially different CPUs, so percentages are not comparable across machines
 #[derive(Debug, Args)]
 pub struct Top {
     /// Address of the dora coordinator
@@ -206,7 +210,7 @@ impl App {
         }
     }
 
-    fn update_stats(&mut self, node_infos: Vec<NodeInfo>, _system: &System) {
+    fn update_stats(&mut self, node_infos: Vec<NodeInfo>) {
         self.node_stats.clear();
 
         // Use daemon-provided metrics (works for distributed nodes!)
@@ -241,8 +245,6 @@ fn run_app<B: Backend>(
 ) -> eyre::Result<()> {
     let mut app = App::new();
     let mut last_update = Instant::now();
-    let mut last_node_query = Instant::now();
-    let mut system = System::new_all();
     let mut node_infos: Vec<NodeInfo> = Vec::new();
 
     // Reuse coordinator connection
@@ -298,9 +300,9 @@ fn run_app<B: Backend>(
                             app.toggle_sort(SortColumn::Memory);
                         }
                         KeyCode::Char('r') => {
-                            // Force refresh node list
-                            last_node_query = Instant::now()
-                                .checked_sub(Duration::from_secs(60))
+                            // Force refresh by resetting last_update
+                            last_update = Instant::now()
+                                .checked_sub(refresh_duration)
                                 .unwrap_or(Instant::now());
                         }
                         _ => {}
@@ -311,37 +313,29 @@ fn run_app<B: Backend>(
 
         // Update data if refresh interval has passed
         if last_update.elapsed() >= refresh_duration {
-            // Refresh system info (process metrics)
-            system.refresh_all();
+            // Query node info every refresh interval to get updated metrics
+            let request = ControlRequest::GetNodeInfo;
+            let reply_raw = session
+                .request(&serde_json::to_vec(&request).unwrap())
+                .wrap_err("failed to send request to coordinator")?;
 
-            // Re-query node info periodically (every 30 seconds) or on demand
-            // Node list changes less frequently than metrics
-            if last_node_query.elapsed() >= Duration::from_secs(30) {
-                let request = ControlRequest::GetNodeInfo;
-                let reply_raw = session
-                    .request(&serde_json::to_vec(&request).unwrap())
-                    .wrap_err("failed to send request to coordinator")?;
+            let reply: ControlRequestReply =
+                serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
 
-                let reply: ControlRequestReply =
-                    serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-
-                match reply {
-                    ControlRequestReply::NodeInfoList(infos) => {
-                        node_infos = infos;
-                    }
-                    ControlRequestReply::Error(err) => {
-                        return Err(eyre!("coordinator error: {err}"));
-                    }
-                    _ => {
-                        return Err(eyre!("unexpected reply from coordinator"));
-                    }
+            match reply {
+                ControlRequestReply::NodeInfoList(infos) => {
+                    node_infos = infos;
                 }
-
-                last_node_query = Instant::now();
+                ControlRequestReply::Error(err) => {
+                    return Err(eyre!("coordinator error: {err}"));
+                }
+                _ => {
+                    return Err(eyre!("unexpected reply from coordinator"));
+                }
             }
 
-            // Update stats with current node info and fresh system metrics
-            app.update_stats(node_infos.clone(), &system);
+            // Update stats with current node info
+            app.update_stats(node_infos.clone());
             last_update = Instant::now();
         }
     }
