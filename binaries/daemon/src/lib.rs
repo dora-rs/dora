@@ -892,9 +892,10 @@ impl Daemon {
         }
 
         // Reuse system instance for metrics collection
-        let system = self.metrics_system.as_mut().ok_or_else(|| {
-            eyre::eyre!("metrics_system not initialized")
-        })?;
+        let system = self
+            .metrics_system
+            .as_mut()
+            .ok_or_else(|| eyre::eyre!("metrics_system not initialized"))?;
 
         // Metrics are collected every 2 seconds (metrics_interval)
         const METRICS_INTERVAL_SECS: f64 = 2.0;
@@ -936,10 +937,12 @@ impl Daemon {
                                     cpu_usage: process.cpu_usage(),
                                     memory_bytes: process.memory(),
                                     disk_read_bytes: Some(
-                                        (disk_usage.read_bytes as f64 / METRICS_INTERVAL_SECS) as u64,
+                                        (disk_usage.read_bytes as f64 / METRICS_INTERVAL_SECS)
+                                            as u64,
                                     ),
                                     disk_write_bytes: Some(
-                                        (disk_usage.written_bytes as f64 / METRICS_INTERVAL_SECS) as u64,
+                                        (disk_usage.written_bytes as f64 / METRICS_INTERVAL_SECS)
+                                            as u64,
                                     ),
                                 },
                             );
