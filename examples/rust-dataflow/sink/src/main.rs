@@ -24,6 +24,10 @@ fn main() -> eyre::Result<()> {
                         bail!("unexpected message format (should end with 'ticks')")
                     }
                 }
+                "exit" => {
+                    println!("sink received exit signal, stopping");
+                    break;
+                }
                 other => eprintln!("Ignoring unexpected input `{other}`"),
             },
             Event::Stop(_) => {
