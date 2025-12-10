@@ -11,6 +11,7 @@ This examples requires a sourced ROS2 installation.
 - Follow tasks 1 and 2 of the [ROS2 turtlesim tutorial](https://docs.ros.org/en/iron/Tutorials/Beginner-CLI-Tools/Introducing-Turtlesim/Introducing-Turtlesim.html#id3)
   - Install the turtlesim package
   - Install the examples-rclcpp-minimal-service package 
+  - On Ubuntu, you can install them with `sudo apt install ros-<ros-distro>-examples-rclcpp-minimal-service ros-<ros-distro>-turtlesim`
   
 ## Run example
 
@@ -24,7 +25,7 @@ cargo run --package dora-ros2-bridge --example cxx-ros2-dataflow
 ```
 
 ## Alternative (manual)
-Not recommended, because manually build c++ is heavy job.
+Not recommended, because manually building c++ node is a heavy job.
 
 ### Build the example
 Please refer to the `run.rs` file in the same directory with this `README.md` file.
