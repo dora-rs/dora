@@ -11,6 +11,8 @@ This examples requires a sourced ROS2 installation.
 - Follow tasks 1 and 2 of the [ROS2 turtlesim tutorial](https://docs.ros.org/en/iron/Tutorials/Beginner-CLI-Tools/Introducing-Turtlesim/Introducing-Turtlesim.html#id3)
   - Install the turtlesim package
   - Install the examples-rclcpp-minimal-service package 
+  - On Ubuntu, you can install them with `sudo apt install ros-<ros-distro>-examples-rclcpp-minimal-service ros-<ros-distro>-turtlesim`
+  
 ## Running
 
 > [!NOTE]

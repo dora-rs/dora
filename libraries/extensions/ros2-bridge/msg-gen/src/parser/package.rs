@@ -110,13 +110,14 @@ fn get_ros_msgs_each_package<P: AsRef<Path>>(root_dirs: &[P]) -> Result<Vec<Pack
     // flatten the dependencies
     let dependencies = {
         let mut flattened_dependencies = HashMap::<String, BTreeSet<String>>::new();
-        let mut finished_set: BTreeSet<String> = dependencies.keys().cloned().collect();
-        while let Some(first) = finished_set.first().cloned() {
-            dfs_collect(
+        let mut unfinished_set: BTreeSet<String> = dependencies.keys().cloned().collect();
+        // recursively flatten the dependencies
+        while let Some(first) = unfinished_set.first().cloned() {
+            flatten_dependencies(
                 &first,
                 &dependencies,
                 &mut flattened_dependencies,
-                &mut finished_set,
+                &mut unfinished_set,
             );
         }
         flattened_dependencies
@@ -134,11 +135,16 @@ fn get_ros_msgs_each_package<P: AsRef<Path>>(root_dirs: &[P]) -> Result<Vec<Pack
     Ok(packages)
 }
 
-fn dfs_collect(
-    name: &String,
+/// Flatten the dependencies of packages recursively.
+/// The name is the name of the package to expand.
+/// The dependencies is the dependency trees of the packages with its direct dependencies.
+/// flattened_dependencies records the flattened dependencies of the packages.
+/// finished_set is the set of names of packages that have been finished.
+fn flatten_dependencies(
+    name: &str,
     dependencies: &HashMap<String, BTreeSet<String>>,
     flattened_dependencies: &mut HashMap<String, BTreeSet<String>>,
-    finished_set: &mut BTreeSet<String>,
+    unfinished_set: &mut BTreeSet<String>,
 ) -> BTreeSet<String> {
     if let Some(add_deps) = flattened_dependencies.get(name) {
         return add_deps.clone();
@@ -147,17 +153,17 @@ fn dfs_collect(
     let mut add_deps = BTreeSet::new();
     let direct_deps: BTreeSet<String> = dependencies.get(name).unwrap().iter().cloned().collect();
     for dep_name in &direct_deps {
-        let indirect_deps = dfs_collect(
+        let indirect_deps = flatten_dependencies(
             &dep_name,
             dependencies,
             flattened_dependencies,
-            finished_set,
+            unfinished_set,
         );
         add_deps.extend(indirect_deps);
     }
     add_deps.extend(direct_deps);
-    flattened_dependencies.insert(name.clone(), add_deps.clone());
-    finished_set.remove(name);
+    flattened_dependencies.insert(name.to_string(), add_deps.clone());
+    unfinished_set.remove(name);
     add_deps
 }
 
