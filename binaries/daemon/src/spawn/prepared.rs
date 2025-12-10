@@ -37,7 +37,6 @@ use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt},
     sync::{mpsc, oneshot},
 };
-use tracing::error;
 
 #[derive(Clone)]
 pub struct PreparedNode {
@@ -90,9 +89,6 @@ impl PreparedNode {
         mut finished_rx: oneshot::Receiver<NodeProcessFinished>,
         disable_restart: Arc<AtomicBool>,
     ) {
-        let dataflow_id = self.dataflow_id;
-        let node_id = self.node.id.clone();
-
         let restart_policy = match &self.node.kind {
             dora_core::descriptor::CoreNodeKind::Custom(n) => n.restart_policy,
             dora_core::descriptor::CoreNodeKind::Runtime(_) => RestartPolicy::Never,
@@ -100,9 +96,13 @@ impl PreparedNode {
 
         loop {
             let Ok(NodeProcessFinished { exit_status, op_rx }) = finished_rx.await else {
-                tracing::error!(
-                    "failed to receive finished signal for node {dataflow_id}/{node_id}"
-                );
+                logger
+                    .log(
+                        LogLevel::Error,
+                        Some("daemon".into()),
+                        "failed to receive finished signal".to_string(),
+                    )
+                    .await;
                 break;
             };
 
@@ -115,16 +115,32 @@ impl PreparedNode {
 
             let restart_disabled = disable_restart.load(atomic::Ordering::Acquire);
             if restart && restart_disabled {
-                tracing::info!(
-                    "not restarting node {dataflow_id}/{node_id} because all inputs are already closed"
-                );
+                logger
+                    .log(
+                        LogLevel::Info,
+                        Some("daemon".into()),
+                        "not restarting node because all inputs are already closed".to_string(),
+                    )
+                    .await;
             }
 
             if restart && !restart_disabled {
                 if exit_status.is_success() {
-                    tracing::info!("restarting node {dataflow_id}/{node_id} after successful exit");
+                    logger
+                        .log(
+                            LogLevel::Info,
+                            Some("daemon".into()),
+                            "restarting node after successful exit".to_string(),
+                        )
+                        .await;
                 } else {
-                    tracing::warn!("restarting node {dataflow_id}/{node_id} after failed exit");
+                    logger
+                        .log(
+                            LogLevel::Warn,
+                            Some("daemon".into()),
+                            "restarting node after failure".to_string(),
+                        )
+                        .await;
                 }
                 let (finished_tx, finished_rx_new) = oneshot::channel();
                 let result = self
@@ -136,11 +152,23 @@ impl PreparedNode {
                         finished_rx = finished_rx_new;
                     }
                     Ok(NodeKind::Dynamic) => {
-                        tracing::error!("cannot restart dynamic node {dataflow_id}/{node_id}");
+                        logger
+                            .log(
+                                LogLevel::Error,
+                                Some("daemon".into()),
+                                "cannot restart dynamic node".to_string(),
+                            )
+                            .await;
                         break;
                     }
                     Err(err) => {
-                        tracing::error!("failed to restart node {dataflow_id}/{node_id}: {err:?}");
+                        logger
+                            .log(
+                                LogLevel::Error,
+                                Some("daemon".into()),
+                                format!("failed to restart node: {err:?}"),
+                            )
+                            .await;
                         break;
                     }
                 }
@@ -241,6 +269,7 @@ impl PreparedNode {
             tokio::io::BufReader::new(child.stdout().take().expect("failed to take stdout"));
         let stdout_tx = tx.clone();
         let node_id = self.node.id.clone();
+        let mut logger_c = logger.try_clone().await?;
         // Stdout listener stream
         tokio::spawn(async move {
             let mut buffer = String::new();
@@ -256,7 +285,9 @@ impl PreparedNode {
                     Ok(0) => true,
                     Ok(_) => false,
                     Err(err) => {
-                        tracing::warn!("{err:?}");
+                        logger_c
+                            .log(LogLevel::Warn, Some("daemon".into()), format!("{err:?}"))
+                            .await;
                         false
                     }
                 };
@@ -265,10 +296,16 @@ impl PreparedNode {
                     Ok(s) => buffer.push_str(&s),
                     Err(err) => {
                         let lossy = String::from_utf8_lossy(err.as_bytes());
-                        tracing::warn!(
-                            "stdout not valid UTF-8 string (node {node_id}): {}: {lossy}",
-                            err.utf8_error()
-                        );
+                        logger_c
+                            .log(
+                                LogLevel::Warn,
+                                Some("daemon".into()),
+                                format!(
+                                    "stdout not valid UTF-8 string ({}: {lossy}",
+                                    err.utf8_error()
+                                ),
+                            )
+                            .await;
                         buffer.push_str(&lossy)
                     }
                 };
@@ -373,6 +410,7 @@ impl PreparedNode {
             .send_stdout_as()
             .context("Could not resolve `send_stdout_as` configuration")?;
         let uhlc = self.clock.clone();
+        let mut logger_c = logger.try_clone().await?;
         // Log to file stream.
         tokio::spawn(async move {
             while let Some(message) = rx.recv().await {
@@ -407,10 +445,19 @@ impl PreparedNode {
                     let _ = daemon_tx_log.send(event).await;
                 }
 
-                let _ = file
-                    .write_all(message.as_bytes())
-                    .await
-                    .map_err(|err| error!("Could not log {message} to file due to {err}"));
+                match file.write_all(message.as_bytes()).await {
+                    Ok(_) => {}
+                    Err(err) => {
+                        logger_c
+                            .log(
+                                LogLevel::Error,
+                                Some("daemon".into()),
+                                format!("Could not log {message} to file due to {err}"),
+                            )
+                            .await;
+                    }
+                }
+
                 let formatted = message.lines().fold(String::default(), |mut output, line| {
                     output.push_str(line);
                     output
@@ -446,14 +493,21 @@ impl PreparedNode {
                     }
                 }
                 // Make sure that all data has been synced to disk.
-                let _ = file
-                    .sync_all()
-                    .await
-                    .map_err(|err| error!("Could not sync logs to file due to {err}"));
+                let _ = file.sync_all().await.map_err(|err| {
+                    logger_c.log(
+                        LogLevel::Error,
+                        Some("daemon".into()),
+                        format!("Could not sync logs to file due to {err}"),
+                    )
+                });
             }
-            let _ = log_finish_tx
-                .send(())
-                .map_err(|_| error!("Could not inform that log file thread finished"));
+            let _ = log_finish_tx.send(()).map_err(|_| {
+                logger_c.log(
+                    LogLevel::Error,
+                    Some("daemon".into()),
+                    "Could not inform that log file thread finished".to_string(),
+                )
+            });
         });
         Ok(NodeKind::Spawned)
     }
