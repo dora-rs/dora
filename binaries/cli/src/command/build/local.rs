@@ -77,6 +77,7 @@ async fn build_dataflow(
                 LocalBuildLogger {
                     node_id: node_id.clone(),
                     progress_bar: Some(node_pb),
+                    multi: Some(multi.clone()),
                 },
                 &mut git_manager,
             )
@@ -104,6 +105,7 @@ async fn build_dataflow(
 struct LocalBuildLogger {
     node_id: NodeId,
     progress_bar: Option<ProgressBar>,
+    multi: Option<Arc<MultiProgress>>,
 }
 
 impl BuildLogger for LocalBuildLogger {
@@ -115,10 +117,25 @@ impl BuildLogger for LocalBuildLogger {
         message: impl Into<String> + Send,
     ) {
         let message_str: String = message.into();
+        let log_level = level.into();
 
-        // Update progress bar message if available
+        // Always print log messages to terminal so users can scroll back
+        let level_colored = match log_level {
+            LogLevelOrStdout::LogLevel(level) => match level {
+                log::Level::Error => "ERROR ".red(),
+                log::Level::Warn => "WARN  ".yellow(),
+                log::Level::Info => "INFO  ".green(),
+                log::Level::Debug => "DEBUG ".bright_blue(),
+                log::Level::Trace => "TRACE ".dimmed(),
+            },
+            LogLevelOrStdout::Stdout => "stdout".italic().dimmed(),
+        };
+        let node = self.node_id.to_string().bold().bright_black();
+        println!("{node}: {level_colored}   {message_str}");
+
+        // Also update progress bar message if available
         if let Some(pb) = &self.progress_bar {
-            let level_indicator = match level.into() {
+            let level_indicator = match log_level {
                 LogLevelOrStdout::LogLevel(level) => match level {
                     log::Level::Error => "ERROR",
                     log::Level::Warn => "WARN",
@@ -137,30 +154,20 @@ impl BuildLogger for LocalBuildLogger {
             } else {
                 pb.set_message(format!("{}: {}", self.node_id, message_str));
             }
-        } else {
-            // Fallback to println if no progress bar
-            let level = match level.into() {
-                LogLevelOrStdout::LogLevel(level) => match level {
-                    log::Level::Error => "ERROR ".red(),
-                    log::Level::Warn => "WARN  ".yellow(),
-                    log::Level::Info => "INFO  ".green(),
-                    log::Level::Debug => "DEBUG ".bright_blue(),
-                    log::Level::Trace => "TRACE ".dimmed(),
-                },
-                LogLevelOrStdout::Stdout => "stdout".italic().dimmed(),
-            };
-            let node = self.node_id.to_string().bold().bright_black();
-            println!("{node}: {level}   {message_str}");
         }
     }
 
     async fn try_clone(&self) -> eyre::Result<Self::Clone> {
+        let progress_bar = if let (Some(_), Some(multi)) = (&self.progress_bar, &self.multi) {
+            Some(multi.add_spinner(format!("Building {}", self.node_id)))
+        } else {
+            None
+        };
+
         Ok(LocalBuildLogger {
             node_id: self.node_id.clone(),
-            progress_bar: self
-                .progress_bar
-                .as_ref()
-                .map(|_| ProgressBar::new_spinner(format!("Building {}", self.node_id))),
+            progress_bar,
+            multi: self.multi.clone(),
         })
     }
 }

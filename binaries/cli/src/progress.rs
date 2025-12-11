@@ -1,18 +1,22 @@
 //! Shared progress bar components for time-consuming CLI operations.
 //!
-//! This module provides a unified interface for displaying progress feedback
-//! across all dora CLI commands using the `indicatif` crate.
+//! This module provides progress indicators using the [`indicatif`](https://docs.rs/indicatif/) crate.
 //!
-//! # Design Principles
+//! # Features
 //!
-//! - **Unified Style**: All progress bars share consistent styling and behavior
-//! - **Reusable Components**: Common patterns are encapsulated for easy reuse
-//! - **Multi-task Support**: Support for parallel operations with multiple progress bars
-//! - **Graceful Degradation**: Works in environments without TTY support
+//! - **Spinners**: For tasks with unknown duration (see [`ProgressBar::new_spinner`])
+//! - **Progress bars**: For tasks with known steps (see [`ProgressBar::new`])
+//! - **Multi-progress**: Display multiple concurrent operations (see [`MultiProgress`])
+//!
+//! # Behavior
+//!
+//! Progress indicators are automatically shown on stderr. If stderr is not a terminal
+//! (e.g., when output is redirected or in CI environments), progress indicators are hidden
+//! and the program outputs normally without any visual artifacts.
 //!
 //! # Usage Examples
 //!
-//! ## Simple Progress Bar
+//! ## Spinner for unknown duration
 //!
 //! ```rust,ignore
 //! use crate::progress::ProgressBar;
@@ -22,14 +26,27 @@
 //! pb.finish_with_message("Build complete!");
 //! ```
 //!
-//! ## Multi-task Progress
+//! ## Progress bar with known steps
+//!
+//! ```rust,ignore
+//! use crate::progress::ProgressBar;
+//!
+//! let pb = ProgressBar::new(10, "Processing items");
+//! for i in 0..10 {
+//!     // do work...
+//!     pb.inc(1);
+//! }
+//! pb.finish();
+//! ```
+//!
+//! ## Multiple concurrent operations
 //!
 //! ```rust,ignore
 //! use crate::progress::MultiProgress;
 //!
 //! let multi = MultiProgress::new();
-//! let pb1 = multi.add_task("Cloning repository...");
-//! let pb2 = multi.add_task("Building node...");
+//! let pb1 = multi.add_spinner("Cloning repository...");
+//! let pb2 = multi.add_spinner("Building node...");
 //! // do work...
 //! pb1.finish();
 //! pb2.finish();
@@ -38,6 +55,7 @@
 use indicatif::{
     MultiProgress as IndicatifMultiProgress, ProgressBar as IndicatifProgressBar, ProgressStyle,
 };
+use std::io::IsTerminal;
 use std::time::Duration;
 
 /// Standard tick rate for spinners (milliseconds)
@@ -87,7 +105,12 @@ impl ProgressBar {
     /// pb.finish_with_message("Done!");
     /// ```
     pub fn new_spinner(message: impl Into<String>) -> Self {
-        let pb = IndicatifProgressBar::new_spinner();
+        let pb = if std::io::stderr().is_terminal() {
+            IndicatifProgressBar::new_spinner()
+        } else {
+            IndicatifProgressBar::hidden()
+        };
+
         pb.set_style(
             ProgressStyle::default_spinner()
                 .tick_chars(SPINNER_CHARS)
@@ -117,17 +140,7 @@ impl ProgressBar {
     /// pb.finish();
     /// ```
     pub fn new(len: u64, message: impl Into<String>) -> Self {
-        let pb = IndicatifProgressBar::new(len);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .tick_chars(SPINNER_CHARS)
-                .template(PROGRESS_TEMPLATE)
-                .expect("invalid template")
-                .progress_chars("=>-"),
-        );
-        pb.enable_steady_tick(Duration::from_millis(SPINNER_TICK_MS));
-        pb.set_message(message.into());
-        Self { inner: pb }
+        Self::new_inner(len, message, PROGRESS_TEMPLATE)
     }
 
     /// Creates a new progress bar for byte-based progress (downloads, file copies, etc.).
@@ -145,11 +158,21 @@ impl ProgressBar {
     /// pb.inc(512);
     /// ```
     pub fn new_bytes(total_bytes: u64, message: impl Into<String>) -> Self {
-        let pb = IndicatifProgressBar::new(total_bytes);
+        Self::new_inner(total_bytes, message, BYTES_TEMPLATE)
+    }
+
+    /// Internal helper to create progress bars with different templates
+    fn new_inner(len: u64, message: impl Into<String>, template: &str) -> Self {
+        let pb = if std::io::stderr().is_terminal() {
+            IndicatifProgressBar::new(len)
+        } else {
+            IndicatifProgressBar::hidden()
+        };
+
         pb.set_style(
             ProgressStyle::default_bar()
                 .tick_chars(SPINNER_CHARS)
-                .template(BYTES_TEMPLATE)
+                .template(template)
                 .expect("invalid template")
                 .progress_chars("=>-"),
         );
@@ -295,104 +318,6 @@ impl Default for MultiProgress {
     }
 }
 
-/// Builder for creating progress bars with custom configuration.
-pub struct ProgressBarBuilder {
-    message: String,
-    length: Option<u64>,
-    style_type: ProgressStyleType,
-    hidden: bool,
-}
-
-#[derive(Debug, Clone, Copy)]
-enum ProgressStyleType {
-    Spinner,
-    Bar,
-    Bytes,
-}
-
-impl ProgressBarBuilder {
-    /// Creates a new progress bar builder.
-    pub fn new(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-            length: None,
-            style_type: ProgressStyleType::Spinner,
-            hidden: false,
-        }
-    }
-
-    /// Sets the progress bar to display as a bar (requires length).
-    pub fn bar(mut self, length: u64) -> Self {
-        self.length = Some(length);
-        self.style_type = ProgressStyleType::Bar;
-        self
-    }
-
-    /// Sets the progress bar to display byte-based progress (requires length).
-    pub fn bytes(mut self, total_bytes: u64) -> Self {
-        self.length = Some(total_bytes);
-        self.style_type = ProgressStyleType::Bytes;
-        self
-    }
-
-    /// Sets the progress bar to display as a spinner.
-    pub fn spinner(mut self) -> Self {
-        self.style_type = ProgressStyleType::Spinner;
-        self
-    }
-
-    /// Sets whether the progress bar should be hidden.
-    pub fn hidden(mut self, hidden: bool) -> Self {
-        self.hidden = hidden;
-        self
-    }
-
-    /// Builds the progress bar.
-    pub fn build(self) -> ProgressBar {
-        if self.hidden {
-            return ProgressBar::hidden();
-        }
-
-        match self.style_type {
-            ProgressStyleType::Spinner => ProgressBar::new_spinner(self.message),
-            ProgressStyleType::Bar => ProgressBar::new(self.length.unwrap_or(100), self.message),
-            ProgressStyleType::Bytes => {
-                ProgressBar::new_bytes(self.length.unwrap_or(0), self.message)
-            }
-        }
-    }
-}
-
-/// Utility function to check if progress bars should be displayed.
-///
-/// Progress bars are hidden in the following cases:
-/// - Not running in a TTY
-/// - CI environment detected
-/// - User explicitly disabled progress (via environment variable)
-pub fn should_show_progress() -> bool {
-    // Check if we're in a TTY
-    if !atty::is(atty::Stream::Stderr) {
-        return false;
-    }
-
-    // Check for common CI environment variables
-    if std::env::var("CI").is_ok()
-        || std::env::var("CONTINUOUS_INTEGRATION").is_ok()
-        || std::env::var("GITHUB_ACTIONS").is_ok()
-    {
-        return false;
-    }
-
-    // Check for explicit disable
-    if let Ok(val) = std::env::var("DORA_NO_PROGRESS") {
-        if val == "1" || val.eq_ignore_ascii_case("true") {
-            return false;
-        }
-    }
-
-    true
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -417,17 +342,5 @@ mod tests {
         let pb2 = multi.add_spinner("Task 2");
         pb1.finish();
         pb2.finish();
-    }
-
-    #[test]
-    fn test_builder() {
-        let pb = ProgressBarBuilder::new("Test").spinner().build();
-        pb.finish();
-
-        let pb = ProgressBarBuilder::new("Test").bar(100).build();
-        pb.finish();
-
-        let pb = ProgressBarBuilder::new("Test").bytes(1024).build();
-        pb.finish();
     }
 }
