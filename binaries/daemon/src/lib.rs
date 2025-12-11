@@ -1564,10 +1564,6 @@ impl Daemon {
                 .send_out(dataflow_id, node_id, output_id, metadata, data)
                 .await
                 .context("failed to send out")?,
-            DaemonNodeEvent::SendError { output_id, error } => self
-                .send_error(dataflow_id, node_id, output_id, error)
-                .await
-                .context("failed to send error")?,
             DaemonNodeEvent::ReportDrop { tokens } => {
                 let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
                     format!(
@@ -1672,36 +1668,48 @@ impl Daemon {
         Ok(())
     }
 
-    async fn send_error(
+    /// Send error events to downstream nodes when a node fails.
+    ///
+    /// This is called automatically when a node exits with a non-zero exit code.
+    /// It sends `InputError` events to all downstream nodes that consume outputs from the failed node.
+    async fn propagate_node_error(
         &mut self,
         dataflow_id: Uuid,
         source_node_id: NodeId,
-        output_id: DataId,
-        error: String,
+        error_message: String,
     ) -> Result<(), eyre::ErrReport> {
         let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
-            format!("send error failed: no running dataflow with ID `{dataflow_id}`")
+            format!("propagate error failed: no running dataflow with ID `{dataflow_id}`")
         })?;
 
         tracing::warn!(
-            "Node {}/{} sent error on output {}: {}",
+            "Node {}/{} failed: {}. Propagating error to downstream nodes.",
             dataflow_id,
             source_node_id,
-            output_id,
-            error
+            error_message
         );
 
-        // Find downstream nodes that consume this output
-        let output_key = OutputId(source_node_id.clone(), output_id.clone());
-        if let Some(receivers) = dataflow.mappings.get(&output_key) {
-            for (receiver_node_id, input_id) in receivers {
-                if let Some(channel) = dataflow.subscribe_channels.get(receiver_node_id) {
-                    let event = NodeEvent::InputError {
-                        id: input_id.clone(),
-                        error: error.clone(),
-                        source_node_id: source_node_id.clone(),
-                    };
-                    let _ = send_with_timestamp(channel, event, &self.clock);
+        // Get all outputs of the failed node
+        let outputs: Vec<DataId> = dataflow
+            .mappings
+            .keys()
+            .filter(|m| &m.0 == &source_node_id)
+            .map(|m| m.1.clone())
+            .collect();
+
+        // For each output, send error events to downstream nodes
+        for output_id in outputs {
+            let output_key = OutputId(source_node_id.clone(), output_id.clone());
+            if let Some(receivers) = dataflow.mappings.get(&output_key) {
+                for (receiver_node_id, input_id) in receivers {
+                    if let Some(channel) = dataflow.subscribe_channels.get(receiver_node_id) {
+                        let event = NodeEvent::InputError {
+                            id: input_id.clone(),
+                            error: error_message.clone(),
+                            source_node_id: source_node_id.clone(),
+                        };
+                        let _ = send_with_timestamp(channel, event, &self.clock);
+                    }
                 }
             }
         }
@@ -2164,7 +2172,22 @@ impl Daemon {
                 self.dataflow_node_results
                     .entry(dataflow_id)
                     .or_default()
-                    .insert(node_id.clone(), node_result);
+                    .insert(node_id.clone(), node_result.clone());
+
+                // If the node failed (non-zero exit code), propagate error to downstream nodes
+                if let Err(node_error) = &node_result {
+                    let error_message = format!("{}", node_error);
+                    if let Err(err) = self
+                        .propagate_node_error(dataflow_id, node_id.clone(), error_message)
+                        .await
+                    {
+                        tracing::warn!(
+                            "Failed to propagate error for node {}/{}: {err:?}",
+                            dataflow_id,
+                            node_id
+                        );
+                    }
+                }
 
                 self.handle_node_stop(dataflow_id, &node_id, dynamic_node)
                     .await?;
@@ -2835,10 +2858,6 @@ pub enum DaemonNodeEvent {
         output_id: DataId,
         metadata: metadata::Metadata,
         data: Option<DataMessage>,
-    },
-    SendError {
-        output_id: DataId,
-        error: String,
     },
     ReportDrop {
         tokens: Vec<DropToken>,

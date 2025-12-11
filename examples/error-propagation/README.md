@@ -1,18 +1,18 @@
 # Error Propagation Example
 
-This example demonstrates the error event propagation feature, which allows nodes to send errors to downstream nodes instead of crashing.
+This example demonstrates the automatic error event propagation feature, which notifies downstream nodes when a node fails.
 
 ## Overview
 
 The dataflow consists of two nodes:
-- **Producer**: Simulates a processing error and sends an error event instead of crashing
-- **Consumer**: Receives the error event and handles it gracefully
+- **Producer**: Simulates a processing error and exits with a non-zero exit code
+- **Consumer**: Automatically receives an error event when the producer fails and handles it gracefully
 
 ## Key Features Demonstrated
 
-1. **Graceful Error Handling**: The producer node encounters an error but continues running
-2. **Error Propagation**: The error is sent to downstream nodes via `node.send_error()`
-3. **Error Reception**: The consumer receives `Event::InputError` and can handle it appropriately
+1. **Automatic Error Propagation**: When a node exits with a non-zero exit code, the daemon automatically sends `InputError` events to all downstream nodes
+2. **Error Reception**: The consumer receives `Event::InputError` and can handle it appropriately
+3. **Fault Tolerance**: Downstream nodes are notified of upstream failures and can implement recovery strategies
 
 ## Running the Example
 
@@ -30,18 +30,17 @@ dora start examples/error-propagation/dataflow.yml
 **Producer:**
 ```
 [Producer] Starting...
-[Producer] Sending message 0
-[Producer] Sending message 1
-[Producer] Sending message 2
-[Producer] Encountered an error! Sending error event instead of crashing...
-[Producer] Continuing after error...
-[Producer] Exiting gracefully
+[Producer] Processing message 0
+[Producer] Processing message 1
+[Producer] Processing message 2
+[Producer] Encountered an error! Exiting with error code...
+Error: Simulated processing error: invalid data format
 ```
 
 **Consumer:**
 ```
 [Consumer] Starting...
-[Consumer] ⚠️  Received error from node 'producer' on input 'data': Simulated processing error: invalid data format
+[Consumer] ⚠️  Received error from node 'producer' on input 'data': exited with code 1
 [Consumer] Handling error gracefully - using cached data...
 [Consumer] Input data closed
 [Consumer] Exiting

@@ -126,18 +126,4 @@ impl ControlChannel {
         }
     }
 
-    pub fn send_error(&mut self, output_id: DataId, error: String) -> eyre::Result<()> {
-        let request = DaemonRequest::SendError { output_id, error };
-        let reply = self
-            .channel
-            .request(&Timestamped {
-                inner: request,
-                timestamp: self.clock.new_timestamp(),
-            })
-            .wrap_err("failed to send SendError request to dora-daemon")?;
-        match reply {
-            DaemonReply::Empty => Ok(()),
-            other => bail!("unexpected SendError reply: {other:?}"),
-        }
-    }
 }

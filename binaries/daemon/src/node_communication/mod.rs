@@ -383,10 +383,6 @@ impl Listener {
                 };
                 self.process_daemon_event(event, None, connection).await?;
             }
-            DaemonRequest::SendError { output_id, error } => {
-                let event = crate::DaemonNodeEvent::SendError { output_id, error };
-                self.process_daemon_event(event, None, connection).await?;
-            }
             DaemonRequest::Subscribe => {
                 let (tx, rx) = mpsc::unbounded_channel();
                 let (reply_sender, reply) = oneshot::channel();
