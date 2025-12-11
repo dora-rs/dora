@@ -1503,9 +1503,18 @@ async fn destroy_daemon(
         ))?;
 
     // wait for reply
-    let reply_raw = tcp_receive(&mut daemon_connection.stream)
-        .await
-        .wrap_err("failed to receive destroy reply from daemon")?;
+    let reply_raw = match tcp_receive(&mut daemon_connection.stream).await {
+        Ok(raw) => raw,
+        Err(err) => {
+            // If we can't receive the reply, the daemon might have already closed the connection
+            // This can happen during shutdown. Log a warning but don't fail.
+            tracing::warn!(
+                "failed to receive destroy reply from daemon `{daemon_id}`: {err}, \
+                 assuming daemon is already shut down"
+            );
+            return Ok(());
+        }
+    };
     match serde_json::from_slice(&reply_raw)
         .wrap_err("failed to deserialize destroy reply from daemon")?
     {
