@@ -80,7 +80,9 @@ impl Connection for TcpConnection {
                 // If deserialization fails, treat it as a connection error
                 // This can happen if the connection was closed mid-transmission
                 // or if there's a version mismatch
-                tracing::debug!("failed to deserialize DaemonRequest: {err}, treating as disconnect");
+                tracing::debug!(
+                    "failed to deserialize DaemonRequest: {err}, treating as disconnect"
+                );
                 Ok(None)
             }
         }
