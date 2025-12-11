@@ -115,7 +115,7 @@ pub struct Daemon {
     builds: BTreeMap<BuildId, BuildInfo>,
     git_manager: GitManager,
     /// System instance for metrics collection (reused across calls)
-    metrics_system: Option<sysinfo::System>,
+    metrics_system: sysinfo::System,
 }
 
 type DaemonRunResult = BTreeMap<Uuid, BTreeMap<NodeId, Result<(), NodeError>>>;
@@ -356,7 +356,7 @@ impl Daemon {
             git_manager: Default::default(),
             builds,
             sessions: Default::default(),
-            metrics_system: Some(sysinfo::System::new()),
+            metrics_system: sysinfo::System::new(),
         };
 
         let dora_events = ReceiverStream::new(dora_events_rx);
@@ -892,10 +892,7 @@ impl Daemon {
         }
 
         // Reuse system instance for metrics collection
-        let system = self
-            .metrics_system
-            .as_mut()
-            .ok_or_else(|| eyre::eyre!("metrics_system not initialized"))?;
+        let system = &mut self.metrics_system;
 
         // Metrics are collected every 2 seconds (metrics_interval)
         const METRICS_INTERVAL_SECS: f64 = 2.0;
@@ -913,10 +910,10 @@ impl Daemon {
 
             if !pids.is_empty() {
                 // Refresh process metrics (cpu, memory, disk)
-                // Note: We need cpu, memory, and disk_usage. ProcessRefreshKind::everything()
-                // includes these along with other metrics. In sysinfo 0.36, there's no API
-                // to selectively enable only specific refresh kinds, so we use everything().
-                let refresh_kind = ProcessRefreshKind::everything();
+                let refresh_kind = ProcessRefreshKind::nothing()
+                    .with_cpu()
+                    .with_memory()
+                    .with_disk_usage();
                 system.refresh_processes_specifics(
                     ProcessesToUpdate::Some(&pids),
                     true,

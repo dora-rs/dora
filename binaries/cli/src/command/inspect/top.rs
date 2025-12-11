@@ -111,6 +111,8 @@ struct NodeStats {
     pid: Option<u32>,
     cpu_usage: f32,
     memory_mb: f64,
+    disk_read_mb_s: Option<f64>,
+    disk_write_mb_s: Option<f64>,
 }
 
 impl App {
@@ -215,10 +217,16 @@ impl App {
 
         // Use daemon-provided metrics (works for distributed nodes!)
         for node_info in node_infos {
-            let (pid, cpu_usage, memory_mb) = if let Some(metrics) = &node_info.metrics {
-                (Some(metrics.pid), metrics.cpu_usage, metrics.memory_mb)
+            let (pid, cpu_usage, memory_mb, disk_read_mb_s, disk_write_mb_s) = if let Some(metrics) = &node_info.metrics {
+                (
+                    Some(metrics.pid),
+                    metrics.cpu_usage,
+                    metrics.memory_mb,
+                    metrics.disk_read_mb_s,
+                    metrics.disk_write_mb_s,
+                )
             } else {
-                (None, 0.0, 0.0)
+                (None, 0.0, 0.0, None, None)
             };
 
             self.node_stats.push(NodeStats {
@@ -230,6 +238,8 @@ impl App {
                 pid,
                 cpu_usage,
                 memory_mb,
+                disk_read_mb_s,
+                disk_write_mb_s,
             });
         }
 
@@ -360,6 +370,8 @@ fn ui(f: &mut Frame, app: &mut App, refresh_duration: Duration) {
         "PID".to_string(),
         format!("CPU%{}", sort_indicator(SortColumn::Cpu)),
         format!("MEMORY (MB){}", sort_indicator(SortColumn::Memory)),
+        "I/O READ (MB/s)".to_string(),
+        "I/O WRITE (MB/s)".to_string(),
     ];
 
     let header_cells = header_strings.iter().map(|h| {
@@ -384,16 +396,30 @@ fn ui(f: &mut Frame, app: &mut App, refresh_duration: Duration) {
             ),
             Cell::from(format!("{:.1}%", stats.cpu_usage)),
             Cell::from(format!("{:.1}", stats.memory_mb)),
+            Cell::from(
+                stats
+                    .disk_read_mb_s
+                    .map(|v| format!("{:.1}", v))
+                    .unwrap_or_else(|| "N/A".to_string()),
+            ),
+            Cell::from(
+                stats
+                    .disk_write_mb_s
+                    .map(|v| format!("{:.1}", v))
+                    .unwrap_or_else(|| "N/A".to_string()),
+            ),
         ];
         Row::new(cells).height(1)
     });
 
     let widths = [
-        Constraint::Percentage(25),
-        Constraint::Percentage(25),
-        Constraint::Percentage(10),
-        Constraint::Percentage(15),
-        Constraint::Percentage(25),
+        Constraint::Percentage(20),
+        Constraint::Percentage(20),
+        Constraint::Percentage(8),
+        Constraint::Percentage(12),
+        Constraint::Percentage(12),
+        Constraint::Percentage(14),
+        Constraint::Percentage(14),
     ];
 
     let title = format!(
