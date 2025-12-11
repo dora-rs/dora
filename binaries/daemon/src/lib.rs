@@ -1485,6 +1485,13 @@ impl Daemon {
                     Ok(dataflow) => {
                         Self::subscribe(dataflow, node_id.clone(), event_sender, &self.clock).await;
 
+                        // Note: handle_node_subscription takes ownership of reply_sender and stores it
+                        // in waiting_subscribers. The reply will be sent later by answer_subscribe_requests.
+                        // If handle_node_subscription returns an error, the reply_sender is still in
+                        // waiting_subscribers and should be answered by answer_subscribe_requests.
+                        // However, if there's an error, answer_subscribe_requests might not be called,
+                        // so the reply might not be sent. Our fix in process_daemon_event should handle
+                        // this case by sending an error reply if the daemon main loop doesn't respond.
                         let status = dataflow
                             .pending_nodes
                             .handle_node_subscription(
