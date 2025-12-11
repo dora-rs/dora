@@ -75,6 +75,7 @@ impl PreparedNode {
                 NodeKind::Spawned => Some(crate::ProcessHandle::new(op_tx)),
             },
             node_config: self.node_config.clone(),
+            restart_policy: self.restart_policy(),
             disable_restart: disable_restart.clone(),
         };
 
@@ -83,17 +84,19 @@ impl PreparedNode {
         Ok(running_node)
     }
 
+    fn restart_policy(&self) -> RestartPolicy {
+        match &self.node.kind {
+            dora_core::descriptor::CoreNodeKind::Custom(n) => n.restart_policy,
+            dora_core::descriptor::CoreNodeKind::Runtime(_) => RestartPolicy::Never,
+        }
+    }
+
     async fn restart_loop(
         self,
         mut logger: NodeLogger<'static>,
         mut finished_rx: oneshot::Receiver<NodeProcessFinished>,
         disable_restart: Arc<AtomicBool>,
     ) {
-        let restart_policy = match &self.node.kind {
-            dora_core::descriptor::CoreNodeKind::Custom(n) => n.restart_policy,
-            dora_core::descriptor::CoreNodeKind::Runtime(_) => RestartPolicy::Never,
-        };
-
         loop {
             let Ok(NodeProcessFinished { exit_status, op_rx }) = finished_rx.await else {
                 logger
@@ -106,7 +109,7 @@ impl PreparedNode {
                 break;
             };
 
-            let restart = match restart_policy {
+            let restart = match self.restart_policy() {
                 RestartPolicy::Always => true,
                 RestartPolicy::OnFailure if exit_status.is_success() => false,
                 RestartPolicy::OnFailure => true,

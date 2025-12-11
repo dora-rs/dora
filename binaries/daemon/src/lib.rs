@@ -27,7 +27,7 @@ use dora_message::{
     },
     daemon_to_daemon::InterDaemonEvent,
     daemon_to_node::{DaemonReply, NodeConfig, NodeDropEvent, NodeEvent},
-    descriptor::NodeSource,
+    descriptor::{NodeSource, RestartPolicy},
     metadata::{self, ArrowTypeInfo},
     node_to_daemon::{DynamicNodeEvent, Timestamped},
 };
@@ -1467,6 +1467,15 @@ impl Daemon {
         dataflow_id: DataflowId,
         node_id: NodeId,
     ) -> eyre::Result<()> {
+        let might_restart = || {
+            let dataflow = self.running.get(&dataflow_id)?;
+            let node = dataflow.running_nodes.get(&node_id)?;
+            Some(match node.restart_policy {
+                RestartPolicy::Never => false,
+                _ if node.restarts_disabled() => false,
+                RestartPolicy::OnFailure | RestartPolicy::Always => true,
+            })
+        };
         match event {
             DaemonNodeEvent::Subscribe {
                 event_sender,
@@ -1542,17 +1551,32 @@ impl Daemon {
                 outputs,
                 reply_sender,
             } => {
-                // notify downstream nodes
-                let inner = async {
-                    self.send_output_closed_events(dataflow_id, node_id, outputs)
-                        .await
-                };
+                let reply = if might_restart().unwrap_or(false) {
+                    self.logger
+                        .for_dataflow(dataflow_id)
+                        .for_node(node_id.clone())
+                        .log(
+                            LogLevel::Debug,
+                            Some("daemon".into()),
+                            "skipping CloseOutputs because node might restart",
+                        )
+                        .await;
+                    Ok(())
+                } else {
+                    // notify downstream nodes
+                    let inner = async {
+                        self.send_output_closed_events(dataflow_id, node_id, outputs)
+                            .await
+                    };
 
-                let reply = inner.await.map_err(|err| format!("{err:?}"));
+                    inner.await.map_err(|err| format!("{err:?}"))
+                };
                 let _ = reply_sender.send(DaemonReply::Result(reply));
             }
             DaemonNodeEvent::OutputsDone { reply_sender } => {
-                let result = self.handle_outputs_done(dataflow_id, &node_id).await;
+                let result = self
+                    .handle_outputs_done(dataflow_id, &node_id, might_restart().unwrap_or(false))
+                    .await;
 
                 let _ = reply_sender.send(DaemonReply::Result(
                     result.map_err(|err| format!("{err:?}")),
@@ -1805,6 +1829,7 @@ impl Daemon {
         &mut self,
         dataflow_id: DataflowId,
         node_id: &NodeId,
+        might_restart: bool,
     ) -> eyre::Result<()> {
         let dataflow = self
             .running
@@ -1818,8 +1843,21 @@ impl Daemon {
             .map(|m| &m.1)
             .cloned()
             .collect();
-        self.send_output_closed_events(dataflow_id, node_id.clone(), outputs)
-            .await?;
+
+        if might_restart {
+            self.logger
+                .for_dataflow(dataflow_id)
+                .for_node(node_id.clone())
+                .log(
+                    LogLevel::Debug,
+                    Some("daemon".into()),
+                    "keeping outputs open because node might restart",
+                )
+                .await;
+        } else {
+            self.send_output_closed_events(dataflow_id, node_id.clone(), outputs)
+                .await?;
+        }
 
         let dataflow = self
             .running
@@ -1884,7 +1922,11 @@ impl Daemon {
             )
             .await?;
 
-        self.handle_outputs_done(dataflow_id, node_id).await?;
+        // node only reaches here if it will not be restarted
+        let might_restart = false;
+
+        self.handle_outputs_done(dataflow_id, node_id, might_restart)
+            .await?;
 
         let mut logger = self.logger.for_dataflow(dataflow_id);
         let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
@@ -2376,6 +2418,7 @@ fn close_input(
 pub struct RunningNode {
     process: Option<ProcessHandle>,
     node_config: NodeConfig,
+    restart_policy: RestartPolicy,
     /// Don't restart the node even if the restart policy says so.
     ///
     /// This flag is set when all inputs of the node were closed and when a manual stop command
