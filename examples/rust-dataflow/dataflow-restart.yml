@@ -1,0 +1,29 @@
+nodes:
+  - id: rust-node
+    build: cargo build -p rust-dataflow-example-node
+    path: ../../target/debug/rust-dataflow-example-node
+    inputs:
+      tick: dora/timer/millis/100
+    outputs:
+      - random
+
+  - id: rust-status-node
+    build: cargo build -p rust-dataflow-example-status-node
+    path: ../../target/debug/rust-dataflow-example-status-node
+    restart_policy: on-failure
+    inputs:
+      tick: dora/timer/millis/100
+      fail: dora/timer/millis/400
+      trigger-exit: dora/timer/millis/300
+      random: rust-node/random
+    outputs:
+      - status
+      - triggered-exit
+
+  - id: rust-sink
+    build: cargo build -p rust-dataflow-example-sink
+    path: ../../target/debug/rust-dataflow-example-sink
+    restart_policy: always
+    inputs:
+      exit: rust-status-node/triggered-exit
+      message: rust-status-node/status
