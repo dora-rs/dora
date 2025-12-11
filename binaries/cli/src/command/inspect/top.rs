@@ -217,17 +217,18 @@ impl App {
 
         // Use daemon-provided metrics (works for distributed nodes!)
         for node_info in node_infos {
-            let (pid, cpu_usage, memory_mb, disk_read_mb_s, disk_write_mb_s) = if let Some(metrics) = &node_info.metrics {
-                (
-                    Some(metrics.pid),
-                    metrics.cpu_usage,
-                    metrics.memory_mb,
-                    metrics.disk_read_mb_s,
-                    metrics.disk_write_mb_s,
-                )
-            } else {
-                (None, 0.0, 0.0, None, None)
-            };
+            let (pid, cpu_usage, memory_mb, disk_read_mb_s, disk_write_mb_s) =
+                if let Some(metrics) = &node_info.metrics {
+                    (
+                        Some(metrics.pid),
+                        metrics.cpu_usage,
+                        metrics.memory_mb,
+                        metrics.disk_read_mb_s,
+                        metrics.disk_write_mb_s,
+                    )
+                } else {
+                    (None, 0.0, 0.0, None, None)
+                };
 
             self.node_stats.push(NodeStats {
                 dataflow_id: node_info.dataflow_id,
