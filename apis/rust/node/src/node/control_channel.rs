@@ -125,5 +125,4 @@ impl ControlChannel {
             other => bail!("unexpected SendMessage reply: {other:?}"),
         }
     }
-
 }

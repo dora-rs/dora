@@ -63,7 +63,7 @@ impl DaemonRequest {
             | DaemonRequest::OutputsDone
             | DaemonRequest::NextEvent { .. }
             | DaemonRequest::SubscribeDrop
-            |             DaemonRequest::NextFinishedDropTokens
+            | DaemonRequest::NextFinishedDropTokens
             | DaemonRequest::ReportDropTokens { .. }
             | DaemonRequest::SendMessage { .. }
             | DaemonRequest::EventStreamDropped => false,

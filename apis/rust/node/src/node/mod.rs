@@ -754,7 +754,6 @@ impl DoraNode {
         Ok(())
     }
 
-
     /// Returns the ID of the node as specified in the dataflow configuration file.
     pub fn id(&self) -> &NodeId {
         &self.id

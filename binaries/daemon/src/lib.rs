@@ -1879,7 +1879,10 @@ impl Daemon {
         let result = self
             .handle_node_stop_inner(dataflow_id, node_id, dynamic_node)
             .await;
-        let _ = self
+
+        // Always send NodeStopped event, even if handle_node_stop_inner failed
+        // This is critical for daemon shutdown - the event must be sent
+        if let Err(err) = self
             .events_tx
             .send(Timestamped {
                 inner: Event::NodeStopped {
@@ -1888,7 +1891,15 @@ impl Daemon {
                 },
                 timestamp: self.clock.new_timestamp(),
             })
-            .await;
+            .await
+        {
+            tracing::error!(
+                "Failed to send NodeStopped event for {}/{}: {err:?}. Daemon may not exit properly.",
+                dataflow_id,
+                node_id
+            );
+        }
+
         result
     }
 
@@ -2117,12 +2128,12 @@ impl Daemon {
                             let cause = match caused_by_node {
                                 Some(caused_by_node) => {
                                     logger
-                                        .log(
-                                            LogLevel::Info,
-                                            Some("daemon".into()),
-                                            format!("marking `{node_id}` as cascading error caused by `{caused_by_node}`")
-                                        )
-                                        .await;
+                                    .log(
+                                        LogLevel::Info,
+                                        Some("daemon".into()),
+                                        format!("marking `{node_id}` as cascading error caused by `{caused_by_node}`")
+                                    )
+                                    .await;
 
                                     NodeErrorCause::Cascading { caused_by_node }
                                 }
@@ -2189,8 +2200,19 @@ impl Daemon {
                     }
                 }
 
-                self.handle_node_stop(dataflow_id, &node_id, dynamic_node)
-                    .await?;
+                // Always send NodeStopped event, even if handle_node_stop fails
+                // This ensures the daemon can exit properly
+                let stop_result = self
+                    .handle_node_stop(dataflow_id, &node_id, dynamic_node)
+                    .await;
+                if let Err(err) = &stop_result {
+                    tracing::warn!(
+                        "Error handling node stop for {}/{}: {err:?}, but NodeStopped event should have been sent",
+                        dataflow_id,
+                        node_id
+                    );
+                }
+                // Don't propagate the error - NodeStopped event is more important for shutdown
             }
         }
         Ok(())
