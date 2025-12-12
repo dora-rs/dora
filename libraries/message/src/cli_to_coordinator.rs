@@ -90,4 +90,5 @@ pub enum ControlRequest {
         level: log::LevelFilter,
     },
     CliAndDefaultDaemonOnSameMachine,
+    GetNodeInfo,
 }

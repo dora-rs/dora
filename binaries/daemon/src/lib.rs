@@ -114,6 +114,8 @@ pub struct Daemon {
     sessions: BTreeMap<SessionId, BuildId>,
     builds: BTreeMap<BuildId, BuildInfo>,
     git_manager: GitManager,
+    /// System instance for metrics collection (reused across calls)
+    metrics_system: sysinfo::System,
 }
 
 type DaemonRunResult = BTreeMap<Uuid, BTreeMap<NodeId, Result<(), NodeError>>>;
@@ -354,6 +356,7 @@ impl Daemon {
             git_manager: Default::default(),
             builds,
             sessions: Default::default(),
+            metrics_system: sysinfo::System::new(),
         };
 
         let dora_events = ReceiverStream::new(dora_events_rx);
@@ -365,7 +368,23 @@ impl Daemon {
             inner: Event::HeartbeatInterval,
             timestamp: watchdog_clock.new_timestamp(),
         });
-        let events = (external_events, dora_events, watchdog_interval).merge();
+
+        let metrics_clock = daemon.clock.clone();
+        let metrics_interval = tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(
+            Duration::from_secs(2), // Collect metrics every 2 seconds
+        ))
+        .map(|_| Timestamped {
+            inner: Event::MetricsInterval,
+            timestamp: metrics_clock.new_timestamp(),
+        });
+
+        let events = (
+            external_events,
+            dora_events,
+            watchdog_interval,
+            metrics_interval,
+        )
+            .merge();
         daemon.run_inner(events).await
     }
 
@@ -422,6 +441,9 @@ impl Daemon {
                             bail!("lost connection to coordinator")
                         }
                     }
+                }
+                Event::MetricsInterval => {
+                    self.collect_and_send_metrics().await?;
                 }
                 Event::CtrlC => {
                     tracing::info!("received ctrlc signal -> stopping all dataflows");
@@ -859,6 +881,94 @@ impl Daemon {
             }
         };
         Ok(status)
+    }
+
+    async fn collect_and_send_metrics(&mut self) -> eyre::Result<()> {
+        use dora_message::daemon_to_coordinator::NodeMetrics;
+        use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate};
+
+        if self.coordinator_connection.is_none() {
+            return Ok(());
+        }
+
+        // Reuse system instance for metrics collection
+        let system = &mut self.metrics_system;
+
+        // Metrics are collected every 2 seconds (metrics_interval)
+        const METRICS_INTERVAL_SECS: f64 = 2.0;
+
+        // Collect metrics for all running dataflows
+        for (dataflow_id, dataflow) in &self.running {
+            let mut metrics = BTreeMap::new();
+
+            // Collect all PIDs for this dataflow
+            let pids: Vec<Pid> = dataflow
+                .running_nodes
+                .values()
+                .filter_map(|node| node.pid.map(Pid::from_u32))
+                .collect();
+
+            if !pids.is_empty() {
+                // Refresh process metrics (cpu, memory, disk)
+                let refresh_kind = ProcessRefreshKind::nothing()
+                    .with_cpu()
+                    .with_memory()
+                    .with_disk_usage();
+                system.refresh_processes_specifics(
+                    ProcessesToUpdate::Some(&pids),
+                    true,
+                    refresh_kind,
+                );
+
+                // Collect metrics for each node
+                for (node_id, running_node) in &dataflow.running_nodes {
+                    if let Some(pid) = running_node.pid {
+                        let sys_pid = Pid::from_u32(pid);
+                        if let Some(process) = system.process(sys_pid) {
+                            let disk_usage = process.disk_usage();
+                            // Divide by metrics_interval to get per-second averages
+                            metrics.insert(
+                                node_id.clone(),
+                                NodeMetrics {
+                                    pid,
+                                    cpu_usage: process.cpu_usage(),
+                                    memory_bytes: process.memory(),
+                                    disk_read_bytes: Some(
+                                        (disk_usage.read_bytes as f64 / METRICS_INTERVAL_SECS)
+                                            as u64,
+                                    ),
+                                    disk_write_bytes: Some(
+                                        (disk_usage.written_bytes as f64 / METRICS_INTERVAL_SECS)
+                                            as u64,
+                                    ),
+                                },
+                            );
+                        }
+                    }
+                }
+            }
+
+            // Send metrics to coordinator if we have any
+            if !metrics.is_empty() {
+                if let Some(connection) = &mut self.coordinator_connection {
+                    let msg = serde_json::to_vec(&Timestamped {
+                        inner: CoordinatorRequest::Event {
+                            daemon_id: self.daemon_id.clone(),
+                            event: DaemonEvent::NodeMetrics {
+                                dataflow_id: *dataflow_id,
+                                metrics,
+                            },
+                        },
+                        timestamp: self.clock.new_timestamp(),
+                    })?;
+                    socket_stream_send(connection, &msg)
+                        .await
+                        .wrap_err("failed to send metrics to coordinator")?;
+                }
+            }
+        }
+
+        Ok(())
     }
 
     async fn handle_inter_daemon_event(&mut self, event: InterDaemonEvent) -> eyre::Result<()> {
@@ -2358,6 +2468,7 @@ fn close_input(
 pub struct RunningNode {
     process: Option<ProcessHandle>,
     node_config: NodeConfig,
+    pid: Option<u32>,
 }
 
 #[derive(Debug)]
@@ -2704,6 +2815,7 @@ pub enum Event {
     Dora(DoraEvent),
     DynamicNode(DynamicNodeEventWrapper),
     HeartbeatInterval,
+    MetricsInterval,
     CtrlC,
     SecondCtrlC,
     DaemonError(eyre::Report),
@@ -2743,6 +2855,7 @@ impl Event {
             Event::Dora(_) => "Dora",
             Event::DynamicNode(_) => "DynamicNode",
             Event::HeartbeatInterval => "HeartbeatInterval",
+            Event::MetricsInterval => "MetricsInterval",
             Event::CtrlC => "CtrlC",
             Event::SecondCtrlC => "SecondCtrlC",
             Event::DaemonError(_) => "DaemonError",

@@ -39,6 +39,8 @@ pub(super) async fn spawn_dataflow(
         .into_group_map_by(|n| n.deploy.as_ref().and_then(|d| d.machine.as_ref()));
 
     let mut daemons = BTreeSet::new();
+    let mut node_to_daemon = BTreeMap::new();
+
     for (machine, nodes_on_machine) in &nodes_by_daemon {
         let spawn_nodes = nodes_on_machine.iter().map(|n| n.id.clone()).collect();
         tracing::debug!(
@@ -65,7 +67,12 @@ pub(super) async fn spawn_dataflow(
             spawn_dataflow_on_machine(daemon_connections, machine.map(|m| m.as_str()), &message)
                 .await
                 .wrap_err_with(|| format!("failed to spawn dataflow on machine `{machine:?}`"))?;
-        daemons.insert(daemon_id);
+        daemons.insert(daemon_id.clone());
+
+        // Map each node on this machine to its daemon
+        for node in nodes_on_machine {
+            node_to_daemon.insert(node.id.clone(), daemon_id.clone());
+        }
     }
 
     tracing::info!("successfully triggered dataflow spawn `{uuid}`",);
@@ -74,6 +81,7 @@ pub(super) async fn spawn_dataflow(
         uuid,
         daemons,
         nodes,
+        node_to_daemon,
     })
 }
 
@@ -119,4 +127,5 @@ pub struct SpawnedDataflow {
     pub uuid: Uuid,
     pub daemons: BTreeSet<DaemonId>,
     pub nodes: BTreeMap<NodeId, ResolvedNode>,
+    pub node_to_daemon: BTreeMap<NodeId, DaemonId>,
 }
