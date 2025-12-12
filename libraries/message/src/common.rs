@@ -118,8 +118,9 @@ impl<'de> Deserialize<'de> for LogLevelOrStdout {
 
 #[derive(Debug, Clone, serde::Serialize, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LogLevelOrStdout {
-    LogLevel(LogLevel),
     Stdout,
+    #[serde(untagged)]
+    LogLevel(LogLevel),
 }
 
 impl From<LogLevel> for LogLevelOrStdout {
