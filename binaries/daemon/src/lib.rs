@@ -537,7 +537,15 @@ impl Daemon {
                             break;
                         }
                     }
+                    // Exit when all dataflows are finished after Ctrl-C
                     if self.exit_when_all_finished && self.running.is_empty() {
+                        tracing::info!("exiting daemon because all dataflows are finished");
+                        break;
+                    }
+                    // Also exit in example mode when all dataflows finish, even if exit_when_done
+                    // tracking didn't catch all nodes (e.g., if nodes finish before being tracked)
+                    if self.exit_when_done.is_some() && self.running.is_empty() {
+                        tracing::info!("exiting daemon because all dataflows are finished (example mode)");
                         break;
                     }
                 }
