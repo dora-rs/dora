@@ -141,14 +141,7 @@ async fn receive_message(
             }
         },
     };
-    match bincode::deserialize(&raw) {
-        Ok(message) => Ok(Some(message)),
-        Err(err) => {
-            // If deserialization fails, treat it as a connection error
-            // This can happen if the connection was closed mid-transmission
-            // or if there's a version mismatch
-            tracing::debug!("failed to deserialize DaemonRequest: {err}, treating as disconnect");
-            Ok(None)
-        }
-    }
+    bincode::deserialize(&raw)
+        .wrap_err("failed to deserialize DaemonRequest")
+        .map(Some)
 }

@@ -11,14 +11,14 @@ fn main() -> Result<()> {
             Event::Input { id, .. } => {
                 println!("[Consumer] Received input on {}", id);
             }
-            Event::InputError {
-                id,
+            Event::NodeFailed {
+                affected_input_ids,
                 error,
                 source_node_id,
             } => {
                 println!(
-                    "[Consumer] ⚠️  Received error from node '{}' on input '{}': {}",
-                    source_node_id, id, error
+                    "[Consumer] ⚠️  Received error from node '{}' affecting inputs {:?}: {}",
+                    source_node_id, affected_input_ids, error
                 );
                 println!("[Consumer] Handling error gracefully - using cached data...");
                 // In a real application, you could:

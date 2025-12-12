@@ -383,8 +383,8 @@ impl EventStream {
                         });
                         Some(event_json)
                     }
-                    NodeEvent::InputError {
-                        id,
+                    NodeEvent::NodeFailed {
+                        affected_input_ids,
                         error,
                         source_node_id,
                     } => {
@@ -393,8 +393,8 @@ impl EventStream {
                             .new_timestamp()
                             .get_diff_duration(&self.start_timestamp);
                         let event_json = serde_json::json!({
-                            "type": "InputError",
-                            "id": id.to_string(),
+                            "type": "NodeFailed",
+                            "affected_input_ids": affected_input_ids.iter().map(|id| id.to_string()).collect::<Vec<_>>(),
                             "error": error,
                             "source_node_id": source_node_id.to_string(),
                             "time_offset_secs": time_offset.as_secs_f64(),
@@ -504,12 +504,12 @@ impl EventStream {
                 NodeEvent::Stop => Event::Stop(event::StopCause::Manual),
                 NodeEvent::Reload { operator_id } => Event::Reload { operator_id },
                 NodeEvent::InputClosed { id } => Event::InputClosed { id },
-                NodeEvent::InputError {
-                    id,
+                NodeEvent::NodeFailed {
+                    affected_input_ids,
                     error,
                     source_node_id,
-                } => Event::InputError {
-                    id,
+                } => Event::NodeFailed {
+                    affected_input_ids,
                     error,
                     source_node_id,
                 },

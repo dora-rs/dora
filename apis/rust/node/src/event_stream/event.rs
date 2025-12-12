@@ -41,17 +41,20 @@ pub enum Event {
         /// assigned to the input in the YAML file.
         id: DataId,
     },
-    /// An error occurred in an upstream node.
+    /// A node failed and exited with a non-zero exit code.
     ///
-    /// Instead of crashing, the upstream node sent an error event to allow
-    /// downstream nodes to handle the error gracefully (e.g., use cached data,
+    /// The daemon automatically creates this event when a node exits with a non-zero exit code.
+    /// This allows downstream nodes to handle the error gracefully (e.g., use cached data,
     /// switch to backup source, log and continue).
-    InputError {
-        /// The ID of the input that had an error, as specified in the YAML file.
-        id: DataId,
-        /// The error message from the upstream node.
+    NodeFailed {
+        /// The IDs of the inputs that are affected by the node failure, as specified in the YAML file.
+        ///
+        /// A node failure can affect multiple inputs if the failed node produced multiple outputs
+        /// that are consumed by this node.
+        affected_input_ids: Vec<DataId>,
+        /// The error message describing the failure.
         error: String,
-        /// The ID of the node that sent the error.
+        /// The ID of the node that failed.
         source_node_id: NodeId,
     },
     /// Notification that the event stream is about to close.

@@ -1671,7 +1671,7 @@ impl Daemon {
     /// Send error events to downstream nodes when a node fails.
     ///
     /// This is called automatically when a node exits with a non-zero exit code.
-    /// It sends `InputError` events to all downstream nodes that consume outputs from the failed node.
+    /// It sends `NodeFailed` events to all downstream nodes that consume outputs from the failed node.
     async fn propagate_node_error(
         &mut self,
         dataflow_id: Uuid,
@@ -1697,20 +1697,30 @@ impl Daemon {
             .map(|m| m.1.clone())
             .collect();
 
-        // For each output, send error events to downstream nodes
+        // Group affected inputs by receiver node
+        let mut affected_by_receiver: BTreeMap<NodeId, Vec<DataId>> = BTreeMap::new();
+
         for output_id in outputs {
             let output_key = OutputId(source_node_id.clone(), output_id.clone());
             if let Some(receivers) = dataflow.mappings.get(&output_key) {
                 for (receiver_node_id, input_id) in receivers {
-                    if let Some(channel) = dataflow.subscribe_channels.get(receiver_node_id) {
-                        let event = NodeEvent::InputError {
-                            id: input_id.clone(),
-                            error: error_message.clone(),
-                            source_node_id: source_node_id.clone(),
-                        };
-                        let _ = send_with_timestamp(channel, event, &self.clock);
-                    }
+                    affected_by_receiver
+                        .entry(receiver_node_id.clone())
+                        .or_insert_with(Vec::new)
+                        .push(input_id.clone());
                 }
+            }
+        }
+
+        // Send one NodeFailed event per receiver node with all affected input IDs
+        for (receiver_node_id, affected_input_ids) in affected_by_receiver {
+            if let Some(channel) = dataflow.subscribe_channels.get(&receiver_node_id) {
+                let event = NodeEvent::NodeFailed {
+                    affected_input_ids,
+                    error: error_message.clone(),
+                    source_node_id: source_node_id.clone(),
+                };
+                let _ = send_with_timestamp(channel, event, &self.clock);
             }
         }
 

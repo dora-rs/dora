@@ -73,8 +73,8 @@ pub enum NodeEvent {
     InputClosed {
         id: DataId,
     },
-    InputError {
-        id: DataId,
+    NodeFailed {
+        affected_input_ids: Vec<DataId>,
         error: String,
         source_node_id: NodeId,
     },

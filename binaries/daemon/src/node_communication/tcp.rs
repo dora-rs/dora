@@ -74,90 +74,9 @@ impl Connection for TcpConnection {
                 }
             },
         };
-        match bincode::deserialize(&raw) {
-            Ok(message) => Ok(Some(message)),
-            Err(err) => {
-                // If deserialization fails, treat it as a connection error
-                // This can happen if the connection was closed mid-transmission
-                // or if there's a version mismatch
-                // Log the raw data length and first few bytes to help diagnose the issue
-                let preview = if raw.len() > 16 {
-                    format!("{:?}", &raw[..16])
-                } else {
-                    format!("{:?}", raw)
-                };
-                // Log hex dump of first 32 bytes to help diagnose the issue
-                let hex_preview = if raw.len() > 32 {
-                    format!("{:02x?}", &raw[..32])
-                } else {
-                    format!("{:02x?}", raw)
-                };
-                // Try to identify what variant this might be
-                // Note: socket_stream_receive returns the message body (without length prefix)
-                // So the first 4 bytes should be the bincode enum variant index
-                let variant_hint = if raw.len() >= 4 {
-                    let variant_idx = u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]);
-                    let variant_name = match variant_idx {
-                        0 => "Register",
-                        1 => "Subscribe",
-                        2 => "SendMessage",
-                        3 => "CloseOutputs",
-                        4 => "OutputsDone",
-                        5 => "NextEvent",
-                        6 => "ReportDropTokens",
-                        7 => "SubscribeDrop",
-                        8 => "NextFinishedDropTokens",
-                        9 => "EventStreamDropped",
-                        10 => "NodeConfig",
-                        _ => "Unknown",
-                    };
-                    format!(
-                        " (variant index: {} = {}, expected 8 for SubscribeDrop)",
-                        variant_idx, variant_name
-                    )
-                } else {
-                    String::new()
-                };
-
-                // Workaround for sync/async I/O mismatch: if we receive variant 7 (ReportDropTokens)
-                // with a 28-byte message (which matches SubscribeDrop size), it's likely a corrupted
-                // SubscribeDrop message due to sync/async I/O mismatch. Try to fix it.
-                let mut fixed_raw = raw.clone();
-                if raw.len() == 28 && raw.len() >= 4 {
-                    let variant_idx = u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]);
-                    if variant_idx == 7 {
-                        // Change variant index from 7 (ReportDropTokens) to 8 (SubscribeDrop)
-                        tracing::debug!(
-                            "attempting to fix corrupted SubscribeDrop message (variant 7 -> 8) due to sync/async I/O mismatch"
-                        );
-                        fixed_raw[0] = 8;
-                        fixed_raw[1] = 0;
-                        fixed_raw[2] = 0;
-                        fixed_raw[3] = 0;
-                        // Try to deserialize the fixed message
-                        if let Ok(message) =
-                            bincode::deserialize::<Timestamped<DaemonRequest>>(&fixed_raw)
-                        {
-                            if matches!(message.inner, DaemonRequest::SubscribeDrop) {
-                                tracing::debug!(
-                                    "successfully fixed corrupted SubscribeDrop message"
-                                );
-                                return Ok(Some(message));
-                            }
-                        }
-                    }
-                }
-
-                tracing::warn!(
-                    "failed to deserialize DaemonRequest: {err}, raw data length: {}, preview: {}, hex: {}{}, treating as disconnect",
-                    raw.len(),
-                    preview,
-                    hex_preview,
-                    variant_hint
-                );
-                Ok(None)
-            }
-        }
+        bincode::deserialize(&raw)
+            .wrap_err("failed to deserialize DaemonRequest")
+            .map(Some)
     }
 
     async fn send_reply(&mut self, message: DaemonReply) -> eyre::Result<()> {

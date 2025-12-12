@@ -1496,52 +1496,21 @@ async fn destroy_daemon(
         timestamp,
     })?;
 
-    // Try to send destroy message. If it fails, the daemon might already be closed.
-    if let Err(err) = tcp_send(&mut daemon_connection.stream, &message).await {
-        // If we can't send the message, the daemon might have already closed the connection
-        // This can happen during shutdown. Log a debug message but don't fail.
-        tracing::debug!(
-            "failed to send destroy message to daemon `{daemon_id}`: {err}, \
-             assuming daemon is already shut down"
-        );
-        return Ok(());
-    }
+    tcp_send(&mut daemon_connection.stream, &message)
+        .await
+        .wrap_err("failed to send destroy message to daemon")?;
 
     // wait for reply
-    let reply_raw = match tcp_receive(&mut daemon_connection.stream).await {
-        Ok(raw) => raw,
-        Err(err) => {
-            // If we can't receive the reply, the daemon might have already closed the connection
-            // This can happen during shutdown. Log a debug message but don't fail.
-            tracing::debug!(
-                "failed to receive destroy reply from daemon `{daemon_id}`: {err}, \
-                 assuming daemon is already shut down"
-            );
-            return Ok(());
-        }
-    };
-
-    // Try to deserialize the reply. If it fails, treat it as a shutdown.
-    match serde_json::from_slice(&reply_raw) {
-        Ok(DaemonCoordinatorReply::DestroyResult { result, .. }) => result
+    let reply_raw = tcp_receive(&mut daemon_connection.stream)
+        .await
+        .wrap_err("failed to receive destroy reply from daemon")?;
+    match serde_json::from_slice(&reply_raw)
+        .wrap_err("failed to deserialize destroy reply from daemon")?
+    {
+        DaemonCoordinatorReply::DestroyResult { result, .. } => result
             .map_err(|e| eyre!(e))
             .wrap_err("failed to destroy dataflow")?,
-        Ok(other) => {
-            tracing::debug!(
-                "unexpected reply after sending `destroy` to daemon `{daemon_id}`: {other:?}, \
-                 assuming daemon is already shut down"
-            );
-            return Ok(());
-        }
-        Err(err) => {
-            // If deserialization fails, the daemon might have sent a partial reply before closing
-            // This can happen during shutdown. Log a debug message but don't fail.
-            tracing::debug!(
-                "failed to deserialize destroy reply from daemon `{daemon_id}`: {err}, \
-                 assuming daemon is already shut down"
-            );
-            return Ok(());
-        }
+        other => bail!("unexpected reply after sending `destroy`: {other:?}"),
     }
 
     tracing::info!("successfully destroyed daemon `{daemon_id}`");

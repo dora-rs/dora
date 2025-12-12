@@ -10,8 +10,8 @@ The dataflow consists of two nodes:
 
 ## Key Features Demonstrated
 
-1. **Automatic Error Propagation**: When a node exits with a non-zero exit code, the daemon automatically sends `InputError` events to all downstream nodes
-2. **Error Reception**: The consumer receives `Event::InputError` and can handle it appropriately
+1. **Automatic Error Propagation**: When a node exits with a non-zero exit code, the daemon automatically sends `NodeFailed` events to all downstream nodes
+2. **Error Reception**: The consumer receives `Event::NodeFailed` and can handle it appropriately
 3. **Fault Tolerance**: Downstream nodes are notified of upstream failures and can implement recovery strategies
 
 ## Running the Example
@@ -40,7 +40,7 @@ Error: Simulated processing error: invalid data format
 **Consumer:**
 ```
 [Consumer] Starting...
-[Consumer] ⚠️  Received error from node 'producer' on input 'data': exited with code 1
+[Consumer] ⚠️  Received error from node 'producer' affecting inputs ["data"]: exited with code 1
 [Consumer] Handling error gracefully - using cached data...
 [Consumer] Input data closed
 [Consumer] Exiting
