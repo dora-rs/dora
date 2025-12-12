@@ -112,6 +112,18 @@ pub async fn handle_connection(
                         break;
                     }
                 }
+                DaemonEvent::NodeMetrics {
+                    dataflow_id,
+                    metrics,
+                } => {
+                    let event = Event::NodeMetrics {
+                        dataflow_id,
+                        metrics,
+                    };
+                    if events_tx.send(event).await.is_err() {
+                        break;
+                    }
+                }
                 DaemonEvent::BuildResult { build_id, result } => {
                     let event = Event::DataflowBuildResult {
                         build_id,
