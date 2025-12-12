@@ -8,5 +8,5 @@ publish = false
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-dora-node-api = { workspace = true, features = ["tracing"] }
+dora-node-api = { workspace = true }
 eyre = "0.6.8"
