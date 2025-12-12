@@ -31,6 +31,8 @@ use dora_message::{
 use eyre::{WrapErr, bail};
 use is_terminal::IsTerminal;
 use shared_memory_extended::{Shmem, ShmemConf};
+
+use std::sync::Mutex;
 use std::{
     collections::{BTreeSet, HashMap, VecDeque},
     ops::{Deref, DerefMut},
@@ -38,13 +40,11 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use tokio::runtime::{Handle, Runtime};
-use tracing::{info, warn};
+use tokio::runtime::Handle;
 
-#[cfg(feature = "metrics")]
-use dora_metrics::run_metrics_monitor;
 #[cfg(feature = "tracing")]
-use dora_tracing::TracingBuilder;
+use dora_tracing::{OtelGuard, TracingBuilder};
+use tracing::{info, warn};
 
 pub mod arrow_utils;
 mod control_channel;
@@ -66,12 +66,6 @@ mod drop_stream;
 /// TCP.
 pub const ZERO_COPY_THRESHOLD: usize = 4096;
 
-#[allow(dead_code)]
-enum TokioRuntime {
-    Runtime(Runtime),
-    Handle(Handle),
-}
-
 /// Allows sending outputs and retrieving node information.
 ///
 /// The main purpose of this struct is to send outputs via Dora. There are also functions available
@@ -89,8 +83,6 @@ pub struct DoraNode {
 
     dataflow_descriptor: serde_yaml::Result<Descriptor>,
     warned_unknown_output: BTreeSet<DataId>,
-    _rt: TokioRuntime,
-
     interactive: bool,
 }
 
@@ -148,14 +140,6 @@ impl DoraNode {
             Ok(raw) => {
                 let node_config: NodeConfig =
                     serde_yaml::from_str(&raw).context("failed to deserialize node config")?;
-                #[cfg(feature = "tracing")]
-                {
-                    TracingBuilder::new(node_config.node_id.as_ref())
-                        .with_stdout("info", true)
-                        .build()
-                        .wrap_err("failed to set up tracing subscriber")?;
-                }
-
                 return Self::init(node_config);
             }
             Err(std::env::VarError::NotUnicode(_)) => {
@@ -444,34 +428,6 @@ impl DoraNode {
         let clock = Arc::new(uhlc::HLC::default());
         let input_config = run_config.inputs.clone();
 
-        let rt = match Handle::try_current() {
-            Ok(handle) => TokioRuntime::Handle(handle),
-            Err(_) => TokioRuntime::Runtime(
-                tokio::runtime::Builder::new_multi_thread()
-                    .worker_threads(2)
-                    .enable_all()
-                    .build()
-                    .context("tokio runtime failed")?,
-            ),
-        };
-
-        #[cfg(feature = "metrics")]
-        {
-            let id = format!("{dataflow_id}/{node_id}");
-            let monitor_task = async move {
-                if let Err(e) = run_metrics_monitor(id.clone())
-                    .await
-                    .wrap_err("metrics monitor exited unexpectedly")
-                {
-                    warn!("metrics monitor failed: {:#?}", e);
-                }
-            };
-            match &rt {
-                TokioRuntime::Runtime(rt) => rt.spawn(monitor_task),
-                TokioRuntime::Handle(handle) => handle.spawn(monitor_task),
-            };
-        }
-
         let daemon_communication = match daemon_communication {
             Some(comm) => comm.into(),
             None => match testing_communication {
@@ -518,7 +474,6 @@ impl DoraNode {
         let control_channel =
             ControlChannel::init(dataflow_id, &node_id, &daemon_communication, clock.clone())
                 .wrap_err("failed to init control channel")?;
-
         let node = Self {
             id: node_id,
             dataflow_id,
@@ -530,7 +485,6 @@ impl DoraNode {
             cache: VecDeque::new(),
             dataflow_descriptor: serde_yaml::from_value(dataflow_descriptor),
             warned_unknown_output: BTreeSet::new(),
-            _rt: rt,
             interactive: false,
         };
 
@@ -1007,3 +961,58 @@ impl DerefMut for ShmemHandle {
 
 unsafe impl Send for ShmemHandle {}
 unsafe impl Sync for ShmemHandle {}
+
+/// Init Opentelemetry Tracing
+#[cfg(feature = "tracing")]
+pub fn init_tracing(
+    node_id: &NodeId,
+    dataflow_id: &DataflowId,
+) -> eyre::Result<Arc<Mutex<Option<OtelGuard>>>> {
+    let node_id_str = node_id.to_string();
+    #[cfg(feature = "tracing")]
+    let guard: Arc<Mutex<Option<OtelGuard>>> = Arc::new(Mutex::new(None));
+    #[cfg(feature = "tracing")]
+    {
+        let clone = guard.clone();
+        let tracing_monitor = async move {
+            let mut builder = TracingBuilder::new(node_id_str);
+            // Only enable OTLP if environment variable is set
+            if std::env::var("DORA_OTLP_ENDPOINT").is_ok()
+                || std::env::var("DORA_JAEGER_TRACING").is_ok()
+            {
+                builder = builder
+                    .with_otlp_tracing()
+                    .context("failed to set up OTLP tracing")
+                    .unwrap()
+                    .with_stdout("info", true)
+            }
+            *clone.lock().unwrap() = builder.guard.take();
+
+            builder
+                .build()
+                .wrap_err("failed to set up tracing subscriber")
+                .unwrap();
+        };
+
+        let rt = Handle::try_current().context("failed to get tokio runtime handle")?;
+        rt.spawn(tracing_monitor);
+    }
+
+    #[cfg(feature = "metrics")]
+    {
+        let id = format!("{dataflow_id}/{node_id}");
+        let monitor_task = async move {
+            use dora_metrics::run_metrics_monitor;
+
+            if let Err(e) = run_metrics_monitor(id.clone())
+                .await
+                .wrap_err("metrics monitor exited unexpectedly")
+            {
+                warn!("metrics monitor failed: {:#?}", e);
+            }
+        };
+        let rt = Handle::try_current().context("failed to get tokio runtime handle")?;
+        rt.spawn(monitor_task);
+    };
+    Ok(guard)
+}
