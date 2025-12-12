@@ -545,7 +545,9 @@ impl Daemon {
                     // Also exit in example mode when all dataflows finish, even if exit_when_done
                     // tracking didn't catch all nodes (e.g., if nodes finish before being tracked)
                     if self.exit_when_done.is_some() && self.running.is_empty() {
-                        tracing::info!("exiting daemon because all dataflows are finished (example mode)");
+                        tracing::info!(
+                            "exiting daemon because all dataflows are finished (example mode)"
+                        );
                         break;
                     }
                 }
