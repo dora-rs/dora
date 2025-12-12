@@ -8,11 +8,12 @@ publish = false
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-dora-node-api = { workspace = true, features = ["tracing"] }
+dora-node-api = { workspace = true, features = ["tracing", "metrics"] }
 eyre = "0.6.8"
 futures = "0.3.21"
 fastrand = "2.3.0"
-tokio = { version = "1.24.2", features = ["rt", "macros"] }
+tokio = { version = "1.24.2", features = ["rt-multi-thread", "time", "macros"] }
+tracing = "0.1.33"
 
 [dev-dependencies]
 tempfile = "3.3.0"
