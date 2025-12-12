@@ -1484,6 +1484,7 @@ version = "0.3.13"
 dependencies = [
  "arrow",
  "arrow-json",
+ "arrow-schema",
  "chrono",
  "clap",
  "clap_complete",
