@@ -102,7 +102,10 @@ pub use event_stream::{Event, EventScheduler, EventStream, StopCause, TryRecvErr
 pub use flume;
 pub use flume::Receiver;
 pub use futures;
+#[cfg(feature = "tracing")]
+pub use node::init_tracing;
 pub use node::{DataSample, DoraNode, ZERO_COPY_THRESHOLD, arrow_utils};
+
 pub use serde_json;
 use tokio::sync::oneshot;
 
