@@ -158,10 +158,19 @@ impl BuildLogger for LocalBuildLogger {
     }
 
     async fn try_clone(&self) -> eyre::Result<Self::Clone> {
-        let progress_bar = if let (Some(_), Some(multi)) = (&self.progress_bar, &self.multi) {
-            Some(multi.add_spinner(format!("Building {}", self.node_id)))
-        } else {
-            None
+        let progress_bar = match (&self.progress_bar, &self.multi) {
+            (Some(pb), Some(multi)) => {
+                // Clone the progress bar by creating a new one with the same message
+                // and adding it to the MultiProgress
+                let message = pb.inner().message();
+                Some(multi.add_spinner(message))
+            }
+            (Some(pb), None) => {
+                // No MultiProgress, create a standalone progress bar with the same message
+                let message = pb.inner().message();
+                Some(ProgressBar::new_spinner(message))
+            }
+            _ => None,
         };
 
         Ok(LocalBuildLogger {
