@@ -1,5 +1,11 @@
 # Quick Python ROS2 example
 
+- Install the turtlesim package
+- On Ubuntu, you can install it with `sudo apt install ros-<ros-distro>-turtlesim`
+
+> [!NOTE]
+> Please replace the `<ros-distro>` with the actual ROS2 distribution you are using.
+
 To get started:
 
 ```bash
