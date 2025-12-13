@@ -1506,6 +1506,7 @@ dependencies = [
  "eyre",
  "futures",
  "git2",
+ "indicatif",
  "inquire 0.5.3",
  "itertools 0.14.0",
  "log",
