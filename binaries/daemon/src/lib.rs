@@ -559,7 +559,17 @@ impl Daemon {
                             break;
                         }
                     }
+                    // Exit when all dataflows are finished after Ctrl-C
                     if self.exit_when_all_finished && self.running.is_empty() {
+                        tracing::info!("exiting daemon because all dataflows are finished");
+                        break;
+                    }
+                    // Also exit in example mode when all dataflows finish, even if exit_when_done
+                    // tracking didn't catch all nodes (e.g., if nodes finish before being tracked)
+                    if self.exit_when_done.is_some() && self.running.is_empty() {
+                        tracing::info!(
+                            "exiting daemon because all dataflows are finished (example mode)"
+                        );
                         break;
                     }
                 }
@@ -1595,6 +1605,13 @@ impl Daemon {
                     Ok(dataflow) => {
                         Self::subscribe(dataflow, node_id.clone(), event_sender, &self.clock).await;
 
+                        // Note: handle_node_subscription takes ownership of reply_sender and stores it
+                        // in waiting_subscribers. The reply will be sent later by answer_subscribe_requests.
+                        // If handle_node_subscription returns an error, the reply_sender is still in
+                        // waiting_subscribers and should be answered by answer_subscribe_requests.
+                        // However, if there's an error, answer_subscribe_requests might not be called,
+                        // so the reply might not be sent. Our fix in process_daemon_event should handle
+                        // this case by sending an error reply if the daemon main loop doesn't respond.
                         let status = dataflow
                             .pending_nodes
                             .handle_node_subscription(
@@ -1771,6 +1788,65 @@ impl Daemon {
         Ok(())
     }
 
+    /// Send error events to downstream nodes when a node fails.
+    ///
+    /// This is called automatically when a node exits with a non-zero exit code.
+    /// It sends `NodeFailed` events to all downstream nodes that consume outputs from the failed node.
+    async fn propagate_node_error(
+        &mut self,
+        dataflow_id: Uuid,
+        source_node_id: NodeId,
+        error_message: String,
+    ) -> Result<(), eyre::ErrReport> {
+        let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
+            format!("propagate error failed: no running dataflow with ID `{dataflow_id}`")
+        })?;
+
+        tracing::warn!(
+            "Node {}/{} failed: {}. Propagating error to downstream nodes.",
+            dataflow_id,
+            source_node_id,
+            error_message
+        );
+
+        // Get all outputs of the failed node
+        let outputs: Vec<DataId> = dataflow
+            .mappings
+            .keys()
+            .filter(|m| &m.0 == &source_node_id)
+            .map(|m| m.1.clone())
+            .collect();
+
+        // Group affected inputs by receiver node
+        let mut affected_by_receiver: BTreeMap<NodeId, Vec<DataId>> = BTreeMap::new();
+
+        for output_id in outputs {
+            let output_key = OutputId(source_node_id.clone(), output_id.clone());
+            if let Some(receivers) = dataflow.mappings.get(&output_key) {
+                for (receiver_node_id, input_id) in receivers {
+                    affected_by_receiver
+                        .entry(receiver_node_id.clone())
+                        .or_insert_with(Vec::new)
+                        .push(input_id.clone());
+                }
+            }
+        }
+
+        // Send one NodeFailed event per receiver node with all affected input IDs
+        for (receiver_node_id, affected_input_ids) in affected_by_receiver {
+            if let Some(channel) = dataflow.subscribe_channels.get(&receiver_node_id) {
+                let event = NodeEvent::NodeFailed {
+                    affected_input_ids,
+                    error: error_message.clone(),
+                    source_node_id: source_node_id.clone(),
+                };
+                let _ = send_with_timestamp(channel, event, &self.clock);
+            }
+        }
+
+        Ok(())
+    }
+
     async fn send_to_remote_receivers(
         &mut self,
         dataflow_id: Uuid,
@@ -1933,7 +2009,10 @@ impl Daemon {
         let result = self
             .handle_node_stop_inner(dataflow_id, node_id, dynamic_node)
             .await;
-        let _ = self
+
+        // Always send NodeStopped event, even if handle_node_stop_inner failed
+        // This is critical for daemon shutdown - the event must be sent
+        if let Err(err) = self
             .events_tx
             .send(Timestamped {
                 inner: Event::NodeStopped {
@@ -1942,7 +2021,15 @@ impl Daemon {
                 },
                 timestamp: self.clock.new_timestamp(),
             })
-            .await;
+            .await
+        {
+            tracing::error!(
+                "Failed to send NodeStopped event for {}/{}: {err:?}. Daemon may not exit properly.",
+                dataflow_id,
+                node_id
+            );
+        }
+
         result
     }
 
@@ -2157,9 +2244,20 @@ impl Daemon {
                             .map(|d| d.grace_duration_kills.contains(&node_id))
                             .unwrap_or_default();
 
-                        let cause = match caused_by_node {
-                            Some(caused_by_node) => {
-                                logger
+                        // Nodes killed by grace duration during stop are not errors
+                        if grace_duration_kill {
+                            logger
+                                .log(
+                                    LogLevel::Debug,
+                                    Some("daemon".into()),
+                                    format!("node `{node_id}` was stopped by grace duration (not an error)"),
+                                )
+                                .await;
+                            Ok(())
+                        } else {
+                            let cause = match caused_by_node {
+                                Some(caused_by_node) => {
+                                    logger
                                     .log(
                                         LogLevel::Info,
                                         Some("daemon".into()),
@@ -2167,33 +2265,33 @@ impl Daemon {
                                     )
                                     .await;
 
-                                NodeErrorCause::Cascading { caused_by_node }
-                            }
-                            None if grace_duration_kill => NodeErrorCause::GraceDuration,
-                            None => {
-                                let cause = dataflow
-                                    .and_then(|d| d.node_stderr_most_recent.get(&node_id))
-                                    .map(|queue| {
-                                        let mut s = if queue.is_full() {
-                                            "[...]".into()
-                                        } else {
-                                            String::new()
-                                        };
-                                        while let Some(line) = queue.pop() {
-                                            s += &line;
-                                        }
-                                        s
-                                    })
-                                    .unwrap_or_default();
+                                    NodeErrorCause::Cascading { caused_by_node }
+                                }
+                                None => {
+                                    let cause = dataflow
+                                        .and_then(|d| d.node_stderr_most_recent.get(&node_id))
+                                        .map(|queue| {
+                                            let mut s = if queue.is_full() {
+                                                "[...]".into()
+                                            } else {
+                                                String::new()
+                                            };
+                                            while let Some(line) = queue.pop() {
+                                                s += &line;
+                                            }
+                                            s
+                                        })
+                                        .unwrap_or_default();
 
-                                NodeErrorCause::Other { stderr: cause }
-                            }
-                        };
-                        Err(NodeError {
-                            timestamp: self.clock.new_timestamp(),
-                            cause,
-                            exit_status,
-                        })
+                                    NodeErrorCause::Other { stderr: cause }
+                                }
+                            };
+                            Err(NodeError {
+                                timestamp: self.clock.new_timestamp(),
+                                cause,
+                                exit_status,
+                            })
+                        }
                     }
                 };
 
@@ -2215,10 +2313,36 @@ impl Daemon {
                 self.dataflow_node_results
                     .entry(dataflow_id)
                     .or_default()
-                    .insert(node_id.clone(), node_result);
+                    .insert(node_id.clone(), node_result.clone());
 
-                self.handle_node_stop(dataflow_id, &node_id, dynamic_node)
-                    .await?;
+                // If the node failed (non-zero exit code), propagate error to downstream nodes
+                if let Err(node_error) = &node_result {
+                    let error_message = format!("{}", node_error);
+                    if let Err(err) = self
+                        .propagate_node_error(dataflow_id, node_id.clone(), error_message)
+                        .await
+                    {
+                        tracing::warn!(
+                            "Failed to propagate error for node {}/{}: {err:?}",
+                            dataflow_id,
+                            node_id
+                        );
+                    }
+                }
+
+                // Always send NodeStopped event, even if handle_node_stop fails
+                // This ensures the daemon can exit properly
+                let stop_result = self
+                    .handle_node_stop(dataflow_id, &node_id, dynamic_node)
+                    .await;
+                if let Err(err) = &stop_result {
+                    tracing::warn!(
+                        "Error handling node stop for {}/{}: {err:?}, but NodeStopped event should have been sent",
+                        dataflow_id,
+                        node_id
+                    );
+                }
+                // Don't propagate the error - NodeStopped event is more important for shutdown
             }
         }
         Ok(())

@@ -1,5 +1,7 @@
 use super::{Executable, default_tracing};
-use crate::common::{connect_to_coordinator, handle_dataflow_result, query_running_dataflows};
+use crate::common::{
+    connect_to_coordinator, handle_dataflow_result_with_options, query_running_dataflows,
+};
 use communication_layer_request_reply::TcpRequestReplyConnection;
 use dora_core::topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST};
 use dora_message::cli_to_coordinator::ControlRequest;
@@ -100,7 +102,9 @@ fn stop_dataflow(
         serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
     match result {
         ControlRequestReply::DataflowStopped { uuid, result } => {
-            handle_dataflow_result(result, Some(uuid))
+            // For stop commands, we consider it successful if we successfully stopped the dataflow,
+            // even if the dataflow was already in a failed state
+            handle_dataflow_result_with_options(result, Some(uuid), true)
         }
         ControlRequestReply::Error(err) => bail!("{err}"),
         other => bail!("unexpected stop dataflow reply: {other:?}"),
@@ -127,7 +131,9 @@ fn stop_dataflow_by_name(
         serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
     match result {
         ControlRequestReply::DataflowStopped { uuid, result } => {
-            handle_dataflow_result(result, Some(uuid))
+            // For stop commands, we consider it successful if we successfully stopped the dataflow,
+            // even if the dataflow was already in a failed state
+            handle_dataflow_result_with_options(result, Some(uuid), true)
         }
         ControlRequestReply::Error(err) => bail!("{err}"),
         other => bail!("unexpected stop dataflow reply: {other:?}"),
