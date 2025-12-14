@@ -969,34 +969,30 @@ pub fn init_tracing(
     dataflow_id: &DataflowId,
 ) -> eyre::Result<Arc<Mutex<Option<OtelGuard>>>> {
     let node_id_str = node_id.to_string();
-    #[cfg(feature = "tracing")]
     let guard: Arc<Mutex<Option<OtelGuard>>> = Arc::new(Mutex::new(None));
-    #[cfg(feature = "tracing")]
-    {
-        let clone = guard.clone();
-        let tracing_monitor = async move {
-            let mut builder = TracingBuilder::new(node_id_str);
-            // Only enable OTLP if environment variable is set
-            if std::env::var("DORA_OTLP_ENDPOINT").is_ok()
-                || std::env::var("DORA_JAEGER_TRACING").is_ok()
-            {
-                builder = builder
-                    .with_otlp_tracing()
-                    .context("failed to set up OTLP tracing")
-                    .unwrap()
-                    .with_stdout("info", true)
-            }
-            *clone.lock().unwrap() = builder.guard.take();
+    let clone = guard.clone();
+    let tracing_monitor = async move {
+        let mut builder = TracingBuilder::new(node_id_str);
+        // Only enable OTLP if environment variable is set
+        if std::env::var("DORA_OTLP_ENDPOINT").is_ok()
+            || std::env::var("DORA_JAEGER_TRACING").is_ok()
+        {
+            builder = builder
+                .with_otlp_tracing()
+                .context("failed to set up OTLP tracing")
+                .unwrap()
+                .with_stdout("info", true)
+        }
+        *clone.lock().unwrap() = builder.guard.take();
 
-            builder
-                .build()
-                .wrap_err("failed to set up tracing subscriber")
-                .unwrap();
-        };
+        builder
+            .build()
+            .wrap_err("failed to set up tracing subscriber")
+            .unwrap();
+    };
 
-        let rt = Handle::try_current().context("failed to get tokio runtime handle")?;
-        rt.spawn(tracing_monitor);
-    }
+    let rt = Handle::try_current().context("failed to get tokio runtime handle")?;
+    rt.spawn(tracing_monitor);
 
     #[cfg(feature = "metrics")]
     {
