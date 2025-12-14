@@ -963,6 +963,8 @@ unsafe impl Send for ShmemHandle {}
 unsafe impl Sync for ShmemHandle {}
 
 /// Init Opentelemetry Tracing
+///
+/// This requires a tokio runtime spawning this function to be functional
 #[cfg(feature = "tracing")]
 pub fn init_tracing(
     node_id: &NodeId,
