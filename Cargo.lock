@@ -2320,6 +2320,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "futures-concurrency-dynamic"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ecf1dfbccd5f39f75d57eddb6ee77eebb18ce38f6b68de8f6b7f0ab5e549318b"
+dependencies = [
+ "futures-concurrency",
+ "futures-core",
+ "futures-util",
+ "pin-project",
+]
+
+[[package]]
 name = "futures-core"
 version = "0.3.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5225,6 +5237,7 @@ dependencies = [
  "dora-ros2-bridge",
  "eyre",
  "futures",
+ "futures-concurrency-dynamic",
  "futures-timer",
  "rand 0.8.5",
  "serde_json",

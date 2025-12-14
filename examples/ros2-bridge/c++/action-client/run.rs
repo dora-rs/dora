@@ -19,7 +19,6 @@ fn main() -> eyre::Result<()> {
         .wrap_err("failed to set working dir")?;
 
     std::fs::create_dir_all("build")?;
-    let build_dir = Path::new("build");
 
     build_package("dora-node-api-cxx", &["ros2-bridge"])?;
     let node_cxxbridge = target
@@ -32,10 +31,7 @@ fn main() -> eyre::Result<()> {
         &[
             &dunce::canonicalize(Path::new("./").join("main.cc"))?,
             &dunce::canonicalize(node_cxxbridge.join("dora-node-api.cc"))?,
-            &dunce::canonicalize(node_cxxbridge.join("ros2-bridge/msg/sensor_msgs.cc"))?,
-            &dunce::canonicalize(node_cxxbridge.join("ros2-bridge/msg/geometry_msgs.cc"))?,
             &dunce::canonicalize(node_cxxbridge.join("ros2-bridge/msg/example_interfaces.cc"))?,
-            &dunce::canonicalize(node_cxxbridge.join("ros2-bridge/msg/turtlesim.cc"))?,
             &dunce::canonicalize(node_cxxbridge.join("ros2-bridge/impl.cc"))?,
             &dunce::canonicalize(node_cxxbridge.join("ros2-bridge/msg/action_msgs.cc"))?,
             &dunce::canonicalize(node_cxxbridge.join("ros2-bridge/msg/builtin_interfaces.cc"))?,
@@ -54,16 +50,16 @@ fn main() -> eyre::Result<()> {
         dora_cli::run("dataflow.yml".to_string(), false).unwrap();
     });
 
-    let mut add_service_task = run_ros_node("examples_rclcpp_minimal_service", "service_main")?;
-    let mut turtle_task = run_ros_node("turtlesim", "turtlesim_node")?;
+    let mut ros_task = run_ros_node(
+        "examples_rclcpp_minimal_action_server",
+        "action_server_member_functions",
+    )?;
 
-    dataflow_task
-        .join()
-        .map_err(|_| eyre::eyre!("Failed to run dataflow"))?;
+    let dataflow_task_res = dataflow_task.join();
 
-    add_service_task.kill()?;
-    turtle_task.kill()?;
+    ros_task.kill()?;
 
+    dataflow_task_res.map_err(|e| eyre::eyre!("the dataflow thread failed: {:?}", e))?;
     Ok(())
 }
 

@@ -9,7 +9,7 @@
 
 use std::path::Path;
 
-use quote::{ToTokens, format_ident, quote};
+use quote::{format_ident, quote};
 
 pub mod parser;
 pub mod types;
@@ -100,6 +100,9 @@ pub fn generate_package(package: &Package, create_cxx_bridge: bool) -> proc_macr
 
                     type U16String = crate::ros2::default_impl::ffi::U16String;
 
+                    type ActionGoalId = crate::ros2::default_impl::ActionGoalId;
+                    type ActionStatusEnum = crate::ros2::default_impl::ffi::ActionStatusEnum;
+
                     #reuse_bindings
                 }
             },
@@ -107,6 +110,8 @@ pub fn generate_package(package: &Package, create_cxx_bridge: bool) -> proc_macr
                 #rust_imports
 
                 use crate::ros2::default_impl::Ros2Node;
+                #[allow(unused_imports)]
+                use crate::ros2::default_impl::ActionGoalId;
             },
         )
     } else {
@@ -206,6 +211,7 @@ fn generate_default_impls(create_cxx_bridge: bool) -> proc_macro2::TokenStream {
         extern "Rust" {
             type Ros2Context;
             type Ros2Node;
+            type ActionGoalId;
             fn init_ros2_context() -> Result<Box<Ros2Context>>;
             fn new_node(self: &Ros2Context, name_space: &str, base_name: &str) -> Result<Box<Ros2Node>>;
             fn qos_default() -> Ros2QosPolicies;
@@ -247,6 +253,25 @@ fn generate_default_impls(create_cxx_bridge: bool) -> proc_macro2::TokenStream {
             Automatic,
             ManualByParticipant,
             ManualByTopic,
+        }
+
+        /// Named goal statuses from [GoalStatus](https://docs.ros2.org/foxy/api/action_msgs/msg/GoalStatus.html)
+        #[derive(Clone, Copy, PartialEq, Debug)]
+        #[repr(i8)]
+        pub enum ActionStatusEnum {
+            /// Let's use "Unknown" also for "New"
+            Unknown = 0,
+            Accepted = 1,
+            Executing = 2,
+            Canceling = 3,
+            Succeeded = 4,
+            Canceled = 5,
+            Aborted = 6,
+        }
+
+        // It's used to auto-generate code about Box<ActionGoalId> with CXX crate
+        pub struct ActionGoalIdBoxed {
+            inner: Box<ActionGoalId>,
         }
     };
     let cxx_ros2_impl = quote! {
@@ -296,6 +321,16 @@ fn generate_default_impls(create_cxx_bridge: bool) -> proc_macro2::TokenStream {
 
         unsafe impl cxx::ExternType for Ros2Context {
             type Id = cxx::type_id!("Ros2Context");
+            type Kind = cxx::kind::Opaque;
+        }
+
+        #[derive(Clone)]
+        pub struct ActionGoalId {
+            pub id: ros2_client::action::GoalId,
+        }
+
+        unsafe impl cxx::ExternType for ActionGoalId {
+            type Id = cxx::type_id!("ActionGoalId");
             type Kind = cxx::kind::Opaque;
         }
 
@@ -419,6 +454,20 @@ fn generate_default_impls(create_cxx_bridge: bool) -> proc_macro2::TokenStream {
                     cancel_service: value.cancel_service.into(),
                     feedback_subscription: value.feedback_subscription.into(),
                     status_subscription: value.status_subscription.into(),
+                }
+            }
+        }
+
+        impl From<crate::ros2_client::action::GoalStatusEnum> for ffi::ActionStatusEnum {
+            fn from(value: crate::ros2_client::action::GoalStatusEnum) -> Self {
+                match value {
+                    crate::ros2_client::action::GoalStatusEnum::Unknown => ffi::ActionStatusEnum::Unknown,
+                    crate::ros2_client::action::GoalStatusEnum::Accepted => ffi::ActionStatusEnum::Accepted,
+                    crate::ros2_client::action::GoalStatusEnum::Executing => ffi::ActionStatusEnum::Executing,
+                    crate::ros2_client::action::GoalStatusEnum::Canceling => ffi::ActionStatusEnum::Canceling,
+                    crate::ros2_client::action::GoalStatusEnum::Succeeded => ffi::ActionStatusEnum::Succeeded,
+                    crate::ros2_client::action::GoalStatusEnum::Canceled => ffi::ActionStatusEnum::Canceled,
+                    crate::ros2_client::action::GoalStatusEnum::Aborted => ffi::ActionStatusEnum::Aborted,
                 }
             }
         }

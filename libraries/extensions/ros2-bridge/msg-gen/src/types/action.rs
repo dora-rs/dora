@@ -212,66 +212,181 @@ impl Action {
         let client_name = format_ident!("Actionclient__{package_name}__{}", self.name);
         let cxx_client_name = format!("Actionclient_{}", self.name);
         let create_client = format_ident!("new_ActionClient__{package_name}__{}", self.name);
-        let cxx_create_client = format!("create_action_client_{package_name}_{}", self.name);
+        let cxx_create_client = format!("create_{}_action_client", self.name);
 
-        let package = format_ident!("{package_name}");
         let self_name = format_ident!("{}", self.name);
         let self_name_str = &self.name;
 
-        let send_goal = format_ident!("send_goal__{package_name}__{}", self.name);
-        let cxx_send_goal = "send_goal".to_string();
+        let wait_for_action = format_ident!("wait_for__{package_name}__{}", self.name);
+        let send_goal = format_ident!("send__{package_name}__{}_goal", self.name);
+        let send_goal_with_timeout =
+            format_ident!("send__{package_name}__{}_goal_with_timeout", self.name);
 
-        let response_matches = format_ident!("matches__{package_name}__{}_response", self.name);
-        let cxx_response_matches = "matches_response";
+        let request_result = format_ident!("request__{package_name}__{}_result", self.name);
+        let result_matches = format_ident!("matches__{package_name}__{}_response", self.name);
         let feedback_matches = format_ident!("matches__{package_name}__{}_feedback", self.name);
-        let cxx_feedback_matches = "matches_feedback";
         let status_matches = format_ident!("matches__{package_name}__{}_status", self.name);
-        let cxx_status_matches = "matches_status";
 
-        let downcast = format_ident!("action_downcast__{package_name}__{}", self.name);
-        let cxx_downcast = "downcast";
+        let result_event_name =
+            format_ident!("ActionClientResultEvent__{package_name}__{}", self.name);
+        let cxx_result_event = format!("ResultEvent_{}", self.name);
+        let result_event_matches = format_ident!(
+            "ActionClientResultEvent_matches__{package_name}__{}",
+            self.name
+        );
+        let result_event_get_status = format_ident!(
+            "ActionClientResultEvent_get_status__{package_name}__{}",
+            self.name
+        );
+        let result_event_get_result = format_ident!(
+            "ActionClientResultEvent_get_result__{package_name}__{}",
+            self.name
+        );
+        let feedback_event_name =
+            format_ident!("ActionClientFeedbackEvent__{package_name}__{}", self.name);
+        let cxx_feedback_event = format!("FeedbackEvent_{}", self.name);
+        let feedback_event_matches = format_ident!(
+            "ActionClientFeedbackEvent_matches__{package_name}__{}",
+            self.name
+        );
+        let feedback_event_get_feedback = format_ident!(
+            "ActionClientFeedbackEvent_get_feedback__{package_name}__{}",
+            self.name
+        );
+        let status_event_name =
+            format_ident!("ActionClientStatusEvent__{package_name}__{}", self.name);
+        let cxx_status_event = format!("StatusEvent_{}", self.name);
+        let status_event_matches = format_ident!(
+            "ActionClientStatusEvent_matches__{package_name}__{}",
+            self.name
+        );
+        let status_event_get_status = format_ident!(
+            "ActionClientStatusEvent_get_status__{package_name}__{}",
+            self.name
+        );
+
+        let downcast_result =
+            format_ident!("action_downcast_result__{package_name}__{}", self.name);
+        let downcast_feedback =
+            format_ident!("action_downcast_feedback__{package_name}__{}", self.name);
+        let downcast_status =
+            format_ident!("action_downcast_status__{package_name}__{}", self.name);
 
         let goal_type_raw = format_ident!("{package_name}__{}_Goal", self.name);
-        let result_type_raw = format_ident!("{package_name}__{}_Result", self.name);
         let feedback_type_raw = format_ident!("{package_name}__{}_Feedback", self.name);
-        let status_type_raw = format_ident!("action_msgs__GoalStatus");
+        let result_type_raw = format_ident!("{package_name}__{}_Result", self.name);
 
         let result_type_raw_str = result_type_raw.to_string();
+        let feedback_type_raw_str = feedback_type_raw.to_string();
 
         let def = quote! {
+            #[namespace = #package_name]
+            #[cxx_name = #cxx_result_event]
+            type #result_event_name;
+            #[namespace = #package_name]
+            #[cxx_name = #cxx_feedback_event]
+            type #feedback_event_name;
+            #[namespace = #package_name]
+            #[cxx_name = #cxx_status_event]
+            type #status_event_name;
+
+            #[namespace = #package_name]
+            #[cxx_name = matches_goal]
+            fn #result_event_matches(self: &#result_event_name, goal_id: &Box<ActionGoalId>) -> bool;
+
+            #[namespace = #package_name]
+            #[cxx_name = get_status]
+            fn #result_event_get_status(self: &#result_event_name) -> ActionStatusEnum;
+
+            #[namespace = #package_name]
+            #[cxx_name = get_result]
+            fn #result_event_get_result(self: &#result_event_name) -> &#result_type_raw;
+
+            #[namespace = #package_name]
+            #[cxx_name = matches_goal]
+            fn #feedback_event_matches(self: &#feedback_event_name, goal_id: &Box<ActionGoalId>) -> bool;
+
+            #[namespace = #package_name]
+            #[cxx_name = get_feedback]
+            fn #feedback_event_get_feedback(self: &#feedback_event_name) -> &#feedback_type_raw;
+
+            #[namespace = #package_name]
+            #[cxx_name = matches_goal]
+            fn #status_event_matches(self: &#status_event_name, goal_id: &Box<ActionGoalId>) -> bool;
+
+            #[namespace = #package_name]
+            #[cxx_name = get_status]
+            fn #status_event_get_status(self: &#status_event_name) -> ActionStatusEnum;
+
             #[namespace = #package_name]
             #[cxx_name = #cxx_client_name]
             type #client_name;
 
+            #[namespace = #package_name]
             #[cxx_name = #cxx_create_client]
-            fn #create_client(node: &mut Ros2Node, name_space: &str, base_name: &str, qos:Ros2ActionClientQosPolicies, events: &mut CombinedEvents) -> Result<Box<#client_name>>;
+            fn #create_client(
+                node: &mut Ros2Node,
+                name_space: &str,
+                base_name: &str,
+                qos:Ros2ActionClientQosPolicies,
+                events: &mut CombinedEvents) -> Result<Box<#client_name>>;
 
             #[namespace = #package_name]
-            #[cxx_name = #cxx_send_goal]
-            fn #send_goal(self: &mut #client_name, request: #goal_type_raw) -> Result<()>;
+            #[cxx_name = wait_for_action]
+            fn #wait_for_action(self: &mut #client_name, node: &Box<Ros2Node>) -> Result<()>;
 
             #[namespace = #package_name]
-            #[cxx_name = #cxx_response_matches]
-            fn #response_matches(self: &mut #client_name, event: &CombinedEvent) -> bool;
+            #[cxx_name = send_goal]
+            fn #send_goal(self: &mut #client_name, request: #goal_type_raw) -> Result<Box<ActionGoalId>>;
 
             #[namespace = #package_name]
-            #[cxx_name = #cxx_feedback_matches]
+            #[cxx_name = send_goal_with_timeout]
+            fn #send_goal_with_timeout(
+                self: &mut #client_name,
+                request: #goal_type_raw,
+                timeout: u64) -> Result<Box<ActionGoalId>>;
+
+            #[namespace = #package_name]
+            #[cxx_name = request_result]
+            fn #request_result(self: &mut #client_name, goal_id: &Box<ActionGoalId>) -> Result<()>;
+
+            #[namespace = #package_name]
+            #[cxx_name = matches_result]
+            fn #result_matches(self: &mut #client_name, event: &CombinedEvent) -> bool;
+
+            #[namespace = #package_name]
+            #[cxx_name = matches_feedback]
             fn #feedback_matches(self: &mut #client_name, event: &CombinedEvent) -> bool;
 
             #[namespace = #package_name]
-            #[cxx_name = #cxx_status_matches]
+            #[cxx_name = matches_status]
             fn #status_matches(self: &mut #client_name, event: &CombinedEvent) -> bool;
 
             #[namespace = #package_name]
-            #[cxx_name = #cxx_downcast]
-            fn #downcast(self: &mut #client_name, event: CombinedEvent) -> Result<#result_type_raw>;
+            #[cxx_name = downcast_result]
+            fn #downcast_result(self: &mut #client_name, event: CombinedEvent) -> Result<Box<#result_event_name>>;
+
+            #[namespace = #package_name]
+            #[cxx_name = downcast_feedback]
+            fn #downcast_feedback(self: &mut #client_name, event: CombinedEvent) -> Result<Box<#feedback_event_name>>;
+
+            #[namespace = #package_name]
+            #[cxx_name = downcast_status]
+            fn #downcast_status(self: &mut #client_name, event: CombinedEvent) -> Result<Box<#status_event_name>>;
         };
 
         let imp = quote! {
 
             #[allow(non_snake_case)]
-            pub fn #create_client(node: &mut Ros2Node, name_space: &str, base_name: &str, qos: ffi::Ros2ActionClientQosPolicies, events: &mut crate::ffi::CombinedEvents) -> eyre::Result<Box<#client_name>> {
+            pub fn #create_client(
+                node: &mut Ros2Node,
+                name_space: &str,
+                base_name: &str,
+                qos: ffi::Ros2ActionClientQosPolicies,
+                events: &mut crate::ffi::CombinedEvents
+            ) -> eyre::Result<Box<#client_name>> {
                 use futures::StreamExt as _;
+                use std::sync::Arc;
 
                 let client = node.node.create_action_client::< action :: #self_name >(
                     crate::ros2_client::ServiceMapping::Enhanced,
@@ -279,142 +394,245 @@ impl Action {
                     &crate::ros2_client::ActionTypeName::new(#package_name, #self_name_str),
                     qos.into(),
                 ).map_err(|e| eyre::eyre!("{e:?}"))?;
-                let (response_tx, response_rx) = flume::bounded(1);
-                let response_stream = response_rx.into_stream().map(|v: eyre::Result<_>| Box::new(v) as Box<dyn std::any::Any + 'static>);
-                let response_id = events.events.merge(Box::pin(response_stream));
+                let client = Arc::new(client);
+                let (result_tx, result_rx) = flume::bounded(1);
 
-                let (feedback_tx, feedback_rx) = flume::bounded(1);
-                let feedback_stream = feedback_rx.into_stream().map(|v: eyre::Result<_>| Box::new(v) as Box<dyn std::any::Any + 'static>);
-                let feedback_id = events.events.merge(Box::pin(feedback_stream));
+                let result_stream = result_rx.into_stream()
+                    .map(|v: eyre::Result<_>| Box::new(v) as Box<dyn std::any::Any + 'static>);
+                let result_id = events.events.merge(Box::pin(result_stream));
 
-                let (status_tx, status_rx) = flume::bounded(1);
-                let status_stream = status_rx.into_stream().map(|v: eyre::Result<_>| Box::new(v) as Box<dyn std::any::Any + 'static>);
-                let status_id = events.events.merge(Box::pin(status_stream));
+                let feedback_id = {
+                    let stream = futures_lite::stream::unfold(Arc::clone(&client), |client| async {
+                        // SAFETY:
+                        // The ros2_client crate only provides &mut access to the feedback subscription, but
+                        // the mutable permission is not required at all.
+                        // There is no other position that will access the feedback subscription.
+                        // There is no modification on the feedback_subscription.
+                        // The Arc ensures the client is not dropped while the stream is active.
+                        // The async_take() method only requires immutable access to the subscription struct.
+                        let item = unsafe {
+                            let ptr = Arc::as_ptr(&client) as *mut crate::ros2_client::action::ActionClient< action :: #self_name>;
+                            let sub = (&mut *ptr).feedback_subscription();
+                            sub.async_take().await
+                        };
+                        let item = item.map(
+                            |(crate::ros2_client::action::FeedbackMessage {goal_id, feedback}, _msg_info)| {
+                                Box::new(#feedback_event_name {
+                                    goal_id: ActionGoalId { id: goal_id },
+                                    feedback
+                                })
+                            }
+                        ).map_err(|e| eyre::eyre!("Failed to read feedback: {}", e));
+                        let item_boxed: Box<dyn std::any::Any + 'static> = Box::new(item);
+                        Some((item_boxed, client))
+                    });
+                    events.events.merge(Box::pin(stream))
+                };
+
+                let status_id = {
+                    let client = Arc::clone(&client);
+                    let stream = futures_lite::stream::unfold(client, |client| async {
+                        Some((client.async_receive_status().await, client))
+                    }).filter_map(|status_res| async {
+                        if let Ok(status_arr) = status_res {
+                            Some(futures::stream::iter(status_arr.status_list.into_iter().map(|goal_status| {
+                                let item = #status_event_name {
+                                    goal_id: ActionGoalId { id: goal_status.goal_info.goal_id },
+                                    status: goal_status.status.into()
+                                };
+                                Box::new(item) as Box<dyn std::any::Any + 'static>
+                            })))
+                        } else {
+                            None
+                        }
+                    }).flatten();
+                    events.events.merge(Box::pin(stream))
+                };
 
                 Ok(Box::new(#client_name {
-                    client: std::sync::Arc::new(client),
-                    response_tx: std::sync::Arc::new(response_tx),
-                    feedback_tx: std::sync::Arc::new(feedback_tx),
-                    status_tx: std::sync::Arc::new(status_tx),
+                    client,
+                    result_tx: Arc::new(result_tx),
                     executor: node.executor.clone(),
-                    response_id: response_id,
-                    feedback_id: feedback_id,
-                    status_id: status_id,
+                    result_id,
+                    feedback_id,
+                    status_id,
                 }))
             }
 
             #[allow(non_camel_case_types)]
             pub struct #client_name {
                 client: std::sync::Arc<crate::ros2_client::action::ActionClient< action :: #self_name>>,
-                response_tx: std::sync::Arc<crate::flume::Sender<eyre::Result<ffi::#result_type_raw>>>,
-                feedback_tx: std::sync::Arc<crate::flume::Sender<eyre::Result<ffi::#feedback_type_raw>>>,
-                status_tx: std::sync::Arc<crate::flume::Sender<eyre::Result<ffi::#status_type_raw>>>,
+                result_tx: std::sync::Arc<crate::flume::Sender<eyre::Result<#result_event_name>>>,
                 executor: std::sync::Arc<crate::futures::executor::ThreadPool>,
-                response_id: u32,
+                result_id: u32,
                 feedback_id: u32,
                 status_id: u32,
             }
 
+            #[allow(non_camel_case_types)]
+            pub struct #result_event_name {
+                goal_id: ffi::ActionGoalId,
+                status: ffi::ActionStatusEnum,
+                result: ffi::#result_type_raw,
+            }
+
+            impl #result_event_name {
+                #[allow(non_snake_case)]
+                pub fn #result_event_matches(&self, goal_id: &Box<ffi::ActionGoalId>) -> bool {
+                    self.goal_id.id == goal_id.id
+                }
+                #[allow(non_snake_case)]
+                pub fn #result_event_get_status(&self) -> ffi::ActionStatusEnum {
+                    self.status
+                }
+                #[allow(non_snake_case)]
+                pub fn #result_event_get_result(&self) -> &ffi::#result_type_raw {
+                    &self.result
+                }
+            }
+
+            #[allow(non_camel_case_types)]
+            pub struct #feedback_event_name {
+                goal_id: ffi::ActionGoalId,
+                feedback: ffi::#feedback_type_raw,
+            }
+
+            impl #feedback_event_name {
+                #[allow(non_snake_case)]
+                pub fn #feedback_event_matches(&self, goal_id: &Box<ffi::ActionGoalId>) -> bool {
+                    self.goal_id.id == goal_id.id
+                }
+                #[allow(non_snake_case)]
+                pub fn #feedback_event_get_feedback(&self) -> &ffi::#feedback_type_raw {
+                    &self.feedback
+                }
+            }
+
+            #[allow(non_camel_case_types)]
+            pub struct #status_event_name {
+                goal_id: ffi::ActionGoalId,
+                status: ffi::ActionStatusEnum,
+            }
+
+            impl #status_event_name {
+                #[allow(non_snake_case)]
+                pub fn #status_event_matches(&self, goal_id: &Box<ffi::ActionGoalId>) -> bool {
+                    self.goal_id.id == goal_id.id
+                }
+                #[allow(non_snake_case)]
+                pub fn #status_event_get_status(&self) -> ffi::ActionStatusEnum {
+                    self.status
+                }
+            }
+
             impl #client_name {
+                #[allow(non_snake_case)]
+                fn #send_goal(&mut self, request: ffi::#goal_type_raw) -> eyre::Result<Box<ffi::ActionGoalId>> {
+                    self.#send_goal_with_timeout(request, 0)
+                }
 
                 #[allow(non_snake_case)]
-                fn #send_goal(&mut self, request: ffi::#goal_type_raw) -> eyre::Result<()> {
-                    use eyre::WrapErr;
-                    use futures::task::SpawnExt as _;
-                    use futures::stream::StreamExt;
-                    use futures::executor::block_on;
-                    use std::sync::Arc;
-
-                    let client_arc = Arc::new(self.client.clone());
-
-                    let client_ref = Arc::clone(&client_arc);
-                    let send_goal = async move {
-                        client_ref.async_send_goal(request.clone()).await
+                fn #send_goal_with_timeout(
+                    &mut self, request: ffi::#goal_type_raw,
+                    timeout: u64)
+                -> eyre::Result<Box<ffi::ActionGoalId>> {
+                    let timeout = if timeout == 0 {
+                        None
+                    } else {
+                        Some(core::time::Duration::from_nanos(timeout))
                     };
 
-                    let handle = self.executor.spawn_with_handle(send_goal)
-                        .map_err(|e| eyre::eyre!("{e:?}"))?;
+                    let client_ref = &self.client;
+                    let send_goal_fut = async move {
+                        let send_fut = client_ref.async_send_goal(request);
+                        futures::pin_mut!(send_fut);
+                        if let Some(timeout) = timeout {
+                            let timeout = futures_timer::Delay::new(timeout);
+                            match futures::future::select(send_fut, timeout).await {
+                                futures::future::Either::Left((result, _)) => result.map_err(|e| eyre::eyre!("Failed to send goal: {:?}", e)),
+                                futures::future::Either::Right(_) => Err(eyre::eyre!("Timeout")),
+                            }
+                        } else {
+                            send_fut.await.map_err(|e| eyre::eyre!("Failed to send goal: {:?}", e))
+                        }
+                    };
 
-                    let (goal_id, send_goal_response) = block_on(handle)
-                        .map_err(|e| eyre::eyre!("{e:?}"))?;
+                    let (goal_id, send_goal_response) = futures::executor::block_on(send_goal_fut)?;
 
                     if !send_goal_response.accepted {
                         return Err(eyre::eyre!("Goal was rejected by the server."));
                     }
 
-                    let feedback_handle = {
-                        let client_ref = Arc::clone(&client_arc);
-                        let feedback_tx = self.feedback_tx.clone();
-                        async move {
-                            let feedback_stream = client_ref.feedback_stream(goal_id);
-                            feedback_stream.for_each(|feedback| async {
-                                match feedback {
-                                    Ok(feedback) => {
-                                        let feedback = Ok(feedback);
-                                        if feedback_tx.send_async(feedback).await.is_err() {
-                                            tracing::warn!("failed to send action feedback");
-                                        }
-                                    }
-                                    Err(e) => {
-                                        tracing::error!("Failed to receive feedback for request {goal_id:?}: {:?}", e);
-                                    }
-                                }
-                            }).await;
-                        }
+                    Ok(Box::new(ffi::ActionGoalId{ id: goal_id }))
+                }
+
+                #[allow(non_snake_case)]
+                fn #wait_for_action(&self, node: &Box<Ros2Node>) -> eyre::Result<()> {
+                    // SAFETY:
+                    // The ros2_client crate only provides &mut access to the goal service client, but
+                    // the mutable permission is not required at all.
+                    // There is no modification on the goal service client.
+                    // The other method will access the goal service client is send_goal() which is not required
+                    // mutable access as well.
+                    // The wait_for_service() method only requires immutable access to the subscription struct.
+                    let service_client = unsafe {
+                        let ptr = std::sync::Arc::as_ptr(&self.client)
+                            as *mut crate::ros2_client::action::ActionClient< action :: #self_name >;
+                        (&mut *ptr).goal_client()
                     };
-
-                    self.executor.spawn(feedback_handle).context("failed to spawn feedback task")?;
-
-
-                    let status_handle = {
-                        let client_ref = Arc::clone(&client_arc);
-                        let status_tx = self.status_tx.clone();
-                        async move {
-                            let status_stream = client_ref.status_stream(goal_id);
-                            status_stream.for_each(|status| async {
-                                match status {
-                                    Ok(status) => {
-                                        let status = Ok(status.into());
-                                        if status_tx.send_async(status).await.is_err() {
-                                            tracing::warn!("failed to send action status");
-                                        }
-                                    }
-                                    Err(e) => {
-                                        tracing::error!("Failed to receive status for request {goal_id:?}: {:?}", e);
-                                    }
+                    let service_ready = async {
+                        for _ in 0..10 {
+                            let ready = service_client.wait_for_service(&node.node);
+                            futures::pin_mut!(ready);
+                            let timeout = futures_timer::Delay::new(std::time::Duration::from_secs(2));
+                            match futures::future::select(ready, timeout).await {
+                                futures::future::Either::Left(((), _)) => {
+                                    return Ok(());
                                 }
-                            }).await;
-                        }
-                    };
-
-                    self.executor.spawn(status_handle).context("failed to spawn status task")?;
-
-                    let request_result_handle = {
-                        let client_ref = Arc::clone(&client_arc);
-                        let response_tx = self.response_tx.clone();
-                        async move {
-                            match client_ref.async_request_result(goal_id).await {
-                                Ok((_status, result)) => {
-                                    let response = Ok(result);
-                                    if response_tx.send_async(response).await.is_err() {
-                                        tracing::warn!("failed to send action result");
-                                    }
-                                },
-                                Err(e) => {
-                                    tracing::error!("Failed to receive response for request {goal_id:?}: {:?}", e);
+                                futures::future::Either::Right(_) => {
+                                    eprintln!("timeout while waiting for service, retrying");
                                 }
                             }
                         }
+                        eyre::bail!("service not available");
                     };
-
-                    self.executor.spawn(request_result_handle).context("failed to spawn response task").map_err(|e| eyre::eyre!("{e:?}"))?;
+                    futures::executor::block_on(service_ready)?;
                     Ok(())
                 }
 
                 #[allow(non_snake_case)]
-                fn #response_matches(&self, event: &crate::ffi::CombinedEvent) -> bool {
+                fn #request_result(&self, goal_id: &Box<ActionGoalId>) -> eyre::Result<()> {
+                    use eyre::WrapErr;
+                    use futures::task::SpawnExt as _;
+
+                    let request_result_handle = {
+                        let client_ref = std::sync::Arc::clone(&self.client);
+                        let result_tx = self.result_tx.clone();
+                        let goal_id = *goal_id.clone();
+                        async move {
+                            let resp = client_ref.async_request_result(goal_id.id).await;
+                            let resp = resp.map(|(status, response)| {
+                                let status: ffi::ActionStatusEnum = status.into();
+                                #result_event_name {
+                                    goal_id: goal_id.clone(),
+                                    status,
+                                    result: response
+                                }
+                            }).map_err(|e| eyre::eyre!("Failed to request result: {:?}", e));
+                            if result_tx.send_async(resp).await.is_err() {
+                                tracing::warn!("failed to send action result");
+                            }
+                        }
+                    };
+                    self.executor.spawn(request_result_handle)
+                        .context("failed to spawn response task").map_err(|e| eyre::eyre!("{e:?}"))?;
+                    Ok(())
+                }
+
+                #[allow(non_snake_case)]
+                fn #result_matches(&self, event: &crate::ffi::CombinedEvent) -> bool {
                     match &event.event.as_ref().0 {
-                        Some(crate::MergedEvent::External(event)) if event.id == self.response_id => true,
+                        Some(crate::MergedEvent::External(event)) if event.id == self.result_id => true,
                         _ => false
                     }
                 }
@@ -436,19 +654,49 @@ impl Action {
                 }
 
                 #[allow(non_snake_case)]
-                fn #downcast(&self, event: crate::ffi::CombinedEvent) -> eyre::Result<ffi::#result_type_raw> {
-                    use eyre::WrapErr;
+                fn #downcast_result(&self, event: crate::ffi::CombinedEvent) -> eyre::Result<Box<#result_event_name>> {
+                    use eyre::WrapErr as _;
 
                     match (*event.event).0 {
-                        Some(crate::MergedEvent::External(event)) if event.id == self.response_id => {
-                            let result = event.event.downcast::<eyre::Result<ffi::#result_type_raw>>()
+                        Some(crate::MergedEvent::External(event)) if event.id == self.result_id => {
+                            let result = event.event.downcast::<eyre::Result<#result_event_name>>()
                                 .map_err(|_| eyre::eyre!("downcast to {} failed", #result_type_raw_str))?;
 
                             let data = result.with_context(|| format!("failed to receive {} response", #self_name_str))
                                 .map_err(|e| eyre::eyre!("{e:?}"))?;
-                            Ok(data)
+                            Ok(Box::new(data))
                         },
                         _ => eyre::bail!("not a {} response event", #self_name_str),
+                    }
+                }
+
+                #[allow(non_snake_case)]
+                fn #downcast_feedback(self: &mut #client_name, event: crate::ffi::CombinedEvent) -> eyre::Result<Box<#feedback_event_name>> {
+                    use eyre::WrapErr;
+
+                    match (*event.event).0 {
+                        Some(crate::MergedEvent::External(event)) if event.id == self.feedback_id => {
+                            let result = event.event.downcast::<eyre::Result<Box<#feedback_event_name>>>()
+                                .map_err(|e| eyre::eyre!("downcast to {} failed: {:?}", #feedback_type_raw_str, e))?;
+
+                            let data = result.with_context(|| format!("failed to receive {} feedback", #self_name_str))
+                                .map_err(|e| eyre::eyre!("{e:?}"))?;
+                            Ok(data)
+                        },
+                        _ => eyre::bail!("not a {} feedback event", #self_name_str),
+                    }
+                }
+
+                #[allow(non_snake_case)]
+                fn #downcast_status(self: &mut #client_name, event: crate::ffi::CombinedEvent) -> eyre::Result<Box<#status_event_name>> {
+                    match (*event.event).0 {
+                        Some(crate::MergedEvent::External(event)) if event.id == self.status_id => {
+                            let result = event.event.downcast::<#status_event_name>()
+                                .map_err(|_| eyre::eyre!("downcast to {} failed", "action_msgs__GoalStatus"))?;
+
+                            Ok(result)
+                        },
+                        _ => eyre::bail!("not a {} status event", #self_name_str),
                     }
                 }
             }
@@ -505,7 +753,6 @@ impl Action {
                 type SendGoal = #send_goal_type;
                 type GetResult = #get_result_type;
                 type FeedbackMessage = #feedback_message_type;
-
             }
 
             mod goal {
