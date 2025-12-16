@@ -74,6 +74,8 @@ pub enum Command {
     Runtime(Runtime),
     Coordinator(Coordinator),
     #[clap(subcommand)]
+    Node(Node),
+    #[clap(subcommand)]
     Topic(Topic),
     #[clap(subcommand)]
     Node(Node),
@@ -122,6 +124,7 @@ impl Executable for Command {
             Command::Daemon(args) => args.execute(),
             Command::Self_ { command } => command.execute(),
             Command::Runtime(args) => args.execute(),
+            Command::Node(args) => args.execute(),
             Command::Topic(args) => args.execute(),
             Command::Node(args) => args.execute(),
             Command::Completion(args) => args.execute(),
