@@ -961,7 +961,9 @@ impl Daemon {
                     .log(
                         LogLevel::Debug,
                         Some("daemon".into()),
-                        format!("received NodeFailed event from {source_node_id} for {receiver_node_id}"),
+                        format!(
+                            "received NodeFailed event from {source_node_id} for {receiver_node_id}"
+                        ),
                     )
                     .await;
 
@@ -1776,7 +1778,7 @@ impl Daemon {
 
         // Separate local and remote receivers to avoid borrow checker issues
         let mut remote_receivers = Vec::new();
-        
+
         // Send one NodeFailed event per receiver node with all affected input IDs
         for (receiver_node_id, affected_input_ids) in affected_by_receiver {
             // Check if receiver is on this daemon (local) or another daemon (remote)
@@ -1806,9 +1808,12 @@ impl Daemon {
                 affected_input_ids,
                 error: error_message.clone(),
             };
-            
+
             // Send to remote receivers using the same mechanism as regular outputs
-            if let Err(err) = self.send_to_remote_receivers(dataflow_id, &output_id, event).await {
+            if let Err(err) = self
+                .send_to_remote_receivers(dataflow_id, &output_id, event)
+                .await
+            {
                 tracing::warn!(
                     "Failed to send error event to remote receiver {}: {err:?}",
                     receiver_node_id
