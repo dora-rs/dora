@@ -29,7 +29,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{self, AtomicBool},
+        atomic::{self, AtomicBool, AtomicU32},
     },
 };
 use tokio::{
@@ -69,17 +69,25 @@ impl PreparedNode {
             .await?;
 
         let disable_restart = Arc::new(AtomicBool::new(false));
+        let pid = Arc::new(AtomicU32::new(0));
         let running_node = RunningNode {
-            process: match kind {
+            process: match &kind {
                 NodeKind::Dynamic => None,
-                NodeKind::Spawned => Some(crate::ProcessHandle::new(op_tx)),
+                NodeKind::Spawned { .. } => Some(crate::ProcessHandle::new(op_tx)),
             },
             node_config: self.node_config.clone(),
             restart_policy: self.restart_policy(),
             disable_restart: disable_restart.clone(),
+            pid: match kind {
+                NodeKind::Dynamic => None,
+                NodeKind::Spawned { pid: new_pid } => {
+                    pid.store(new_pid, atomic::Ordering::Release);
+                    Some(pid.clone())
+                }
+            },
         };
 
-        tokio::spawn(self.restart_loop(logger, finished_rx, disable_restart));
+        tokio::spawn(self.restart_loop(logger, finished_rx, disable_restart, pid));
 
         Ok(running_node)
     }
@@ -96,6 +104,7 @@ impl PreparedNode {
         mut logger: NodeLogger<'static>,
         mut finished_rx: oneshot::Receiver<NodeProcessFinished>,
         disable_restart: Arc<AtomicBool>,
+        pid: Arc<AtomicU32>,
     ) {
         loop {
             let Ok(NodeProcessFinished { exit_status, op_rx }) = finished_rx.await else {
@@ -151,8 +160,9 @@ impl PreparedNode {
                     .spawn_inner(&mut logger, op_rx, finished_tx)
                     .await;
                 match result {
-                    Ok(NodeKind::Spawned) => {
+                    Ok(NodeKind::Spawned { pid: new_pid }) => {
                         finished_rx = finished_rx_new;
+                        pid.store(new_pid, atomic::Ordering::Release);
                     }
                     Ok(NodeKind::Dynamic) => {
                         logger
@@ -516,14 +526,14 @@ impl PreparedNode {
                 )
             });
         });
-        Ok(NodeKind::Spawned)
+        Ok(NodeKind::Spawned { pid })
     }
 }
 
 #[must_use]
 enum NodeKind {
     Dynamic,
-    Spawned,
+    Spawned { pid: u32 },
 }
 
 struct NodeProcessFinished {
