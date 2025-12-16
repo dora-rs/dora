@@ -72,6 +72,11 @@ int main()
                 example_interfaces::AddTwoInts_Request request = {.a = 4, .b = 5};
                 add_two_ints->send_request(request);
             }
+            else if (ty == DoraEventType::Stop)
+            {
+                std::cout << "Received stop event" << std::endl;
+                break;
+            }
             else
             {
                 std::cerr << "Unknown event type " << static_cast<int>(ty) << std::endl;
