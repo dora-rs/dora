@@ -52,7 +52,7 @@ use std::{
     pin::pin,
     sync::{
         Arc,
-        atomic::{self, AtomicBool},
+        atomic::{self, AtomicBool, AtomicU32},
     },
     time::{Duration, Instant},
 };
@@ -908,7 +908,11 @@ impl Daemon {
             let pids: Vec<Pid> = dataflow
                 .running_nodes
                 .values()
-                .filter_map(|node| node.pid.map(Pid::from_u32))
+                .filter_map(|node| {
+                    node.pid
+                        .as_ref()
+                        .map(|pid| Pid::from_u32(pid.load(atomic::Ordering::Acquire)))
+                })
                 .collect();
 
             if !pids.is_empty() {
@@ -925,7 +929,8 @@ impl Daemon {
 
                 // Collect metrics for each node
                 for (node_id, running_node) in &dataflow.running_nodes {
-                    if let Some(pid) = running_node.pid {
+                    if let Some(pid) = running_node.pid.as_ref() {
+                        let pid = pid.load(atomic::Ordering::Acquire);
                         let sys_pid = Pid::from_u32(pid);
                         if let Some(process) = system.process(sys_pid) {
                             let disk_usage = process.disk_usage();
@@ -2528,7 +2533,7 @@ fn close_input(
 pub struct RunningNode {
     process: Option<ProcessHandle>,
     node_config: NodeConfig,
-    pid: Option<u32>,
+    pid: Option<Arc<AtomicU32>>,
     restart_policy: RestartPolicy,
     /// Don't restart the node even if the restart policy says so.
     ///
