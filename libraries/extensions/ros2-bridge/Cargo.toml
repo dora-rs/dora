@@ -34,11 +34,49 @@ futures = { version = "0.3.21", features = ["thread-pool"] }
 futures-timer = "3.0.3"
 
 [dev-dependencies]
+dora-cli = { workspace = true }
+dunce = "1.0.2"
 rand = "0.8.5"
 futures = { version = "0.3.28", default-features = false }
+process-wrap = { version = "8.2.1", features = ["std", "tokio1"] }
 
 [build-dependencies]
 dora-ros2-bridge-msg-gen = { workspace = true, optional = true }
 rust-format = { version = "0.3.4", features = [
     "pretty_please",
 ], optional = true }
+
+[[example]]
+name = "rust-ros2-dataflow"
+path = "../../../examples/ros2-bridge/rust/turtle/run.rs"
+required-features = ["ros2-examples"]
+
+[[example]]
+name = "rust-ros2-dataflow-topic-sub"
+path = "../../../examples/ros2-bridge/rust/topic-sub/run.rs"
+required-features = ["ros2-examples"]
+
+[[example]]
+name = "rust-ros2-dataflow-topic-pub"
+path = "../../../examples/ros2-bridge/rust/topic-pub/run.rs"
+required-features = ["ros2-examples"]
+
+[[example]]
+name = "rust-ros2-dataflow-service-client"
+path = "../../../examples/ros2-bridge/rust/service-client/run.rs"
+required-features = ["ros2-examples"]
+
+[[example]]
+name = "rust-ros2-dataflow-service-server"
+path = "../../../examples/ros2-bridge/rust/service-server/run.rs"
+required-features = ["ros2-examples"]
+
+[[example]]
+name = "python-ros2-dataflow"
+path = "../../../examples/ros2-bridge/python/turtle/run.rs"
+required-features = ["ros2-examples"]
+
+[[example]]
+name = "cxx-ros2-dataflow"
+path = "../../../examples/ros2-bridge/c++/turtle/run.rs"
+required-features = ["ros2-examples"]

@@ -773,6 +773,43 @@ async fn start_inner(
                                 },
                             ));
                         }
+                        ControlRequest::GetNodeInfo => {
+                            use dora_message::coordinator_to_cli::{NodeInfo, NodeMetricsInfo};
+
+                            let mut node_infos = Vec::new();
+                            for dataflow in running_dataflows.values() {
+                                for (node_id, _node) in &dataflow.nodes {
+                                    // Get the specific daemon this node is running on
+                                    if let Some(daemon_id) = dataflow.node_to_daemon.get(node_id) {
+                                        // Get metrics if available
+                                        let metrics = dataflow.node_metrics.get(node_id).map(|m| {
+                                            NodeMetricsInfo {
+                                                pid: m.pid,
+                                                cpu_usage: m.cpu_usage,
+                                                // Use 1000 for MB (megabytes) instead of 1024 (mebibytes)
+                                                memory_mb: m.memory_bytes as f64 / 1000.0 / 1000.0,
+                                                disk_read_mb_s: m
+                                                    .disk_read_bytes
+                                                    .map(|b| b as f64 / 1000.0 / 1000.0),
+                                                disk_write_mb_s: m
+                                                    .disk_write_bytes
+                                                    .map(|b| b as f64 / 1000.0 / 1000.0),
+                                            }
+                                        });
+
+                                        node_infos.push(NodeInfo {
+                                            dataflow_id: dataflow.uuid,
+                                            dataflow_name: dataflow.name.clone(),
+                                            node_id: node_id.clone(),
+                                            daemon_id: daemon_id.clone(),
+                                            metrics,
+                                        });
+                                    }
+                                }
+                            }
+                            let _ = reply_sender
+                                .send(Ok(ControlRequestReply::NodeInfoList(node_infos)));
+                        }
                     }
                 }
                 ControlEvent::Error(err) => tracing::error!("{err:?}"),
@@ -884,6 +921,17 @@ async fn start_inner(
             Event::DaemonExit { daemon_id } => {
                 tracing::info!("Daemon `{daemon_id}` exited");
                 daemon_connections.remove(&daemon_id);
+            }
+            Event::NodeMetrics {
+                dataflow_id,
+                metrics,
+            } => {
+                // Store metrics for this dataflow
+                if let Some(dataflow) = running_dataflows.get_mut(&dataflow_id) {
+                    for (node_id, node_metrics) in metrics {
+                        dataflow.node_metrics.insert(node_id, node_metrics);
+                    }
+                }
             }
             Event::DataflowBuildResult {
                 build_id,
@@ -1063,6 +1111,10 @@ struct RunningDataflow {
     pending_daemons: BTreeSet<DaemonId>,
     exited_before_subscribe: Vec<NodeId>,
     nodes: BTreeMap<NodeId, ResolvedNode>,
+    /// Maps each node to the daemon it's running on
+    node_to_daemon: BTreeMap<NodeId, DaemonId>,
+    /// Latest metrics for each node (from daemons)
+    node_metrics: BTreeMap<NodeId, dora_message::daemon_to_coordinator::NodeMetrics>,
 
     spawn_result: CachedResult,
     stop_reply_senders: Vec<tokio::sync::oneshot::Sender<eyre::Result<ControlRequestReply>>>,
@@ -1454,6 +1506,7 @@ async fn start_dataflow(
         uuid,
         daemons,
         nodes,
+        node_to_daemon,
     } = spawn_dataflow(
         build_id,
         session_id,
@@ -1477,6 +1530,8 @@ async fn start_dataflow(
         exited_before_subscribe: Default::default(),
         daemons: daemons.clone(),
         nodes,
+        node_to_daemon,
+        node_metrics: BTreeMap::new(),
         spawn_result: CachedResult::default(),
         stop_reply_senders: Vec::new(),
         buffered_log_messages: Vec::new(),
@@ -1566,6 +1621,10 @@ pub enum Event {
         daemon_id: DaemonId,
         result: eyre::Result<()>,
     },
+    NodeMetrics {
+        dataflow_id: uuid::Uuid,
+        metrics: BTreeMap<NodeId, dora_message::daemon_to_coordinator::NodeMetrics>,
+    },
 }
 
 impl Event {
@@ -1592,6 +1651,7 @@ impl Event {
             Event::DaemonExit { .. } => "DaemonExit",
             Event::DataflowBuildResult { .. } => "DataflowBuildResult",
             Event::DataflowSpawnResult { .. } => "DataflowSpawnResult",
+            Event::NodeMetrics { .. } => "NodeMetrics",
         }
     }
 }

@@ -42,14 +42,19 @@ pub async fn handle_connection(
                 break;
             }
         };
-        let message: Timestamped<CoordinatorRequest> =
-            match serde_json::from_slice(&raw).wrap_err("failed to deserialize message") {
-                Ok(e) => e,
-                Err(err) => {
-                    tracing::warn!("{err:?}");
-                    continue;
-                }
-            };
+        let message: Timestamped<CoordinatorRequest> = match serde_json::from_slice(&raw)
+            .wrap_err_with(|| {
+                format!(
+                    "failed to deserialize message: {}",
+                    String::from_utf8_lossy(&raw)
+                )
+            }) {
+            Ok(e) => e,
+            Err(err) => {
+                tracing::warn!("{err:?}");
+                continue;
+            }
+        };
 
         if let Err(err) = clock.update_with_timestamp(&message.timestamp) {
             tracing::warn!("failed to update coordinator clock: {err}");
@@ -108,6 +113,18 @@ pub async fn handle_connection(
                 }
                 DaemonEvent::Exit => {
                     let event = Event::DaemonExit { daemon_id };
+                    if events_tx.send(event).await.is_err() {
+                        break;
+                    }
+                }
+                DaemonEvent::NodeMetrics {
+                    dataflow_id,
+                    metrics,
+                } => {
+                    let event = Event::NodeMetrics {
+                        dataflow_id,
+                        metrics,
+                    };
                     if events_tx.send(event).await.is_err() {
                         break;
                     }

@@ -1,12 +1,15 @@
 mod build;
 mod check;
+mod completion;
 mod coordinator;
 mod daemon;
 mod destroy;
 mod graph;
+mod inspect;
 mod list;
 mod logs;
 mod new;
+mod node;
 mod run;
 mod runtime;
 mod self_;
@@ -20,14 +23,17 @@ pub use run::{run, run_func};
 
 use build::Build;
 use check::Check;
+use completion::Completion;
 use coordinator::Coordinator;
 use daemon::Daemon;
 use destroy::Destroy;
 use eyre::Context;
 use graph::Graph;
+use inspect::Inspect;
 use list::ListArgs;
 use logs::LogsArgs;
 use new::NewArgs;
+use node::Node;
 use run::Run;
 use runtime::Runtime;
 use self_::SelfSubCommand;
@@ -58,12 +64,17 @@ pub enum Command {
     // Stats,
     // Get,
     // Upgrade,
+    #[clap(subcommand)]
+    Inspect(Inspect),
     Daemon(Daemon),
     Runtime(Runtime),
     Coordinator(Coordinator),
     #[clap(subcommand)]
     Topic(Topic),
+    #[clap(subcommand)]
+    Node(Node),
 
+    Completion(Completion),
     Self_ {
         #[clap(subcommand)]
         command: SelfSubCommand,
@@ -102,10 +113,13 @@ impl Executable for Command {
             Command::Stop(args) => args.execute(),
             Command::List(args) => args.execute(),
             Command::Logs(args) => args.execute(),
+            Command::Inspect(args) => args.execute(),
             Command::Daemon(args) => args.execute(),
             Command::Self_ { command } => command.execute(),
             Command::Runtime(args) => args.execute(),
             Command::Topic(args) => args.execute(),
+            Command::Node(args) => args.execute(),
+            Command::Completion(args) => args.execute(),
         }
     }
 }
