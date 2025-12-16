@@ -815,7 +815,6 @@ impl DoraNode {
 }
 
 impl Drop for DoraNode {
-    #[tracing::instrument(skip(self), fields(self.id = %self.id), level = "trace")]
     fn drop(&mut self) {
         // close all outputs first to notify subscribers as early as possible
         if let Err(err) = self
