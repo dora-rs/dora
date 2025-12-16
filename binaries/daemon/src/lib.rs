@@ -946,6 +946,56 @@ impl Daemon {
                 }
                 Ok(())
             }
+            InterDaemonEvent::NodeFailed {
+                dataflow_id,
+                source_node_id,
+                receiver_node_id,
+                affected_input_ids,
+                error,
+            } => {
+                let mut logger = self
+                    .logger
+                    .for_dataflow(dataflow_id)
+                    .for_node(receiver_node_id.clone());
+                logger
+                    .log(
+                        LogLevel::Debug,
+                        Some("daemon".into()),
+                        format!("received NodeFailed event from {source_node_id} for {receiver_node_id}"),
+                    )
+                    .await;
+
+                let inner = async {
+                    let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
+                        format!("failed to handle NodeFailed: no running dataflow with ID `{dataflow_id}`")
+                    })?;
+
+                    // Forward the error event to the local receiver node
+                    if let Some(channel) = dataflow.subscribe_channels.get(&receiver_node_id) {
+                        let event = NodeEvent::NodeFailed {
+                            affected_input_ids,
+                            error,
+                            source_node_id,
+                        };
+                        let _ = send_with_timestamp(channel, event, &self.clock);
+                    } else {
+                        tracing::warn!(
+                            "Received NodeFailed event for node {} but it's not subscribed on this daemon",
+                            receiver_node_id
+                        );
+                    }
+                    Result::<(), eyre::Report>::Ok(())
+                };
+                if let Err(err) = inner
+                    .await
+                    .wrap_err("failed to handle NodeFailed event sent by remote daemon")
+                {
+                    logger
+                        .log(LogLevel::Warn, Some("daemon".into()), format!("{err:?}"))
+                        .await;
+                }
+                Ok(())
+            }
         }
     }
 
@@ -1682,6 +1732,8 @@ impl Daemon {
     ///
     /// This is called automatically when a node exits with a non-zero exit code.
     /// It sends `NodeFailed` events to all downstream nodes that consume outputs from the failed node.
+    /// For nodes on the same daemon, events are sent directly. For nodes on other daemons,
+    /// events are routed through the coordinator.
     async fn propagate_node_error(
         &mut self,
         dataflow_id: Uuid,
@@ -1722,15 +1774,45 @@ impl Daemon {
             }
         }
 
+        // Separate local and remote receivers to avoid borrow checker issues
+        let mut remote_receivers = Vec::new();
+        
         // Send one NodeFailed event per receiver node with all affected input IDs
         for (receiver_node_id, affected_input_ids) in affected_by_receiver {
+            // Check if receiver is on this daemon (local) or another daemon (remote)
             if let Some(channel) = dataflow.subscribe_channels.get(&receiver_node_id) {
+                // Local receiver - send directly
                 let event = NodeEvent::NodeFailed {
                     affected_input_ids,
                     error: error_message.clone(),
                     source_node_id: source_node_id.clone(),
                 };
                 let _ = send_with_timestamp(channel, event, &self.clock);
+            } else {
+                // Remote receiver - collect for later processing
+                remote_receivers.push((receiver_node_id, affected_input_ids));
+            }
+        }
+
+        // Now send to remote receivers (after releasing the borrow on dataflow)
+        for (receiver_node_id, affected_input_ids) in remote_receivers {
+            // Remote receiver - send through coordinator via zenoh
+            // The coordinator will forward this to the appropriate daemon
+            let output_id = OutputId(source_node_id.clone(), affected_input_ids[0].clone());
+            let event = InterDaemonEvent::NodeFailed {
+                dataflow_id,
+                source_node_id: source_node_id.clone(),
+                receiver_node_id: receiver_node_id.clone(),
+                affected_input_ids,
+                error: error_message.clone(),
+            };
+            
+            // Send to remote receivers using the same mechanism as regular outputs
+            if let Err(err) = self.send_to_remote_receivers(dataflow_id, &output_id, event).await {
+                tracing::warn!(
+                    "Failed to send error event to remote receiver {}: {err:?}",
+                    receiver_node_id
+                );
             }
         }
 
@@ -2130,58 +2212,43 @@ impl Daemon {
                                 dataflow.cascading_error_causes.error_caused_by(&node_id)
                             })
                             .cloned();
-                        let grace_duration_kill = dataflow
-                            .map(|d| d.grace_duration_kills.contains(&node_id))
-                            .unwrap_or_default();
 
-                        // Nodes killed by grace duration during stop are not errors
-                        if grace_duration_kill {
-                            logger
+                        let cause = match caused_by_node {
+                            Some(caused_by_node) => {
+                                logger
                                 .log(
-                                    LogLevel::Debug,
+                                    LogLevel::Info,
                                     Some("daemon".into()),
-                                    format!("node `{node_id}` was stopped by grace duration (not an error)"),
+                                    format!("marking `{node_id}` as cascading error caused by `{caused_by_node}`")
                                 )
                                 .await;
-                            Ok(())
-                        } else {
-                            let cause = match caused_by_node {
-                                Some(caused_by_node) => {
-                                    logger
-                                    .log(
-                                        LogLevel::Info,
-                                        Some("daemon".into()),
-                                        format!("marking `{node_id}` as cascading error caused by `{caused_by_node}`")
-                                    )
-                                    .await;
 
-                                    NodeErrorCause::Cascading { caused_by_node }
-                                }
-                                None => {
-                                    let cause = dataflow
-                                        .and_then(|d| d.node_stderr_most_recent.get(&node_id))
-                                        .map(|queue| {
-                                            let mut s = if queue.is_full() {
-                                                "[...]".into()
-                                            } else {
-                                                String::new()
-                                            };
-                                            while let Some(line) = queue.pop() {
-                                                s += &line;
-                                            }
-                                            s
-                                        })
-                                        .unwrap_or_default();
+                                NodeErrorCause::Cascading { caused_by_node }
+                            }
+                            None => {
+                                let cause = dataflow
+                                    .and_then(|d| d.node_stderr_most_recent.get(&node_id))
+                                    .map(|queue| {
+                                        let mut s = if queue.is_full() {
+                                            "[...]".into()
+                                        } else {
+                                            String::new()
+                                        };
+                                        while let Some(line) = queue.pop() {
+                                            s += &line;
+                                        }
+                                        s
+                                    })
+                                    .unwrap_or_default();
 
-                                    NodeErrorCause::Other { stderr: cause }
-                                }
-                            };
-                            Err(NodeError {
-                                timestamp: self.clock.new_timestamp(),
-                                cause,
-                                exit_status,
-                            })
-                        }
+                                NodeErrorCause::Other { stderr: cause }
+                            }
+                        };
+                        Err(NodeError {
+                            timestamp: self.clock.new_timestamp(),
+                            cause,
+                            exit_status,
+                        })
                     }
                 };
 
@@ -2220,19 +2287,17 @@ impl Daemon {
                     }
                 }
 
-                // Always send NodeStopped event, even if handle_node_stop fails
-                // This ensures the daemon can exit properly
-                let stop_result = self
+                // Handle node stop (this will send NodeStopped event internally)
+                if let Err(err) = self
                     .handle_node_stop(dataflow_id, &node_id, dynamic_node)
-                    .await;
-                if let Err(err) = &stop_result {
+                    .await
+                {
                     tracing::warn!(
-                        "Error handling node stop for {}/{}: {err:?}, but NodeStopped event should have been sent",
+                        "Error handling node stop for {}/{}: {err:?}",
                         dataflow_id,
                         node_id
                     );
                 }
-                // Don't propagate the error - NodeStopped event is more important for shutdown
             }
         }
         Ok(())

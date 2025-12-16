@@ -22,19 +22,7 @@ pub(crate) fn handle_dataflow_result(
     result: DataflowResult,
     uuid: Option<Uuid>,
 ) -> Result<(), eyre::Error> {
-    handle_dataflow_result_with_options(result, uuid, false)
-}
-
-pub(crate) fn handle_dataflow_result_with_options(
-    result: DataflowResult,
-    uuid: Option<Uuid>,
-    ignore_failures: bool,
-) -> Result<(), eyre::Error> {
     if result.is_ok() {
-        Ok(())
-    } else if ignore_failures {
-        // For stop commands, we consider it successful if we successfully stopped the dataflow,
-        // even if the dataflow was already in a failed state
         Ok(())
     } else {
         Err(match uuid {

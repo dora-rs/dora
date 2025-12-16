@@ -337,6 +337,10 @@ async fn subscribe_output(
             InterDaemonEvent::OutputClosed { .. } => {
                 break;
             }
+            InterDaemonEvent::NodeFailed { .. } => {
+                // NodeFailed events are not relevant for topic hz
+                continue;
+            }
         }
     }
 
