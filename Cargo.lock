@@ -1917,7 +1917,6 @@ dependencies = [
  "eyre",
  "opentelemetry 0.31.0",
  "opentelemetry-otlp",
- "opentelemetry-system-metrics",
  "opentelemetry_sdk",
  "tracing",
  "tracing-opentelemetry",
