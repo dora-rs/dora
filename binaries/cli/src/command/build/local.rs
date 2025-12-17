@@ -66,7 +66,7 @@ async fn build_dataflow(
         });
 
         // Create a progress spinner for this specific node
-        let node_pb = multi.add_spinner(format!("Building {}", node_id));
+        let node_pb = Arc::new(multi.add_spinner(format!("Building {}", node_id)));
 
         let task = builder
             .clone()
@@ -104,7 +104,7 @@ async fn build_dataflow(
 
 struct LocalBuildLogger {
     node_id: NodeId,
-    progress_bar: Option<ProgressBar>,
+    progress_bar: Option<Arc<ProgressBar>>,
     multi: Option<Arc<MultiProgress>>,
 }
 
@@ -158,24 +158,9 @@ impl BuildLogger for LocalBuildLogger {
     }
 
     async fn try_clone(&self) -> eyre::Result<Self::Clone> {
-        let progress_bar = match (&self.progress_bar, &self.multi) {
-            (Some(pb), Some(multi)) => {
-                // Clone the progress bar by creating a new one with the same message
-                // and adding it to the MultiProgress
-                let message = pb.inner().message();
-                Some(multi.add_spinner(message))
-            }
-            (Some(pb), None) => {
-                // No MultiProgress, create a standalone progress bar with the same message
-                let message = pb.inner().message();
-                Some(ProgressBar::new_spinner(message))
-            }
-            _ => None,
-        };
-
         Ok(LocalBuildLogger {
             node_id: self.node_id.clone(),
-            progress_bar,
+            progress_bar: self.progress_bar.clone(),
             multi: self.multi.clone(),
         })
     }
