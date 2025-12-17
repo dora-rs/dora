@@ -203,7 +203,7 @@ jobs:
       fail-fast: false
       matrix:
         platform:
-          - runner: macos-13
+          - runner: macos-15
             target: aarch64
         repository:
           - path: apis/python/node

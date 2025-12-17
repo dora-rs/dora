@@ -14,8 +14,6 @@ links = "dora-ros2-bridge"
 [features]
 default = ["generate-messages"]
 generate-messages = ["dep:dora-ros2-bridge-msg-gen", "dep:rust-format"]
-# enables examples that depend on a sourced ROS2 installation
-ros2-examples = ["dep:eyre", "tokio", "dora-daemon"]
 
 [dependencies]
 array-init = "2.1.0"
@@ -24,9 +22,7 @@ serde-big-array = "0.5.1"
 widestring = "1.0.2"
 ros2-client = "0.8.0"
 rustdds = "=0.11.4" # pinned because of https://github.com/Atostek/RustDDS/issues/375
-eyre = { version = "0.6.8", optional = true }
-tokio = { version = "1.29.1", features = ["full"], optional = true }
-dora-daemon = { workspace = true, optional = true }
+eyre = { version = "0.6.8" }
 tracing = "0.1.37"
 tracing-subscriber = "0.3.20"
 flume = "0.11.0"
@@ -34,6 +30,8 @@ futures = { version = "0.3.21", features = ["thread-pool"] }
 futures-timer = "3.0.3"
 
 [dev-dependencies]
+dora-daemon = { workspace = true }
+tokio = { version = "1.29.1", features = ["full"] }
 dora-cli = { workspace = true }
 dunce = "1.0.2"
 rand = "0.8.5"
@@ -49,34 +47,27 @@ rust-format = { version = "0.3.4", features = [
 [[example]]
 name = "rust-ros2-dataflow"
 path = "../../../examples/ros2-bridge/rust/turtle/run.rs"
-required-features = ["ros2-examples"]
 
 [[example]]
 name = "rust-ros2-dataflow-topic-sub"
 path = "../../../examples/ros2-bridge/rust/topic-sub/run.rs"
-required-features = ["ros2-examples"]
 
 [[example]]
 name = "rust-ros2-dataflow-topic-pub"
 path = "../../../examples/ros2-bridge/rust/topic-pub/run.rs"
-required-features = ["ros2-examples"]
 
 [[example]]
 name = "rust-ros2-dataflow-service-client"
 path = "../../../examples/ros2-bridge/rust/service-client/run.rs"
-required-features = ["ros2-examples"]
 
 [[example]]
 name = "rust-ros2-dataflow-service-server"
 path = "../../../examples/ros2-bridge/rust/service-server/run.rs"
-required-features = ["ros2-examples"]
 
 [[example]]
 name = "python-ros2-dataflow"
 path = "../../../examples/ros2-bridge/python/turtle/run.rs"
-required-features = ["ros2-examples"]
 
 [[example]]
 name = "cxx-ros2-dataflow"
 path = "../../../examples/ros2-bridge/c++/turtle/run.rs"
-required-features = ["ros2-examples"]

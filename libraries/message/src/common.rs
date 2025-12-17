@@ -94,32 +94,13 @@ impl From<LogMessageHelper> for LogMessage {
     }
 }
 
-impl<'de> Deserialize<'de> for LogLevelOrStdout {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-
-        match s.to_lowercase().as_str() {
-            "stdout" => Ok(LogLevelOrStdout::Stdout),
-            "trace" => Ok(LogLevelOrStdout::LogLevel(LogLevel::Trace)),
-            "debug" => Ok(LogLevelOrStdout::LogLevel(LogLevel::Debug)),
-            "info" => Ok(LogLevelOrStdout::LogLevel(LogLevel::Info)),
-            "warn" | "warning" => Ok(LogLevelOrStdout::LogLevel(LogLevel::Warn)),
-            "error" => Ok(LogLevelOrStdout::LogLevel(LogLevel::Error)),
-            _ => Err(serde::de::Error::custom(format!(
-                "invalid log level or stdout: '{}'. Expected one of: trace, debug, info, warn, error, stdout",
-                s
-            ))),
-        }
-    }
-}
-
-#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "UPPERCASE")]
 pub enum LogLevelOrStdout {
-    LogLevel(LogLevel),
+    #[serde(rename = "stdout")]
     Stdout,
+    #[serde(untagged)]
+    LogLevel(LogLevel),
 }
 
 impl From<LogLevel> for LogLevelOrStdout {
