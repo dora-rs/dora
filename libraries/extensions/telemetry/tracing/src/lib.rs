@@ -13,7 +13,6 @@ use opentelemetry_sdk::trace::SdkTracerProvider;
 use tracing::metadata::LevelFilter;
 
 use tracing_opentelemetry::{MetricsLayer, OpenTelemetryLayer};
-use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{
     EnvFilter, Layer, filter::FilterExt, prelude::__tracing_subscriber_SubscriberExt,
 };
@@ -38,8 +37,8 @@ pub fn set_up_tracing(name: &str) -> eyre::Result<()> {
 }
 
 pub struct OtelGuard {
-    _tracer_provider: SdkTracerProvider,
-    _meter_provider: SdkMeterProvider,
+    tracer_provider: SdkTracerProvider,
+    meter_provider: SdkMeterProvider,
 }
 
 #[must_use = "call `build` to finalize the tracing setup"]
@@ -125,8 +124,8 @@ impl TracingBuilder {
         let tracer = sdk_tracer_provider.tracer("tracing-otel-subscriber");
 
         let guard = OtelGuard {
-            _tracer_provider: sdk_tracer_provider,
-            _meter_provider: meter_provider.clone(),
+            tracer_provider: sdk_tracer_provider,
+            meter_provider: meter_provider.clone(),
         };
 
         self.guard = Some(guard);
@@ -168,5 +167,14 @@ impl TracingBuilder {
             "failed to set tracing global subscriber for {}",
             self.name
         ))
+    }
+}
+
+impl Drop for OtelGuard {
+    fn drop(&mut self) {
+        self.meter_provider.force_flush().ok();
+        self.meter_provider.shutdown().ok();
+        self.tracer_provider.force_flush().ok();
+        self.tracer_provider.shutdown().ok();
     }
 }
