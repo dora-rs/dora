@@ -24,4 +24,3 @@ opentelemetry-otlp = { version = "0.31.0", features = [
     "metrics",
     "grpc-tonic",
 ] }
-opentelemetry-system-metrics = { version = "0.31.0" }
