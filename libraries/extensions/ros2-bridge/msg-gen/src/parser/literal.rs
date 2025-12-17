@@ -102,8 +102,8 @@ fn integer_literal(s: &str) -> IResult<&str, i128> {
 
 fn bool_literal(s: &str) -> IResult<&str, bool> {
     alt((
-        value(true, alt((tag("true"), tag("1")))),
-        value(false, alt((tag("false"), tag("0")))),
+        value(true, alt((tag("true"), tag("1"), tag("True")))),
+        value(false, alt((tag("false"), tag("0"), tag("False")))),
     ))(s)
 }
 
