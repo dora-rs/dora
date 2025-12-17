@@ -1,0 +1,24 @@
+[build-system]
+requires = ["maturin>=0.13.2"]
+build-backend = "maturin"
+
+[project]
+name = "dora-rs"
+dynamic = ["version"]
+# Install pyarrow at the same time of dora-rs
+requires-python = ">=3.7"
+license = { text = "MIT" }
+readme = "README.md"
+dependencies = ['pyarrow', "pyyaml>=6.0"]
+
+[dependency-groups]
+dev = ["pytest >=7.1.1", "ruff >=0.9.1"]
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
+
+[tool.ruff.lint]
+extend-select = [
+    "D",  # pydocstyle
+    "UP",
+]

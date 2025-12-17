@@ -1,0 +1,24 @@
+[package]
+name = "dora-ros2-bridge-msg-gen"
+version.workspace = true
+rust-version.workspace = true
+edition.workspace = true
+description = "Message generation for ROS2 bridge"
+authors = ["Yuma Hiramatsu <yuma.hiramatsu@gmail.com>"]
+license = "Apache-2.0"
+
+[dependencies]
+anyhow = "1.0"
+heck = "0.3"
+nom = "7"
+proc-macro2 = "1.0"
+quote = "1.0"
+regex = "1"
+syn = "1.0"
+thiserror = "1.0"
+glob = "0.3.1"
+tracing = "0.1.33"
+rust-format = { version = "0.3.4", features = [
+    "pretty_please",
+]}
+quick-xml = "0.38.3"

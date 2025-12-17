@@ -1,0 +1,31 @@
+nodes:
+  - id: rust-node
+    _unstable_deploy:
+      machine: A
+    build: cargo build -p multiple-daemons-example-node
+    path: ../../target/debug/multiple-daemons-example-node
+    inputs:
+      tick: dora/timer/millis/10
+    outputs:
+      - random
+
+  - id: runtime-node
+    _unstable_deploy:
+      machine: A
+    operators:
+      - id: rust-operator
+        build: cargo build -p multiple-daemons-example-operator
+        shared-library: ../../target/debug/multiple_daemons_example_operator
+        inputs:
+          tick: dora/timer/millis/100
+          random: rust-node/random
+        outputs:
+          - status
+
+  - id: rust-sink
+    _unstable_deploy:
+      machine: B
+    build: cargo build -p multiple-daemons-example-sink
+    path: ../../target/debug/multiple-daemons-example-sink
+    inputs:
+      message: runtime-node/rust-operator/status

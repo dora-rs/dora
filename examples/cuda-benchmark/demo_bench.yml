@@ -1,0 +1,17 @@
+nodes:
+  - id: node_1
+    inputs:
+      next: node_2/next
+    outputs:
+      - latency
+    path: demo_sender.py
+    env:
+      DEVICE: cpu
+  - id: node_2
+    path: dynamic # receiver.py
+    inputs:
+      next: node_1/latency
+    outputs:
+      - next
+    env:
+      DEVICE: cpu

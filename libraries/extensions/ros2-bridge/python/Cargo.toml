@@ -1,0 +1,18 @@
+[package]
+name = "dora-ros2-bridge-python"
+version.workspace = true
+rust-version.workspace = true
+edition.workspace = true
+
+[dependencies]
+dora-ros2-bridge = { path = "..", default-features = false }
+dora-ros2-bridge-msg-gen = { path = "../msg-gen" }
+pyo3 = { workspace = true, features = ["eyre", "abi3-py37", "serde"] }
+eyre = "0.6"
+serde = "1.0.166"
+arrow = { workspace = true, features = ["pyarrow"] }
+futures = "0.3.28"
+pyo3_special_method_derive = "0.4.3"
+
+[dev-dependencies]
+serde_assert = "0.7.1"

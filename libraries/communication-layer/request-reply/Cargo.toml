@@ -1,0 +1,14 @@
+[package]
+name = "communication-layer-request-reply"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+documentation.workspace = true
+readme.workspace = true
+description.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

@@ -1,0 +1,85 @@
+cmake_minimum_required(VERSION 3.21)
+project(cxx-dataflow LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_FLAGS "-fPIC")
+
+set(DORA_ROOT_DIR "__DORA_PATH__" CACHE FILEPATH "Path to the root of dora")
+
+set(dora_cxx_include_dir "${CMAKE_CURRENT_BINARY_DIR}/include/cxx")
+set(node_bridge "${CMAKE_CURRENT_BINARY_DIR}/node_bridge.cc")
+
+if(DORA_ROOT_DIR)
+    include(ExternalProject)
+    ExternalProject_Add(Dora
+        SOURCE_DIR ${DORA_ROOT_DIR}
+        BUILD_IN_SOURCE True
+        CONFIGURE_COMMAND ""
+        BUILD_COMMAND
+            cargo build
+            --package dora-node-api-cxx
+        INSTALL_COMMAND ""
+    )
+
+    add_custom_command(OUTPUT ${node_bridge} ${dora_cxx_include_dir} ${operator_bridge} ${dora_c_include_dir}
+        WORKING_DIRECTORY ${DORA_ROOT_DIR}
+        DEPENDS Dora
+        COMMAND
+            mkdir ${dora_cxx_include_dir} -p
+            &&
+            cp target/cxxbridge/dora-node-api-cxx/src/lib.rs.cc ${node_bridge}
+            &&
+            cp target/cxxbridge/dora-node-api-cxx/src/lib.rs.h ${dora_cxx_include_dir}/dora-node-api.h
+    )
+    
+    add_custom_target(Dora_cxx DEPENDS ${node_bridge} ${dora_cxx_include_dir})
+    set(dora_link_dirs ${DORA_ROOT_DIR}/target/debug)
+else()
+    include(ExternalProject)
+    ExternalProject_Add(Dora
+        PREFIX ${CMAKE_CURRENT_BINARY_DIR}/dora
+        GIT_REPOSITORY https://github.com/dora-rs/dora.git
+        GIT_TAG main
+        BUILD_IN_SOURCE True
+        CONFIGURE_COMMAND ""
+        BUILD_COMMAND
+            cargo build
+            --package dora-node-api-cxx
+            --target-dir ${CMAKE_CURRENT_BINARY_DIR}/dora/src/Dora/target
+        INSTALL_COMMAND ""
+    )
+
+    add_custom_command(OUTPUT ${node_bridge} ${dora_cxx_include_dir}
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/dora/src/Dora/target
+        DEPENDS Dora
+        COMMAND
+            mkdir ${dora_cxx_include_dir} -p
+            &&
+            cp cxxbridge/dora-node-api-cxx/src/lib.rs.cc ${node_bridge}
+            &&
+            cp cxxbridge/dora-node-api-cxx/src/lib.rs.h ${dora_cxx_include_dir}/dora-node-api.h
+    )
+
+    set(dora_link_dirs ${CMAKE_CURRENT_BINARY_DIR}/dora/src/Dora/target/debug)
+
+    add_custom_target(Dora_cxx DEPENDS ${node_bridge} ${dora_cxx_include_dir})
+endif()
+
+link_directories(${dora_link_dirs})
+
+add_executable(talker_1 talker_1/node.cc ${node_bridge})
+add_dependencies(talker_1 Dora_cxx)
+target_include_directories(talker_1 PRIVATE ${dora_cxx_include_dir})
+target_link_libraries(talker_1 dora_node_api_cxx z)
+
+add_executable(talker_2 talker_2/node.cc ${node_bridge})
+add_dependencies(talker_2 Dora_cxx)
+target_include_directories(talker_2 PRIVATE ${dora_cxx_include_dir})
+target_link_libraries(talker_2 dora_node_api_cxx z)
+
+add_executable(listener_1 listener_1/node.cc ${node_bridge})
+add_dependencies(listener_1 Dora_cxx)
+target_include_directories(listener_1 PRIVATE ${dora_cxx_include_dir})
+target_link_libraries(listener_1 dora_node_api_cxx z)
+
+install(TARGETS listener_1 talker_1 talker_2 DESTINATION ${CMAKE_CURRENT_SOURCE_DIR}/bin)

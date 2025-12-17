@@ -1,0 +1,28 @@
+nodes:
+  - id: webcam
+    operator:
+      python: webcam.py
+      inputs:
+        tick: dora/timer/millis/50
+      outputs:
+        - image
+
+  - id: object_detection
+    operator:
+      send_stdout_as: stdout
+      python: object_detection.py
+      inputs:
+        image: webcam/image
+      outputs:
+        - bbox
+        - stdout
+
+  - id: plot
+    operator:
+      python: 
+        source: plot.py
+        conda_env: base
+      inputs:
+        image: webcam/image
+        bbox: object_detection/bbox
+        assistant_message: object_detection/stdout

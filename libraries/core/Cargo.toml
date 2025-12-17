@@ -1,0 +1,38 @@
+[package]
+name = "dora-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+documentation.workspace = true
+readme = "README.md"
+description.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[features]
+build = ["dep:git2", "dep:url"]
+zenoh = ["dep:zenoh"]
+
+[dependencies]
+dora-message = { workspace = true }
+eyre = "0.6.8"
+serde = { version = "1.0.136", features = ["derive"] }
+serde_yaml = { workspace = true }
+once_cell = "1.13.0"
+which = "5.0.0"
+uuid = { version = "1.7", features = ["serde", "v7"] }
+tracing = "0.1"
+serde-with-expand-env = "1.1.0"
+tokio = { version = "1.24.1", features = ["fs", "process", "sync", "rt"] }
+schemars = "1.0.4"
+serde_json = "1.0.117"
+log = { version = "0.4.21", features = ["serde"] }
+dunce = "1.0.5"
+itertools = "0.14"
+url = { version = "2.5.4", optional = true }
+git2 = { workspace = true, optional = true }
+fs_extra = "1.3.0"
+splitty = "1.0.2"
+zenoh = { workspace = true, optional = true }

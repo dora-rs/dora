@@ -1,0 +1,28 @@
+[package]
+name = "dora-node-api-c"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+documentation.workspace = true
+readme.workspace = true
+description.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+crate-type = ["staticlib", "lib"]
+
+
+[features]
+default = ["tracing"]
+tracing = ["dora-node-api/tracing"]
+
+[dependencies]
+eyre = "0.6.8"
+tracing = "0.1.33"
+arrow-array = { workspace = true }
+
+[dependencies.dora-node-api]
+workspace = true

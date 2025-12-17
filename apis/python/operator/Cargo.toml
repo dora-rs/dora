@@ -1,0 +1,24 @@
+[package]
+name = "dora-operator-api-python"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+documentation.workspace = true
+readme.workspace = true
+description.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+dora-node-api = { workspace = true }
+pyo3 = { workspace = true, features = ["eyre", "abi3-py37"] }
+eyre = "0.6"
+serde_yaml = { workspace = true }
+flume = "0.10.14"
+arrow = { workspace = true, features = ["pyarrow"] }
+arrow-schema = { workspace = true }
+aligned-vec = "0.5.0"
+futures = "0.3.28"
+futures-concurrency = "7.3.0"

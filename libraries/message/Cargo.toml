@@ -1,0 +1,32 @@
+[package]
+name = "dora-message"
+# versioned separately from the other dora crates
+version = "0.6.0"
+edition.workspace = true
+rust-version.workspace = true
+documentation.workspace = true
+readme.workspace = true
+description.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+arrow-data = { workspace = true }
+serde = { version = "1.0.136", features = ["derive"] }
+eyre = "0.6.8"
+arrow-schema = { workspace = true, features = ["serde"] }
+tokio = { version = "1.39.2", features = ["sync"] }
+uuid = { version = "1.7", features = ["serde", "v7"] }
+log = { version = "0.4.21", features = ["serde"] }
+aligned-vec = { version = "0.5.0", features = ["serde"] }
+semver = { version = "1.0.23", features = ["serde"] }
+schemars = "1.0.4"
+uhlc = "0.5.1"
+serde_yaml = { workspace = true }
+once_cell = "1.13.0"
+serde-with-expand-env = "1.1.0"
+bincode = "1.3.3"
+serde_json = { workspace = true }
+chrono = { version = "0.4", features = ["serde"] }

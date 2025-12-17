@@ -1,0 +1,19 @@
+[package]
+name = "dora-operator-api-types"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+documentation.workspace = true
+description.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+arrow = { workspace = true, features = ["ffi"] }
+dora-arrow-convert = { workspace = true }
+
+[dependencies.safer-ffi]
+version = "0.1.4"
+features = ["headers", "inventory-0-3-1"]

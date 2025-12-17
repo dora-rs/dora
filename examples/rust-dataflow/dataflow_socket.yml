@@ -1,0 +1,26 @@
+communication:
+  _unstable_local: UnixDomain
+
+nodes:
+  - id: rust-node
+    build: cargo build -p rust-dataflow-example-node
+    path: ../../target/debug/rust-dataflow-example-node
+    inputs:
+      tick: dora/timer/millis/10
+    outputs:
+      - random
+
+  - id: rust-status-node
+    build: cargo build -p rust-dataflow-example-status-node
+    path: ../../target/debug/rust-dataflow-example-status-node
+    inputs:
+      tick: dora/timer/millis/100
+      random: rust-node/random
+    outputs:
+      - status
+
+  - id: rust-sink
+    build: cargo build -p rust-dataflow-example-sink
+    path: ../../target/debug/rust-dataflow-example-sink
+    inputs:
+      message: rust-status-node/status

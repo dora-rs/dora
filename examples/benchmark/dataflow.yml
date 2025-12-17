@@ -1,0 +1,16 @@
+nodes:
+  - id: rust-node
+    build: cargo build -p benchmark-example-node --release
+    path: ../../target/release/benchmark-example-node
+    outputs:
+      - latency
+      - throughput
+
+  - id: rust-sink
+    build: cargo build -p benchmark-example-sink --release
+    path: ../../target/release/benchmark-example-sink
+    inputs:
+      latency: rust-node/latency
+      throughput:
+        source: rust-node/throughput
+        queue_size: 1000

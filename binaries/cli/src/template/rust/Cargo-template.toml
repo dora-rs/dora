@@ -1,0 +1,3 @@
+[workspace]
+resolver = "2"
+members = ["talker_1", "talker_2", "listener_1"]

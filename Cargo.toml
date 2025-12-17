@@ -1,0 +1,171 @@
+[workspace]
+members = [
+    "apis/c/node",
+    "apis/c/operator",
+    "apis/c++/node",
+    "apis/c++/operator",
+    "apis/python/node",
+    "apis/python/operator",
+    "apis/rust/*",
+    "apis/rust/operator/macros",
+    "apis/rust/operator/types",
+    "binaries/cli",
+    "binaries/coordinator",
+    "binaries/daemon",
+    "binaries/runtime",
+    "examples/rust-dataflow/node",
+    "examples/rust-dataflow/status-node",
+    "examples/rust-dataflow/sink",
+    "examples/rust-dataflow/sink-dynamic",
+    "examples/ros2-bridge/rust/rust-ros2-example-node",
+    "examples/benchmark/node",
+    "examples/benchmark/sink",
+    "examples/multiple-daemons/node",
+    "examples/multiple-daemons/operator",
+    "examples/multiple-daemons/sink",
+    "libraries/arrow-convert",
+    "libraries/communication-layer/*",
+    "libraries/core",
+    "libraries/message",
+    "libraries/shared-memory-server",
+    "libraries/extensions/download",
+    "libraries/extensions/telemetry/*",
+    "libraries/extensions/ros2-bridge",
+    "libraries/extensions/ros2-bridge/msg-gen",
+    "libraries/extensions/ros2-bridge/python",
+    "tests/queue_size_latest_data_rust/receive_data",
+]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.85.0"
+# Make sure to also bump `apis/node/python/__init__.py` version.
+version = "0.3.13"
+description = "`dora` goal is to be a low latency, composable, and distributed data flow."
+documentation = "https://dora-rs.ai"
+readme = "./README.md"
+license = "Apache-2.0"
+repository = "https://github.com/dora-rs/dora/"
+
+[workspace.dependencies]
+dora-node-api = { version = "0.3.13", path = "apis/rust/node", default-features = false }
+dora-node-api-python = { version = "0.3.13", path = "apis/python/node", default-features = false }
+dora-operator-api = { version = "0.3.13", path = "apis/rust/operator", default-features = false }
+dora-operator-api-macros = { version = "0.3.13", path = "apis/rust/operator/macros" }
+dora-operator-api-types = { version = "0.3.13", path = "apis/rust/operator/types" }
+dora-operator-api-python = { version = "0.3.13", path = "apis/python/operator" }
+dora-operator-api-c = { version = "0.3.13", path = "apis/c/operator" }
+dora-node-api-c = { version = "0.3.13", path = "apis/c/node" }
+dora-core = { version = "0.3.13", path = "libraries/core" }
+dora-arrow-convert = { version = "0.3.13", path = "libraries/arrow-convert" }
+dora-tracing = { version = "0.3.13", path = "libraries/extensions/telemetry/tracing" }
+dora-metrics = { version = "0.3.13", path = "libraries/extensions/telemetry/metrics" }
+dora-download = { version = "0.3.13", path = "libraries/extensions/download" }
+shared-memory-server = { version = "0.3.13", path = "libraries/shared-memory-server" }
+communication-layer-request-reply = { version = "0.3.13", path = "libraries/communication-layer/request-reply" }
+dora-cli = { version = "0.3.13", path = "binaries/cli" }
+dora-runtime = { version = "0.3.13", path = "binaries/runtime" }
+dora-daemon = { version = "0.3.13", path = "binaries/daemon" }
+dora-coordinator = { version = "0.3.13", path = "binaries/coordinator" }
+dora-ros2-bridge = { version = "0.3.13", path = "libraries/extensions/ros2-bridge" }
+dora-ros2-bridge-msg-gen = { version = "0.3.13", path = "libraries/extensions/ros2-bridge/msg-gen" }
+dora-ros2-bridge-python = { path = "libraries/extensions/ros2-bridge/python" }
+# versioned independently from the other dora crates
+dora-message = { version = "0.6.0", path = "libraries/message" }
+arrow = { version = "54.2.1" }
+arrow-schema = { version = "54.2.1" }
+arrow-data = { version = "54.2.1" }
+arrow-array = { version = "54.2.1" }
+arrow-json = { version = "54.2.1" }
+parquet = { version = "54.2.1" }
+pyo3 = { version = "0.23", features = [
+    "eyre",
+    "abi3-py37",
+    "multiple-pymethods",
+] }
+pythonize = "0.23"
+git2 = { version = "0.18.0", features = ["vendored-openssl"] }
+serde_yaml = "0.9.33"
+zenoh = "1.1.1"
+serde_json = "1.0.145"
+
+[package]
+name = "dora-examples"
+rust-version = "1.85.0"
+version = "0.0.0"
+edition.workspace = true
+license = "Apache-2.0"
+publish = false
+
+
+[features]
+# enables examples that depend on a sourced ROS2 installation
+ros2-examples = []
+
+[dev-dependencies]
+eyre = "0.6.8"
+tokio = "1.24.2"
+dora-cli = { workspace = true }
+dora-coordinator = { workspace = true }
+dora-core = { workspace = true }
+dora-message = { workspace = true }
+dora-tracing = { workspace = true }
+dora-download = { workspace = true }
+dunce = "1.0.2"
+serde_yaml = "0.8.23"
+uuid = { version = "1.7", features = ["v7", "serde"] }
+tracing = "0.1.36"
+futures = "0.3.25"
+tokio-stream = "0.1.11"
+tempfile = "3.23.0"
+assert2 = "0.3.16"
+
+[[example]]
+name = "c-dataflow"
+path = "examples/c-dataflow/run.rs"
+
+[[example]]
+name = "rust-dataflow"
+path = "examples/rust-dataflow/run.rs"
+
+[[example]]
+name = "rust-dataflow-git"
+path = "examples/rust-dataflow-git/run.rs"
+
+# TODO: Fix example #192
+[[example]]
+name = "rust-dataflow-url"
+path = "examples/rust-dataflow-url/run.rs"
+
+[[example]]
+name = "cxx-dataflow"
+path = "examples/c++-dataflow/run.rs"
+
+[[example]]
+name = "cxx-arrow-dataflow"
+path = "examples/c++-arrow-dataflow/run.rs"
+
+[[example]]
+name = "python-dataflow"
+path = "examples/python-dataflow/run.rs"
+
+[[example]]
+name = "python-operator-dataflow"
+path = "examples/python-operator-dataflow/run.rs"
+
+[[example]]
+name = "benchmark"
+path = "examples/benchmark/run.rs"
+
+[[example]]
+name = "multiple-daemons"
+path = "examples/multiple-daemons/run.rs"
+
+[[example]]
+name = "cmake-dataflow"
+path = "examples/cmake-dataflow/run.rs"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

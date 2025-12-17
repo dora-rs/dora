@@ -1,0 +1,79 @@
+cmake_minimum_required(VERSION 3.21)
+project(cxx-dataflow LANGUAGES C)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_FLAGS "-fPIC")
+
+set(DORA_ROOT_DIR "__DORA_PATH__" CACHE FILEPATH "Path to the root of dora")
+
+set(dora_c_include_dir "${CMAKE_CURRENT_BINARY_DIR}/include/c")
+if(DORA_ROOT_DIR)
+    include(ExternalProject)
+    ExternalProject_Add(Dora
+        SOURCE_DIR ${DORA_ROOT_DIR}
+        BUILD_IN_SOURCE True
+        CONFIGURE_COMMAND ""
+        BUILD_COMMAND
+            cargo build
+            --package dora-node-api-c
+        INSTALL_COMMAND ""
+    )
+
+    add_custom_command(OUTPUT ${dora_c_include_dir}
+        WORKING_DIRECTORY ${DORA_ROOT_DIR}
+        DEPENDS Dora
+        COMMAND
+            mkdir ${CMAKE_CURRENT_BINARY_DIR}/include/c -p
+            &&
+            cp apis/c/node ${CMAKE_CURRENT_BINARY_DIR}/include/c -r
+    )
+
+    add_custom_target(Dora_c DEPENDS ${dora_c_include_dir})
+    set(dora_link_dirs ${DORA_ROOT_DIR}/target/debug)
+else()
+    include(ExternalProject)
+    ExternalProject_Add(Dora
+        PREFIX ${CMAKE_CURRENT_BINARY_DIR}/dora
+        GIT_REPOSITORY https://github.com/dora-rs/dora.git
+        GIT_TAG main
+        BUILD_IN_SOURCE True
+        CONFIGURE_COMMAND ""
+        BUILD_COMMAND
+            cargo build
+            --package dora-node-api-c
+            --target-dir ${CMAKE_CURRENT_BINARY_DIR}/dora/src/Dora/target
+        INSTALL_COMMAND ""
+    )
+
+    add_custom_command(OUTPUT ${dora_c_include_dir}
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/dora/src/Dora/target
+        DEPENDS Dora
+        COMMAND
+            mkdir ${CMAKE_CURRENT_BINARY_DIR}/include/c -p
+            &&
+            cp ../apis/c/node ${CMAKE_CURRENT_BINARY_DIR}/include/c -r
+    )
+
+    set(dora_link_dirs ${CMAKE_CURRENT_BINARY_DIR}/dora/src/Dora/target/debug)
+
+    add_custom_target(Dora_c DEPENDS ${dora_c_include_dir})
+endif()
+
+link_directories(${dora_link_dirs})
+
+add_executable(talker_1 talker_1/node.c)
+add_dependencies(talker_1 Dora_c)
+target_include_directories(talker_1 PRIVATE ${dora_c_include_dir})
+target_link_libraries(talker_1 dora_node_api_c m z)
+
+add_executable(talker_2 talker_2/node.c)
+add_dependencies(talker_2 Dora_c)
+target_include_directories(talker_2 PRIVATE ${dora_c_include_dir})
+target_link_libraries(talker_2 dora_node_api_c m z)
+
+add_executable(listener_1 listener_1/node.c)
+add_dependencies(listener_1 Dora_c)
+target_include_directories(listener_1 PRIVATE ${dora_c_include_dir})
+target_link_libraries(listener_1 dora_node_api_c m z)
+
+install(TARGETS listener_1 talker_1 talker_2 DESTINATION ${CMAKE_CURRENT_SOURCE_DIR}/bin)

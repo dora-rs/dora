@@ -1,0 +1,19 @@
+[package]
+name = "dora-arrow-convert"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+documentation.workspace = true
+readme.workspace = true
+description.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+arrow = { workspace = true }
+eyre = "0.6.8"
+half = "2.5.0"
+num = "0.4.3"
+chrono = "0.4.39"
