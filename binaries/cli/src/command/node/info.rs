@@ -47,12 +47,7 @@ impl Executable for Info {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
 
-        info(
-            self.coordinator,
-            self.node_name,
-            self.dataflow,
-            self.format,
-        )
+        info(self.coordinator, self.node_name, self.dataflow, self.format)
     }
 }
 
@@ -69,13 +64,12 @@ fn info(
         .request(&serde_json::to_vec(&ControlRequest::GetNodeInfo).unwrap())
         .wrap_err("failed to send GetNodeInfo request")?;
 
-    let node_list: Vec<NodeInfo> = match serde_json::from_slice(&reply_raw)
-        .wrap_err("failed to parse reply")?
-    {
-        ControlRequestReply::NodeInfoList(list) => list,
-        ControlRequestReply::Error(err) => bail!("{err}"),
-        other => bail!("unexpected reply to GetNodeInfo: {other:?}"),
-    };
+    let node_list: Vec<NodeInfo> =
+        match serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")? {
+            ControlRequestReply::NodeInfoList(list) => list,
+            ControlRequestReply::Error(err) => bail!("{err}"),
+            other => bail!("unexpected reply to GetNodeInfo: {other:?}"),
+        };
 
     // Filter nodes by name
     let matching_nodes: Vec<&NodeInfo> = node_list
@@ -102,17 +96,13 @@ fn info(
             // Filter by dataflow name
             matching_nodes
                 .iter()
-                .filter(|node| {
-                    node.dataflow_name.as_deref() == Some(dataflow_id_or_name.as_str())
-                })
+                .filter(|node| node.dataflow_name.as_deref() == Some(dataflow_id_or_name.as_str()))
                 .copied()
                 .collect()
         };
 
         if matching_by_dataflow.is_empty() {
-            bail!(
-                "No node `{node_name}` found in dataflow `{dataflow_id_or_name}`"
-            );
+            bail!("No node `{node_name}` found in dataflow `{dataflow_id_or_name}`");
         } else if matching_by_dataflow.len() == 1 {
             matching_by_dataflow[0]
         } else {
@@ -191,15 +181,19 @@ fn info(
         OutputFormat::Table => {
             println!("Name: {}", selected_node.node_id);
             println!("Status: Running");
-            
+
             if let Some(metrics) = &selected_node.metrics {
                 println!("PID: {}", metrics.pid);
                 // TODO: Calculate uptime if we have node start time
                 // For now, we don't have this information from the coordinator
             }
 
-            println!("Dataflow: {} ({})", 
-                selected_node.dataflow_name.as_deref().unwrap_or("<unnamed>"),
+            println!(
+                "Dataflow: {} ({})",
+                selected_node
+                    .dataflow_name
+                    .as_deref()
+                    .unwrap_or("<unnamed>"),
                 selected_node.dataflow_id
             );
             println!("Daemon: {}", selected_node.daemon_id);
@@ -242,20 +236,36 @@ fn info(
             let mut json_output = serde_json::Map::new();
             json_output.insert("name".to_string(), serde_json::json!(selected_node.node_id));
             json_output.insert("status".to_string(), serde_json::json!("Running"));
-            json_output.insert("dataflow_id".to_string(), serde_json::json!(selected_node.dataflow_id));
-            json_output.insert("dataflow_name".to_string(), serde_json::json!(selected_node.dataflow_name));
-            json_output.insert("daemon_id".to_string(), serde_json::json!(selected_node.daemon_id));
+            json_output.insert(
+                "dataflow_id".to_string(),
+                serde_json::json!(selected_node.dataflow_id),
+            );
+            json_output.insert(
+                "dataflow_name".to_string(),
+                serde_json::json!(selected_node.dataflow_name),
+            );
+            json_output.insert(
+                "daemon_id".to_string(),
+                serde_json::json!(selected_node.daemon_id),
+            );
 
             if let Some(metrics) = &selected_node.metrics {
                 let mut metrics_map = serde_json::Map::new();
                 metrics_map.insert("pid".to_string(), serde_json::json!(metrics.pid));
-                metrics_map.insert("cpu_usage".to_string(), serde_json::json!(metrics.cpu_usage));
-                metrics_map.insert("memory_mb".to_string(), serde_json::json!(metrics.memory_mb));
+                metrics_map.insert(
+                    "cpu_usage".to_string(),
+                    serde_json::json!(metrics.cpu_usage),
+                );
+                metrics_map.insert(
+                    "memory_mb".to_string(),
+                    serde_json::json!(metrics.memory_mb),
+                );
                 if let Some(disk_read) = metrics.disk_read_mb_s {
                     metrics_map.insert("disk_read_mb_s".to_string(), serde_json::json!(disk_read));
                 }
                 if let Some(disk_write) = metrics.disk_write_mb_s {
-                    metrics_map.insert("disk_write_mb_s".to_string(), serde_json::json!(disk_write));
+                    metrics_map
+                        .insert("disk_write_mb_s".to_string(), serde_json::json!(disk_write));
                 }
                 json_output.insert("metrics".to_string(), serde_json::json!(metrics_map));
             }
