@@ -27,11 +27,11 @@ use crate::{
 #[derive(Debug, Args)]
 #[clap(verbatim_doc_comment)]
 pub struct Info {
-    /// Name of the node to inspect
-    #[clap(value_name = "NODE_NAME")]
-    node_name: NodeId,
+    /// ID of the node to inspect
+    #[clap(value_name = "NODE_ID")]
+    node_id: NodeId,
 
-    /// Dataflow UUID or name to filter nodes (required if multiple dataflows have nodes with the same name)
+    /// Dataflow UUID or name to filter nodes (required if multiple dataflows have nodes with the same ID)
     #[clap(short, long, value_name = "UUID_OR_NAME")]
     dataflow: Option<String>,
 
@@ -47,13 +47,13 @@ impl Executable for Info {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
 
-        info(self.coordinator, self.node_name, self.dataflow, self.format)
+        info(self.coordinator, self.node_id, self.dataflow, self.format)
     }
 }
 
 fn info(
     coordinator: CoordinatorOptions,
-    node_name: NodeId,
+    node_id: NodeId,
     dataflow_filter: Option<String>,
     format: OutputFormat,
 ) -> eyre::Result<()> {
@@ -71,14 +71,14 @@ fn info(
             other => bail!("unexpected reply to GetNodeInfo: {other:?}"),
         };
 
-    // Filter nodes by name
+    // Filter nodes by ID
     let matching_nodes: Vec<&NodeInfo> = node_list
         .iter()
-        .filter(|node| node.node_id == node_name)
+        .filter(|node| node.node_id == node_id)
         .collect();
 
     if matching_nodes.is_empty() {
-        bail!("No running node with name `{node_name}` found");
+        bail!("No running node with ID `{node_id}` found");
     }
 
     // Further filter by dataflow if specified
@@ -102,12 +102,12 @@ fn info(
         };
 
         if matching_by_dataflow.is_empty() {
-            bail!("No node `{node_name}` found in dataflow `{dataflow_id_or_name}`");
+            bail!("No node `{node_id}` found in dataflow `{dataflow_id_or_name}`");
         } else if matching_by_dataflow.len() == 1 {
             matching_by_dataflow[0]
         } else {
             bail!(
-                "Multiple nodes with name `{node_name}` found in dataflow `{dataflow_id_or_name}`. This should not happen."
+                "Multiple nodes with ID `{node_id}` found in dataflow `{dataflow_id_or_name}`. This should not happen."
             );
         }
     } else {
@@ -115,7 +115,7 @@ fn info(
         if matching_nodes.len() == 1 {
             matching_nodes[0]
         } else {
-            // Multiple nodes with same name in different dataflows - prompt user
+            // Multiple nodes with same ID in different dataflows - prompt user
             let choices: Vec<String> = matching_nodes
                 .iter()
                 .map(|node| {
@@ -129,7 +129,7 @@ fn info(
                 .collect();
 
             let selection = inquire::Select::new(
-                "Multiple dataflows have a node with this name. Choose dataflow:",
+                "Multiple dataflows have a node with this ID. Choose dataflow:",
                 choices.clone(),
             )
             .prompt()?;
@@ -173,19 +173,32 @@ fn info(
     let node_descriptor = descriptor
         .nodes
         .iter()
-        .find(|n| n.id == node_name)
-        .ok_or_else(|| eyre::eyre!("Node `{node_name}` not found in dataflow descriptor"))?;
+        .find(|n| n.id == node_id)
+        .ok_or_else(|| eyre::eyre!("Node `{node_id}` not found in dataflow descriptor"))?;
 
     // Display the information
     match format {
         OutputFormat::Table => {
-            println!("Name: {}", selected_node.node_id);
-            println!("Status: Running");
+            println!("ID: {}", selected_node.node_id);
 
             if let Some(metrics) = &selected_node.metrics {
                 println!("PID: {}", metrics.pid);
-                // TODO: Calculate uptime if we have node start time
-                // For now, we don't have this information from the coordinator
+                if let Some(start_time) = metrics.start_time {
+                     let uptime = std::time::SystemTime::now()
+                        .duration_since(start_time.get_time().to_system_time())
+                        .unwrap_or_default();
+                     let secs = uptime.as_secs();
+                     let hours = secs / 3600;
+                     let minutes = (secs % 3600) / 60;
+                     let seconds = secs % 60;
+                     if hours > 0 {
+                        println!("Uptime: {}h {}m {}s", hours, minutes, seconds);
+                     } else if minutes > 0 {
+                        println!("Uptime: {}m {}s", minutes, seconds);
+                     } else {
+                        println!("Uptime: {}s", seconds);
+                     }
+                }
             }
 
             println!(
@@ -234,8 +247,7 @@ fn info(
         OutputFormat::Json => {
             // Create a JSON representation
             let mut json_output = serde_json::Map::new();
-            json_output.insert("name".to_string(), serde_json::json!(selected_node.node_id));
-            json_output.insert("status".to_string(), serde_json::json!("Running"));
+            json_output.insert("id".to_string(), serde_json::json!(selected_node.node_id));
             json_output.insert(
                 "dataflow_id".to_string(),
                 serde_json::json!(selected_node.dataflow_id),
@@ -266,6 +278,9 @@ fn info(
                 if let Some(disk_write) = metrics.disk_write_mb_s {
                     metrics_map
                         .insert("disk_write_mb_s".to_string(), serde_json::json!(disk_write));
+                }
+                if let Some(start_time) = metrics.start_time {
+                    metrics_map.insert("start_time".to_string(), serde_json::json!(start_time));
                 }
                 json_output.insert("metrics".to_string(), serde_json::json!(metrics_map));
             }

@@ -794,6 +794,7 @@ async fn start_inner(
                                                 disk_write_mb_s: m
                                                     .disk_write_bytes
                                                     .map(|b| b as f64 / 1000.0 / 1000.0),
+                                                start_time: m.start_time,
                                             }
                                         });
 

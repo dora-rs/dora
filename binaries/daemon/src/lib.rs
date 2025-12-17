@@ -952,6 +952,7 @@ impl Daemon {
                                         (disk_usage.written_bytes as f64 / METRICS_INTERVAL_SECS)
                                             as u64,
                                     ),
+                                    start_time: running_node.start_time,
                                 },
                             );
                         }
@@ -2563,6 +2564,7 @@ pub struct RunningNode {
     /// This flag is set when all inputs of the node were closed and when a manual stop command
     /// was sent.
     disable_restart: Arc<AtomicBool>,
+    start_time: Option<uhlc::Timestamp>,
 }
 
 impl RunningNode {
