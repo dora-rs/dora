@@ -34,34 +34,35 @@ static RUNTIME: LazyLock<Runtime> = LazyLock::new(|| {
 /// Consume a Python `logging.LogRecord` and emit a Rust `tracing::Event` instead.
 #[pyfunction]
 fn host_log<'py>(record: Bound<'py, PyAny>) -> PyResult<()> {
-    let level = record.getattr("levelno")?;
+    let level = record.getattr("levelno")?.extract::<u8>()?;
     let message = record.getattr("getMessage")?.call0()?.to_string();
     let pathname = record.getattr("pathname")?.to_string();
     let lineno = record.getattr("lineno")?.to_string();
     let target = record.getattr("name")?.to_string();
 
     RUNTIME.spawn(async move {
-        if level.ge(&40u8) {
-            let span = span!(Level::ERROR, "PYTHON ERROR");
-            let _enter = span.enter();
-            tracing::event!(tracing::Level::ERROR, file=pathname, line=lineno, %target, %message);
-        } else if level.ge(&30u8) {
-            let span = span!(Level::ERROR, "PYTHON WARNING");
-            let _enter = span.enter();
-            tracing::event!(tracing::Level::WARN, file=pathname, line=lineno, %target, %message);
-        } else if level.ge(&20u8) {
-            let span = span!(Level::INFO, "PYTHON INFO");
-            let _enter = span.enter();
-            tracing::event!(tracing::Level::INFO, file=pathname, line=lineno, %target, %message);
-        } else if level.ge(&10u8) {
-            let span = span!(Level::DEBUG, "PYTHON DEBUG");
-            let _enter = span.enter();
-            tracing::event!(tracing::Level::DEBUG, file=pathname, line=lineno, %target, %message);
-        } else {
-            let span = span!(Level::TRACE, "PYTHON TRACE");
-            let _enter = span.enter();
-            tracing::event!(tracing::Level::TRACE, file=pathname, line=lineno, %target, %message);
-        }
+
+    if level.ge(&40u8) {
+        let span = span!(Level::ERROR, "dora.python.log.error", file=pathname, line=lineno, %target, %message);
+        let _enter = span.enter();
+        tracing::event!(tracing::Level::ERROR, file=pathname, line=lineno, %target, %message);
+    } else if level.ge(&30u8) {
+        let span = span!(Level::ERROR, "dora.python.log.warn", file=pathname, line=lineno, %target, %message);
+        let _enter = span.enter();
+        tracing::event!(tracing::Level::WARN, file=pathname, line=lineno, %target, %message);
+    } else if level.ge(&20u8){
+        let span = span!(Level::INFO, "dora.python.log.info", file=pathname, line=lineno, %target, %message);
+        let _enter = span.enter();
+        tracing::event!(tracing::Level::INFO, file=pathname, line=lineno, %target, %message);
+    } else if level.ge(&10u8) {
+        let span = span!(Level::DEBUG, "dora.python.log.debug", file=pathname, line=lineno, %target, %message);
+        let _enter = span.enter();
+        tracing::event!(tracing::Level::DEBUG, file=pathname, line=lineno, %target, %message);
+    } else {
+        let span = span!(Level::TRACE, "dora.python.log.trace", file=pathname, line=lineno, %target, %message);
+        let _enter = span.enter();
+        tracing::event!(tracing::Level::TRACE, file=pathname, line=lineno, %target, %message);
+    }
     });
     Ok(())
 }
@@ -144,11 +145,10 @@ impl Node {
         let id = node.id().clone();
         let dataflow_id = node.dataflow_id().clone();
         RUNTIME.spawn(async move {
-            let guard = init_tracing(&id, &dataflow_id).unwrap();
+            let _guard = init_tracing(&id, &dataflow_id).unwrap();
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             }
-            drop(guard)
         });
 
         let dataflow_id = *node.dataflow_id();
