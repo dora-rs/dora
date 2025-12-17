@@ -42,14 +42,6 @@ pub async fn open_zenoh_session(coordinator_addr: Option<IpAddr>) -> eyre::Resul
                         ),
                     )
                     .unwrap();
-                if cfg!(target_os = "macos") {
-                    warn!(
-                        "disabling multicast on macos systems. Enable it with the ZENOH_CONFIG env variable or file"
-                    );
-                    zenoh_config
-                        .insert_json5("scouting/multicast", r#"{ enabled: false }"#)
-                        .unwrap();
-                }
             }
             if let Ok(zenoh_session) = zenoh::open(zenoh_config).await {
                 zenoh_session
