@@ -1,4 +1,4 @@
-use super::check::daemon_running;
+use super::system::status::daemon_running;
 use super::{Executable, default_tracing};
 use crate::{LOCALHOST, common::connect_to_coordinator};
 use dora_core::topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT;
