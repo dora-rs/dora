@@ -2,7 +2,6 @@ mod build;
 mod completion;
 mod coordinator;
 mod daemon;
-mod destroy;
 mod graph;
 mod inspect;
 mod list;
@@ -16,7 +15,6 @@ mod start;
 mod stop;
 mod system;
 mod topic;
-mod up;
 
 pub use build::build;
 pub use run::{run, run_func};
@@ -26,7 +24,6 @@ use build::Build;
 use completion::Completion;
 use coordinator::Coordinator;
 use daemon::Daemon;
-use destroy::Destroy;
 use eyre::Context;
 use graph::Graph;
 use inspect::Inspect;
@@ -41,7 +38,6 @@ use start::Start;
 use stop::Stop;
 use system::System;
 use topic::Topic;
-use up::Up;
 
 /// dora-rs cli client
 #[derive(Debug, clap::Subcommand)]
@@ -50,12 +46,16 @@ pub enum Command {
     System(System),
     /// Alias for `system status`
     Check(system::status::Status),
+    /// Alias for `system start`
+    #[clap(hide = true)]
+    Up(system::start::Start),
+    /// Alias for `system stop`
+    #[clap(hide = true)]
+    Destroy(system::stop::Stop),
     Graph(Graph),
     Build(Build),
     New(NewArgs),
     Run(Run),
-    Up(Up),
-    Destroy(Destroy),
     Start(Start),
     Stop(Stop),
     #[clap(alias = "ps")]
@@ -107,12 +107,12 @@ impl Executable for Command {
         match self {
             Command::System(args) => args.execute(),
             Command::Check(args) => args.execute(),
+            Command::Up(args) => args.execute(),
             Command::Coordinator(args) => args.execute(),
             Command::Graph(args) => args.execute(),
             Command::Build(args) => args.execute(),
             Command::New(args) => args.execute(),
             Command::Run(args) => args.execute(),
-            Command::Up(args) => args.execute(),
             Command::Destroy(args) => args.execute(),
             Command::Start(args) => args.execute(),
             Command::Stop(args) => args.execute(),
