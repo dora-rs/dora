@@ -1,12 +1,12 @@
-use crate::command::{default_tracing, Executable};
-use crate::{common::connect_to_coordinator, LOCALHOST};
+use crate::command::{Executable, default_tracing};
+use crate::{LOCALHOST, common::connect_to_coordinator};
 use communication_layer_request_reply::TcpRequestReplyConnection;
 use dora_core::topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT;
 use dora_message::{
     cli_to_coordinator::ControlRequest,
     coordinator_to_cli::{ControlRequestReply, DataflowStatus},
 };
-use eyre::{bail, Context};
+use eyre::{Context, bail};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::io::{IsTerminal, Write};
 use std::net::{IpAddr, SocketAddr};
@@ -190,4 +190,3 @@ fn parse_config(config_path: Option<&Path>) -> Result<StopConfig, eyre::ErrRepor
     };
     Ok(config)
 }
-

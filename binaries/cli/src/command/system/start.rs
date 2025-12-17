@@ -1,9 +1,9 @@
-use crate::command::{default_tracing, Executable};
-use crate::{common::connect_to_coordinator, LOCALHOST};
+use crate::command::{Executable, default_tracing};
+use crate::{LOCALHOST, common::connect_to_coordinator};
 use communication_layer_request_reply::TcpRequestReplyConnection;
 use dora_core::topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT;
 use dora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply};
-use eyre::{bail, Context, ContextCompat};
+use eyre::{Context, ContextCompat, bail};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
@@ -152,9 +152,10 @@ fn get_daemon_pid(session: &mut TcpRequestReplyConnection) -> Option<u32> {
 
     let reply: ControlRequestReply = serde_json::from_slice(&reply_raw).ok()?;
     match reply {
-        ControlRequestReply::NodeInfoList(nodes) => {
-            nodes.first().and_then(|n| n.metrics.as_ref()).map(|m| m.pid)
-        }
+        ControlRequestReply::NodeInfoList(nodes) => nodes
+            .first()
+            .and_then(|n| n.metrics.as_ref())
+            .map(|m| m.pid),
         _ => None,
     }
 }
@@ -206,4 +207,3 @@ fn start_daemon() -> eyre::Result<()> {
     cmd.spawn().wrap_err("failed to run `dora daemon`")?;
     Ok(())
 }
-
