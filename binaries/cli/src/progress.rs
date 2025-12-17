@@ -310,6 +310,25 @@ impl MultiProgress {
     pub fn clear(&self) -> std::io::Result<()> {
         self.inner.clear()
     }
+
+    /// Prints a message above the progress bars.
+    ///
+    /// This ensures that log messages appear above the pinned progress bars
+    /// and can scroll up normally. On non-terminal outputs, this falls back
+    /// to regular println! to ensure logs are still visible.
+    ///
+    /// # Arguments
+    ///
+    /// * `msg` - The message to print
+    pub fn println(&self, msg: impl AsRef<str>) -> std::io::Result<()> {
+        if std::io::stderr().is_terminal() {
+            self.inner.println(msg)
+        } else {
+            // Fall back to regular println for non-terminal outputs (e.g., logs)
+            println!("{}", msg.as_ref());
+            Ok(())
+        }
+    }
 }
 
 impl Default for MultiProgress {

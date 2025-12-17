@@ -119,7 +119,7 @@ impl BuildLogger for LocalBuildLogger {
         let message_str: String = message.into();
         let log_level = level.into();
 
-        // Always print log messages to terminal so users can scroll back
+        // Format the log message with colors
         let level_colored = match log_level {
             LogLevelOrStdout::LogLevel(level) => match level {
                 log::Level::Error => "ERROR ".red(),
@@ -131,7 +131,15 @@ impl BuildLogger for LocalBuildLogger {
             LogLevelOrStdout::Stdout => "stdout".italic().dimmed(),
         };
         let node = self.node_id.to_string().bold().bright_black();
-        println!("{node}: {level_colored}   {message_str}");
+        let formatted_msg = format!("{node}: {level_colored}   {message_str}");
+
+        // Print using MultiProgress::println to keep progress bars pinned at bottom
+        // Falls back to regular println! for non-terminal outputs
+        if let Some(multi) = &self.multi {
+            let _ = multi.println(&formatted_msg);
+        } else {
+            println!("{}", formatted_msg);
+        }
 
         // Also update progress bar message if available
         if let Some(pb) = &self.progress_bar {
