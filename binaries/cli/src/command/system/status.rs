@@ -15,7 +15,6 @@ use std::{
 use std::{net::IpAddr, path::PathBuf};
 use termcolor::{Color, ColorChoice, ColorSpec, WriteColor};
 
-const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub fn check_environment(coordinator_addr: SocketAddr) -> eyre::Result<()> {
     let mut error_occurred = false;
@@ -33,7 +32,7 @@ pub fn check_environment(coordinator_addr: SocketAddr) -> eyre::Result<()> {
             let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Green)));
             write!(stdout, "✓ ")?;
             let _ = stdout.reset();
-            writeln!(stdout, "Coordinator: Running (v{})", VERSION)?;
+            writeln!(stdout, "Coordinator: Running")?;
             writeln!(
                 stdout,
                 "  Address: {}:{}",
@@ -53,17 +52,16 @@ pub fn check_environment(coordinator_addr: SocketAddr) -> eyre::Result<()> {
     };
 
     // Daemon status
-    let daemon_info = session
+    let daemon_running = session
         .as_deref_mut()
-        .map(query_daemon_info)
-        .transpose()?
-        .flatten();
+        .map(daemon_running)
+        .transpose()?;
 
-    if let Some(info) = daemon_info {
+    if daemon_running == Some(true) {
         let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Green)));
         write!(stdout, "✓ ")?;
         let _ = stdout.reset();
-        writeln!(stdout, "Daemon: Running (PID: {})", info.pid)?;
+        writeln!(stdout, "Daemon: Running")?;
     } else if session.is_some() {
         let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Red)));
         write!(stdout, "✗ ")?;
@@ -90,47 +88,6 @@ pub fn check_environment(coordinator_addr: SocketAddr) -> eyre::Result<()> {
     }
 
     Ok(())
-}
-
-struct DaemonInfo {
-    pid: u32,
-}
-
-fn query_daemon_info(
-    session: &mut TcpRequestReplyConnection,
-) -> Result<Option<DaemonInfo>, eyre::ErrReport> {
-    let reply_raw = session
-        .request(&serde_json::to_vec(&ControlRequest::DaemonConnected).unwrap())
-        .wrap_err("failed to send DaemonConnected message")?;
-
-    let reply = serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-    let running = match reply {
-        ControlRequestReply::DaemonConnected(running) => running,
-        other => bail!("unexpected reply to daemon connection check: {other:?}"),
-    };
-
-    if running {
-        // Try to get PID from node info if available
-        let pid = get_daemon_pid(session).unwrap_or(0);
-        Ok(Some(DaemonInfo { pid }))
-    } else {
-        Ok(None)
-    }
-}
-
-fn get_daemon_pid(session: &mut TcpRequestReplyConnection) -> Option<u32> {
-    let reply_raw = session
-        .request(&serde_json::to_vec(&ControlRequest::GetNodeInfo).ok()?)
-        .ok()?;
-
-    let reply: ControlRequestReply = serde_json::from_slice(&reply_raw).ok()?;
-    match reply {
-        ControlRequestReply::NodeInfoList(nodes) => nodes
-            .first()
-            .and_then(|n| n.metrics.as_ref())
-            .map(|m| m.pid),
-        _ => None,
-    }
 }
 
 pub fn daemon_running(session: &mut TcpRequestReplyConnection) -> Result<bool, eyre::ErrReport> {
@@ -169,10 +126,13 @@ fn query_running_dataflow_count(
 
 #[derive(Debug, clap::Args)]
 pub struct Status {
+     /// Path to the dataflow descriptor file (enables additional checks)
     #[clap(long, value_name = "PATH", value_hint = clap::ValueHint::FilePath)]
     dataflow: Option<PathBuf>,
+    /// Address of the dora coordinator
     #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
     coordinator_addr: IpAddr,
+    /// Port number of the coordinator control server
     #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
     coordinator_port: u16,
 }
