@@ -15,7 +15,6 @@ use std::{
 use std::{net::IpAddr, path::PathBuf};
 use termcolor::{Color, ColorChoice, ColorSpec, WriteColor};
 
-
 pub fn check_environment(coordinator_addr: SocketAddr) -> eyre::Result<()> {
     let mut error_occurred = false;
 
@@ -52,10 +51,7 @@ pub fn check_environment(coordinator_addr: SocketAddr) -> eyre::Result<()> {
     };
 
     // Daemon status
-    let daemon_running = session
-        .as_deref_mut()
-        .map(daemon_running)
-        .transpose()?;
+    let daemon_running = session.as_deref_mut().map(daemon_running).transpose()?;
 
     if daemon_running == Some(true) {
         let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Green)));
@@ -126,7 +122,7 @@ fn query_running_dataflow_count(
 
 #[derive(Debug, clap::Args)]
 pub struct Status {
-     /// Path to the dataflow descriptor file (enables additional checks)
+    /// Path to the dataflow descriptor file (enables additional checks)
     #[clap(long, value_name = "PATH", value_hint = clap::ValueHint::FilePath)]
     dataflow: Option<PathBuf>,
     /// Address of the dora coordinator
