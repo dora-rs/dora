@@ -77,8 +77,6 @@ pub enum Command {
     Node(Node),
     #[clap(subcommand)]
     Topic(Topic),
-    #[clap(subcommand)]
-    Node(Node),
 
     Completion(Completion),
     Self_ {
@@ -126,7 +124,6 @@ impl Executable for Command {
             Command::Runtime(args) => args.execute(),
             Command::Node(args) => args.execute(),
             Command::Topic(args) => args.execute(),
-            Command::Node(args) => args.execute(),
             Command::Completion(args) => args.execute(),
         }
     }
