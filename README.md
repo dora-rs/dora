@@ -1,4 +1,24 @@
-#
+
+### Latest News 🎉
+
+<details open>
+<summary><b>2025</b></summary>
+
+- [08/25] Introduced `dora.builder`, a new Pythonic API for imperatively defining `dora` dataflows.
+- [07/25] Added Kornia rust nodes in the hub for V4L / Gstreamer cameras and Sobel image processing.
+- [06/25] Add support for git based node, dora-vggt for multi-camera depth estimation, and adding robot_descriptions_py as a default way to get urdfs within dora.
+- [05/25] Add support for dora-pytorch-kinematics for fk and ik, dora-mediapipe for pose estimation, dora-rustypot for rust serialport read/write, points2d and points3d visualization in rerun.
+- [04/25] Add support for dora-cotracker to track any point on a frame, dora-rav1e AV1 encoding up to 12bit and dora-dav1d AV1 decoding,
+- [03/25] Add support for dora async Python.
+- [03/25] Add support for Microsoft Phi4, Microsoft Magma.
+- [03/25] dora-rs has been accepted to [**GSoC 2025 🎉**](https://summerofcode.withgoogle.com/programs/2025/organizations/dora-rs-tb), with the following [**idea list**](https://github.com/dora-rs/dora/wiki/GSoC_2025).
+- [03/25] Add support for Zenoh for distributed dataflow.
+- [03/25] Add support for Meta SAM2, Kokoro(TTS), Improved Qwen2.5 Performance using `llama.cpp`.
+- [02/25] Add support for Qwen2.5(LLM), Qwen2.5-VL(VLM), outetts(TTS)
+</details>
+
+
+<hr>
 
 <p align="center">
     <img src="https://raw.githubusercontent.com/dora-rs/dora/main/docs/src/logo.svg" width="400"/>
@@ -37,16 +57,20 @@
 <a href="https://trendshift.io/repositories/9190" target="_blank"><img src="https://trendshift.io/api/badge/repositories/9190" alt="dora-rs%2Fdora | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
 </div>
 
-## Highlights
+<hr>
+<details open><summary><big><strong>Introduction</strong></big></summary>
 
-- 🚀 dora-rs is a framework to run realtime multi-AI and multi-hardware applications.
-- 🦀 dora-rs internals are 100% Rust making it extremely fast compared to alternative such as being ⚡️ [10-17x faster](https://github.com/dora-rs/dora-benchmark) than `ros2`.
-- ❇️ Includes a large set of pre-packaged nodes for fast prototyping which simplifies integration of hardware, algorithms, and AI models.
+## ✨ Highlights
+Fast, simple, and robust dataflow for robotics.
+* **🚀 Low Latency:** Zero-copy messaging using shared memory.
+* **🦀 Rust-Native:** Built for performance and safety.
+* **Python Support:** Write nodes in Python with native speed.
+* **ROS2 Compatible:** Seamless bridge to existing ROS2 nodes.
 
 <p align="center">
   <picture align="center">
     <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/dora-rs/dora/main/docs/src/bar_chart_dark.svg">
-    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/dora-rs/dora/main/docs/src/bar_chart_light.svg">
+    <source media="(prefers-color-scheme: light)" srcset="https://private-user-images.githubusercontent.com/22787340/402251366-3285d183-7560-40e1-ac02-30fee0f120cb.png?jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmF3LmdpdGh1YnVzZXJjb250ZW50LmNvbSIsImtleSI6ImtleTUiLCJleHAiOjE3NjYwNzM2NzYsIm5iZiI6MTc2NjA3MzM3NiwicGF0aCI6Ii8yMjc4NzM0MC80MDIyNTEzNjYtMzI4NWQxODMtNzU2MC00MGUxLWFjMDItMzBmZWUwZjEyMGNiLnBuZz9YLUFtei1BbGdvcml0aG09QVdTNC1ITUFDLVNIQTI1NiZYLUFtei1DcmVkZW50aWFsPUFLSUFWQ09EWUxTQTUzUFFLNFpBJTJGMjAyNTEyMTglMkZ1cy1lYXN0LTElMkZzMyUyRmF3czRfcmVxdWVzdCZYLUFtei1EYXRlPTIwMjUxMjE4VDE1NTYxNlomWC1BbXotRXhwaXJlcz0zMDAmWC1BbXotU2lnbmF0dXJlPTE3YjM5OTUzOTFkOWZlZDJmNDNmNjgzZjQ1ZGY3YjgwMjkxMTY3OWZhODMxMjYxZGUyMWI1ODY4ZDFlODRlM2EmWC1BbXotU2lnbmVkSGVhZGVycz1ob3N0In0.zY6jVl17UKKAIvBsCyjGBwB6BJevJKb33fUEEcrl4y0">
     <img src="https://raw.githubusercontent.com/dora-rs/dora/main/docs/src/bar_chart_light.svg">
   </picture>
 </p>
@@ -57,25 +81,26 @@
   </a>
 </p>
 
-## Latest News 🎉
+### What is DORA-RS?
 
-<details open>
-<summary><b>2025</b></summary>
+**D**ataflow-**O**riented **R**obotic **A**rchitecture (`dora-rs`) is a framework that makes creation of robotic applications fast and simple.
 
-- \[08/25\] Introduced `dora.builder`, a new Pythonic API for imperatively defining `dora` dataflows.
-- \[07/25\] Added Kornia rust nodes in the hub for V4L / Gstreamer cameras and Sobel image processing.
-- \[06/25\] Add support for git based node, dora-vggt for multi-camera depth estimation, and adding robot_descriptions_py as a default way to get urdfs within dora.
-- \[05/25\] Add support for dora-pytorch-kinematics for fk and ik, dora-mediapipe for pose estimation, dora-rustypot for rust serialport read/write, points2d and points3d visualization in rerun.
-- \[04/25\] Add support for dora-cotracker to track any point on a frame, dora-rav1e AV1 encoding up to 12bit and dora-dav1d AV1 decoding,
-- \[03/25\] Add support for dora async Python.
-- \[03/25\] Add support for Microsoft Phi4, Microsoft Magma.
-- \[03/25\] dora-rs has been accepted to [**GSoC 2025 🎉**](https://summerofcode.withgoogle.com/programs/2025/organizations/dora-rs-tb), with the following [**idea list**](https://github.com/dora-rs/dora/wiki/GSoC_2025).
-- \[03/25\] Add support for Zenoh for distributed dataflow.
-- \[03/25\] Add support for Meta SAM2, Kokoro(TTS), Improved Qwen2.5 Performance using `llama.cpp`.
-- \[02/25\] Add support for Qwen2.5(LLM), Qwen2.5-VL(VLM), outetts(TTS)
+`dora-rs` implements a declarative dataflow paradigm where tasks are split between nodes isolated as individual processes.
+
+The dataflow paradigm has the advantage of creating an abstraction layer that makes robotic applications modular and easily configurable.
+
 </details>
+<hr>
+<details closed><summary><big><strong>Support Matrix</strong></big></summary>
 
-## Support Matrix
+> - ⭐ = Recommended
+> - ✅ = First Class Support
+> - 🆗 = Best Effort Support
+> - 📐 = Experimental and looking for contributions
+> - 🛠️ = Unsupported but hoped for through contributions
+>
+> Everything is open for contributions 🙋
+
 
 |                                   | dora-rs                                                                                                                                                                                                     |
 | --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -89,39 +114,10 @@
 | **Configuration**                 | YAML ✅                                                                                                                                                                                                     |
 | **Package Manager**               | [pip](https://pypi.org/): Python Node ✅ Rust Node ✅ C/C++ Node 🛠️ <br>[cargo](https://crates.io/): Rust Node ✅                                                                                           |
 
-> - ⭐ = Recommended
-> - ✅ = First Class Support
-> - 🆗 = Best Effort Support
-> - 📐 = Experimental and looking for contributions
-> - 🛠️ = Unsupported but hoped for through contributions
->
-> Everything is open for contributions 🙋
+</details>
+<hr>
 
-## Node Hub
-
-The node hub is available in the [**`dora-rs/dora-hub`**](https://github.com/dora-rs/dora-hub/) repository.
-
-## Examples
-
-| Type      | Title                                                                                                          | Description                             | Last Commit                                                                                                          |
-| --------- | -------------------------------------------------------------------------------------------------------------- | --------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| Vision    | [YOLO](https://github.com/dora-rs/dora/blob/main/examples/python-dataflow)                                     | Use YOLO to detect object within image. | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fpython-dataflow&label=%20)         |
-| ROS2      | [C++ ROS2 Example](https://github.com/dora-rs/dora/blob/main/examples/c++-ros2-dataflow)                       | Example using C++ ROS2                  | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fc%2b%2b-ros2-dataflow&label=%20)   |
-| ROS2      | [Rust ROS2 Example](https://github.com/dora-rs/dora/blob/main/examples/rust-ros2-dataflow)                     | Example using Rust ROS2                 | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Frust-ros2-dataflow&label=%20)      |
-| ROS2      | [Python ROS2 Example](https://github.com/dora-rs/dora/blob/main/examples/python-ros2-dataflow)                 | Example using Python ROS2               | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fpython-ros2-dataflow&label=%20)    |
-| Benchmark | [GPU Benchmark](https://github.com/dora-rs/dora/blob/main/examples/cuda-benchmark)                             | GPU Benchmark of dora-rs                | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fcuda-benchmark&label=%20)          |
-| Benchmark | [CPU Benchmark](https://github.com/dora-rs/dora-benchmark/blob/main)                                           | CPU Benchmark of dora-rs                | ![License](https://img.shields.io/github/last-commit/dora-rs/dora-benchmark?path=dora-rs&label=%20)                  |
-| Tutorial  | [Rust Example](https://github.com/dora-rs/dora/blob/main/examples/rust-dataflow)                               | Example using Rust                      | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Frust-dataflow&label=%20)           |
-| Tutorial  | [Python Example](https://github.com/dora-rs/dora/blob/main/examples/python-dataflow)                           | Example using Python                    | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fpython-dataflow&label=%20)         |
-| Tutorial  | [CMake Example](https://github.com/dora-rs/dora/blob/main/examples/cmake-dataflow)                             | Example using CMake                     | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fcmake-dataflow&label=%20)          |
-| Tutorial  | [C Example](https://github.com/dora-rs/dora/blob/main/examples/c-dataflow)                                     | Example with C node                     | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fc-dataflow&label=%20)              |
-| Tutorial  | [CUDA Example](https://github.com/dora-rs/dora/blob/main/examples/cuda-benchmark)                              | Example using CUDA Zero Copy            | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fcuda-benchmark&label=%20)          |
-| Tutorial  | [C++ Example](https://github.com/dora-rs/dora/blob/main/examples/c++-dataflow)                                 | Example with C++ node                   | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fc%2b%2b-dataflow&label=%20)        |
-| Tutorial  | [Python Dataflow Builder Examples](https://github.com/dora-rs/dora/blob/main/examples/python-dataflow-builder) | Examples using the new Pythonic API.    | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fpython-dataflow-builder&label=%20) |
-
-=
-
-## Getting Started
+<details open><summary><big><strong>Getting Started</strong></big></summary>
 
 ### Installation
 
@@ -129,30 +125,30 @@ The node hub is available in the [**`dora-rs/dora-hub`**](https://github.com/dor
 pip install dora-rs-cli
 ```
 
-<details close>
+<details closed>
 <summary><b>Additional installation methods</b></summary>
 
 Install dora with our standalone installers, or from [crates.io](https://crates.io/crates/dora-cli):
 
-### With cargo
+#### With cargo
 
 ```bash
 cargo install dora-cli
 ```
 
-### With Github release for macOS and Linux
+#### With Github release for macOS and Linux
 
 ```bash
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/dora-rs/dora/releases/latest/download/dora-cli-installer.sh | sh
 ```
 
-### With Github release for Windows
+#### With Github release for Windows
 
 ```powershell
 powershell -ExecutionPolicy ByPass -c "irm https://github.com/dora-rs/dora/releases/latest/download/dora-cli-installer.ps1 | iex"
 ```
 
-### With Source
+#### With Source
 
 ```bash
 git clone https://github.com/dora-rs/dora.git
@@ -177,7 +173,7 @@ dora build https://raw.githubusercontent.com/dora-rs/dora/refs/heads/main/exampl
 ## Run yolo graph
 dora run dataflow.yml --uv
 ```
-> Make sure to have a webcam
+ **Make sure to have a webcam**
 
 To stop your dataflow, you can use <kbd>ctrl</kbd>+<kbd>c</kbd>
 
@@ -219,24 +215,41 @@ nodes:
       boxes2d: object-detection/bbox
 ```
 
-- In the above example, we can understand that the camera is sending image to both the rerun viewer as well as a yolo model that generates bounding box that is visualized within rerun.
+- In the above example, we can understand that the camera is sending image (focus on `id: camera` and it's `output`) to both the rerun viewer as well as a yolo model that generates bounding box that is visualized within rerun.
 
-### Documentation
+</details>
+<hr>
+<details closed><summary><big><strong>Practical Applications</strong></big></summary>
 
-The full documentation is available on [our website](https://dora-rs.ai/).
-A lot of guides are available on [this section](https://dora-rs.ai/docs/guides/) of our website.
+### Examples
 
-## What is Dora? And what features does Dora offer?
+| Type      | Title                                                                                                          | Description                             | Last Commit                                                                                                          |
+| --------- | -------------------------------------------------------------------------------------------------------------- | --------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| Vision    | [YOLO](https://github.com/dora-rs/dora/blob/main/examples/python-dataflow)                                     | Use YOLO to detect object within image. | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fpython-dataflow&label=%20)         |
+| ROS2      | [C++ ROS2 Example](https://github.com/dora-rs/dora/blob/main/examples/c++-ros2-dataflow)                       | Example using C++ ROS2                  | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fc%2b%2b-ros2-dataflow&label=%20)   |
+| ROS2      | [Rust ROS2 Example](https://github.com/dora-rs/dora/blob/main/examples/rust-ros2-dataflow)                     | Example using Rust ROS2                 | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Frust-ros2-dataflow&label=%20)      |
+| ROS2      | [Python ROS2 Example](https://github.com/dora-rs/dora/blob/main/examples/python-ros2-dataflow)                 | Example using Python ROS2               | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fpython-ros2-dataflow&label=%20)    |
+| Benchmark | [GPU Benchmark](https://github.com/dora-rs/dora/blob/main/examples/cuda-benchmark)                             | GPU Benchmark of dora-rs                | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fcuda-benchmark&label=%20)          |
+| Benchmark | [CPU Benchmark](https://github.com/dora-rs/dora-benchmark/blob/main)                                           | CPU Benchmark of dora-rs                | ![License](https://img.shields.io/github/last-commit/dora-rs/dora-benchmark?path=dora-rs&label=%20)                  |
+| Tutorial  | [Rust Example](https://github.com/dora-rs/dora/blob/main/examples/rust-dataflow)                               | Example using Rust                      | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Frust-dataflow&label=%20)           |
+| Tutorial  | [Python Example](https://github.com/dora-rs/dora/blob/main/examples/python-dataflow)                           | Example using Python                    | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fpython-dataflow&label=%20)         |
+| Tutorial  | [CMake Example](https://github.com/dora-rs/dora/blob/main/examples/cmake-dataflow)                             | Example using CMake                     | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fcmake-dataflow&label=%20)          |
+| Tutorial  | [C Example](https://github.com/dora-rs/dora/blob/main/examples/c-dataflow)                                     | Example with C node                     | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fc-dataflow&label=%20)              |
+| Tutorial  | [CUDA Example](https://github.com/dora-rs/dora/blob/main/examples/cuda-benchmark)                              | Example using CUDA Zero Copy            | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fcuda-benchmark&label=%20)          |
+| Tutorial  | [C++ Example](https://github.com/dora-rs/dora/blob/main/examples/c++-dataflow)                                 | Example with C++ node                   | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fc%2b%2b-dataflow&label=%20)        |
+| Tutorial  | [Python Dataflow Builder Examples](https://github.com/dora-rs/dora/blob/main/examples/python-dataflow-builder) | Examples using the new Pythonic API.    | ![License](https://img.shields.io/github/last-commit/dora-rs/dora?path=examples%2Fpython-dataflow-builder&label=%20) |
 
-**D**ataflow-**O**riented **R**obotic **A**rchitecture (`dora-rs`) is a framework that makes creation of robotic applications fast and simple.
+### Node Hub
 
-`dora-rs` implements a declarative dataflow paradigm where tasks are split between nodes isolated as individual processes.
+The node hub is available in the [**`dora-rs/dora-hub`**](https://github.com/dora-rs/dora-hub/) repository.
 
-The dataflow paradigm has the advantage of creating an abstraction layer that makes robotic applications modular and easily configurable.
+</details>
+<hr>
+<details closed><summary><big><strong>Features</strong></big></summary>
 
 ### TCP Communication and Shared Memory
 
-Communication between nodes is handled with shared memory on a same machine and TCP on distributed machines. Our shared memory implementation tracks messages across processes and discards them when obsolete. Shared memory slots are cached to avoid new memory allocation.
+Communication between nodes is handled with **shared memory on a same machine** and TCP on distributed machines. Our shared memory implementation tracks messages across processes and discards them when obsolete. Shared memory slots are cached to avoid new memory allocation.
 
 ### Arrow Message Format
 
@@ -246,18 +259,18 @@ Nodes communicate with Apache Arrow Data Format.
 
 ### Opentelemetry
 
-dora-rs uses Opentelemetry to record all your logs, metrics and traces. This means that the data and telemetry can be linked using a shared abstraction.
+`dora-rs` uses Opentelemetry to record all your logs, metrics and traces. This means that the data and telemetry can be linked using a shared abstraction.
 
-[Opentelemetry](https://opentelemetry.io/) is an open source observability standard that makes dora-rs telemetry collectable by most backends such as elasticsearch, prometheus, Datadog...
+[Opentelemetry](https://opentelemetry.io/) is an open source observability standard that makes `dora-rs` telemetry collectable by most backends such as elasticsearch, prometheus, Datadog...
 
 Opentelemetry is language independent, backend agnostic, and easily collect distributed data, making it perfect for dora-rs applications.
 
 ### ROS2 Bridge
 
-**Note**: this feature is marked as unstable.
+**Note**: this feature is marked as **unstable**.
 
 - Compilation Free Message passing to ROS 2
-- Automatic conversion ROS 2 Message <-> Arrow Array
+- Automatic conversion between ROS 2 Message &harr; Arrow Array
 
 ```python
 import pyarrow as pa
@@ -281,13 +294,23 @@ turtle_twist_writer.publish(message)
 
 > You might want to use ChatGPT to write the Arrow Formatting: https://chat.openai.com/share/4eec1c6d-dbd2-46dc-b6cd-310d2895ba15
 
-## Contributing
+</details>
+<hr>
+<details closed><summary><big><strong>Community And Resources</strong></big></summary>
+
+### Documentation
+
+The full documentation is available on [our website](https://dora-rs.ai/).
+A lot of guides are available on [this section](https://dora-rs.ai/docs/guides/) of our website.
+
+
+### Contribution
 
 We are passionate about supporting contributors of all levels of experience and would love to see
 you get involved in the project. See the
 [contributing guide](https://github.com/dora-rs/dora/blob/main/CONTRIBUTING.md) to get started.
 
-## Discussions
+### Discussions
 
 Our main communication channels are:
 
@@ -296,20 +319,18 @@ Our main communication channels are:
 
 Feel free to reach out on any topic, issues or ideas.
 
-We also have [a contributing guide](CONTRIBUTING.md).
 
-## License
+### License
 
 This project is licensed under Apache-2.0. Check out [NOTICE.md](NOTICE.md) for more information.
 
----
 
-## Further Resources 📚
+
+### Further Resources 📚
 
 - [Zenoh Documentation](https://zenoh.io/docs/getting-started/first-app/)
 - [DORA Zenoh Discussion (GitHub Issue #512)](https://github.com/dora-rs/dora/issues/512)
 - [Dora Autoware Localization Demo](https://github.com/dora-rs/dora-autoware-localization-demo)
 
-```
-
-```
+</details>
+<hr>
