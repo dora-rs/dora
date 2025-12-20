@@ -200,6 +200,10 @@ fn info(
                         InterDaemonEvent::OutputClosed { .. } => {
                             break;
                         }
+                        InterDaemonEvent::NodeFailed { .. } => {
+                            // NodeFailed events are not relevant for topic info
+                            continue;
+                        }
                     }
                 }
                 Err(_) => break,
