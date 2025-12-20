@@ -3,7 +3,7 @@ use dora_core::{
     uhlc::{self, Timestamp},
 };
 use dora_message::{
-    daemon_to_node::{DaemonReply, NodeEvent},
+    daemon_to_node::{DaemonReply, NodeEvent, NodeEventOrUnknown},
     node_to_daemon::{DaemonRequest, DropToken, Timestamped},
 };
 use eyre::{Context, eyre};
@@ -138,7 +138,12 @@ fn event_stream_loop(
             if let Err(err) = clock.update_with_timestamp(&timestamp) {
                 tracing::warn!("failed to update HLC: {err}");
             }
-            let drop_token = match &inner {
+            let NodeEventOrUnknown::Known(inner) = inner else {
+                tracing::info!("received unknown event from daemon -> skipping it");
+                continue;
+            };
+
+            let drop_token = match inner.as_ref() {
                 NodeEvent::Input {
                     data: Some(data), ..
                 } => data.drop_token(),
@@ -152,7 +157,7 @@ fn event_stream_loop(
             if let Some(tx) = tx.as_ref() {
                 let (drop_tx, drop_rx) = flume::bounded(0);
                 match tx.send(EventItem::NodeEvent {
-                    event: inner,
+                    event: *inner,
                     ack_channel: drop_tx,
                 }) {
                     Ok(()) => {}

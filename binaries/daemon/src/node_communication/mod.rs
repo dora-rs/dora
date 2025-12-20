@@ -7,7 +7,9 @@ use dora_core::{
 use dora_message::{
     DataflowId,
     common::{DropToken, Timestamped},
-    daemon_to_node::{DaemonCommunication, DaemonReply, NodeDropEvent, NodeEvent},
+    daemon_to_node::{
+        DaemonCommunication, DaemonReply, NodeDropEvent, NodeEvent, NodeEventOrUnknown,
+    },
     node_to_daemon::DaemonRequest,
 };
 use eyre::{Context, eyre};
@@ -183,7 +185,7 @@ struct Listener {
     daemon_tx: mpsc::Sender<Timestamped<Event>>,
     subscribed_events: Option<UnboundedReceiver<Timestamped<NodeEvent>>>,
     subscribed_drop_events: Option<UnboundedReceiver<Timestamped<NodeDropEvent>>>,
-    queue: VecDeque<Box<Option<Timestamped<NodeEvent>>>>,
+    queue: VecDeque<Box<Option<Timestamped<NodeEventOrUnknown>>>>,
     clock: Arc<uhlc::HLC>,
 }
 
@@ -280,7 +282,7 @@ impl Listener {
                     future::Either::Right((message, _)) => break message,
                 };
 
-                self.queue.push_back(Box::new(Some(event)));
+                self.queue.push_back(Box::new(Some(event.into())));
                 self.handle_events().await?;
             };
 
@@ -304,7 +306,7 @@ impl Listener {
     async fn handle_events(&mut self) -> eyre::Result<()> {
         if let Some(events) = &mut self.subscribed_events {
             while let Ok(event) = events.try_recv() {
-                self.queue.push_back(Box::new(Some(event)));
+                self.queue.push_back(Box::new(Some(event.into())));
             }
         }
         Ok(())
@@ -406,7 +408,7 @@ impl Listener {
                     match self.subscribed_events.as_mut() {
                         // wait for next event
                         Some(events) => match events.recv().await {
-                            Some(event) => DaemonReply::NextEvents(vec![event]),
+                            Some(event) => DaemonReply::NextEvents(vec![event.into()]),
                             None => DaemonReply::NextEvents(vec![]),
                         },
                         None => {
