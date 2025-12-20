@@ -24,8 +24,6 @@ pub enum InterDaemonEvent {
     NodeFailed {
         dataflow_id: DataflowId,
         source_node_id: NodeId,
-        receiver_node_id: NodeId,
-        affected_input_ids: Vec<DataId>,
         error: String,
     },
 }
