@@ -1,47 +1,55 @@
 mod build;
-mod check;
 mod completion;
 mod coordinator;
 mod daemon;
 mod destroy;
 mod graph;
+mod inspect;
 mod list;
 mod logs;
 mod new;
+mod node;
 mod run;
 mod runtime;
 mod self_;
 mod start;
 mod stop;
+mod system;
 mod topic;
 mod up;
 
 pub use build::build;
 pub use run::{run, run_func};
+pub use system::check_environment;
 
 use build::Build;
-use check::Check;
 use completion::Completion;
 use coordinator::Coordinator;
 use daemon::Daemon;
 use destroy::Destroy;
 use eyre::Context;
 use graph::Graph;
+use inspect::Inspect;
 use list::ListArgs;
 use logs::LogsArgs;
 use new::NewArgs;
+use node::Node;
 use run::Run;
 use runtime::Runtime;
 use self_::SelfSubCommand;
 use start::Start;
 use stop::Stop;
+use system::System;
 use topic::Topic;
 use up::Up;
 
 /// dora-rs cli client
 #[derive(Debug, clap::Subcommand)]
 pub enum Command {
-    Check(Check),
+    #[clap(subcommand)]
+    System(System),
+    /// Alias for `system status`
+    Check(system::status::Status),
     Graph(Graph),
     Build(Build),
     New(NewArgs),
@@ -60,11 +68,15 @@ pub enum Command {
     // Stats,
     // Get,
     // Upgrade,
+    #[clap(subcommand)]
+    Inspect(Inspect),
     Daemon(Daemon),
     Runtime(Runtime),
     Coordinator(Coordinator),
     #[clap(subcommand)]
     Topic(Topic),
+    #[clap(subcommand)]
+    Node(Node),
 
     Completion(Completion),
     Self_ {
@@ -93,6 +105,7 @@ pub trait Executable {
 impl Executable for Command {
     fn execute(self) -> eyre::Result<()> {
         match self {
+            Command::System(args) => args.execute(),
             Command::Check(args) => args.execute(),
             Command::Coordinator(args) => args.execute(),
             Command::Graph(args) => args.execute(),
@@ -105,10 +118,12 @@ impl Executable for Command {
             Command::Stop(args) => args.execute(),
             Command::List(args) => args.execute(),
             Command::Logs(args) => args.execute(),
+            Command::Inspect(args) => args.execute(),
             Command::Daemon(args) => args.execute(),
             Command::Self_ { command } => command.execute(),
             Command::Runtime(args) => args.execute(),
             Command::Topic(args) => args.execute(),
+            Command::Node(args) => args.execute(),
             Command::Completion(args) => args.execute(),
         }
     }

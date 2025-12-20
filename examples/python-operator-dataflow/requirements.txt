@@ -45,3 +45,4 @@ seaborn>=0.11.0
 
 opencv-python>=4.1.1
 maturin
+scikit-learn

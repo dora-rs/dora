@@ -224,7 +224,7 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: |
           source /opt/ros/humble/setup.bash &&
-          cargo run -p dora-ros2-bridge --example rust-ros2-dataflow --features="ros2-examples"
+          cargo run -p dora-ros2-bridge --example rust-ros2-dataflow
       - uses: actions/setup-python@v5
         if: runner.os != 'Windows'
         with:
@@ -248,14 +248,14 @@ jobs:
           fi
           uv pip install -e apis/python/node
           uv pip install pyarrow
-          cargo run -p dora-ros2-bridge --example python-ros2-dataflow --features="ros2-examples"
+          cargo run -p dora-ros2-bridge --example python-ros2-dataflow
       - name: "c++-ros2-dataflow"
         timeout-minutes: 30
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
           source /opt/ros/humble/setup.bash &&
-          cargo run -p dora-ros2-bridge --example cxx-ros2-dataflow --features="ros2-examples"
+          cargo run -p dora-ros2-bridge --example cxx-ros2-dataflow
 
   bench:
     name: "Bench"
@@ -564,9 +564,9 @@ jobs:
             target: armv7-unknown-linux-musleabihf
           - runner: ubuntu-22.04
             target: x86_64-pc-windows-gnu
-          - runner: macos-13
+          - runner: macos-15
             target: aarch64-apple-darwin
-          - runner: macos-13
+          - runner: macos-15
             target: x86_64-apple-darwin
       fail-fast: false
     steps:
