@@ -1620,7 +1620,7 @@ dependencies = [
 
 [[package]]
 name = "dora-message"
-version = "0.6.0"
+version = "0.7.0-alpha"
 dependencies = [
  "aligned-vec",
  "arrow-data",
