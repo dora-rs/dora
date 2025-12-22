@@ -4,7 +4,6 @@ use std::path::PathBuf;
 
 use config::{Config, File, FileFormat};
 use eyre::{Context, ContextCompat, Result, bail};
-use serde::{Deserialize, Serialize};
 
 /// Configuration manager for dora CLI
 pub struct ConfigManager {
