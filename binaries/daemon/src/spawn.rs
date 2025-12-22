@@ -627,7 +627,11 @@ impl PreparedNode {
                 if std::env::var("DORA_QUIET").is_err() {
                     match serde_json::de::from_str::<LogMessageHelper>(&formatted) {
                         Ok(log_msg) => {
-                            cloned_logger.log(LogMessage::from(log_msg)).await;
+                            let mut message = LogMessage::from(log_msg);
+                            message.dataflow_id = Some(dataflow_id);
+                            message.node_id = Some(node_id.clone());
+                            message.daemon_id = Some(daemon_id.clone());
+                            cloned_logger.log(message).await;
                         }
                         Err(_err) => {
                             cloned_logger
