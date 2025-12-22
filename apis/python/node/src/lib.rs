@@ -168,7 +168,7 @@ impl Node {
     #[pyo3(signature = (timeout=None))]
     #[allow(clippy::should_implement_trait)]
     pub fn next(&self, py: Python, timeout: Option<f32>) -> PyResult<Option<Py<PyDict>>> {
-        let event = py.allow_threads(|| self.events.recv(timeout.map(Duration::from_secs_f32)));
+        let event = py.allow_threads(|| self.events.recv(timeout.map(Duration::from_secs_f32)))?;
         if let Some(event) = event {
             let dict = event
                 .to_py_dict(py)
@@ -216,14 +216,14 @@ impl Node {
     ///
     /// :rtype: dict
     #[allow(clippy::should_implement_trait)]
-    pub fn try_recv(&mut self, py: Python) -> Option<Py<PyDict>> {
-        match self.events.try_recv() {
+    pub fn try_recv(&mut self, py: Python) -> PyResult<Option<Py<PyDict>>> {
+        Ok(match self.events.try_recv()? {
             Ok(event) => match event.to_py_dict(py) {
                 Ok(dict) => Some(dict),
                 Err(_) => None,
             },
             Err(_) => None,
-        }
+        })
     }
 
     /// Check if there are any buffered events in the event stream.
@@ -257,7 +257,7 @@ impl Node {
         let event = self
             .events
             .recv_async_timeout(timeout.map(Duration::from_secs_f32))
-            .await;
+            .await?;
         if let Some(event) = event {
             // Get python
             Python::with_gil(|py| {
@@ -428,42 +428,57 @@ struct Events {
 }
 
 impl Events {
-    fn recv(&self, timeout: Option<Duration>) -> Option<PyEvent> {
+    fn recv(&self, timeout: Option<Duration>) -> PyResult<Option<PyEvent>> {
         let mut inner = self.inner.blocking_lock();
         let event = match &mut *inner {
-            EventsInner::Dora(events) => match timeout {
-                Some(timeout) => events.recv_timeout(timeout).map(MergedEvent::Dora),
-                None => events.recv().map(MergedEvent::Dora),
-            },
+            EventsInner::Dora(events) => {
+                if events.is_closed() {
+                    return Err(eyre::eyre!("cannot receive from closed event stream").into());
+                }
+                match timeout {
+                    Some(timeout) => events.recv_timeout(timeout).map(MergedEvent::Dora),
+                    None => events.recv().map(MergedEvent::Dora),
+                }
+            }
             EventsInner::Merged(events) => futures::executor::block_on(events.next()),
         };
-        event.map(|event| PyEvent { event })
+        Ok(event.map(|event| PyEvent { event }))
     }
 
-    fn try_recv(&self) -> Result<PyEvent, TryRecvError> {
+    fn try_recv(&self) -> PyResult<Result<PyEvent, TryRecvError>> {
         let mut inner = self.inner.blocking_lock();
         let event = match &mut *inner {
-            EventsInner::Dora(events) => events.try_recv().map(MergedEvent::Dora),
+            EventsInner::Dora(events) => {
+                if events.is_closed() {
+                    return Err(eyre::eyre!("cannot receive from closed event stream").into());
+                }
+                events.try_recv().map(MergedEvent::Dora)
+            }
             EventsInner::Merged(_events) => {
                 todo!("try_recv on external event stream is not yet implemented!")
             }
         };
-        event.map(|event| PyEvent { event })
+        Ok(event.map(|event| PyEvent { event }))
     }
 
-    async fn recv_async_timeout(&self, timeout: Option<Duration>) -> Option<PyEvent> {
+    async fn recv_async_timeout(&self, timeout: Option<Duration>) -> PyResult<Option<PyEvent>> {
         let mut inner = self.inner.lock().await;
         let event = match &mut *inner {
-            EventsInner::Dora(events) => match timeout {
-                Some(timeout) => events
-                    .recv_async_timeout(timeout)
-                    .await
-                    .map(MergedEvent::Dora),
-                None => events.recv_async().await.map(MergedEvent::Dora),
-            },
+            EventsInner::Dora(events) => {
+                if events.is_closed() {
+                    return Err(eyre::eyre!("cannot receive from closed event stream").into());
+                }
+                match timeout {
+                    Some(timeout) => events
+                        .recv_async_timeout(timeout)
+                        .await
+                        .map(MergedEvent::Dora),
+                    None => events.recv_async().await.map(MergedEvent::Dora),
+                }
+            }
             EventsInner::Merged(events) => events.next().await,
         };
-        event.map(|event| PyEvent { event })
+        Ok(event.map(|event| PyEvent { event }))
     }
 
     fn drain(&self) -> Option<Vec<PyEvent>> {
