@@ -23,22 +23,22 @@ use pyo3_special_method_derive::{Dict, Dir, Repr, Str};
 
 /// Consume a Python `logging.LogRecord` and emit a Rust `tracing::Event` instead.
 #[pyfunction]
-fn host_log<'py>(record: Bound<'py, PyAny>, node_id: String, dataflow_id: String) -> PyResult<()> {
+fn host_log<'py>(record: Bound<'py, PyAny>) -> PyResult<()> {
     let level = record.getattr("levelno")?;
     let message = record.getattr("getMessage")?.call0()?.to_string();
     let pathname = record.getattr("pathname")?.to_string();
     let lineno = record.getattr("lineno")?.to_string();
     let target = record.getattr("name")?.to_string();
     if level.ge(40u8)? {
-        tracing::event!(tracing::Level::ERROR, file=pathname, line=lineno, %target, %message, %node_id, %dataflow_id);
+        tracing::event!(tracing::Level::ERROR, file=pathname, line=lineno, %target, %message);
     } else if level.ge(30u8)? {
-        tracing::event!(tracing::Level::WARN, file=pathname, line=lineno, %target, %message, %node_id, %dataflow_id);
+        tracing::event!(tracing::Level::WARN, file=pathname, line=lineno, %target, %message);
     } else if level.ge(20u8)? {
-        tracing::event!(tracing::Level::INFO, file=pathname, line=lineno, %target, %message, %node_id, %dataflow_id);
+        tracing::event!(tracing::Level::INFO, file=pathname, line=lineno, %target, %message);
     } else if level.ge(10u8)? {
-        tracing::event!(tracing::Level::DEBUG, file=pathname, line=lineno, %target, %message, %node_id, %dataflow_id);
+        tracing::event!(tracing::Level::DEBUG, file=pathname, line=lineno, %target, %message);
     } else {
-        tracing::event!(tracing::Level::TRACE, file=pathname, line=lineno, %target, %message, %node_id, %dataflow_id);
+        tracing::event!(tracing::Level::TRACE, file=pathname, line=lineno, %target, %message);
     }
 
     Ok(())
@@ -50,13 +50,12 @@ fn host_log<'py>(record: Bound<'py, PyAny>, node_id: String, dataflow_id: String
 ///   is not exported in `logging.__all__`, as it is not intended to be called directly.
 /// - A new class `logging.HostHandler` provides a `logging.Handler` that delivers all records to `host_log`.
 /// - `logging.basicConfig` is changed to use `logging.HostHandler` by default.
+///
 /// Since any call like `logging.warn(...)` sets up logging via `logging.basicConfig`, all log messages are now
 /// delivered to `crate::host_log`, which will send them to `tracing::event!`.
 pub fn setup_logging(py: Python, node_id: NodeId, dataflow_id: DataflowId) -> PyResult<()> {
     let logging = py.import("logging")?;
     logging.setattr("host_log", wrap_pyfunction!(host_log, &logging)?)?;
-    logging.setattr("node_id", node_id.to_string())?;
-    logging.setattr("dataflow_id", dataflow_id.to_string())?;
     py.run(
         cr#"
 class HostHandler(Handler):
@@ -64,7 +63,7 @@ class HostHandler(Handler):
 		super().__init__(level=level)
 	
 	def emit(self, record):
-		host_log(record, node_id, dataflow_id)
+		host_log(record)
 
 oldBasicConfig = basicConfig
 
