@@ -216,7 +216,11 @@ impl ConfigManager {
 }
 
 /// Recursively flatten a TOML table into dot-notation keys
-fn flatten_table(table: &HashMap<String, toml::Value>, prefix: String, result: &mut HashMap<String, String>) {
+fn flatten_table(
+    table: &HashMap<String, toml::Value>,
+    prefix: String,
+    result: &mut HashMap<String, String>,
+) {
     for (key, value) in table {
         let full_key = if prefix.is_empty() {
             key.clone()
@@ -227,7 +231,8 @@ fn flatten_table(table: &HashMap<String, toml::Value>, prefix: String, result: &
         match value {
             toml::Value::Table(nested_table) => {
                 // Recursively flatten nested tables
-                let nested_map: HashMap<String, toml::Value> = nested_table.clone().into_iter().collect();
+                let nested_map: HashMap<String, toml::Value> =
+                    nested_table.clone().into_iter().collect();
                 flatten_table(&nested_map, full_key, result);
             }
             _ => {
