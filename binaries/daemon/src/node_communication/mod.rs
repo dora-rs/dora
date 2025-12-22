@@ -421,6 +421,12 @@ impl Listener {
                     DaemonReply::NextEvents(queued_events)
                 };
 
+                tracing::debug!(
+                    node_id = ?self.node_id,
+                    dataflow_id = ?self.dataflow_id,
+                    "sending NextEvent reply: {reply:?}",
+                );
+
                 self.send_reply(reply.clone(), connection)
                     .await
                     .wrap_err_with(|| format!("failed to send NextEvent reply: {reply:?}"))?;

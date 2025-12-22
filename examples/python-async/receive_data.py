@@ -1,12 +1,16 @@
 import asyncio
+import logging
 
 from dora import Node
 
 
 async def main():
     node = Node()
+    logging.error("starting receiver")
     for _ in range(50):
+        logging.info("waiting for event")
         event = await node.recv_async()
+        logging.info(f"received {event}")
         if event["type"] == "STOP":
             break
         del event

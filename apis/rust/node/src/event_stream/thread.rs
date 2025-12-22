@@ -111,7 +111,7 @@ fn event_stream_loop(
         let events = match channel.request(&daemon_request) {
             Ok(DaemonReply::NextEvents(events)) => {
                 if events.is_empty() {
-                    tracing::trace!("event stream closed for node `{node_id}`");
+                    tracing::debug!("event stream closed for node `{node_id}`");
                     break Ok(());
                 } else {
                     events
@@ -139,9 +139,11 @@ fn event_stream_loop(
                 tracing::warn!("failed to update HLC: {err}");
             }
             let NodeEventOrUnknown::Known(inner) = inner else {
-                tracing::info!("received unknown event from daemon -> skipping it");
+                tracing::warn!("received unknown event from daemon -> skipping it");
                 continue;
             };
+
+            tracing::debug!("received event from daemon: {:?}", inner);
 
             let drop_token = match inner.as_ref() {
                 NodeEvent::Input {
@@ -160,7 +162,9 @@ fn event_stream_loop(
                     event: *inner,
                     ack_channel: drop_tx,
                 }) {
-                    Ok(()) => {}
+                    Ok(()) => {
+                        tracing::debug!("forwarded event to event stream");
+                    }
                     Err(send_error) => {
                         let event = send_error.into_inner();
                         tracing::trace!(

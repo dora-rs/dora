@@ -53,6 +53,8 @@ fn host_log<'py>(record: Bound<'py, PyAny>) -> PyResult<()> {
 /// Since any call like `logging.warn(...)` sets up logging via `logging.basicConfig`, all log messages are now
 /// delivered to `crate::host_log`, which will send them to `tracing::event!`.
 pub fn setup_logging(py: Python) -> PyResult<()> {
+    tracing::warn!("Setting up logging integration between Python logging and tracing");
+    println!("setup_logging called");
     let logging = py.import("logging")?;
     logging.setattr("host_log", wrap_pyfunction!(host_log, &logging)?)?;
     py.run(
