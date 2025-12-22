@@ -333,18 +333,23 @@ impl EventStream {
     /// it has returned `None` once. Use [`is_closed`][Self::is_closed] to check if the stream
     /// is closed.
     pub async fn recv_async(&mut self) -> Option<Event> {
+        assert!(
+            !self.closed,
+            "receive function called after None was returned"
+        );
+
         if !self.use_scheduler {
-            return self.recv_next().await.map(Self::convert_event_item);
+            return self.receiver.next().await.map(Self::convert_event_item);
         }
         loop {
             if self.scheduler.is_empty() {
-                if let Some(event) = self.recv_next().await {
+                if let Some(event) = self.receiver.next().await {
                     self.add_event(event);
                 } else {
                     break;
                 }
             } else {
-                match self.recv_next().now_or_never().flatten() {
+                match self.receiver.next().now_or_never().flatten() {
                     Some(event) => self.add_event(event),
                     None => break, // no other ready events
                 };
@@ -352,19 +357,10 @@ impl EventStream {
         }
         let event = self.scheduler.next();
         tracing::debug!("received event from scheduler: {:?}", event);
-        event.map(Self::convert_event_item)
-    }
-
-    async fn recv_next(&mut self) -> Option<EventItem> {
-        assert!(
-            !self.closed,
-            "receive function called after None was returned"
-        );
-        let res = self.receiver.next().await;
-        if res.is_none() {
+        if event.is_none() {
             self.closed = true;
         }
-        res
+        event.map(Self::convert_event_item)
     }
 
     /// Check if there are any buffered events in the scheduler or the receiver.
