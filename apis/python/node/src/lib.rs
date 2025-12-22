@@ -28,17 +28,16 @@ fn host_log<'py>(record: Bound<'py, PyAny>) -> PyResult<()> {
     let message = record.getattr("getMessage")?.call0()?.to_string();
     let pathname = record.getattr("pathname")?.to_string();
     let lineno = record.getattr("lineno")?.to_string();
-    let target = record.getattr("name")?.to_string();
     if level.ge(40u8)? {
-        tracing::event!(tracing::Level::ERROR, file=pathname, line=lineno, %target, %message);
+        tracing::event!(target: "", tracing::Level::ERROR, file=pathname, line=lineno, %message);
     } else if level.ge(30u8)? {
-        tracing::event!(tracing::Level::WARN, file=pathname, line=lineno, %target, %message);
+        tracing::event!(target: "", tracing::Level::WARN, file=pathname, line=lineno, %message);
     } else if level.ge(20u8)? {
-        tracing::event!(tracing::Level::INFO, file=pathname, line=lineno, %target, %message);
+        tracing::event!(target: "", tracing::Level::INFO, file=pathname, line=lineno, %message);
     } else if level.ge(10u8)? {
-        tracing::event!(tracing::Level::DEBUG, file=pathname, line=lineno, %target, %message);
+        tracing::event!(target: "", tracing::Level::DEBUG, file=pathname, line=lineno, %message);
     } else {
-        tracing::event!(tracing::Level::TRACE, file=pathname, line=lineno, %target, %message);
+        tracing::event!(target: "", tracing::Level::TRACE, file=pathname, line=lineno, %message);
     }
 
     Ok(())
@@ -53,7 +52,7 @@ fn host_log<'py>(record: Bound<'py, PyAny>) -> PyResult<()> {
 ///
 /// Since any call like `logging.warn(...)` sets up logging via `logging.basicConfig`, all log messages are now
 /// delivered to `crate::host_log`, which will send them to `tracing::event!`.
-pub fn setup_logging(py: Python, node_id: NodeId, dataflow_id: DataflowId) -> PyResult<()> {
+pub fn setup_logging(py: Python) -> PyResult<()> {
     let logging = py.import("logging")?;
     logging.setattr("host_log", wrap_pyfunction!(host_log, &logging)?)?;
     py.run(
@@ -130,7 +129,7 @@ impl Node {
 
         Python::with_gil(|py| {
             // Extend the `logging` module to interact with tracing
-            setup_logging(py, node_id.clone(), dataflow_id)
+            setup_logging(py)
         })?;
 
         Ok(Node {
