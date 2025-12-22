@@ -12,12 +12,6 @@ pub struct ConfigManager {
     project_path: PathBuf,
 }
 
-#[derive(Debug, Serialize, Deserialize, Default)]
-pub struct DoraConfig {
-    #[serde(flatten)]
-    pub values: HashMap<String, toml::Value>,
-}
-
 impl ConfigManager {
     /// Create a new configuration manager
     pub fn new() -> Result<Self> {
