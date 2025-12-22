@@ -326,6 +326,8 @@ jobs:
         timeout-minutes: 45
         # fail-fast by using bash shell explictly
         shell: bash
+        env:
+          RUST_BACKTRACE: 1
         run: |
           # Test Rust template Project
           dora new test_rust_project --internal-create-with-path-dependencies
