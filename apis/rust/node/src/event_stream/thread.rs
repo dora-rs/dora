@@ -167,7 +167,7 @@ fn event_stream_loop(
                     }
                     Err(send_error) => {
                         let event = send_error.into_inner();
-                        tracing::trace!(
+                        tracing::warn!(
                             "event channel was closed already, could not forward `{event:?}`"
                         );
 
