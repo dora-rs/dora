@@ -366,7 +366,7 @@ jobs:
           else
             source .venv/Scripts/activate
           fi
-          uv pip install -e ../apis/python/node
+          uv pip install -e apis/python/node
           uv pip install ruff pytest
 
           echo PATH=$PATH >> "$GITHUB_ENV"
