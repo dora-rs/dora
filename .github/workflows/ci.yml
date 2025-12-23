@@ -429,7 +429,7 @@ jobs:
           echo "Running CI Async test"
           ## TODO: Fix async Windows support
           if [ "$RUNNER_OS" != "Windows" ]; then
-            dora run examples/python-async/dataflow.yaml --uv
+            RUST_LOG=debug dora run examples/python-async/dataflow.yaml --uv
           fi
 
           # Run Python drain
