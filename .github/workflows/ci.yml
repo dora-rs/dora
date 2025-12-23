@@ -326,8 +326,6 @@ jobs:
         timeout-minutes: 45
         # fail-fast by using bash shell explictly
         shell: bash
-        env:
-          RUST_BACKTRACE: 1
         run: |
           # Test Rust template Project
           dora new test_rust_project --internal-create-with-path-dependencies
@@ -429,7 +427,7 @@ jobs:
           echo "Running CI Async test"
           ## TODO: Fix async Windows support
           if [ "$RUNNER_OS" != "Windows" ]; then
-            RUST_LOG=debug dora run examples/python-async/dataflow.yaml --uv
+            dora run examples/python-async/dataflow.yaml --uv
           fi
 
           # Run Python drain

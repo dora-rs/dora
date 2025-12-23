@@ -3,7 +3,7 @@ use dora_core::{
     uhlc::{self, Timestamp},
 };
 use dora_message::{
-    daemon_to_node::{DaemonReply, NodeEvent, NodeEventOrUnknown},
+    daemon_to_node::{DaemonReply, NodeEvent},
     node_to_daemon::{DaemonRequest, DropToken, Timestamped},
 };
 use eyre::{Context, eyre};
@@ -111,7 +111,7 @@ fn event_stream_loop(
         let events = match channel.request(&daemon_request) {
             Ok(DaemonReply::NextEvents(events)) => {
                 if events.is_empty() {
-                    tracing::debug!("event stream closed for node `{node_id}`");
+                    tracing::trace!("event stream closed for node `{node_id}`");
                     break Ok(());
                 } else {
                     events
@@ -138,14 +138,7 @@ fn event_stream_loop(
             if let Err(err) = clock.update_with_timestamp(&timestamp) {
                 tracing::warn!("failed to update HLC: {err}");
             }
-            let NodeEventOrUnknown::Known(inner) = inner else {
-                tracing::warn!("received unknown event from daemon -> skipping it");
-                continue;
-            };
-
-            tracing::debug!("received event from daemon: {:?}", inner);
-
-            let drop_token = match inner.as_ref() {
+            let drop_token = match &inner {
                 NodeEvent::Input {
                     data: Some(data), ..
                 } => data.drop_token(),
@@ -159,15 +152,13 @@ fn event_stream_loop(
             if let Some(tx) = tx.as_ref() {
                 let (drop_tx, drop_rx) = flume::bounded(0);
                 match tx.send(EventItem::NodeEvent {
-                    event: *inner,
+                    event: inner,
                     ack_channel: drop_tx,
                 }) {
-                    Ok(()) => {
-                        tracing::debug!("forwarded event to event stream");
-                    }
+                    Ok(()) => {}
                     Err(send_error) => {
                         let event = send_error.into_inner();
-                        tracing::warn!(
+                        tracing::trace!(
                             "event channel was closed already, could not forward `{event:?}`"
                         );
 
