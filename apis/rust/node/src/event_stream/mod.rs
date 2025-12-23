@@ -69,6 +69,7 @@ pub struct EventStream {
     write_events_to: Option<WriteEventsTo>,
     start_timestamp: uhlc::Timestamp,
     use_scheduler: bool,
+    closed: bool,
 }
 
 impl EventStream {
@@ -254,6 +255,7 @@ impl EventStream {
             scheduler,
             write_events_to,
             use_scheduler,
+            closed: false,
         })
     }
 
@@ -273,6 +275,12 @@ impl EventStream {
     /// If you want to receive the events in their original chronological order, use the
     /// asynchronous [`StreamExt::next`] method instead ([`EventStream`] implements the
     /// [`Stream`] trait).
+    ///
+    /// ## Panics
+    ///
+    /// This method will panic if called after the event stream has been closed, i.e. after
+    /// it has returned `None` once. Use [`is_closed`][Self::is_closed] to check if the stream
+    /// is closed.
     pub fn recv(&mut self) -> Option<Event> {
         futures::executor::block_on(self.recv_async())
     }
@@ -295,6 +303,12 @@ impl EventStream {
     /// If you want to receive the events in their original chronological order, use the
     /// asynchronous [`StreamExt::next`] method instead ([`EventStream`] implements the
     /// [`Stream`] trait).
+    ///
+    /// ## Panics
+    ///
+    /// This method will panic if called after the event stream has been closed, i.e. after
+    /// it has returned `None` once. Use [`is_closed`][Self::is_closed] to check if the stream
+    /// is closed.
     pub fn recv_timeout(&mut self, dur: Duration) -> Option<Event> {
         futures::executor::block_on(self.recv_async_timeout(dur))
     }
@@ -312,7 +326,18 @@ impl EventStream {
     /// If you want to receive the events in their original chronological order, use the
     /// [`StreamExt::next`] method with a custom timeout future instead
     /// ([`EventStream`] implements the [`Stream`] trait).
+    ///
+    /// ## Panics
+    ///
+    /// This method will panic if called after the event stream has been closed, i.e. after
+    /// it has returned `None` once. Use [`is_closed`][Self::is_closed] to check if the stream
+    /// is closed.
     pub async fn recv_async(&mut self) -> Option<Event> {
+        assert!(
+            !self.closed,
+            "receive function called after None was returned"
+        );
+
         if !self.use_scheduler {
             return self.receiver.next().await.map(Self::convert_event_item);
         }
@@ -331,12 +356,24 @@ impl EventStream {
             }
         }
         let event = self.scheduler.next();
+        tracing::debug!("received event from scheduler: {:?}", event);
+        if event.is_none() {
+            self.closed = true;
+        }
         event.map(Self::convert_event_item)
     }
 
     /// Check if there are any buffered events in the scheduler or the receiver.
     pub fn is_empty(&self) -> bool {
         self.scheduler.is_empty() & self.receiver.is_empty()
+    }
+
+    /// Returns `true` if the event stream has been closed.
+    ///
+    /// An event stream is closed after it has returned `None` once from
+    /// any of its receive methods. Calling receive methods again after that will panic.
+    pub fn is_closed(&self) -> bool {
+        self.closed
     }
 
     fn add_event(&mut self, event: EventItem) {
