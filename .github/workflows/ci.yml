@@ -406,7 +406,7 @@ jobs:
         # fail-fast by using bash shell explicitly
         shell: bash
         env:
-          RUST_LOG: debug
+          RUST_LOG: info
         run: |
           echo "Running Python Node Example"
           dora up
