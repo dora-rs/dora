@@ -14,7 +14,7 @@ use dora_core::{
 };
 use dora_message::{
     common::{DataMessage, Timestamped},
-    daemon_to_node::{DaemonReply, NodeEvent},
+    daemon_to_node::{DaemonReply, NodeEvent, NodeEventOrUnknown},
     integration_testing_format::{
         IncomingEvent, InputData, IntegrationTestInput, TimedIncomingEvent,
     },
@@ -157,7 +157,7 @@ impl IntegrationTestingEvents {
         Ok(DaemonReply::Empty)
     }
 
-    fn next_event(&mut self) -> eyre::Result<Option<Timestamped<NodeEvent>>> {
+    fn next_event(&mut self) -> eyre::Result<Option<Timestamped<NodeEventOrUnknown>>> {
         let Some(event) = self.events.next() else {
             return Ok(None);
         };
@@ -205,7 +205,7 @@ impl IntegrationTestingEvents {
             IncomingEvent::AllInputsClosed => NodeEvent::AllInputsClosed,
         };
         Ok(Some(Timestamped {
-            inner: converted,
+            inner: converted.into(),
             timestamp,
         }))
     }
