@@ -356,14 +356,9 @@ jobs:
         with:
           enable-cache: true
 
-      - name: "Test CLI (Python): Template Project"
-        timeout-minutes: 80
-        # fail-fast by using bash shell explicitly
+      - name: "Set up venv"
         shell: bash
         run: |
-          # Test Python template Project
-          dora new test_python_project --lang python --internal-create-with-path-dependencies
-          cd test_python_project
           uv venv --seed -p 3.12
           ## If not Windows
           if [ "$RUNNER_OS" != "Windows" ]; then
@@ -373,6 +368,17 @@ jobs:
           fi
           uv pip install -e ../apis/python/node
           uv pip install ruff pytest
+
+          echo PATH=$PATH >> "$GITHUB_ENV"
+
+      - name: "Test CLI (Python): Template Project"
+        timeout-minutes: 80
+        # fail-fast by using bash shell explicitly
+        shell: bash
+        run: |
+          # Test Python template Project
+          dora new test_python_project --lang python --internal-create-with-path-dependencies
+          cd test_python_project
 
           echo "Running dora up"
           dora up
