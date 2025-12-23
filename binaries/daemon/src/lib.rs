@@ -2683,6 +2683,7 @@ impl RunningDataflow {
         force: bool,
         logger: &mut DataflowLogger<'_>,
     ) -> eyre::Result<()> {
+        tracing::info!("stopping all nodes in dataflow {}", self.id);
         self.pending_nodes
             .handle_dataflow_stop(
                 coordinator_connection,
@@ -2717,6 +2718,10 @@ impl RunningDataflow {
                 for (node, proc) in &running_processes {
                     if let Some(proc) = proc {
                         if proc.submit(crate::ProcessOperation::SoftKill) {
+                            warn!(
+                                "{node} was killed (soft) due to not stopping within the {:#?} grace period",
+                                duration
+                            );
                             grace_duration_kills.insert(node.clone());
                         }
                     }
