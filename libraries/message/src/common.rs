@@ -74,13 +74,9 @@ impl From<LogMessageHelper> for LogMessage {
                     }
                 })),
             level: helper.level,
-            target: {
-                match helper.target {
-                    Some(t) if !t.is_empty() => Some(t),
-                    // try to fall back to fields if target is None or the empty string
-                    _ => fields.and_then(|f| f.get("target").cloned()),
-                }
-            },
+            target: helper
+                .target
+                .or(fields.and_then(|f| f.get("target").cloned())),
             module_path: helper
                 .module_path
                 .or(fields.and_then(|f| f.get("module_path").cloned())),
