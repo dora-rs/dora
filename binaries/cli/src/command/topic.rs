@@ -1,10 +1,11 @@
 use crate::command::{
     Executable,
-    topic::{echo::Echo, hz::Hz, list::List},
+    topic::{echo::Echo, hz::Hz, info::Info, list::List},
 };
 
 mod echo;
 mod hz;
+mod info;
 mod list;
 mod selector;
 
@@ -14,6 +15,7 @@ pub enum Topic {
     List(List),
     Echo(Echo),
     Hz(Hz),
+    Info(Info),
 }
 
 impl Executable for Topic {
@@ -22,6 +24,7 @@ impl Executable for Topic {
             Topic::List(cmd) => cmd.execute(),
             Topic::Echo(cmd) => cmd.execute(),
             Topic::Hz(cmd) => cmd.execute(),
+            Topic::Info(cmd) => cmd.execute(),
         }
     }
 }
