@@ -406,6 +406,8 @@ jobs:
         timeout-minutes: 20
         # fail-fast by using bash shell explicitly
         shell: bash
+        env:
+          RUST_LOG: debug
         run: |
           echo "Running Python Node Example"
           dora up
