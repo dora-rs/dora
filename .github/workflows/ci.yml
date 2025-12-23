@@ -121,7 +121,7 @@ jobs:
       # CLI tests
       - name: "Build cli and binaries"
         timeout-minutes: 45
-        # fail-fast by using bash shell explictly
+        # fail-fast by using bash shell explicitly
         shell: bash
         run: |
           cargo install --path binaries/cli --locked
@@ -318,13 +318,13 @@ jobs:
       # CLI tests
       - name: "Build cli and binaries"
         timeout-minutes: 45
-        # fail-fast by using bash shell explictly
+        # fail-fast by using bash shell explicitly
         shell: bash
         run: |
           cargo install --path binaries/cli --locked
       - name: "Test CLI (Rust)"
         timeout-minutes: 45
-        # fail-fast by using bash shell explictly
+        # fail-fast by using bash shell explicitly
         shell: bash
         run: |
           # Test Rust template Project
@@ -354,14 +354,9 @@ jobs:
         with:
           enable-cache: true
 
-      - name: "Test CLI (Python)"
-        timeout-minutes: 80
-        # fail-fast by using bash shell explictly
+      - name: "Set up venv"
         shell: bash
         run: |
-          # Test Python template Project
-          dora new test_python_project --lang python --internal-create-with-path-dependencies
-          cd test_python_project
           uv venv --seed -p 3.12
           ## If not Windows
           if [ "$RUNNER_OS" != "Windows" ]; then
@@ -369,6 +364,18 @@ jobs:
           else
             source .venv/Scripts/activate
           fi
+
+          echo PATH=$PATH >> "$GITHUB_ENV"
+
+      - name: "Test CLI (Python): Template Project"
+        timeout-minutes: 80
+        # fail-fast by using bash shell explicitly
+        shell: bash
+        run: |
+          # Test Python template Project
+          dora new test_python_project --lang python --internal-create-with-path-dependencies
+          cd test_python_project
+
           uv pip install -e ../apis/python/node
           uv pip install ruff pytest
 
@@ -394,8 +401,13 @@ jobs:
           sleep 5
 
           cd ..
-
-          # Run Python Node Example
+      - name: "Test CLI (Python): Node example"
+        timeout-minutes: 20
+        # fail-fast by using bash shell explicitly
+        shell: bash
+        env:
+          RUST_LOG: debug
+        run: |
           echo "Running Python Node Example"
           dora up
           dora build examples/python-dataflow/dataflow.yml --uv
@@ -403,8 +415,11 @@ jobs:
           sleep 10
           echo "Running dora stop"
           dora stop --name ci-python  --grace-duration 30s
-
-          # Run Python Dynamic Node Example
+      - name: "Test CLI (Python): Dynamic Node example"
+        timeout-minutes: 20
+        # fail-fast by using bash shell explicitly
+        shell: bash
+        run: |
           echo "Running Python Node Dynamic Example"
           dora build examples/python-dataflow/dataflow_dynamic.yml --uv
           dora start examples/python-dataflow/dataflow_dynamic.yml --name ci-python-dynamic --detach --uv
@@ -412,39 +427,45 @@ jobs:
           sleep 10
           echo "Running dora stop"
           dora stop --name ci-python-dynamic  --grace-duration 30s
-
-          # Run Python Operator Example
+      - name: "Test CLI (Python): Operator example"
+        timeout-minutes: 20
+        # fail-fast by using bash shell explicitly
+        shell: bash
+        run: |
           echo "Running CI Operator Test"
           dora start examples/python-operator-dataflow/dataflow.yml --name ci-python-operator --detach --uv
           sleep 10
           echo "Running dora stop"
           dora stop --name ci-python-operator  --grace-duration 30s
-
+      - name: "Test CLI (Python): Dora destroy"
+        timeout-minutes: 5
+        # fail-fast by using bash shell explicitly
+        shell: bash
+        run: |
           dora destroy
           sleep 5
-
-          # Run Python async
-          echo "Running CI Async test"
-          ## TODO: Fix async Windows support
-          if [ "$RUNNER_OS" != "Windows" ]; then
-            dora run examples/python-async/dataflow.yaml --uv
-          fi
-
-          # Run Python drain
-          echo "Running CI Drain Test"
-          dora run examples/python-drain/dataflow.yaml --uv
-
-          # Test Dora Python Dataflow builder
-          uv run examples/python-dataflow-builder/simple_example.py
-
-          # Run Python queue latency test
-          echo "Running CI Queue Latency Test"
-          dora run tests/queue_size_latest_data_python/dataflow.yaml --uv
-
-          # Run Python queue latency test + timeout
-          echo "Running CI Queue + Timeout Test"
-          dora run tests/queue_size_and_timeout_python/dataflow.yaml --uv
-
+      - name: "Test CLI (Python): Async Example"
+        timeout-minutes: 30
+        ## TODO: Fix async Windows support
+        if: runner.os != 'Windows'
+        env:
+          RUST_LOG: debug
+        run: dora run examples/python-async/dataflow.yaml --uv
+      - name: "Test CLI (Python): Drain Example"
+        timeout-minutes: 30
+        run: dora run examples/python-drain/dataflow.yaml --uv
+      - name: "Test CLI (Python): Dataflow Builder Example"
+        timeout-minutes: 30
+        run: uv run examples/python-dataflow-builder/simple_example.py
+      - name: "Test CLI (Python): Queue Latency Test"
+        timeout-minutes: 30
+        run: dora run tests/queue_size_latest_data_python/dataflow.yaml --uv
+      - name: "Test CLI (Python): Queue Latency + Timeout Test"
+        timeout-minutes: 30
+        run: dora run tests/queue_size_and_timeout_python/dataflow.yaml --uv
+      - name: "Test CLI (Python): Queue Latency Rust Test"
+        timeout-minutes: 30
+        run: |
           # Run Rust queue latency test
           echo "Running CI Queue Size Latest Data Rust Test"
           dora build tests/queue_size_latest_data_rust/dataflow.yaml --uv
@@ -452,7 +473,7 @@ jobs:
 
       - name: "Test CLI (C)"
         timeout-minutes: 45
-        # fail-fast by using bash shell explictly
+        # fail-fast by using bash shell explicitly
         shell: bash
         if: runner.os == 'Linux'
         run: |
@@ -471,7 +492,7 @@ jobs:
 
       - name: "Test CLI (C++)"
         timeout-minutes: 45
-        # fail-fast by using bash shell explictly
+        # fail-fast by using bash shell explicitly
         shell: bash
         if: runner.os == 'Linux'
         run: |
