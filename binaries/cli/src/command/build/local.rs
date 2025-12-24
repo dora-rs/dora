@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 use colored::Colorize;
 use dora_core::{
@@ -8,7 +8,10 @@ use dora_core::{
 use dora_message::{common::GitSource, id::NodeId};
 use eyre::Context;
 
-use crate::session::DataflowSession;
+use crate::{
+    progress::{MultiProgress, ProgressBar},
+    session::DataflowSession,
+};
 
 pub fn build_dataflow_locally(
     dataflow: Descriptor,
@@ -41,9 +44,14 @@ async fn build_dataflow(
         uv,
     };
     let nodes = dataflow.resolve_aliases_and_set_defaults()?;
+    let node_count = nodes.len() as u64;
 
     let mut git_manager = GitManager::default();
     let prev_git_sources = &dataflow_session.git_sources;
+
+    // Create multi-progress for showing all nodes being built
+    let multi = Arc::new(MultiProgress::new());
+    let overall_pb = multi.add_bar(node_count, "Building nodes");
 
     let mut tasks = Vec::new();
 
@@ -57,6 +65,9 @@ async fn build_dataflow(
             git_source: prev_source,
         });
 
+        // Create a progress spinner for this specific node
+        let node_pb = Arc::new(multi.add_spinner(format!("Building {}", node_id)));
+
         let task = builder
             .clone()
             .build_node(
@@ -65,6 +76,8 @@ async fn build_dataflow(
                 prev_git,
                 LocalBuildLogger {
                     node_id: node_id.clone(),
+                    progress_bar: Some(node_pb),
+                    multi: Some(multi.clone()),
                 },
                 &mut git_manager,
             )
@@ -82,12 +95,17 @@ async fn build_dataflow(
             .with_context(|| format!("failed to build node `{node_id}`"))?;
         info.node_working_dirs
             .insert(node_id, node.node_working_dir);
+        overall_pb.inc(1);
     }
+
+    overall_pb.finish_with_message(format!("Built {} nodes successfully", node_count));
     Ok(info)
 }
 
 struct LocalBuildLogger {
     node_id: NodeId,
+    progress_bar: Option<Arc<ProgressBar>>,
+    multi: Option<Arc<MultiProgress>>,
 }
 
 impl BuildLogger for LocalBuildLogger {
@@ -98,7 +116,11 @@ impl BuildLogger for LocalBuildLogger {
         level: impl Into<LogLevelOrStdout> + Send,
         message: impl Into<String> + Send,
     ) {
-        let level = match level.into() {
+        let message_str: String = message.into();
+        let log_level = level.into();
+
+        // Format the log message with colors
+        let level_colored = match log_level {
             LogLevelOrStdout::LogLevel(level) => match level {
                 log::Level::Error => "ERROR ".red(),
                 log::Level::Warn => "WARN  ".yellow(),
@@ -109,13 +131,45 @@ impl BuildLogger for LocalBuildLogger {
             LogLevelOrStdout::Stdout => "stdout".italic().dimmed(),
         };
         let node = self.node_id.to_string().bold().bright_black();
-        let message: String = message.into();
-        println!("{node}: {level}   {message}");
+        let formatted_msg = format!("{node}: {level_colored}   {message_str}");
+
+        // Print using MultiProgress::println to keep progress bars pinned at bottom
+        // Falls back to regular println! for non-terminal outputs
+        if let Some(multi) = &self.multi {
+            let _ = multi.println(&formatted_msg);
+        } else {
+            println!("{}", formatted_msg);
+        }
+
+        // Also update progress bar message if available
+        if let Some(pb) = &self.progress_bar {
+            let level_indicator = match log_level {
+                LogLevelOrStdout::LogLevel(level) => match level {
+                    log::Level::Error => "ERROR",
+                    log::Level::Warn => "WARN",
+                    log::Level::Info => "",
+                    log::Level::Debug => "DEBUG",
+                    log::Level::Trace => "TRACE",
+                },
+                LogLevelOrStdout::Stdout => "",
+            };
+
+            if !level_indicator.is_empty() {
+                pb.set_message(format!(
+                    "{}: {} - {}",
+                    self.node_id, level_indicator, message_str
+                ));
+            } else {
+                pb.set_message(format!("{}: {}", self.node_id, message_str));
+            }
+        }
     }
 
     async fn try_clone(&self) -> eyre::Result<Self::Clone> {
         Ok(LocalBuildLogger {
             node_id: self.node_id.clone(),
+            progress_bar: self.progress_bar.clone(),
+            multi: self.multi.clone(),
         })
     }
 }
