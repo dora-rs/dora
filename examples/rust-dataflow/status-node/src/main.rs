@@ -25,6 +25,13 @@ fn main() -> eyre::Result<()> {
                         output.into_arrow(),
                     )?;
                 }
+                "fail" => {
+                    panic!("simulated failure as requested");
+                }
+                "trigger-exit" => {
+                    println!("trigger-exit received, sending exit signal to sink");
+                    node.send_output_bytes("triggered-exit".into(), metadata.parameters, 0, &[])?
+                }
                 other => eprintln!("ignoring unexpected input {other}"),
             },
             Event::Stop(_) => {}
