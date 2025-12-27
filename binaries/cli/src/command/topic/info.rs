@@ -201,8 +201,8 @@ fn info(
                             break;
                         }
                         InterDaemonEvent::NodeFailed { .. } => {
-                            // NodeFailed events are not relevant for topic info
-                            continue;
+                            // Node failed, stop collecting statistics
+                            break;
                         }
                     }
                 }

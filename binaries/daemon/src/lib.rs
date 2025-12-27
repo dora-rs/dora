@@ -564,11 +564,13 @@ impl Daemon {
                         tracing::info!("exiting daemon because all dataflows are finished");
                         break;
                     }
-                    // Also exit in example mode when all dataflows finish, even if exit_when_done
-                    // tracking didn't catch all nodes (e.g., if nodes finish before being tracked)
+                    // Fallback for example mode: exit when all dataflows finish, even if exit_when_done
+                    // tracking didn't catch all nodes. This handles edge cases where nodes finish
+                    // before being added to exit_when_done (e.g., very fast nodes or initialization issues).
+                    // The primary exit path (lines 553-560) should handle normal cases.
                     if self.exit_when_done.is_some() && self.running.is_empty() {
                         tracing::info!(
-                            "exiting daemon because all dataflows are finished (example mode)"
+                            "exiting daemon because all dataflows are finished (example mode fallback)"
                         );
                         break;
                     }
@@ -1070,43 +1072,15 @@ impl Daemon {
                         format!("failed to handle NodeFailed: no running dataflow with ID `{dataflow_id}`")
                     })?;
 
-                    // Determine which local nodes are affected by this failure
-                    // by checking which nodes have inputs from the failed node's outputs
-                    let outputs: Vec<DataId> = dataflow
-                        .mappings
-                        .keys()
-                        .filter(|m| &m.0 == &source_node_id)
-                        .map(|m| m.1.clone())
-                        .collect();
+                    // Use the same helper function to find and notify local receivers
+                    // (remote_receivers is ignored here since we're already handling a remote event)
+                    let (_outputs, _remote_receivers) = Self::find_and_notify_local_receivers(
+                        dataflow,
+                        &source_node_id,
+                        &error,
+                        &self.clock,
+                    );
 
-                    // Group affected inputs by receiver node (only local nodes)
-                    let mut affected_by_receiver: BTreeMap<NodeId, Vec<DataId>> = BTreeMap::new();
-                    for output_id in outputs {
-                        let output_key = OutputId(source_node_id.clone(), output_id.clone());
-                        if let Some(receivers) = dataflow.mappings.get(&output_key) {
-                            for (receiver_node_id, input_id) in receivers {
-                                // Only process if this node is local (has a subscribe channel)
-                                if dataflow.subscribe_channels.contains_key(receiver_node_id) {
-                                    affected_by_receiver
-                                        .entry(receiver_node_id.clone())
-                                        .or_insert_with(Vec::new)
-                                        .push(input_id.clone());
-                                }
-                            }
-                        }
-                    }
-
-                    // Send NodeFailed event to each affected local node
-                    for (receiver_node_id, affected_input_ids) in affected_by_receiver {
-                        if let Some(channel) = dataflow.subscribe_channels.get(&receiver_node_id) {
-                            let event = NodeEvent::NodeFailed {
-                                affected_input_ids,
-                                error: error.clone(),
-                                source_node_id: source_node_id.clone(),
-                            };
-                            let _ = send_with_timestamp(channel, event, &self.clock);
-                        }
-                    }
                     Result::<(), eyre::Report>::Ok(())
                 };
                 if let Err(err) = inner
@@ -1849,34 +1823,20 @@ impl Daemon {
         Ok(())
     }
 
-    /// Send error events to downstream nodes when a node fails.
+    /// Find all receivers affected by a node failure and send NodeFailed events to local ones.
     ///
-    /// This is called automatically when a node exits with a non-zero exit code.
-    /// It sends `NodeFailed` events to all downstream nodes that consume outputs from the failed node.
-    /// For nodes on the same daemon, events are sent directly. For nodes on other daemons,
-    /// events are routed through the coordinator.
-    async fn propagate_node_error(
-        &mut self,
-        dataflow_id: Uuid,
-        source_node_id: NodeId,
-        error_message: String,
-    ) -> Result<(), eyre::ErrReport> {
-        let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
-            format!("propagate error failed: no running dataflow with ID `{dataflow_id}`")
-        })?;
-
-        tracing::warn!(
-            "Node {}/{} failed: {}. Propagating error to downstream nodes.",
-            dataflow_id,
-            source_node_id,
-            error_message
-        );
-
+    /// Returns the list of outputs and a set of remote receiver node IDs (nodes not on this daemon).
+    fn find_and_notify_local_receivers(
+        dataflow: &mut RunningDataflow,
+        source_node_id: &NodeId,
+        error_message: &str,
+        clock: &HLC,
+    ) -> (Vec<DataId>, BTreeSet<NodeId>) {
         // Get all outputs of the failed node
         let outputs: Vec<DataId> = dataflow
             .mappings
             .keys()
-            .filter(|m| &m.0 == &source_node_id)
+            .filter(|m| &m.0 == source_node_id)
             .map(|m| m.1.clone())
             .collect();
 
@@ -1895,10 +1855,12 @@ impl Daemon {
             }
         }
 
-        // Check if there are any remote receivers (nodes not on this daemon)
-        let has_remote_receivers = affected_by_receiver
+        // Identify remote receivers (nodes not on this daemon)
+        let remote_receivers: BTreeSet<NodeId> = affected_by_receiver
             .keys()
-            .any(|receiver_node_id| !dataflow.subscribe_channels.contains_key(receiver_node_id));
+            .filter(|receiver_node_id| !dataflow.subscribe_channels.contains_key(receiver_node_id))
+            .cloned()
+            .collect();
 
         // Send NodeFailed event to each local receiver
         for (receiver_node_id, affected_input_ids) in affected_by_receiver {
@@ -1906,33 +1868,72 @@ impl Daemon {
                 // Local receiver - send directly
                 let event = NodeEvent::NodeFailed {
                     affected_input_ids,
-                    error: error_message.clone(),
+                    error: error_message.to_string(),
                     source_node_id: source_node_id.clone(),
                 };
-                let _ = send_with_timestamp(channel, event, &self.clock);
+                let _ = send_with_timestamp(channel, event, clock);
             }
         }
 
-        // If there are remote receivers, send a single InterDaemonEvent
-        // The receiving daemon will determine which of its nodes are affected
-        if has_remote_receivers {
-            // Use the first output as the routing key (any output will work)
-            let first_output = outputs.first().ok_or_else(|| {
-                eyre!("Failed node has no outputs, cannot send error to remote receivers")
-            })?;
-            let output_id = OutputId(source_node_id.clone(), first_output.clone());
-            let event = InterDaemonEvent::NodeFailed {
-                dataflow_id,
-                source_node_id: source_node_id.clone(),
-                error: error_message.clone(),
-            };
+        (outputs, remote_receivers)
+    }
 
-            // Send to remote receivers using the same mechanism as regular outputs
-            if let Err(err) = self
-                .send_to_remote_receivers(dataflow_id, &output_id, event)
-                .await
-            {
-                tracing::warn!("Failed to send error event to remote receivers: {err:?}");
+    /// Send error events to downstream nodes when a node fails.
+    ///
+    /// This is called automatically when a node exits with a non-zero exit code.
+    /// It sends `NodeFailed` events to all downstream nodes that consume outputs from the failed node.
+    /// For nodes on the same daemon, events are sent directly. For nodes on other daemons,
+    /// events are routed through zenoh by sending to all outputs (to ensure all subscribing daemons receive it).
+    async fn propagate_node_error(
+        &mut self,
+        dataflow_id: Uuid,
+        source_node_id: NodeId,
+        error_message: String,
+    ) -> Result<(), eyre::ErrReport> {
+        let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
+            format!("propagate error failed: no running dataflow with ID `{dataflow_id}`")
+        })?;
+
+        tracing::warn!(
+            "Node {}/{} failed: {}. Propagating error to downstream nodes.",
+            dataflow_id,
+            source_node_id,
+            error_message
+        );
+
+        let (outputs, remote_receivers) = Self::find_and_notify_local_receivers(
+            dataflow,
+            &source_node_id,
+            &error_message,
+            &self.clock,
+        );
+
+        // If there are remote receivers, send InterDaemonEvent to all outputs
+        // This ensures all daemons that subscribe to any of the node's outputs will receive the error
+        if !remote_receivers.is_empty() {
+            // If node has no outputs, there are no remote receivers to notify
+            if outputs.is_empty() {
+                return Ok(());
+            }
+
+            // Send to all outputs to ensure all subscribing daemons receive the error
+            // (daemons subscribe to specific output topics, so we need to send to each one)
+            for output_id in &outputs {
+                let output_key = OutputId(source_node_id.clone(), output_id.clone());
+                let event = InterDaemonEvent::NodeFailed {
+                    dataflow_id,
+                    source_node_id: source_node_id.clone(),
+                    error: error_message.clone(),
+                };
+                if let Err(err) = self
+                    .send_to_remote_receivers(dataflow_id, &output_key, event)
+                    .await
+                {
+                    tracing::warn!(
+                        "Failed to send error event to remote receivers via output {}: {err:?}",
+                        output_id
+                    );
+                }
             }
         }
 
