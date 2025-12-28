@@ -40,7 +40,7 @@ impl<T> DelayedCleanup<T> {
         CleanupHandle(self.0.clone())
     }
 
-    pub fn get_mut(&self) -> std::sync::MutexGuard<T> {
+    pub fn get_mut(&self) -> std::sync::MutexGuard<'_, T> {
         self.0.try_lock().expect("failed to lock DelayedCleanup")
     }
 }

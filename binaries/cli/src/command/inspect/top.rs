@@ -212,7 +212,7 @@ impl App {
         }
     }
 
-    fn update_stats(&mut self, node_infos: Vec<NodeInfo>) {
+    fn update_stats(&mut self, node_infos: &[NodeInfo]) {
         self.node_stats.clear();
 
         // Use daemon-provided metrics (works for distributed nodes!)
@@ -234,8 +234,10 @@ impl App {
                 dataflow_id: node_info.dataflow_id,
                 dataflow_name: node_info
                     .dataflow_name
-                    .unwrap_or_else(|| "<unnamed>".to_string()),
-                node_id: node_info.node_id,
+                    .as_deref()
+                    .unwrap_or("<unnamed>")
+                    .to_owned(),
+                node_id: node_info.node_id.clone(),
                 pid,
                 cpu_usage,
                 memory_mb,
@@ -346,7 +348,7 @@ fn run_app<B: Backend>(
             }
 
             // Update stats with current node info
-            app.update_stats(node_infos.clone());
+            app.update_stats(&node_infos);
             last_update = Instant::now();
         }
     }
