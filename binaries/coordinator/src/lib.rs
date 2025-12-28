@@ -778,7 +778,7 @@ async fn start_inner(
 
                             let mut node_infos = Vec::new();
                             for dataflow in running_dataflows.values() {
-                                for (node_id, _node) in &dataflow.nodes {
+                                for node_id in dataflow.nodes.keys() {
                                     // Get the specific daemon this node is running on
                                     if let Some(daemon_id) = dataflow.node_to_daemon.get(node_id) {
                                         // Get metrics if available

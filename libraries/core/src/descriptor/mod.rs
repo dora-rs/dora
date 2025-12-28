@@ -239,11 +239,11 @@ pub fn resolve_path(source: &str, working_dir: &Path) -> Result<PathBuf> {
 }
 
 pub trait NodeExt {
-    fn kind(&self) -> eyre::Result<NodeKind>;
+    fn kind(&self) -> eyre::Result<NodeKind<'_>>;
 }
 
 impl NodeExt for Node {
-    fn kind(&self) -> eyre::Result<NodeKind> {
+    fn kind(&self) -> eyre::Result<NodeKind<'_>> {
         match (&self.path, &self.operators, &self.custom, &self.operator) {
             (None, None, None, None) => {
                 eyre::bail!(

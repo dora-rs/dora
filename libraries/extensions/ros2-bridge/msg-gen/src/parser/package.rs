@@ -12,7 +12,7 @@ use crate::types::Package;
 fn get_ros_msgs_each_package<P: AsRef<Path>>(root_dirs: &[P]) -> Result<Vec<Package>> {
     let mut map: HashMap<String, Package> = HashMap::new();
 
-    let ros_formats = vec!["msg", "srv", "action"];
+    let ros_formats = ["msg", "srv", "action"];
 
     // Return empty vector if root_dir is empty
     for root_dir in root_dirs {
@@ -93,7 +93,7 @@ fn get_ros_msgs_each_package<P: AsRef<Path>>(root_dirs: &[P]) -> Result<Vec<Pack
 
     let mut packages = Vec::new();
     let mut dependencies = HashMap::<String, BTreeSet<String>>::new();
-    for (_pkg_name, pkg) in &map {
+    for pkg in map.values() {
         packages.push(pkg.clone());
     }
     for package in &mut packages {
@@ -128,7 +128,7 @@ fn get_ros_msgs_each_package<P: AsRef<Path>>(root_dirs: &[P]) -> Result<Vec<Pack
             .get(&package.name)
             .unwrap()
             .iter()
-            .filter_map(|dep| map.get(dep).map(|pkg| pkg.clone()))
+            .filter_map(|dep| map.get(dep).cloned())
             .collect();
     }
 
