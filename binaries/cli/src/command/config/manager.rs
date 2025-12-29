@@ -35,11 +35,11 @@ impl ConfigManager {
     }
 
     /// Load merged configuration from all sources
-    /// Priority: project config > global config
+    /// Priority: environment variables > project config > global config
     pub fn load(&self) -> Result<HashMap<String, String>> {
         let mut builder = Config::builder();
 
-        // Load global config if it exists
+        // Load global config if it exists (lowest priority)
         if self.global_path.exists() {
             builder = builder.add_source(
                 File::from(self.global_path.clone())
@@ -62,16 +62,38 @@ impl ConfigManager {
         // Convert to HashMap<String, String> with flattened keys
         let mut result = HashMap::new();
 
-        // Get all keys from the config
+        // Get all keys from the config files
         if let Ok(table) = config.try_deserialize::<HashMap<String, toml::Value>>() {
             flatten_table(&table, String::new(), &mut result);
+        }
+
+        // Add environment variable overrides (highest priority)
+        // Environment variables should be in format: DORA_<KEY> where KEY uses double underscores
+        // e.g., DORA_COORDINATOR__ADDR for coordinator.addr
+        for (key, value) in std::env::vars() {
+            if key.starts_with("DORA_") {
+                let config_key = key
+                    .strip_prefix("DORA_")
+                    .unwrap()
+                    .to_lowercase()
+                    .replace("__", "."); // Double underscore becomes dot
+                result.insert(config_key, value);
+            }
         }
 
         Ok(result)
     }
 
     /// Get a specific configuration value
+    /// Checks environment variables first, then project config, then global config
     pub fn get(&self, key: &str) -> Result<String> {
+        // First check environment variable (highest priority)
+        let env_key = format!("DORA_{}", key.to_uppercase().replace('.', "__"));
+        if let Ok(value) = std::env::var(&env_key) {
+            return Ok(value);
+        }
+
+        // Then check loaded config
         let config = self.load()?;
         config
             .get(key)
