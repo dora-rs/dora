@@ -1,4 +1,4 @@
-#![warn(missing_docs)]
+//! Dora Dataflow Descriptor
 
 use crate::{
     config::{CommunicationConfig, Input, InputMapping, NodeRunConfig},
