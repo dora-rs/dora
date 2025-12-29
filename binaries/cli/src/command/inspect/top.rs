@@ -234,7 +234,7 @@ impl App {
                 dataflow_id: node_info.dataflow_id,
                 dataflow_name: node_info
                     .dataflow_name
-                    .unwrap_or_else(|| "<unnamed>".to_string()),
+                    .unwrap_or_else(|| "<unnamed>".to_owned()),
                 node_id: node_info.node_id,
                 pid,
                 cpu_usage,
@@ -256,30 +256,19 @@ fn run_app<B: Backend>(
 ) -> eyre::Result<()> {
     let mut app = App::new();
     let mut last_update = Instant::now();
-    let mut node_infos: Vec<NodeInfo> = Vec::new();
 
     // Reuse coordinator connection
     let mut session = connect_to_coordinator((coordinator_addr, coordinator_port).into())
         .wrap_err("Failed to connect to coordinator")?;
 
     // Query node info once initially
-    let request = ControlRequest::GetNodeInfo;
-    let reply_raw = session
-        .request(&serde_json::to_vec(&request).unwrap())
-        .wrap_err("failed to send initial request to coordinator")?;
+    // let request = ControlRequest::GetNodeInfo;
+    // let reply_raw = session
+    //     .request(&serde_json::to_vec(&request).unwrap())
+    //     .wrap_err("failed to send initial request to coordinator")?;
 
-    let reply: ControlRequestReply =
-        serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-
-    node_infos = match reply {
-        ControlRequestReply::NodeInfoList(infos) => infos,
-        ControlRequestReply::Error(err) => {
-            return Err(eyre!("coordinator error: {err}"));
-        }
-        _ => {
-            return Err(eyre!("unexpected reply from coordinator"));
-        }
-    };
+    // let reply: ControlRequestReply =
+    //     serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
 
     loop {
         terminal.draw(|f| ui(f, &mut app, refresh_duration))?;
@@ -333,20 +322,18 @@ fn run_app<B: Backend>(
             let reply: ControlRequestReply =
                 serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
 
-            match reply {
-                ControlRequestReply::NodeInfoList(infos) => {
-                    node_infos = infos;
-                }
+            let node_infos = match reply {
+                ControlRequestReply::NodeInfoList(infos) => infos,
                 ControlRequestReply::Error(err) => {
                     return Err(eyre!("coordinator error: {err}"));
                 }
                 _ => {
                     return Err(eyre!("unexpected reply from coordinator"));
                 }
-            }
+            };
 
             // Update stats with current node info
-            app.update_stats(node_infos.clone());
+            app.update_stats(node_infos);
             last_update = Instant::now();
         }
     }
@@ -365,7 +352,7 @@ fn ui(f: &mut Frame, app: &mut App, refresh_duration: Duration) {
         }
     };
 
-    let header_strings = vec![
+    let header_strings = [
         format!("NODE{}", sort_indicator(SortColumn::Node)),
         "DATAFLOW".to_string(),
         "PID".to_string(),

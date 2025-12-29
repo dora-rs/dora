@@ -359,7 +359,7 @@ impl Message {
         let publisher_name = format_ident!("Publisher__{package_name}__{}", self.name);
         let cxx_publisher_name = format!("Publisher_{}", self.name);
         let create_publisher = format_ident!("new__Publisher__{package_name}__{}", self.name);
-        let cxx_create_publisher = format!("create_publisher");
+        let cxx_create_publisher = "create_publisher";
 
         let struct_raw_name = format_ident!("{package_name}__{}", self.name);
         let struct_raw_name_str = struct_raw_name.to_string();

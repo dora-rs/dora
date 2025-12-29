@@ -1,5 +1,4 @@
 use dora_node_api::{self, DoraNode, Event};
-use eyre::Context;
 use std::time::{Duration, Instant};
 fn main() -> eyre::Result<()> {
     let (_node, mut events) = DoraNode::init_from_env()?;

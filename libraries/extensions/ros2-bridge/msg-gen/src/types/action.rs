@@ -214,7 +214,7 @@ impl Action {
         let create_client = format_ident!("new_ActionClient__{package_name}__{}", self.name);
         let cxx_create_client = format!("create_action_client_{package_name}_{}", self.name);
 
-        let package = format_ident!("{package_name}");
+        // let package = format_ident!("{package_name}");
         let self_name = format_ident!("{}", self.name);
         let self_name_str = &self.name;
 

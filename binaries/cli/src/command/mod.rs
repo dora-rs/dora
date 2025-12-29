@@ -19,8 +19,7 @@ mod topic;
 mod up;
 
 pub use build::build;
-pub use run::{run, run_func};
-pub use system::check_environment;
+pub use run::run;
 
 use build::Build;
 use completion::Completion;

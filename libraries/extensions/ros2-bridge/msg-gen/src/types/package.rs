@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, path::PathBuf};
+use std::path::PathBuf;
 
 use proc_macro2::Span;
 use quote::{ToTokens, format_ident, quote};

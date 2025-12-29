@@ -352,14 +352,14 @@ fn ui(
     window_dur: Duration,
 ) {
     // Layout: table | charts | footer
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage(55),
-            Constraint::Percentage(44),
-            Constraint::Length(1),
-        ])
-        .split(f.area());
+    // let chunks = Layout::default()
+    //     .direction(Direction::Vertical)
+    //     .constraints([
+    //         Constraint::Percentage(55),
+    //         Constraint::Percentage(44),
+    //         Constraint::Length(1),
+    //     ])
+    //     .split(f.area());
 
     // Table header: interval stats in ms + derived avg Hz
     let header = Row::new([

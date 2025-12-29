@@ -53,7 +53,7 @@ fn host_log<'py>(record: Bound<'py, PyAny>) -> PyResult<()> {
 ///
 /// Since any call like `logging.warn(...)` sets up logging via `logging.basicConfig`, all log messages are now
 /// delivered to `crate::host_log`, which will send them to `tracing::event!`.
-pub fn setup_logging(py: Python, node_id: NodeId, dataflow_id: DataflowId) -> PyResult<()> {
+pub fn setup_logging(py: Python, _node_id: NodeId, _dataflow_id: DataflowId) -> PyResult<()> {
     let logging = py.import("logging")?;
     logging.setattr("host_log", wrap_pyfunction!(host_log, &logging)?)?;
     py.run(
@@ -61,7 +61,7 @@ pub fn setup_logging(py: Python, node_id: NodeId, dataflow_id: DataflowId) -> Py
 class HostHandler(Handler):
 	def __init__(self, level=0):
 		super().__init__(level=level)
-	
+
 	def emit(self, record):
 		host_log(record)
 
@@ -218,10 +218,7 @@ impl Node {
     #[allow(clippy::should_implement_trait)]
     pub fn try_recv(&mut self, py: Python) -> Option<Py<PyDict>> {
         match self.events.try_recv() {
-            Ok(event) => match event.to_py_dict(py) {
-                Ok(dict) => Some(dict),
-                Err(_) => None,
-            },
+            Ok(event) => event.to_py_dict(py).ok(),
             Err(_) => None,
         }
     }
