@@ -153,7 +153,7 @@ pub async fn read_as_descriptor(path: &Path) -> eyre::Result<Descriptor> {
     Descriptor::parse(buf)
 }
 
-fn node_kind_mut(node: &mut Node) -> eyre::Result<NodeKindMut> {
+fn node_kind_mut(node: &mut Node) -> eyre::Result<NodeKindMut<'_>> {
     match node.kind()? {
         NodeKind::Standard(_) => {
             let source = match (&node.git, &node.branch, &node.tag, &node.rev) {

@@ -482,7 +482,6 @@ impl PreparedNode {
         // Stderr listener stream
         let stderr_tx = tx.clone();
         let node_id = self.node.id.clone();
-        let uhlc = self.clock.clone();
         let daemon_tx_log = self.daemon_tx.clone();
         tokio::spawn(async move {
             let mut buffer = String::new();
