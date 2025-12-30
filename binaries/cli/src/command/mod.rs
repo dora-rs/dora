@@ -9,6 +9,7 @@ mod list;
 mod logs;
 mod new;
 mod node;
+mod ros;
 mod run;
 mod runtime;
 mod self_;
@@ -34,6 +35,7 @@ use list::ListArgs;
 use logs::LogsArgs;
 use new::NewArgs;
 use node::Node;
+use ros::Ros;
 use run::Run;
 use runtime::Runtime;
 use self_::SelfSubCommand;
@@ -77,6 +79,8 @@ pub enum Command {
     Topic(Topic),
     #[clap(subcommand)]
     Node(Node),
+    #[clap(subcommand)]
+    Ros(Ros),
 
     Completion(Completion),
     Self_ {
@@ -124,6 +128,7 @@ impl Executable for Command {
             Command::Runtime(args) => args.execute(),
             Command::Topic(args) => args.execute(),
             Command::Node(args) => args.execute(),
+            Command::Ros(args) => args.execute(),
             Command::Completion(args) => args.execute(),
         }
     }

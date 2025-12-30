@@ -1,0 +1,37 @@
+[package]
+name = "dora-ros-compat"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+documentation.workspace = true
+readme.workspace = true
+description = "ROS message format compatibility layer for dora-rs"
+
+[features]
+default = []
+ros1 = ["rosrust"]
+ros2 = []
+python = ["pyo3", "arrow/pyarrow"]
+
+[dependencies]
+arrow = { workspace = true }
+arrow-schema = { workspace = true }
+arrow-array = { workspace = true }
+serde = { version = "1.0.164", features = ["derive"] }
+serde_yaml = { workspace = true }
+eyre = { version = "0.6.8" }
+tracing = "0.1.37"
+dora-arrow-convert = { workspace = true }
+dora-message = { workspace = true }
+dora-core = { workspace = true }
+rosrust = { version = "0.9", optional = true }
+ros2-client = { version = "0.8.0", optional = true }
+tokio = { version = "1.29.1", features = ["full"] }
+futures = "0.3.21"
+pyo3 = { workspace = true, optional = true }
+pyo3_special_method_derive = { version = "0.4.3", optional = true }
+
+[dev-dependencies]
+tokio = { version = "1.29.1", features = ["full"] }
+
