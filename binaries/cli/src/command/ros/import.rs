@@ -48,9 +48,7 @@ impl Executable for Import {
 }
 
 fn import_ros_messages(args: Import) -> eyre::Result<()> {
-    use dora_ros_compat::message_parser;
     use std::fs;
-    use std::path::Path;
 
     println!("Importing ROS message types: {:?}", args.message_types);
     println!("ROS Version: {}", args.ros_version);

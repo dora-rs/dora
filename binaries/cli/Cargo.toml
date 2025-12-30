@@ -19,6 +19,8 @@ path = "src/main.rs"
 default = ["tracing"]
 tracing = ["dep:dora-tracing"]
 python = ["pyo3"]
+ros1 = ["dora-ros-compat/ros1"]
+ros2 = ["dora-ros-compat/ros2"]
 
 [dependencies]
 arrow = { workspace = true }

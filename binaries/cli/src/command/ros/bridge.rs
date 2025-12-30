@@ -1,5 +1,4 @@
 use clap::Args;
-use eyre::Context;
 use std::path::PathBuf;
 
 use crate::command::{Executable, default_tracing};
@@ -38,8 +37,6 @@ impl Executable for Bridge {
 
 fn start_bridge(args: Bridge) -> eyre::Result<()> {
     use dora_ros_compat::bridge_config::BridgeConfig;
-    use std::sync::Arc;
-    use tokio::sync::mpsc;
 
     println!("Starting ROS bridge...");
 
@@ -91,32 +88,31 @@ fn start_bridge(args: Bridge) -> eyre::Result<()> {
     Ok(())
 }
 
-fn start_ros1_bridge(config: dora_ros_compat::bridge_config::BridgeConfig) -> eyre::Result<()> {
+fn start_ros1_bridge(_config: dora_ros_compat::bridge_config::BridgeConfig) -> eyre::Result<()> {
     println!("Starting ROS 1 bridge...");
 
     #[cfg(feature = "ros1")]
     {
         use dora_ros_compat::bridge::RosBridge;
 
-        let mut bridge = RosBridge::new(config)?;
+        let mut bridge = RosBridge::new(_config)?;
 
         tokio::runtime::Runtime::new()?.block_on(async {
             bridge.start().await?;
             Ok::<(), eyre::Error>(())
         })?;
+        Ok(())
     }
 
     #[cfg(not(feature = "ros1"))]
     {
         eyre::bail!(
             "ROS 1 support requires 'ros1' feature. Build dora-ros-compat with: cargo build --features ros1"
-        );
+        )
     }
-
-    Ok(())
 }
 
-fn start_ros2_bridge(config: dora_ros_compat::bridge_config::BridgeConfig) -> eyre::Result<()> {
+fn start_ros2_bridge(_config: dora_ros_compat::bridge_config::BridgeConfig) -> eyre::Result<()> {
     println!("Starting ROS 2 bridge...");
     println!("Note: ROS 2 bridge integration with dora-ros2-bridge coming soon");
 
@@ -126,18 +122,17 @@ fn start_ros2_bridge(config: dora_ros_compat::bridge_config::BridgeConfig) -> ey
     {
         use dora_ros_compat::bridge::RosBridge;
 
-        let mut bridge = RosBridge::new(config)?;
+        let mut bridge = RosBridge::new(_config)?;
 
         tokio::runtime::Runtime::new()?.block_on(async {
             bridge.start().await?;
             Ok::<(), eyre::Error>(())
         })?;
+        Ok(())
     }
 
     #[cfg(not(any(feature = "ros1", feature = "ros2")))]
     {
-        eyre::bail!("ROS bridge support requires 'ros1' or 'ros2' feature");
+        eyre::bail!("ROS bridge support requires 'ros1' or 'ros2' feature")
     }
-
-    Ok(())
 }

@@ -443,6 +443,7 @@ pub mod common_types {
         pub count: u32,
     }
 
+    #[allow(dead_code)]
     fn create_pointfield_array(
         names: Vec<String>,
         offsets: Vec<u32>,

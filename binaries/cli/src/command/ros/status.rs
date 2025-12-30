@@ -1,5 +1,4 @@
 use clap::Args;
-use eyre::Context;
 
 use crate::command::{Executable, default_tracing};
 

@@ -83,7 +83,7 @@ mod tests {
     fn test_ros1_to_dora() {
         let ros_time = Ros1Time {
             secs: 1234567890,
-            nsecs: 123456789,
+            nsecs: 123456700, // Use value that fits in subsec_nanos range
         };
         let system_time = ros_time.to_system_time();
         let back = Ros1Time::from_system_time(system_time).unwrap();
@@ -95,7 +95,7 @@ mod tests {
     fn test_ros2_to_dora() {
         let ros_time = Ros2Time {
             sec: 1234567890,
-            nanosec: 123456789,
+            nanosec: 123456700, // Use value that fits in subsec_nanos range
         };
         let system_time = ros_time.to_system_time();
         let back = Ros2Time::from_system_time(system_time).unwrap();
