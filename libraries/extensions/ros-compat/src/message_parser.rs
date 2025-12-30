@@ -47,7 +47,7 @@ pub fn parse_msg_file(path: &Path) -> Result<MessageDefinition> {
         .and_then(|n| n.to_str())
         .unwrap_or("unknown")
         .to_string();
-    
+
     let name = path
         .file_stem()
         .and_then(|n| n.to_str())
@@ -69,7 +69,7 @@ pub fn parse_msg_content(content: &str) -> Result<MessageDefinition> {
         // Remove comments
         let (line, _) = line.split_once('#').unwrap_or((line, ""));
         let line = line.trim();
-        
+
         // Skip empty lines
         if line.is_empty() {
             continue;
@@ -79,7 +79,7 @@ pub fn parse_msg_content(content: &str) -> Result<MessageDefinition> {
         if let Some(equal_pos) = line.find('=') {
             let before = line[..equal_pos].trim();
             let after = line[equal_pos + 1..].trim();
-            
+
             if let Some(space_pos) = before.rfind(char::is_whitespace) {
                 let constant_type = before[..space_pos].trim().to_string();
                 let name = before[space_pos..].trim().to_string();
@@ -96,13 +96,13 @@ pub fn parse_msg_content(content: &str) -> Result<MessageDefinition> {
         if let Some(space_pos) = line.rfind(char::is_whitespace) {
             let field_type_part = line[..space_pos].trim();
             let name = line[space_pos..].trim().to_string();
-            
+
             // Check for array syntax: TYPE[] or TYPE[N]
             let (field_type, is_array, array_size) = if field_type_part.ends_with(']') {
                 if let Some(bracket_start) = field_type_part.rfind('[') {
                     let base_type = field_type_part[..bracket_start].trim();
                     let array_part = &field_type_part[bracket_start + 1..field_type_part.len() - 1];
-                    
+
                     if array_part.is_empty() {
                         // Unbounded array: TYPE[]
                         (base_type.to_string(), true, None)
@@ -119,7 +119,7 @@ pub fn parse_msg_content(content: &str) -> Result<MessageDefinition> {
             } else {
                 (field_type_part.to_string(), false, None)
             };
-            
+
             fields.push(MessageField {
                 field_type,
                 name,
@@ -149,11 +149,11 @@ pub fn find_msg_file(workspace: &Path, package: &str, message: &str) -> Result<P
         .join(package)
         .join("msg")
         .join(format!("{}.msg", message));
-    
+
     if msg_path.exists() {
         return Ok(msg_path);
     }
-    
+
     // Try ROS 1 layout (devel/share or share)
     let msg_path = workspace
         .join("devel")
@@ -161,23 +161,28 @@ pub fn find_msg_file(workspace: &Path, package: &str, message: &str) -> Result<P
         .join(package)
         .join("msg")
         .join(format!("{}.msg", message));
-    
+
     if msg_path.exists() {
         return Ok(msg_path);
     }
-    
+
     // Try direct share layout
     let msg_path = workspace
         .join("share")
         .join(package)
         .join("msg")
         .join(format!("{}.msg", message));
-    
+
     if msg_path.exists() {
         return Ok(msg_path);
     }
-    
-    eyre::bail!("Message file not found for {}/{} in workspace: {}", package, message, workspace.display())
+
+    eyre::bail!(
+        "Message file not found for {}/{} in workspace: {}",
+        package,
+        message,
+        workspace.display()
+    )
 }
 
 #[cfg(test)]
@@ -192,7 +197,7 @@ int32 x
 float64 y
 string name
 "#;
-        
+
         let msg = parse_msg_content(content).unwrap();
         assert_eq!(msg.fields.len(), 3);
         assert_eq!(msg.fields[0].name, "x");
@@ -207,10 +212,9 @@ string BAR="hello"
 float64 PI=3.14159
 int32 x
 "#;
-        
+
         let msg = parse_msg_content(content).unwrap();
         assert_eq!(msg.constants.len(), 3);
         assert_eq!(msg.fields.len(), 1);
     }
 }
-

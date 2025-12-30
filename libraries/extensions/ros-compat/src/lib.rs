@@ -4,13 +4,13 @@
 //! It supports both ROS 1 and ROS 2 message types and provides automatic
 //! conversion to/from Dora's Arrow-based data format.
 
-pub mod converter;
-pub mod message_parser;
-pub mod types;
-pub mod timestamp;
-pub mod bridge_config;
 #[cfg(any(feature = "ros1", feature = "ros2"))]
 pub mod bridge;
+pub mod bridge_config;
+pub mod converter;
+pub mod message_parser;
+pub mod timestamp;
+pub mod types;
 
 // Re-export bridge for easier access
 #[cfg(any(feature = "ros1", feature = "ros2"))]
@@ -63,4 +63,3 @@ impl std::fmt::Display for RosVersion {
         }
     }
 }
-

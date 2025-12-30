@@ -1,10 +1,10 @@
 use crate::command::{
     Executable,
-    ros::{import::Import, bridge::Bridge, status::Status},
+    ros::{bridge::Bridge, import::Import, status::Status},
 };
 
-mod import;
 mod bridge;
+mod import;
 mod status;
 
 /// ROS integration commands for message format compatibility and bridging.
@@ -27,4 +27,3 @@ impl Executable for Ros {
         }
     }
 }
-

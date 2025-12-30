@@ -4,7 +4,7 @@
 //! For now, this provides basic conversion utilities that can be extended
 //! when integrating with actual ROS messages.
 
-use std::time::{SystemTime, UNIX_EPOCH, Duration};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// ROS 1 timestamp (secs, nsecs)
 #[derive(Debug, Clone, Copy)]
@@ -103,4 +103,3 @@ mod tests {
         assert_eq!(ros_time.nanosec, back.nanosec);
     }
 }
-

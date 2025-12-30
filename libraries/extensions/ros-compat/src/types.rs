@@ -62,4 +62,3 @@ pub mod geometry_msgs {
         }
     }
 }
-

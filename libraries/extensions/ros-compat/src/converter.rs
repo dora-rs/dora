@@ -18,10 +18,14 @@ pub mod common_types {
     ) -> Result<ArrayRef> {
         let fields = Fields::from(vec![
             Field::new("seq", DataType::UInt32, false),
-            Field::new("stamp", DataType::Struct(Fields::from(vec![
-                Field::new("secs", DataType::UInt32, false),
-                Field::new("nsecs", DataType::UInt32, false),
-            ])), false),
+            Field::new(
+                "stamp",
+                DataType::Struct(Fields::from(vec![
+                    Field::new("secs", DataType::UInt32, false),
+                    Field::new("nsecs", DataType::UInt32, false),
+                ])),
+                false,
+            ),
             Field::new("frame_id", DataType::Utf8, false),
         ]);
 
@@ -36,7 +40,10 @@ pub mod common_types {
         ]);
         let stamp_struct = StructArray::new(
             stamp_fields,
-            vec![Arc::new(secs_array) as ArrayRef, Arc::new(nsecs_array) as ArrayRef],
+            vec![
+                Arc::new(secs_array) as ArrayRef,
+                Arc::new(nsecs_array) as ArrayRef,
+            ],
             None,
         );
 
@@ -63,16 +70,24 @@ pub mod common_types {
         angular_z: f64,
     ) -> Result<ArrayRef> {
         let fields = Fields::from(vec![
-            Field::new("linear", DataType::Struct(Fields::from(vec![
-                Field::new("x", DataType::Float64, false),
-                Field::new("y", DataType::Float64, false),
-                Field::new("z", DataType::Float64, false),
-            ])), false),
-            Field::new("angular", DataType::Struct(Fields::from(vec![
-                Field::new("x", DataType::Float64, false),
-                Field::new("y", DataType::Float64, false),
-                Field::new("z", DataType::Float64, false),
-            ])), false),
+            Field::new(
+                "linear",
+                DataType::Struct(Fields::from(vec![
+                    Field::new("x", DataType::Float64, false),
+                    Field::new("y", DataType::Float64, false),
+                    Field::new("z", DataType::Float64, false),
+                ])),
+                false,
+            ),
+            Field::new(
+                "angular",
+                DataType::Struct(Fields::from(vec![
+                    Field::new("x", DataType::Float64, false),
+                    Field::new("y", DataType::Float64, false),
+                    Field::new("z", DataType::Float64, false),
+                ])),
+                false,
+            ),
         ]);
 
         let linear_x_array = arrow::array::Float64Array::from(vec![linear_x]);
@@ -177,22 +192,24 @@ pub mod common_types {
 
     /// Convert geometry_msgs/Pose to Arrow
     pub fn pose_to_arrow(
-        position_x: f64, position_y: f64, position_z: f64,
-        orientation_x: f64, orientation_y: f64, orientation_z: f64, orientation_w: f64,
+        position_x: f64,
+        position_y: f64,
+        position_z: f64,
+        orientation_x: f64,
+        orientation_y: f64,
+        orientation_z: f64,
+        orientation_w: f64,
     ) -> Result<ArrayRef> {
         let position = point_to_arrow(position_x, position_y, position_z)?;
-        let orientation = quaternion_to_arrow(orientation_x, orientation_y, orientation_z, orientation_w)?;
+        let orientation =
+            quaternion_to_arrow(orientation_x, orientation_y, orientation_z, orientation_w)?;
 
         let fields = Fields::from(vec![
             Field::new("position", position.data_type().clone(), false),
             Field::new("orientation", orientation.data_type().clone(), false),
         ]);
 
-        let pose_struct = StructArray::new(
-            fields,
-            vec![position, orientation],
-            None,
-        );
+        let pose_struct = StructArray::new(fields, vec![position, orientation], None);
 
         Ok(Arc::new(pose_struct))
     }
@@ -322,7 +339,7 @@ pub mod common_types {
             let offset_array = arrow::array::UInt32Array::from(vec![field.offset]);
             let datatype_array = arrow::array::UInt8Array::from(vec![field.datatype]);
             let count_array = arrow::array::UInt32Array::from(vec![field.count]);
-            
+
             let pointfield = StructArray::new(
                 field_fields.clone(),
                 vec![
@@ -345,7 +362,11 @@ pub mod common_types {
             use arrow::buffer::{OffsetBuffer, ScalarBuffer};
             let offsets = OffsetBuffer::new(ScalarBuffer::from(vec![0i32, 0i32]));
             arrow::array::ListArray::new(
-                Arc::new(Field::new("item", DataType::Struct(field_fields.clone()), false)),
+                Arc::new(Field::new(
+                    "item",
+                    DataType::Struct(field_fields.clone()),
+                    false,
+                )),
                 offsets,
                 Arc::new(empty_struct),
                 None,
@@ -356,7 +377,11 @@ pub mod common_types {
             let first_field = pointfield_structs[0].clone();
             let offsets = OffsetBuffer::new(ScalarBuffer::from(vec![0i32, 1i32]));
             arrow::array::ListArray::new(
-                Arc::new(Field::new("item", DataType::Struct(field_fields.clone()), false)),
+                Arc::new(Field::new(
+                    "item",
+                    DataType::Struct(field_fields.clone()),
+                    false,
+                )),
                 offsets,
                 first_field,
                 None,
@@ -367,7 +392,15 @@ pub mod common_types {
             Field::new("header", header.data_type().clone(), false),
             Field::new("height", DataType::UInt32, false),
             Field::new("width", DataType::UInt32, false),
-            Field::new("fields", DataType::List(Arc::new(Field::new("item", DataType::Struct(field_fields), false))), false),
+            Field::new(
+                "fields",
+                DataType::List(Arc::new(Field::new(
+                    "item",
+                    DataType::Struct(field_fields),
+                    false,
+                ))),
+                false,
+            ),
             Field::new("is_bigendian", DataType::UInt8, false),
             Field::new("point_step", DataType::UInt32, false),
             Field::new("row_step", DataType::UInt32, false),
@@ -464,8 +497,16 @@ pub mod common_types {
             Field::new("scan_time", DataType::Float32, false),
             Field::new("range_min", DataType::Float32, false),
             Field::new("range_max", DataType::Float32, false),
-            Field::new("ranges", DataType::List(Arc::new(Field::new("item", DataType::Float32, false))), false),
-            Field::new("intensities", DataType::List(Arc::new(Field::new("item", DataType::Float32, false))), false),
+            Field::new(
+                "ranges",
+                DataType::List(Arc::new(Field::new("item", DataType::Float32, false))),
+                false,
+            ),
+            Field::new(
+                "intensities",
+                DataType::List(Arc::new(Field::new("item", DataType::Float32, false))),
+                false,
+            ),
         ]);
 
         let angle_min_array = arrow::array::Float32Array::from(vec![angle_min]);
@@ -476,19 +517,24 @@ pub mod common_types {
         let range_min_array = arrow::array::Float32Array::from(vec![range_min]);
         let range_max_array = arrow::array::Float32Array::from(vec![range_max]);
         let ranges_array = arrow::array::Float32Array::from_iter_values(ranges.iter().copied());
-        let intensities_array = arrow::array::Float32Array::from_iter_values(intensities.iter().copied());
+        let intensities_array =
+            arrow::array::Float32Array::from_iter_values(intensities.iter().copied());
 
         // Create list arrays using manual construction
         use arrow::buffer::{OffsetBuffer, ScalarBuffer};
-        let ranges_offsets = OffsetBuffer::new(ScalarBuffer::from(vec![0i32, ranges_array.len() as i32]));
+        let ranges_offsets =
+            OffsetBuffer::new(ScalarBuffer::from(vec![0i32, ranges_array.len() as i32]));
         let ranges_list = arrow::array::ListArray::new(
             Arc::new(Field::new("item", DataType::Float32, false)),
             ranges_offsets,
             Arc::new(ranges_array),
             None,
         );
-        
-        let intensities_offsets = OffsetBuffer::new(ScalarBuffer::from(vec![0i32, intensities_array.len() as i32]));
+
+        let intensities_offsets = OffsetBuffer::new(ScalarBuffer::from(vec![
+            0i32,
+            intensities_array.len() as i32,
+        ]));
         let intensities_list = arrow::array::ListArray::new(
             Arc::new(Field::new("item", DataType::Float32, false)),
             intensities_offsets,
@@ -529,16 +575,41 @@ pub mod common_types {
         let fields = Fields::from(vec![
             Field::new("header", header.data_type().clone(), false),
             Field::new("orientation", orientation.data_type().clone(), false),
-            Field::new("orientation_covariance", DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float64, false)), 9), false),
-            Field::new("angular_velocity", angular_velocity.data_type().clone(), false),
-            Field::new("angular_velocity_covariance", DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float64, false)), 9), false),
-            Field::new("linear_acceleration", linear_acceleration.data_type().clone(), false),
-            Field::new("linear_acceleration_covariance", DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float64, false)), 9), false),
+            Field::new(
+                "orientation_covariance",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float64, false)), 9),
+                false,
+            ),
+            Field::new(
+                "angular_velocity",
+                angular_velocity.data_type().clone(),
+                false,
+            ),
+            Field::new(
+                "angular_velocity_covariance",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float64, false)), 9),
+                false,
+            ),
+            Field::new(
+                "linear_acceleration",
+                linear_acceleration.data_type().clone(),
+                false,
+            ),
+            Field::new(
+                "linear_acceleration_covariance",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float64, false)), 9),
+                false,
+            ),
         ]);
 
-        let orientation_cov_array = arrow::array::Float64Array::from_iter_values(orientation_covariance.iter().copied());
-        let angular_vel_cov_array = arrow::array::Float64Array::from_iter_values(angular_velocity_covariance.iter().copied());
-        let linear_accel_cov_array = arrow::array::Float64Array::from_iter_values(linear_acceleration_covariance.iter().copied());
+        let orientation_cov_array =
+            arrow::array::Float64Array::from_iter_values(orientation_covariance.iter().copied());
+        let angular_vel_cov_array = arrow::array::Float64Array::from_iter_values(
+            angular_velocity_covariance.iter().copied(),
+        );
+        let linear_accel_cov_array = arrow::array::Float64Array::from_iter_values(
+            linear_acceleration_covariance.iter().copied(),
+        );
 
         // Create fixed-size list arrays for covariance matrices (3x3 = 9 elements)
         let orientation_cov_list = arrow::array::FixedSizeListArray::new(
@@ -600,19 +671,39 @@ pub mod common_types {
             Field::new("height", DataType::UInt32, false),
             Field::new("width", DataType::UInt32, false),
             Field::new("distortion_model", DataType::Utf8, false),
-            Field::new("d", DataType::List(Arc::new(Field::new("item", DataType::Float64, false))), false),
-            Field::new("k", DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float64, false)), 9), false),
-            Field::new("r", DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float64, false)), 9), false),
-            Field::new("p", DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float64, false)), 12), false),
+            Field::new(
+                "d",
+                DataType::List(Arc::new(Field::new("item", DataType::Float64, false))),
+                false,
+            ),
+            Field::new(
+                "k",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float64, false)), 9),
+                false,
+            ),
+            Field::new(
+                "r",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float64, false)), 9),
+                false,
+            ),
+            Field::new(
+                "p",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float64, false)), 12),
+                false,
+            ),
             Field::new("binning_x", DataType::UInt32, false),
             Field::new("binning_y", DataType::UInt32, false),
-            Field::new("roi", DataType::Struct(Fields::from(vec![
-                Field::new("x_offset", DataType::UInt32, false),
-                Field::new("y_offset", DataType::UInt32, false),
-                Field::new("height", DataType::UInt32, false),
-                Field::new("width", DataType::UInt32, false),
-                Field::new("do_rectify", DataType::Boolean, false),
-            ])), false),
+            Field::new(
+                "roi",
+                DataType::Struct(Fields::from(vec![
+                    Field::new("x_offset", DataType::UInt32, false),
+                    Field::new("y_offset", DataType::UInt32, false),
+                    Field::new("height", DataType::UInt32, false),
+                    Field::new("width", DataType::UInt32, false),
+                    Field::new("do_rectify", DataType::Boolean, false),
+                ])),
+                false,
+            ),
         ]);
 
         let height_array = arrow::array::UInt32Array::from(vec![height]);
@@ -704,67 +795,40 @@ pub mod common_types {
     // ============================================================================
 
     /// Convert geometry_msgs/PoseStamped to Arrow
-    pub fn pose_stamped_to_arrow(
-        header: &ArrayRef,
-        pose: &ArrayRef,
-    ) -> Result<ArrayRef> {
+    pub fn pose_stamped_to_arrow(header: &ArrayRef, pose: &ArrayRef) -> Result<ArrayRef> {
         let fields = Fields::from(vec![
             Field::new("header", header.data_type().clone(), false),
             Field::new("pose", pose.data_type().clone(), false),
         ]);
 
-        let pose_stamped_struct = StructArray::new(
-            fields,
-            vec![
-                header.clone(),
-                pose.clone(),
-            ],
-            None,
-        );
+        let pose_stamped_struct =
+            StructArray::new(fields, vec![header.clone(), pose.clone()], None);
 
         Ok(Arc::new(pose_stamped_struct))
     }
 
     /// Convert geometry_msgs/TwistStamped to Arrow
-    pub fn twist_stamped_to_arrow(
-        header: &ArrayRef,
-        twist: &ArrayRef,
-    ) -> Result<ArrayRef> {
+    pub fn twist_stamped_to_arrow(header: &ArrayRef, twist: &ArrayRef) -> Result<ArrayRef> {
         let fields = Fields::from(vec![
             Field::new("header", header.data_type().clone(), false),
             Field::new("twist", twist.data_type().clone(), false),
         ]);
 
-        let twist_stamped_struct = StructArray::new(
-            fields,
-            vec![
-                header.clone(),
-                twist.clone(),
-            ],
-            None,
-        );
+        let twist_stamped_struct =
+            StructArray::new(fields, vec![header.clone(), twist.clone()], None);
 
         Ok(Arc::new(twist_stamped_struct))
     }
 
     /// Convert geometry_msgs/Transform to Arrow
-    pub fn transform_to_arrow(
-        translation: &ArrayRef,
-        rotation: &ArrayRef,
-    ) -> Result<ArrayRef> {
+    pub fn transform_to_arrow(translation: &ArrayRef, rotation: &ArrayRef) -> Result<ArrayRef> {
         let fields = Fields::from(vec![
             Field::new("translation", translation.data_type().clone(), false),
             Field::new("rotation", rotation.data_type().clone(), false),
         ]);
 
-        let transform_struct = StructArray::new(
-            fields,
-            vec![
-                translation.clone(),
-                rotation.clone(),
-            ],
-            None,
-        );
+        let transform_struct =
+            StructArray::new(fields, vec![translation.clone(), rotation.clone()], None);
 
         Ok(Arc::new(transform_struct))
     }
@@ -812,19 +876,43 @@ pub mod common_types {
         let fields = Fields::from(vec![
             Field::new("header", header.data_type().clone(), false),
             Field::new("child_frame_id", DataType::Utf8, false),
-            Field::new("pose", DataType::Struct(Fields::from(vec![
-                Field::new("pose", pose.data_type().clone(), false),
-                Field::new("covariance", DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float64, false)), 36), false),
-            ])), false),
-            Field::new("twist", DataType::Struct(Fields::from(vec![
-                Field::new("twist", twist.data_type().clone(), false),
-                Field::new("covariance", DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float64, false)), 36), false),
-            ])), false),
+            Field::new(
+                "pose",
+                DataType::Struct(Fields::from(vec![
+                    Field::new("pose", pose.data_type().clone(), false),
+                    Field::new(
+                        "covariance",
+                        DataType::FixedSizeList(
+                            Arc::new(Field::new("item", DataType::Float64, false)),
+                            36,
+                        ),
+                        false,
+                    ),
+                ])),
+                false,
+            ),
+            Field::new(
+                "twist",
+                DataType::Struct(Fields::from(vec![
+                    Field::new("twist", twist.data_type().clone(), false),
+                    Field::new(
+                        "covariance",
+                        DataType::FixedSizeList(
+                            Arc::new(Field::new("item", DataType::Float64, false)),
+                            36,
+                        ),
+                        false,
+                    ),
+                ])),
+                false,
+            ),
         ]);
 
         let child_frame_id_array = arrow::array::StringArray::from(vec![child_frame_id]);
-        let pose_cov_array = arrow::array::Float64Array::from_iter_values(pose_covariance.iter().copied());
-        let twist_cov_array = arrow::array::Float64Array::from_iter_values(twist_covariance.iter().copied());
+        let pose_cov_array =
+            arrow::array::Float64Array::from_iter_values(pose_covariance.iter().copied());
+        let twist_cov_array =
+            arrow::array::Float64Array::from_iter_values(twist_covariance.iter().copied());
 
         let pose_cov_list = arrow::array::FixedSizeListArray::new(
             Arc::new(Field::new("item", DataType::Float64, false)),
@@ -842,28 +930,30 @@ pub mod common_types {
         // Create pose struct
         let pose_fields = Fields::from(vec![
             Field::new("pose", pose.data_type().clone(), false),
-            Field::new("covariance", DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float64, false)), 36), false),
+            Field::new(
+                "covariance",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float64, false)), 36),
+                false,
+            ),
         ]);
         let pose_struct = StructArray::new(
             pose_fields,
-            vec![
-                pose.clone(),
-                Arc::new(pose_cov_list) as ArrayRef,
-            ],
+            vec![pose.clone(), Arc::new(pose_cov_list) as ArrayRef],
             None,
         );
 
         // Create twist struct
         let twist_fields = Fields::from(vec![
             Field::new("twist", twist.data_type().clone(), false),
-            Field::new("covariance", DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float64, false)), 36), false),
+            Field::new(
+                "covariance",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float64, false)), 36),
+                false,
+            ),
         ]);
         let twist_struct = StructArray::new(
             twist_fields,
-            vec![
-                twist.clone(),
-                Arc::new(twist_cov_list) as ArrayRef,
-            ],
+            vec![twist.clone(), Arc::new(twist_cov_list) as ArrayRef],
             None,
         );
 
@@ -882,10 +972,7 @@ pub mod common_types {
     }
 
     /// Convert nav_msgs/Path to Arrow
-    pub fn path_to_arrow(
-        header: &ArrayRef,
-        poses: Vec<&ArrayRef>,
-    ) -> Result<ArrayRef> {
+    pub fn path_to_arrow(header: &ArrayRef, poses: Vec<&ArrayRef>) -> Result<ArrayRef> {
         // Create array of PoseStamped messages
         let pose_stamped_fields = Fields::from(vec![
             Field::new("header", header.data_type().clone(), false),
@@ -896,10 +983,7 @@ pub mod common_types {
         for pose in poses {
             let pose_stamped = StructArray::new(
                 pose_stamped_fields.clone(),
-                vec![
-                    header.clone(),
-                    pose.clone(),
-                ],
+                vec![header.clone(), pose.clone()],
                 None,
             );
             pose_stamped_arrays.push(Arc::new(pose_stamped) as ArrayRef);
@@ -917,15 +1001,15 @@ pub mod common_types {
         // Flatten all struct arrays into a single struct array
         if pose_stamped_arrays.is_empty() {
             // Empty list
-            let empty_struct = StructArray::new(
-                pose_stamped_fields.clone(),
-                vec![],
-                None,
-            );
+            let empty_struct = StructArray::new(pose_stamped_fields.clone(), vec![], None);
             use arrow::buffer::{OffsetBuffer, ScalarBuffer};
             let offsets = OffsetBuffer::new(ScalarBuffer::from(vec![0i32, 0i32]));
             let empty_list = arrow::array::ListArray::new(
-                Arc::new(Field::new("item", DataType::Struct(pose_stamped_fields.clone()), false)),
+                Arc::new(Field::new(
+                    "item",
+                    DataType::Struct(pose_stamped_fields.clone()),
+                    false,
+                )),
                 offsets,
                 Arc::new(empty_struct),
                 None,
@@ -933,15 +1017,20 @@ pub mod common_types {
 
             let fields = Fields::from(vec![
                 Field::new("header", header.data_type().clone(), false),
-                Field::new("poses", DataType::List(Arc::new(Field::new("item", DataType::Struct(pose_stamped_fields), false))), false),
+                Field::new(
+                    "poses",
+                    DataType::List(Arc::new(Field::new(
+                        "item",
+                        DataType::Struct(pose_stamped_fields),
+                        false,
+                    ))),
+                    false,
+                ),
             ]);
 
             let path_struct = StructArray::new(
                 fields,
-                vec![
-                    header.clone(),
-                    Arc::new(empty_list) as ArrayRef,
-                ],
+                vec![header.clone(), Arc::new(empty_list) as ArrayRef],
                 None,
             );
             return Ok(Arc::new(path_struct));
@@ -951,11 +1040,16 @@ pub mod common_types {
         // Full implementation would concatenate all struct arrays
         let first_pose_stamped = pose_stamped_arrays[0].clone();
         use arrow::buffer::{OffsetBuffer, ScalarBuffer};
-        let offsets = OffsetBuffer::new(
-            ScalarBuffer::from(vec![0i32, first_pose_stamped.len() as i32])
-        );
+        let offsets = OffsetBuffer::new(ScalarBuffer::from(vec![
+            0i32,
+            first_pose_stamped.len() as i32,
+        ]));
         let poses_list = arrow::array::ListArray::new(
-            Arc::new(Field::new("item", DataType::Struct(pose_stamped_fields.clone()), false)),
+            Arc::new(Field::new(
+                "item",
+                DataType::Struct(pose_stamped_fields.clone()),
+                false,
+            )),
             offsets,
             first_pose_stamped,
             None,
@@ -963,15 +1057,20 @@ pub mod common_types {
 
         let fields = Fields::from(vec![
             Field::new("header", header.data_type().clone(), false),
-            Field::new("poses", DataType::List(Arc::new(Field::new("item", DataType::Struct(pose_stamped_fields), false))), false),
+            Field::new(
+                "poses",
+                DataType::List(Arc::new(Field::new(
+                    "item",
+                    DataType::Struct(pose_stamped_fields),
+                    false,
+                ))),
+                false,
+            ),
         ]);
 
         let path_struct = StructArray::new(
             fields,
-            vec![
-                header.clone(),
-                Arc::new(poses_list) as ArrayRef,
-            ],
+            vec![header.clone(), Arc::new(poses_list) as ArrayRef],
             None,
         );
 
@@ -987,12 +1086,17 @@ pub mod common_types {
         let fields = Fields::from(vec![
             Field::new("header", header.data_type().clone(), false),
             Field::new("info", info.data_type().clone(), false),
-            Field::new("data", DataType::List(Arc::new(Field::new("item", DataType::Int8, false))), false),
+            Field::new(
+                "data",
+                DataType::List(Arc::new(Field::new("item", DataType::Int8, false))),
+                false,
+            ),
         ]);
 
         let data_array = arrow::array::Int8Array::from_iter_values(data.iter().copied());
         use arrow::buffer::{OffsetBuffer, ScalarBuffer};
-        let data_offsets = OffsetBuffer::new(ScalarBuffer::from(vec![0i32, data_array.len() as i32]));
+        let data_offsets =
+            OffsetBuffer::new(ScalarBuffer::from(vec![0i32, data_array.len() as i32]));
         let data_list = arrow::array::ListArray::new(
             Arc::new(Field::new("item", DataType::Int8, false)),
             data_offsets,
@@ -1013,4 +1117,3 @@ pub mod common_types {
         Ok(Arc::new(occupancy_grid_struct))
     }
 }
-

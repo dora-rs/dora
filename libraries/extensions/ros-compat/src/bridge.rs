@@ -17,7 +17,7 @@ impl RosBridge {
     /// Create a new ROS bridge from configuration
     pub fn new(config: BridgeConfig) -> Result<Self> {
         config.validate()?;
-        
+
         Ok(Self {
             config,
             #[cfg(feature = "ros1")]
@@ -42,22 +42,27 @@ impl RosBridge {
         info!("Initializing ROS 1 bridge...");
 
         // Initialize ROS 1 node
-        let master_uri = self.config.ros_master_uri.as_deref()
+        let master_uri = self
+            .config
+            .ros_master_uri
+            .as_deref()
             .or_else(|| std::env::var("ROS_MASTER_URI").ok().as_deref())
             .unwrap_or("http://localhost:11311");
 
         info!("Connecting to ROS Master: {}", master_uri);
-        
+
         // Initialize rosrust
         rosrust::init("dora_ros_bridge");
-        
-        let ros = Arc::new(Ros::new(master_uri)
-            .map_err(|e| eyre::eyre!("Failed to connect to ROS Master: {:?}", e))?);
+
+        let ros = Arc::new(
+            Ros::new(master_uri)
+                .map_err(|e| eyre::eyre!("Failed to connect to ROS Master: {:?}", e))?,
+        );
         self.ros1_node = Some(ros.clone());
 
         // Create bridges for each mapping
         let mut handles = Vec::new();
-        
+
         for bridge in &self.config.bridges {
             match bridge.direction {
                 BridgeDirection::RosToDora | BridgeDirection::Bidirectional => {
@@ -93,7 +98,9 @@ impl RosBridge {
 
     #[cfg(not(feature = "ros1"))]
     async fn start_ros1_bridge(&mut self) -> Result<()> {
-        eyre::bail!("ROS 1 support requires 'ros1' feature. Build with: cargo build --features ros1");
+        eyre::bail!(
+            "ROS 1 support requires 'ros1' feature. Build with: cargo build --features ros1"
+        );
     }
 
     #[cfg(feature = "ros1")]
@@ -111,14 +118,17 @@ impl RosBridge {
         let handle = tokio::spawn(async move {
             // TODO: Implement actual ROS 1 subscriber
             // This is a placeholder that shows the structure
-            warn!("ROS 1 subscriber for {} not yet fully implemented", ros_topic);
-            
+            warn!(
+                "ROS 1 subscriber for {} not yet fully implemented",
+                ros_topic
+            );
+
             // Example structure:
             // let subscriber = ros.subscribe(&ros_topic, 10, move |msg: rosrust::RawMessage| {
             //     // Convert ROS message to Arrow
             //     // Send to Dora coordinator
             // })?;
-            
+
             loop {
                 tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                 // Placeholder: would receive messages here
@@ -142,15 +152,18 @@ impl RosBridge {
 
         let handle = tokio::spawn(async move {
             // TODO: Implement actual ROS 1 publisher and Dora subscription
-            warn!("Dora→ROS 1 bridge for {} not yet fully implemented", ros_topic);
-            
+            warn!(
+                "Dora→ROS 1 bridge for {} not yet fully implemented",
+                ros_topic
+            );
+
             // Example structure:
             // let publisher = ros.advertise(&ros_topic, 10)?;
-            // 
+            //
             // // Subscribe to Dora topic
             // // Convert Arrow to ROS message
             // // Publish to ROS
-            
+
             loop {
                 tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                 // Placeholder: would receive from Dora and publish to ROS here
@@ -163,13 +176,13 @@ impl RosBridge {
     async fn start_ros2_bridge(&mut self) -> Result<()> {
         info!("Starting ROS 2 bridge...");
         info!("Note: ROS 2 bridge can leverage existing dora-ros2-bridge");
-        
+
         // TODO: Integrate with existing dora-ros2-bridge
         // The dora-ros2-bridge already has ROS 2 support
         // We can create a wrapper that uses it
-        
+
         warn!("ROS 2 bridge integration with dora-ros2-bridge not yet implemented");
-        
+
         // Keep running until interrupted
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
@@ -197,4 +210,3 @@ pub struct BridgeStatus {
     pub active_bridges: usize,
     pub bridges: Vec<BridgeMapping>,
 }
-

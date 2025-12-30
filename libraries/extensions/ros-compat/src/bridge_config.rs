@@ -9,11 +9,11 @@ use std::path::Path;
 pub struct BridgeConfig {
     /// ROS version (1 or 2)
     pub ros_version: u8,
-    
+
     /// ROS Master URI (for ROS 1)
     #[serde(default)]
     pub ros_master_uri: Option<String>,
-    
+
     /// List of bridge mappings
     pub bridges: Vec<BridgeMapping>,
 }
@@ -23,16 +23,16 @@ pub struct BridgeConfig {
 pub struct BridgeMapping {
     /// ROS topic name
     pub ros_topic: String,
-    
+
     /// Dora topic name
     pub dora_topic: String,
-    
+
     /// ROS message type (e.g., "sensor_msgs/Image")
     pub msg_type: String,
-    
+
     /// Bridge direction
     pub direction: BridgeDirection,
-    
+
     /// QoS settings (for ROS 2)
     #[serde(default)]
     pub qos: Option<QosSettings>,
@@ -56,11 +56,11 @@ pub struct QosSettings {
     /// Reliability setting
     #[serde(default)]
     pub reliability: Option<String>, // "reliable" or "best_effort"
-    
+
     /// Durability setting
     #[serde(default)]
     pub durability: Option<String>, // "volatile", "transient_local", etc.
-    
+
     /// History depth
     #[serde(default)]
     pub depth: Option<i32>,
@@ -69,28 +69,29 @@ pub struct QosSettings {
 impl BridgeConfig {
     /// Load bridge configuration from a YAML file
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let content = std::fs::read_to_string(path.as_ref())
-            .with_context(|| format!("Failed to read bridge config: {}", path.as_ref().display()))?;
-        
+        let content = std::fs::read_to_string(path.as_ref()).with_context(|| {
+            format!("Failed to read bridge config: {}", path.as_ref().display())
+        })?;
+
         let config: BridgeConfig = serde_yaml::from_str(&content)
             .with_context(|| "Failed to parse bridge configuration")?;
-        
+
         Ok(config)
     }
-    
+
     /// Validate the configuration
     pub fn validate(&self) -> Result<()> {
         if self.ros_version != 1 && self.ros_version != 2 {
             eyre::bail!("ros_version must be 1 or 2, got {}", self.ros_version);
         }
-        
+
         if self.ros_version == 1 && self.ros_master_uri.is_none() {
             // Try to get from environment
             if std::env::var("ROS_MASTER_URI").is_err() {
                 eyre::bail!("ROS_MASTER_URI must be set for ROS 1");
             }
         }
-        
+
         for bridge in &self.bridges {
             if bridge.ros_topic.is_empty() {
                 eyre::bail!("ros_topic cannot be empty");
@@ -102,7 +103,7 @@ impl BridgeConfig {
                 eyre::bail!("msg_type cannot be empty");
             }
         }
-        
+
         Ok(())
     }
 }
@@ -126,10 +127,9 @@ bridges:
     msg_type: geometry_msgs/Twist
     direction: dora_to_ros
 "#;
-        
+
         let config: BridgeConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.ros_version, 1);
         assert_eq!(config.bridges.len(), 2);
     }
 }
-
