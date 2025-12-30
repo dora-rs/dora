@@ -141,7 +141,7 @@ fn list(
                 uuid,
                 name: entry.id.name.unwrap_or_default(),
                 status: entry.status,
-                uptime: "-".to_string(), // TODO: Implement uptime calculation. We don't have start time infomation yet.
+                uptime: "-".to_string(), // TODO: Implement uptime calculation. We don't have start time information yet.
                 nodes,
                 cpu,
                 memory,
