@@ -60,12 +60,18 @@ pub fn generate_protocol(schema: &SchemaInput) -> proc_macro2::TokenStream {
         #[derive(Debug, ::serde::Serialize, ::serde::Deserialize)]
         pub enum #response_enum {
             #(#response_variants,)*
+            Error(#error_struct),
         }
 
         #[derive(Debug, ::serde::Serialize, ::serde::Deserialize)]
         pub struct #error_struct {
-            pub message: String,
-            pub source: Option<String>,
+            pub msg: String,
+        }
+
+        impl #error_struct {
+            pub fn new(msg: String) -> Self {
+                Self { msg }
+            }
         }
     }
 }

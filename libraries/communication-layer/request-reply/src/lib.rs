@@ -75,3 +75,13 @@ pub trait RequestReplyConnection: Send + Sync {
 
     fn request(&mut self, request: &Self::RequestData) -> Result<Self::ReplyData, Self::Error>;
 }
+
+impl<T: RequestReplyConnection + ?Sized> RequestReplyConnection for &mut T {
+    type RequestData = T::RequestData;
+    type ReplyData = T::ReplyData;
+    type Error = T::Error;
+    fn request(&mut self, request: &Self::RequestData) -> Result<Self::ReplyData, Self::Error> {
+        (**self).request(request)
+    }
+}
+

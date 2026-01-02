@@ -37,6 +37,7 @@ pub fn generate_client(schema: &SchemaInput) -> proc_macro2::TokenStream {
 
                     match resp_enum {
                         #response_enum::#variant(resp) => Ok(resp),
+                        #response_enum::Error(err) => Err(::eyre::eyre!("Server returned error: {}", err.msg)),
                         _ => ::eyre::bail!("Unexpected response type"),
                     }
                 }
@@ -71,7 +72,7 @@ pub fn generate_client(schema: &SchemaInput) -> proc_macro2::TokenStream {
                 ReplyData = std::vec::Vec<u8>,
                 Error = E,
             >,
-            E: std::marker::Send + std::marker::Sync + std::error::Error + 'static,
+            E: std::marker::Send + std::marker::Sync + std::error::Error,
         {
             #(#client_methods)*
         }

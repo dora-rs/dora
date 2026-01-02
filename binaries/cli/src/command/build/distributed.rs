@@ -2,7 +2,7 @@ use communication_layer_request_reply::{TcpConnection, TcpRequestReplyConnection
 use dora_core::descriptor::Descriptor;
 use dora_message::{
     BuildId,
-    cli_to_coordinator::ControlRequest,
+    cli_to_coordinator::{CliToCoordinatorClient, ControlRequest},
     common::{GitSource, LogMessage},
     coordinator_to_cli::ControlRequestReply,
     id::NodeId,
@@ -23,33 +23,17 @@ pub fn build_distributed_dataflow(
     local_working_dir: Option<std::path::PathBuf>,
     uv: bool,
 ) -> eyre::Result<BuildId> {
-    let build_id = {
-        let reply_raw = session
-            .request(
-                &serde_json::to_vec(&ControlRequest::Build {
-                    session_id: dataflow_session.session_id,
-                    dataflow,
-                    git_sources: git_sources.clone(),
-                    prev_git_sources: dataflow_session.git_sources.clone(),
-                    local_working_dir,
-                    uv,
-                })
-                .unwrap(),
-            )
-            .wrap_err("failed to send start dataflow message")?;
-
-        let result: ControlRequestReply =
-            serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-        match result {
-            ControlRequestReply::DataflowBuildTriggered { build_id } => {
-                eprintln!("dataflow build triggered: {build_id}");
-                build_id
-            }
-            ControlRequestReply::Error(err) => bail!("{err}"),
-            other => bail!("unexpected start dataflow reply: {other:?}"),
-        }
-    };
-    Ok(build_id)
+    let mut client: CliToCoordinatorClient<_, Vec<u8>, Vec<u8>, std::io::Error> =
+        CliToCoordinatorClient::new(session);
+    let build_id = client.build(dora_message::cli_to_coordinator::BuildReq {
+        session_id: dataflow_session.session_id,
+        dataflow,
+        git_sources: git_sources.clone(),
+        prev_git_sources: dataflow_session.git_sources.clone(),
+        local_working_dir,
+        uv,
+    })?;
+    Ok(build_id.build_id)
 }
 
 pub fn wait_until_dataflow_built(
