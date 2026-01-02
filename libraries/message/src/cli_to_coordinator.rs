@@ -1,5 +1,6 @@
 use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
@@ -8,6 +9,38 @@ use crate::{
     descriptor::Descriptor,
     id::{NodeId, OperatorId},
 };
+
+dora_schema_macro::dora_schema! {
+    Cli => Coordinator:
+
+    build: BuildReq => BuildResp;
+//     wait_for_build: ControlRequestWaitForBuild => ControlRequestWaitForBuildReply;
+//     start: ControlRequestStart => ControlRequestStartReply;
+//     wait_for_spawn: ControlRequestWaitForSpawn => ControlRequestWaitForSpawnReply;
+//     reload: ControlRequestReload => ControlRequestReloadReply;
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BuildReq {
+    pub session_id: SessionId,
+    pub dataflow: Descriptor,
+    pub git_sources: BTreeMap<NodeId, GitSource>,
+    pub prev_git_sources: BTreeMap<NodeId, GitSource>,
+    /// Allows overwriting the base working dir when CLI and daemon are
+    /// running on the same machine.
+    ///
+    /// Must not be used for multi-machine dataflows.
+    ///
+    /// Note that nodes with git sources still use a subdirectory of
+    /// the base working dir.
+    pub local_working_dir: Option<PathBuf>,
+    pub uv: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BuildResp {
+    pub build_id: BuildId,
+}
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub enum ControlRequest {

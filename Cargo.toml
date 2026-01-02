@@ -27,6 +27,7 @@ members = [
     "libraries/communication-layer/*",
     "libraries/core",
     "libraries/message",
+    "libraries/dora-schema-macro",
     "libraries/shared-memory-server",
     "libraries/extensions/download",
     "libraries/extensions/telemetry/*",
@@ -72,6 +73,7 @@ dora-ros2-bridge-msg-gen = { version = "0.3.13", path = "libraries/extensions/ro
 dora-ros2-bridge-python = { path = "libraries/extensions/ros2-bridge/python" }
 # versioned independently from the other dora crates
 dora-message = { version = "0.6.0", path = "libraries/message" }
+dora-schema-macro = { path = "libraries/dora-schema-macro" }
 arrow = { version = "54.2.1" }
 arrow-schema = { version = "54.2.1" }
 arrow-data = { version = "54.2.1" }

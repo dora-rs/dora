@@ -1661,6 +1661,8 @@ dependencies = [
  "arrow-schema",
  "bincode",
  "chrono",
+ "communication-layer-request-reply",
+ "dora-schema-macro",
  "eyre",
  "log",
  "once_cell",
@@ -1912,6 +1914,19 @@ dependencies = [
  "tokio-stream",
  "tracing",
  "tracing-opentelemetry",
+]
+
+[[package]]
+name = "dora-schema-macro"
+version = "0.1.0"
+dependencies = [
+ "communication-layer-request-reply",
+ "convert_case",
+ "proc-macro2",
+ "quote",
+ "serde",
+ "serde_json",
+ "syn 2.0.111",
 ]
 
 [[package]]
