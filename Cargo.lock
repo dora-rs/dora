@@ -1754,6 +1754,7 @@ dependencies = [
  "dora-download",
  "dora-node-api",
  "dora-operator-api-python",
+ "dora-ros-compat",
  "dora-ros2-bridge-python",
  "dora-runtime",
  "eyre",
@@ -1825,6 +1826,16 @@ dependencies = [
  "arrow",
  "dora-arrow-convert",
  "safer-ffi",
+]
+
+[[package]]
+name = "dora-ros-compat"
+version = "0.3.13"
+dependencies = [
+ "arrow",
+ "arrow-array",
+ "arrow-schema",
+ "pyo3",
 ]
 
 [[package]]

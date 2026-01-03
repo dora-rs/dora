@@ -596,6 +596,15 @@ pub fn run(dataflow_path: String, uv: Option<bool>) -> eyre::Result<()> {
 fn dora(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
     dora_ros2_bridge_python::create_dora_ros2_bridge_module(&m)?;
 
+    // Add ROS compatibility module
+    #[cfg(feature = "ros-compat")]
+    {
+        use dora_ros_compat::python::create_ros_compat_module;
+        let ros_module = PyModule::new_bound(_py, "ros")?;
+        create_ros_compat_module(&ros_module)?;
+        m.add_submodule(&ros_module)?;
+    }
+
     m.add_function(wrap_pyfunction!(start_runtime, &m)?)?;
     m.add_function(wrap_pyfunction!(run, &m)?)?;
     m.add_function(wrap_pyfunction!(build, &m)?)?;

@@ -1,0 +1,12 @@
+nodes:
+  - id: sender
+    path: ./sender_node.py
+    outputs:
+      - twist_data
+
+  - id: converter
+    path: ./twist_node.py
+    inputs:
+      twist_data: sender/twist_data
+    outputs:
+      - converted_twist
