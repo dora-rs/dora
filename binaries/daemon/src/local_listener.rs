@@ -99,7 +99,7 @@ async fn handle_connection_loop(
                     continue;
                 };
                 if let Some(reply) = reply {
-                    let serialized = match serde_json::to_vec(&reply)
+                    let serialized = match bincode::serialize(&reply)
                         .wrap_err("failed to serialize DaemonReply")
                     {
                         Ok(r) => r,

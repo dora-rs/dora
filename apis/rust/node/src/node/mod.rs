@@ -237,7 +237,9 @@ impl DoraNode {
         match reply {
             DaemonReply::NodeConfig {
                 result: Ok(node_config),
-            } => Self::init(node_config),
+            } => Self::init(
+                serde_json::from_str(&node_config).context("failed to deserialize node config")?,
+            ),
             DaemonReply::NodeConfig { result: Err(error) } => {
                 bail!("failed to get node config from daemon: {error}")
             }

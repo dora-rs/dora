@@ -54,7 +54,7 @@ pub enum DaemonReply {
     PreparedMessage { shared_memory_id: SharedMemoryId },
     NextEvents(Vec<Timestamped<NodeEvent>>),
     NextDropEvents(Vec<Timestamped<NodeDropEvent>>),
-    NodeConfig { result: Result<NodeConfig, String> },
+    NodeConfig { result: Result<String, String> },
     Empty,
 }
 

@@ -12,7 +12,7 @@ use dora_message::{
 };
 use eyre::{Context, eyre};
 use futures::{Future, future, task};
-use shared_memory_server::{ShmemConf, ShmemServer};
+use shared_memory_server::{ShmemChannel, ShmemConf};
 use std::{
     collections::{BTreeMap, VecDeque},
     mem,
@@ -89,7 +89,7 @@ pub async fn spawn_listener_loop(
             let daemon_events_close_region_id = daemon_events_close_region.get_os_id().to_owned();
 
             {
-                let server = unsafe { ShmemServer::new(daemon_control_region) }
+                let server = unsafe { ShmemChannel::new_server(daemon_control_region) }
                     .wrap_err("failed to create control server")?;
                 let daemon_tx = daemon_tx.clone();
                 let queue_sizes = queue_sizes.clone();
@@ -98,7 +98,7 @@ pub async fn spawn_listener_loop(
             }
 
             {
-                let server = unsafe { ShmemServer::new(daemon_events_region) }
+                let server = unsafe { ShmemChannel::new_server(daemon_events_region) }
                     .wrap_err("failed to create events server")?;
                 let event_loop_node_id = format!("{dataflow_id}/{node_id}");
                 let daemon_tx = daemon_tx.clone();
@@ -111,7 +111,7 @@ pub async fn spawn_listener_loop(
             }
 
             {
-                let server = unsafe { ShmemServer::new(daemon_drop_region) }
+                let server = unsafe { ShmemChannel::new_server(daemon_drop_region) }
                     .wrap_err("failed to create drop server")?;
                 let drop_loop_node_id = format!("{dataflow_id}/{node_id}");
                 let daemon_tx = daemon_tx.clone();
@@ -124,7 +124,7 @@ pub async fn spawn_listener_loop(
             }
 
             {
-                let server = unsafe { ShmemServer::new(daemon_events_close_region) }
+                let server = unsafe { ShmemChannel::new_server(daemon_events_close_region) }
                     .wrap_err("failed to create events close server")?;
                 let drop_loop_node_id = format!("{dataflow_id}/{node_id}");
                 let daemon_tx = daemon_tx.clone();
