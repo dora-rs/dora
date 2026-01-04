@@ -25,19 +25,19 @@ cargo run --example python-ros-compat-twist
 ## The code
 
 ```python
-from dora import Node
-from dora.ros import RosMessageConverter
+from dora import Node, ros
 
 node = Node()
-converter = RosMessageConverter()
+converter = ros.RosMessageConverter()
 
 for event in node:
     if event["type"] == "INPUT":
-        ros_twist = converter.to_ros(event["value"], "geometry_msgs/Twist")
+        # Returns a list of dicts (one per message in the batch)
+        ros_msgs = converter.to_ros(event["value"], "geometry_msgs/Twist")
         
-        linear = ros_twist["linear"]
-        angular = ros_twist["angular"]
-        print(f"Linear: x={linear['x']}, y={linear['y']}, z={linear['z']}")
+        for msg in ros_msgs:
+            linear = msg["linear"]
+            print(f"Linear: x={linear['x']}, y={linear['y']}, z={linear['z']}")
 ```
 
 ## Note

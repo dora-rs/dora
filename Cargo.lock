@@ -1835,6 +1835,8 @@ dependencies = [
  "arrow",
  "arrow-array",
  "arrow-schema",
+ "dora-ros2-bridge-msg-gen",
+ "eyre",
  "pyo3",
 ]
 

@@ -17,4 +17,6 @@ arrow = { workspace = true }
 arrow-schema = { workspace = true }
 arrow-array = { workspace = true }
 pyo3 = { workspace = true, optional = true }
+dora-ros2-bridge-msg-gen = { workspace = true }
+eyre = "0.6"
 

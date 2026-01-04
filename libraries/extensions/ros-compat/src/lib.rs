@@ -14,8 +14,10 @@
 //!
 //! for event in node:
 //!     if event["type"] == "INPUT":
-//!         ros_msg = converter.to_ros(event["value"], "geometry_msgs/Twist")
-//!         print(f"Linear: {ros_msg['linear']}")
+//!         # Converts to a list of dicts (one per message in the batch)
+//!         ros_msgs = converter.to_ros(event["value"])
+//!         for msg in ros_msgs:
+//!             print(f"Linear: {msg['linear']}")
 //! ```
 
 #[cfg(feature = "python")]
