@@ -5,7 +5,7 @@ use dora_message::{
 };
 use eyre::{Context, OptionExt, Result, bail};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     env::consts::EXE_EXTENSION,
     path::{Path, PathBuf},
     process::Stdio,
@@ -14,8 +14,9 @@ use tokio::process::Command;
 
 // reexport for compatibility
 pub use dora_message::descriptor::{
-    CoreNodeKind, CustomNode, DYNAMIC_SOURCE, Descriptor, Node, OperatorConfig, OperatorDefinition,
-    OperatorSource, PythonSource, ResolvedNode, RuntimeNode, SHELL_SOURCE,
+    CoreNodeKind, CustomNode, DYNAMIC_SOURCE, Descriptor, GraphNode, InputDefinition, Node,
+    NodeMetadata, NodeMetadataFile, OperatorConfig, OperatorDefinition, OperatorSource,
+    OutputDefinition, PythonSource, ResolvedNode, RuntimeNode, SHELL_SOURCE,
     SingleOperatorDefinition,
 };
 pub use validate::ResolvedNodeExt;
@@ -24,8 +25,15 @@ pub use visualize::collect_dora_timers;
 mod validate;
 mod visualize;
 
+#[cfg(test)]
+mod tests;
+
 pub trait DescriptorExt {
     fn resolve_aliases_and_set_defaults(&self) -> eyre::Result<BTreeMap<NodeId, ResolvedNode>>;
+    fn resolve_with_metadata(
+        &self,
+        metadata_file: Option<&NodeMetadataFile>,
+    ) -> eyre::Result<BTreeMap<NodeId, ResolvedNode>>;
     fn visualize_as_mermaid(&self) -> eyre::Result<String>;
     fn blocking_read(path: &Path) -> eyre::Result<Descriptor>;
     fn parse(buf: Vec<u8>) -> eyre::Result<Descriptor>;
@@ -33,87 +41,61 @@ pub trait DescriptorExt {
     fn check_in_daemon(&self, working_dir: &Path, coordinator_is_remote: bool) -> eyre::Result<()>;
 }
 
+pub trait NodeMetadataFileExt {
+    fn blocking_read(path: &Path) -> eyre::Result<NodeMetadataFile>;
+    fn parse(buf: Vec<u8>) -> eyre::Result<NodeMetadataFile>;
+}
+
 pub const SINGLE_OPERATOR_DEFAULT_ID: &str = "op";
 
 impl DescriptorExt for Descriptor {
     fn resolve_aliases_and_set_defaults(&self) -> eyre::Result<BTreeMap<NodeId, ResolvedNode>> {
-        let default_op_id = OperatorId::from(SINGLE_OPERATOR_DEFAULT_ID.to_string());
+        // If graph is defined, resolve with metadata
+        if !self.graph.is_empty() {
+            // Try to load metadata file from the same directory
+            // This is a simplified approach; in production, we might need more sophisticated path resolution
+            return self.resolve_with_metadata(None);
+        }
 
-        let single_operator_nodes: HashMap<_, _> = self
-            .nodes
-            .iter()
-            .filter_map(|n| {
-                n.operator
-                    .as_ref()
-                    .map(|op| (&n.id, op.id.as_ref().unwrap_or(&default_op_id)))
-            })
-            .collect();
+        // Legacy format resolution
+        resolve_legacy_format(self)
+    }
 
+    fn resolve_with_metadata(
+        &self,
+        metadata_file: Option<&NodeMetadataFile>,
+    ) -> eyre::Result<BTreeMap<NodeId, ResolvedNode>> {
+        if self.graph.is_empty() {
+            // No graph defined, fall back to legacy format
+            return resolve_legacy_format(self);
+        }
+
+        // Load metadata if not provided
+        let metadata = if let Some(m) = metadata_file {
+            m.clone()
+        } else {
+            // Try to load dora.yaml from current directory
+            // In a real implementation, we would need to know the dataflow file's directory
+            // For now, return an error if metadata is required but not provided
+            bail!("Graph-based dataflow requires node metadata. Please provide dora.yaml or use resolve_with_metadata_from_path()");
+        };
+
+        // Build a map of node prototypes
+        let mut prototypes: HashMap<String, &NodeMetadata> = HashMap::new();
+        for node_meta in &metadata.nodes {
+            prototypes.insert(node_meta.name.clone(), node_meta);
+        }
+
+        // Resolve graph nodes
         let mut resolved = BTreeMap::new();
-        for mut node in self.nodes.clone() {
-            // adjust input mappings
-            let mut node_kind = node_kind_mut(&mut node)?;
-            let input_mappings: Vec<_> = match &mut node_kind {
-                NodeKindMut::Standard { inputs, .. } => inputs.values_mut().collect(),
-                NodeKindMut::Runtime(node) => node
-                    .operators
-                    .iter_mut()
-                    .flat_map(|op| op.config.inputs.values_mut())
-                    .collect(),
-                NodeKindMut::Custom(node) => node.run_config.inputs.values_mut().collect(),
-                NodeKindMut::Operator(operator) => operator.config.inputs.values_mut().collect(),
-            };
-            for mapping in input_mappings
-                .into_iter()
-                .filter_map(|i| match &mut i.mapping {
-                    InputMapping::Timer { .. } => None,
-                    InputMapping::User(m) => Some(m),
-                })
-            {
-                if let Some(op_name) = single_operator_nodes.get(&mapping.source).copied() {
-                    mapping.output = DataId::from(format!("{op_name}/{}", mapping.output));
-                }
-            }
+        for graph_node in &self.graph {
+            let proto = prototypes
+                .get(&graph_node.proto)
+                .ok_or_eyre(format!("Node prototype '{}' not found in dora.yaml", graph_node.proto))?;
 
-            // resolve nodes
-            let kind = match node_kind {
-                NodeKindMut::Standard {
-                    path,
-                    source,
-                    inputs: _,
-                } => CoreNodeKind::Custom(CustomNode {
-                    path: path.clone(),
-                    source,
-                    args: node.args,
-                    build: node.build,
-                    send_stdout_as: node.send_stdout_as,
-                    run_config: NodeRunConfig {
-                        inputs: node.inputs,
-                        outputs: node.outputs,
-                    },
-                    envs: None,
-                }),
-                NodeKindMut::Custom(node) => CoreNodeKind::Custom(node.clone()),
-                NodeKindMut::Runtime(node) => CoreNodeKind::Runtime(node.clone()),
-                NodeKindMut::Operator(op) => CoreNodeKind::Runtime(RuntimeNode {
-                    operators: vec![OperatorDefinition {
-                        id: op.id.clone().unwrap_or_else(|| default_op_id.clone()),
-                        config: op.config.clone(),
-                    }],
-                }),
-            };
-
-            resolved.insert(
-                node.id.clone(),
-                ResolvedNode {
-                    id: node.id,
-                    name: node.name,
-                    description: node.description,
-                    env: node.env,
-                    deploy: node.deploy,
-                    kind,
-                },
-            );
+            // Create a resolved node from the prototype and graph node
+            let node = merge_graph_node_with_prototype(graph_node, proto)?;
+            resolved.insert(graph_node.id.clone(), node);
         }
 
         Ok(resolved)
@@ -143,6 +125,50 @@ impl DescriptorExt for Descriptor {
     fn check_in_daemon(&self, working_dir: &Path, coordinator_is_remote: bool) -> eyre::Result<()> {
         validate::check_dataflow(self, working_dir, None, coordinator_is_remote)
             .wrap_err("Dataflow could not be validated.")
+    }
+}
+
+/// Load descriptor and automatically load metadata if needed
+pub fn load_descriptor_with_metadata(dataflow_path: &Path) -> eyre::Result<(Descriptor, Option<NodeMetadataFile>)> {
+    let descriptor = Descriptor::blocking_read(dataflow_path)?;
+    
+    // If graph is defined, try to load metadata from the same directory
+    if !descriptor.graph.is_empty() {
+        let dataflow_dir = dataflow_path.parent().unwrap_or_else(|| Path::new("."));
+        let metadata_path = dataflow_dir.join("dora.yaml");
+        
+        if metadata_path.exists() {
+            let metadata = NodeMetadataFile::blocking_read(&metadata_path)
+                .context("Failed to load dora.yaml metadata file")?;
+            Ok((descriptor, Some(metadata)))
+        } else {
+            bail!("Graph-based dataflow requires a dora.yaml file in the same directory, but it was not found at: {}", metadata_path.display());
+        }
+    } else {
+        // Legacy format, no metadata needed
+        Ok((descriptor, None))
+    }
+}
+
+/// Resolve descriptor with automatic metadata loading
+pub fn resolve_descriptor_from_path(dataflow_path: &Path) -> eyre::Result<BTreeMap<NodeId, ResolvedNode>> {
+    let (descriptor, metadata) = load_descriptor_with_metadata(dataflow_path)?;
+    
+    if let Some(metadata) = metadata {
+        descriptor.resolve_with_metadata(Some(&metadata))
+    } else {
+        descriptor.resolve_aliases_and_set_defaults()
+    }
+}
+
+impl NodeMetadataFileExt for NodeMetadataFile {
+    fn blocking_read(path: &Path) -> eyre::Result<NodeMetadataFile> {
+        let buf = std::fs::read(path).context("failed to open node metadata file")?;
+        Self::parse(buf)
+    }
+
+    fn parse(buf: Vec<u8>) -> eyre::Result<NodeMetadataFile> {
+        serde_yaml::from_slice(&buf).context("failed to parse node metadata file")
     }
 }
 
@@ -285,4 +311,176 @@ enum NodeKindMut<'a> {
     Runtime(&'a mut RuntimeNode),
     Custom(&'a mut CustomNode),
     Operator(&'a mut SingleOperatorDefinition),
+}
+
+/// Resolve nodes using the legacy format (nodes field)
+fn resolve_legacy_format(descriptor: &Descriptor) -> eyre::Result<BTreeMap<NodeId, ResolvedNode>> {
+    let default_op_id = OperatorId::from(SINGLE_OPERATOR_DEFAULT_ID.to_string());
+
+    let single_operator_nodes: HashMap<_, _> = descriptor
+        .nodes
+        .iter()
+        .filter_map(|n| {
+            n.operator
+                .as_ref()
+                .map(|op| (&n.id, op.id.as_ref().unwrap_or(&default_op_id)))
+        })
+        .collect();
+
+    let mut resolved = BTreeMap::new();
+    for mut node in descriptor.nodes.clone() {
+        // adjust input mappings
+        let mut node_kind = node_kind_mut(&mut node)?;
+        let input_mappings: Vec<_> = match &mut node_kind {
+            NodeKindMut::Standard { inputs, .. } => inputs.values_mut().collect(),
+            NodeKindMut::Runtime(node) => node
+                .operators
+                .iter_mut()
+                .flat_map(|op| op.config.inputs.values_mut())
+                .collect(),
+            NodeKindMut::Custom(node) => node.run_config.inputs.values_mut().collect(),
+            NodeKindMut::Operator(operator) => operator.config.inputs.values_mut().collect(),
+        };
+        for mapping in input_mappings
+            .into_iter()
+            .filter_map(|i| match &mut i.mapping {
+                InputMapping::Timer { .. } => None,
+                InputMapping::User(m) => Some(m),
+            })
+        {
+            if let Some(op_name) = single_operator_nodes.get(&mapping.source).copied() {
+                mapping.output = DataId::from(format!("{op_name}/{}", mapping.output));
+            }
+        }
+
+        // resolve nodes
+        let kind = match node_kind {
+            NodeKindMut::Standard {
+                path,
+                source,
+                inputs: _,
+            } => CoreNodeKind::Custom(CustomNode {
+                path: path.clone(),
+                source,
+                args: node.args,
+                build: node.build,
+                send_stdout_as: node.send_stdout_as,
+                run_config: NodeRunConfig {
+                    inputs: node.inputs,
+                    outputs: node.outputs,
+                },
+                envs: None,
+            }),
+            NodeKindMut::Custom(node) => CoreNodeKind::Custom(node.clone()),
+            NodeKindMut::Runtime(node) => CoreNodeKind::Runtime(node.clone()),
+            NodeKindMut::Operator(op) => CoreNodeKind::Runtime(RuntimeNode {
+                operators: vec![OperatorDefinition {
+                    id: op.id.clone().unwrap_or_else(|| default_op_id.clone()),
+                    config: op.config.clone(),
+                }],
+            }),
+        };
+
+        resolved.insert(
+            node.id.clone(),
+            ResolvedNode {
+                id: node.id,
+                name: node.name,
+                description: node.description,
+                env: node.env,
+                deploy: node.deploy,
+                kind,
+            },
+        );
+    }
+
+    Ok(resolved)
+}
+
+/// Merge a graph node with its prototype to create a resolved node
+fn merge_graph_node_with_prototype(
+    graph_node: &GraphNode,
+    proto: &NodeMetadata,
+) -> eyre::Result<ResolvedNode> {
+    // Determine the node source
+    let source = match (&proto.git, &proto.branch, &proto.tag, &proto.rev) {
+        (None, None, None, None) => NodeSource::Local,
+        (Some(repo), branch, tag, rev) => {
+            let rev = match (branch, tag, rev) {
+                (None, None, None) => None,
+                (Some(branch), None, None) => Some(GitRepoRev::Branch(branch.clone())),
+                (None, Some(tag), None) => Some(GitRepoRev::Tag(tag.clone())),
+                (None, None, Some(rev)) => Some(GitRepoRev::Rev(rev.clone())),
+                _ => bail!("only one of `branch`, `tag`, and `rev` are allowed"),
+            };
+            NodeSource::GitBranch {
+                repo: repo.clone(),
+                rev,
+            }
+        }
+        (None, _, _, _) => {
+            bail!("`git` source required when using branch, tag, or rev")
+        }
+    };
+
+    // Convert outputs from OutputDefinition to DataId
+    let outputs: BTreeSet<DataId> = proto
+        .outputs
+        .iter()
+        .map(|o| DataId::from(o.name.clone()))
+        .collect();
+
+    // Build the node kind
+    let kind = if let Some(operators) = &proto.operators {
+        CoreNodeKind::Runtime(operators.clone())
+    } else if let Some(operator) = &proto.operator {
+        let default_op_id = OperatorId::from(SINGLE_OPERATOR_DEFAULT_ID.to_string());
+        CoreNodeKind::Runtime(RuntimeNode {
+            operators: vec![OperatorDefinition {
+                id: operator.id.clone().unwrap_or_else(|| default_op_id.clone()),
+                config: operator.config.clone(),
+            }],
+        })
+    } else {
+        // Standard custom node
+        let path = proto
+            .entry
+            .as_ref()
+            .ok_or_eyre("Node prototype must have an 'entry' field")?
+            .clone();
+
+        CoreNodeKind::Custom(CustomNode {
+            path,
+            source,
+            args: proto.args.clone(),
+            build: proto.build.clone(),
+            send_stdout_as: None,
+            run_config: NodeRunConfig {
+                inputs: graph_node.inputs.clone(),
+                outputs,
+            },
+            envs: None,
+        })
+    };
+
+    // Merge environment variables (graph node overrides prototype)
+    let env = match (&proto.env, &graph_node.env) {
+        (None, None) => None,
+        (Some(proto_env), None) => Some(proto_env.clone()),
+        (None, Some(graph_env)) => Some(graph_env.clone()),
+        (Some(proto_env), Some(graph_env)) => {
+            let mut merged = proto_env.clone();
+            merged.extend(graph_env.clone());
+            Some(merged)
+        }
+    };
+
+    Ok(ResolvedNode {
+        id: graph_node.id.clone(),
+        name: Some(proto.name.clone()),
+        description: None,
+        env,
+        deploy: graph_node.deploy.clone(),
+        kind,
+    })
 }

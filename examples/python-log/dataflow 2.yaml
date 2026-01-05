@@ -1,0 +1,10 @@
+graph:
+  - id: send_data
+    proto: "sender"
+    inputs:
+      tick: dora/timer/millis/10
+
+  - id: receive_data_with_sleep
+    proto: "receiver"
+    inputs:
+      tick: send_data/data

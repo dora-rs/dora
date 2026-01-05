@@ -1,22 +1,22 @@
-define:
-  nodes:
-    - name: receiver
-      lang: python
-      entry: ./receive_data.py
-      build: pip install numpy pyarrow
-
-    - name: sender
-      lang: python
-      entry: ./send_data.py
-      build: pip install asyncio
-      inputs:
-        - name: tick
-          type: number
-          required: true
-      outputs:
-        - name: data
-          type: number
-
 nodes:
+  - name: receiver
+    lang: python
+    export: true
+    entry: ./receive_data.py
+    build: pip install numpy pyarrow
+
+  - name: sender
+    lang: python
+    export: true
+    entry: ./send_data.py
+    build: pip install asyncio
+    inputs:
+      - name: tick
+        type: number
+        required: true
+    outputs:
+      - name: data
+        type: number
+
   - name: abc
     lang: python
