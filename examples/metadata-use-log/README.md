@@ -1,63 +1,62 @@
 # Metadata Use Log Example
 
-This example demonstrates how to use **metadata dependencies** (also called "herds") in Dora dataflows. Herds allow you to reuse node definitions from external packages, making it easy to compose dataflows from shared components.
+This example demonstrates advanced features of Dora's metadata system:
+- **Metadata dependencies (herds)**: Reuse node definitions from external packages
+- **Workflow-type nodes**: Use entire dataflows as nodes in parent dataflows
 
-## Overview
+## Features Demonstrated
 
-This dataflow uses:
-- A local node (`sender`) defined in the local `dora.yaml`
-- A node from an external herd (`log/log1`) defined in `../metadata-log/dora.yaml`
-
-## File Structure
-
-### dataflow.yaml
-Defines the dataflow graph using `proto` references:
+### 1. Simple Herd Nodes
+Reference individual nodes from external packages:
 ```yaml
-graph:
-  - id: send_data
-    proto: "sender"        # Local node from dora.yaml
-    inputs:
-      tick: dora/timer/millis/10
-
-  - id: log_data
-    proto: "out_log/log1"  # Node from herd dependency
-    inputs:
-      tick: send_data/data
+- id: log_data
+  proto: "out_log/log1"  # Single node from herd
+  inputs:
+    tick: send_data/data
 ```
 
-### dora.yaml
-Defines local nodes and declares dependencies:
+### 2. Workflow-Type Nodes
+Use complete dataflows as nodes:
 ```yaml
-nodes:
-  - name: sender
-    lang: python
-    entry: ./send_data.py
-    build: pip install numpy pyarrow
-    outputs:
-      - name: data
-        type: number
-
-dependencies:
-  out_log:                    # Custom herd name (used in proto references)
-    package: log              # Original herd package name (optional, for documentation)
-    path: ../metadata-log     # Path to the herd directory
-    nodes: ["log1", "log2"]   # Which nodes to import (empty = all exported nodes)
+- id: log_data2
+  proto: "out_log/flow_log"  # Entire dataflow as a node
+  inputs:
+    tick: send_data/data
 ```
 
 ## How It Works
 
-1. **Dependencies Map**: The `dependencies` field in `dora.yaml` is a map where:
-   - **Key** (`out_log`): The custom name used as prefix in proto references (e.g., `out_log/log1`)
-   - **Value**: Contains:
-     - `package`: Original herd name (optional, for clarity)
-     - `path`: Relative or absolute path to the herd package
-     - `nodes`: List of node names to import (empty means all exported nodes)
+### Herd Dependencies (dora.yaml)
+```yaml
+dependencies:
+  out_log:                    # Custom herd name
+    package: log              # Original package name (optional)
+    path: ../metadata-log     # Path to herd directory
+    nodes: ["log1", "log2", "flow_log"]  # Which nodes to import
+```
 
-2. **Proto References**: 
-   - Local nodes: Use simple names like `"sender"`
-   - Herd nodes: Use qualified names like `"out_log/log1"` (custom_name/node_name)
+### Workflow-Type Nodes
+When a node's `entry` points to a `.yaml` file, it's treated as a workflow node:
 
-3. **Path Resolution**: When a node comes from a herd, its `entry` path is resolved relative to the herd's directory, not the consumer's directory.
+**In the herd's dora.yaml:**
+```yaml
+- name: flow_log
+  export: true
+  entry: ./dataflow.yaml     # Points to a dataflow
+  inputs:
+    - name: tick
+      type: number
+      required: true
+      target: log_data/tick  # Which graph node receives this input
+```
+
+The `target` field specifies which node inside the sub-dataflow receives the parent's input.
+
+**Result:**
+- The sub-dataflow is expanded inline
+- All graph nodes get prefixed IDs (e.g., `log_data2_send_data`, `log_data2_log_data`)
+- Internal connections are preserved
+- External inputs are routed to specified targets
 
 ## Getting Started
 
@@ -71,7 +70,8 @@ dora run dataflow.yaml --uv
 
 ## Benefits
 
-- **Reusability**: Share node implementations across multiple dataflows
-- **Versioning**: Pin to specific versions using git references in herd metadata
-- **Namespacing**: Custom herd names prevent naming conflicts
+- **Reusability**: Share node implementations and complete workflows
+- **Composition**: Build complex dataflows from smaller, tested components
+- **Namespacing**: Custom herd names prevent conflicts
 - **Selective Import**: Choose which nodes to import from a herd
+- **Encapsulation**: Workflow nodes hide internal implementation details

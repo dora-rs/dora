@@ -430,8 +430,154 @@ fn resolve_with_metadata_and_base_dir(
                 )
             })?;
 
+        // Check if this is a workflow-type node (entry points to a .yaml file)
+        if let Some(entry) = &proto.entry {
+            if entry.ends_with(".yaml") || entry.ends_with(".yml") {
+                // Workflow-type node: load and resolve the sub-dataflow
+                let workflow_nodes = resolve_workflow_node(graph_node, proto, proto_base_dir, &prototypes)?;
+                for (id, node) in workflow_nodes {
+                    resolved.insert(id, node);
+                }
+                continue;
+            }
+        }
+
+        // Regular node
         let node = merge_graph_node_with_prototype(graph_node, proto, proto_base_dir)?;
         resolved.insert(graph_node.id.clone(), node);
+    }
+
+    Ok(resolved)
+}
+
+/// Resolve a workflow-type node (where entry points to a dataflow YAML)
+///
+/// This function loads the sub-dataflow, resolves it, and returns multiple
+/// resolved nodes with prefixed IDs to avoid conflicts.
+fn resolve_workflow_node(
+    graph_node: &GraphNode,
+    proto: &NodeMetadata,
+    proto_base_dir: &Path,
+    parent_prototypes: &HashMap<String, (NodeMetadata, PathBuf)>,
+) -> eyre::Result<BTreeMap<NodeId, ResolvedNode>> {
+    let entry_path = proto
+        .entry
+        .as_ref()
+        .ok_or_eyre("Workflow node must have an 'entry' field")?;
+
+    // Resolve the dataflow path relative to the prototype's base directory
+    let dataflow_path = if Path::new(entry_path).is_relative() {
+        proto_base_dir.join(entry_path)
+    } else {
+        PathBuf::from(entry_path)
+    };
+
+    if !dataflow_path.exists() {
+        bail!(
+            "Workflow dataflow file not found: {}",
+            dataflow_path.display()
+        );
+    }
+
+    // Load the sub-dataflow
+    let sub_descriptor = Descriptor::blocking_read(&dataflow_path)
+        .with_context(|| format!("Failed to load workflow dataflow from {}", dataflow_path.display()))?;
+
+    if sub_descriptor.graph.is_empty() {
+        bail!(
+            "Workflow dataflow must use graph format: {}",
+            dataflow_path.display()
+        );
+    }
+
+    // Load metadata for the sub-dataflow (from same directory)
+    let dataflow_dir = dataflow_path
+        .parent()
+        .ok_or_eyre("Dataflow path has no parent directory")?;
+    let sub_metadata_path = dataflow_dir.join("dora.yaml");
+    
+    let sub_metadata = if sub_metadata_path.exists() {
+        Some(NodeMetadataFile::blocking_read(&sub_metadata_path)
+            .context("Failed to load sub-dataflow metadata")?)
+    } else {
+        None
+    };
+
+    // Build prototypes for the sub-dataflow (includes local nodes and parent's herds)
+    let mut sub_prototypes: HashMap<String, (NodeMetadata, PathBuf)> = parent_prototypes.clone();
+    
+    if let Some(ref metadata) = sub_metadata {
+        // Add local nodes from sub-dataflow's metadata
+        for node_meta in &metadata.nodes {
+            sub_prototypes.insert(node_meta.name.clone(), (node_meta.clone(), dataflow_dir.to_path_buf()));
+        }
+    }
+
+    // Create a map of input targets from the workflow prototype
+    // target format: "graph_node_id/input_id"
+    let mut input_targets: HashMap<String, (NodeId, DataId)> = HashMap::new();
+    for input_def in &proto.inputs {
+        if let Some(ref target) = input_def.target {
+            // Parse target: "graph_node_id/input_id"
+            if let Some((node_id, input_id)) = target.split_once('/') {
+                input_targets.insert(
+                    input_def.name.clone(),
+                    (NodeId::from(node_id.to_string()), DataId::from(input_id.to_string()))
+                );
+            }
+        }
+    }
+
+    // Resolve sub-dataflow's graph nodes
+    let mut resolved = BTreeMap::new();
+    for sub_graph_node in &sub_descriptor.graph {
+        let (sub_proto, sub_proto_base_dir) = sub_prototypes
+            .get(&sub_graph_node.proto)
+            .ok_or_else(|| {
+                eyre::eyre!(
+                    "Node prototype '{}' not found in sub-dataflow metadata",
+                    sub_graph_node.proto
+                )
+            })?;
+
+        // Create a modified graph node with prefixed ID and potentially overridden inputs
+        let mut modified_graph_node = sub_graph_node.clone();
+        
+        // Prefix the node ID to avoid conflicts with parent dataflow
+        let prefixed_id = NodeId::from(format!("{}_{}", graph_node.id, sub_graph_node.id));
+        modified_graph_node.id = prefixed_id.clone();
+
+        // Override inputs if they are targeted by the parent's inputs
+        for (parent_input_name, parent_input_mapping) in &graph_node.inputs {
+            if let Some((target_node_id, target_input_id)) = input_targets.get(parent_input_name.as_ref() as &str) {
+                if target_node_id == &sub_graph_node.id {
+                    // This graph node is the target for this input
+                    // Override the specific input, but keep other inputs intact
+                    modified_graph_node.inputs.insert(target_input_id.clone(), parent_input_mapping.clone());
+                }
+            }
+        }
+
+        // Update internal references to point to prefixed node IDs
+        let mut updated_inputs = BTreeMap::new();
+        for (input_id, input_mapping) in &modified_graph_node.inputs {
+            let mut new_mapping = input_mapping.clone();
+            if let Input { mapping: dora_message::config::InputMapping::User(ref mut user_mapping), .. } = new_mapping {
+                // Check if the source is one of the sub-dataflow's graph nodes
+                for sub_node in &sub_descriptor.graph {
+                    if user_mapping.source == sub_node.id {
+                        // Update to prefixed ID
+                        user_mapping.source = NodeId::from(format!("{}_{}", graph_node.id, sub_node.id));
+                        break;
+                    }
+                }
+            }
+            updated_inputs.insert(input_id.clone(), new_mapping);
+        }
+        modified_graph_node.inputs = updated_inputs;
+
+        let node = merge_graph_node_with_prototype(&modified_graph_node, sub_proto, sub_proto_base_dir)?;
+        resolved.insert(prefixed_id, node);
     }
 
     Ok(resolved)

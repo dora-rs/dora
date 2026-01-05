@@ -892,6 +892,16 @@ pub struct InputDefinition {
     /// Whether this input is required
     #[serde(default)]
     pub required: bool,
+
+    /// Target graph node for workflow-type nodes (optional)
+    ///
+    /// When a node's entry points to a dataflow YAML file (workflow-type node),
+    /// this field specifies which graph node inside that dataflow should receive
+    /// this input. Format: `graph_node_id/input_id`
+    ///
+    /// Example: `log_data/tick` means the `tick` input goes to graph node `log_data`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
 }
 
 /// # Output Definition
