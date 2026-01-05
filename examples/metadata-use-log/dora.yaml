@@ -1,5 +1,5 @@
 nodes:
-  - name: send_data
+  - name: sender
     lang: python
     entry: ./send_data.py
     build: pip install numpy pyarrow
@@ -7,4 +7,4 @@ nodes:
 dependencies:
   - name: log
     path: ../metadata-log
-    nodes: ["log1"]
+    nodes: ["log1", "log2"]

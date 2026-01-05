@@ -1,13 +1,19 @@
 nodes:
-  - name: receiver
+  - name: log1
     lang: python
     export: true
-    entry: ./receive_data.py
+    entry: ./log1.py
+    build: pip install numpy pyarrow
+
+  - name: log2
+    lang: python
+    export: true
+    entry: ./log1.py
     build: pip install numpy pyarrow
 
   - name: sender
     lang: python
-    export: true
+    export: false
     entry: ./send_data.py
     build: pip install asyncio
     inputs:
