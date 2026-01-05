@@ -41,7 +41,6 @@ fn host_log<'py>(record: Bound<'py, PyAny>) -> PyResult<()> {
     let target = record.getattr("name")?.to_string();
 
     RUNTIME.spawn(async move {
-        
     if level.ge(&40u8) {
         let span = span!(Level::ERROR, "dora.python.log.error", file=pathname, line=lineno, %target, %message);
         let _enter = span.enter();
@@ -76,7 +75,7 @@ fn host_log<'py>(record: Bound<'py, PyAny>) -> PyResult<()> {
 ///
 /// Since any call like `logging.warn(...)` sets up logging via `logging.basicConfig`, all log messages are now
 /// delivered to `crate::host_log`, which will send them to `tracing::event!`.
-pub fn setup_logging(py: Python, node_id: NodeId, dataflow_id: DataflowId) -> PyResult<()> {
+pub fn setup_logging(py: Python) -> PyResult<()> {
     let logging = py.import("logging")?;
     logging.setattr("host_log", wrap_pyfunction!(host_log, &logging)?)?;
     py.run(
@@ -161,7 +160,7 @@ impl Node {
 
         Python::with_gil(|py| {
             // Extend the `logging` module to interact with tracing
-            setup_logging(py, node_id.clone(), dataflow_id)
+            setup_logging(py)
         })?;
 
         Ok(Node {
