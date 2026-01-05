@@ -451,7 +451,7 @@ jobs:
           dora run tests/queue_size_latest_data_rust/dataflow.yaml --uv
 
       - name: "Test CI (ROS Compat Mock)"
-        timeout-minutes: 5
+        timeout-minutes: 15
         shell: bash
         run: |
           uv venv --seed -p 3.12
@@ -460,8 +460,8 @@ jobs:
           else
             source .venv/Scripts/activate
           fi
-          uv pip install -e apis/python/node
-          uv pip install pyarrow
+          uv pip install maturin pyarrow pytest
+          maturin develop -m apis/python/node/Cargo.toml --features ros-compat
           python examples/ros-compat/python/ros1_turtle/test_mock_bridge.py
 
       - name: "Test CLI (C)"
