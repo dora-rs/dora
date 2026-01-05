@@ -116,9 +116,11 @@ pub fn build(
         DataflowSession::read_session(&dataflow_path).context("failed to read DataflowSession")?;
 
     let mut git_sources = BTreeMap::new();
-    let resolved_nodes = dataflow_descriptor
-        .resolve_aliases_and_set_defaults()
+    
+    // Use resolve_descriptor_from_path for automatic metadata loading
+    let resolved_nodes = dora_core::descriptor::resolve_descriptor_from_path(&dataflow_path)
         .context("failed to resolve nodes")?;
+    
     for (node_id, node) in resolved_nodes {
         if let CoreNodeKind::Custom(CustomNode {
             source: NodeSource::GitBranch { repo, rev },
@@ -173,6 +175,7 @@ pub fn build(
                 .to_owned();
             let build_info = build_dataflow_locally(
                 dataflow_descriptor,
+                &dataflow_path,
                 &git_sources,
                 &dataflow_session,
                 local_working_dir,

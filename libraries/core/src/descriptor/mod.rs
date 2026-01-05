@@ -30,6 +30,10 @@ mod tests;
 
 pub trait DescriptorExt {
     fn resolve_aliases_and_set_defaults(&self) -> eyre::Result<BTreeMap<NodeId, ResolvedNode>>;
+    fn resolve_aliases_and_set_defaults_with_working_dir(
+        &self,
+        working_dir: &Path,
+    ) -> eyre::Result<BTreeMap<NodeId, ResolvedNode>>;
     fn resolve_with_metadata(
         &self,
         metadata_file: Option<&NodeMetadataFile>,
@@ -50,11 +54,30 @@ pub const SINGLE_OPERATOR_DEFAULT_ID: &str = "op";
 
 impl DescriptorExt for Descriptor {
     fn resolve_aliases_and_set_defaults(&self) -> eyre::Result<BTreeMap<NodeId, ResolvedNode>> {
-        // If graph is defined, resolve with metadata
+        // If graph is defined, this will fail with a clear error message
         if !self.graph.is_empty() {
-            // Try to load metadata file from the same directory
-            // This is a simplified approach; in production, we might need more sophisticated path resolution
-            return self.resolve_with_metadata(None);
+            bail!("Graph-based dataflow requires node metadata. Please provide dora.yaml or use resolve_with_metadata_from_path()");
+        }
+
+        // Legacy format resolution
+        resolve_legacy_format(self)
+    }
+
+    fn resolve_aliases_and_set_defaults_with_working_dir(
+        &self,
+        working_dir: &Path,
+    ) -> eyre::Result<BTreeMap<NodeId, ResolvedNode>> {
+        // If graph is defined, try to load metadata from working directory
+        if !self.graph.is_empty() {
+            let metadata_path = working_dir.join("dora.yaml");
+            
+            if metadata_path.exists() {
+                let metadata = NodeMetadataFile::blocking_read(&metadata_path)
+                    .context("Failed to load dora.yaml metadata file")?;
+                return self.resolve_with_metadata(Some(&metadata));
+            } else {
+                bail!("Graph-based dataflow requires a dora.yaml file in the working directory, but it was not found at: {}", metadata_path.display());
+            }
         }
 
         // Legacy format resolution
