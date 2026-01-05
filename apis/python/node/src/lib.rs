@@ -41,7 +41,7 @@ fn host_log<'py>(record: Bound<'py, PyAny>) -> PyResult<()> {
     let target = record.getattr("name")?.to_string();
 
     RUNTIME.spawn(async move {
-
+        
     if level.ge(&40u8) {
         let span = span!(Level::ERROR, "dora.python.log.error", file=pathname, line=lineno, %target, %message);
         let _enter = span.enter();

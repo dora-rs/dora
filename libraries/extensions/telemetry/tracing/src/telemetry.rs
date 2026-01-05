@@ -1,5 +1,6 @@
 use opentelemetry::propagation::Extractor;
 use opentelemetry::{Context, global};
+use opentelemetry_otlp::WithExportConfig;
 
 use std::collections::HashMap;
 
@@ -41,6 +42,7 @@ impl Extractor for MetadataMap<'_> {
 pub fn init_tracing(name: &str, endpoint: &str) -> sdktrace::SdkTracerProvider {
     let exporter = opentelemetry_otlp::SpanExporter::builder()
         .with_tonic()
+        .with_endpoint(endpoint)
         .build()
         .unwrap();
 
@@ -51,7 +53,7 @@ pub fn init_tracing(name: &str, endpoint: &str) -> sdktrace::SdkTracerProvider {
 }
 
 /// Legacy function name for backward compatibility
-#[deprecated(since = "0.1.0", note = "Use `init_tracing` instead")]
+#[deprecated(since = "0.3.13", note = "Use `init_tracing` instead")]
 pub fn init_jaeger_tracing(name: &str, endpoint: &str) -> sdktrace::SdkTracerProvider {
     init_tracing(name, endpoint)
 }

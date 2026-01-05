@@ -982,9 +982,11 @@ pub fn init_tracing(
                 .with_otlp_tracing()
                 .context("failed to set up OTLP tracing")
                 .unwrap()
-                .with_stdout("info", true)
+                .with_stdout("info", true);
+            *clone.lock().unwrap() = builder.guard.take();
+        } else {
+            builder = builder.with_stdout("info", true);
         }
-        *clone.lock().unwrap() = builder.guard.take();
 
         builder
             .build()

@@ -63,7 +63,12 @@ impl TracingBuilder {
     /// it uses [std::io::stdout] which is synchronous
     /// and might block the logging thread.
     pub fn with_stdout(mut self, filter: impl AsRef<str>, json: bool) -> Self {
-        let parsed = EnvFilter::builder().parse_lossy(filter);
+        let parsed = EnvFilter::builder()
+            .parse_lossy(filter)
+            .add_directive("hyper=off".parse().unwrap())
+            .add_directive("tonic=off".parse().unwrap())
+            .add_directive("h2=off".parse().unwrap())
+            .add_directive("reqwest=off".parse().unwrap());
         let env_filter = EnvFilter::from_default_env().or(parsed);
         let layer = tracing_subscriber::fmt::layer()
             .compact()
@@ -129,8 +134,17 @@ impl TracingBuilder {
         };
 
         self.guard = Some(guard);
-        self.layers.push(OpenTelemetryLayer::new(tracer).boxed());
         self.layers.push(MetricsLayer::new(meter_provider).boxed());
+        let filter_otel = EnvFilter::new("trace")
+            .add_directive("hyper=off".parse().unwrap())
+            .add_directive("tonic=off".parse().unwrap())
+            .add_directive("h2=off".parse().unwrap())
+            .add_directive("reqwest=off".parse().unwrap());
+        self.layers.push(
+            OpenTelemetryLayer::new(tracer)
+                .with_filter(filter_otel)
+                .boxed(),
+        );
         Ok(self)
     }
 
