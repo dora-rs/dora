@@ -4,7 +4,7 @@ graph:
     inputs:
       tick: dora/timer/millis/10
 
-  - id: receive_data_with_sleep
-    proto: "receiver"
+  - id: log_data
+    proto: "log1"
     inputs:
       tick: send_data/data
