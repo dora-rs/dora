@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use syn::{
     parse::{Parse, ParseStream},
-    Ident, Result, Token,
+    Attribute, Ident, Result, Token,
 };
 
 #[derive(Debug)]
@@ -22,6 +22,8 @@ impl SchemaInput {
 pub struct MethodDef {
     /// Method name, should be in snake_case
     pub name: Ident,
+    /// Attributes on the method
+    pub attrs: Vec<Attribute>,
     /// Request type
     pub request: Ident,
     /// Response type
@@ -57,6 +59,8 @@ impl Parse for SchemaInput {
 impl Parse for MethodDef {
     fn parse(input: ParseStream) -> Result<Self> {
         // list_nodes: ListNodesRequest => ListNodesResponse;
+        let attr = input.call(Attribute::parse_outer)?;
+
         let name: Ident = input
             .parse()
             .map_err(|_| input.error("Expected method name (e.g., list_nodes)".to_string()))?;
@@ -72,6 +76,7 @@ impl Parse for MethodDef {
 
         Ok(MethodDef {
             name,
+            attrs: attr,
             request,
             response,
         })

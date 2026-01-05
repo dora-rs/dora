@@ -16,10 +16,12 @@ fn sync_client(
         .iter()
         .map(|m| {
             let method_name = &m.name;
+            let attributes = &m.attrs;
             let request_type = &m.request;
             let response_type = &m.response;
             let variant = enum_variant_ident(m);
             quote! {
+                #(#attributes)*
                 pub fn #method_name(
                     &mut self,
                     request: #request_type
