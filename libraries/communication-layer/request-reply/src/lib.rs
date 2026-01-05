@@ -8,7 +8,7 @@
 //! TODO
 
 pub use tcp::*;
-pub use transport::Transport;
+pub use transport::{AsyncTransport, Transport};
 
 pub mod encoding;
 mod tcp;

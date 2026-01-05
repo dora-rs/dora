@@ -91,7 +91,7 @@ pub fn generate_server_trait(schema: &SchemaInput) -> proc_macro2::TokenStream {
     };
 
     quote! {
-        pub trait #trait_name: std::marker::Send + std::marker::Sync {
+        pub trait #trait_name: ::std::marker::Send + ::std::marker::Sync {
             #(#trait_methods)*
         }
 

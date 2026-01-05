@@ -47,7 +47,7 @@ fn sync_client(
 
     quote! {
         pub struct #client_struct {
-            transport: std::boxed::Box<dyn ::communication_layer_request_reply::Transport<
+            transport: ::std::boxed::Box<dyn ::communication_layer_request_reply::Transport<
                 #request_enum_ident,
                 #response_enum_ident,
             >>,
@@ -59,7 +59,7 @@ fn sync_client(
 
         impl #client_struct {
             /// `JSON | u64-length-delimited(framed) | tcp`
-            pub fn new_tcp(addr: std::net::SocketAddr) -> std::io::Result<Self> {
+            pub fn new_tcp(addr: ::std::net::SocketAddr) -> std::io::Result<Self> {
                 let transport = ::communication_layer_request_reply::transport::FramedTransport::new(std::net::TcpStream::connect(addr)?);
                 let transport = ::communication_layer_request_reply::Transport::with_encoding::<
                     _,
@@ -69,7 +69,7 @@ fn sync_client(
                     transport,
                     ::communication_layer_request_reply::encoding::JsonEncoding,
                 );
-                let transport = std::boxed::Box::new(transport);
+                let transport = ::std::boxed::Box::new(transport);
                 Ok(Self { transport })
             }
 
@@ -138,8 +138,8 @@ fn async_client(
 
         impl #client_struct {
             /// `JSON | u64-length-delimited(framed) | tcp`
-            pub async fn new_tcp(addr: std::net::SocketAddr) -> std::io::Result<Self> {
-                let transport = ::communication_layer_request_reply::transport::FramedTransport::new_tokio(
+            pub async fn new_tcp(addr: ::std::net::SocketAddr) -> ::std::io::Result<Self> {
+                let transport = ::communication_layer_request_reply::transport::FramedTransport::new(
                     ::tokio::net::TcpStream::connect(addr).await?,
                 );
                 let transport = ::communication_layer_request_reply::AsyncTransport::with_encoding::<
