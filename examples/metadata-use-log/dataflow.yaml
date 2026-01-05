@@ -1,14 +1,10 @@
-nodes:
+graph:
   - id: send_data
-    build: pip install asyncio
-    path: ./send_data.py
+    proto: "sender"
     inputs:
       tick: dora/timer/millis/10
-    outputs:
-      - data
 
-  - id: receive_data_with_sleep
-    build: pip install numpy pyarrow
-    path: ./receive_data.py
+  - id: log_data
+    proto: "log/log1"
     inputs:
       tick: send_data/data
