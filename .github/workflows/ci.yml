@@ -454,8 +454,15 @@ jobs:
         timeout-minutes: 5
         shell: bash
         run: |
+          uv venv --seed -p 3.12
+          if [ "$RUNNER_OS" != "Windows" ]; then
+            source .venv/bin/activate
+          else
+            source .venv/Scripts/activate
+          fi
+          uv pip install -e apis/python/node
           uv pip install pyarrow
-          python3 examples/ros-compat/python/ros1_turtle/test_mock_bridge.py
+          python examples/ros-compat/python/ros1_turtle/test_mock_bridge.py
 
       - name: "Test CLI (C)"
         timeout-minutes: 45
