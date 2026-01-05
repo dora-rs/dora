@@ -1,13 +1,25 @@
 use std::io;
 use std::marker::PhantomData;
 
+#[cfg(feature = "bincode")]
 pub use bincode::BincodeEncoding;
+#[cfg(feature = "postcard")]
 pub use postcard::PostcardEncoding;
+#[cfg(feature = "json")]
+pub use json::JsonEncoding;
+#[cfg(feature = "yaml")]
+pub use yaml::YamlEncoding;
 
 use crate::Transport;
 
+#[cfg(feature = "bincode")]
 mod bincode;
+#[cfg(feature = "postcard")]
 mod postcard;
+#[cfg(feature = "json")]
+mod json;
+#[cfg(feature = "yaml")]
+mod yaml;
 
 pub trait Encoder<T: ?Sized> {
     fn encode(&self, item: &T, dest: &mut Vec<u8>) -> Result<(), io::Error>;
