@@ -5,7 +5,7 @@ use dora_message::{
 };
 use eyre::{Context, OptionExt, Result, bail};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     env::consts::EXE_EXTENSION,
     path::{Path, PathBuf},
     process::Stdio,
@@ -76,7 +76,7 @@ impl DescriptorExt for Descriptor {
             if metadata_path.exists() {
                 let metadata = NodeMetadataFile::blocking_read(&metadata_path)
                     .context("Failed to load dora.yaml metadata file")?;
-                return self.resolve_with_metadata(Some(&metadata));
+                return resolve_with_metadata_and_base_dir(self, &metadata, working_dir);
             } else {
                 if working_dir.join("dora.yml").exists() {
                     bail!("You need to rename dora.yml to dora.yaml");
@@ -106,34 +106,16 @@ impl DescriptorExt for Descriptor {
         let metadata = if let Some(m) = metadata_file {
             m.clone()
         } else {
-            // Try to load dora.yaml from current directory
-            // In a real implementation, we would need to know the dataflow file's directory
-            // For now, return an error if metadata is required but not provided
+            // In this path we don't know the dataflow file location, so we
+            // fall back to the current working directory as base for
+            // resolving dependencies.
             bail!(
-                "Graph-based dataflow requires node metadata. Please provide dora.yaml or use resolve_with_metadata_from_path()"
+                "Graph-based dataflow requires node metadata. Please provide dora.yaml or use resolve_descriptor_from_path()"
             );
         };
 
-        // Build a map of node prototypes
-        let mut prototypes: HashMap<String, &NodeMetadata> = HashMap::new();
-        for node_meta in &metadata.nodes {
-            prototypes.insert(node_meta.name.clone(), node_meta);
-        }
-
-        // Resolve graph nodes
-        let mut resolved = BTreeMap::new();
-        for graph_node in &self.graph {
-            let proto = prototypes.get(&graph_node.proto).ok_or_eyre(format!(
-                "Node prototype '{}' not found in dora.yaml",
-                graph_node.proto
-            ))?;
-
-            // Create a resolved node from the prototype and graph node
-            let node = merge_graph_node_with_prototype(graph_node, proto)?;
-            resolved.insert(graph_node.id.clone(), node);
-        }
-
-        Ok(resolved)
+        let base_dir = std::env::current_dir().context("Failed to get current working directory")?;
+        resolve_with_metadata_and_base_dir(self, &metadata, &base_dir)
     }
 
     fn visualize_as_mermaid(&self) -> eyre::Result<String> {
@@ -197,7 +179,10 @@ pub fn resolve_descriptor_from_path(
     let (descriptor, metadata) = load_descriptor_with_metadata(dataflow_path)?;
 
     if let Some(metadata) = metadata {
-        descriptor.resolve_with_metadata(Some(&metadata))
+        let dataflow_dir = dataflow_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."));
+        resolve_with_metadata_and_base_dir(&descriptor, &metadata, dataflow_dir)
     } else {
         descriptor.resolve_aliases_and_set_defaults()
     }
@@ -355,6 +340,103 @@ enum NodeKindMut<'a> {
     Operator(&'a mut SingleOperatorDefinition),
 }
 
+/// Resolve a graph-based descriptor using a metadata file and a base directory
+///
+/// The base directory is used to resolve relative paths in metadata
+/// dependencies ("herds").
+fn resolve_with_metadata_and_base_dir(
+    descriptor: &Descriptor,
+    metadata: &NodeMetadataFile,
+    base_dir: &Path,
+) -> eyre::Result<BTreeMap<NodeId, ResolvedNode>> {
+    if descriptor.graph.is_empty() {
+        return resolve_legacy_format(descriptor);
+    }
+
+    // Collect prototypes from the main metadata file
+    // Store both the prototype metadata and the base directory where paths should be resolved
+    let mut prototypes: HashMap<String, (NodeMetadata, PathBuf)> = HashMap::new();
+    for node_meta in &metadata.nodes {
+        prototypes.insert(node_meta.name.clone(), (node_meta.clone(), base_dir.to_path_buf()));
+    }
+
+    // Resolve dependency herds, if any
+    // Dependencies is now a map where the key is the custom herd name (used in proto references)
+    // and the value is the MetadataDependency with path and optional filtering
+    for (custom_herd_name, dep) in &metadata.dependencies {
+        let dep_path = base_dir.join(&dep.path);
+        let dep_metadata_path = if dep_path.is_dir() {
+            dep_path.join("dora.yaml")
+        } else {
+            dep_path.clone()
+        };
+
+        if !dep_metadata_path.exists() {
+            bail!(
+                "Metadata dependency '{}' not found at {}",
+                custom_herd_name,
+                dep_metadata_path.display()
+            );
+        }
+
+        let dep_metadata = NodeMetadataFile::blocking_read(&dep_metadata_path).with_context(|| {
+            format!(
+                "Failed to load metadata for dependency '{}' from {}",
+                custom_herd_name,
+                dep_metadata_path.display()
+            )
+        })?;
+
+        // Determine the herd base directory (where relative paths in herd nodes should be resolved)
+        let herd_base_dir = if dep_path.is_dir() {
+            dep_path
+        } else {
+            dep_path.parent().unwrap_or(&dep_path).to_path_buf()
+        };
+
+        let allowed: Option<HashSet<String>> = if dep.nodes.is_empty() {
+            None
+        } else {
+            Some(dep.nodes.iter().cloned().collect())
+        };
+
+        for node_meta in &dep_metadata.nodes {
+            // Only consider exported nodes
+            if !node_meta.export {
+                continue;
+            }
+
+            if let Some(ref allowed_set) = allowed {
+                if !allowed_set.contains(&node_meta.name) {
+                    continue;
+                }
+            }
+
+            // Use the custom herd name (the map key) as prefix, not dep.package
+            let qualified_name = format!("{}/{}", custom_herd_name, node_meta.name);
+            prototypes.insert(qualified_name, (node_meta.clone(), herd_base_dir.clone()));
+        }
+    }
+
+    // Resolve graph nodes
+    let mut resolved = BTreeMap::new();
+    for graph_node in &descriptor.graph {
+        let (proto, proto_base_dir) = prototypes
+            .get(&graph_node.proto)
+            .ok_or_else(|| {
+                eyre::eyre!(
+                    "Node prototype '{}' not found in metadata (including dependencies)",
+                    graph_node.proto
+                )
+            })?;
+
+        let node = merge_graph_node_with_prototype(graph_node, proto, proto_base_dir)?;
+        resolved.insert(graph_node.id.clone(), node);
+    }
+
+    Ok(resolved)
+}
+
 /// Resolve nodes using the legacy format (nodes field)
 fn resolve_legacy_format(descriptor: &Descriptor) -> eyre::Result<BTreeMap<NodeId, ResolvedNode>> {
     let default_op_id = OperatorId::from(SINGLE_OPERATOR_DEFAULT_ID.to_string());
@@ -440,9 +522,13 @@ fn resolve_legacy_format(descriptor: &Descriptor) -> eyre::Result<BTreeMap<NodeI
 }
 
 /// Merge a graph node with its prototype to create a resolved node
+///
+/// The proto_base_dir is used to resolve relative paths in the prototype
+/// (e.g., entry paths for herd nodes should be resolved relative to the herd directory)
 fn merge_graph_node_with_prototype(
     graph_node: &GraphNode,
     proto: &NodeMetadata,
+    proto_base_dir: &Path,
 ) -> eyre::Result<ResolvedNode> {
     // Determine the node source
     let source = match (&proto.git, &proto.branch, &proto.tag, &proto.rev) {
@@ -485,11 +571,20 @@ fn merge_graph_node_with_prototype(
         })
     } else {
         // Standard custom node
-        let path = proto
+        let entry_path = proto
             .entry
             .as_ref()
-            .ok_or_eyre("Node prototype must have an 'entry' field")?
-            .clone();
+            .ok_or_eyre("Node prototype must have an 'entry' field")?;
+        
+        // Resolve the entry path relative to the prototype's base directory
+        let path = if Path::new(entry_path).is_relative() {
+            proto_base_dir.join(entry_path)
+                .to_str()
+                .ok_or_eyre("Failed to convert path to string")?
+                .to_string()
+        } else {
+            entry_path.clone()
+        };
 
         CoreNodeKind::Custom(CustomNode {
             path,

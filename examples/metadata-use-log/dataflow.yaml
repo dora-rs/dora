@@ -5,6 +5,6 @@ graph:
       tick: dora/timer/millis/10
 
   - id: log_data
-    proto: "log/log1"
+    proto: "out_log/log1"
     inputs:
       tick: send_data/data

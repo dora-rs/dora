@@ -771,6 +771,46 @@ pub struct GraphNode {
 pub struct NodeMetadataFile {
     /// List of node prototypes
     pub nodes: Vec<NodeMetadata>,
+
+    /// Optional map of metadata dependencies ("herds")
+    ///
+    /// Each dependency points to another metadata package that exposes
+    /// additional node prototypes. The key is the custom herd name used
+    /// as prefix in proto references (e.g., `out_log/log1`), and the
+    /// value describes the dependency location and filtering.
+    #[serde(default)]
+    pub dependencies: BTreeMap<String, MetadataDependency>,
+}
+
+/// # Metadata Dependency (Herd)
+///
+/// Describes a dependency on another metadata package ("herd").
+///
+/// The herd is referenced in the parent dora.yaml as a key in the
+/// `dependencies` map (e.g., `out_log`), which is then used as a
+/// prefix in `proto` references (e.g., `out_log/log1`).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MetadataDependency {
+    /// Original package/herd name (optional, for documentation/reference)
+    ///
+    /// This field identifies the original name of the herd package.
+    /// It is primarily for clarity and tooling, as the actual herd name
+    /// used in proto references is the key in the dependencies map.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package: Option<String>,
+
+    /// Relative or absolute path to the dependency package.
+    ///
+    /// This usually points to a folder that contains a `dora.yaml`
+    /// metadata file, but can also directly point to such a file.
+    pub path: String,
+
+    /// Optional list of node prototype names that are imported
+    /// from this dependency. If empty, all exported nodes from
+    /// the dependency are available.
+    #[serde(default)]
+    pub nodes: Vec<String>,
 }
 
 /// # Node Metadata (Prototype)

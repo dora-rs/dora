@@ -3,8 +3,12 @@ nodes:
     lang: python
     entry: ./send_data.py
     build: pip install numpy pyarrow
+    outputs:
+      - name: data
+        type: number
 
 dependencies:
-  - name: log
+  out_log:
+    package: log
     path: ../metadata-log
     nodes: ["log1", "log2"]

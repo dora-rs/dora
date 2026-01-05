@@ -60,4 +60,25 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn test_metadata_herd_dependency() {
+        let dataflow_path = Path::new("examples/metadata-use-log/dataflow.yaml");
+
+        if dataflow_path.exists() {
+            let result = resolve_descriptor_from_path(dataflow_path);
+            assert!(
+                result.is_ok(),
+                "Failed to resolve metadata-use-log with herd dependency: {:?}",
+                result.err()
+            );
+
+            let resolved = result.unwrap();
+            // We expect two graph nodes: send_data (local) and log_data (from herd)
+            assert_eq!(resolved.len(), 2, "Expected 2 nodes in metadata-use-log dataflow");
+
+            assert!(resolved.contains_key(&NodeId::from("send_data".to_string())));
+            assert!(resolved.contains_key(&NodeId::from("log_data".to_string())));
+        }
+    }
 }
