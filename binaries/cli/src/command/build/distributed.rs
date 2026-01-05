@@ -2,7 +2,7 @@ use communication_layer_request_reply::{TcpConnection, TcpRequestReplyConnection
 use dora_core::descriptor::Descriptor;
 use dora_message::{
     BuildId,
-    cli_to_coordinator::{CliToCoordinatorClient, ControlRequest},
+    cli_to_coordinator::{CliToCoordinatorClient, ControlRequest, WaitForBuildReq},
     common::{GitSource, LogMessage},
     coordinator_to_cli::ControlRequestReply,
     id::NodeId,
@@ -16,16 +16,14 @@ use std::{
 use crate::{output::print_log_message, session::DataflowSession};
 
 pub fn build_distributed_dataflow(
-    session: &mut TcpRequestReplyConnection,
+    coordinator_client: &mut CliToCoordinatorClient,
     dataflow: Descriptor,
     git_sources: &BTreeMap<NodeId, GitSource>,
     dataflow_session: &DataflowSession,
     local_working_dir: Option<std::path::PathBuf>,
     uv: bool,
 ) -> eyre::Result<BuildId> {
-    let mut client: CliToCoordinatorClient<_, Vec<u8>, Vec<u8>, std::io::Error> =
-        CliToCoordinatorClient::new(session);
-    let build_id = client.build(dora_message::cli_to_coordinator::BuildReq {
+    let build_id = coordinator_client.build(dora_message::cli_to_coordinator::BuildReq {
         session_id: dataflow_session.session_id,
         dataflow,
         git_sources: git_sources.clone(),
@@ -38,7 +36,7 @@ pub fn build_distributed_dataflow(
 
 pub fn wait_until_dataflow_built(
     build_id: BuildId,
-    session: &mut TcpRequestReplyConnection,
+    coordinator_client: &mut CliToCoordinatorClient,
     coordinator_socket: SocketAddr,
     log_level: log::LevelFilter,
 ) -> eyre::Result<BuildId> {
@@ -71,21 +69,12 @@ pub fn wait_until_dataflow_built(
         }
     });
 
-    let reply_raw = session
-        .request(&serde_json::to_vec(&ControlRequest::WaitForBuild { build_id }).unwrap())
-        .wrap_err("failed to send WaitForBuild message")?;
-
-    let result: ControlRequestReply =
-        serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-    match result {
-        ControlRequestReply::DataflowBuildFinished { build_id, result } => match result {
-            Ok(()) => {
-                eprintln!("dataflow build finished successfully");
-                Ok(build_id)
-            }
-            Err(err) => bail!("{err}"),
-        },
-        ControlRequestReply::Error(err) => bail!("{err}"),
-        other => bail!("unexpected start dataflow reply: {other:?}"),
+    let resp = coordinator_client.wait_for_build(WaitForBuildReq { build_id })?;
+    match resp.result {
+        Ok(()) => {
+            eprintln!("dataflow build finished successfully");
+            Ok(resp.build_id)
+        }
+        Err(err) => bail!("{err}"),
     }
 }

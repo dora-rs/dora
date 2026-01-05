@@ -52,7 +52,7 @@ use dora_core::{
     descriptor::{CoreNodeKind, CustomNode, Descriptor, DescriptorExt},
     topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST},
 };
-use dora_message::{BuildId, descriptor::NodeSource};
+use dora_message::{BuildId, cli_to_coordinator::CliToCoordinatorClient, descriptor::NodeSource};
 use eyre::Context;
 use std::{collections::BTreeMap, net::IpAddr};
 
@@ -132,6 +132,8 @@ pub fn build(
     }
 
     let session = || connect_to_coordinator_with_defaults(coordinator_addr, coordinator_port);
+    let coordinator_client =
+        CliToCoordinatorClient::new_tcp(coordinator_socket(coordinator_addr, coordinator_port))?;
 
     let build_kind = if force_local {
         log::info!("Building locally, as requested through `--force-local`");
@@ -142,17 +144,13 @@ pub fn build(
     } else if coordinator_addr.is_some() || coordinator_port.is_some() {
         log::info!("Building through coordinator, using the given coordinator socket information");
         // explicit coordinator address or port set -> there should be a coordinator running
-        BuildKind::ThroughCoordinator {
-            coordinator_session: session().context("failed to connect to coordinator")?,
-        }
+        BuildKind::ThroughCoordinator { coordinator_client }
     } else {
         match session() {
-            Ok(coordinator_session) => {
+            Ok(_) => {
                 // we found a local coordinator instance at default port -> use it for building
                 log::info!("Found local dora coordinator instance -> building through coordinator");
-                BuildKind::ThroughCoordinator {
-                    coordinator_session,
-                }
+                BuildKind::ThroughCoordinator { coordinator_client }
             }
             Err(_) => {
                 log::warn!("No dora coordinator instance found -> trying a local build");
@@ -188,15 +186,15 @@ pub fn build(
                 .context("failed to write out dataflow session file")?;
         }
         BuildKind::ThroughCoordinator {
-            mut coordinator_session,
+            mut coordinator_client,
         } => {
             let local_working_dir = local_working_dir(
                 &dataflow_path,
                 &dataflow_descriptor,
-                &mut *coordinator_session,
+                &mut coordinator_client,
             )?;
             let build_id = build_distributed_dataflow(
-                &mut *coordinator_session,
+                &mut coordinator_client,
                 dataflow_descriptor,
                 &git_sources,
                 &dataflow_session,
@@ -213,7 +211,7 @@ pub fn build(
 
             wait_until_dataflow_built(
                 build_id,
-                &mut *coordinator_session,
+                &mut coordinator_client,
                 coordinator_socket(coordinator_addr, coordinator_port),
                 log::LevelFilter::Info,
             )?;
@@ -232,7 +230,7 @@ pub fn build(
 enum BuildKind {
     Local,
     ThroughCoordinator {
-        coordinator_session: Box<TcpRequestReplyConnection>,
+        coordinator_client: CliToCoordinatorClient,
     },
 }
 

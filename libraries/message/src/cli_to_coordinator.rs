@@ -14,7 +14,9 @@ dora_schema_macro::dora_schema! {
     Cli => Coordinator:
 
     build: BuildReq => BuildResp;
+    wait_for_build: WaitForBuildReq => WaitForBuildResp;
     start: StartReq => StartResp;
+    cli_and_default_daemon_on_same_machine: CliAndDefaultDaemonOnSameMachine => CliAndDefaultDaemonIps;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,6 +42,17 @@ pub struct BuildResp {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WaitForBuildReq {
+    pub build_id: BuildId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WaitForBuildResp {
+    pub build_id: BuildId,
+    pub result: Result<(), String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StartReq {
     pub build_id: Option<BuildId>,
     pub session_id: SessionId,
@@ -60,6 +73,15 @@ pub struct StartReq {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StartResp {
     pub uuid: Uuid,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CliAndDefaultDaemonOnSameMachine;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CliAndDefaultDaemonIps {
+    pub default_daemon: Option<std::net::IpAddr>,
+    pub cli: Option<std::net::IpAddr>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

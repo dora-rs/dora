@@ -15,7 +15,9 @@ use dora_core::{
     topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST},
 };
 use dora_message::{
-    cli_to_coordinator::ControlRequest, common::LogMessage, coordinator_to_cli::ControlRequestReply,
+    cli_to_coordinator::{CliToCoordinatorClient, ControlRequest},
+    common::LogMessage,
+    coordinator_to_cli::ControlRequestReply,
 };
 use eyre::{Context, bail};
 use std::{
@@ -117,8 +119,10 @@ fn start_dataflow(
 
     let mut session = connect_to_coordinator(coordinator_socket)
         .wrap_err("failed to connect to dora coordinator")?;
+    let mut coordinator_client = CliToCoordinatorClient::new_tcp(coordinator_socket)?;
 
-    let local_working_dir = local_working_dir(&dataflow, &dataflow_descriptor, &mut *session)?;
+    let local_working_dir =
+        local_working_dir(&dataflow, &dataflow_descriptor, &mut coordinator_client)?;
 
     let dataflow_id = {
         let dataflow = dataflow_descriptor.clone();
