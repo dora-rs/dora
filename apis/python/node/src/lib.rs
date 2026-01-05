@@ -2,7 +2,7 @@
 
 use std::env::current_dir;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use tokio::sync::Mutex;
 
@@ -11,7 +11,7 @@ use dora_download::download_file;
 use dora_node_api::dora_core::config::NodeId;
 use dora_node_api::dora_core::descriptor::source_is_url;
 use dora_node_api::merged::{MergeExternalSend, MergedEvent};
-use dora_node_api::{DataflowId, DoraNode, EventStream, TryRecvError};
+use dora_node_api::{DataflowId, DoraNode, EventStream, TryRecvError, init_tracing};
 use dora_operator_api_python::{DelayedCleanup, NodeCleanupHandle, PyEvent, pydict_to_metadata};
 use dora_ros2_bridge_python::Ros2Subscription;
 use eyre::{Context, ContextCompat};
@@ -20,27 +20,49 @@ use futures::{Stream, StreamExt};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
 use pyo3_special_method_derive::{Dict, Dir, Repr, Str};
+use tokio::runtime::{Builder, Runtime};
+use tracing::{Level, span};
+static RUNTIME: LazyLock<Runtime> = LazyLock::new(|| {
+    Builder::new_multi_thread()
+        .worker_threads(4)
+        .enable_all()
+        .build()
+        .context("Failed to create Tokio runtime")
+        .unwrap()
+});
 
 /// Consume a Python `logging.LogRecord` and emit a Rust `tracing::Event` instead.
 #[pyfunction]
 fn host_log<'py>(record: Bound<'py, PyAny>) -> PyResult<()> {
-    let level = record.getattr("levelno")?;
+    let level = record.getattr("levelno")?.extract::<u8>()?;
     let message = record.getattr("getMessage")?.call0()?.to_string();
     let pathname = record.getattr("pathname")?.to_string();
     let lineno = record.getattr("lineno")?.to_string();
     let target = record.getattr("name")?.to_string();
-    if level.ge(40u8)? {
+
+    RUNTIME.spawn(async move {
+    if level.ge(&40u8) {
+        let span = span!(Level::ERROR, "dora.python.log.error", file=pathname, line=lineno, %target, %message);
+        let _enter = span.enter();
         tracing::event!(tracing::Level::ERROR, file=pathname, line=lineno, %target, %message);
-    } else if level.ge(30u8)? {
+    } else if level.ge(&30u8) {
+        let span = span!(Level::ERROR, "dora.python.log.warn", file=pathname, line=lineno, %target, %message);
+        let _enter = span.enter();
         tracing::event!(tracing::Level::WARN, file=pathname, line=lineno, %target, %message);
-    } else if level.ge(20u8)? {
+    } else if level.ge(&20u8){
+        let span = span!(Level::INFO, "dora.python.log.info", file=pathname, line=lineno, %target, %message);
+        let _enter = span.enter();
         tracing::event!(tracing::Level::INFO, file=pathname, line=lineno, %target, %message);
-    } else if level.ge(10u8)? {
+    } else if level.ge(&10u8) {
+        let span = span!(Level::DEBUG, "dora.python.log.debug", file=pathname, line=lineno, %target, %message);
+        let _enter = span.enter();
         tracing::event!(tracing::Level::DEBUG, file=pathname, line=lineno, %target, %message);
     } else {
+        let span = span!(Level::TRACE, "dora.python.log.trace", file=pathname, line=lineno, %target, %message);
+        let _enter = span.enter();
         tracing::event!(tracing::Level::TRACE, file=pathname, line=lineno, %target, %message);
     }
-
+    });
     Ok(())
 }
 
@@ -53,7 +75,7 @@ fn host_log<'py>(record: Bound<'py, PyAny>) -> PyResult<()> {
 ///
 /// Since any call like `logging.warn(...)` sets up logging via `logging.basicConfig`, all log messages are now
 /// delivered to `crate::host_log`, which will send them to `tracing::event!`.
-pub fn setup_logging(py: Python, node_id: NodeId, dataflow_id: DataflowId) -> PyResult<()> {
+pub fn setup_logging(py: Python) -> PyResult<()> {
     let logging = py.import("logging")?;
     logging.setattr("host_log", wrap_pyfunction!(host_log, &logging)?)?;
     py.run(
@@ -119,6 +141,14 @@ impl Node {
         } else {
             DoraNode::init_from_env().context("Could not initiate node from environment variable. For dynamic node, please add a node id in the initialization function.")?
         };
+        let id = node.id().clone();
+        let dataflow_id = node.dataflow_id().clone();
+        RUNTIME.spawn(async move {
+            let _guard = init_tracing(&id, &dataflow_id).unwrap();
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+        });
 
         let dataflow_id = *node.dataflow_id();
         let node_id = node.id().clone();
@@ -130,7 +160,7 @@ impl Node {
 
         Python::with_gil(|py| {
             // Extend the `logging` module to interact with tracing
-            setup_logging(py, node_id.clone(), dataflow_id)
+            setup_logging(py)
         })?;
 
         Ok(Node {
