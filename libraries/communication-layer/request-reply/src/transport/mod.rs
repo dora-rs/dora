@@ -14,6 +14,8 @@ where
     Req: ?Sized,
 {
     fn send(&mut self, item: &Req) -> io::Result<()>;
+    /// Receives an item. If the underlying transport is closed (finished), returns Ok(None).
+    /// Otherwise, returns Ok(Some(item)) or an error.
     fn receive(&mut self) -> io::Result<Option<Resp>>;
 
     fn with_encoding<Encoding, Req2: ?Sized, Resp2>(

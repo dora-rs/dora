@@ -42,6 +42,7 @@ where
         let mut len_buf = [0u8; 8];
         match self.inner.read_exact(&mut len_buf) {
             Ok(_) => {}
+            // TODO: verify that this is the correct way to detect closed transport
             Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
             Err(e) => return Err(e),
         }
@@ -69,6 +70,7 @@ where
         let mut len_buf = [0u8; 8];
         match self.inner.read_exact(&mut len_buf).await {
             Ok(_) => {}
+            // TODO: verify that this is the correct way to detect closed transport
             Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
             Err(e) => return Err(e),
         }
