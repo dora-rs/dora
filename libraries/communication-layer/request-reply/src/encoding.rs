@@ -1,23 +1,26 @@
 use std::io;
 use std::marker::PhantomData;
 
+use async_trait::async_trait;
+
 #[cfg(feature = "bincode")]
 pub use bincode::BincodeEncoding;
-#[cfg(feature = "postcard")]
-pub use postcard::PostcardEncoding;
 #[cfg(feature = "json")]
 pub use json::JsonEncoding;
+#[cfg(feature = "postcard")]
+pub use postcard::PostcardEncoding;
 #[cfg(feature = "yaml")]
 pub use yaml::YamlEncoding;
 
 use crate::Transport;
+use crate::transport::AsyncTransport;
 
 #[cfg(feature = "bincode")]
 mod bincode;
-#[cfg(feature = "postcard")]
-mod postcard;
 #[cfg(feature = "json")]
 mod json;
+#[cfg(feature = "postcard")]
+mod postcard;
 #[cfg(feature = "yaml")]
 mod yaml;
 
@@ -68,6 +71,30 @@ where
     fn receive(&mut self) -> io::Result<Option<Resp>> {
         self.inner
             .receive()?
+            .map(|data| self.encoding.decode(&data))
+            .transpose()
+    }
+}
+
+#[async_trait]
+impl<T, Encoding, Req, Resp> AsyncTransport<Req, Resp> for EncodedTransport<T, Encoding, Req, Resp>
+where
+    T: AsyncTransport<[u8], Vec<u8>> + Send,
+    Encoding: Encoder<Req> + Decoder<Resp> + Send,
+    Req: Sync + Send + ?Sized,
+    Resp: Send,
+{
+    async fn send(&mut self, item: &Req) -> io::Result<()> {
+        self.buf.clear();
+        self.encoding.encode(item, &mut self.buf)?;
+        self.inner.send(&self.buf).await?;
+        Ok(())
+    }
+
+    async fn receive(&mut self) -> io::Result<Option<Resp>> {
+        self.inner
+            .receive()
+            .await?
             .map(|data| self.encoding.decode(&data))
             .transpose()
     }
