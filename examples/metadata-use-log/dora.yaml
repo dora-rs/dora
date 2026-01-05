@@ -11,4 +11,4 @@ dependencies:
   out_log:
     package: log
     path: ../metadata-log
-    nodes: ["log1", "log2"]
+    nodes: ["log1", "log2", "flow_log"]

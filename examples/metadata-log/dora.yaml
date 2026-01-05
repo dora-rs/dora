@@ -4,12 +4,29 @@ nodes:
     export: true
     entry: ./log1.py
     build: pip install numpy pyarrow
+    inputs:
+      - name: tick
+        type: number
+        required: true
 
   - name: log2
     lang: python
     export: true
     entry: ./log1.py
     build: pip install numpy pyarrow
+    inputs:
+      - name: tick
+        type: number
+        required: true
+
+  - name: flow_log
+    export: true
+    entry: ./dataflow.yaml
+    inputs:
+      - name: tick
+        type: number
+        required: true
+        target: log_data/tick
 
   - name: sender
     lang: python
@@ -23,7 +40,3 @@ nodes:
     outputs:
       - name: data
         type: number
-
-  - name: flow
-    export: true
-    entry: ./datalow.yaml
