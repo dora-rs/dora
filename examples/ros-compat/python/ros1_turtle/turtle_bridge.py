@@ -23,30 +23,38 @@ def main():
     # Note: This requires a running rosbridge_server
     ros_host = os.environ.get("ROS_HOST", "localhost")
     ros_port = int(os.environ.get("ROS_PORT", 9090))
+    mock_mode = os.environ.get("ROS_MOCK_MODE", "0") == "1"
     
-    client = roslibpy.Ros(host=ros_host, port=ros_port)
-    client.run()
-    
-    # Publisher to turtlesim
-    # We'll publish to /turtle1/cmd_vel
-    talker = roslibpy.Topic(client, '/turtle1/cmd_vel', 'geometry_msgs/Twist')
-    
-    # Subscribe to turtlesim pose
-    # We'll forward this to dora
+    if mock_mode:
+        print("Running in MOCK mode (CI)")
+        # Mock class to simulate roslibpy behavior
+        class MockClient:
+            def run(self): pass
+            def terminate(self): pass
+        
+        class MockTopic:
+            def __init__(self, client, name, type): pass
+            def publish(self, msg): pass
+            def subscribe(self, cb): pass
+            
+        client = MockClient()
+        talker = MockTopic(client, '/turtle1/cmd_vel', 'geometry_msgs/Twist')
+        listener = MockTopic(client, '/turtle1/pose', 'turtlesim/Pose')
+        
+    else:
+        client = roslibpy.Ros(host=ros_host, port=ros_port)
+        client.run()
+        
+        # Publisher to turtlesim
+        # We'll publish to /turtle1/cmd_vel
+        talker = roslibpy.Topic(client, '/turtle1/cmd_vel', 'geometry_msgs/Twist')
+        
+        # Subscribe to turtlesim pose
+        listener = roslibpy.Topic(client, '/turtle1/pose', 'turtlesim/Pose')
+
     def on_pose_message(message):
-        # ROS1 message is a dict
-        
-        # In a real scenario, you would convert this dict to Arrow struct
-        # Since dora-ros-compat converts Arrow -> ROS, we demonstrate the other way here:
-        # We'll create an Arrow array from the ROS message and "send" it to a mock conversion
-        
-        # Create Twist message for dora stream
-        # (Mocking a source that sends Arrow data matching ROS format)
-        
-        # Here we demonstrate sending commands TO ROS1 from dora inputs
         pass
 
-    listener = roslibpy.Topic(client, '/turtle1/pose', 'turtlesim/Pose')
     listener.subscribe(on_pose_message)
     
     print("Dora ROS1 Turtle Bridge Started")
@@ -63,8 +71,12 @@ def main():
                 for msg in ros_msgs:
                     # Publish to ROS1 via roslibpy
                     # msg is already in the correct dict format for ROS
-                    talker.publish(roslibpy.Message(msg))
-                    print(f"Sent command to ROS1: {msg}")
+                    if mock_mode:
+                        # In mock mode, we just verify structure is dict
+                         print(f"Sent command to ROS1 (MOCK): {msg}")
+                    else:
+                        talker.publish(roslibpy.Message(msg))
+                        print(f"Sent command to ROS1: {msg}")
 
     client.terminate()
 
