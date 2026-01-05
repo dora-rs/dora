@@ -56,7 +56,9 @@ impl DescriptorExt for Descriptor {
     fn resolve_aliases_and_set_defaults(&self) -> eyre::Result<BTreeMap<NodeId, ResolvedNode>> {
         // If graph is defined, this will fail with a clear error message
         if !self.graph.is_empty() {
-            bail!("Graph-based dataflow requires node metadata. Please provide dora.yaml or use resolve_with_metadata_from_path()");
+            bail!(
+                "Graph-based dataflow requires node metadata. Please provide dora.yaml or use resolve_with_metadata_from_path()"
+            );
         }
 
         // Legacy format resolution
@@ -70,13 +72,20 @@ impl DescriptorExt for Descriptor {
         // If graph is defined, try to load metadata from working directory
         if !self.graph.is_empty() {
             let metadata_path = working_dir.join("dora.yaml");
-            
+
             if metadata_path.exists() {
                 let metadata = NodeMetadataFile::blocking_read(&metadata_path)
                     .context("Failed to load dora.yaml metadata file")?;
                 return self.resolve_with_metadata(Some(&metadata));
             } else {
-                bail!("Graph-based dataflow requires a dora.yaml file in the working directory, but it was not found at: {}", metadata_path.display());
+                if working_dir.join("dora.yml").exists() {
+                    bail!("You need to rename dora.yml to dora.yaml");
+                } else {
+                    bail!(
+                        "Graph-based dataflow requires a dora.yaml file in the working directory, but it was not found at: {}",
+                        metadata_path.display()
+                    );
+                }
             }
         }
 
@@ -100,7 +109,9 @@ impl DescriptorExt for Descriptor {
             // Try to load dora.yaml from current directory
             // In a real implementation, we would need to know the dataflow file's directory
             // For now, return an error if metadata is required but not provided
-            bail!("Graph-based dataflow requires node metadata. Please provide dora.yaml or use resolve_with_metadata_from_path()");
+            bail!(
+                "Graph-based dataflow requires node metadata. Please provide dora.yaml or use resolve_with_metadata_from_path()"
+            );
         };
 
         // Build a map of node prototypes
@@ -112,9 +123,10 @@ impl DescriptorExt for Descriptor {
         // Resolve graph nodes
         let mut resolved = BTreeMap::new();
         for graph_node in &self.graph {
-            let proto = prototypes
-                .get(&graph_node.proto)
-                .ok_or_eyre(format!("Node prototype '{}' not found in dora.yaml", graph_node.proto))?;
+            let proto = prototypes.get(&graph_node.proto).ok_or_eyre(format!(
+                "Node prototype '{}' not found in dora.yaml",
+                graph_node.proto
+            ))?;
 
             // Create a resolved node from the prototype and graph node
             let node = merge_graph_node_with_prototype(graph_node, proto)?;
@@ -152,20 +164,25 @@ impl DescriptorExt for Descriptor {
 }
 
 /// Load descriptor and automatically load metadata if needed
-pub fn load_descriptor_with_metadata(dataflow_path: &Path) -> eyre::Result<(Descriptor, Option<NodeMetadataFile>)> {
+pub fn load_descriptor_with_metadata(
+    dataflow_path: &Path,
+) -> eyre::Result<(Descriptor, Option<NodeMetadataFile>)> {
     let descriptor = Descriptor::blocking_read(dataflow_path)?;
-    
+
     // If graph is defined, try to load metadata from the same directory
     if !descriptor.graph.is_empty() {
         let dataflow_dir = dataflow_path.parent().unwrap_or_else(|| Path::new("."));
         let metadata_path = dataflow_dir.join("dora.yaml");
-        
+
         if metadata_path.exists() {
             let metadata = NodeMetadataFile::blocking_read(&metadata_path)
                 .context("Failed to load dora.yaml metadata file")?;
             Ok((descriptor, Some(metadata)))
         } else {
-            bail!("Graph-based dataflow requires a dora.yaml file in the same directory, but it was not found at: {}", metadata_path.display());
+            bail!(
+                "Graph-based dataflow requires a dora.yaml file in the same directory, but it was not found at: {}",
+                metadata_path.display()
+            );
         }
     } else {
         // Legacy format, no metadata needed
@@ -174,9 +191,11 @@ pub fn load_descriptor_with_metadata(dataflow_path: &Path) -> eyre::Result<(Desc
 }
 
 /// Resolve descriptor with automatic metadata loading
-pub fn resolve_descriptor_from_path(dataflow_path: &Path) -> eyre::Result<BTreeMap<NodeId, ResolvedNode>> {
+pub fn resolve_descriptor_from_path(
+    dataflow_path: &Path,
+) -> eyre::Result<BTreeMap<NodeId, ResolvedNode>> {
     let (descriptor, metadata) = load_descriptor_with_metadata(dataflow_path)?;
-    
+
     if let Some(metadata) = metadata {
         descriptor.resolve_with_metadata(Some(&metadata))
     } else {

@@ -1,0 +1,3 @@
+nodes:
+  - name: sender
+    path: ../python-log/flow

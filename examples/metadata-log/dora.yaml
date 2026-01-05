@@ -18,5 +18,6 @@ nodes:
       - name: data
         type: number
 
-  - name: abc
-    lang: python
+  - name: flow
+    export: true
+    entry: ./datalow.yaml
