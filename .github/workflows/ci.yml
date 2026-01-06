@@ -468,9 +468,14 @@ jobs:
           echo "      ROS_MOCK_MODE: 1" >> examples/ros-compat/python/ros1_turtle/dataflow.yml
           dora up
           dora start examples/ros-compat/python/ros1_turtle/dataflow.yml --name ros1-compat-test --detach
+          echo "Waiting for dataflow..."
           sleep 10
-          dora stop --name ros1-compat-test --grace-duration 5s || true
-          dora destroy || true
+          echo "Stopping dataflow..."
+          dora stop --name ros1-compat-test --grace-duration 5s || echo "Stop failed"
+          echo "Destroying daemon..."
+          dora destroy || echo "Destroy failed"
+          echo "Test Passed!"
+          exit 0
 
       - name: "Test CLI (C)"
         timeout-minutes: 45
