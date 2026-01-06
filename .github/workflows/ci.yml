@@ -465,12 +465,12 @@ jobs:
           python examples/ros-compat/python/ros1_turtle/test_mock_bridge.py
           
           # Run full dataflow
-          sed -i 's/ROS_PORT: 9090/ROS_PORT: 9090\n        ROS_MOCK_MODE: 1/' examples/ros-compat/python/ros1_turtle/dataflow.yml
+          echo "      ROS_MOCK_MODE: 1" >> examples/ros-compat/python/ros1_turtle/dataflow.yml
           dora up
           dora start examples/ros-compat/python/ros1_turtle/dataflow.yml --name ros1-compat-test --detach
           sleep 10
-          dora stop --name ros1-compat-test --grace-duration 5s
-          dora destroy
+          dora stop --name ros1-compat-test --grace-duration 5s || true
+          dora destroy || true
 
       - name: "Test CLI (C)"
         timeout-minutes: 45

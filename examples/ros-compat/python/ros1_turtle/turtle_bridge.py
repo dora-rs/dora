@@ -6,7 +6,6 @@ This node subscribes to a ROS1 topic, converts the message to Arrow, and sends i
 
 import time
 import os
-import roslibpy
 import pyarrow as pa
 from dora import Node, ros
 
@@ -36,12 +35,17 @@ def main():
             def __init__(self, client, name, type): pass
             def publish(self, msg): pass
             def subscribe(self, cb): pass
+        
+        class MockMessage:
+            def __init__(self, msg): pass
             
         client = MockClient()
         talker = MockTopic(client, '/turtle1/cmd_vel', 'geometry_msgs/Twist')
         listener = MockTopic(client, '/turtle1/pose', 'turtlesim/Pose')
+        Message = MockMessage
         
     else:
+        import roslibpy
         client = roslibpy.Ros(host=ros_host, port=ros_port)
         client.run()
         
@@ -51,6 +55,7 @@ def main():
         
         # Subscribe to turtlesim pose
         listener = roslibpy.Topic(client, '/turtle1/pose', 'turtlesim/Pose')
+        Message = roslibpy.Message
 
     def on_pose_message(message):
         pass
@@ -75,7 +80,7 @@ def main():
                         # In mock mode, we just verify structure is dict
                          print(f"Sent command to ROS1 (MOCK): {msg}")
                     else:
-                        talker.publish(roslibpy.Message(msg))
+                        talker.publish(Message(msg))
                         print(f"Sent command to ROS1: {msg}")
 
     client.terminate()

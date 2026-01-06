@@ -71,7 +71,7 @@ class TestRos1Bridge(unittest.TestCase):
         mock_message.assert_called_with(expected_msg)
         mock_talker.publish.assert_called()
         
-        print("✓ Mock ROS1 Bridge Logic Verified")
+        print("[OK] Mock ROS1 Bridge Logic Verified")
 
 if __name__ == '__main__':
     unittest.main()
