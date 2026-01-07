@@ -1569,6 +1569,8 @@ dependencies = [
 name = "dora-coordinator"
 version = "0.3.13"
 dependencies = [
+ "async-trait",
+ "communication-layer-request-reply",
  "ctrlc",
  "dora-core",
  "dora-message",
@@ -1694,6 +1696,7 @@ dependencies = [
  "aligned-vec",
  "arrow-data",
  "arrow-schema",
+ "async-trait",
  "bincode",
  "chrono",
  "communication-layer-request-reply",

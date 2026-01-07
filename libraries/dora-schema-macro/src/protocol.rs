@@ -51,6 +51,7 @@ pub fn generate_protocol(schema: &SchemaInput) -> proc_macro2::TokenStream {
     let response_enum = response_enum_ident(schema);
     let error_struct = error_struct_ident(schema);
 
+    // TODO: better eyre conversion
     quote! {
         #[derive(Debug, ::serde::Serialize, ::serde::Deserialize)]
         pub enum #request_enum {
@@ -66,6 +67,20 @@ pub fn generate_protocol(schema: &SchemaInput) -> proc_macro2::TokenStream {
         #[derive(Debug, ::serde::Serialize, ::serde::Deserialize)]
         pub struct #error_struct {
             pub msg: String,
+        }
+
+        impl ::std::fmt::Display for #error_struct {
+            fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+                write!(f, "{}", self.msg)
+            }
+        }
+
+        impl ::std::error::Error for #error_struct {}
+
+        impl ::std::convert::From<::eyre::Report> for #error_struct {
+            fn from(report: ::eyre::Report) -> Self {
+                Self { msg: format!("{}", report) }
+            }
         }
 
         impl #error_struct {

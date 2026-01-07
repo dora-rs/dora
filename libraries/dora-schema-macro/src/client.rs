@@ -60,7 +60,7 @@ fn sync_client(
         impl #client_struct {
             /// `JSON | u64-length-delimited(framed) | tcp`
             pub fn new_tcp(addr: ::std::net::SocketAddr) -> std::io::Result<Self> {
-                let transport = ::communication_layer_request_reply::transport::FramedTransport::new(std::net::TcpStream::connect(addr)?);
+                let transport = ::communication_layer_request_reply::transport::FramedTransport::new(::std::net::TcpStream::connect(addr)?);
                 let transport = ::communication_layer_request_reply::Transport::with_encoding::<
                     _,
                     #request_enum_ident,
