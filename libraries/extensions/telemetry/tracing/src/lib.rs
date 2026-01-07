@@ -1,17 +1,24 @@
-//! Enable tracing using Opentelemetry and Jaeger.
+//! Enable tracing using OpenTelemetry with OTLP.
 //!
-//! This module init a tracing propagator for Rust code that requires tracing, and is
+//! This module initializes a tracing propagator for Rust code that requires tracing, and is
 //! able to serialize and deserialize context that has been sent via the middleware.
+//! Supports any OTLP-compatible backend (Jaeger, Zipkin, Tempo, etc.).
 
 use std::path::Path;
 
 use eyre::Context as EyreContext;
+use opentelemetry::trace::TracerProvider;
+use opentelemetry_sdk::metrics::SdkMeterProvider;
+use opentelemetry_sdk::trace::SdkTracerProvider;
 use tracing::metadata::LevelFilter;
+
+use tracing_opentelemetry::{MetricsLayer, OpenTelemetryLayer};
 use tracing_subscriber::{
     EnvFilter, Layer, filter::FilterExt, prelude::__tracing_subscriber_SubscriberExt,
 };
 
 use tracing_subscriber::Registry;
+pub mod metrics;
 pub mod telemetry;
 
 /// Setup tracing with a default configuration.
@@ -29,10 +36,16 @@ pub fn set_up_tracing(name: &str) -> eyre::Result<()> {
     Ok(())
 }
 
+pub struct OtelGuard {
+    tracer_provider: SdkTracerProvider,
+    meter_provider: SdkMeterProvider,
+}
+
 #[must_use = "call `build` to finalize the tracing setup"]
 pub struct TracingBuilder {
     name: String,
     layers: Vec<Box<dyn Layer<Registry> + Send + Sync>>,
+    pub guard: Option<OtelGuard>,
 }
 
 impl TracingBuilder {
@@ -40,6 +53,7 @@ impl TracingBuilder {
         Self {
             name: name.into(),
             layers: Vec::new(),
+            guard: None,
         }
     }
 
@@ -49,7 +63,12 @@ impl TracingBuilder {
     /// it uses [std::io::stdout] which is synchronous
     /// and might block the logging thread.
     pub fn with_stdout(mut self, filter: impl AsRef<str>, json: bool) -> Self {
-        let parsed = EnvFilter::builder().parse_lossy(filter);
+        let parsed = EnvFilter::builder()
+            .parse_lossy(filter)
+            .add_directive("hyper=off".parse().unwrap())
+            .add_directive("tonic=off".parse().unwrap())
+            .add_directive("h2=off".parse().unwrap())
+            .add_directive("reqwest=off".parse().unwrap());
         let env_filter = EnvFilter::from_default_env().or(parsed);
         let layer = tracing_subscriber::fmt::layer()
             .compact()
@@ -89,14 +108,50 @@ impl TracingBuilder {
         Ok(self)
     }
 
-    pub fn with_jaeger_tracing(mut self) -> eyre::Result<Self> {
-        let endpoint = std::env::var("DORA_JAEGER_TRACING")
-            .wrap_err("DORA_JAEGER_TRACING environment variable not set")?;
-        let tracer = crate::telemetry::init_jaeger_tracing(&self.name, &endpoint)
-            .wrap_err("Could not instantiate tracing")?;
-        let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
-        self.layers.push(telemetry.boxed());
+    /// Add OpenTelemetry tracing layer with OTLP exporter.
+    ///
+    /// Reads the OTLP endpoint from `DORA_OTLP_ENDPOINT` environment variable.
+    /// If not set, falls back to `DORA_JAEGER_TRACING` for backward compatibility.
+    ///
+    /// The endpoint should be in the format: "http://localhost:4317"
+    pub fn with_otlp_tracing(mut self) -> eyre::Result<Self> {
+        let endpoint = std::env::var("DORA_OTLP_ENDPOINT")
+            .or_else(|_| std::env::var("DORA_JAEGER_TRACING"))
+            .wrap_err("DORA_OTLP_ENDPOINT or DORA_JAEGER_TRACING environment variable not set")?;
+
+        // Initialize OTLP tracing - this returns a tracer and sets the global provider
+        let sdk_tracer_provider = crate::telemetry::init_tracing(&self.name, &endpoint);
+        let meter_provider = metrics::init_meter_provider();
+
+        // TODO: Maybe this needs to be removed in favor of application level global.
+        // global::set_meter_provider(meter_provider.clone());
+        // Use the specific tracer instance returned from init_tracing
+        let tracer = sdk_tracer_provider.tracer("tracing-otel-subscriber");
+
+        let guard = OtelGuard {
+            tracer_provider: sdk_tracer_provider,
+            meter_provider: meter_provider.clone(),
+        };
+
+        self.guard = Some(guard);
+        self.layers.push(MetricsLayer::new(meter_provider).boxed());
+        let filter_otel = EnvFilter::new("trace")
+            .add_directive("hyper=off".parse().unwrap())
+            .add_directive("tonic=off".parse().unwrap())
+            .add_directive("h2=off".parse().unwrap())
+            .add_directive("reqwest=off".parse().unwrap());
+        self.layers.push(
+            OpenTelemetryLayer::new(tracer)
+                .with_filter(filter_otel)
+                .boxed(),
+        );
         Ok(self)
+    }
+
+    /// Legacy method name for backward compatibility.
+    #[deprecated(since = "0.3.14", note = "Use `with_otlp_tracing` instead")]
+    pub fn with_jaeger_tracing(self) -> eyre::Result<Self> {
+        self.with_otlp_tracing()
     }
 
     pub fn add_layer<L>(mut self, layer: L) -> Self
@@ -120,9 +175,20 @@ impl TracingBuilder {
 
     pub fn build(self) -> eyre::Result<()> {
         let registry = Registry::default().with(self.layers);
+
+        // TODO: Maybe this needs to be removed in favor of application level global.
         tracing::subscriber::set_global_default(registry).context(format!(
             "failed to set tracing global subscriber for {}",
             self.name
         ))
+    }
+}
+
+impl Drop for OtelGuard {
+    fn drop(&mut self) {
+        self.meter_provider.force_flush().ok();
+        self.meter_provider.shutdown().ok();
+        self.tracer_provider.force_flush().ok();
+        self.tracer_provider.shutdown().ok();
     }
 }

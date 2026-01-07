@@ -1,5 +1,4 @@
 mod build;
-mod check;
 mod completion;
 mod coordinator;
 mod daemon;
@@ -15,14 +14,15 @@ mod runtime;
 mod self_;
 mod start;
 mod stop;
+mod system;
 mod topic;
 mod up;
 
 pub use build::build;
 pub use run::{run, run_func};
+pub use system::check_environment;
 
 use build::Build;
-use check::Check;
 use completion::Completion;
 use coordinator::Coordinator;
 use daemon::Daemon;
@@ -39,13 +39,17 @@ use runtime::Runtime;
 use self_::SelfSubCommand;
 use start::Start;
 use stop::Stop;
+use system::System;
 use topic::Topic;
 use up::Up;
 
 /// dora-rs cli client
 #[derive(Debug, clap::Subcommand)]
 pub enum Command {
-    Check(Check),
+    #[clap(subcommand)]
+    System(System),
+    /// Alias for `system status`
+    Check(system::status::Status),
     Graph(Graph),
     Build(Build),
     New(NewArgs),
@@ -101,6 +105,7 @@ pub trait Executable {
 impl Executable for Command {
     fn execute(self) -> eyre::Result<()> {
         match self {
+            Command::System(args) => args.execute(),
             Command::Check(args) => args.execute(),
             Command::Coordinator(args) => args.execute(),
             Command::Graph(args) => args.execute(),

@@ -10,15 +10,15 @@ This examples requires a sourced ROS2 installation.
 - Don't forget to [source the ROS2 setup files](https://docs.ros.org/en/iron/Tutorials/Beginner-CLI-Tools/Configuring-ROS2-Environment.html#source-the-setup-files)
 - Follow tasks 1 and 2 of the [ROS2 turtlesim tutorial](https://docs.ros.org/en/iron/Tutorials/Beginner-CLI-Tools/Introducing-Turtlesim/Introducing-Turtlesim.html#id3)
   - Install the turtlesim package
-  - Start the turtlesim node through `ros2 run turtlesim turtlesim_node`
-- In a separate terminal, start the `/add_two_ints` service: `ros2 run examples_rclcpp_minimal_service service_main`
-
+  - Install the examples-rclcpp-minimal-service package 
+  - On Ubuntu, you can install them with `sudo apt install ros-<ros-distro>-examples-rclcpp-minimal-service ros-<ros-distro>-turtlesim`
+  
 ## Running
 
-After sourcing the ROS2 installation and starting both the `turtlesim` node and the `/add_two_ints` service, you can run this example to move the turtle in random directions:
+> [!NOTE]
+> Please replace the `<ros-distro>` with the actual ROS2 distribution you are using.
 
+```bash
+source /opt/ros/<ros-distro>/setup.bash
+cargo run --package dora-ros2-bridge --example rust-ros2-dataflow
 ```
-cargo run --example rust-ros2-dataflow --features ros2-examples
-```
-
-You should see a few random requests in the terminal where you started the `examples_rclcpp_minimal_service`.

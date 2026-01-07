@@ -170,7 +170,6 @@ impl DropStreamThreadHandle {
 }
 
 impl Drop for DropStreamThreadHandle {
-    #[tracing::instrument(skip(self), fields(node_id = %self.node_id))]
     fn drop(&mut self) {
         if self.handle.is_empty() {
             tracing::trace!("waiting for drop stream thread");

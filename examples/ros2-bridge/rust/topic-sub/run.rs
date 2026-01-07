@@ -2,9 +2,7 @@ use dora_cli::{build, run};
 use eyre::Context;
 use std::path::Path;
 
-use process_wrap::std::{
-    ProcessGroup, StdChildWrapper as ChildWrapper, StdCommandWrap as CommandWrap,
-};
+use process_wrap::std::{StdChildWrapper as ChildWrapper, StdCommandWrap as CommandWrap};
 
 fn main() -> eyre::Result<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -19,12 +17,13 @@ fn main() -> eyre::Result<()> {
 
     let mut pub_task = run_ros_node("examples_rclcpp_minimal_publisher", "publisher_lambda")?;
 
-    dataflow_task
+    let dataflow_result = dataflow_task
         .join()
-        .map_err(|_| eyre::eyre!("Failed to run dataflow"))?;
+        .map_err(|_| eyre::eyre!("Failed to run dataflow"));
 
     pub_task.kill()?;
-    Ok(())
+
+    dataflow_result
 }
 
 fn run_ros_node(package: &str, node: &str) -> eyre::Result<Box<dyn ChildWrapper>> {
@@ -32,7 +31,10 @@ fn run_ros_node(package: &str, node: &str) -> eyre::Result<Box<dyn ChildWrapper>
         cmd.arg("run");
         cmd.arg(package).arg(node);
     });
-    command.wrap(ProcessGroup::leader());
+    #[cfg(unix)]
+    command.wrap(process_wrap::std::ProcessGroup::leader());
+    #[cfg(windows)]
+    command.wrap(process_wrap::std::JobObject);
     command
         .spawn()
         .map_err(|e| eyre::eyre!("failed to spawn ros node: {}", e))
