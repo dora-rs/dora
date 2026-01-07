@@ -58,7 +58,7 @@ pub fn generate_server_trait(schema: &SchemaInput) -> proc_macro2::TokenStream {
             T: ::communication_layer_request_reply::AsyncTransport<#response_enum, #request_enum> + ::std::marker::Send + ::std::marker::Sync,
         {
             use ::communication_layer_request_reply::AsyncTransport;
-            // TODO: handle transprt errors (e.g. serde errors) and return error responses instead of exiting
+            // TODO: handle transport errors (e.g. serde errors) and return error responses instead of exiting
             if let Some(req) = transport.receive().await? {
                 let resp = match req {
                     #(#dispatch_arms)*
