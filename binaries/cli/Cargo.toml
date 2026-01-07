@@ -22,6 +22,7 @@ python = ["pyo3"]
 
 [dependencies]
 arrow = { workspace = true }
+arrow-schema = { workspace = true }
 clap = { version = "4.0.3", features = ["derive"] }
 clap_complete = "4.5.61"
 eyre = "0.6.8"
