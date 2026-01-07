@@ -2,7 +2,9 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use super::{Connection, Listener};
 use crate::Event;
-use communication_layer_request_reply::{Transport, encoding::BincodeEncoding, transport::ShmemTransport};
+use communication_layer_request_reply::{
+    Transport, encoding::BincodeEncoding, transport::ShmemTransport,
+};
 use dora_core::{config::DataId, uhlc::HLC};
 use dora_message::{
     common::Timestamped, daemon_to_node::DaemonReply, node_to_daemon::DaemonRequest,
@@ -32,7 +34,10 @@ pub async fn listener_loop(
                     message,
                     result_sender,
                 } => {
-                    if result_sender.send(server.send(&message).map_err(Into::into)).is_err() {
+                    if result_sender
+                        .send(server.send(&message).map_err(Into::into))
+                        .is_err()
+                    {
                         break;
                     }
                 }

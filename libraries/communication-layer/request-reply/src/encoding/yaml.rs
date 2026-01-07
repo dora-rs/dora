@@ -1,6 +1,6 @@
 use crate::encoding::{Decoder, Encoder};
 
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 use std::io;
 
 pub struct YamlEncoding;
@@ -19,4 +19,3 @@ impl<T: DeserializeOwned> Decoder<T> for YamlEncoding {
             .map_err(|e| io::Error::other(format!("YAML deserialization error: {e}")))
     }
 }
-

@@ -1,6 +1,6 @@
 use crate::encoding::{Decoder, Encoder};
 
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 use std::io;
 
 pub struct JsonEncoding;
@@ -18,4 +18,3 @@ impl<T: DeserializeOwned> Decoder<T> for JsonEncoding {
             .map_err(|e| io::Error::other(format!("JSON deserialization error: {e}")))
     }
 }
-
