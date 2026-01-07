@@ -90,12 +90,21 @@ pub struct Descriptor {
     pub debug: Debug,
 }
 
+/// Specifies when a node should be restarted.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum RestartPolicy {
+    /// Never restart the node (default)
     #[default]
     Never,
+    /// Restart the node if it exits with a non-zero exit code.
     OnFailure,
+    /// Always restart the node when it exits, regardless of exit code.
+    ///
+    /// The node will not be restarted on the following conditions:
+    ///
+    /// - The node was stopped by the user (e.g., via `dora stop`).
+    /// - All inputs to the node have been closed and the node finished with a non-zero exit code.
     Always,
 }
 
@@ -471,6 +480,9 @@ pub struct Node {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rev: Option<String>,
 
+    /// Whether this node should be restarted on exit or error.
+    ///
+    /// Defaults to `RestartPolicy::Never`.
     #[serde(default)]
     pub restart_policy: RestartPolicy,
 
