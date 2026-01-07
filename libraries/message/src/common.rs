@@ -196,6 +196,12 @@ pub enum NodeExitStatus {
     Unknown,
 }
 
+impl NodeExitStatus {
+    pub fn is_success(&self) -> bool {
+        matches!(self, NodeExitStatus::Success)
+    }
+}
+
 impl From<Result<std::process::ExitStatus, std::io::Error>> for NodeExitStatus {
     fn from(result: Result<std::process::ExitStatus, std::io::Error>) -> Self {
         match result {
