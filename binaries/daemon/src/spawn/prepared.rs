@@ -135,9 +135,25 @@ impl PreparedNode {
                     )
                     .await;
             }
+            let restart = restart && !restart_disabled;
+            let success = exit_status.is_success();
 
-            if restart && !restart_disabled {
-                if exit_status.is_success() {
+            let event = DoraEvent::SpawnedNodeResult {
+                dataflow_id: self.dataflow_id,
+                node_id: self.node.id.clone(),
+                exit_status,
+                dynamic_node: self.node.kind.dynamic(),
+                restart,
+            }
+            .into();
+            let event = Timestamped {
+                inner: event,
+                timestamp: self.clock.clone().new_timestamp(),
+            };
+            let _ = self.daemon_tx.clone().send(event).await;
+
+            if restart {
+                if success {
                     logger
                         .log(
                             LogLevel::Info,
@@ -186,18 +202,6 @@ impl PreparedNode {
                     }
                 }
             } else {
-                let event = DoraEvent::SpawnedNodeResult {
-                    dataflow_id: self.dataflow_id,
-                    node_id: self.node.id.clone(),
-                    exit_status,
-                    dynamic_node: self.node.kind.dynamic(),
-                }
-                .into();
-                let event = Timestamped {
-                    inner: event,
-                    timestamp: self.clock.clone().new_timestamp(),
-                };
-                let _ = self.daemon_tx.clone().send(event).await;
                 break;
             }
         }

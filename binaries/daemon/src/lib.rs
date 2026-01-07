@@ -2193,6 +2193,7 @@ impl Daemon {
                 node_id,
                 dynamic_node,
                 exit_status,
+                restart,
             } => {
                 let mut logger = self
                     .logger
@@ -2202,7 +2203,7 @@ impl Daemon {
                     .log(
                         LogLevel::Debug,
                         Some("daemon".into()),
-                        format!("handling node stop with exit status {exit_status:?}"),
+                        format!("handling node stop with exit status {exit_status:?} (restart: {restart})"),
                     )
                     .await;
 
@@ -2274,13 +2275,23 @@ impl Daemon {
                     )
                     .await;
 
-                self.dataflow_node_results
-                    .entry(dataflow_id)
-                    .or_default()
-                    .insert(node_id.clone(), node_result);
+                if restart {
+                    logger
+                        .log(
+                            LogLevel::Info,
+                            Some("daemon".into()),
+                            "node will be restarted",
+                        )
+                        .await;
+                } else {
+                    self.dataflow_node_results
+                        .entry(dataflow_id)
+                        .or_default()
+                        .insert(node_id.clone(), node_result);
 
-                self.handle_node_stop(dataflow_id, &node_id, dynamic_node)
-                    .await?;
+                    self.handle_node_stop(dataflow_id, &node_id, dynamic_node)
+                        .await?;
+                }
             }
         }
         Ok(())
@@ -3004,6 +3015,8 @@ pub enum DoraEvent {
         node_id: NodeId,
         dynamic_node: bool,
         exit_status: NodeExitStatus,
+        /// Whether the node will be restarted
+        restart: bool,
     },
 }
 
