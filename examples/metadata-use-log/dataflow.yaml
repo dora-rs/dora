@@ -1,0 +1,15 @@
+graph:
+  - id: send_data
+    proto: "sender"
+    inputs:
+      tick: dora/timer/millis/10
+
+  - id: log_data
+    proto: "out_log/log1"
+    inputs:
+      tick: send_data/data
+
+  - id: log_data2
+    proto: "out_log/flow_log"
+    inputs:
+      tick: send_data/data

@@ -1,0 +1,14 @@
+nodes:
+  - name: sender
+    lang: python
+    entry: ./send_data.py
+    build: pip install numpy pyarrow
+    outputs:
+      - name: data
+        type: number
+
+dependencies:
+  out_log:
+    package: log
+    path: ../metadata-log
+    nodes: ["log1", "log2", "flow_log"]

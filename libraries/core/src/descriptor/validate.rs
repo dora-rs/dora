@@ -22,7 +22,7 @@ pub fn check_dataflow(
     remote_daemon_id: Option<&[&str]>,
     coordinator_is_remote: bool,
 ) -> eyre::Result<()> {
-    let nodes = dataflow.resolve_aliases_and_set_defaults()?;
+    let nodes = dataflow.resolve_aliases_and_set_defaults_with_working_dir(working_dir)?;
     let mut has_python_operator = false;
 
     // check that nodes and operators exist

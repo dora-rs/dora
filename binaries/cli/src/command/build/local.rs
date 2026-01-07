@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{collections::BTreeMap, path::{Path, PathBuf}};
 
 use colored::Colorize;
 use dora_core::{
@@ -12,6 +12,7 @@ use crate::session::DataflowSession;
 
 pub fn build_dataflow_locally(
     dataflow: Descriptor,
+    dataflow_path: &Path,
     git_sources: &BTreeMap<NodeId, GitSource>,
     dataflow_session: &DataflowSession,
     working_dir: PathBuf,
@@ -21,6 +22,7 @@ pub fn build_dataflow_locally(
 
     runtime.block_on(build_dataflow(
         dataflow,
+        dataflow_path,
         git_sources,
         dataflow_session,
         working_dir,
@@ -30,6 +32,7 @@ pub fn build_dataflow_locally(
 
 async fn build_dataflow(
     dataflow: Descriptor,
+    dataflow_path: &Path,
     git_sources: &BTreeMap<NodeId, GitSource>,
     dataflow_session: &DataflowSession,
     base_working_dir: PathBuf,
@@ -40,7 +43,9 @@ async fn build_dataflow(
         base_working_dir,
         uv,
     };
-    let nodes = dataflow.resolve_aliases_and_set_defaults()?;
+    
+    // Use resolve_descriptor_from_path to automatically load metadata if needed
+    let nodes = dora_core::descriptor::resolve_descriptor_from_path(dataflow_path)?;
 
     let mut git_manager = GitManager::default();
     let prev_git_sources = &dataflow_session.git_sources;

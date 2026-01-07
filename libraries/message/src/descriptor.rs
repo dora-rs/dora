@@ -27,12 +27,13 @@ pub const DYNAMIC_SOURCE: &str = "dynamic";
 /// ## Structure
 ///
 /// A dataflow consists of:
-/// - **Nodes**: The computational units that process data
+/// - **Nodes**: The computational units that process data (legacy format)
+/// - **Graph**: The graph of node instances (new format)
 /// - **Communication**: Optional communication configuration
 /// - **Deployment**: Optional deployment configuration (unstable)
 /// - **Debug options**: Optional development and debugging settings (unstable)
 ///
-/// ## Example
+/// ## Example (Legacy Format)
 ///
 /// ```yaml
 /// nodes:
@@ -49,11 +50,25 @@ pub const DYNAMIC_SOURCE: &str = "dynamic";
 ///       inputs:
 ///         image: webcam/image
 /// ```
+///
+/// ## Example (New Format)
+///
+/// ```yaml
+/// graph:
+///   - id: send_data
+///     proto: "sender"
+///     inputs:
+///       tick: dora/timer/millis/10
+///   - id: receive_data_with_sleep
+///     proto: "receiver"
+///     inputs:
+///       tick: send_data/data
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(title = "dora-rs specification")]
 pub struct Descriptor {
-    /// List of nodes in the dataflow
+    /// List of nodes in the dataflow (legacy format)
     ///
     /// This is the most important field of the dataflow specification.
     /// Each node must be identified by a unique `id`:
@@ -72,7 +87,25 @@ pub struct Descriptor {
     ///
     /// For each node, you need to specify the `path` of the executable or script that Dora should run when starting the node.
     /// Most of the other node fields are optional, but you typically want to specify at least some `inputs` and/or `outputs`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub nodes: Vec<Node>,
+
+    /// Graph of node instances (new format)
+    ///
+    /// This field defines the dataflow graph by referencing node prototypes
+    /// defined in a separate dora.yaml file.
+    ///
+    /// ## Example
+    ///
+    /// ```yaml
+    /// graph:
+    ///   - id: send_data
+    ///     proto: "sender"
+    ///     inputs:
+    ///       tick: dora/timer/millis/10
+    /// ```
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub graph: Vec<GraphNode>,
 
     /// Communication configuration (optional, uses defaults)
     #[schemars(skip)]
@@ -699,4 +732,188 @@ impl fmt::Display for EnvValue {
             EnvValue::String(str) => fmt.write_str(str),
         }
     }
+}
+
+/// # Graph Node Configuration
+///
+/// Represents a node instance in the dataflow graph (new format).
+/// References a node prototype via the `proto` field.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GraphNode {
+    /// Unique node instance identifier
+    pub id: NodeId,
+
+    /// Reference to a node prototype defined in dora.yaml
+    pub proto: String,
+
+    /// Input data connections from other nodes
+    ///
+    /// Defines the inputs that this node is subscribing to.
+    /// Format: `input_id: source_node_id/source_node_output_id`
+    #[serde(default)]
+    pub inputs: BTreeMap<DataId, Input>,
+
+    /// Environment variables for node execution
+    pub env: Option<BTreeMap<String, EnvValue>>,
+
+    /// Unstable machine deployment configuration
+    #[schemars(skip)]
+    #[serde(rename = "_unstable_deploy")]
+    pub deploy: Option<Deploy>,
+}
+
+/// # Node Metadata File
+///
+/// Represents the dora.yaml file that contains node prototype definitions.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NodeMetadataFile {
+    /// List of node prototypes
+    pub nodes: Vec<NodeMetadata>,
+
+    /// Optional map of metadata dependencies ("herds")
+    ///
+    /// Each dependency points to another metadata package that exposes
+    /// additional node prototypes. The key is the custom herd name used
+    /// as prefix in proto references (e.g., `out_log/log1`), and the
+    /// value describes the dependency location and filtering.
+    #[serde(default)]
+    pub dependencies: BTreeMap<String, MetadataDependency>,
+}
+
+/// # Metadata Dependency (Herd)
+///
+/// Describes a dependency on another metadata package ("herd").
+///
+/// The herd is referenced in the parent dora.yaml as a key in the
+/// `dependencies` map (e.g., `out_log`), which is then used as a
+/// prefix in `proto` references (e.g., `out_log/log1`).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MetadataDependency {
+    /// Original package/herd name (optional, for documentation/reference)
+    ///
+    /// This field identifies the original name of the herd package.
+    /// It is primarily for clarity and tooling, as the actual herd name
+    /// used in proto references is the key in the dependencies map.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package: Option<String>,
+
+    /// Relative or absolute path to the dependency package.
+    ///
+    /// This usually points to a folder that contains a `dora.yaml`
+    /// metadata file, but can also directly point to such a file.
+    pub path: String,
+
+    /// Optional list of node prototype names that are imported
+    /// from this dependency. If empty, all exported nodes from
+    /// the dependency are available.
+    #[serde(default)]
+    pub nodes: Vec<String>,
+}
+
+/// # Node Metadata (Prototype)
+///
+/// Represents a reusable node definition/prototype.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NodeMetadata {
+    /// Unique node prototype name
+    pub name: String,
+
+    /// Programming language of the node
+    pub lang: Option<String>,
+
+    /// Whether this node prototype can be exported/shared
+    #[serde(default)]
+    pub export: bool,
+
+    /// Path to executable or script
+    pub entry: Option<String>,
+
+    /// Build commands
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build: Option<String>,
+
+    /// Input definitions with types
+    #[serde(default)]
+    pub inputs: Vec<InputDefinition>,
+
+    /// Output definitions with types
+    #[serde(default)]
+    pub outputs: Vec<OutputDefinition>,
+
+    /// Environment variables
+    pub env: Option<BTreeMap<String, EnvValue>>,
+
+    /// Command-line arguments
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args: Option<String>,
+
+    /// Multiple operators running in a shared runtime process
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operators: Option<RuntimeNode>,
+
+    /// Single operator configuration
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operator: Option<SingleOperatorDefinition>,
+
+    /// Git repository URL
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git: Option<String>,
+
+    /// Git branch
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+
+    /// Git tag
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
+
+    /// Git revision
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rev: Option<String>,
+}
+
+/// # Input Definition
+///
+/// Defines an input with its type and requirements.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct InputDefinition {
+    /// Input name/identifier
+    pub name: String,
+
+    /// Input data type (e.g., "number", "string", "image")
+    #[serde(rename = "type")]
+    pub data_type: Option<String>,
+
+    /// Whether this input is required
+    #[serde(default)]
+    pub required: bool,
+
+    /// Target graph node for workflow-type nodes (optional)
+    ///
+    /// When a node's entry points to a dataflow YAML file (workflow-type node),
+    /// this field specifies which graph node inside that dataflow should receive
+    /// this input. Format: `graph_node_id/input_id`
+    ///
+    /// Example: `log_data/tick` means the `tick` input goes to graph node `log_data`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+}
+
+/// # Output Definition
+///
+/// Defines an output with its type.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct OutputDefinition {
+    /// Output name/identifier
+    pub name: String,
+
+    /// Output data type (e.g., "number", "string", "image")
+    #[serde(rename = "type")]
+    pub data_type: Option<String>,
 }

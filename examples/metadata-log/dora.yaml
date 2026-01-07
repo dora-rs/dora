@@ -1,0 +1,42 @@
+nodes:
+  - name: log1
+    lang: python
+    export: true
+    entry: ./log1.py
+    build: pip install numpy pyarrow
+    inputs:
+      - name: tick
+        type: number
+        required: true
+
+  - name: log2
+    lang: python
+    export: true
+    entry: ./log1.py
+    build: pip install numpy pyarrow
+    inputs:
+      - name: tick
+        type: number
+        required: true
+
+  - name: flow_log
+    export: true
+    entry: ./dataflow.yaml
+    inputs:
+      - name: tick
+        type: number
+        required: true
+        target: log_data/tick
+
+  - name: sender
+    lang: python
+    export: false
+    entry: ./send_data.py
+    build: pip install asyncio
+    inputs:
+      - name: tick
+        type: number
+        required: true
+    outputs:
+      - name: data
+        type: number

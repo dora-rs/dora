@@ -210,7 +210,9 @@ impl Daemon {
         }
 
         descriptor.check(&working_dir)?;
-        let nodes = descriptor.resolve_aliases_and_set_defaults()?;
+        
+        // Use resolve_descriptor_from_path to automatically load metadata if needed
+        let nodes = dora_core::descriptor::resolve_descriptor_from_path(dataflow_path)?;
 
         let (events_tx, events_rx) = flume::bounded(10);
         if nodes
