@@ -12,6 +12,7 @@ use crate::{BuildId, common::DaemonId, descriptor::Descriptor, id::NodeId};
 pub enum ControlRequestReply {
     Error(String),
     CoordinatorStopped,
+    #[serde(rename = "BuildResp")]
     DataflowBuildTriggered {
         build_id: BuildId,
     },
@@ -19,6 +20,7 @@ pub enum ControlRequestReply {
         build_id: BuildId,
         result: Result<(), String>,
     },
+    #[serde(rename = "StartResp")]
     DataflowStartTriggered {
         uuid: Uuid,
     },

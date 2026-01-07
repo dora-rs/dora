@@ -1,5 +1,6 @@
 use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
@@ -9,7 +10,81 @@ use crate::{
     id::{NodeId, OperatorId},
 };
 
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+dora_schema_macro::dora_schema! {
+    Cli => Coordinator:
+
+    build: BuildReq => BuildResp;
+    wait_for_build: WaitForBuildReq => WaitForBuildResp;
+    start: StartReq => StartResp;
+    cli_and_default_daemon_on_same_machine: CliAndDefaultDaemonOnSameMachine => CliAndDefaultDaemonIps;
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BuildReq {
+    pub session_id: SessionId,
+    pub dataflow: Descriptor,
+    pub git_sources: BTreeMap<NodeId, GitSource>,
+    pub prev_git_sources: BTreeMap<NodeId, GitSource>,
+    /// Allows overwriting the base working dir when CLI and daemon are
+    /// running on the same machine.
+    ///
+    /// Must not be used for multi-machine dataflows.
+    ///
+    /// Note that nodes with git sources still use a subdirectory of
+    /// the base working dir.
+    pub local_working_dir: Option<PathBuf>,
+    pub uv: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BuildResp {
+    pub build_id: BuildId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WaitForBuildReq {
+    pub build_id: BuildId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WaitForBuildResp {
+    pub build_id: BuildId,
+    pub result: Result<(), String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StartReq {
+    pub build_id: Option<BuildId>,
+    pub session_id: SessionId,
+    pub dataflow: Descriptor,
+    pub name: Option<String>,
+    /// Allows overwriting the base working dir when CLI and daemon are
+    /// running on the same machine.
+    ///
+    /// Must not be used for multi-machine dataflows.
+    ///
+    /// Note that nodes with git sources still use a subdirectory of
+    /// the base working dir.
+    pub local_working_dir: Option<PathBuf>,
+    pub uv: bool,
+    pub write_events_to: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StartResp {
+    pub uuid: Uuid,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CliAndDefaultDaemonOnSameMachine;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CliAndDefaultDaemonIps {
+    pub default_daemon: Option<std::net::IpAddr>,
+    pub cli: Option<std::net::IpAddr>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ControlRequest {
     Build {
         session_id: SessionId,

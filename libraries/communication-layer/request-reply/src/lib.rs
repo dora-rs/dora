@@ -8,8 +8,14 @@
 //! TODO
 
 pub use tcp::*;
+pub use transport::{AsyncTransport, Transport};
 
+pub mod encoding;
 mod tcp;
+pub mod transport;
+
+pub type TcpRequestReplyConnection =
+    dyn RequestReplyConnection<RequestData = Vec<u8>, ReplyData = Vec<u8>, Error = std::io::Error>;
 
 /// Abstraction trait for different publisher/subscriber implementations.
 pub trait RequestReplyLayer: Send + Sync {
@@ -75,3 +81,14 @@ pub trait RequestReplyConnection: Send + Sync {
 
     fn request(&mut self, request: &Self::RequestData) -> Result<Self::ReplyData, Self::Error>;
 }
+
+impl<T: RequestReplyConnection + ?Sized> RequestReplyConnection for &mut T {
+    type RequestData = T::RequestData;
+    type ReplyData = T::ReplyData;
+    type Error = T::Error;
+    fn request(&mut self, request: &Self::RequestData) -> Result<Self::ReplyData, Self::Error> {
+        (**self).request(request)
+    }
+}
+
+pub use encoding::EncodedTransport;
