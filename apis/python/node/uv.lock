@@ -12,7 +12,7 @@ wheels = [
 
 [[package]]
 name = "dora-rs"
-version = "0.3.13"
+version = "0.3.14-rc0"
 source = { editable = "." }
 dependencies = [
     { name = "pyarrow" },
