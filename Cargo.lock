@@ -1759,7 +1759,9 @@ version = "0.4.0"
 dependencies = [
  "arrow",
  "dora-cli",
+ "dora-core",
  "dora-download",
+ "dora-message",
  "dora-node-api",
  "dora-operator-api-python",
  "dora-ros2-bridge-python",

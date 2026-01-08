@@ -31,6 +31,12 @@ pub struct NodeCleanupHandle {
 /// Owned type with delayed cleanup (using `handle` method).
 pub struct DelayedCleanup<T>(Arc<Mutex<T>>);
 
+impl<T> Clone for DelayedCleanup<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
 impl<T> DelayedCleanup<T> {
     pub fn new(value: T) -> Self {
         Self(Arc::new(Mutex::new(value)))
