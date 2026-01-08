@@ -515,7 +515,7 @@ impl DoraNode {
         Ok((node, event_stream))
     }
 
-    fn validate_output(&mut self, output_id: &DataId) -> bool {
+    pub fn validate_output(&mut self, output_id: &DataId) -> bool {
         if !self.node_config.outputs.contains(output_id) && !self.interactive {
             if !self.warned_unknown_output.contains(output_id) {
                 warn!("Ignoring output `{output_id}` not in node's output list.");
