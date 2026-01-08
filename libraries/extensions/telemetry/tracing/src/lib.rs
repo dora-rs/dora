@@ -149,7 +149,7 @@ impl TracingBuilder {
     }
 
     /// Legacy method name for backward compatibility.
-    #[deprecated(since = "0.4.0-rc0", note = "Use `with_otlp_tracing` instead")]
+    #[deprecated(since = "0.4.0", note = "Use `with_otlp_tracing` instead")]
     pub fn with_jaeger_tracing(self) -> eyre::Result<Self> {
         self.with_otlp_tracing()
     }
