@@ -10,6 +10,7 @@ import numpy as np
 import pyarrow as pa
 from dora import Node
 
+
 def main():
     node = Node()
 
@@ -24,10 +25,12 @@ def main():
                 # Allocate a sample using the context manager
                 with node.send_output_raw("large_output", data_size) as sample:
                     # Get the writable numpy array wrapping the buffer (zero-copy)
-                    np_array = sample.as_arrow()
+                    np_array = sample.as_array()
 
                     # Fill the buffer with data
-                    np_array[:] = np.random.randint(0, 256, size=data_size, dtype=np.uint8)
+                    np_array[:] = np.random.randint(
+                        0, 256, size=data_size, dtype=np.uint8
+                    )
 
                     print(f"Prepared {data_size} bytes for zero-copy send")
 
@@ -39,15 +42,17 @@ def main():
                 pixel_count = 100000
                 rgb_size = pixel_count * 3  # 3 bytes per pixel (R, G, B)
 
-                with node.send_output_raw("rgb_image", rgb_size, metadata={"width": 500, "height": 200}) as sample:
+                with node.send_output_raw(
+                    "rgb_image", rgb_size, metadata={"width": 500, "height": 200}
+                ) as sample:
                     # Get the writable numpy array wrapping the buffer (zero-copy)
-                    pixels = sample.as_arrow()
+                    pixels = sample.as_array()
 
                     # Fill with gradient pattern
                     for i in range(pixel_count):
-                        pixels[i*3] = (i % 256)      # Red
-                        pixels[i*3 + 1] = ((i // 256) % 256)  # Green
-                        pixels[i*3 + 2] = 128        # Blue
+                        pixels[i * 3] = 10  # Red
+                        pixels[i * 3 + 1] = 10  # Green
+                        pixels[i * 3 + 2] = 10  # Blue
 
                     print(f"Prepared RGB image: {pixel_count} pixels")
 
@@ -56,6 +61,7 @@ def main():
         elif event["type"] == "STOP":
             print("Received stop signal")
             break
+
 
 if __name__ == "__main__":
     main()

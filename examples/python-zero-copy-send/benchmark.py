@@ -56,13 +56,11 @@ def benchmark_zero_copy_send(node, output_id, data_size, iterations):
                 "iteration": i,
             },
         ) as sample:
-            arrow_array = sample.as_arrow()
+            arr = sample.as_array()
             # simulate the process of fulfilling the promise
-            arrow_array[:] = data
+            arr[:] = data
             if i == 0:
-                print(
-                    f"  Got numpy array, shape: {arrow_array.shape}, dtype: {arrow_array.dtype}"
-                )
+                print(f"  Got numpy array, shape: {arr.shape}, dtype: {arr.dtype}")
 
         time.sleep(0.1)  # Give time for the warmup messages to be processed
 
@@ -85,8 +83,8 @@ def send_memory_usage(node, output_id, data_size):
     tracemalloc.start()
     tracemalloc.reset_peak()
     with node.send_output_raw(output_id, data_size, metadata={"skip": True}) as sample:
-        arrow_array = sample.as_arrow()
-        arrow_array[:] = data
+        arr = sample.as_array()
+        arr[:] = data
     _, zero_copy_peak = tracemalloc.get_traced_memory()
     tracemalloc.stop()
 
