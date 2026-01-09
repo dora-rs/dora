@@ -200,6 +200,10 @@ fn info(
                         InterDaemonEvent::OutputClosed { .. } => {
                             break;
                         }
+                        InterDaemonEvent::NodeFailed { .. } => {
+                            // Node failed, stop collecting statistics
+                            break;
+                        }
                     }
                 }
                 Err(_) => break,
