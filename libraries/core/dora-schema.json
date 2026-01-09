@@ -65,6 +65,10 @@
           "description": "Path of the source code\n\nIf you want to use a specific `conda` environment.\nProvide the python path within the source.\n\nsource: /home/peter/miniconda3/bin/python\n\nargs: some_node.py\n\nSource can match any executable in PATH.",
           "type": "string"
         },
+        "restart_policy": {
+          "$ref": "#/$defs/RestartPolicy",
+          "default": "never"
+        },
         "send_stdout_as": {
           "description": "Send stdout and stderr to another node",
           "type": [
@@ -341,6 +345,11 @@
             "null"
           ]
         },
+        "restart_policy": {
+          "description": "Whether this node should be restarted on exit or error.\n\nDefaults to `RestartPolicy::Never`.",
+          "$ref": "#/$defs/RestartPolicy",
+          "default": "never"
+        },
         "rev": {
           "description": "Git revision (e.g. commit hash) to checkout after cloning.\n\nThe `rev` field is only allowed in combination with the [`git`](#git) field.\nIt specifies the git revision (e.g. a commit hash) that should be checked out after cloning.\nOnly one of `branch`, `tag`, or `rev` can be specified.\n\n## Example\n\n```yaml\nnodes:\n  - id: rust-node\n    git: https://github.com/dora-rs/dora.git\n    rev: 64ab0d7c\n```",
           "type": [
@@ -516,6 +525,26 @@
           "required": [
             "source"
           ]
+        }
+      ]
+    },
+    "RestartPolicy": {
+      "description": "Specifies when a node should be restarted.",
+      "oneOf": [
+        {
+          "description": "Never restart the node (default)",
+          "type": "string",
+          "const": "never"
+        },
+        {
+          "description": "Restart the node if it exits with a non-zero exit code.",
+          "type": "string",
+          "const": "on-failure"
+        },
+        {
+          "description": "Always restart the node when it exits, regardless of exit code.\n\nThe node will not be restarted on the following conditions:\n\n- The node was stopped by the user (e.g., via `dora stop`).\n- All inputs to the node have been closed and the node finished with a non-zero exit code.",
+          "type": "string",
+          "const": "always"
         }
       ]
     },
