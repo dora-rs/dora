@@ -1,8 +1,10 @@
 use opentelemetry::propagation::Extractor;
-use opentelemetry::trace::TraceError;
 use opentelemetry::{Context, global};
-use opentelemetry_sdk::{propagation::TraceContextPropagator, trace as sdktrace};
+use opentelemetry_otlp::WithExportConfig;
+
 use std::collections::HashMap;
+
+use opentelemetry_sdk::trace::{self as sdktrace, SdkTracerProvider};
 
 struct MetadataMap<'a>(HashMap<&'a str, &'a str>);
 
@@ -18,26 +20,42 @@ impl Extractor for MetadataMap<'_> {
     }
 }
 
-/// Init opentelemetry tracing
+/// Init opentelemetry tracing with OTLP exporter
 ///
-/// Use the default exporter Jaeger as exporter with
-/// - host: `172.17.0.1` which correspond to the docker address
-/// - port: 6831 which is the default Jaeger port.
+/// Uses the OpenTelemetry Protocol (OTLP) to export traces to any compatible backend:
+/// - Jaeger (via OTLP receiver on port 4317/4318)
+/// - Zipkin
+/// - Tempo
+/// - OpenTelemetry Collector
+/// - Any other OTLP-compatible backend
 ///
-/// To launch the associated Jaeger docker container, launch the
-/// following command:
+/// # Arguments
+/// * `name` - Service name for the traces
+/// * `endpoint` - OTLP endpoint (e.g., "http://localhost:4317")
+///
+/// # Example
+/// To use with Jaeger via OTLP:
 /// ```bash
-/// docker run -d -p 6831:6831/udp -p 6832:6832/udp -p 16686:16686 -p 14268:14268 jaegertracing/all-in-one:latest
+/// docker run -d -p 4317:4317 -p 4318:4318 -p 16686:16686 jaegertracing/all-in-one:latest
 /// ```
 ///
-/// TODO: Make Jaeger configurable
-///
-pub fn init_jaeger_tracing(name: &str, endpoint: &str) -> Result<sdktrace::Tracer, TraceError> {
-    global::set_text_map_propagator(TraceContextPropagator::new());
-    opentelemetry_jaeger::new_agent_pipeline()
+pub fn init_tracing(name: &str, endpoint: &str) -> sdktrace::SdkTracerProvider {
+    let exporter = opentelemetry_otlp::SpanExporter::builder()
+        .with_tonic()
         .with_endpoint(endpoint)
-        .with_service_name(name)
-        .install_simple()
+        .build()
+        .unwrap();
+
+    SdkTracerProvider::builder()
+        // Customize sampling strategy
+        .with_batch_exporter(exporter)
+        .build()
+}
+
+/// Legacy function name for backward compatibility
+#[deprecated(since = "0.3.14", note = "Use `init_tracing` instead")]
+pub fn init_jaeger_tracing(name: &str, endpoint: &str) -> sdktrace::SdkTracerProvider {
+    init_tracing(name, endpoint)
 }
 
 pub fn serialize_context(context: &Context) -> String {

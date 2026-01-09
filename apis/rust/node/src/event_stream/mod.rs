@@ -590,7 +590,6 @@ impl Stream for EventStream {
 }
 
 impl Drop for EventStream {
-    #[tracing::instrument(skip(self), fields(%self.node_id))]
     fn drop(&mut self) {
         let request = Timestamped {
             inner: DaemonRequest::EventStreamDropped,
