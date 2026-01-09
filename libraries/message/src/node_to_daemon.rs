@@ -33,6 +33,7 @@ pub enum DaemonRequest {
     NodeConfig {
         node_id: NodeId,
     },
+    Fail(NodeFailureError),
 }
 
 impl DaemonRequest {
@@ -41,7 +42,8 @@ impl DaemonRequest {
         match self {
             DaemonRequest::SendMessage { .. }
             | DaemonRequest::NodeConfig { .. }
-            | DaemonRequest::ReportDropTokens { .. } => false,
+            | DaemonRequest::ReportDropTokens { .. }
+            | DaemonRequest::Fail { .. } => false,
             DaemonRequest::Register(NodeRegisterRequest { .. })
             | DaemonRequest::Subscribe
             | DaemonRequest::CloseOutputs(_)
@@ -66,7 +68,8 @@ impl DaemonRequest {
             | DaemonRequest::NextFinishedDropTokens
             | DaemonRequest::ReportDropTokens { .. }
             | DaemonRequest::SendMessage { .. }
-            | DaemonRequest::EventStreamDropped => false,
+            | DaemonRequest::EventStreamDropped
+            | DaemonRequest::Fail { .. } => false,
         }
     }
 }
@@ -133,4 +136,62 @@ pub struct SharedMemoryInput {
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub enum DynamicNodeEvent {
     NodeConfig { node_id: NodeId },
+}
+
+/// Reports a node failure to the Dora daemon.
+///
+/// Use the `node_failure_error!` macro to create an instance of this struct with
+/// file, line, and column information.
+///
+/// This struct is intended to be used with the `DoraNode::report_failure_error` method.
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub struct NodeFailureError {
+    /// A short summary of the error.
+    pub summary: String,
+    /// Detailed information about the error.
+    pub detailed: Option<String>,
+    /// The source file where the error occurred.
+    pub file: Option<String>,
+    /// The line number in the source file where the error occurred.
+    pub line: Option<u32>,
+    /// The column number in the source file line where the error occurred.
+    pub column: Option<u32>,
+}
+
+impl NodeFailureError {
+    /// Creates a new `NodeFailureError` with the given summary.
+    ///
+    /// All other fields are initialized to `None`.
+    ///
+    /// See the `node_failure_error!` macro for a convenient way to
+    /// create an instance with file, line, and column information.
+    pub fn new<S: Into<String>>(error: S) -> Self {
+        Self {
+            summary: error.into(),
+            detailed: None,
+            file: None,
+            line: None,
+            column: None,
+        }
+    }
+}
+
+impl core::fmt::Display for NodeFailureError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}", self.summary)?;
+        if let Some(file) = &self.file {
+            write!(f, " at {}", file)?;
+            if let Some(line) = self.line {
+                write!(f, ":{}", line)?;
+                if let Some(column) = self.column {
+                    write!(f, ":{}", column)?;
+                }
+            }
+        }
+        if let Some(detailed) = &self.detailed {
+            write!(f, ": {}", detailed)?;
+        }
+        Ok(())
+    }
 }
