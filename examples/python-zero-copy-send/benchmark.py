@@ -116,7 +116,7 @@ def main():
     # Test different data sizes
     data_sizes = [
         # 512,  # 0.5 KB (below threshold, uses Vec)
-        # 1 * 1024,  # 1 KB (below threshold, uses Vec)
+        1 * 1024,  # 1 KB (below threshold, uses Vec)
         4 * 1024,  # 4 KB (threshold for shared memory)
         8 * 1024,  # 8 KB
         64 * 1024,  # 64 KB

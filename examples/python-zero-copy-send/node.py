@@ -42,6 +42,21 @@ def main():
                 pixel_count = 100000
                 rgb_size = pixel_count * 3  # 3 bytes per pixel (R, G, B)
 
+                # # method 1: directly use
+                # sample = node.send_output_raw(
+                #     "rgb_image", rgb_size, metadata={"width": 500, "height": 200}
+                # )
+                # pixels = sample.as_array()
+                # for i in range(pixel_count):
+                #     pixels[i * 3] = 10  # Red
+                #     pixels[i * 3 + 1] = 10  # Green
+                #     pixels[i * 3 + 2] = 10  # Blue
+                # sample.send()
+                #
+                # # assignment after `send` method trigger error
+                # # pixels[0] = 1
+
+                # method 2: use `with .. as ..`
                 with node.send_output_raw(
                     "rgb_image", rgb_size, metadata={"width": 500, "height": 200}
                 ) as sample:
@@ -55,7 +70,6 @@ def main():
                         pixels[i * 3 + 2] = 10  # Blue
 
                     print(f"Prepared RGB image: {pixel_count} pixels")
-
                 print("RGB image sent!")
 
         elif event["type"] == "STOP":

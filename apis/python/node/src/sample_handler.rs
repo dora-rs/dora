@@ -9,6 +9,7 @@ use pyo3::{Bound, Py, PyAny, PyResult, Python, pyclass, pymethods};
 pub struct SampleHandler {
     node: DelayedCleanup<DoraNode>,
     inner: Option<SampleInner>,
+    numpy_array: Option<Py<PyAny>>,
 }
 
 pub struct SampleInner {
@@ -36,6 +37,7 @@ impl SampleHandler {
         Ok(Self {
             node,
             inner: Some(inner),
+            numpy_array: None,
         })
     }
 }
@@ -49,13 +51,16 @@ impl SampleHandler {
         use std::ops::DerefMut;
 
         if let Some(inner) = &mut self.inner {
+            if let Some(arr) = self.numpy_array.as_mut() {
+                return Ok(arr.clone_ref(py));
+            }
             let sample_slice: &mut [u8] = inner.sample.deref_mut();
             let len = sample_slice.len();
             let ptr = sample_slice.as_mut_ptr();
 
             // Import numpy and ctypes
-            let np = py.import_bound("numpy")?;
-            let ctypes = py.import_bound("ctypes")?;
+            let np = py.import("numpy")?;
+            let ctypes = py.import("ctypes")?;
 
             // Create ctypes array type: ctypes.c_uint8 * len
             let c_uint8 = ctypes.getattr("c_uint8")?;
@@ -68,6 +73,7 @@ impl SampleHandler {
             let np_ctypeslib = np.getattr("ctypeslib")?;
             let np_array = np_ctypeslib.call_method1("as_array", (c_array,))?;
 
+            self.numpy_array = Some(np_array.clone().unbind());
             Ok(np_array.into())
         } else {
             Err(pyo3::exceptions::PyRuntimeError::new_err(
@@ -106,6 +112,17 @@ impl SampleHandler {
             .take()
             .ok_or_else(|| eyre::eyre!("Sample has already been sent"))?;
 
+        if let Some(ref array) = self.numpy_array {
+            Python::with_gil(|py| -> PyResult<()> {
+                use pyo3::types::PyAnyMethods;
+                let bound_array = array.bind(py);
+                // Make the array read-only to prevent further writes
+                // and avoid data race
+                let flags = bound_array.getattr("flags")?;
+                flags.setattr("writeable", false)?;
+                Ok(())
+            })?;
+        }
         self.node
             .get_mut()
             .send_output_sample(data_id, type_info, parameters, Some(sample))
