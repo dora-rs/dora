@@ -17,6 +17,7 @@ tracing = ["dora-node-api/tracing"]
 metrics = ["dora-node-api/metrics"]
 async = ["pyo3/experimental-async"]
 telemetry = ["dora-runtime/telemetry"]
+ros-compat = ["dora-ros-compat/python"]
 
 [dependencies]
 dora-node-api = { workspace = true }
@@ -32,6 +33,7 @@ arrow = { workspace = true, features = ["pyarrow"] }
 pythonize = { workspace = true }
 futures = "0.3.28"
 dora-ros2-bridge-python = { workspace = true }
+dora-ros-compat = { path = "../../../libraries/extensions/ros-compat", features = ["python"] }
 pyo3_special_method_derive = "0.4.3"
 tokio = { version = "1.24.2", features = ["rt-multi-thread", "time", "macros"] }
 tracing = "0.1.36"
