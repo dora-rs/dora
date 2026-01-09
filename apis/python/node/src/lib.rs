@@ -34,9 +34,10 @@ static RUNTIME: LazyLock<Runtime> = LazyLock::new(|| {
         .unwrap()
 });
 
-use crate::sample_handler::SampleHandler;
-
+#[cfg(Py_3_11)]
 mod sample_handler;
+#[cfg(Py_3_11)]
+use crate::sample_handler::SampleHandler;
 /// Consume a Python `logging.LogRecord` and emit a Rust `tracing::Event` instead.
 #[pyfunction]
 fn host_log<'py>(record: Bound<'py, PyAny>) -> PyResult<()> {
@@ -388,45 +389,41 @@ impl Node {
         Ok(())
     }
 
-    /// `send_output_raw` zero-copy send data from the node.
+    /// `send_output_raw` send data from the node via a writable buffer.
     ///
-    /// This method allocates a buffer and returns a SampleHandler that can be used
-    /// with Python's context manager syntax (`with ... as ...`). The buffer can be
-    /// filled using the `as_arrow()` method, which returns a PyArrow UInt8Array
-    /// that wraps the allocated memory.
+    /// This method returns a `SampleHandler` that can be used with Python's
+    /// context manager syntax (`with ... as ...`). The context manager yields
+    /// a writable `memoryview` backed by a `SampleBuffer` which implements the
+    /// buffer protocol and can be passed directly to `numpy`, `struct`, etc.
+    ///
+    /// Requires Python >= 3.11 (buffer-protocol slots are stable from 3.11).
     ///
     /// Example usage:
     ///
     /// ```python
-    /// import numpy as np
+    /// # Allocate a 1 MB buffer and fill it
+    /// with node.send_output_raw("output_id", 1024 * 1024, {"key": "value"}) as mv:
+    ///     # mv is a writable memoryview – use it with any buffer-protocol consumer
+    ///     mv[:] = your_data                                # slice assignment
+    ///     numpy.frombuffer(mv, numpy.uint8)[:] = arr       # via numpy
     ///
-    /// # Allocate a 1MB buffer for zero-copy send
-    /// with node.send_output_raw("output_id", 1024 * 1024, {"key": "value"}) as sample:
-    ///     # Get PyArrow array wrapping the buffer
-    ///     arrow_array = sample.as_arrow()
-    ///
-    ///     # Convert to numpy for easy manipulation (zero-copy view)
-    ///     np_array = np.frombuffer(arrow_array.buffers()[1], dtype=np.uint8)
-    ///
-    ///     # Fill the buffer with your data
-    ///     np_array[:] = your_data
-    ///
-    /// # The sample is automatically sent when exiting the `with` block
+    /// # The data is automatically sent when exiting the `with` block
     /// ```
     ///
     /// Alternatively, you can manually send:
     ///
     /// ```python
     /// sample = node.send_output_raw("output_id", data_length)
-    /// arrow_array = sample.as_arrow()
-    /// # ... fill the buffer ...
-    /// sample.send()  # Manually send
+    /// mv = sample.as_memoryview()   # returns a writable memoryview
+    /// mv[:] = your_data
+    /// sample.send()                 # manually send
     /// ```
     ///
     /// :type output_id: str
     /// :type data_length: int
     /// :type metadata: dict, optional
     /// :rtype: SampleHandler
+    #[cfg(Py_3_11)]
     #[pyo3(signature = (output_id, data_length, metadata=None))]
     pub fn send_output_raw(
         &self,
@@ -504,6 +501,28 @@ impl Node {
         *inner = EventsInner::Merged(events.merge_external_send(Box::pin(stream)));
 
         Ok(())
+    }
+}
+
+/// Stub for `send_output_raw` on Python < 3.11.
+///
+/// Raises `NotImplementedError` with a clear message so callers get
+/// actionable feedback instead of a bare `AttributeError`.
+#[cfg(not(Py_3_11))]
+#[pymethods]
+impl Node {
+    #[pyo3(signature = (output_id, data_length, metadata=None))]
+    pub fn send_output_raw(
+        &self,
+        output_id: String,
+        data_length: usize,
+        metadata: Option<Bound<'_, PyDict>>,
+    ) -> PyResult<()> {
+        Err(pyo3::exceptions::PyNotImplementedError::new_err(format!(
+            "send_output_raw (output_id={output_id:?}) requires Python >= 3.11. \
+             The buffer-protocol slots used for zero-copy I/O are only stable \
+             from Python 3.11 onwards. Please upgrade your Python interpreter."
+        )))
     }
 }
 
