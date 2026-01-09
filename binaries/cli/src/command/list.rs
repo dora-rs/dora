@@ -36,7 +36,7 @@ pub struct ListArgs {
     /// Filter by dataflow name
     #[clap(long, value_name = "PATTERN")]
     pub name: Option<String>,
-    /// Sort by field (uptime, memory, cpu)
+    /// Sort by field (memory, cpu)
     #[clap(long, value_name = "FIELD")]
     pub sort_by: Option<String>,
 }
@@ -64,7 +64,6 @@ struct OutputEntry {
     uuid: Uuid,
     name: String,
     status: DataflowStatus,
-    uptime: String,
     nodes: usize,
     cpu: f64,
     memory: f64,
@@ -141,7 +140,6 @@ fn list(
                 uuid,
                 name: entry.id.name.unwrap_or_default(),
                 status: entry.status,
-                uptime: "-".to_string(), // TODO: Implement uptime calculation. We don't have start time information yet.
                 nodes,
                 cpu,
                 memory,
@@ -186,12 +184,9 @@ fn list(
                         .unwrap_or(std::cmp::Ordering::Equal)
                 });
             }
-            "uptime" => {
-                // TODO: Implement uptime sorting
-            }
             _ => {
                 eprintln!(
-                    "Unknown sort field: {}. Valid options: cpu, memory, uptime",
+                    "Unknown sort field: {}. Valid options: cpu, memory",
                     sort_field
                 );
             }
@@ -202,7 +197,7 @@ fn list(
         OutputFormat::Table => {
             let mut tw = TabWriter::new(std::io::stdout().lock());
             // Header
-            tw.write_all(format!("UUID\tName\tStatus\tUptime\tNodes\tCPU\tMemory\n").as_bytes())?;
+            tw.write_all(format!("UUID\tName\tStatus\tNodes\tCPU\tMemory\n").as_bytes())?;
             for entry in entries {
                 let status = match entry.status {
                     DataflowStatus::Running => "Running",
@@ -212,11 +207,10 @@ fn list(
 
                 tw.write_all(
                     format!(
-                        "{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                        "{}\t{}\t{}\t{}\t{}\t{}\n",
                         entry.uuid,
                         entry.name,
                         status,
-                        entry.uptime,
                         entry.nodes,
                         format!("{:.1}%", entry.cpu),
                         format!("{:.1} GB", entry.memory)
