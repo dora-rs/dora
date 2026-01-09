@@ -74,6 +74,7 @@ pub use flume;
 pub use log::LogDestination;
 
 mod coordinator;
+mod extract_err_from_stderr;
 mod local_listener;
 mod log;
 mod node_communication;
@@ -86,9 +87,9 @@ use dora_tracing::telemetry::serialize_context;
 #[cfg(feature = "telemetry")]
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
-use crate::pending::DataflowStatus;
+use crate::{extract_err_from_stderr::extract_err_from_stderr, pending::DataflowStatus};
 
-const STDERR_LOG_LINES: usize = 10;
+const STDERR_LOG_LINES_MAX: usize = 500;
 
 pub struct Daemon {
     running: HashMap<DataflowId, RunningDataflow>,
@@ -1264,7 +1265,7 @@ impl Daemon {
                 let node_stderr_most_recent = dataflow
                     .node_stderr_most_recent
                     .entry(node.id.clone())
-                    .or_insert_with(|| Arc::new(ArrayQueue::new(STDERR_LOG_LINES)))
+                    .or_insert_with(|| Arc::new(ArrayQueue::new(STDERR_LOG_LINES_MAX)))
                     .clone();
 
                 let configured_node_working_dir = node_working_dirs.get(&node_id).cloned();
@@ -2237,16 +2238,16 @@ impl Daemon {
                                 let cause = dataflow
                                     .and_then(|d| d.node_stderr_most_recent.get(&node_id))
                                     .map(|queue| {
-                                        let mut s = if queue.is_full() {
-                                            "[...]".into()
-                                        } else {
-                                            String::new()
-                                        };
-                                        while let Some(line) = queue.pop() {
-                                            s += &line;
+                                        let mut lines = Vec::new();
+                                        if queue.is_full() {
+                                            lines.push("[...]".into());
                                         }
-                                        s
+                                        while let Some(line) = queue.pop() {
+                                            lines.push(line);
+                                        }
+                                        lines
                                     })
+                                    .map(extract_err_from_stderr)
                                     .unwrap_or_default();
 
                                 NodeErrorCause::Other { stderr: cause }
