@@ -1,6 +1,8 @@
 nodes:
     - id: zero_copy_sender
       path: node.py
+      inputs:
+          tick: dora/timer/millis/100
       outputs:
           - large_output
           - rgb_image

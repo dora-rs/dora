@@ -44,7 +44,7 @@ impl SampleHandler {
 impl SampleHandler {
     /// Get a writable numpy array wrapping the buffer for zero-copy writing
     /// This returns a writable UInt8 numpy array that Python can fill
-    pub fn as_arrow(&mut self, py: Python) -> PyResult<Py<PyAny>> {
+    pub fn as_array(&mut self, py: Python) -> PyResult<Py<PyAny>> {
         use pyo3::types::PyAnyMethods;
         use std::ops::DerefMut;
 
