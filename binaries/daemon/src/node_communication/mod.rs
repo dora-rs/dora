@@ -8,7 +8,7 @@ use dora_message::{
     DataflowId,
     common::{DropToken, Timestamped},
     daemon_to_node::{DaemonCommunication, DaemonReply, NodeDropEvent, NodeEvent},
-    node_to_daemon::DaemonRequest,
+    node_to_daemon::{DaemonRequest, NodeFailureError},
 };
 use eyre::{Context, eyre};
 use futures::{Future, future, task};
@@ -456,6 +456,10 @@ impl Listener {
                     connection,
                 )
                 .await?;
+            }
+            DaemonRequest::Fail(failure) => {
+                self.process_daemon_event(DaemonNodeEvent::Fail(failure), None, connection)
+                    .await?;
             }
         }
         Ok(())

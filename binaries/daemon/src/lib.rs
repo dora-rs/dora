@@ -29,7 +29,7 @@ use dora_message::{
     daemon_to_node::{DaemonReply, NodeConfig, NodeDropEvent, NodeEvent},
     descriptor::{NodeSource, RestartPolicy},
     metadata::{self, ArrowTypeInfo},
-    node_to_daemon::{DynamicNodeEvent, Timestamped},
+    node_to_daemon::{DynamicNodeEvent, NodeFailureError, Timestamped},
 };
 use dora_node_api::{Parameter, arrow::datatypes::DataType};
 use eyre::{Context, ContextCompat, Result, bail, eyre};
@@ -1747,6 +1747,16 @@ impl Daemon {
                 let reply = inner.await.map_err(|err| format!("{err:?}"));
                 let _ = reply_sender.send(DaemonReply::Result(reply));
             }
+            DaemonNodeEvent::Fail(failure) => {
+                if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
+                    dataflow.node_failure_message.insert(node_id, failure);
+                } else {
+                    tracing::warn!(
+                        "could not record node failure message for node {node_id} \
+                        because dataflow {dataflow_id} is not running"
+                    );
+                }
+            }
         }
         Ok(())
     }
@@ -2234,24 +2244,7 @@ impl Daemon {
                                 NodeErrorCause::Cascading { caused_by_node }
                             }
                             None if grace_duration_kill => NodeErrorCause::GraceDuration,
-                            None => {
-                                let cause = dataflow
-                                    .and_then(|d| d.node_stderr_most_recent.get(&node_id))
-                                    .map(|queue| {
-                                        let mut lines = Vec::new();
-                                        if queue.is_full() {
-                                            lines.push("[...]".into());
-                                        }
-                                        while let Some(line) = queue.pop() {
-                                            lines.push(line);
-                                        }
-                                        lines
-                                    })
-                                    .map(extract_err_from_stderr)
-                                    .unwrap_or_default();
-
-                                NodeErrorCause::Other { stderr: cause }
-                            }
+                            None => get_error_cause(&node_id, dataflow),
                         };
                         Err(NodeError {
                             timestamp: self.clock.new_timestamp(),
@@ -2325,6 +2318,33 @@ impl Daemon {
             }
         }
     }
+}
+
+fn get_error_cause(node_id: &NodeId, dataflow: Option<&RunningDataflow>) -> NodeErrorCause {
+    let Some(dataflow) = dataflow else {
+        return NodeErrorCause::DataflowNotFound;
+    };
+    if let Some(failure) = dataflow.node_failure_message.get(node_id) {
+        return NodeErrorCause::Failure(failure.clone());
+    }
+
+    // extract stderr lines
+    let stderr = dataflow
+        .node_stderr_most_recent
+        .get(node_id)
+        .map(|queue| {
+            let mut lines = Vec::new();
+            if queue.is_full() {
+                lines.push("[...]".into());
+            }
+            while let Some(line) = queue.pop() {
+                lines.push(line);
+            }
+            lines
+        })
+        .map(extract_err_from_stderr)
+        .unwrap_or_default();
+    NodeErrorCause::Other { stderr }
 }
 
 async fn read_last_n_lines(file: &mut File, mut tail: usize) -> io::Result<Vec<u8>> {
@@ -2672,6 +2692,7 @@ pub struct RunningDataflow {
     cascading_error_causes: CascadingErrorCauses,
     grace_duration_kills: Arc<crossbeam_skiplist::SkipSet<NodeId>>,
 
+    node_failure_message: BTreeMap<NodeId, NodeFailureError>,
     node_stderr_most_recent: BTreeMap<NodeId, Arc<ArrayQueue<String>>>,
 
     publishers: BTreeMap<OutputId, zenoh::pubsub::Publisher<'static>>,
@@ -2706,6 +2727,7 @@ impl RunningDataflow {
             empty_set: BTreeSet::new(),
             cascading_error_causes: Default::default(),
             grace_duration_kills: Default::default(),
+            node_failure_message: BTreeMap::new(),
             node_stderr_most_recent: BTreeMap::new(),
             publishers: Default::default(),
             finished_tx,
@@ -2996,6 +3018,7 @@ pub enum DaemonNodeEvent {
     EventStreamDropped {
         reply_sender: oneshot::Sender<DaemonReply>,
     },
+    Fail(NodeFailureError),
 }
 
 #[derive(Debug)]

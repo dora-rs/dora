@@ -26,7 +26,7 @@ use dora_message::{
     DataflowId,
     daemon_to_node::{DaemonCommunication, DaemonReply, NodeConfig},
     metadata::{ArrowTypeInfo, Metadata, MetadataParameters},
-    node_to_daemon::{DaemonRequest, DataMessage, DropToken, Timestamped},
+    node_to_daemon::{DaemonRequest, DataMessage, DropToken, NodeFailureError, Timestamped},
 };
 use eyre::{WrapErr, bail};
 use is_terminal::IsTerminal;
@@ -811,6 +811,27 @@ impl DoraNode {
                 daemon and the dora node API"
             ),
         }
+    }
+
+    /// Report that this node is about to fail because of the given error.
+    ///
+    /// This function allows the node to report a detailed error to the Dora daemon before exiting
+    /// with a non-zero exit code. Note that this function does not exit the node; the node must
+    /// still exit itself after reporting the error.
+    ///
+    /// By default, when a node exits with a non-zero exit code, the Dora daemon will try to extract
+    /// a meaningful error message from the node's `stderr` output. However, this is only a
+    /// heuristic and the resulting error message might be incomplete or include unrelated
+    /// `stderr` lines. By using this function, the node can provide a structured error message of
+    /// higher quality.
+    ///
+    /// Note: This function has currently no effect when the node exits with exit code zero. The
+    /// node is considered successful in this case. This behavior might change in the future, so
+    /// it is recommended to only use this function before exiting with a non-zero exit code.
+    pub fn report_failure_error(mut self, error: NodeFailureError) -> eyre::Result<()> {
+        self.control_channel
+            .report_failure(error)
+            .wrap_err("failed to report node failure to daemon")
     }
 }
 
