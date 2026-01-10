@@ -1,4 +1,5 @@
 use clap::Args;
+use colored::Colorize;
 
 use crate::command::Executable;
 
@@ -38,7 +39,7 @@ impl Executable for Set {
             "global config (~/.dora/config.toml)"
         };
 
-        println!("Set {} = \"{}\" in {}", self.key, self.value, location);
+        println!("Set {} = \"{}\" in {}", self.key.green(), self.value, location);
         Ok(())
     }
 }

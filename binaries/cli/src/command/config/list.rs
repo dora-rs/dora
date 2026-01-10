@@ -1,7 +1,7 @@
 use clap::Args;
+use colored::Colorize;
 
 use crate::command::Executable;
-
 use super::manager::ConfigManager;
 
 /// List all configuration values
@@ -23,7 +23,7 @@ impl Executable for List {
             println!("No configuration values set");
         } else {
             for (key, value) in items {
-                println!("{} = \"{}\"", key, value);
+                println!("{} = {}", key.cyan(), value);
             }
         }
 

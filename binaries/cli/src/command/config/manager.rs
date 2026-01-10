@@ -23,6 +23,14 @@ impl ConfigManager {
         })
     }
 
+    /// Create a new configuration manager with specific paths (useful for testing)
+    pub fn new_with_paths(global_path: PathBuf, project_path: PathBuf) -> Self {
+        Self {
+            global_path,
+            project_path,
+        }
+    }
+
     /// Get the global config file path (~/.dora/config.toml)
     fn global_config_path() -> Result<PathBuf> {
         let home = dirs::home_dir().context("Could not determine home directory")?;
@@ -36,7 +44,7 @@ impl ConfigManager {
 
     /// Load merged configuration from all sources
     /// Priority: environment variables > project config > global config
-    pub fn load(&self) -> Result<HashMap<String, String>> {
+    pub fn load(&self) -> Result<HashMap<String, toml::Value>> {
         let mut builder = Config::builder();
 
         // Load global config if it exists (lowest priority)
@@ -59,7 +67,7 @@ impl ConfigManager {
 
         let config = builder.build().context("Failed to build configuration")?;
 
-        // Convert to HashMap<String, String> with flattened keys
+        // Convert to HashMap<String, toml::Value> with flattened keys
         let mut result = HashMap::new();
 
         // Get all keys from the config files
@@ -77,7 +85,7 @@ impl ConfigManager {
                     .unwrap()
                     .to_lowercase()
                     .replace("__", "."); // Double underscore becomes dot
-                result.insert(config_key, value);
+                result.insert(config_key, toml::Value::String(value));
             }
         }
 
@@ -95,10 +103,11 @@ impl ConfigManager {
 
         // Then check loaded config
         let config = self.load()?;
-        config
+        let val = config
             .get(key)
-            .cloned()
-            .ok_or_else(|| eyre::eyre!("Configuration key '{}' not found", key))
+            .ok_or_else(|| eyre::eyre!("Configuration key '{}' not found", key))?;
+        
+        Ok(value_to_string_raw(val))
     }
 
     /// Set a configuration value in the specified config file
@@ -222,9 +231,9 @@ impl ConfigManager {
     }
 
     /// List all configuration values
-    pub fn list(&self) -> Result<Vec<(String, String)>> {
+    pub fn list(&self) -> Result<Vec<(String, toml::Value)>> {
         let config = self.load()?;
-        let mut items: Vec<(String, String)> = config.into_iter().collect();
+        let mut items: Vec<(String, toml::Value)> = config.into_iter().collect();
         items.sort_by(|a, b| a.0.cmp(&b.0));
         Ok(items)
     }
@@ -234,7 +243,7 @@ impl ConfigManager {
 fn flatten_table(
     table: &HashMap<String, toml::Value>,
     prefix: String,
-    result: &mut HashMap<String, String>,
+    result: &mut HashMap<String, toml::Value>,
 ) {
     for (key, value) in table {
         let full_key = if prefix.is_empty() {
@@ -252,14 +261,14 @@ fn flatten_table(
             }
             _ => {
                 // Leaf value - add to result
-                result.insert(full_key, value_to_string(value));
+                result.insert(full_key, value.clone());
             }
         }
     }
 }
 
-/// Convert a toml::Value to a string representation
-fn value_to_string(value: &toml::Value) -> String {
+/// Convert a toml::Value to a raw string representation (no quotes for strings)
+fn value_to_string_raw(value: &toml::Value) -> String {
     match value {
         toml::Value::String(s) => s.clone(),
         toml::Value::Integer(i) => i.to_string(),
@@ -269,14 +278,101 @@ fn value_to_string(value: &toml::Value) -> String {
             // For nested tables, create dot-notation keys
             let mut result = Vec::new();
             for (k, v) in table {
-                result.push(format!("{} = {}", k, value_to_string(v)));
+                result.push(format!("{} = {}", k, value_to_string_raw(v)));
             }
             result.join(", ")
         }
         toml::Value::Array(arr) => {
-            let items: Vec<String> = arr.iter().map(value_to_string).collect();
+            let items: Vec<String> = arr.iter().map(value_to_string_raw).collect();
             format!("[{}]", items.join(", "))
         }
         toml::Value::Datetime(dt) => dt.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs::File;
+    use std::io::Write;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_config_precedence() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let global_path = temp_dir.path().join("global_config.toml");
+        let project_path = temp_dir.path().join("project_config.toml");
+
+        let manager = ConfigManager::new_with_paths(global_path.clone(), project_path.clone());
+
+        // 1. Set global
+        manager.set("test.key", "global_value", false)?;
+        assert_eq!(manager.get("test.key")?, "global_value");
+
+        // 2. Set project (should override global)
+        manager.set("test.key", "project_value", true)?;
+        assert_eq!(manager.get("test.key")?, "project_value");
+
+        // 3. Env var (should override project)
+        // We can't easily test env vars in parallel tests without side effects, 
+        // but we can verify the manager reads them if we set one locally.
+        // unsafe { std::env::set_var("DORA_TEST__KEY", "env_value"); }
+        // assert_eq!(manager.get("test.key")?, "env_value");
+        // unsafe { std::env::remove_var("DORA_TEST__KEY"); }
+        
+        Ok(())
+    }
+
+    #[test]
+    fn test_set_get_unset() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let global_path = temp_dir.path().join("dora").join("config.toml");
+        let project_path = temp_dir.path().join("dora.toml");
+
+        let manager = ConfigManager::new_with_paths(global_path.clone(), project_path.clone());
+
+        // Test global set
+        manager.set("coordinator.addr", "127.0.0.1", false)?;
+        assert!(global_path.exists());
+        assert_eq!(manager.get("coordinator.addr")?, "127.0.0.1");
+
+        // Test project set
+        manager.set("coordinator.port", "8080", true)?;
+        assert!(project_path.exists());
+        assert_eq!(manager.get("coordinator.port")?, "8080");
+
+        // List
+        let items = manager.list()?;
+        // Check that items contain "coordinator.addr" key with typed value
+        let addr = items.iter().find(|(k, _)| k == "coordinator.addr").unwrap();
+        match &addr.1 {
+            toml::Value::String(s) => assert_eq!(s, "127.0.0.1"),
+            _ => panic!("Expected string"),
+        }
+         
+        let port = items.iter().find(|(k, _)| k == "coordinator.port").unwrap();
+        match &port.1 {
+            toml::Value::String(s) => assert_eq!(s, "8080"),
+            _ => panic!("Expected string"), // "8080" was set as string in test
+        }
+
+        // Unset global
+        manager.unset("coordinator.addr", false)?;
+        assert!(manager.get("coordinator.addr").is_err());
+
+        Ok(())
+    }
+    
+    #[test]
+    fn test_nested_keys() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let global_path = temp_dir.path().join("config.toml");
+        let project_path = temp_dir.path().join("dora.toml");
+        let manager = ConfigManager::new_with_paths(global_path, project_path);
+
+        manager.set("log.level", "debug", true)?;
+        assert_eq!(manager.get("log.level")?, "debug");
+        
+        Ok(())
     }
 }

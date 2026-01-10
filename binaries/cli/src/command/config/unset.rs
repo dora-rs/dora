@@ -1,4 +1,5 @@
 use clap::Args;
+use colored::Colorize;
 
 use crate::command::Executable;
 
@@ -35,7 +36,7 @@ impl Executable for Unset {
             "global config (~/.dora/config.toml)"
         };
 
-        println!("Removed {} from {}", self.key, location);
+        println!("Removed {} from {}", self.key.green(), location);
         Ok(())
     }
 }

@@ -1556,6 +1556,7 @@ dependencies = [
  "serde_yaml 0.9.34+deprecated",
  "sysinfo 0.36.1",
  "tabwriter",
+ "tempfile",
  "termcolor",
  "tokio",
  "tokio-stream",
