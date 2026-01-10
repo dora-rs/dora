@@ -5,13 +5,6 @@ use std::{
 };
 
 fn main() -> eyre::Result<()> {
-    if cfg!(windows) {
-        tracing::error!(
-            "The c++ example does not work on Windows currently because of a linker error"
-        );
-        return Ok(());
-    }
-
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let target = root.join("target");
     std::env::set_current_dir(root.join(file!()).parent().unwrap())
@@ -148,6 +141,7 @@ fn build_cxx_node(root: &Path, paths: &[&Path], out_name: &str, args: &[&str]) -
         clang.arg("-lmsimg32");
         clang.arg("-lmswsock");
         clang.arg("-lole32");
+        clang.arg("-loleaut32");
         clang.arg("-lopengl32");
         clang.arg("-lsecur32");
         clang.arg("-lshell32");
@@ -195,6 +189,8 @@ fn build_cxx_operator(paths: &[&Path], out_name: &str, link_args: &[&str]) -> ey
         compile.arg("-o").arg(&object_file_path);
         #[cfg(unix)]
         compile.arg("-fPIC");
+        #[cfg(target_os = "windows")]
+        compile.arg("-D_DLL");
         if let Some(parent) = path.parent() {
             compile.current_dir(parent);
         }
@@ -228,6 +224,7 @@ fn build_cxx_operator(paths: &[&Path], out_name: &str, link_args: &[&str]) -> ey
         link.arg("-lmsimg32");
         link.arg("-lmswsock");
         link.arg("-lole32");
+        link.arg("-loleaut32");
         link.arg("-lopengl32");
         link.arg("-lsecur32");
         link.arg("-lshell32");
@@ -238,7 +235,6 @@ fn build_cxx_operator(paths: &[&Path], out_name: &str, link_args: &[&str]) -> ey
         link.arg("-Wl,-nodefaultlib:libcmt");
         link.arg("-D_DLL");
         link.arg("-lmsvcrt");
-        link.arg("-fms-runtime-lib=static");
     }
     #[cfg(target_os = "macos")]
     {
