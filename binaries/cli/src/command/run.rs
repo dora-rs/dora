@@ -9,6 +9,7 @@ use super::Executable;
 use crate::{
     common::{handle_dataflow_result, resolve_dataflow, write_events_to},
     output::print_log_message,
+    progress::ProgressBar,
     session::DataflowSession,
 };
 use dora_daemon::{Daemon, LogDestination, flume};
@@ -45,21 +46,32 @@ pub fn run(dataflow: String, uv: bool) -> eyre::Result<()> {
             .wrap_err("failed to set up tracing subscriber")?;
     }
 
+    let pb = ProgressBar::new_spinner("Initializing dataflow...");
+
     let dataflow_path = resolve_dataflow(dataflow).context("could not resolve dataflow")?;
     let dataflow_session =
         DataflowSession::read_session(&dataflow_path).context("failed to read DataflowSession")?;
+
+    pb.set_message("Starting runtime...");
     let rt = Builder::new_multi_thread()
         .enable_all()
         .build()
         .context("tokio runtime failed")?;
 
-    let (log_tx, log_rx) = flume::bounded(100);
+    let (log_tx, log_rx) = flume::bounded::<dora_message::common::LogMessage>(100);
+    let pb_clone = ProgressBar::new_spinner("Running dataflow...");
     std::thread::spawn(move || {
         for message in log_rx {
+            // Update progress bar with node messages
+            if let Some(node_id) = &message.node_id {
+                pb_clone.set_message(format!("{}: {}", node_id, message.message));
+            }
             print_log_message(message, false, false);
         }
+        pb_clone.finish_and_clear();
     });
 
+    pb.set_message("Running dataflow...");
     let result = rt.block_on(Daemon::run_dataflow(
         &dataflow_path,
         dataflow_session.build_id,
@@ -69,6 +81,8 @@ pub fn run(dataflow: String, uv: bool) -> eyre::Result<()> {
         LogDestination::Channel { sender: log_tx },
         write_events_to(),
     ))?;
+
+    pb.finish_with_message("Dataflow execution completed");
     handle_dataflow_result(result, None)
 }
 
