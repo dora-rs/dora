@@ -31,7 +31,7 @@ pub fn build_distributed_dataflow(
         local_working_dir,
         uv,
     })?;
-    Ok(build_id.build_id)
+    Ok(build_id)
 }
 
 pub fn wait_until_dataflow_built(
@@ -69,7 +69,7 @@ pub fn wait_until_dataflow_built(
         }
     });
 
-    let resp = coordinator_client.wait_for_build(WaitForBuildReq { build_id })?;
+    let resp = coordinator_client.wait_for_build(build_id)?;
     match resp.result {
         Ok(()) => {
             eprintln!("dataflow build finished successfully");

@@ -150,8 +150,7 @@ pub(crate) fn local_working_dir(
 pub(crate) fn cli_and_daemon_on_same_machine(
     coordinator_client: &mut CliToCoordinatorClient,
 ) -> eyre::Result<bool> {
-    let resp = coordinator_client
-        .cli_and_default_daemon_on_same_machine(CliAndDefaultDaemonOnSameMachine)?;
+    let resp = coordinator_client.cli_and_default_daemon_on_same_machine()?;
     Ok(resp.default_daemon.is_some() && resp.default_daemon == resp.cli)
 }
 

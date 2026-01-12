@@ -13,19 +13,20 @@ use crate::syntax::SchemaInput;
 ///
 /// ```ignore
 /// use dora_schema_macro::dora_schema;
-/// dora_schema! {
-///     MyClient => MyServer:
-///     foo: FooRequest => FooResponse;
-///     bar: BarRequest => BarResponse;
+///
+/// #[dora_schema]
+/// pub trait MyProtocol {
+///     fn foo(foo: FooRequest) -> FooResponse;
+///     fn bar(bar: BarRequest) -> BarResponse;
 /// }
 /// ```
 ///
 /// This will generate:
 /// - Protocol enums `MyProtocolRequest` and `MyProtocolResponse`
-/// - A client struct `MyClient` with methods `foo` and `bar`
-/// - A server trait `MyHandler` with handler methods for `foo` and `bar
-#[proc_macro]
-pub fn dora_schema(input: TokenStream) -> TokenStream {
+/// - A client struct `MyProtocolClient` with methods `foo` and `bar`
+/// - A server trait `MyProtocol` with handler methods for `foo` and `bar
+#[proc_macro_attribute]
+pub fn dora_schema(_attr: TokenStream, input: TokenStream) -> TokenStream {
     let schema = syn::parse_macro_input!(input as SchemaInput);
 
     let protocol_code = protocol::generate_protocol(&schema);

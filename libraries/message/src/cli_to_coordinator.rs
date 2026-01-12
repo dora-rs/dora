@@ -10,13 +10,13 @@ use crate::{
     id::{NodeId, OperatorId},
 };
 
-dora_schema_macro::dora_schema! {
-    Cli => Coordinator:
-
-    build: BuildReq => BuildResp;
-    wait_for_build: WaitForBuildReq => WaitForBuildResp;
-    start: StartReq => StartResp;
-    cli_and_default_daemon_on_same_machine: CliAndDefaultDaemonOnSameMachine => CliAndDefaultDaemonIps;
+#[dora_schema_macro::dora_schema]
+pub trait CliToCoordinator {
+    async fn build(req: BuildReq) -> BuildId;
+    async fn wait_for_build(build_id: BuildId) -> WaitForBuildResp;
+    async fn start(req: StartReq) -> Uuid;
+    async fn wait_for_spawn(dataflow_id: Uuid) -> Uuid;
+    async fn cli_and_default_daemon_on_same_machine() -> CliAndDefaultDaemonIps;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

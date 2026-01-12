@@ -1,8 +1,8 @@
 use quote::{format_ident, quote};
 
 use crate::{
-    protocol::{enum_variant_ident, request_enum_ident, response_enum_ident},
     SchemaInput,
+    protocol::{request_enum_ident, response_enum_ident},
 };
 
 fn sync_client(
@@ -10,25 +10,26 @@ fn sync_client(
     request_enum_ident: &proc_macro2::Ident,
     response_enum_ident: &proc_macro2::Ident,
 ) -> proc_macro2::TokenStream {
-    let client_struct = format_ident!("{}Client", schema.protocol_name());
+    let client_struct = format_ident!("{}Client", schema.item.ident);
     let client_methods = schema
-        .methods
+    .methods
         .iter()
         .map(|m| {
-            let method_name = &m.name;
+            let method_name = &m.sig.ident;
             let attributes = &m.attrs;
-            let request_type = &m.request;
-            let response_type = &m.response;
-            let variant = enum_variant_ident(m);
+            let arguments = &m.arguments;
+            let argument_pats = m.arguments.iter().map(|arg| &arg.pat);
+            let response = &m.response;
+            let variant = m.variant_ident();
             quote! {
                 #(#attributes)*
                 pub fn #method_name(
                     &mut self,
-                    request: #request_type
-                ) -> ::eyre::Result<#response_type> {
+                    #(#arguments),*
+                ) -> ::eyre::Result<#response> {
                     use ::communication_layer_request_reply::Transport;
 
-                    let req_enum = #request_enum_ident::#variant(request);
+                    let req_enum = #request_enum_ident::#variant { #(#argument_pats),* };
 
                     self.transport.send(&req_enum).map_err(|e| ::eyre::eyre!("Transport IO error while sending: {}", e))?;
                     let Some(resp_enum) = self.transport.receive().map_err(|e| ::eyre::eyre!("Transport IO error while receiving: {}", e))? else {
@@ -89,25 +90,26 @@ fn async_client(
     request_enum_ident: &proc_macro2::Ident,
     response_enum_ident: &proc_macro2::Ident,
 ) -> proc_macro2::TokenStream {
-    let client_struct = format_ident!("Async{}Client", schema.protocol_name());
+    let client_struct = format_ident!("{}AsyncClient", schema.item.ident);
     let client_methods = schema
         .methods
         .iter()
         .map(|m| {
-            let method_name = &m.name;
+            let method_name = &m.sig.ident;
             let attributes = &m.attrs;
-            let request_type = &m.request;
-            let response_type = &m.response;
-            let variant = enum_variant_ident(m);
+            let arguments = &m.arguments;
+            let argument_pats = m.arguments.iter().map(|arg| &arg.pat);
+            let response = &m.response;
+            let variant = m.variant_ident();
             quote! {
                 #(#attributes)*
                 pub async fn #method_name(
                     &mut self,
-                    request: #request_type
-                ) -> ::eyre::Result<#response_type> {
+                    #(#arguments),*
+                ) -> ::eyre::Result<#response> {
                     use ::communication_layer_request_reply::AsyncTransport;
 
-                    let req_enum = #request_enum_ident::#variant(request);
+                    let req_enum = #request_enum_ident::#variant { #(#argument_pats),* };
 
                     self.transport.lock().await.send(&req_enum).await.map_err(|e| ::eyre::eyre!("Transport IO error while sending: {}", e))?;
                     let Some(resp_enum) = self.transport.lock().await.receive().await.map_err(|e| ::eyre::eyre!("Transport IO error while receiving: {}", e))? else {

@@ -1,85 +1,85 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, mem};
 
+use convert_case::{Case, Casing};
+use quote::format_ident;
 use syn::{
+    Attribute, ItemTrait, Result,
     parse::{Parse, ParseStream},
-    Attribute, Ident, Result, Token,
 };
 
 #[derive(Debug)]
-pub struct SchemaInput {
-    pub client_name: Ident,
-    pub server_name: Ident,
-    pub methods: Vec<MethodDef>,
+pub struct MethodDef {
+    pub attrs: Vec<Attribute>,
+    pub sig: syn::Signature,
+    pub arguments: Vec<syn::PatType>,
+    pub response: syn::Type,
 }
 
-impl SchemaInput {
-    pub fn protocol_name(&self) -> String {
-        format!("{}To{}", self.client_name, self.server_name)
+impl MethodDef {
+    pub fn variant_ident(&self) -> syn::Ident {
+        let name =
+            Casing::from_case(&self.sig.ident.to_string(), Case::Snake).to_case(Case::Pascal);
+        format_ident!("{name}")
     }
 }
 
 #[derive(Debug)]
-pub struct MethodDef {
-    /// Method name, should be in snake_case
-    pub name: Ident,
-    /// Attributes on the method
-    pub attrs: Vec<Attribute>,
-    /// Request type
-    pub request: Ident,
-    /// Response type
-    pub response: Ident,
+pub struct SchemaInput {
+    pub item: ItemTrait,
+    pub methods: Vec<MethodDef>,
 }
 
 impl Parse for SchemaInput {
     fn parse(input: ParseStream) -> Result<Self> {
-        // Cli => Coordinator:
-        let client_name: Ident = input.parse()?;
-        input.parse::<Token![=>]>()?;
-        let server_name: Ident = input.parse()?;
-        input.parse::<Token![:]>()?;
+        let attrs = input.call(Attribute::parse_outer)?;
+        let mut item: ItemTrait = input.parse()?;
+        item.attrs = attrs;
+        let methods = mem::take(&mut item.items)
+            .into_iter()
+            .map(|m| {
+                let syn::TraitItem::Fn(f) = m else {
+                    return Err(syn::Error::new_spanned(m, "Expected method definition"));
+                };
+                let attrs = f.attrs;
+                let sig = f.sig.clone();
+                let arguments = f
+                    .sig
+                    .inputs
+                    .iter()
+                    .map(|arg| match arg {
+                        syn::FnArg::Receiver(_) => Err(syn::Error::new_spanned(
+                            arg,
+                            "Methods cannot have self parameter",
+                        )),
+                        syn::FnArg::Typed(pat_type) => Ok(pat_type.clone()),
+                    })
+                    .collect::<Result<Vec<syn::PatType>>>()?;
+                let response = match &f.sig.output {
+                    syn::ReturnType::Type(_, ty) => (**ty).clone(),
+                    syn::ReturnType::Default => syn::parse_quote!(()),
+                };
 
-        let mut methods = Vec::new();
-        let mut methods_seen = HashSet::new();
-        while !input.is_empty() {
-            let method = input.parse::<MethodDef>()?;
-            if !methods_seen.insert(method.name.to_string()) {
-                return Err(input.error(format!("Duplicate method name: {}", method.name)));
+                Ok(MethodDef {
+                    attrs,
+                    sig,
+                    arguments,
+                    response,
+                })
+            })
+            .collect::<Result<Vec<MethodDef>>>()?;
+
+        let mut seen = HashSet::new();
+        seen.insert(format_ident!("handle"));
+        for method in &methods {
+            if !seen.insert(method.sig.ident.clone()) {
+                return Err(syn::Error::new_spanned(
+                    &method.sig.ident,
+                    format!("Duplicate or reserved method name `{}`", method.sig.ident),
+                ));
             }
-            methods.push(method);
         }
 
-        Ok(SchemaInput {
-            client_name,
-            server_name,
-            methods,
-        })
-    }
-}
-
-impl Parse for MethodDef {
-    fn parse(input: ParseStream) -> Result<Self> {
-        // list_nodes: ListNodesRequest => ListNodesResponse;
-        let attr = input.call(Attribute::parse_outer)?;
-
-        let name: Ident = input
-            .parse()
-            .map_err(|_| input.error("Expected method name (e.g., list_nodes)".to_string()))?;
-        input.parse::<Token![:]>()?;
-        let request: Ident = input.parse().map_err(|_| {
-            input.error("Expected request type (e.g., ListNodesRequest)".to_string())
-        })?;
-        input.parse::<Token![=>]>()?;
-        let response: Ident = input.parse().map_err(|_| {
-            input.error("Expected response type (e.g., ListNodesResponse)".to_string())
-        })?;
-        input.parse::<Token![;]>()?;
-
-        Ok(MethodDef {
-            name,
-            attrs: attr,
-            request,
-            response,
-        })
+        Ok(SchemaInput { item, methods })
     }
 }
 
@@ -87,72 +87,56 @@ impl Parse for MethodDef {
 mod tests {
     use super::*;
     use quote::quote;
-    use syn::parse2;
+    use syn::{parse_quote, parse2};
 
     #[test]
     fn parse_schema_input_valid_two_methods() {
         let input = quote! {
-            SomeClient => SomeServer:
-            list_nodes: ListNodesRequest => ListNodesResponse;
-            get_node: GetNodeRequest => GetNodeResponse;
+            trait Handler {
+                fn list_nodes(req: ListNodesRequest) -> ListNodesResponse;
+                fn get_node(req2: GetNodeRequest) -> GetNodeResponse;
+            }
         };
 
         let schema: SchemaInput = parse2(input).expect("Failed to parse schema input");
 
-        assert_eq!(schema.client_name.to_string(), "SomeClient");
-        assert_eq!(schema.server_name.to_string(), "SomeServer");
         assert_eq!(schema.methods.len(), 2);
 
-        assert_eq!(schema.methods[0].name.to_string(), "list_nodes");
-        assert_eq!(schema.methods[0].request.to_string(), "ListNodesRequest");
-        assert_eq!(schema.methods[0].response.to_string(), "ListNodesResponse");
+        assert_eq!(schema.methods[0].sig.ident, "list_nodes");
+        assert_eq!(schema.methods[0].response, parse_quote!(ListNodesResponse));
 
-        assert_eq!(schema.methods[1].name.to_string(), "get_node");
-        assert_eq!(schema.methods[1].request.to_string(), "GetNodeRequest");
-        assert_eq!(schema.methods[1].response.to_string(), "GetNodeResponse");
+        assert_eq!(schema.methods[1].sig.ident, "get_node");
+        assert_eq!(schema.methods[1].response, parse_quote!(GetNodeResponse));
     }
 
     #[test]
-    fn parse_schema_input_no_methods() {
+    fn parse_schema_input_empty_return() {
         let input = quote! {
-            SomeClient => SomeServer:
+            trait Handler {
+                fn list_nodes(req: ListNodesRequest);
+            }
         };
-
-        let schema: SchemaInput =
-            parse2(input).expect("Failed to parse schema input with no methods");
-        assert_eq!(schema.client_name.to_string(), "SomeClient");
-        assert_eq!(schema.server_name.to_string(), "SomeServer");
-        assert!(schema.methods.is_empty());
-    }
-
-    #[test]
-    fn parse_schema_input_syntax_error() {
-        let bad_input = quote! {
-            SomeClient SomeServer:
-        };
-        let _ = parse2::<SchemaInput>(bad_input).expect_err("Expected parsing to fail");
+        let _ = parse2::<SchemaInput>(input).expect("Failed to parse schema input");
     }
 
     #[test]
     fn parse_schema_input_duplicate_method_error() {
-        let dup_method_input = quote! {
-            SomeClient => SomeServer:
-            list_nodes: ListNodesRequest => ListNodesResponse;
-            list_nodes: GetNodeRequest => GetNodeResponse;
+        let input = quote! {
+            trait Handler {
+                fn list_nodes(req: ListNodesRequest) -> ListNodesResponse;
+                fn list_nodes(req: GetNodeRequest) -> GetNodeResponse;
+            }
         };
-        let _ = parse2::<SchemaInput>(dup_method_input).expect_err("Expected parsing to fail");
+        let _ = parse2::<SchemaInput>(input).expect_err("Expected parsing to fail");
     }
 
     #[test]
-    fn test_parse_method_def() {
+    fn parse_schema_input_reserved_name() {
         let input = quote! {
-            list_nodes: ListNodesRequest => ListNodesResponse;
+            trait Handler {
+                fn handle(req: ServeRequest);
+            }
         };
-
-        let method: MethodDef = parse2(input).expect("Failed to parse method definition");
-
-        assert_eq!(method.name.to_string(), "list_nodes");
-        assert_eq!(method.request.to_string(), "ListNodesRequest");
-        assert_eq!(method.response.to_string(), "ListNodesResponse");
+        let _ = parse2::<SchemaInput>(input).expect_err("Expected parsing to fail");
     }
 }

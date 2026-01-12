@@ -2,20 +2,12 @@ use proc_macro2::Ident;
 use quote::{format_ident, quote};
 
 use crate::{
-    protocol::{enum_variant_ident, error_struct_ident, request_enum_ident, response_enum_ident},
     SchemaInput,
+    protocol::{error_struct_ident, request_enum_ident, response_enum_ident},
 };
 
-pub fn server_trait_ident(schema: &SchemaInput) -> Ident {
-    format_ident!("{}Handler", schema.protocol_name())
-}
-
-pub fn method_handler_ident(method: &crate::syntax::MethodDef) -> Ident {
-    format_ident!("{}_handler", method.name)
-}
-
 pub fn generate_server_trait(schema: &SchemaInput) -> proc_macro2::TokenStream {
-    let trait_name = server_trait_ident(schema);
+    let trait_name = &schema.item.ident;
     let request_enum = request_enum_ident(schema);
     let response_enum = response_enum_ident(schema);
     let error_type = error_struct_ident(schema);
@@ -24,12 +16,12 @@ pub fn generate_server_trait(schema: &SchemaInput) -> proc_macro2::TokenStream {
         .methods
         .iter()
         .map(|m| {
-            let handler_name = method_handler_ident(m);
-            let request_type = &m.request;
+            let asyncness = &m.sig.asyncness;
+            let ident = &m.sig.ident;
+            let arguments = &m.arguments;
             let response_type = &m.response;
-
             quote! {
-                async fn #handler_name(self, request: #request_type) -> ::std::result::Result<#response_type, #error_type>;
+                #asyncness fn #ident(self, #(#arguments),*) -> ::std::result::Result<#response_type, #error_type>;
             }
         })
         .collect();
@@ -38,11 +30,13 @@ pub fn generate_server_trait(schema: &SchemaInput) -> proc_macro2::TokenStream {
         .methods
         .iter()
         .map(|m| {
-            let handler_name = method_handler_ident(m);
-            let method_variant = enum_variant_ident(m);
+            let asyncness = &m.sig.asyncness.as_ref().map(|_| quote! { .await });
+            let ident = &m.sig.ident;
+            let argument_pats = m.arguments.iter().map(|arg| &arg.pat).collect::<Vec<_>>();
+            let method_variant = m.variant_ident();
             quote! {
-                #request_enum::#method_variant(request) => {
-                    let response = self.#handler_name(request).await;
+                #request_enum::#method_variant { #(#argument_pats),* } => {
+                    let response = self.#ident(#(#argument_pats),*) #asyncness;
                     match response {
                         Ok(resp) => #response_enum::#method_variant(resp),
                         Err(err) => #response_enum::Error(err),
