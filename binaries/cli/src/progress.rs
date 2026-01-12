@@ -105,6 +105,17 @@ impl ProgressBar {
     /// pb.finish_with_message("Done!");
     /// ```
     pub fn new_spinner(message: impl Into<String>) -> Self {
+        let pb = Self::new_spinner_without_message();
+        pb.set_message(message.into());
+        Self { inner: pb.inner }
+    }
+
+    /// Creates a new spinner without an initial message.
+    ///
+    /// Use this function when adding the spinner to a `MultiProgress`. Only set the message
+    /// after adding it to the `MultiProgress` to ensure proper display (otherwise the
+    /// multi-progress bar is duplicated).
+    fn new_spinner_without_message() -> Self {
         let pb = if std::io::stderr().is_terminal() {
             IndicatifProgressBar::new_spinner()
         } else {
@@ -118,7 +129,6 @@ impl ProgressBar {
                 .expect("invalid template"),
         );
         pb.enable_steady_tick(Duration::from_millis(SPINNER_TICK_MS));
-        pb.set_message(message.into());
         Self { inner: pb }
     }
 
@@ -140,7 +150,16 @@ impl ProgressBar {
     /// pb.finish();
     /// ```
     pub fn new(len: u64, message: impl Into<String>) -> Self {
-        Self::new_inner(len, message, PROGRESS_TEMPLATE)
+        Self::new_inner(len, Some(message.into()), PROGRESS_TEMPLATE)
+    }
+
+    /// Creates a new progress bar without an initial message.
+    ///
+    /// Use this function when adding the progress bar to a `MultiProgress`. Only set the message
+    /// after adding it to the `MultiProgress` to ensure proper display (otherwise the
+    /// multi-progress bar is duplicated).
+    fn new_without_message(len: u64) -> Self {
+        Self::new_inner(len, None, PROGRESS_TEMPLATE)
     }
 
     /// Creates a new progress bar for byte-based progress (downloads, file copies, etc.).
@@ -158,11 +177,20 @@ impl ProgressBar {
     /// pb.inc(512);
     /// ```
     pub fn new_bytes(total_bytes: u64, message: impl Into<String>) -> Self {
-        Self::new_inner(total_bytes, message, BYTES_TEMPLATE)
+        Self::new_inner(total_bytes, Some(message.into()), BYTES_TEMPLATE)
+    }
+
+    /// Creates a new byte-based progress bar without an initial message.
+    ///
+    /// Use this function when adding the progress bar to a `MultiProgress`. Only set the
+    /// message after adding it to the `MultiProgress` to ensure proper display (otherwise the
+    /// multi-progress bar is duplicated).
+    fn new_bytes_without_message(total_bytes: u64) -> Self {
+        Self::new_inner(total_bytes, None, BYTES_TEMPLATE)
     }
 
     /// Internal helper to create progress bars with different templates
-    fn new_inner(len: u64, message: impl Into<String>, template: &str) -> Self {
+    fn new_inner(len: u64, message: Option<String>, template: &str) -> Self {
         let pb = if std::io::stderr().is_terminal() {
             IndicatifProgressBar::new(len)
         } else {
@@ -177,7 +205,9 @@ impl ProgressBar {
                 .progress_chars("=>-"),
         );
         pb.enable_steady_tick(Duration::from_millis(SPINNER_TICK_MS));
-        pb.set_message(message.into());
+        if let Some(message) = message {
+            pb.set_message(message);
+        }
         Self { inner: pb }
     }
 
@@ -271,8 +301,9 @@ impl MultiProgress {
     ///
     /// A `ProgressBar` that can be used to update this task's progress
     pub fn add_spinner(&self, message: impl Into<String>) -> ProgressBar {
-        let pb = ProgressBar::new_spinner(message);
+        let pb = ProgressBar::new_spinner_without_message();
         let added = self.inner.add(pb.inner.clone());
+        pb.set_message(message);
         ProgressBar { inner: added }
     }
 
@@ -283,15 +314,17 @@ impl MultiProgress {
     /// * `len` - The total number of items/steps
     /// * `message` - The message to display for this task
     pub fn add_bar(&self, len: u64, message: impl Into<String>) -> ProgressBar {
-        let pb = ProgressBar::new(len, message);
+        let pb = ProgressBar::new_without_message(len);
         let added = self.inner.add(pb.inner.clone());
+        added.set_message(message.into());
         ProgressBar { inner: added }
     }
 
     /// Adds a byte-based progress bar task.
     pub fn add_bytes(&self, total_bytes: u64, message: impl Into<String>) -> ProgressBar {
-        let pb = ProgressBar::new_bytes(total_bytes, message);
+        let pb = ProgressBar::new_bytes_without_message(total_bytes);
         let added = self.inner.add(pb.inner.clone());
+        added.set_message(message.into());
         ProgressBar { inner: added }
     }
 
