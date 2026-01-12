@@ -15,3 +15,8 @@ quote = "1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json.workspace = true
 syn = { version = "2", features = ["full", "parsing"] }
+
+[dev-dependencies]
+async-trait = { workspace = true }
+eyre = { workspace = true }
+tokio = { workspace = true }

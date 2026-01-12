@@ -10,11 +10,12 @@ use dora_core::{
 };
 use dora_message::{
     BuildId, DataflowId, SessionId,
-    cli_to_coordinator::ControlRequest,
+    cli_to_coordinator::CliToCoordinatorRequest,
+    cli_to_coordinator::CliToCoordinatorResponse,
     common::{DaemonId, GitSource},
     coordinator_to_cli::{
-        ControlRequestReply, DataflowIdAndName, DataflowList, DataflowListEntry, DataflowResult,
-        DataflowStatus, LogLevel, LogMessage,
+        DataflowIdAndName, DataflowList, DataflowListEntry, DataflowResult, DataflowStatus,
+        LogLevel, LogMessage,
     },
     coordinator_to_daemon::{
         BuildDataflowNodes, DaemonCoordinatorEvent, RegisterResult, Timestamped,
@@ -46,6 +47,7 @@ use uuid::Uuid;
 
 mod control;
 mod listener;
+mod handler;
 mod log_subscriber;
 mod run;
 mod tcp_utils;
@@ -184,6 +186,10 @@ impl DaemonConnections {
     fn unnamed(&self) -> impl Iterator<Item = &DaemonId> {
         self.daemons.keys().filter(|id| id.machine_id().is_none())
     }
+}
+
+pub struct Coordinator {
+    
 }
 
 async fn start_inner(
@@ -392,7 +398,7 @@ async fn start_inner(
                                 )
                                 .await;
 
-                                let reply = ControlRequestReply::DataflowStopped {
+                                let reply = CliToCoordinatorResponse::DataflowStopped {
                                     uuid,
                                     result: dataflow_results
                                         .get(&uuid)
@@ -425,7 +431,7 @@ async fn start_inner(
                     reply_sender,
                 } => {
                     match request {
-                        ControlRequest::Build {
+                        CliToCoordinatorRequest::Build {
                             session_id,
                             dataflow,
                             git_sources,
@@ -452,7 +458,9 @@ async fn start_inner(
                                 Ok(build) => {
                                     running_builds.insert(build_id, build);
                                     let _ = reply_sender.send(Ok(
-                                        ControlRequestReply::DataflowBuildTriggered { build_id },
+                                        CliToCoordinatorResponse::DataflowBuildTriggered {
+                                            build_id,
+                                        },
                                     ));
                                 }
                                 Err(err) => {
@@ -460,7 +468,7 @@ async fn start_inner(
                                 }
                             }
                         }
-                        ControlRequest::WaitForBuild { build_id } => {
+                        CliToCoordinatorRequest::WaitForBuild { build_id } => {
                             if let Some(build) = running_builds.get_mut(&build_id) {
                                 build.build_result.register(reply_sender);
                             } else if let Some(result) = finished_builds.get_mut(&build_id) {
@@ -470,7 +478,7 @@ async fn start_inner(
                                     reply_sender.send(Err(eyre!("unknown build id {build_id}")));
                             }
                         }
-                        ControlRequest::Start {
+                        CliToCoordinatorRequest::Start {
                             build_id,
                             session_id,
                             dataflow,
@@ -512,7 +520,9 @@ async fn start_inner(
                                     let uuid = dataflow.uuid;
                                     running_dataflows.insert(uuid, dataflow);
                                     let _ = reply_sender.send(Ok(
-                                        ControlRequestReply::DataflowStartTriggered { uuid },
+                                        CliToCoordinatorResponse::DataflowStartTriggered {
+                                            uuid,
+                                        },
                                     ));
                                 }
                                 Err(err) => {
@@ -520,7 +530,7 @@ async fn start_inner(
                                 }
                             }
                         }
-                        ControlRequest::WaitForSpawn { dataflow_id } => {
+                        CliToCoordinatorRequest::WaitForSpawn { dataflow_id } => {
                             if let Some(dataflow) = running_dataflows.get_mut(&dataflow_id) {
                                 dataflow.spawn_result.register(reply_sender);
                             } else {
@@ -528,12 +538,12 @@ async fn start_inner(
                                     reply_sender.send(Err(eyre!("unknown dataflow {dataflow_id}")));
                             }
                         }
-                        ControlRequest::Check { dataflow_uuid } => {
+                        CliToCoordinatorRequest::Check { dataflow_uuid } => {
                             let status = match &running_dataflows.get(&dataflow_uuid) {
-                                Some(_) => ControlRequestReply::DataflowSpawned {
+                                Some(_) => CliToCoordinatorResponse::DataflowSpawned {
                                     uuid: dataflow_uuid,
                                 },
-                                None => ControlRequestReply::DataflowStopped {
+                                None => CliToCoordinatorResponse::DataflowStopped {
                                     uuid: dataflow_uuid,
                                     result: dataflow_results
                                         .get(&dataflow_uuid)
@@ -548,7 +558,7 @@ async fn start_inner(
                             };
                             let _ = reply_sender.send(Ok(status));
                         }
-                        ControlRequest::Reload {
+                        CliToCoordinatorRequest::Reload {
                             dataflow_id,
                             node_id,
                             operator_id,
@@ -565,21 +575,18 @@ async fn start_inner(
                                 .await?;
                                 Result::<_, eyre::Report>::Ok(())
                             };
-                            let reply =
-                                reload
-                                    .await
-                                    .map(|()| ControlRequestReply::DataflowReloaded {
-                                        uuid: dataflow_id,
-                                    });
+                            let reply = reload.await.map(|()| {
+                                CliToCoordinatorResponse::DataflowReloaded { uuid: dataflow_id }
+                            });
                             let _ = reply_sender.send(reply);
                         }
-                        ControlRequest::Stop {
+                        CliToCoordinatorRequest::Stop {
                             dataflow_uuid,
                             grace_duration,
                             force,
                         } => {
                             if let Some(result) = dataflow_results.get(&dataflow_uuid) {
-                                let reply = ControlRequestReply::DataflowStopped {
+                                let reply = CliToCoordinatorResponse::DataflowStopped {
                                     uuid: dataflow_uuid,
                                     result: dataflow_result(result, dataflow_uuid, &clock),
                                 };
@@ -607,14 +614,14 @@ async fn start_inner(
                                 }
                             }
                         }
-                        ControlRequest::StopByName {
+                        CliToCoordinatorRequest::StopByName {
                             name,
                             grace_duration,
                             force,
                         } => match resolve_name(name, &running_dataflows, &archived_dataflows) {
                             Ok(dataflow_uuid) => {
                                 if let Some(result) = dataflow_results.get(&dataflow_uuid) {
-                                    let reply = ControlRequestReply::DataflowStopped {
+                                    let reply = CliToCoordinatorResponse::DataflowStopped {
                                         uuid: dataflow_uuid,
                                         result: dataflow_result(result, dataflow_uuid, &clock),
                                     };
@@ -646,7 +653,7 @@ async fn start_inner(
                                 let _ = reply_sender.send(Err(err));
                             }
                         },
-                        ControlRequest::Logs {
+                        CliToCoordinatorRequest::Logs {
                             uuid,
                             name,
                             node,
@@ -672,7 +679,7 @@ async fn start_inner(
                                         tail,
                                     )
                                     .await
-                                    .map(ControlRequestReply::Logs);
+                                    .map(CliToCoordinatorResponse::Logs);
                                     let _ = reply_sender.send(reply);
                                 }
                                 Err(err) => {
@@ -680,20 +687,22 @@ async fn start_inner(
                                 }
                             }
                         }
-                        ControlRequest::Info { dataflow_uuid } => {
+                        CliToCoordinatorRequest::Info { dataflow_uuid } => {
                             if let Some(dataflow) = running_dataflows.get(&dataflow_uuid) {
-                                let _ = reply_sender.send(Ok(ControlRequestReply::DataflowInfo {
-                                    uuid: dataflow.uuid,
-                                    name: dataflow.name.clone(),
-                                    descriptor: dataflow.descriptor.clone(),
-                                }));
+                                let _ = reply_sender.send(Ok(
+                                    CliToCoordinatorResponse::DataflowInfo {
+                                        uuid: dataflow.uuid,
+                                        name: dataflow.name.clone(),
+                                        descriptor: dataflow.descriptor.clone(),
+                                    },
+                                ));
                             } else {
                                 let _ = reply_sender.send(Err(eyre!(
                                     "No running dataflow with uuid `{dataflow_uuid}`"
                                 )));
                             }
                         }
-                        ControlRequest::Destroy => {
+                        CliToCoordinatorRequest::Destroy => {
                             tracing::info!("Received destroy command");
 
                             let reply = handle_destroy(
@@ -704,10 +713,10 @@ async fn start_inner(
                                 &clock,
                             )
                             .await
-                            .map(|()| ControlRequestReply::DestroyOk);
+                            .map(|()| CliToCoordinatorResponse::DestroyOk);
                             let _ = reply_sender.send(reply);
                         }
-                        ControlRequest::List => {
+                        CliToCoordinatorRequest::List => {
                             let mut dataflows: Vec<_> = running_dataflows.values().collect();
                             dataflows.sort_by_key(|d| (&d.name, d.uuid));
 
@@ -731,33 +740,33 @@ async fn start_inner(
                                     DataflowListEntry { id, status }
                                 });
 
-                            let reply = Ok(ControlRequestReply::DataflowList(DataflowList(
-                                running.chain(finished_failed).collect(),
-                            )));
+                            let reply = Ok(CliToCoordinatorResponse::DataflowList(
+                                DataflowList(running.chain(finished_failed).collect()),
+                            ));
                             let _ = reply_sender.send(reply);
                         }
-                        ControlRequest::DaemonConnected => {
+                        CliToCoordinatorRequest::DaemonConnected => {
                             let running = !daemon_connections.is_empty();
                             let _ = reply_sender
-                                .send(Ok(ControlRequestReply::DaemonConnected(running)));
+                                .send(Ok(CliToCoordinatorResponse::DaemonConnected(running)));
                         }
-                        ControlRequest::ConnectedMachines => {
-                            let reply = Ok(ControlRequestReply::ConnectedDaemons(
+                        CliToCoordinatorRequest::ConnectedMachines => {
+                            let reply = Ok(CliToCoordinatorResponse::ConnectedDaemons(
                                 daemon_connections.keys().cloned().collect(),
                             ));
                             let _ = reply_sender.send(reply);
                         }
-                        ControlRequest::LogSubscribe { .. } => {
+                        CliToCoordinatorRequest::LogSubscribe { .. } => {
                             let _ = reply_sender.send(Err(eyre::eyre!(
                                 "LogSubscribe request should be handled separately"
                             )));
                         }
-                        ControlRequest::BuildLogSubscribe { .. } => {
+                        CliToCoordinatorRequest::BuildLogSubscribe { .. } => {
                             let _ = reply_sender.send(Err(eyre::eyre!(
                                 "BuildLogSubscribe request should be handled separately"
                             )));
                         }
-                        ControlRequest::CliAndDefaultDaemonOnSameMachine => {
+                        CliToCoordinatorRequest::CliAndDefaultDaemonOnSameMachine => {
                             let mut default_daemon_ip = None;
                             if let Some(default_id) = daemon_connections.unnamed().next() {
                                 if let Some(connection) = daemon_connections.get(default_id) {
@@ -767,13 +776,13 @@ async fn start_inner(
                                 }
                             }
                             let _ = reply_sender.send(Ok(
-                                ControlRequestReply::CliAndDefaultDaemonIps {
+                                CliToCoordinatorResponse::CliAndDefaultDaemonIps {
                                     default_daemon: default_daemon_ip,
                                     cli: None, // filled later
                                 },
                             ));
                         }
-                        ControlRequest::GetNodeInfo => {
+                        CliToCoordinatorRequest::GetNodeInfo => {
                             use dora_message::coordinator_to_cli::{NodeInfo, NodeMetricsInfo};
 
                             let mut node_infos = Vec::new();
@@ -808,7 +817,7 @@ async fn start_inner(
                                 }
                             }
                             let _ = reply_sender
-                                .send(Ok(ControlRequestReply::NodeInfoList(node_infos)));
+                                .send(Ok(CliToCoordinatorResponse::GetNodeInfo(node_infos)));
                         }
                     }
                 }
@@ -956,7 +965,10 @@ async fn start_inner(
                         };
 
                         build.build_result.set_result(Ok(
-                            ControlRequestReply::DataflowBuildFinished { build_id, result },
+                            CliToCoordinatorResponse::DataflowBuildFinished {
+                                build_id,
+                                result,
+                            },
                         ));
 
                         finished_builds.insert(build_id, build.build_result);
@@ -980,7 +992,9 @@ async fn start_inner(
                             if dataflow.pending_spawn_results.is_empty() {
                                 tracing::info!("successfully spawned dataflow `{dataflow_id}`",);
                                 dataflow.spawn_result.set_result(Ok(
-                                    ControlRequestReply::DataflowSpawned { uuid: dataflow_id },
+                                    CliToCoordinatorResponse::DataflowSpawned {
+                                        uuid: dataflow_id,
+                                    },
                                 ));
                             }
                         }
@@ -1117,7 +1131,8 @@ struct RunningDataflow {
     node_metrics: BTreeMap<NodeId, dora_message::daemon_to_coordinator::NodeMetrics>,
 
     spawn_result: CachedResult,
-    stop_reply_senders: Vec<tokio::sync::oneshot::Sender<eyre::Result<ControlRequestReply>>>,
+    stop_reply_senders:
+        Vec<tokio::sync::oneshot::Sender<eyre::Result<CliToCoordinatorResponse>>>,
 
     /// Buffer for log messages that were sent before there were any subscribers.
     buffered_log_messages: Vec<LogMessage>,
@@ -1128,10 +1143,11 @@ struct RunningDataflow {
 
 pub enum CachedResult {
     Pending {
-        result_senders: Vec<tokio::sync::oneshot::Sender<eyre::Result<ControlRequestReply>>>,
+        result_senders:
+            Vec<tokio::sync::oneshot::Sender<eyre::Result<CliToCoordinatorResponse>>>,
     },
     Cached {
-        result: eyre::Result<ControlRequestReply>,
+        result: eyre::Result<CliToCoordinatorResponse>,
     },
 }
 
@@ -1146,7 +1162,7 @@ impl Default for CachedResult {
 impl CachedResult {
     fn register(
         &mut self,
-        reply_sender: tokio::sync::oneshot::Sender<eyre::Result<ControlRequestReply>>,
+        reply_sender: tokio::sync::oneshot::Sender<eyre::Result<CliToCoordinatorResponse>>,
     ) {
         match self {
             CachedResult::Pending { result_senders } => result_senders.push(reply_sender),
@@ -1156,7 +1172,7 @@ impl CachedResult {
         }
     }
 
-    fn set_result(&mut self, result: eyre::Result<ControlRequestReply>) {
+    fn set_result(&mut self, result: eyre::Result<CliToCoordinatorResponse>) {
         match self {
             CachedResult::Pending { result_senders } => {
                 for sender in result_senders.drain(..) {
@@ -1169,8 +1185,8 @@ impl CachedResult {
     }
 
     fn send_result_to(
-        result: &eyre::Result<ControlRequestReply>,
-        sender: oneshot::Sender<eyre::Result<ControlRequestReply>>,
+        result: &eyre::Result<CliToCoordinatorResponse>,
+        sender: oneshot::Sender<eyre::Result<CliToCoordinatorResponse>>,
     ) {
         let result = match result {
             Ok(r) => Ok(r.clone()),

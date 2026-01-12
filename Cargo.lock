@@ -1959,13 +1959,16 @@ dependencies = [
 name = "dora-schema-macro"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "communication-layer-request-reply",
  "convert_case",
+ "eyre",
  "proc-macro2",
  "quote",
  "serde",
  "serde_json",
  "syn 2.0.111",
+ "tokio",
 ]
 
 [[package]]

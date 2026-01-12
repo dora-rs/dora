@@ -38,7 +38,7 @@ fn sync_client(
 
                     match resp_enum {
                         #response_enum_ident::#variant(resp) => Ok(resp),
-                        #response_enum_ident::Error(err) => Err(::eyre::eyre!("Server returned error: {}", err.msg)),
+                        #response_enum_ident::Error(err) => Err(::eyre::eyre!("Server returned error: {err}")),
                         _ => ::eyre::bail!("Unexpected response type"),
                     }
                 }
@@ -118,7 +118,7 @@ fn async_client(
 
                     match resp_enum {
                         #response_enum_ident::#variant(resp) => Ok(resp),
-                        #response_enum_ident::Error(err) => Err(::eyre::eyre!("Server returned error: {}", err.msg)),
+                        #response_enum_ident::Error(err) => Err(::eyre::eyre!("Server returned error: {err}")),
                         _ => ::eyre::bail!("Unexpected response type"),
                     }
                 }

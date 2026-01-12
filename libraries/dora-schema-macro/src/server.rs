@@ -1,16 +1,14 @@
-use proc_macro2::Ident;
-use quote::{format_ident, quote};
+use quote::quote;
 
 use crate::{
     SchemaInput,
-    protocol::{error_struct_ident, request_enum_ident, response_enum_ident},
+    protocol::{request_enum_ident, response_enum_ident},
 };
 
 pub fn generate_server_trait(schema: &SchemaInput) -> proc_macro2::TokenStream {
     let trait_name = &schema.item.ident;
     let request_enum = request_enum_ident(schema);
     let response_enum = response_enum_ident(schema);
-    let error_type = error_struct_ident(schema);
 
     let trait_methods: Vec<_> = schema
         .methods
@@ -21,7 +19,7 @@ pub fn generate_server_trait(schema: &SchemaInput) -> proc_macro2::TokenStream {
             let arguments = &m.arguments;
             let response_type = &m.response;
             quote! {
-                #asyncness fn #ident(self, #(#arguments),*) -> ::std::result::Result<#response_type, #error_type>;
+                #asyncness fn #ident(self, #(#arguments),*) -> ::eyre::Result<#response_type>;
             }
         })
         .collect();
@@ -39,7 +37,7 @@ pub fn generate_server_trait(schema: &SchemaInput) -> proc_macro2::TokenStream {
                     let response = self.#ident(#(#argument_pats),*) #asyncness;
                     match response {
                         Ok(resp) => #response_enum::#method_variant(resp),
-                        Err(err) => #response_enum::Error(err),
+                        Err(err) => #response_enum::Error(err.to_string()),
                     }
                 }
             }
@@ -47,28 +45,22 @@ pub fn generate_server_trait(schema: &SchemaInput) -> proc_macro2::TokenStream {
         .collect::<Vec<_>>();
 
     let handle_function = quote! {
-        async fn handle<T>(self, mut transport: T) -> ::eyre::Result<()>
-        where
-            T: ::communication_layer_request_reply::AsyncTransport<#response_enum, #request_enum> + ::std::marker::Send + ::std::marker::Sync,
+        /// Handle a single request, returning a response.
+        ///
+        /// Do the dispatching by default, override this method to implement custom dispatching logic.
+        ///
+        async fn handle(self, request: #request_enum) -> ::eyre::Result<#response_enum>
         {
-            use ::communication_layer_request_reply::AsyncTransport;
-            // TODO: handle transport errors (e.g. serde errors) and return error responses instead of exiting
-            if let Some(req) = transport.receive().await? {
-                let resp = match req {
-                    #(#dispatch_arms)*
-                };
-                transport.send(&resp).await?;
-            } else {
-                ::eyre::bail!("Transport closed while waiting for request");
-            }
-            Ok(())
+            Ok(match request {
+                #(#dispatch_arms)*
+            })
         }
     };
 
     quote! {
         #[::async_trait::async_trait]
         /// Note: the `serve` function will clone the handler for each request, use `Arc<Mutex<State>>` to share state between requests.
-        pub trait #trait_name: ::std::marker::Sized {
+        pub trait #trait_name: ::std::marker::Sized + ::std::marker::Send {
             #(#trait_methods)*
 
             #handle_function

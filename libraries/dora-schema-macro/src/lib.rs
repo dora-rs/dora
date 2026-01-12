@@ -24,7 +24,22 @@ use crate::syntax::SchemaInput;
 /// This will generate:
 /// - Protocol enums `MyProtocolRequest` and `MyProtocolResponse`
 /// - A client struct `MyProtocolClient` with methods `foo` and `bar`
-/// - A server trait `MyProtocol` with handler methods for `foo` and `bar
+/// - A server trait `MyProtocol` with handler methods for `foo` and `bar`
+///
+/// For example, the above trait will generate the following protocol enums:
+///
+/// ```ignore
+/// pub enum MyProtocolRequest {
+///     Foo{ foo: FooRequest },
+///     Bar{ bar: BarRequest },
+/// }
+///
+/// pub enum MyProtocolResponse {
+///     Foo(FooResponse),
+///     Bar(BarResponse),
+/// }
+/// ```
+///
 #[proc_macro_attribute]
 pub fn dora_schema(_attr: TokenStream, input: TokenStream) -> TokenStream {
     let schema = syn::parse_macro_input!(input as SchemaInput);

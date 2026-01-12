@@ -1,13 +1,10 @@
-use std::{collections::BTreeMap, path::PathBuf, time::Duration};
+use std::{collections::{BTreeMap, BTreeSet}, path::PathBuf, time::Duration};
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    BuildId, SessionId,
-    common::GitSource,
-    descriptor::Descriptor,
-    id::{NodeId, OperatorId},
+    BuildId, SessionId, common::GitSource, coordinator_to_cli::NodeInfo, descriptor::Descriptor, id::{NodeId, OperatorId}
 };
 
 #[dora_schema_macro::dora_schema]
@@ -16,7 +13,33 @@ pub trait CliToCoordinator {
     async fn wait_for_build(build_id: BuildId) -> WaitForBuildResp;
     async fn start(req: StartReq) -> Uuid;
     async fn wait_for_spawn(dataflow_id: Uuid) -> Uuid;
+    async fn reload(dataflow_id: Uuid, node_id: NodeId, operator_id: Option<OperatorId>) -> Uuid;
+    async fn check(dataflow_uuid: Uuid) -> Uuid;
+    async fn stop(
+        dataflow_uuid: Uuid,
+        grace_duration: Option<Duration>,
+        force: bool,
+    ) ;
+    async fn stop_by_name(
+        name: String,
+        grace_duration: Option<Duration>,
+        force: bool,
+    ) ;
+    async fn logs(
+        uuid: Option<Uuid>,
+        name: Option<String>,
+        node: String,
+        tail: Option<usize>,
+    ) -> Vec<u8>;
+    async fn destroy();
+    async fn list() -> Vec<crate::coordinator_to_cli::DataflowListEntry>;
+    async fn info(dataflow_uuid: Uuid);
+    async fn daemon_connected() -> bool;
+    async fn connected_machines() -> BTreeSet<crate::common::DaemonId>;
+    async fn log_subscribe(dataflow_id: Uuid, level: log::LevelFilter);
+    async fn build_log_subscribe(build_id: BuildId, level: log::LevelFilter);
     async fn cli_and_default_daemon_on_same_machine() -> CliAndDefaultDaemonIps;
+    async fn get_node_info() -> Vec<NodeInfo>;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
