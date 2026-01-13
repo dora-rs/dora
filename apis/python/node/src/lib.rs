@@ -389,34 +389,26 @@ impl Node {
     /// `send_output_raw` zero-copy send data from the node.
     ///
     /// This method allocates a buffer and returns a SampleHandler that can be used
-    /// with Python's context manager syntax (`with ... as ...`). The buffer can be
-    /// filled using the `as_arrow()` method, which returns a PyArrow UInt8Array
-    /// that wraps the allocated memory.
+    /// with Python's context manager syntax (`with ... as ...`). The context manager
+    /// returns a writable memoryview that wraps the allocated memory.
     ///
     /// Example usage:
     ///
     /// ```python
-    /// import numpy as np
-    ///
     /// # Allocate a 1MB buffer for zero-copy send
-    /// with node.send_output_raw("output_id", 1024 * 1024, {"key": "value"}) as sample:
-    ///     # Get PyArrow array wrapping the buffer
-    ///     arrow_array = sample.as_arrow()
+    /// with node.send_output_raw("output_id", 1024 * 1024, {"key": "value"}) as buffer:
+    ///     # buffer is a writable memoryview - fill it with your data
+    ///     buffer[:] = your_data  # Direct assignment
+    ///     # or iterate: for i in range(len(buffer)): buffer[i] = data[i]
     ///
-    ///     # Convert to numpy for easy manipulation (zero-copy view)
-    ///     np_array = np.frombuffer(arrow_array.buffers()[1], dtype=np.uint8)
-    ///
-    ///     # Fill the buffer with your data
-    ///     np_array[:] = your_data
-    ///
-    /// # The sample is automatically sent when exiting the `with` block
+    /// # The data is automatically sent when exiting the `with` block
     /// ```
     ///
     /// Alternatively, you can manually send:
     ///
     /// ```python
     /// sample = node.send_output_raw("output_id", data_length)
-    /// arrow_array = sample.as_arrow()
+    /// buffer = sample.as_memoryview()
     /// # ... fill the buffer ...
     /// sample.send()  # Manually send
     /// ```

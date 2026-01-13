@@ -20,12 +20,14 @@ def benchmark_regular_send(node, output_id, data_size, iterations):
     """Benchmark regular send_output (with copy)"""
     for i in range(iterations):
         data = rng.integers(low=0, high=256, size=data_size, dtype=np.uint8)
+        regular_data = np.zeros(data_size, dtype=np.uint8)
 
         # Measure preparation time (data creation in Python)
         start_timestamp = time.perf_counter()
-        regular_data = data.copy()
-        arrow_array = pa.array(regular_data)
+        regular_data[:] = data
+
         # simulate the data generating process
+        arrow_array = pa.array(regular_data)
 
         node.send_output(
             output_id,
@@ -55,12 +57,15 @@ def benchmark_zero_copy_send(node, output_id, data_size, iterations):
                 "size": data_size,
                 "iteration": i,
             },
-        ) as sample:
-            arr = sample.as_array()
+        ) as buffer:
+            # buffer is a memoryview - convert to numpy for easy manipulation (zero-copy)
+            arr = np.asarray(buffer, copy=False)
+
             # simulate the process of fulfilling the promise
             arr[:] = data
+
             if i == 0:
-                print(f"  Got numpy array, shape: {arr.shape}, dtype: {arr.dtype}")
+                print(f"  Got memoryview/numpy array, shape: {arr.shape}, dtype: {arr.dtype}")
 
         time.sleep(0.1)  # Give time for the warmup messages to be processed
 
@@ -82,8 +87,9 @@ def send_memory_usage(node, output_id, data_size):
     # Zero-copy send memory usage
     tracemalloc.start()
     tracemalloc.reset_peak()
-    with node.send_output_raw(output_id, data_size, metadata={"skip": True}) as sample:
-        arr = sample.as_array()
+    with node.send_output_raw(output_id, data_size, metadata={"skip": True}) as buffer:
+        # Convert memoryview to numpy for easy manipulation (zero-copy)
+        arr = np.asarray(buffer, copy=False)
         arr[:] = data
     _, zero_copy_peak = tracemalloc.get_traced_memory()
     tracemalloc.stop()
@@ -115,7 +121,7 @@ def main():
 
     # Test different data sizes
     data_sizes = [
-        # 512,  # 0.5 KB (below threshold, uses Vec)
+        512,  # 0.5 KB (below threshold, uses Vec)
         1 * 1024,  # 1 KB (below threshold, uses Vec)
         4 * 1024,  # 4 KB (threshold for shared memory)
         8 * 1024,  # 8 KB
@@ -131,17 +137,13 @@ def main():
         os.environ.get("ITERATIONS", 100)
     )  # Number of iterations for each benchmark
 
-    print("=" * 80)
-    print("DORA Python API Performance Benchmark")
-    print("Comparing send_output (regular) vs send_output_raw (zero-copy)")
-    print("=" * 80)
     print(f"\nIterations per test: {iterations}")
     print("Warming up...")
 
     # Warmup
     for _ in range(5):
         node.send_output("benchmark_output", pa.array(np.zeros(1024, dtype=np.uint8)))
-        with node.send_output_raw("benchmark_output", 1024) as _sample:
+        with node.send_output_raw("benchmark_output", 1024) as _buffer:
             pass
         time.sleep(0.1)  # Give time for the warmup messages to be processed
 

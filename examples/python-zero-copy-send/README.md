@@ -19,7 +19,7 @@ The implementation consists of two main components:
 1. **`SampleHandler`** (`apis/python/node/src/sample_handler.rs`):
    - Manages the allocated `DataSample`
    - Implements Python's context manager protocol (`__enter__` and `__exit__`)
-   - Provides `as_arrow()` method to expose the buffer as a PyArrow UInt8Array
+   - Provides `as_memoryview()` method to expose the buffer as a writable memoryview
    - Automatically sends the data when the context manager exits
 
 2. **`Node.send_output_raw()`** (`apis/python/node/src/lib.rs`):
@@ -32,46 +32,57 @@ The implementation consists of two main components:
 The API is designed to work naturally with Python's context manager syntax:
 
 ```python
-with node.send_output_raw("output_id", data_length) as sample:
-    arrow_array = sample.as_arrow()
-    # Work with the arrow array...
+with node.send_output_raw("output_id", data_length) as buffer:
+    # buffer is a writable memoryview - work with it directly
+    buffer[:] = your_data
 # Data is automatically sent here
 ```
 
-The `as_arrow()` method returns a PyArrow UInt8Array that wraps the underlying buffer. You can:
+The context manager returns a writable memoryview that wraps the underlying buffer. You can:
 
-- Use it directly with PyArrow operations
-- Convert to NumPy with `np.frombuffer(arrow_array.buffers()[1], dtype=np.uint8)` for zero-copy access
-- Write data directly into the buffer
+- Use it directly with Python's buffer protocol
+- Access and modify bytes using standard indexing: `buffer[i] = value`
+- Use slicing: `buffer[:] = data`
+- Convert to NumPy if needed with `np.asarray(buffer)` for zero-copy access
 
 ## Usage
 
 ```python
 from dora import Node
-import numpy as np
 
 node = Node()
 
 # Allocate a 1MB buffer
-with node.send_output_raw("large_data", 1024 * 1024) as sample:
-    # Get arrow array wrapping the buffer
-    arrow_array = sample.as_arrow()
+with node.send_output_raw("large_data", 1024 * 1024) as buffer:
+    # buffer is a writable memoryview - fill with your data directly
+    for i in range(len(buffer)):
+        buffer[i] = i % 256
 
-    # Convert to numpy for easy manipulation (zero-copy view)
-    np_array = np.frombuffer(arrow_array.buffers()[1], dtype=np.uint8)
+# Data is automatically sent when exiting the with block
+```
+
+### Using with NumPy (optional)
+
+If you want to use NumPy, you can easily convert the memoryview:
+
+```python
+import numpy as np
+
+with node.send_output_raw("large_data", 1024 * 1024) as buffer:
+    # Convert to numpy for convenient operations (zero-copy view)
+    np_array = np.asarray(buffer)
 
     # Fill with your data
     np_array[:] = np.random.randint(0, 256, size=1024*1024, dtype=np.uint8)
-
-# Data is automatically sent when exiting the with block
 ```
 
 ## Benefits
 
 1. **Memory Efficiency**: No unnecessary copies - write directly to the send buffer
 2. **Performance**: Especially beneficial for large data (> 4KB uses shared memory)
-3. **Pythonic API**: Uses familiar `with` statement syntax
-4. **Flexible**: Works with both NumPy and PyArrow
+3. **Pythonic API**: Uses familiar `with` statement syntax and standard buffer protocol
+4. **No Dependencies**: Works with Python's built-in memoryview, no external libraries required
+5. **Flexible**: Compatible with NumPy and any library that supports the buffer protocol
 
 ## When to Use
 
@@ -85,7 +96,7 @@ If you don't want to use the context manager, you can manually call `send()`:
 
 ```python
 sample = node.send_output_raw("output_id", data_length)
-arrow_array = sample.as_arrow()
+buffer = sample.as_memoryview()
 # ... fill the buffer ...
 sample.send()  # Manually send
 ```
@@ -93,6 +104,6 @@ sample.send()  # Manually send
 ## Implementation Notes
 
 - The buffer is allocated using Dora's `allocate_data_sample()` which automatically uses shared memory for large buffers (>= 4KB)
-- The Arrow buffer wraps the underlying memory without copying
+- The memoryview wraps the underlying memory without copying
 - The `SampleHandler` maintains ownership of the buffer until `send()` is called
-- After sending, the sample cannot be reused (calling `as_arrow()` or `send()` again will raise an error)
+- After sending, the sample cannot be reused (calling `as_memoryview()` or `send()` again will raise an error)

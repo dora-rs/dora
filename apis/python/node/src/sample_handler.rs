@@ -9,7 +9,7 @@ use pyo3::{Bound, Py, PyAny, PyResult, Python, pyclass, pymethods};
 pub struct SampleHandler {
     node: DelayedCleanup<DoraNode>,
     inner: Option<SampleInner>,
-    numpy_array: Option<Py<PyAny>>,
+    memoryview: Option<Py<PyAny>>,
 }
 
 pub struct SampleInner {
@@ -37,29 +37,36 @@ impl SampleHandler {
         Ok(Self {
             node,
             inner: Some(inner),
-            numpy_array: None,
+            memoryview: None,
         })
     }
 }
 
 #[pymethods]
 impl SampleHandler {
-    /// Get a writable numpy array wrapping the buffer for zero-copy writing
-    /// This returns a writable UInt8 numpy array that Python can fill
-    pub fn as_array(&mut self, py: Python) -> PyResult<Py<PyAny>> {
+    /// Get a writable memoryview wrapping the buffer for zero-copy writing
+    /// This returns a writable memoryview that Python can fill
+    ///
+    /// This method will raise an error if called after send()
+    pub fn as_memoryview(&mut self, py: Python) -> PyResult<Py<PyAny>> {
         use pyo3::types::PyAnyMethods;
         use std::ops::DerefMut;
 
-        if let Some(inner) = &mut self.inner {
-            if let Some(arr) = self.numpy_array.as_mut() {
-                return Ok(arr.clone_ref(py));
-            }
+        // First check if the sample has already been sent
+        if self.inner.is_none() {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "Cannot access buffer after send() - the sample has already been sent",
+            ));
+        }
+        if let Some(mv) = &self.memoryview {
+            // Return cached memoryview if already created
+            Ok(mv.clone_ref(py))
+        } else if let Some(inner) = &mut self.inner {
             let sample_slice: &mut [u8] = inner.sample.deref_mut();
             let len = sample_slice.len();
             let ptr = sample_slice.as_mut_ptr();
 
-            // Import numpy and ctypes
-            let np = py.import("numpy")?;
+            // Import ctypes to create a writable buffer
             let ctypes = py.import("ctypes")?;
 
             // Create ctypes array type: ctypes.c_uint8 * len
@@ -69,22 +76,21 @@ impl SampleHandler {
             // Create array from address
             let c_array = array_type.call_method1("from_address", (ptr as usize,))?;
 
-            // Convert to numpy array (this will be writable)
-            let np_ctypeslib = np.getattr("ctypeslib")?;
-            let np_array = np_ctypeslib.call_method1("as_array", (c_array,))?;
+            // Create a memoryview from the ctypes array (this will be writable)
+            let builtins = py.import("builtins")?;
+            let memoryview = builtins.call_method1("memoryview", (c_array,))?;
 
-            self.numpy_array = Some(np_array.clone().unbind());
-            Ok(np_array.into())
+            self.memoryview = Some(memoryview.clone().into());
+            Ok(memoryview.into())
         } else {
-            Err(pyo3::exceptions::PyRuntimeError::new_err(
-                "Sample has already been sent",
-            ))
+            // This should never be reached due to the check at the beginning
+            unreachable!()
         }
     }
 
-    /// Enter the context manager - returns self
-    fn __enter__(slf: Py<Self>) -> Py<Self> {
-        slf
+    /// Enter the context manager - returns the memoryview
+    fn __enter__(&mut self, py: Python) -> PyResult<Py<PyAny>> {
+        self.as_memoryview(py)
     }
 
     /// Exit the context manager and send the data
@@ -112,17 +118,13 @@ impl SampleHandler {
             .take()
             .ok_or_else(|| eyre::eyre!("Sample has already been sent"))?;
 
-        if let Some(ref array) = self.numpy_array {
-            Python::with_gil(|py| -> PyResult<()> {
-                use pyo3::types::PyAnyMethods;
-                let bound_array = array.bind(py);
-                // Make the array read-only to prevent further writes
-                // and avoid data race
-                let flags = bound_array.getattr("flags")?;
-                flags.setattr("writeable", false)?;
-                Ok(())
-            })?;
+        if let Some(mv) = self.memoryview.take() {
+            // Drop the memoryview to release the buffer
+            Python::with_gil(|py| {
+                mv.call_method0(py, "release").unwrap();
+            });
         }
+
         self.node
             .get_mut()
             .send_output_sample(data_id, type_info, parameters, Some(sample))
