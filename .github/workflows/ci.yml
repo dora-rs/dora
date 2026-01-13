@@ -483,19 +483,19 @@ jobs:
         env:
           RUST_LOG: debug
         run: dora run examples/python-async/dataflow.yaml --uv
-      - name: "Test CLI (Python): Drain Example"
+      - name: "Test Python Example: Drain"
         timeout-minutes: 30
         run: dora run examples/python-drain/dataflow.yaml --uv
-      - name: "Test CLI (Python): Dataflow Builder Example"
+      - name: "Test Python Example: Dataflow Builder"
         timeout-minutes: 30
         run: uv run examples/python-dataflow-builder/simple_example.py
-      - name: "Test CLI (Python): Queue Latency Test"
+      - name: "Python Queue Latency Test"
         timeout-minutes: 30
         run: dora run tests/queue_size_latest_data_python/dataflow.yaml --uv
-      - name: "Test CLI (Python): Queue Latency + Timeout Test"
+      - name: "Python Queue Latency + Timeout Test"
         timeout-minutes: 30
         run: dora run tests/queue_size_and_timeout_python/dataflow.yaml --uv
-      - name: "Test CLI (Python): Queue Latency Rust Test"
+      - name: "Rust Queue Latency Test"
         timeout-minutes: 30
         run: |
           # Run Rust queue latency test
