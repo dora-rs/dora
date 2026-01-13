@@ -138,6 +138,16 @@ impl PreparedNode {
             let restart = restart && !restart_disabled;
             let success = exit_status.is_success();
 
+            if !success {
+                let _span = tracing::error_span!(
+                    "node_failure",
+                    node_id = %self.node.id,
+                    dataflow_id = %self.dataflow_id
+                )
+                .entered();
+                tracing::error!("node exited with error: {:?}", exit_status);
+            }
+
             let event = DoraEvent::SpawnedNodeResult {
                 dataflow_id: self.dataflow_id,
                 node_id: self.node.id.clone(),

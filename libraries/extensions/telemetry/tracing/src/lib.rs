@@ -63,12 +63,24 @@ impl TracingBuilder {
     /// it uses [std::io::stdout] which is synchronous
     /// and might block the logging thread.
     pub fn with_stdout(mut self, filter: impl AsRef<str>, json: bool) -> Self {
-        let parsed = EnvFilter::builder()
+        let mut parsed = EnvFilter::builder()
             .parse_lossy(filter)
             .add_directive("hyper=off".parse().unwrap())
             .add_directive("tonic=off".parse().unwrap())
+            .add_directive("tokio=off".parse().unwrap())
+            .add_directive("process_wrap=off".parse().unwrap())
             .add_directive("h2=off".parse().unwrap())
             .add_directive("reqwest=off".parse().unwrap());
+        let env_log = std::env::var("RUST_LOG").unwrap_or_default();
+        if !env_log.contains("dora_daemon") {
+            parsed = parsed.add_directive("dora_daemon=info".parse().unwrap());
+        }
+        if !env_log.contains("dora_core") {
+            parsed = parsed.add_directive("dora_core=warn".parse().unwrap());
+        }
+        if !env_log.contains("zenoh") {
+            parsed = parsed.add_directive("zenoh=warn".parse().unwrap());
+        }
         let env_filter = EnvFilter::from_default_env().or(parsed);
         let layer = tracing_subscriber::fmt::layer()
             .compact()
@@ -135,11 +147,17 @@ impl TracingBuilder {
 
         self.guard = Some(guard);
         self.layers.push(MetricsLayer::new(meter_provider).boxed());
-        let filter_otel = EnvFilter::new("trace")
+        let mut filter_otel = EnvFilter::new("trace")
             .add_directive("hyper=off".parse().unwrap())
             .add_directive("tonic=off".parse().unwrap())
+            .add_directive("tokio=off".parse().unwrap())
+            .add_directive("process_wrap=off".parse().unwrap())
             .add_directive("h2=off".parse().unwrap())
             .add_directive("reqwest=off".parse().unwrap());
+        let env_log = std::env::var("RUST_LOG").unwrap_or_default();
+        if !env_log.contains("dora_daemon") {
+            filter_otel = filter_otel.add_directive("dora_daemon=debug".parse().unwrap());
+        }
         self.layers.push(
             OpenTelemetryLayer::new(tracer)
                 .with_filter(filter_otel)
