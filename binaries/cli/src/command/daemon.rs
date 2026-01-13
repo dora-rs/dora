@@ -40,28 +40,50 @@ pub struct Daemon {
 
 impl Executable for Daemon {
     fn execute(self) -> eyre::Result<()> {
+        let rt = Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .context("tokio runtime failed")?;
         #[cfg(feature = "tracing")]
         {
+            use std::sync::{Arc, Mutex};
+
+            use dora_tracing::OtelGuard;
+
             let name = "dora-daemon";
             let filename = self
                 .machine_id
                 .as_ref()
                 .map(|id| format!("{name}-{id}"))
                 .unwrap_or(name.to_string());
-            let mut builder = TracingBuilder::new(name);
-            if !self.quiet {
-                builder = builder.with_stdout("info,zenoh=warn", false);
-            }
-            builder = builder.with_file(filename, LevelFilter::INFO)?;
-            builder
-                .build()
-                .wrap_err("failed to set up tracing subscriber")?;
-        }
+            let quiet = self.quiet;
+            let guard: Arc<Mutex<Option<OtelGuard>>> = Arc::new(Mutex::new(None));
+            let clone = guard.clone();
 
-        let rt = Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .context("tokio runtime failed")?;
+            rt.spawn(async move {
+                let mut builder = TracingBuilder::new(name);
+                if std::env::var("DORA_OTLP_ENDPOINT").is_ok()
+                    || std::env::var("DORA_JAEGER_TRACING").is_ok()
+                {
+                    builder = builder
+                        .with_otlp_tracing()
+                        .context("failed to set up OTLP tracing")
+                        .unwrap();
+                    *clone.lock().unwrap() = builder.guard.take();
+                } else if !quiet {
+                    let env_log = std::env::var("RUST_LOG").unwrap_or("info".to_string());
+                    builder = builder.with_stdout(env_log, false);
+                }
+                builder = builder.with_file(filename, LevelFilter::INFO).unwrap();
+                builder
+                    .build()
+                    .wrap_err("failed to set up tracing subscriber")
+                    .unwrap();
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                }
+            });
+        }
         rt.block_on(async {
                 match self.run_dataflow {
                     Some(dataflow_path) => {

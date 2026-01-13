@@ -36,22 +36,45 @@ pub fn run_func(dataflow: String, uv: bool) -> eyre::Result<()> {
 }
 
 pub fn run(dataflow: String, uv: bool) -> eyre::Result<()> {
+    let rt = Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("tokio runtime failed")?;
     #[cfg(feature = "tracing")]
     {
-        let log_level = std::env::var("RUST_LOG").ok().unwrap_or("info".to_string());
-        TracingBuilder::new("run")
-            .with_stdout(log_level, false)
-            .build()
-            .wrap_err("failed to set up tracing subscriber")?;
+        use std::sync::{Arc, Mutex};
+
+        use dora_tracing::OtelGuard;
+
+        let guard: Arc<Mutex<Option<OtelGuard>>> = Arc::new(Mutex::new(None));
+        let clone = guard.clone();
+        rt.spawn(async move {
+            let mut builder = TracingBuilder::new("dora-run");
+            if std::env::var("DORA_OTLP_ENDPOINT").is_ok()
+                || std::env::var("DORA_JAEGER_TRACING").is_ok()
+            {
+                builder = builder
+                    .with_otlp_tracing()
+                    .context("failed to set up OTLP tracing")
+                    .unwrap();
+                *clone.lock().unwrap() = builder.guard.take();
+            } else {
+                let env_log = std::env::var("RUST_LOG").unwrap_or("info".to_string());
+                builder = builder.with_stdout(env_log, false);
+            }
+            builder
+                .build()
+                .wrap_err("failed to set up tracing subscriber")
+                .unwrap();
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+        });
     }
 
     let dataflow_path = resolve_dataflow(dataflow).context("could not resolve dataflow")?;
     let dataflow_session =
         DataflowSession::read_session(&dataflow_path).context("failed to read DataflowSession")?;
-    let rt = Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .context("tokio runtime failed")?;
 
     let (log_tx, log_rx) = flume::bounded(100);
     std::thread::spawn(move || {
