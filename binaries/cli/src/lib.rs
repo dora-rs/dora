@@ -19,10 +19,87 @@ const LOCALHOST: IpAddr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
 const LISTEN_WILDCARD: IpAddr = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0));
 
 #[derive(Debug, clap::Parser)]
-#[clap(version)]
+#[clap(version = get_version_info())]
 pub struct Args {
     #[clap(subcommand)]
     command: command::Command,
+}
+
+fn get_version_info() -> &'static str {
+    Box::leak(build_version_string().into_boxed_str())
+}
+
+fn build_version_string() -> String {
+    let cli_version = env!("CARGO_PKG_VERSION");
+
+    let mut version_output = format!("dora-cli {}\n", cli_version);
+
+    // Add dora-message version
+    version_output.push_str(&format!("dora-message {}\n", get_dora_message_version()));
+
+    // Try to detect Python dora-rs version
+    match get_python_dora_version() {
+        Some(python_version) => {
+            version_output.push_str(&format!("dora-rs (Python) {}\n", python_version));
+
+            // Check for version mismatch
+            if python_version != cli_version {
+                version_output.push_str(&format!(
+                    "\n⚠️  WARNING: Version mismatch detected!\n   CLI version ({}) differs from Python dora-rs version ({})\n",
+                    cli_version,
+                    python_version
+                ));
+            }
+        }
+        None => {
+            version_output.push_str("dora-rs (Python) not found\n");
+        }
+    }
+
+    version_output
+}
+
+fn get_dora_message_version() -> &'static str {
+    // This is set at build time by build.rs
+    option_env!("DORA_MESSAGE_VERSION").unwrap_or("unknown")
+}
+
+fn get_python_dora_version() -> Option<String> {
+    // Try with uv first
+    if let Ok(output) = std::process::Command::new("uv")
+        .args(["pip", "show", "dora-rs"])
+        .output()
+    {
+        if output.status.success() {
+            if let Some(version) = parse_version_from_pip_show(&output.stdout) {
+                return Some(version);
+            }
+        }
+    }
+
+    // Try with regular pip
+    if let Ok(output) = std::process::Command::new("pip")
+        .args(["show", "dora-rs"])
+        .output()
+    {
+        if output.status.success() {
+            if let Some(version) = parse_version_from_pip_show(&output.stdout) {
+                return Some(version);
+            }
+        }
+    }
+
+    None
+}
+
+fn parse_version_from_pip_show(output: &[u8]) -> Option<String> {
+    let output_str = String::from_utf8_lossy(output);
+    for line in output_str.lines() {
+        if line.starts_with("Version:") {
+            return line.split(':').nth(1).map(|s| s.trim().to_string());
+        }
+    }
+    None
 }
 
 #[derive(Debug, clap::Args)]
