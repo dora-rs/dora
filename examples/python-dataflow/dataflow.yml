@@ -1,27 +1,18 @@
 nodes:
-  - id: camera
-    build: pip install "git+https://github.com/dora-rs/dora-hub.git#egg=opencv-video-capture&subdirectory=node-hub/opencv-video-capture"
-    path: opencv-video-capture
-    inputs:
-      tick: dora/timer/millis/20
+  - id: sender
+    path: sender.py
     outputs:
-      - image
-    env:
-      CAPTURE_PATH: 0
-      IMAGE_WIDTH: 640
-      IMAGE_HEIGHT: 480
+      - message
 
-  - id: object-detection
-    build: pip install "git+https://github.com/dora-rs/dora-hub.git#egg=dora-yolo&subdirectory=node-hub/dora-yolo"
-    path: dora-yolo
+  - id: transformer
+    path: transformer.py
     inputs:
-      image: camera/image
+      message: sender/message
     outputs:
-      - bbox
+      - transformed
 
-  - id: plot
-    build: pip install "git+https://github.com/dora-rs/dora-hub.git#egg=dora-rerun&subdirectory=node-hub/dora-rerun"
-    path: dora-rerun
+  - id: receiver
+    path: receiver.py
     inputs:
-      image: camera/image
-      boxes2d: object-detection/bbox
+      message: sender/message
+      transformed: transformer/transformed
