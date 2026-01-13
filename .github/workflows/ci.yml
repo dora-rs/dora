@@ -426,10 +426,17 @@ jobs:
 
           # Run Python Operator Example
           echo "Running CI Operator Test"
+          dora build examples/python-operator-dataflow/dataflow.yml --uv
           dora start examples/python-operator-dataflow/dataflow.yml --name ci-python-operator --detach --uv
           sleep 10
           echo "Running dora stop"
           dora stop --name ci-python-operator  --grace-duration 30s
+
+          echo "Running Python object detection example with external deps"
+          dora build examples/python-dataflow/dataflow-object-detection.yml --uv
+          dora start examples/python-dataflow/dataflow-object-detection.yml --name ci-python-obj-det --detach --uv
+          sleep 10
+          dora stop --name ci-python-obj-det  --grace-duration 30s
 
           dora destroy
           sleep 5
