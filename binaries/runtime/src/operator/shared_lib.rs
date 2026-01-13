@@ -172,7 +172,9 @@ impl SharedLibraryOperator<'_> {
 
                 let otel = metadata.open_telemetry_context();
                 let cx = deserialize_context(&otel);
-                span.set_parent(cx);
+                span.set_parent(cx)
+                    .context("failed to set parent span")
+                    .unwrap_or_default();
                 let cx = span.context();
                 let string_cx = serialize_context(&cx);
                 metadata.parameters.insert(

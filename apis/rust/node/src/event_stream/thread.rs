@@ -56,7 +56,6 @@ impl EventStreamThreadHandle {
 }
 
 impl Drop for EventStreamThreadHandle {
-    #[tracing::instrument(skip(self), fields(node_id = %self.node_id))]
     fn drop(&mut self) {
         if self.handle.is_empty() {
             tracing::trace!("waiting for event stream thread");

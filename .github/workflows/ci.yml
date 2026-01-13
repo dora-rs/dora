@@ -60,7 +60,18 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           docker system prune --all -f
+          docker builder prune -af 
           Remove-Item "C:\Android" -Force -Recurse
+          Remove-Item "C:\hostedtoolcache\windows\Ruby" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\hostedtoolcache\windows\go" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\Program Files (x86)\Microsoft SDKs\Azure" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\Program Files\Azure Cosmos DB Emulator" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\Program Files\MongoDB" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\mysql*" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\Program Files\PostgreSQL" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\Selenium" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\SeleniumWebDrivers" -Force -Recurse -ErrorAction SilentlyContinue
+
       - uses: Swatinem/rust-cache@v2
         with:
           cache-provider: buildjet

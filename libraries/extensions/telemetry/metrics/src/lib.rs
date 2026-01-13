@@ -39,6 +39,5 @@ pub async fn run_metrics_monitor(meter_id: String) -> Result<()> {
         .build();
     let meter = global::meter_with_scope(scope);
 
-    init_process_observer(meter).await.unwrap();
-    Ok(())
+    init_process_observer(meter).await
 }
