@@ -51,7 +51,7 @@ fn main() -> eyre::Result<()> {
         ],
     )?;
 
-    dora_cli::run("dataflow.yml".to_string(), false)?;
+    dora_cli::run("dataflow.yml".to_string(), false, None)?;
 
     Ok(())
 }
