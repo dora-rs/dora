@@ -12,8 +12,8 @@ fn main() {
     } else {
         // Fallback: read from the dora-message Cargo.toml directly
         let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-        let message_toml_path = std::path::Path::new(&manifest_dir)
-            .join("../../libraries/message/Cargo.toml");
+        let message_toml_path =
+            std::path::Path::new(&manifest_dir).join("../../libraries/message/Cargo.toml");
 
         if let Ok(contents) = std::fs::read_to_string(message_toml_path) {
             for line in contents.lines() {
