@@ -195,6 +195,7 @@ impl Daemon {
         uv: bool,
         log_destination: LogDestination,
         write_events_to: Option<PathBuf>,
+        stop_after: Option<Duration>,
     ) -> eyre::Result<DataflowResult> {
         let working_dir = dataflow_path
             .canonicalize()
@@ -251,6 +252,26 @@ impl Daemon {
 
         let ctrlc_events = ReceiverStream::new(set_up_ctrlc_handler(clock.clone())?);
 
+        // Set up optional timeout for --stop-after
+        let timeout_events = if let Some(duration) = stop_after {
+            let clock = clock.clone();
+            let (tx, rx) = tokio::sync::mpsc::channel(1);
+            tokio::spawn(async move {
+                tokio::time::sleep(duration).await;
+                tracing::info!("stop-after timeout reached ({duration:?}) -> stopping dataflow");
+                let _ = tx
+                    .send(Timestamped {
+                        inner: Event::CtrlC,
+                        timestamp: clock.new_timestamp(),
+                    })
+                    .await;
+            });
+            ReceiverStream::new(rx)
+        } else {
+            // Create an empty stream that never emits events
+            ReceiverStream::new(tokio::sync::mpsc::channel(1).1)
+        };
+
         let exit_when_done = spawn_command
             .nodes
             .values()
@@ -267,7 +288,13 @@ impl Daemon {
                 timestamp,
             }
         });
-        let events = (coordinator_events, ctrlc_events, dynamic_node_events).merge();
+        let events = (
+            coordinator_events,
+            ctrlc_events,
+            timeout_events,
+            dynamic_node_events,
+        )
+            .merge();
         let run_result = Self::run_general(
             Box::pin(events),
             None,

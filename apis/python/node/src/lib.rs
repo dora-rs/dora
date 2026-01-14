@@ -615,11 +615,13 @@ pub fn build(
 ///
 /// :type dataflow_path: str
 /// :type uv: bool, optional
+/// :type stop_after: float, optional
 /// :rtype: None
 #[pyfunction]
-#[pyo3(signature = (dataflow_path, uv=None))]
-pub fn run(dataflow_path: String, uv: Option<bool>) -> eyre::Result<()> {
-    dora_cli::run(dataflow_path, uv.unwrap_or_default())
+#[pyo3(signature = (dataflow_path, uv=None, stop_after=None))]
+pub fn run(dataflow_path: String, uv: Option<bool>, stop_after: Option<f64>) -> eyre::Result<()> {
+    let stop_after_duration = stop_after.map(std::time::Duration::from_secs_f64);
+    dora_cli::run(dataflow_path, uv.unwrap_or_default(), stop_after_duration)
 }
 
 #[pymodule]
