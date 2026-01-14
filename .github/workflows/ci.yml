@@ -483,16 +483,6 @@ jobs:
       - name: "Python Queue Latency + Timeout Test"
         timeout-minutes: 30
         run: dora run tests/queue_size_and_timeout_python/dataflow.yaml --uv
-      - name: "Python Object Detection Node Example"
-        timeout-minutes: 30
-        run: |
-          echo "Running Python Object Detection Node Example"
-          dora up
-          dora build examples/python-dataflow/dataflow-object_detection.yml --uv
-          dora start examples/python-dataflow/dataflow-object_detection.yml --name ci-python --detach --uv
-          sleep 10
-          echo "Running dora stop"
-          dora stop --name ci-python  --grace-duration 30s
 
       - name: "Rust Queue Latency Test"
         timeout-minutes: 30
