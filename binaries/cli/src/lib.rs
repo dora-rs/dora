@@ -25,8 +25,8 @@ pub struct Args {
     command: command::Command,
 }
 
-fn get_version_info() -> &'static str {
-    Box::leak(build_version_string().into_boxed_str())
+fn get_version_info() -> clap::builder::Str {
+    build_version_string().into()
 }
 
 fn build_version_string() -> String {
