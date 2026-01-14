@@ -1,34 +1,28 @@
-use std::sync::LazyLock;
-
 use dora_node_api::{
     self, DoraNode, Event, EventStream, IntoArrow, dora_core::config::DataId, init_tracing,
 };
+use eyre::Context;
+use tracing::{Level, span};
 
 #[cfg(test)]
 mod tests;
-use tokio::runtime::{Builder, Runtime};
-use tracing::{Level, span, warn};
-static RUNTIME: LazyLock<Runtime> = LazyLock::new(|| {
-    Builder::new_multi_thread()
-        .worker_threads(2)
-        .enable_all()
-        .build()
-        .unwrap()
-});
+
 fn main() -> eyre::Result<()> {
     println!("hello");
 
     let (node, events) = DoraNode::init_from_env()?;
-    let id = node.id().clone();
-    let dataflow_id = node.dataflow_id().clone();
-    RUNTIME.spawn(async move {
-        let guard = init_tracing(&id, &dataflow_id).unwrap();
-        loop {
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-        }
-    });
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .build()
+        .context("failed to build tokio runtime")?;
+    let rt_guard = rt.enter();
+    let tracing_guard =
+        init_tracing(&node.id().clone(), node.dataflow_id()).context("failed to init tracing")?;
 
-    run(node, events)
+    let result = run(node, events);
+
+    drop(tracing_guard);
+    drop(rt_guard);
+    result
 }
 
 fn run(mut node: DoraNode, mut events: EventStream) -> eyre::Result<()> {
@@ -48,12 +42,12 @@ fn run(mut node: DoraNode, mut events: EventStream) -> eyre::Result<()> {
             Event::Input { id, metadata, data } => match id.as_str() {
                 "tick" => {
                     let random: u64 = fastrand::u64(..);
-                    warn!("tick {i} with data {data:?}, sending {random:#x}");
+                    tracing::info!("tick {i} with data {data:?}, sending {random:#x}");
                     node.send_output(output.clone(), metadata.parameters, random.into_arrow())
                         .unwrap();
                 }
                 other => {
-                    tracing::warn!(input = other, "Ignoring unexpected input");
+                    tracing::info!(input = other, "Ignoring unexpected input");
                 }
             },
             Event::Stop(_) => {
