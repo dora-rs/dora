@@ -1,9 +1,8 @@
 use clap::Args;
 use colored::Colorize;
 
+use super::config_struct::DoraConfig;
 use crate::command::Executable;
-
-use super::manager::ConfigManager;
 
 /// Set a configuration value
 ///
@@ -30,8 +29,34 @@ pub struct Set {
 
 impl Executable for Set {
     fn execute(self) -> eyre::Result<()> {
-        let manager = ConfigManager::new()?;
-        manager.set(&self.key, &self.value, self.local)?;
+        // Load existing config
+        let mut config = if self.local {
+            // For local, load existing project config or start fresh
+            let project_path = DoraConfig::project_config_path();
+            if project_path.exists() {
+                DoraConfig::load_from_file(&project_path)?
+            } else {
+                DoraConfig::default()
+            }
+        } else {
+            // For global, load existing global config or start fresh
+            let global_path = DoraConfig::global_config_path()?;
+            if global_path.exists() {
+                DoraConfig::load_from_file(&global_path)?
+            } else {
+                DoraConfig::default()
+            }
+        };
+
+        // Set the value (this validates the input)
+        config.set_value(&self.key, &self.value)?;
+
+        // Save to appropriate location
+        if self.local {
+            config.save_project()?;
+        } else {
+            config.save_global()?;
+        }
 
         let location = if self.local {
             "project config (./dora.toml)"
@@ -39,7 +64,12 @@ impl Executable for Set {
             "global config (~/.dora/config.toml)"
         };
 
-        println!("Set {} = \"{}\" in {}", self.key.green(), self.value, location);
+        println!(
+            "Set {} = \"{}\" in {}",
+            self.key.green(),
+            self.value,
+            location
+        );
         Ok(())
     }
 }

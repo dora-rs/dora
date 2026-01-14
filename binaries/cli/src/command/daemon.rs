@@ -26,11 +26,11 @@ pub struct Daemon {
     #[clap(long, default_value_t = DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT)]
     local_listen_port: u16,
     /// Address and port number of the dora coordinator
-    #[clap(long, short, default_value_t = LOCALHOST)]
-    coordinator_addr: IpAddr,
+    #[clap(long, short)]
+    coordinator_addr: Option<IpAddr>,
     /// Port number of the coordinator control server
-    #[clap(long, default_value_t = DORA_COORDINATOR_PORT_DEFAULT)]
-    coordinator_port: u16,
+    #[clap(long)]
+    coordinator_port: Option<u16>,
     #[clap(long, hide = true)]
     run_dataflow: Option<PathBuf>,
     /// Suppresses all log output to stdout.
@@ -58,6 +58,10 @@ impl Executable for Daemon {
                 .wrap_err("failed to set up tracing subscriber")?;
         }
 
+        use crate::common::resolve_coordinator_addr;
+        let (coordinator_addr, coordinator_port) =
+            resolve_coordinator_addr(self.coordinator_addr, self.coordinator_port);
+
         let rt = Builder::new_multi_thread()
             .enable_all()
             .build()
@@ -66,10 +70,10 @@ impl Executable for Daemon {
                 match self.run_dataflow {
                     Some(dataflow_path) => {
                         tracing::info!("Starting dataflow `{}`", dataflow_path.display());
-                        if self.coordinator_addr != LOCALHOST {
+                        if coordinator_addr != LOCALHOST {
                             tracing::info!(
                                 "Not using coordinator addr {} as `run_dataflow` is for local dataflow only. Please use the `start` command for remote coordinator",
-                                self.coordinator_addr
+                                coordinator_addr
                             );
                         }
                         let dataflow_session =
@@ -82,7 +86,7 @@ impl Executable for Daemon {
                         handle_dataflow_result(result, None)
                     }
                     None => {
-                        dora_daemon::Daemon::run(SocketAddr::new(self.coordinator_addr, self.coordinator_port), self.machine_id, self.local_listen_port).await
+                        dora_daemon::Daemon::run(SocketAddr::new(coordinator_addr, coordinator_port), self.machine_id, self.local_listen_port).await
                     }
                 }
             })

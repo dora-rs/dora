@@ -36,11 +36,11 @@ pub struct Start {
     #[clap(long)]
     name: Option<String>,
     /// Address of the dora coordinator
-    #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
-    coordinator_addr: IpAddr,
+    #[clap(long, value_name = "IP")]
+    coordinator_addr: Option<IpAddr>,
     /// Port number of the coordinator control server
-    #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
-    coordinator_port: u16,
+    #[clap(long, value_name = "PORT")]
+    coordinator_port: Option<u16>,
     /// Attach to the dataflow and wait for its completion
     #[clap(long, action)]
     attach: bool,
@@ -58,7 +58,10 @@ pub struct Start {
 impl Executable for Start {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
-        let coordinator_socket = (self.coordinator_addr, self.coordinator_port).into();
+
+        use crate::common::resolve_coordinator_addr;
+        let (addr, port) = resolve_coordinator_addr(self.coordinator_addr, self.coordinator_port);
+        let coordinator_socket = (addr, port).into();
 
         let (dataflow, dataflow_descriptor, mut session, dataflow_id) =
             start_dataflow(self.dataflow, self.name, coordinator_socket, self.uv)?;

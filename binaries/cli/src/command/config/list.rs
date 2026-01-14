@@ -1,8 +1,8 @@
 use clap::Args;
 use colored::Colorize;
 
+use super::config_struct::DoraConfig;
 use crate::command::Executable;
-use super::manager::ConfigManager;
 
 /// List all configuration values
 ///
@@ -16,8 +16,8 @@ pub struct List {}
 
 impl Executable for List {
     fn execute(self) -> eyre::Result<()> {
-        let manager = ConfigManager::new()?;
-        let items = manager.list()?;
+        let config = DoraConfig::load()?;
+        let items = config.list_values();
 
         if items.is_empty() {
             println!("No configuration values set");

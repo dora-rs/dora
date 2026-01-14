@@ -1,8 +1,7 @@
 use clap::Args;
 
+use super::config_struct::DoraConfig;
 use crate::command::Executable;
-
-use super::manager::ConfigManager;
 
 /// Get a configuration value
 ///
@@ -19,8 +18,8 @@ pub struct Get {
 
 impl Executable for Get {
     fn execute(self) -> eyre::Result<()> {
-        let manager = ConfigManager::new()?;
-        let value = manager.get(&self.key)?;
+        let config = DoraConfig::load()?;
+        let value = config.get_value(&self.key)?;
         println!("{}", value);
         Ok(())
     }

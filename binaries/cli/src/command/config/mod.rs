@@ -1,8 +1,10 @@
+mod config_struct;
 mod get;
 mod list;
-mod manager;
 mod set;
 mod unset;
+
+pub use config_struct::DoraConfig;
 
 use clap::Subcommand;
 
@@ -14,7 +16,7 @@ use super::Executable;
 ///   Global: ~/.dora/config.toml
 ///   Project: ./dora.toml (higher priority)
 ///
-/// Common configuration keys:
+/// Supported configuration keys:
 ///   coordinator.addr - Coordinator IP address
 ///   coordinator.port - Coordinator port number
 #[derive(Debug, Subcommand)]

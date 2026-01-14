@@ -19,11 +19,11 @@ use uuid::Uuid;
 /// List running dataflows.
 pub struct ListArgs {
     /// Address of the dora coordinator
-    #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
-    pub coordinator_addr: std::net::IpAddr,
+    #[clap(long, value_name = "IP")]
+    pub coordinator_addr: Option<std::net::IpAddr>,
     /// Port number of the coordinator control server
-    #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
-    pub coordinator_port: u16,
+    #[clap(long, value_name = "PORT")]
+    pub coordinator_port: Option<u16>,
     /// Output format
     #[clap(long, value_name = "FORMAT", default_value_t = OutputFormat::Table)]
     pub format: OutputFormat,
@@ -33,9 +33,12 @@ impl Executable for ListArgs {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
 
-        let mut session =
-            connect_to_coordinator((self.coordinator_addr, self.coordinator_port).into())
-                .map_err(|_| eyre!("Failed to connect to coordinator"))?;
+        // Resolve coordinator address and port from CLI args, config, or defaults
+        use crate::common::resolve_coordinator_addr;
+        let (addr, port) = resolve_coordinator_addr(self.coordinator_addr, self.coordinator_port);
+
+        let mut session = connect_to_coordinator((addr, port).into())
+            .map_err(|_| eyre!("Failed to connect to coordinator"))?;
 
         list(&mut *session, self.format)
     }

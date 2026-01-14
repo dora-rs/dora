@@ -1,9 +1,8 @@
 use clap::Args;
 use colored::Colorize;
 
+use super::config_struct::DoraConfig;
 use crate::command::Executable;
-
-use super::manager::ConfigManager;
 
 /// Remove a configuration value
 ///
@@ -27,8 +26,18 @@ pub struct Unset {
 
 impl Executable for Unset {
     fn execute(self) -> eyre::Result<()> {
-        let manager = ConfigManager::new()?;
-        manager.unset(&self.key, self.local)?;
+        // Load the appropriate config
+        let mut config = DoraConfig::load()?;
+
+        // Unset the value
+        config.unset_value(&self.key)?;
+
+        // Save to appropriate location
+        if self.local {
+            config.save_project()?;
+        } else {
+            config.save_global()?;
+        }
 
         let location = if self.local {
             "project config (./dora.toml)"

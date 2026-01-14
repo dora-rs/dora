@@ -1,6 +1,6 @@
 mod build;
 mod completion;
-mod config;
+pub(crate) mod config;
 mod coordinator;
 mod daemon;
 mod destroy;

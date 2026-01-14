@@ -75,13 +75,14 @@ fn inspect(
 ) -> eyre::Result<()> {
     let mut session = coordinator.connect()?;
     let (dataflow_id, topics) = selector.resolve(session.as_mut())?;
+    let (coordinator_addr, _) = coordinator.resolve();
 
     let rt = Builder::new_multi_thread()
         .enable_all()
         .build()
         .context("tokio runtime failed")?;
     rt.block_on(async move {
-        let zenoh_session = open_zenoh_session(Some(coordinator.coordinator_addr))
+        let zenoh_session = open_zenoh_session(Some(coordinator_addr))
             .await
             .context("failed to open zenoh session")?;
 
