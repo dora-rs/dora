@@ -40,9 +40,16 @@ pub struct Daemon {
 
 impl Executable for Daemon {
     fn execute(self) -> eyre::Result<()> {
+        let rt = Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .context("tokio runtime failed")?;
+
         #[cfg(feature = "tracing")]
         let _guard = {
             use dora_tracing::OtelGuard;
+
+            let _enter = rt.enter();
 
             let name = "dora-daemon";
             let filename = self
@@ -74,11 +81,6 @@ impl Executable for Daemon {
                 .wrap_err("failed to set up tracing subscriber")?;
             guard
         };
-
-        let rt = Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .context("tokio runtime failed")?;
         rt.block_on(async {
                 match self.run_dataflow {
                     Some(dataflow_path) => {
