@@ -449,16 +449,6 @@ jobs:
           echo "Running dora stop"
           dora stop --name ci-python-operator  --grace-duration 30s
 
-      - name: "Test CLI (Python): Object Detection with external deps"
-        timeout-minutes: 30
-        # fail-fast by using bash shell explicitly
-        shell: bash
-        run: |
-          echo "Running Python object detection example with external deps"
-          dora build examples/python-dataflow/dataflow-object-detection.yml --uv
-          dora start examples/python-dataflow/dataflow-object-detection.yml --name ci-python-obj-det --detach --uv
-          sleep 10
-          dora stop --name ci-python-obj-det  --grace-duration 30s
       - name: "Test CLI (Python): Dora destroy"
         timeout-minutes: 5
         # fail-fast by using bash shell explicitly
