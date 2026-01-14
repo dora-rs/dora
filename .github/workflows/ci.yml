@@ -449,6 +449,14 @@ jobs:
           echo "Running dora stop"
           dora stop --name ci-python-operator  --grace-duration 30s
 
+      - name: "Test Python Example: Multiple Arrays"
+        timeout-minutes: 30
+        run: |
+          dora build examples/python-multiple-arrays/dataflow.yml --uv
+          dora start examples/python-multiple-arrays/dataflow.yml --uv --name ci-python-multi-array --detach
+          sleep 30
+          dora stop --name ci-python-multi-array  --grace-duration 30s
+
       - name: "Test CLI (Python): Dora destroy"
         timeout-minutes: 5
         # fail-fast by using bash shell explicitly
@@ -475,9 +483,6 @@ jobs:
       - name: "Python Queue Latency + Timeout Test"
         timeout-minutes: 30
         run: dora run tests/queue_size_and_timeout_python/dataflow.yaml --uv
-      - name: "Test Python Example: Multiple Arrays"
-        timeout-minutes: 30
-        run: dora run examples/python-multiple-arrays/dataflow.yml --uv
       - name: "Python Object Detection Node Example"
         timeout-minutes: 30
         run: |
