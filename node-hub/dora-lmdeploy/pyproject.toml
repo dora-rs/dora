@@ -1,0 +1,19 @@
+[project]
+name = "dora-lmdeploy"
+version = "0.1.0"
+authors = [
+    { name = "Dora-rs Authors", email = "me@dora-rs.ai" }
+]
+description = "Dora node for receiving text and images and performing inference using LMDeploy."
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "dora-rs",
+    "lmdeploy",
+    "pyarrow",
+    "numpy",
+    "Pillow"
+]
+
+[project.scripts]
+dora-lmdeploy = "dora_lmdeploy:main"
