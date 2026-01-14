@@ -1,0 +1,11 @@
+[package]
+name = "error-propagation-producer"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+dora-node-api = { path = "../../../apis/rust/node" }
+eyre = "0.6"
+
