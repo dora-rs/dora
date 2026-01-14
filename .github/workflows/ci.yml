@@ -369,10 +369,12 @@ jobs:
         shell: bash
         run: |
           uv venv --seed -p 3.12
+
+          # Set UV_PROJECT_ENVIRONMENT for all following steps
           if [ "$RUNNER_OS" != "Windows" ]; then
-            source .venv/bin/activate
+            echo "UV_PROJECT_ENVIRONMENT=$PWD/.venv" >> "$GITHUB_ENV"
           else
-            source .venv/Scripts/activate
+            echo "UV_PROJECT_ENVIRONMENT=$PWD/.venv" >> "$GITHUB_ENV"
           fi
 
           uv pip install -e apis/python/node
@@ -383,12 +385,6 @@ jobs:
         # fail-fast by using bash shell explicitly
         shell: bash
         run: |
-          if [ "$RUNNER_OS" != "Windows" ]; then
-            source .venv/bin/activate
-          else
-            source .venv/Scripts/activate
-          fi
-
           # Test Python template Project
           dora new test_python_project --lang python --internal-create-with-path-dependencies
           cd test_python_project
@@ -422,12 +418,6 @@ jobs:
         env:
           RUST_LOG: info
         run: |
-          if [ "$RUNNER_OS" != "Windows" ]; then
-            source .venv/bin/activate
-          else
-            source .venv/Scripts/activate
-          fi
-
           echo "Running Python Node Example"
           dora up
           dora build examples/python-dataflow/dataflow.yml --uv
@@ -440,12 +430,6 @@ jobs:
         # fail-fast by using bash shell explicitly
         shell: bash
         run: |
-          if [ "$RUNNER_OS" != "Windows" ]; then
-            source .venv/bin/activate
-          else
-            source .venv/Scripts/activate
-          fi
-
           echo "Running Python Node Dynamic Example"
           dora build examples/python-dataflow/dataflow_dynamic.yml --uv
           dora start examples/python-dataflow/dataflow_dynamic.yml --name ci-python-dynamic --detach --uv
@@ -458,12 +442,6 @@ jobs:
         # fail-fast by using bash shell explicitly
         shell: bash
         run: |
-          if [ "$RUNNER_OS" != "Windows" ]; then
-            source .venv/bin/activate
-          else
-            source .venv/Scripts/activate
-          fi
-
           echo "Running CI Operator Test"
           dora build examples/python-operator-dataflow/dataflow.yml --uv
           dora start examples/python-operator-dataflow/dataflow.yml --name ci-python-operator --detach --uv
@@ -476,11 +454,6 @@ jobs:
         # fail-fast by using bash shell explicitly
         shell: bash
         run: |
-          if [ "$RUNNER_OS" != "Windows" ]; then
-            source .venv/bin/activate
-          else
-            source .venv/Scripts/activate
-          fi
           echo "Running Python object detection example with external deps"
           dora build examples/python-dataflow/dataflow-object-detection.yml --uv
           dora start examples/python-dataflow/dataflow-object-detection.yml --name ci-python-obj-det --detach --uv
@@ -512,15 +485,12 @@ jobs:
       - name: "Python Queue Latency + Timeout Test"
         timeout-minutes: 30
         run: dora run tests/queue_size_and_timeout_python/dataflow.yaml --uv
+      - name: "Test Python Example: Multiple Arrays"
+        timeout-minutes: 30
+        run: dora run examples/python-multiple-arrays/dataflow.yml --uv
       - name: "Python Object Detection Node Example"
         timeout-minutes: 30
         run: |
-          if [ "$RUNNER_OS" != "Windows" ]; then
-            source .venv/bin/activate
-          else
-            source .venv/Scripts/activate
-          fi
-
           echo "Running Python Object Detection Node Example"
           dora up
           dora build examples/python-dataflow/dataflow-object_detection.yml --uv
