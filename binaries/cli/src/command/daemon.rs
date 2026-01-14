@@ -5,9 +5,6 @@ use dora_core::topics::{
 };
 
 use dora_daemon::LogDestination;
-#[cfg(feature = "tracing")]
-use dora_tracing::TracingBuilder;
-
 use eyre::Context;
 use std::{
     net::{IpAddr, SocketAddr},
@@ -47,8 +44,6 @@ impl Executable for Daemon {
 
         #[cfg(feature = "tracing")]
         let _guard = {
-            use dora_tracing::OtelGuard;
-
             let _enter = rt.enter();
 
             let name = "dora-daemon";
@@ -59,27 +54,19 @@ impl Executable for Daemon {
                 .unwrap_or(name.to_string());
             let quiet = self.quiet;
 
-            let mut builder = TracingBuilder::new(name);
-            let guard: Option<OtelGuard>;
-            if std::env::var("DORA_OTLP_ENDPOINT").is_ok()
-                || std::env::var("DORA_JAEGER_TRACING").is_ok()
-            {
-                builder = builder
-                    .with_otlp_tracing()
-                    .context("failed to set up OTLP tracing")?;
-                guard = builder.guard.take();
+            let stdout_filter = if !quiet {
+                Some(std::env::var("RUST_LOG").unwrap_or("info".to_string()))
             } else {
-                if !quiet {
-                    let env_log = std::env::var("RUST_LOG").unwrap_or("info".to_string());
-                    builder = builder.with_stdout(env_log, false);
-                }
-                guard = None;
-            }
-            builder = builder.with_file(filename, LevelFilter::INFO)?;
-            builder
-                .build()
-                .wrap_err("failed to set up tracing subscriber")?;
-            guard
+                None
+            };
+
+            dora_tracing::init_tracing_subscriber(
+                name,
+                stdout_filter.as_deref(),
+                Some(&filename),
+                LevelFilter::INFO,
+            )
+            .context("failed to initialize tracing")?
         };
         rt.block_on(async {
                 match self.run_dataflow {
