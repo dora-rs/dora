@@ -32,15 +32,15 @@ fn get_version_info() -> clap::builder::Str {
 fn build_version_string() -> String {
     let cli_version = env!("CARGO_PKG_VERSION");
 
-    let mut version_output = format!("dora-cli {}\n", cli_version);
+    let mut version_output = format!("{}\n", cli_version);
 
     // Add dora-message version
-    version_output.push_str(&format!("dora-message {}\n", dora_message::VERSION));
+    version_output.push_str(&format!("dora-message: {}\n", dora_message::VERSION));
 
     // Try to detect Python dora-rs version
     match get_python_dora_version() {
         Some(python_version) => {
-            version_output.push_str(&format!("dora-rs (Python) {}\n", python_version));
+            version_output.push_str(&format!("dora-rs (Python): {}\n", python_version));
 
             // Check for version mismatch
             if python_version != cli_version {
@@ -52,7 +52,7 @@ fn build_version_string() -> String {
             }
         }
         None => {
-            version_output.push_str("dora-rs (Python) not found\n");
+            version_output.push_str("dora-rs (Python): not found\n");
         }
     }
 
