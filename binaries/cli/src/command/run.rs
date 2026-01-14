@@ -36,9 +36,16 @@ pub fn run_func(dataflow: String, uv: bool) -> eyre::Result<()> {
 }
 
 pub fn run(dataflow: String, uv: bool) -> eyre::Result<()> {
+    let rt = Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("tokio runtime failed")?;
+
     #[cfg(feature = "tracing")]
     let _guard = {
         use dora_tracing::OtelGuard;
+
+        let _enter = rt.enter();
 
         let mut builder = TracingBuilder::new("dora-run");
         let guard: Option<OtelGuard>;
@@ -59,11 +66,6 @@ pub fn run(dataflow: String, uv: bool) -> eyre::Result<()> {
             .wrap_err("failed to set up tracing subscriber")?;
         guard
     };
-
-    let rt = Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .context("tokio runtime failed")?;
 
     let dataflow_path = resolve_dataflow(dataflow).context("could not resolve dataflow")?;
     let dataflow_session =
