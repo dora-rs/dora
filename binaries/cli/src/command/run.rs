@@ -12,7 +12,6 @@ use crate::{
     session::DataflowSession,
 };
 use dora_daemon::{Daemon, LogDestination, flume};
-use dora_tracing::TracingBuilder;
 use eyre::Context;
 use tokio::runtime::Builder;
 
@@ -43,28 +42,15 @@ pub fn run(dataflow: String, uv: bool) -> eyre::Result<()> {
 
     #[cfg(feature = "tracing")]
     let _guard = {
-        use dora_tracing::OtelGuard;
-
         let _enter = rt.enter();
-
-        let mut builder = TracingBuilder::new("dora-run");
-        let guard: Option<OtelGuard>;
-        if std::env::var("DORA_OTLP_ENDPOINT").is_ok()
-            || std::env::var("DORA_JAEGER_TRACING").is_ok()
-        {
-            builder = builder
-                .with_otlp_tracing()
-                .context("failed to set up OTLP tracing")?;
-            guard = builder.guard.take();
-        } else {
-            let env_log = std::env::var("RUST_LOG").unwrap_or("info".to_string());
-            builder = builder.with_stdout(env_log, false);
-            guard = None;
-        }
-        builder
-            .build()
-            .wrap_err("failed to set up tracing subscriber")?;
-        guard
+        let env_log = std::env::var("RUST_LOG").unwrap_or("info".to_string());
+        dora_tracing::init_tracing_subscriber(
+            "dora-run",
+            Some(&env_log),
+            None,
+            tracing::metadata::LevelFilter::INFO,
+        )
+        .context("failed to initialize tracing")?
     };
 
     let dataflow_path = resolve_dataflow(dataflow).context("could not resolve dataflow")?;

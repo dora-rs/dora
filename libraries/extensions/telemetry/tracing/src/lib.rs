@@ -210,3 +210,66 @@ impl Drop for OtelGuard {
         self.tracer_provider.shutdown().ok();
     }
 }
+
+/// Initialize tracing with OTLP (if configured) or stdout/file logging.
+///
+/// This function should be called after creating a tokio runtime and calling `runtime.enter()`.
+///
+/// # Parameters
+/// - `name`: Service name for tracing
+/// - `stdout_filter`: Optional RUST_LOG-style filter for stdout logging (e.g., "info", "debug")
+/// - `file_name`: Optional filename for file logging (will be placed in `out/` directory)
+/// - `file_filter`: Level filter for file logging (only used if `file_name` is Some)
+///
+/// # Returns
+/// Returns `Option<OtelGuard>` which must be kept alive for the duration of the program.
+/// When dropped, the guard will flush and shutdown telemetry providers.
+///
+/// # Example
+/// ```no_run
+/// use dora_tracing::init_tracing_subscriber;
+/// use tracing::level_filters::LevelFilter;
+/// use tokio::runtime::Builder;
+///
+/// let rt = Builder::new_multi_thread().enable_all().build().unwrap();
+/// let _enter = rt.enter();
+/// let _guard = init_tracing_subscriber(
+///     "my-service",
+///     Some("info"),
+///     Some("my-service"),
+///     LevelFilter::INFO,
+/// ).unwrap();
+/// ```
+pub fn init_tracing_subscriber(
+    name: &str,
+    stdout_filter: Option<&str>,
+    file_name: Option<&str>,
+    file_filter: LevelFilter,
+) -> eyre::Result<Option<OtelGuard>> {
+    let mut builder = TracingBuilder::new(name);
+    let guard: Option<OtelGuard>;
+
+    if std::env::var("DORA_OTLP_ENDPOINT").is_ok()
+        || std::env::var("DORA_JAEGER_TRACING").is_ok()
+    {
+        builder = builder
+            .with_otlp_tracing()
+            .wrap_err("failed to set up OTLP tracing")?;
+        guard = builder.guard.take();
+    } else {
+        if let Some(filter) = stdout_filter {
+            builder = builder.with_stdout(filter, false);
+        }
+        guard = None;
+    }
+
+    if let Some(filename) = file_name {
+        builder = builder.with_file(filename, file_filter)?;
+    }
+
+    builder
+        .build()
+        .wrap_err("failed to set up tracing subscriber")?;
+
+    Ok(guard)
+}
