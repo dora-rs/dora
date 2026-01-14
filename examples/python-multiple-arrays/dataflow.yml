@@ -1,0 +1,12 @@
+nodes:
+  - id: sender
+    path: sender.py
+    outputs:
+      - multi_array_msg
+    inputs:
+      tick: dora/timer/millis/1000
+
+  - id: receiver
+    path: receiver.py
+    inputs:
+      multi_array_msg: sender/multi_array_msg
