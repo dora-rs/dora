@@ -1,5 +1,6 @@
 use eyre::{Context, ContextCompat, Result, bail};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
 use std::net::IpAddr;
@@ -7,15 +8,19 @@ use std::path::PathBuf;
 
 /// Global configuration for the Dora CLI
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub struct DoraConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub coordinator: Option<CoordinatorConfig>,
+
+    /// Unknown fields
+    #[serde(flatten)]
+    pub _unknown: HashMap<String, Value>,
 }
 
 /// Coordinator configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub struct CoordinatorConfig {
     /// IP address of the coordinator
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -24,6 +29,10 @@ pub struct CoordinatorConfig {
     /// Port number of the coordinator control server
     #[serde(skip_serializing_if = "Option::is_none")]
     pub port: Option<u16>,
+
+    /// Unknown fields
+    #[serde(flatten)]
+    pub _unknown: HashMap<String, Value>,
 }
 
 impl Default for CoordinatorConfig {
@@ -31,6 +40,7 @@ impl Default for CoordinatorConfig {
         Self {
             addr: None,
             port: None,
+            _unknown: HashMap::new(),
         }
     }
 }
@@ -74,8 +84,12 @@ impl DoraConfig {
         let content = fs::read_to_string(path)
             .wrap_err_with(|| format!("Failed to read config file: {}", path.display()))?;
 
-        toml::from_str(&content)
-            .wrap_err_with(|| format!("Failed to parse config file: {}", path.display()))
+        let config: Self = toml::from_str(&content)
+            .wrap_err_with(|| format!("Failed to parse config file: {}", path.display()))?;
+
+        config.check_unknown_fields();
+
+        Ok(config)
     }
 
     /// Get the global config file path (~/.dora/config.toml)
@@ -99,7 +113,9 @@ impl DoraConfig {
             if other_coordinator.port.is_some() {
                 coordinator.port = other_coordinator.port;
             }
+            coordinator._unknown.extend(other_coordinator._unknown);
         }
+        self._unknown.extend(other._unknown);
         self
     }
 
@@ -185,6 +201,17 @@ impl DoraConfig {
 
         items.sort_by(|a, b| a.0.cmp(&b.0));
         items
+    }
+
+    pub fn check_unknown_fields(&self) {
+        for k in self._unknown.keys() {
+            eprintln!("Warning: Unknown configuration key: {}", k);
+        }
+        if let Some(coordinator) = &self.coordinator {
+            for k in coordinator._unknown.keys() {
+                eprintln!("Warning: Unknown configuration key: coordinator.{}", k);
+            }
+        }
     }
 
     /// Save configuration to a file
@@ -287,15 +314,22 @@ mod tests {
     }
 
     #[test]
-    fn test_unknown_fields_rejected() {
+    fn test_unknown_fields_warns() -> Result<()> {
         let invalid_toml = r#"
 [coordinator]
 addr = "127.0.0.1"
 typo_port = 8080
 "#;
 
-        let result: Result<DoraConfig, _> = toml::from_str(invalid_toml);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("unknown field"));
+        let config: DoraConfig = toml::from_str(invalid_toml)?;
+        assert_eq!(config.get_value("coordinator.addr")?, "127.0.0.1");
+
+        if let Some(coord) = config.coordinator {
+            assert!(coord._unknown.contains_key("typo_port"));
+        } else {
+            panic!("coordinator config missing");
+        }
+
+        Ok(())
     }
 }

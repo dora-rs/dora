@@ -76,7 +76,7 @@ git2 = { workspace = true }
 zenoh = { workspace = true }
 arrow-json.workspace = true
 chrono = "0.4.42"
-config = { version = "0.14", default-features = false, features = ["toml"] }
+
 dirs = "5.0"
 toml = "0.8"
 

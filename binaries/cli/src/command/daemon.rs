@@ -59,8 +59,11 @@ impl Executable for Daemon {
         }
 
         use crate::common::resolve_coordinator_addr;
-        let (coordinator_addr, coordinator_port) =
-            resolve_coordinator_addr(self.coordinator_addr, self.coordinator_port);
+        let (coordinator_addr, coordinator_port) = resolve_coordinator_addr(
+            self.coordinator_addr,
+            self.coordinator_port,
+            DORA_COORDINATOR_PORT_DEFAULT,
+        );
 
         let rt = Builder::new_multi_thread()
             .enable_all()

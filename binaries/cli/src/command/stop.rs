@@ -50,7 +50,11 @@ impl Executable for Stop {
         default_tracing()?;
 
         use crate::common::resolve_coordinator_addr;
-        let (addr, port) = resolve_coordinator_addr(self.coordinator_addr, self.coordinator_port);
+        let (addr, port) = resolve_coordinator_addr(
+            self.coordinator_addr,
+            self.coordinator_port,
+            DORA_COORDINATOR_PORT_CONTROL_DEFAULT,
+        );
 
         let mut session = connect_to_coordinator((addr, port).into())
             .wrap_err("could not connect to dora coordinator")?;

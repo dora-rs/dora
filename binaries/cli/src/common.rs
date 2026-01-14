@@ -135,6 +135,7 @@ impl CoordinatorOptions {
 pub(crate) fn resolve_coordinator_addr(
     cli_addr: Option<IpAddr>,
     cli_port: Option<u16>,
+    default_port: u16,
 ) -> (IpAddr, u16) {
     use crate::command::config::DoraConfig;
 
@@ -157,7 +158,7 @@ pub(crate) fn resolve_coordinator_addr(
                 .and_then(|c| c.coordinator.as_ref())
                 .and_then(|c| c.port)
         })
-        .unwrap_or(DORA_COORDINATOR_PORT_CONTROL_DEFAULT);
+        .unwrap_or(default_port);
 
     (addr, port)
 }

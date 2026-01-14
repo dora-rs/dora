@@ -56,7 +56,11 @@ impl Executable for Top {
         default_tracing()?;
 
         use crate::common::resolve_coordinator_addr;
-        let (addr, port) = resolve_coordinator_addr(self.coordinator_addr, self.coordinator_port);
+        let (addr, port) = resolve_coordinator_addr(
+            self.coordinator_addr,
+            self.coordinator_port,
+            DORA_COORDINATOR_PORT_CONTROL_DEFAULT,
+        );
 
         // Setup terminal
         enable_raw_mode()?;
