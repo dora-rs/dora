@@ -12,7 +12,7 @@ fn main() -> eyre::Result<()> {
     build("dataflow.yml".to_string(), None, None, true, true)?;
 
     let dataflow_task = std::thread::spawn(|| {
-        dora_run("dataflow.yml".to_string(), true).unwrap();
+        dora_run("dataflow.yml".to_string(), true, None).unwrap();
     });
 
     // let mut add_service_task = run_ros_node("examples_rclcpp_minimal_service", "service_main")?;

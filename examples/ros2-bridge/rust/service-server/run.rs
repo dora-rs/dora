@@ -14,7 +14,7 @@ fn main() -> eyre::Result<()> {
 
     let (finish_tx, finish_rx) = mpsc::channel();
     let dataflow_task = std::thread::spawn(move || {
-        let dataflow_result = run("dataflow.yml".to_string(), false);
+        let dataflow_result = run("dataflow.yml".to_string(), false, None);
         finish_tx.send(())?;
         dataflow_result
     });

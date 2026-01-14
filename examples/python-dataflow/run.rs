@@ -9,7 +9,7 @@ fn main() -> eyre::Result<()> {
 
     build("dataflow.yml".to_string(), None, None, true, true)?;
 
-    dora_run("dataflow.yml".to_string(), true)?;
+    dora_run("dataflow.yml".to_string(), true, None)?;
 
     Ok(())
 }
