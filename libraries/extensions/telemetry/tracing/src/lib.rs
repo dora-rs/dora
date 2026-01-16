@@ -229,10 +229,9 @@ impl Drop for OtelGuard {
 /// ```no_run
 /// use dora_tracing::init_tracing_subscriber;
 /// use tracing::level_filters::LevelFilter;
-/// use tokio::runtime::Builder;
 ///
-/// let rt = Builder::new_multi_thread().enable_all().build().unwrap();
-/// let _enter = rt.enter();
+/// // Note: This function requires a tokio runtime context to be active
+/// // when using OTLP tracing. Use runtime.enter() before calling.
 /// let _guard = init_tracing_subscriber(
 ///     "my-service",
 ///     Some("info"),
@@ -249,9 +248,7 @@ pub fn init_tracing_subscriber(
     let mut builder = TracingBuilder::new(name);
     let guard: Option<OtelGuard>;
 
-    if std::env::var("DORA_OTLP_ENDPOINT").is_ok()
-        || std::env::var("DORA_JAEGER_TRACING").is_ok()
-    {
+    if std::env::var("DORA_OTLP_ENDPOINT").is_ok() || std::env::var("DORA_JAEGER_TRACING").is_ok() {
         builder = builder
             .with_otlp_tracing()
             .wrap_err("failed to set up OTLP tracing")?;
