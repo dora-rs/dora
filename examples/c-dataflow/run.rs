@@ -18,7 +18,7 @@ fn main() -> eyre::Result<()> {
     build_package("dora-operator-api-c")?;
     build_c_operator(root)?;
 
-    dora_cli::run("dataflow.yml".to_string(), false)?;
+    dora_cli::run("dataflow.yml".to_string(), false, None)?;
 
     Ok(())
 }

@@ -99,7 +99,7 @@ fn main() -> eyre::Result<()> {
 
     build_package("dora-runtime")?;
 
-    dora_cli::run("dataflow.yml".to_string(), false)?;
+    dora_cli::run("dataflow.yml".to_string(), false, None)?;
 
     Ok(())
 }

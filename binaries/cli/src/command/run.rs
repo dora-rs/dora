@@ -13,7 +13,9 @@ use crate::{
 };
 use dora_daemon::{Daemon, LogDestination, flume};
 use dora_tracing::TracingBuilder;
+use duration_str::parse as parse_duration_str;
 use eyre::Context;
+use std::time::Duration;
 use tokio::runtime::Builder;
 
 #[derive(Debug, clap::Args)]
@@ -28,14 +30,26 @@ pub struct Run {
     // Use UV to run nodes.
     #[clap(long, action)]
     uv: bool,
+    /// Automatically stop the dataflow after the given duration
+    ///
+    /// The command will send a stop message after the specified time has elapsed,
+    /// similar to pressing Ctrl-C. This gracefully stops all nodes in the dataflow.
+    ///
+    /// Examples:
+    ///   --stop-after 30      # 30 seconds
+    ///   --stop-after 30s     # 30 seconds
+    ///   --stop-after 5m      # 5 minutes
+    #[clap(long, value_name = "DURATION", verbatim_doc_comment)]
+    #[arg(value_parser = parse_duration_str)]
+    stop_after: Option<Duration>,
 }
 
 #[deprecated(note = "use `run` instead")]
 pub fn run_func(dataflow: String, uv: bool) -> eyre::Result<()> {
-    run(dataflow, uv)
+    run(dataflow, uv, None)
 }
 
-pub fn run(dataflow: String, uv: bool) -> eyre::Result<()> {
+pub fn run(dataflow: String, uv: bool, stop_after: Option<Duration>) -> eyre::Result<()> {
     #[cfg(feature = "tracing")]
     {
         let log_level = std::env::var("RUST_LOG").ok().unwrap_or("info".to_string());
@@ -68,12 +82,13 @@ pub fn run(dataflow: String, uv: bool) -> eyre::Result<()> {
         uv,
         LogDestination::Channel { sender: log_tx },
         write_events_to(),
+        stop_after,
     ))?;
     handle_dataflow_result(result, None)
 }
 
 impl Executable for Run {
     fn execute(self) -> eyre::Result<()> {
-        run(self.dataflow, self.uv)
+        run(self.dataflow, self.uv, self.stop_after)
     }
 }

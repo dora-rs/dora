@@ -12,7 +12,7 @@ fn main() -> eyre::Result<()> {
     build("dataflow.yml".to_string(), None, None, false, true)?;
 
     let dataflow_task = std::thread::spawn(|| {
-        run("dataflow.yml".to_string(), false).unwrap();
+        run("dataflow.yml".to_string(), false, None).unwrap();
     });
 
     let mut pub_task = run_ros_node("examples_rclcpp_minimal_publisher", "publisher_lambda")?;
