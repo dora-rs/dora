@@ -31,7 +31,7 @@ For a manual build, follow these steps:
       ```
       -ladvapi32 -luserenv -lkernel32 -lws2_32 -lbcrypt -lncrypt -lschannel -lntdll -liphlpapi
       -lcfgmgr32 -lcredui -lcrypt32 -lcryptnet -lfwpuclnt -lgdi32 -lmsimg32 -lmswsock -lole32
-      -lopengl32 -lsecur32 -lshell32 -lsynchronization -luser32 -lwinspool
+      -loleaut32 -lopengl32 -lsecur32 -lshell32 -lsynchronization -luser32 -lwinspool
       -Wl,-nodefaultlib:libcmt -D_DLL -lmsvcrt
       ```
       Also: On Windows, the output file should have an `.exe` extension: `--output build/c_node.exe`
