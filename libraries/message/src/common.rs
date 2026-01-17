@@ -4,7 +4,7 @@ use std::{borrow::Cow, collections::BTreeMap};
 use aligned_vec::{AVec, ConstAlign};
 use chrono::{DateTime, Utc};
 use eyre::Context as _;
-use serde::{Deserialize, Deserializer};
+use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::{BuildId, DataflowId, daemon_to_daemon::InterDaemonEvent, id::NodeId};

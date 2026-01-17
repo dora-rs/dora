@@ -63,12 +63,24 @@ impl TracingBuilder {
     /// it uses [std::io::stdout] which is synchronous
     /// and might block the logging thread.
     pub fn with_stdout(mut self, filter: impl AsRef<str>, json: bool) -> Self {
-        let parsed = EnvFilter::builder()
+        let mut parsed = EnvFilter::builder()
             .parse_lossy(filter)
             .add_directive("hyper=off".parse().unwrap())
             .add_directive("tonic=off".parse().unwrap())
+            .add_directive("tokio=off".parse().unwrap())
+            .add_directive("process_wrap=off".parse().unwrap())
             .add_directive("h2=off".parse().unwrap())
             .add_directive("reqwest=off".parse().unwrap());
+        let env_log = std::env::var("RUST_LOG").unwrap_or_default();
+        if !env_log.contains("dora_daemon") {
+            parsed = parsed.add_directive("dora_daemon=info".parse().unwrap());
+        }
+        if !env_log.contains("dora_core") {
+            parsed = parsed.add_directive("dora_core=warn".parse().unwrap());
+        }
+        if !env_log.contains("zenoh") {
+            parsed = parsed.add_directive("zenoh=warn".parse().unwrap());
+        }
         let env_filter = EnvFilter::from_default_env().or(parsed);
         let layer = tracing_subscriber::fmt::layer()
             .compact()
@@ -135,11 +147,17 @@ impl TracingBuilder {
 
         self.guard = Some(guard);
         self.layers.push(MetricsLayer::new(meter_provider).boxed());
-        let filter_otel = EnvFilter::new("trace")
+        let mut filter_otel = EnvFilter::new("trace")
             .add_directive("hyper=off".parse().unwrap())
             .add_directive("tonic=off".parse().unwrap())
+            .add_directive("tokio=off".parse().unwrap())
+            .add_directive("process_wrap=off".parse().unwrap())
             .add_directive("h2=off".parse().unwrap())
             .add_directive("reqwest=off".parse().unwrap());
+        let env_log = std::env::var("RUST_LOG").unwrap_or_default();
+        if !env_log.contains("dora_daemon") {
+            filter_otel = filter_otel.add_directive("dora_daemon=debug".parse().unwrap());
+        }
         self.layers.push(
             OpenTelemetryLayer::new(tracer)
                 .with_filter(filter_otel)
@@ -191,4 +209,64 @@ impl Drop for OtelGuard {
         self.tracer_provider.force_flush().ok();
         self.tracer_provider.shutdown().ok();
     }
+}
+
+/// Initialize tracing with OTLP (if configured) or stdout/file logging.
+///
+/// This function should be called after creating a tokio runtime and calling `runtime.enter()`.
+///
+/// # Parameters
+/// - `name`: Service name for tracing
+/// - `stdout_filter`: Optional RUST_LOG-style filter for stdout logging (e.g., "info", "debug")
+/// - `file_name`: Optional filename for file logging (will be placed in `out/` directory)
+/// - `file_filter`: Level filter for file logging (only used if `file_name` is Some)
+///
+/// # Returns
+/// Returns `Option<OtelGuard>` which must be kept alive for the duration of the program.
+/// When dropped, the guard will flush and shutdown telemetry providers.
+///
+/// # Example
+/// ```no_run
+/// use dora_tracing::init_tracing_subscriber;
+/// use tracing::level_filters::LevelFilter;
+///
+/// // Note: This function requires a tokio runtime context to be active
+/// // when using OTLP tracing. Use runtime.enter() before calling.
+/// let _guard = init_tracing_subscriber(
+///     "my-service",
+///     Some("info"),
+///     Some("my-service"),
+///     LevelFilter::INFO,
+/// ).unwrap();
+/// ```
+pub fn init_tracing_subscriber(
+    name: &str,
+    stdout_filter: Option<&str>,
+    file_name: Option<&str>,
+    file_filter: LevelFilter,
+) -> eyre::Result<Option<OtelGuard>> {
+    let mut builder = TracingBuilder::new(name);
+    let guard: Option<OtelGuard>;
+
+    if std::env::var("DORA_OTLP_ENDPOINT").is_ok() || std::env::var("DORA_JAEGER_TRACING").is_ok() {
+        builder = builder
+            .with_otlp_tracing()
+            .wrap_err("failed to set up OTLP tracing")?;
+        guard = builder.guard.take();
+    } else {
+        if let Some(filter) = stdout_filter {
+            builder = builder.with_stdout(filter, false);
+        }
+        guard = None;
+    }
+
+    if let Some(filename) = file_name {
+        builder = builder.with_file(filename, file_filter)?;
+    }
+
+    builder
+        .build()
+        .wrap_err("failed to set up tracing subscriber")?;
+
+    Ok(guard)
 }
