@@ -152,7 +152,7 @@ fn info(
     let stats_clone = stats.clone();
     let dataflow_id_clone = dataflow_id;
     let topic_clone = topic.clone();
-    let coordinator_addr = coordinator.coordinator_addr;
+    let (coordinator_addr, _) = coordinator.resolve();
 
     rt.block_on(async move {
         let zenoh_session = open_zenoh_session(Some(coordinator_addr))

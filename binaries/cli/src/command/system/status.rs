@@ -126,16 +126,23 @@ pub struct Status {
     #[clap(long, value_name = "PATH", value_hint = clap::ValueHint::FilePath)]
     dataflow: Option<PathBuf>,
     /// Address of the dora coordinator
-    #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
-    coordinator_addr: IpAddr,
+    #[clap(long, value_name = "IP")]
+    coordinator_addr: Option<IpAddr>,
     /// Port number of the coordinator control server
-    #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
-    coordinator_port: u16,
+    #[clap(long, value_name = "PORT")]
+    coordinator_port: Option<u16>,
 }
 
 impl Executable for Status {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
+
+        use crate::common::resolve_coordinator_addr;
+        let (addr, port) = resolve_coordinator_addr(
+            self.coordinator_addr,
+            self.coordinator_port,
+            DORA_COORDINATOR_PORT_CONTROL_DEFAULT,
+        );
 
         match self.dataflow {
             Some(dataflow) => {
@@ -146,9 +153,9 @@ impl Executable for Status {
                     .ok_or_else(|| eyre::eyre!("dataflow path has no parent dir"))?
                     .to_owned();
                 Descriptor::blocking_read(&dataflow)?.check(&working_dir)?;
-                check_environment((self.coordinator_addr, self.coordinator_port).into())?
+                check_environment((addr, port).into())?
             }
-            None => check_environment((self.coordinator_addr, self.coordinator_port).into())?,
+            None => check_environment((addr, port).into())?,
         }
 
         Ok(())

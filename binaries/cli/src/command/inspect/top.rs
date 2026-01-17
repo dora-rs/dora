@@ -41,11 +41,11 @@ use super::super::{Executable, default_tracing};
 #[derive(Debug, Args)]
 pub struct Top {
     /// Address of the dora coordinator
-    #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
-    pub coordinator_addr: std::net::IpAddr,
+    #[clap(long, value_name = "IP")]
+    pub coordinator_addr: Option<std::net::IpAddr>,
     /// Port number of the coordinator control server
-    #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
-    pub coordinator_port: u16,
+    #[clap(long, value_name = "PORT")]
+    pub coordinator_port: Option<u16>,
     /// Refresh interval in seconds
     #[clap(long, value_name = "SECONDS", default_value_t = 2)]
     pub refresh_interval: u64,
@@ -54,6 +54,13 @@ pub struct Top {
 impl Executable for Top {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
+
+        use crate::common::resolve_coordinator_addr;
+        let (addr, port) = resolve_coordinator_addr(
+            self.coordinator_addr,
+            self.coordinator_port,
+            DORA_COORDINATOR_PORT_CONTROL_DEFAULT,
+        );
 
         // Setup terminal
         enable_raw_mode()?;
@@ -64,12 +71,7 @@ impl Executable for Top {
 
         // Create app and run it
         let refresh_duration = Duration::from_secs(self.refresh_interval);
-        let res = run_app(
-            &mut terminal,
-            self.coordinator_addr,
-            self.coordinator_port,
-            refresh_duration,
-        );
+        let res = run_app(&mut terminal, addr, port, refresh_duration);
 
         // Restore terminal
         disable_raw_mode()?;
