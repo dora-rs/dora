@@ -190,7 +190,7 @@ class Ros2Context:
     context = Ros2Context()
     ```"""
 
-    def __init__(self, ros_paths: typing.List[str] = None) -> None:
+    def __init__(self, ros_paths: list[str] = None) -> None:
         """ROS2 Context holding all messages definition for receiving and sending messages to ROS2.
 
         By default, Ros2Context will use env `AMENT_PREFIX_PATH` to search for message definition.
