@@ -1,60 +1,60 @@
 use crate::{
-    Event,
-    tcp_utils::{tcp_receive, tcp_send},
+    Coordinator, handler::CliRequestHandler, log_subscriber::LogSubscriber, send_log_message,
 };
-use dora_message::{
-    BuildId, cli_to_coordinator::CliToCoordinatorRequest, coordinator_to_cli::ControlRequestReply,
+use communication_layer_request_reply::{
+    AsyncTransport, encoding::JsonEncoding, transport::FramedTransport,
+};
+use dora_message::cli_to_coordinator::{
+    CliToCoordinator, CliToCoordinatorRequest, CliToCoordinatorResponse,
 };
 use eyre::{Context, eyre};
 use futures::{
-    FutureExt, Stream, StreamExt,
+    FutureExt,
     future::{self, Either},
-    stream::FuturesUnordered,
 };
 use futures_concurrency::future::Race;
-use std::{io::ErrorKind, net::SocketAddr};
+use std::{
+    io::ErrorKind,
+    net::SocketAddr,
+    sync::{Arc, Weak},
+};
 use tokio::{
     net::{TcpListener, TcpStream},
-    sync::{mpsc, oneshot},
-    task::JoinHandle,
+    sync::{RwLock, Semaphore},
 };
-use tokio_stream::wrappers::ReceiverStream;
-use uuid::Uuid;
+use tokio_util::sync::CancellationToken;
 
-pub(crate) async fn control_events(
-    control_listen_addr: SocketAddr,
-    tasks: &FuturesUnordered<JoinHandle<()>>,
-) -> eyre::Result<impl Stream<Item = Event> + use<>> {
-    let (tx, rx) = mpsc::channel(10);
-
-    let (finish_tx, mut finish_rx) = mpsc::channel(1);
-    tasks.push(tokio::spawn(listen(control_listen_addr, tx, finish_tx)));
-    tasks.push(tokio::spawn(async move {
-        while let Some(()) = finish_rx.recv().await {}
-    }));
-
-    Ok(ReceiverStream::new(rx).map(Event::Control))
+struct ListenState {
+    coordinator: Weak<RwLock<Coordinator>>,
+    semaphore: Semaphore,
+    cancel_token: CancellationToken,
 }
 
-async fn listen(
-    control_listen_addr: SocketAddr,
-    tx: mpsc::Sender<ControlEvent>,
-    _finish_tx: mpsc::Sender<()>,
+pub(crate) async fn listen(
+    coordinator: Weak<RwLock<Coordinator>>,
+    bind_control: SocketAddr,
+    cancel_token: CancellationToken,
 ) {
-    let result = TcpListener::bind(control_listen_addr)
+    let result = TcpListener::bind(bind_control)
         .await
         .wrap_err("failed to listen for control messages");
     let incoming = match result {
         Ok(incoming) => incoming,
         Err(err) => {
-            let _ = tx.send(err.into()).await;
+            tracing::error!("{err:?}");
             return;
         }
     };
 
+    let state = Arc::new(ListenState {
+        coordinator,
+        semaphore: Semaphore::new(10),
+        cancel_token,
+    });
+
     loop {
         let new_connection = incoming.accept().map(Either::Left);
-        let coordinator_stop = tx.closed().map(Either::Right);
+        let coordinator_stop = state.cancel_token.cancelled().map(Either::Right);
         let connection = match (new_connection, coordinator_stop).race().await {
             future::Either::Left(connection) => connection,
             future::Either::Right(()) => {
@@ -64,31 +64,30 @@ async fn listen(
         };
         match connection.wrap_err("failed to connect") {
             Ok((connection, _)) => {
-                let tx = tx.clone();
-                tokio::spawn(handle_requests(connection, tx, _finish_tx.clone()));
+                tokio::spawn(handle_requests(state.clone(), connection));
             }
             Err(err) => {
-                if tx.blocking_send(err.into()).is_err() {
-                    break;
-                }
+                tracing::error!("{err:?}");
             }
         }
     }
 }
 
-async fn handle_requests(
-    mut connection: TcpStream,
-    tx: mpsc::Sender<ControlEvent>,
-    _finish_tx: mpsc::Sender<()>,
-) {
+async fn handle_requests(state: Arc<ListenState>, connection: TcpStream) {
     let peer_addr = connection.peer_addr().ok();
+    let mut transport = FramedTransport::new(connection)
+        .with_encoding::<_, CliToCoordinatorResponse, CliToCoordinatorRequest>(JsonEncoding);
     loop {
-        let next_request = tcp_receive(&mut connection).map(Either::Left);
-        let coordinator_stopped = tx.closed().map(Either::Right);
-        let raw = match (next_request, coordinator_stopped).race().await {
+        let next_request = transport.receive().map(Either::Left);
+        let coordinator_stopped = state.cancel_token.cancelled().map(Either::Right);
+        let request = match (next_request, coordinator_stopped).race().await {
             Either::Right(()) => break,
             Either::Left(request) => match request {
-                Ok(message) => message,
+                Ok(Some(request)) => request,
+                Ok(None) => {
+                    tracing::trace!("Control connection closed by peer");
+                    break;
+                }
                 Err(err) => match err.kind() {
                     ErrorKind::UnexpectedEof => {
                         tracing::trace!("Control connection closed");
@@ -103,53 +102,73 @@ async fn handle_requests(
             },
         };
 
-        let request =
-            serde_json::from_slice(&raw).wrap_err("failed to deserialize incoming message");
+        if let CliToCoordinatorRequest::LogSubscribe { .. }
+        | CliToCoordinatorRequest::BuildLogSubscribe { .. } = &request
+        {
+            let _guard = state.semaphore.acquire().await;
+            let Some(coordinator) = state.coordinator.upgrade() else {
+                break;
+            };
+            let mut this = coordinator.write().await;
 
-        if let Ok(CliToCoordinatorRequest::LogSubscribe { dataflow_id, level }) = request {
-            let _ = tx
-                .send(ControlEvent::LogSubscribe {
-                    dataflow_id,
-                    level,
-                    connection,
-                })
-                .await;
+            let (log_subscribers, buffered_log_messages, level) = match request {
+                CliToCoordinatorRequest::LogSubscribe { dataflow_id, level } => {
+                    if let Some(dataflow) = this.running_dataflows.get_mut(&dataflow_id) {
+                        (
+                            &mut dataflow.log_subscribers,
+                            &mut dataflow.buffered_log_messages,
+                            level,
+                        )
+                    } else {
+                        break;
+                    }
+                }
+                CliToCoordinatorRequest::BuildLogSubscribe { build_id, level } => {
+                    if let Some(build) = this.running_builds.get_mut(&build_id) {
+                        (
+                            &mut build.log_subscribers,
+                            &mut build.buffered_log_messages,
+                            level,
+                        )
+                    } else {
+                        break;
+                    }
+                }
+                _ => unreachable!(),
+            };
+
+            log_subscribers.push(LogSubscriber::new(
+                level,
+                transport.into_inner().into_inner(),
+            ));
+            let buffered = std::mem::take(buffered_log_messages);
+            for message in buffered {
+                send_log_message(log_subscribers, &message).await;
+            }
+
             break;
         }
 
-        if let Ok(CliToCoordinatorRequest::BuildLogSubscribe { build_id, level }) = request {
-            let _ = tx
-                .send(ControlEvent::BuildLogSubscribe {
-                    build_id,
-                    level,
-                    connection,
-                })
-                .await;
-            break;
-        }
-
-        let mut result = match request {
-            Ok(request) => handle_request(request, &tx).await,
-            Err(err) => Err(err),
+        let mut result: eyre::Result<CliToCoordinatorResponse> = {
+            let _guard = state.semaphore.acquire().await;
+            if let Some(coordinator) = state.coordinator.upgrade() {
+                CliRequestHandler(coordinator).handle(request).await
+            } else {
+                Err(eyre!("coordinator has been stopped"))
+            }
         };
 
-        if let Ok(ControlRequestReply::CliAndDefaultDaemonIps { cli, .. }) = &mut result {
-            if cli.is_none() {
+        if let Ok(CliToCoordinatorResponse::CliAndDefaultDaemonOnSameMachine(result)) = &mut result
+        {
+            if result.cli.is_none() {
                 // fill cli IP address in reply
-                *cli = peer_addr.map(|s| s.ip());
+                result.cli = peer_addr.map(|s| s.ip());
             }
         }
 
-        let reply = result.unwrap_or_else(|err| ControlRequestReply::Error(format!("{err:?}")));
-        let serialized: Vec<u8> =
-            match serde_json::to_vec(&reply).wrap_err("failed to serialize ControlRequestReply") {
-                Ok(s) => s,
-                Err(err) => {
-                    tracing::error!("{err:?}");
-                    break;
-                }
-            };
-        match tcp_send(&mut connection, &serialized).await {
+        let reply =
+            result.unwrap_or_else(|err| CliToCoordinatorResponse::Error(format!("{err:?}")));
+        match transport.send(&reply).await {
             Ok(()) => {}
             Err(err) => match err.kind() {
                 ErrorKind::UnexpectedEof => {
@@ -163,53 +182,5 @@ async fn handle_requests(
                 }
             },
         }
-
-        if matches!(reply, ControlRequestReply::CoordinatorStopped) {
-            break;
-        }
-    }
-}
-
-async fn handle_request(
-    request: CliToCoordinatorRequest,
-    tx: &mpsc::Sender<ControlEvent>,
-) -> eyre::Result<ControlRequestReply> {
-    let (reply_tx, reply_rx) = oneshot::channel();
-    let event = ControlEvent::IncomingRequest {
-        request: request.clone(),
-        reply_sender: reply_tx,
-    };
-
-    if tx.send(event).await.is_err() {
-        return Ok(ControlRequestReply::CoordinatorStopped);
-    }
-
-    reply_rx
-        .await
-        .wrap_err_with(|| format!("no coordinator reply to {request:?}"))?
-}
-
-#[derive(Debug)]
-pub enum ControlEvent {
-    IncomingRequest {
-        request: CliToCoordinatorRequest,
-        reply_sender: oneshot::Sender<eyre::Result<ControlRequestReply>>,
-    },
-    LogSubscribe {
-        dataflow_id: Uuid,
-        level: log::LevelFilter,
-        connection: TcpStream,
-    },
-    BuildLogSubscribe {
-        build_id: BuildId,
-        level: log::LevelFilter,
-        connection: TcpStream,
-    },
-    Error(eyre::Report),
-}
-
-impl From<eyre::Report> for ControlEvent {
-    fn from(err: eyre::Report) -> Self {
-        ControlEvent::Error(err)
     }
 }

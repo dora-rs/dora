@@ -53,9 +53,7 @@ impl Executable for Coordinator {
         rt.block_on(async {
             let bind = SocketAddr::new(self.interface, self.port);
             let bind_control = SocketAddr::new(self.control_interface, self.control_port);
-            let (port, task) =
-                dora_coordinator::start(bind, bind_control, futures::stream::empty::<Event>())
-                    .await?;
+            let (port, task) = dora_coordinator::start(bind, bind_control).await?;
             if !self.quiet {
                 println!("Listening for incoming daemon connection on {port}");
             }

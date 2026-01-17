@@ -53,6 +53,9 @@ impl<T, Encoding, Req: ?Sized, Resp> EncodedTransport<T, Encoding, Req, Resp> {
     pub fn inner_mut(&mut self) -> &mut T {
         &mut self.inner
     }
+    pub fn into_inner(self) -> T {
+        self.inner
+    }
 }
 
 impl<T, Encoding, Req: ?Sized, Resp> Transport<Req, Resp>

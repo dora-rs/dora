@@ -1,8 +1,12 @@
-use communication_layer_request_reply::{TcpConnection, TcpRequestReplyConnection};
+use communication_layer_request_reply::{
+    Transport, encoding::JsonEncoding, transport::FramedTransport,
+};
 use dora_core::descriptor::{CoreNodeKind, Descriptor, DescriptorExt, resolve_path};
-use dora_message::cli_to_coordinator::ControlRequest;
+use dora_message::cli_to_coordinator::{
+    CheckResp, CliToCoordinatorClient, CliToCoordinatorRequest, DataflowStopped,
+};
 use dora_message::common::LogMessage;
-use dora_message::coordinator_to_cli::ControlRequestReply;
+use dora_message::id::{NodeId, OperatorId};
 use eyre::Context;
 use notify::event::ModifyKind;
 use notify::{Config, Event as NotifyEvent, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -11,7 +15,7 @@ use std::{
     net::{SocketAddr, TcpStream},
 };
 use std::{path::PathBuf, sync::mpsc, time::Duration};
-use tracing::{error, info};
+use tracing::info;
 use uuid::Uuid;
 
 use crate::common::handle_dataflow_result;
@@ -21,7 +25,7 @@ pub fn attach_dataflow(
     dataflow: Descriptor,
     dataflow_path: PathBuf,
     dataflow_id: Uuid,
-    session: &mut TcpRequestReplyConnection,
+    session: &mut CliToCoordinatorClient,
     hot_reload: bool,
     coordinator_socket: SocketAddr,
     log_level: log::LevelFilter,
@@ -79,11 +83,11 @@ pub fn attach_dataflow(
                 for path in paths {
                     if let Some((dataflow_id, node_id, operator_id)) = node_path_lookup.get(&path) {
                         watcher_tx
-                            .send(AttachEvent::Control(ControlRequest::Reload {
+                            .send(AttachEvent::Reload {
                                 dataflow_id: *dataflow_id,
                                 node_id: node_id.clone(),
                                 operator_id: operator_id.clone(),
-                            }))
+                            })
                             .context("Could not send reload request to the cli loop")
                             .unwrap();
                     }
@@ -111,20 +115,20 @@ pub fn attach_dataflow(
     ctrlc::set_handler(move || {
         if ctrlc_sent {
             ctrlc_tx
-                .send(AttachEvent::Control(ControlRequest::Stop {
+                .send(AttachEvent::Stop {
                     dataflow_uuid: dataflow_id,
                     grace_duration: None,
                     force: true,
-                }))
+                })
                 .ok();
             std::process::abort();
         } else {
             if ctrlc_tx
-                .send(AttachEvent::Control(ControlRequest::Stop {
+                .send(AttachEvent::Stop {
                     dataflow_uuid: dataflow_id,
                     grace_duration: None,
                     force: false,
-                }))
+                })
                 .is_err()
             {
                 // bail!("failed to report ctrl-c event to dora-daemon");
@@ -135,65 +139,71 @@ pub fn attach_dataflow(
     .wrap_err("failed to set ctrl-c handler")?;
 
     // subscribe to log messages
-    let mut log_session = TcpConnection {
-        stream: TcpStream::connect(coordinator_socket)
-            .wrap_err("failed to connect to dora coordinator")?,
-    };
+    let mut log_session = FramedTransport::new(
+        TcpStream::connect(coordinator_socket).wrap_err("failed to connect to dora coordinator")?,
+    )
+    .with_encoding::<_, CliToCoordinatorRequest, LogMessage>(JsonEncoding);
     log_session
-        .send(
-            &serde_json::to_vec(&ControlRequest::LogSubscribe {
-                dataflow_id,
-                level: log_level,
-            })
-            .wrap_err("failed to serialize message")?,
-        )
+        .send(&CliToCoordinatorRequest::LogSubscribe {
+            dataflow_id,
+            level: log_level,
+        })
         .wrap_err("failed to send log subscribe request to coordinator")?;
     std::thread::spawn(move || {
-        while let Ok(raw) = log_session.receive() {
-            let parsed: eyre::Result<LogMessage> =
-                serde_json::from_slice(&raw).context("failed to parse log message");
-            if tx.send(AttachEvent::Log(parsed)).is_err() {
+        while let Ok(Some(message)) = log_session.receive() {
+            if tx.send(AttachEvent::Log(message)).is_err() {
                 break;
             }
         }
     });
 
     loop {
-        let control_request = match rx.recv_timeout(Duration::from_secs(1)) {
-            Err(_err) => ControlRequest::Check {
-                dataflow_uuid: dataflow_id,
-            },
-            Ok(AttachEvent::Control(control_request)) => control_request,
-            Ok(AttachEvent::Log(Ok(log_message))) => {
-                print_log_message(log_message, false, print_daemon_name);
-                continue;
-            }
-            Ok(AttachEvent::Log(Err(err))) => {
-                tracing::warn!("failed to parse log message: {:#?}", err);
-                continue;
-            }
-        };
-
-        let reply_raw = session
-            .request(&serde_json::to_vec(&control_request)?)
-            .wrap_err("failed to send request message to coordinator")?;
-        let result: ControlRequestReply =
-            serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-        match result {
-            ControlRequestReply::DataflowSpawned { uuid: _ } => (),
-            ControlRequestReply::DataflowStopped { uuid, result } => {
+        match rx.recv_timeout(Duration::from_secs(1)) {
+            Err(_err) => {}
+            Ok(AttachEvent::Stop {
+                dataflow_uuid,
+                grace_duration,
+                force,
+            }) => {
+                let DataflowStopped { uuid, result } =
+                    session.stop(dataflow_uuid, grace_duration, force)?;
                 info!("dataflow {uuid} stopped");
                 break handle_dataflow_result(result, Some(uuid));
             }
-            ControlRequestReply::DataflowReloaded { uuid } => {
-                info!("dataflow {uuid} reloaded")
+            Ok(AttachEvent::Reload {
+                dataflow_id,
+                node_id,
+                operator_id,
+            }) => {
+                let uuid = session.reload(dataflow_id, node_id, operator_id)?;
+                info!("dataflow {uuid} reloaded");
             }
-            other => error!("Received unexpected Coordinator Reply: {:#?}", other),
-        };
+            Ok(AttachEvent::Log(log_message)) => {
+                print_log_message(log_message, false, print_daemon_name);
+                continue;
+            }
+        }
+
+        match session.check(dataflow_id)? {
+            CheckResp::Spawned { uuid: _ } => (),
+            CheckResp::Stopped { uuid, result } => {
+                info!("dataflow {uuid} stopped");
+                break handle_dataflow_result(result, Some(uuid));
+            }
+        }
     }
 }
 
 enum AttachEvent {
-    Control(ControlRequest),
-    Log(eyre::Result<LogMessage>),
+    Stop {
+        dataflow_uuid: Uuid,
+        grace_duration: Option<Duration>,
+        force: bool,
+    },
+    Reload {
+        dataflow_id: Uuid,
+        node_id: NodeId,
+        operator_id: Option<OperatorId>,
+    },
+    Log(LogMessage),
 }

@@ -1,15 +1,12 @@
 use crate::{LOCALHOST, formatting::FormatDataflowError};
-use communication_layer_request_reply::{RequestReplyLayer, TcpLayer, TcpRequestReplyConnection};
 use dora_core::{
     descriptor::{Descriptor, source_is_url},
     topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT,
 };
 use dora_download::download_file;
 use dora_message::{
-    cli_to_coordinator::{
-        CliAndDefaultDaemonOnSameMachine, CliToCoordinatorClient, ControlRequest,
-    },
-    coordinator_to_cli::{ControlRequestReply, DataflowList, DataflowResult},
+    cli_to_coordinator::CliToCoordinatorClient,
+    coordinator_to_cli::{DataflowList, DataflowResult},
 };
 use eyre::{Context, ContextCompat, bail};
 use std::{
@@ -39,24 +36,13 @@ pub(crate) fn handle_dataflow_result(
 }
 
 pub(crate) fn query_running_dataflows(
-    session: &mut TcpRequestReplyConnection,
+    session: &mut CliToCoordinatorClient,
 ) -> eyre::Result<DataflowList> {
-    let reply_raw = session
-        .request(&serde_json::to_vec(&ControlRequest::List).unwrap())
-        .wrap_err("failed to send list message")?;
-    let reply: ControlRequestReply =
-        serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-    let ids = match reply {
-        ControlRequestReply::DataflowList(list) => list,
-        ControlRequestReply::Error(err) => bail!("{err}"),
-        other => bail!("unexpected list dataflow reply: {other:?}"),
-    };
-
-    Ok(ids)
+    session.list().map(DataflowList)
 }
 
 pub(crate) fn resolve_dataflow_identifier_interactive(
-    session: &mut TcpRequestReplyConnection,
+    session: &mut CliToCoordinatorClient,
     name_or_uuid: Option<&str>,
 ) -> eyre::Result<Uuid> {
     if let Some(uuid) = name_or_uuid.and_then(|s| Uuid::parse_str(s).ok()) {
@@ -93,7 +79,7 @@ pub(crate) struct CoordinatorOptions {
 }
 
 impl CoordinatorOptions {
-    pub fn connect(&self) -> eyre::Result<Box<TcpRequestReplyConnection>> {
+    pub fn connect(&self) -> eyre::Result<CliToCoordinatorClient> {
         let session = connect_to_coordinator((self.coordinator_addr, self.coordinator_port).into())
             .wrap_err("failed to connect to dora coordinator")?;
         Ok(session)
@@ -102,8 +88,8 @@ impl CoordinatorOptions {
 
 pub(crate) fn connect_to_coordinator(
     coordinator_addr: SocketAddr,
-) -> std::io::Result<Box<TcpRequestReplyConnection>> {
-    TcpLayer::new().connect(coordinator_addr)
+) -> std::io::Result<CliToCoordinatorClient> {
+    CliToCoordinatorClient::new_tcp(coordinator_addr)
 }
 
 pub(crate) fn resolve_dataflow(dataflow: String) -> eyre::Result<PathBuf> {

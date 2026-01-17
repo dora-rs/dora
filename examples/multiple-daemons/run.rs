@@ -1,31 +1,22 @@
 use dora_cli::session::DataflowSession;
-use dora_coordinator::{ControlEvent, Event};
+use dora_coordinator::Event;
 use dora_core::{
     descriptor::{DescriptorExt, read_as_descriptor},
     topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, DORA_COORDINATOR_PORT_DEFAULT},
 };
 use dora_message::{
-    cli_to_coordinator::ControlRequest,
-    common::DaemonId,
-    coordinator_to_cli::{ControlRequestReply, DataflowIdAndName},
+    cli_to_coordinator::{CliToCoordinatorAsyncClient, StartReq},
+    coordinator_to_cli::{DataflowIdAndName, DataflowList},
 };
 use dora_tracing::TracingBuilder;
 use eyre::{Context, bail};
 
 use std::{
-    collections::BTreeSet,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::Path,
     time::Duration,
 };
-use tokio::{
-    sync::{
-        mpsc::{self, Sender},
-        oneshot,
-    },
-    task::JoinSet,
-};
-use tokio_stream::wrappers::ReceiverStream;
+use tokio::task::JoinSet;
 use uuid::Uuid;
 
 #[tokio::main]
@@ -41,7 +32,6 @@ async fn main() -> eyre::Result<()> {
     let dataflow = Path::new("dataflow.yml");
     build_dataflow(dataflow).await?;
 
-    let (coordinator_events_tx, coordinator_events_rx) = mpsc::channel(1);
     let coordinator_bind = SocketAddr::new(
         IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
         DORA_COORDINATOR_PORT_DEFAULT,
@@ -50,12 +40,8 @@ async fn main() -> eyre::Result<()> {
         IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
         DORA_COORDINATOR_PORT_CONTROL_DEFAULT,
     );
-    let (coordinator_port, coordinator) = dora_coordinator::start(
-        coordinator_bind,
-        coordinator_control_bind,
-        ReceiverStream::new(coordinator_events_rx),
-    )
-    .await?;
+    let (coordinator_port, coordinator) =
+        dora_coordinator::start(coordinator_bind, coordinator_control_bind).await?;
 
     tracing::info!("coordinator running on {coordinator_port}");
 
@@ -69,10 +55,17 @@ async fn main() -> eyre::Result<()> {
     tasks.spawn(daemon_b);
     tasks.spawn(daemon_a);
 
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let mut client = CliToCoordinatorAsyncClient::new_tcp(SocketAddr::new(
+        coordinator_addr.into(),
+        DORA_COORDINATOR_PORT_CONTROL_DEFAULT,
+    ))
+    .await?;
+
     tracing::info!("waiting until daemons are connected to coordinator");
     let mut retries = 0;
     loop {
-        let connected_machines = connected_machines(&coordinator_events_tx).await?;
+        let connected_machines = client.connected_machines().await?;
         if connected_machines
             .iter()
             .any(|id| id.matches_machine_id("A"))
@@ -90,10 +83,10 @@ async fn main() -> eyre::Result<()> {
     }
 
     tracing::info!("starting dataflow");
-    let uuid = start_dataflow(dataflow, &coordinator_events_tx).await?;
+    let uuid = start_dataflow(dataflow, &mut client).await?;
     tracing::info!("started dataflow under ID `{uuid}`");
 
-    let running = running_dataflows(&coordinator_events_tx).await?;
+    let running = running_dataflows(&mut client).await?;
     if !running.iter().map(|d| d.uuid).any(|id| id == uuid) {
         bail!("dataflow `{uuid}` is not running");
     }
@@ -101,7 +94,7 @@ async fn main() -> eyre::Result<()> {
     tracing::info!("waiting for dataflow `{uuid}` to finish");
     let mut retries = 0;
     loop {
-        let running = running_dataflows(&coordinator_events_tx).await?;
+        let running = running_dataflows(&mut client).await?;
         if running.is_empty() {
             break;
         } else if retries > 100 {
@@ -113,7 +106,7 @@ async fn main() -> eyre::Result<()> {
         }
     }
     tracing::info!("dataflow `{uuid}` finished, destroying coordinator");
-    destroy(&coordinator_events_tx).await?;
+    client.destroy().await?;
 
     tracing::info!("joining tasks");
     while let Some(res) = tasks.join_next().await {
@@ -126,7 +119,7 @@ async fn main() -> eyre::Result<()> {
 
 async fn start_dataflow(
     dataflow: &Path,
-    coordinator_events_tx: &Sender<Event>,
+    client: &mut CliToCoordinatorAsyncClient,
 ) -> eyre::Result<Uuid> {
     let dataflow_descriptor = read_as_descriptor(dataflow)
         .await
@@ -144,96 +137,25 @@ async fn start_dataflow(
     let dataflow_session =
         DataflowSession::read_session(dataflow).context("failed to read DataflowSession")?;
 
-    let (reply_sender, reply) = oneshot::channel();
-    coordinator_events_tx
-        .send(Event::Control(ControlEvent::IncomingRequest {
-            request: ControlRequest::Start {
-                build_id: dataflow_session.build_id,
-                session_id: dataflow_session.session_id,
-                dataflow: dataflow_descriptor,
-                local_working_dir: Some(working_dir),
-                name: None,
-                uv: false,
-                write_events_to: None,
-            },
-            reply_sender,
-        }))
+    let uuid = client
+        .start(StartReq {
+            build_id: dataflow_session.build_id,
+            session_id: dataflow_session.session_id,
+            dataflow: dataflow_descriptor,
+            name: None,
+            local_working_dir: Some(working_dir),
+            uv: false,
+            write_events_to: None,
+        })
         .await?;
-    let result = reply.await??;
-    let uuid = match result {
-        ControlRequestReply::DataflowStartTriggered { uuid } => uuid,
-        ControlRequestReply::Error(err) => bail!("{err}"),
-        other => bail!("unexpected start dataflow reply: {other:?}"),
-    };
 
-    let (reply_sender, reply) = oneshot::channel();
-    coordinator_events_tx
-        .send(Event::Control(ControlEvent::IncomingRequest {
-            request: ControlRequest::WaitForSpawn { dataflow_id: uuid },
-            reply_sender,
-        }))
-        .await?;
-    let result = reply.await??;
-    let uuid = match result {
-        ControlRequestReply::DataflowSpawned { uuid } => uuid,
-        ControlRequestReply::Error(err) => bail!("{err}"),
-        other => bail!("unexpected start dataflow reply: {other:?}"),
-    };
-    Ok(uuid)
-}
-
-async fn connected_machines(
-    coordinator_events_tx: &Sender<Event>,
-) -> eyre::Result<BTreeSet<DaemonId>> {
-    let (reply_sender, reply) = oneshot::channel();
-    coordinator_events_tx
-        .send(Event::Control(ControlEvent::IncomingRequest {
-            request: ControlRequest::ConnectedMachines,
-            reply_sender,
-        }))
-        .await?;
-    let result = reply.await??;
-    let machines = match result {
-        ControlRequestReply::ConnectedDaemons(machines) => machines,
-        ControlRequestReply::Error(err) => bail!("{err}"),
-        other => bail!("unexpected start dataflow reply: {other:?}"),
-    };
-    Ok(machines)
+    client.wait_for_spawn(uuid).await
 }
 
 async fn running_dataflows(
-    coordinator_events_tx: &Sender<Event>,
+    client: &mut CliToCoordinatorAsyncClient,
 ) -> eyre::Result<Vec<DataflowIdAndName>> {
-    let (reply_sender, reply) = oneshot::channel();
-    coordinator_events_tx
-        .send(Event::Control(ControlEvent::IncomingRequest {
-            request: ControlRequest::List,
-            reply_sender,
-        }))
-        .await?;
-    let result = reply.await??;
-    let dataflows = match result {
-        ControlRequestReply::DataflowList(list) => list.get_active(),
-        ControlRequestReply::Error(err) => bail!("{err}"),
-        other => bail!("unexpected start dataflow reply: {other:?}"),
-    };
-    Ok(dataflows)
-}
-
-async fn destroy(coordinator_events_tx: &Sender<Event>) -> eyre::Result<()> {
-    let (reply_sender, reply) = oneshot::channel();
-    coordinator_events_tx
-        .send(Event::Control(ControlEvent::IncomingRequest {
-            request: ControlRequest::Destroy,
-            reply_sender,
-        }))
-        .await?;
-    let result = reply.await??;
-    match result {
-        ControlRequestReply::DestroyOk => Ok(()),
-        ControlRequestReply::Error(err) => bail!("{err}"),
-        other => bail!("unexpected start dataflow reply: {other:?}"),
-    }
+    Ok(DataflowList(client.list().await?).get_active())
 }
 
 async fn build_dataflow(dataflow: &Path) -> eyre::Result<()> {

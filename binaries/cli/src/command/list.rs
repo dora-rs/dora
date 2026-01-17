@@ -7,9 +7,10 @@ use crate::{
     formatting::OutputFormat,
 };
 use clap::Args;
-use communication_layer_request_reply::TcpRequestReplyConnection;
 use dora_core::topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT;
-use dora_message::coordinator_to_cli::DataflowStatus;
+use dora_message::{
+    cli_to_coordinator::CliToCoordinatorClient, coordinator_to_cli::DataflowStatus,
+};
 use eyre::eyre;
 use serde::Serialize;
 use tabwriter::TabWriter;
@@ -37,7 +38,7 @@ impl Executable for ListArgs {
             connect_to_coordinator((self.coordinator_addr, self.coordinator_port).into())
                 .map_err(|_| eyre!("Failed to connect to coordinator"))?;
 
-        list(&mut *session, self.format)
+        list(&mut session, self.format)
     }
 }
 
@@ -48,10 +49,7 @@ struct OutputEntry {
     status: DataflowStatus,
 }
 
-fn list(
-    session: &mut TcpRequestReplyConnection,
-    format: OutputFormat,
-) -> Result<(), eyre::ErrReport> {
+fn list(session: &mut CliToCoordinatorClient, format: OutputFormat) -> Result<(), eyre::ErrReport> {
     let list = query_running_dataflows(session)?;
 
     let entries = list.0.into_iter().map(|entry| OutputEntry {

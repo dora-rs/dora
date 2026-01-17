@@ -1,10 +1,11 @@
-use communication_layer_request_reply::{TcpConnection, TcpRequestReplyConnection};
+use communication_layer_request_reply::{
+    Transport, encoding::JsonEncoding, transport::FramedTransport,
+};
 use dora_core::descriptor::Descriptor;
 use dora_message::{
     BuildId,
-    cli_to_coordinator::{CliToCoordinatorClient, ControlRequest, WaitForBuildReq},
+    cli_to_coordinator::{CliToCoordinatorClient, CliToCoordinatorRequest},
     common::{GitSource, LogMessage},
-    coordinator_to_cli::ControlRequestReply,
     id::NodeId,
 };
 use eyre::{Context, bail};
@@ -41,31 +42,19 @@ pub fn wait_until_dataflow_built(
     log_level: log::LevelFilter,
 ) -> eyre::Result<BuildId> {
     // subscribe to log messages
-    let mut log_session = TcpConnection {
-        stream: TcpStream::connect(coordinator_socket)
-            .wrap_err("failed to connect to dora coordinator")?,
-    };
+    let mut log_session = FramedTransport::new(
+        TcpStream::connect(coordinator_socket).wrap_err("failed to connect to dora coordinator")?,
+    )
+    .with_encoding::<_, CliToCoordinatorRequest, LogMessage>(JsonEncoding);
     log_session
-        .send(
-            &serde_json::to_vec(&ControlRequest::BuildLogSubscribe {
-                build_id,
-                level: log_level,
-            })
-            .wrap_err("failed to serialize message")?,
-        )
+        .send(&CliToCoordinatorRequest::BuildLogSubscribe {
+            build_id,
+            level: log_level,
+        })
         .wrap_err("failed to send build log subscribe request to coordinator")?;
     std::thread::spawn(move || {
-        while let Ok(raw) = log_session.receive() {
-            let parsed: eyre::Result<LogMessage> =
-                serde_json::from_slice(&raw).context("failed to parse log message");
-            match parsed {
-                Ok(log_message) => {
-                    print_log_message(log_message, false, true);
-                }
-                Err(err) => {
-                    tracing::warn!("failed to parse log message: {err:?}")
-                }
-            }
+        while let Ok(Some(message)) = log_session.receive() {
+            print_log_message(message, false, true);
         }
     });
 
