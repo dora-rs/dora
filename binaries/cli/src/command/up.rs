@@ -1,6 +1,6 @@
 use super::system::status::daemon_running;
 use super::{Executable, default_tracing};
-use crate::{LOCALHOST, common::connect_to_coordinator};
+use crate::{LOCALHOST, common::connect_to_coordinator, progress::ProgressBar};
 use dora_core::topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT;
 use dora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply};
 use eyre::{Context, ContextCompat, bail};
@@ -28,11 +28,19 @@ struct UpConfig {}
 pub(crate) fn up(config_path: Option<&Path>) -> eyre::Result<()> {
     let UpConfig {} = parse_dora_config(config_path)?;
     let coordinator_addr = (LOCALHOST, DORA_COORDINATOR_PORT_CONTROL_DEFAULT).into();
+
+    let pb = ProgressBar::new_spinner("Starting dora coordinator and daemon...");
+
     let mut session = match connect_to_coordinator(coordinator_addr) {
-        Ok(session) => session,
+        Ok(session) => {
+            pb.set_message("Coordinator already running");
+            session
+        }
         Err(_) => {
+            pb.set_message("Starting coordinator...");
             start_coordinator().wrap_err("failed to start dora-coordinator")?;
 
+            pb.set_message("Waiting for coordinator to accept connections...");
             loop {
                 match connect_to_coordinator(coordinator_addr) {
                     Ok(session) => break session,
@@ -46,8 +54,10 @@ pub(crate) fn up(config_path: Option<&Path>) -> eyre::Result<()> {
     };
 
     if !daemon_running(&mut *session)? {
+        pb.set_message("Starting daemon...");
         start_daemon().wrap_err("failed to start dora-daemon")?;
 
+        pb.set_message("Waiting for daemon to connect...");
         // wait a bit until daemon is connected
         let mut i = 0;
         const WAIT_S: f32 = 0.1;
@@ -57,10 +67,14 @@ pub(crate) fn up(config_path: Option<&Path>) -> eyre::Result<()> {
             }
             i += 1;
             if i > 20 {
+                pb.fail_with_message("Daemon failed to connect");
                 eyre::bail!("daemon not connected after {}s", WAIT_S * i as f32);
             }
             std::thread::sleep(Duration::from_secs_f32(WAIT_S));
         }
+        pb.finish_with_message("Coordinator and daemon started successfully");
+    } else {
+        pb.finish_with_message("Coordinator and daemon already running");
     }
 
     Ok(())

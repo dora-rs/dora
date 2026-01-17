@@ -9,6 +9,7 @@ mod command;
 mod common;
 mod formatting;
 pub mod output;
+pub mod progress;
 pub mod session;
 mod template;
 
