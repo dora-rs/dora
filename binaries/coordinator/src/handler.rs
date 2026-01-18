@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use dora_message::{
     BuildId,
     cli_to_coordinator::{
-        BuildReq, CliAndDefaultDaemonIps, CliToCoordinator, DataflowInfo, CheckResp,
+        BuildReq, CheckResp, CliAndDefaultDaemonIps, CliToCoordinator, DataflowInfo,
         DataflowStopped, StartReq, WaitForBuildResp,
     },
     common::DaemonId,
@@ -13,9 +13,9 @@ use dora_message::{
     },
     id::{NodeId, OperatorId},
 };
-use eyre::{ Result, bail, eyre};
+use eyre::{Result, bail, eyre};
 use petname::petname;
-use tokio::sync::{ RwLock};
+use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::{Coordinator, dataflow_result, resolve_name};
