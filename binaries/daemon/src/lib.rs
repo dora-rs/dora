@@ -254,6 +254,7 @@ impl Daemon {
         let exit_when_done = spawn_command
             .nodes
             .values()
+            .filter(|n| !n.kind.dynamic())
             .map(|n| (spawn_command.dataflow_id, n.id.clone()))
             .collect();
         let (reply_tx, reply_rx) = oneshot::channel();
