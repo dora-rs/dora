@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use crate::{
     BuildId, SessionId,
-    common::GitSource,
+    common::{DaemonId, GitSource},
     coordinator_to_cli::{DataflowListEntry, DataflowResult, NodeInfo},
     descriptor::Descriptor,
     id::{NodeId, OperatorId},
@@ -78,15 +78,24 @@ pub trait CliToCoordinator {
         node: String,
         tail: Option<usize>,
     ) -> Vec<u8>;
+    /// Terminate all running dataflows and stop the coordinator and all daemons.
     async fn destroy();
+    /// List all currently running dataflows with their id and status.
     async fn list() -> Vec<DataflowListEntry>;
+    /// Get detailed information about a specific dataflow, including its descriptor.
     async fn info(dataflow_uuid: Uuid) -> DataflowInfo;
+    /// Currently returns `true` if any daemon is connected to the coordinator, otherwise `false`.
     async fn daemon_connected() -> bool;
-    async fn connected_machines() -> BTreeSet<crate::common::DaemonId>;
-    async fn log_subscribe(dataflow_id: Uuid, level: log::LevelFilter);
-    async fn build_log_subscribe(build_id: BuildId, level: log::LevelFilter);
+    /// Get the set of all currently connected daemons to the coordinator.
+    async fn connected_machines() -> BTreeSet<DaemonId>;
     async fn cli_and_default_daemon_on_same_machine() -> CliAndDefaultDaemonIps;
     async fn get_node_info() -> Vec<NodeInfo>;
+    /// Do **NOT** call this function in the client.
+    /// This is kept only to generate a message enum variant for log subscription.
+    async fn log_subscribe(dataflow_id: Uuid, level: log::LevelFilter);
+    /// Do **NOT** call this function in the client.
+    /// This is kept only to generate a message enum variant for build log subscription.
+    async fn build_log_subscribe(build_id: BuildId, level: log::LevelFilter);
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
