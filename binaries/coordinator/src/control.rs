@@ -24,9 +24,17 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
+/// Shared state (held inside an `Arc`) for the control TCP listener tasks.
 struct ListenState {
+    /// `Weak` so the listener doesn't keep [`Coordinator`] alive; `upgrade()`
+    /// returns `None` once the coordinator is dropped and the task exits.
     coordinator: Weak<RwLock<Coordinator>>,
+    /// Caps concurrent requests that may hold locks on the coordinator,
+    /// preventing overload (currently 10 permits).
+    ///
+    /// **TODO: add a const for this value and make it configurable.**
     semaphore: Semaphore,
+    /// Allows the outer coordinator to signal all listener tasks to shut down.
     cancel_token: CancellationToken,
 }
 
