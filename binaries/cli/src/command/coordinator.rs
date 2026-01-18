@@ -1,6 +1,5 @@
 use super::Executable;
 use crate::LISTEN_WILDCARD;
-use dora_coordinator::Event;
 use dora_core::topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, DORA_COORDINATOR_PORT_DEFAULT};
 
 #[cfg(feature = "tracing")]

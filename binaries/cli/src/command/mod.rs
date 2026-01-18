@@ -19,6 +19,7 @@ mod topic;
 mod up;
 
 pub use build::build;
+#[allow(deprecated)]
 pub use run::{run, run_func};
 
 use build::Build;

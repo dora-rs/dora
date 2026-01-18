@@ -93,9 +93,7 @@ fn list(
         std::collections::BTreeMap::new();
 
     for node_info in node_infos {
-        let metrics = dataflow_metrics
-            .entry(node_info.dataflow_id)
-            .or_insert_with(DataflowMetrics::default);
+        let metrics = dataflow_metrics.entry(node_info.dataflow_id).or_default();
         metrics.node_count += 1;
 
         if let Some(node_metrics) = node_info.metrics {
@@ -186,7 +184,11 @@ fn list(
         OutputFormat::Table => {
             let mut tw = TabWriter::new(std::io::stdout().lock());
             // Header
-            tw.write_all(format!("UUID\tName\tStatus\tNodes\tCPU\tMemory\n").as_bytes())?;
+            tw.write_all(
+                "UUID\tName\tStatus\tNodes\tCPU\tMemory\n"
+                    .to_string()
+                    .as_bytes(),
+            )?;
             for entry in entries {
                 let status = match entry.status {
                     DataflowStatus::Running => "Running",
@@ -196,13 +198,8 @@ fn list(
 
                 tw.write_all(
                     format!(
-                        "{}\t{}\t{}\t{}\t{}\t{}\n",
-                        entry.uuid,
-                        entry.name,
-                        status,
-                        entry.nodes,
-                        format!("{:.1}%", entry.cpu),
-                        format!("{:.1} GB", entry.memory)
+                        "{}\t{}\t{}\t{}\t{:.1}%\t{:.1} GB\n",
+                        entry.uuid, entry.name, status, entry.nodes, entry.cpu, entry.memory
                     )
                     .as_bytes(),
                 )?;

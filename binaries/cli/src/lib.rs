@@ -13,6 +13,7 @@ pub mod session;
 mod template;
 
 pub use command::build;
+#[allow(deprecated)]
 pub use command::{run, run_func};
 
 const LOCALHOST: IpAddr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
