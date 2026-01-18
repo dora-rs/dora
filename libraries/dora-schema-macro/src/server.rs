@@ -18,7 +18,9 @@ pub fn generate_server_trait(schema: &SchemaInput) -> proc_macro2::TokenStream {
             let ident = &m.sig.ident;
             let arguments = &m.arguments;
             let response_type = &m.response;
+            let attributes = &m.attrs;
             quote! {
+                #(#attributes)*
                 #asyncness fn #ident(self, #(#arguments),*) -> ::eyre::Result<#response_type>;
             }
         })
