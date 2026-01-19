@@ -55,7 +55,7 @@ fn list(
     format: OutputFormat,
 ) -> eyre::Result<()> {
     let mut session = coordinator.connect()?;
-    let (_dataflow_id, descriptor) = selector.resolve(session.as_mut())?;
+    let (_dataflow_id, descriptor) = selector.resolve(&mut session)?;
 
     let mut subscribers = BTreeMap::<(&NodeId, &DataId), Vec<(&NodeId, &DataId)>>::new();
     for node in &descriptor.nodes {

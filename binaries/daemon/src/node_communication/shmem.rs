@@ -2,27 +2,31 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use super::{Connection, Listener};
 use crate::Event;
+use communication_layer_request_reply::{
+    Transport, encoding::BincodeEncoding, transport::ShmemTransport,
+};
 use dora_core::{config::DataId, uhlc::HLC};
 use dora_message::{
     common::Timestamped, daemon_to_node::DaemonReply, node_to_daemon::DaemonRequest,
 };
 use eyre::eyre;
-use shared_memory_server::ShmemServer;
+use shared_memory_server::ShmemChannel;
 use tokio::sync::{mpsc, oneshot};
 
 #[tracing::instrument(skip(server, daemon_tx, clock), level = "trace")]
 pub async fn listener_loop(
-    mut server: ShmemServer<Timestamped<DaemonRequest>, DaemonReply>,
+    server: ShmemChannel,
     daemon_tx: mpsc::Sender<Timestamped<Event>>,
     queue_sizes: BTreeMap<DataId, usize>,
     clock: Arc<HLC>,
 ) {
     let (tx, rx) = flume::bounded(0);
+    let mut server = ShmemTransport::new(server, None).with_encoding(BincodeEncoding);
     tokio::task::spawn_blocking(move || {
         while let Ok(operation) = rx.recv() {
             match operation {
                 Operation::Receive(sender) => {
-                    if sender.send(server.listen()).is_err() {
+                    if sender.send(server.receive().map_err(Into::into)).is_err() {
                         break;
                     }
                 }
@@ -30,8 +34,10 @@ pub async fn listener_loop(
                     message,
                     result_sender,
                 } => {
-                    let result = server.send_reply(&message);
-                    if result_sender.send(result).is_err() {
+                    if result_sender
+                        .send(server.send(&message).map_err(Into::into))
+                        .is_err()
+                    {
                         break;
                     }
                 }

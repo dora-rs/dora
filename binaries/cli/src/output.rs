@@ -54,7 +54,7 @@ pub fn print_log_message(
             let node_id = node_id
                 .to_string()
                 .bold()
-                .color(word_to_color(&node_id.to_string()));
+                .color(word_to_color(node_id.as_ref()));
             let padding = if daemon.is_empty() { "" } else { " " };
             format!("{node_id}{padding}{daemon}{colon} ")
         }

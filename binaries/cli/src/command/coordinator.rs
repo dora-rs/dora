@@ -1,6 +1,5 @@
 use super::Executable;
 use crate::LISTEN_WILDCARD;
-use dora_coordinator::Event;
 use dora_core::topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, DORA_COORDINATOR_PORT_DEFAULT};
 
 #[cfg(feature = "tracing")]
@@ -53,9 +52,7 @@ impl Executable for Coordinator {
         rt.block_on(async {
             let bind = SocketAddr::new(self.interface, self.port);
             let bind_control = SocketAddr::new(self.control_interface, self.control_port);
-            let (port, task) =
-                dora_coordinator::start(bind, bind_control, futures::stream::empty::<Event>())
-                    .await?;
+            let (port, task) = dora_coordinator::start(bind, bind_control).await?;
             if !self.quiet {
                 println!("Listening for incoming daemon connection on {port}");
             }

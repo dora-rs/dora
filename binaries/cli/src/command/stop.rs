@@ -1,11 +1,9 @@
 use super::{Executable, default_tracing};
 use crate::common::{connect_to_coordinator, handle_dataflow_result, query_running_dataflows};
-use communication_layer_request_reply::TcpRequestReplyConnection;
 use dora_core::topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST};
-use dora_message::cli_to_coordinator::ControlRequest;
-use dora_message::coordinator_to_cli::ControlRequestReply;
+use dora_message::cli_to_coordinator::{CliToCoordinatorClient, DataflowStopped};
 use duration_str::parse;
-use eyre::{Context, bail};
+use eyre::Context;
 use std::net::IpAddr;
 use std::time::Duration;
 use uuid::Uuid;
@@ -51,85 +49,34 @@ impl Executable for Stop {
         let mut session =
             connect_to_coordinator((self.coordinator_addr, self.coordinator_port).into())
                 .wrap_err("could not connect to dora coordinator")?;
-        match (self.uuid, self.name) {
-            (Some(uuid), _) => stop_dataflow(uuid, self.grace_duration, self.force, &mut *session),
-            (None, Some(name)) => {
-                stop_dataflow_by_name(name, self.grace_duration, self.force, &mut *session)
-            }
+        let stopped = match (self.uuid, self.name) {
+            (Some(uuid), _) => session.stop(uuid, self.grace_duration, self.force)?,
+            (None, Some(name)) => session.stop_by_name(name, self.grace_duration, self.force)?,
             (None, None) => {
-                stop_dataflow_interactive(self.grace_duration, self.force, &mut *session)
+                let Some(result) =
+                    stop_dataflow_interactive(self.grace_duration, self.force, &mut session)?
+                else {
+                    return Ok(());
+                };
+                result
             }
-        }
+        };
+        handle_dataflow_result(stopped.result, Some(stopped.uuid))
     }
 }
 
 fn stop_dataflow_interactive(
     grace_duration: Option<Duration>,
     force: bool,
-    session: &mut TcpRequestReplyConnection,
-) -> eyre::Result<()> {
+    session: &mut CliToCoordinatorClient,
+) -> eyre::Result<Option<DataflowStopped>> {
     let list = query_running_dataflows(session).wrap_err("failed to query running dataflows")?;
     let active = list.get_active();
-    if active.is_empty() {
+    Ok(if active.is_empty() {
         eprintln!("No dataflows are running");
+        None
     } else {
         let selection = inquire::Select::new("Choose dataflow to stop:", active).prompt()?;
-        stop_dataflow(selection.uuid, grace_duration, force, session)?;
-    }
-
-    Ok(())
-}
-
-fn stop_dataflow(
-    uuid: Uuid,
-    grace_duration: Option<Duration>,
-    force: bool,
-    session: &mut TcpRequestReplyConnection,
-) -> Result<(), eyre::ErrReport> {
-    let reply_raw = session
-        .request(
-            &serde_json::to_vec(&ControlRequest::Stop {
-                dataflow_uuid: uuid,
-                grace_duration,
-                force,
-            })
-            .unwrap(),
-        )
-        .wrap_err("failed to send dataflow stop message")?;
-    let result: ControlRequestReply =
-        serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-    match result {
-        ControlRequestReply::DataflowStopped { uuid, result } => {
-            handle_dataflow_result(result, Some(uuid))
-        }
-        ControlRequestReply::Error(err) => bail!("{err}"),
-        other => bail!("unexpected stop dataflow reply: {other:?}"),
-    }
-}
-
-fn stop_dataflow_by_name(
-    name: String,
-    grace_duration: Option<Duration>,
-    force: bool,
-    session: &mut TcpRequestReplyConnection,
-) -> Result<(), eyre::ErrReport> {
-    let reply_raw = session
-        .request(
-            &serde_json::to_vec(&ControlRequest::StopByName {
-                name,
-                grace_duration,
-                force,
-            })
-            .unwrap(),
-        )
-        .wrap_err("failed to send dataflow stop_by_name message")?;
-    let result: ControlRequestReply =
-        serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-    match result {
-        ControlRequestReply::DataflowStopped { uuid, result } => {
-            handle_dataflow_result(result, Some(uuid))
-        }
-        ControlRequestReply::Error(err) => bail!("{err}"),
-        other => bail!("unexpected stop dataflow reply: {other:?}"),
-    }
+        Some(session.stop(selection.uuid, grace_duration, force)?)
+    })
 }
