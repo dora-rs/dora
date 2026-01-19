@@ -9,11 +9,11 @@ use crate::{
     output::print_log_message,
 };
 use clap::Args;
-use communication_layer_request_reply::{Transport, transport::FramedTransport};
+use communication_layer_request_reply::{Protocol, Transport};
 use dora_core::topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST};
 use dora_message::{
     cli_to_coordinator::{
-        CliToCoordinatorClient, CliToCoordinatorEncoding, CliToCoordinatorRequest,
+        CliToCoordinatorClient, CliToCoordinatorProtocol, CliToCoordinatorRequest,
     },
     common::LogMessage,
     id::NodeId,
@@ -87,10 +87,10 @@ pub fn logs(
         .filter();
 
     // subscribe to log messages
-    let mut log_session = FramedTransport::new(
+    let mut log_session = CliToCoordinatorProtocol::connect(
         TcpStream::connect(coordinator_addr).wrap_err("failed to connect to dora coordinator")?,
     )
-    .with_encoding::<_, CliToCoordinatorRequest, LogMessage>(CliToCoordinatorEncoding);
+    .with_response::<LogMessage>();
     log_session.send(&CliToCoordinatorRequest::LogSubscribe {
         dataflow_id: uuid,
         level: log_level,

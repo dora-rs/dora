@@ -7,8 +7,14 @@
 //!
 //! TODO
 
+pub use encoding::EncodedTransport;
 pub use tcp::*;
 pub use transport::{AsyncTransport, Transport};
+
+use crate::{
+    encoding::{Decoder, Encoder},
+    transport::{ClientTransport, FramedTransport, ServerTransport},
+};
 
 pub mod encoding;
 mod tcp;
@@ -91,4 +97,38 @@ impl<T: RequestReplyConnection + ?Sized> RequestReplyConnection for &mut T {
     }
 }
 
-pub use encoding::EncodedTransport;
+pub trait Protocol {
+    type Encoding: Encoder<Self::Request>
+        + Decoder<Self::Request>
+        + Encoder<Self::Response>
+        + Decoder<Self::Response>
+        + Default;
+    type Request;
+    type Response;
+
+    fn bind<IO>(io: IO) -> ServerTransport<IO, Self>
+    where
+        IO: std::io::Read + std::io::Write,
+    {
+        EncodedTransport::new(FramedTransport::new(io), Self::Encoding::default())
+    }
+    fn bind_async<IO>(io: IO) -> ServerTransport<IO, Self>
+    where
+        IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send,
+    {
+        EncodedTransport::new(FramedTransport::new(io), Self::Encoding::default())
+    }
+
+    fn connect<IO>(io: IO) -> ClientTransport<IO, Self>
+    where
+        IO: std::io::Read + std::io::Write,
+    {
+        EncodedTransport::new(FramedTransport::new(io), Self::Encoding::default())
+    }
+    fn connect_async<IO>(io: IO) -> ClientTransport<IO, Self>
+    where
+        IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send,
+    {
+        EncodedTransport::new(FramedTransport::new(io), Self::Encoding::default())
+    }
+}

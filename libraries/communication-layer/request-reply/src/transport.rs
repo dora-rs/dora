@@ -1,6 +1,6 @@
 use std::io;
 
-use crate::EncodedTransport;
+use crate::{EncodedTransport, Protocol};
 
 use async_trait::async_trait;
 pub use framed::FramedTransport;
@@ -27,6 +27,23 @@ where
     {
         EncodedTransport::new(self, encoding)
     }
+
+    fn into_server<P>(self) -> EncodedTransport<Self, P::Encoding, P::Response, P::Request>
+    where
+        Self: Sized,
+        P: Protocol,
+        P::Encoding: Default,
+    {
+        EncodedTransport::new(self, P::Encoding::default())
+    }
+    fn into_client<P>(self) -> EncodedTransport<Self, P::Encoding, P::Request, P::Response>
+    where
+        Self: Sized,
+        P: Protocol,
+        P::Encoding: Default,
+    {
+        EncodedTransport::new(self, P::Encoding::default())
+    }
 }
 
 #[async_trait]
@@ -46,4 +63,34 @@ where
     {
         EncodedTransport::new(self, encoding)
     }
+
+    fn into_server<P>(self) -> EncodedTransport<Self, P::Encoding, P::Response, P::Request>
+    where
+        Self: Sized,
+        P: Protocol,
+        P::Encoding: Default,
+    {
+        EncodedTransport::new(self, P::Encoding::default())
+    }
+    fn into_client<P>(self) -> EncodedTransport<Self, P::Encoding, P::Request, P::Response>
+    where
+        Self: Sized,
+        P: Protocol,
+        P::Encoding: Default,
+    {
+        EncodedTransport::new(self, P::Encoding::default())
+    }
 }
+
+pub type ServerTransport<IO, P> = EncodedTransport<
+    FramedTransport<IO>,
+    <P as Protocol>::Encoding,
+    <P as Protocol>::Response,
+    <P as Protocol>::Request,
+>;
+pub type ClientTransport<IO, P> = EncodedTransport<
+    FramedTransport<IO>,
+    <P as Protocol>::Encoding,
+    <P as Protocol>::Request,
+    <P as Protocol>::Response,
+>;

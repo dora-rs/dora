@@ -10,6 +10,10 @@ pub fn response_enum_ident(schema: &SchemaInput) -> proc_macro2::Ident {
     format_ident!("{}Response", schema.item.ident)
 }
 
+pub fn protocol_ident(schema: &SchemaInput) -> proc_macro2::Ident {
+    format_ident!("{}Protocol", schema.item.ident)
+}
+
 /// Generates 2 enums representing the request and response messages
 pub fn generate_protocol(schema: &SchemaInput) -> proc_macro2::TokenStream {
     let (request_variants, response_variants): (Vec<_>, Vec<_>) = schema
@@ -32,6 +36,7 @@ pub fn generate_protocol(schema: &SchemaInput) -> proc_macro2::TokenStream {
 
     let request_enum = request_enum_ident(schema);
     let response_enum = response_enum_ident(schema);
+    let protocol_name = protocol_ident(schema);
 
     // TODO: better eyre conversion
     quote! {
@@ -44,6 +49,14 @@ pub fn generate_protocol(schema: &SchemaInput) -> proc_macro2::TokenStream {
         pub enum #response_enum {
             #(#response_variants,)*
             Error(::std::string::String),
+        }
+
+        pub struct #protocol_name;
+
+        impl ::communication_layer_request_reply::Protocol for #protocol_name {
+            type Encoding = ::communication_layer_request_reply::encoding::PostcardEncoding;
+            type Request = #request_enum;
+            type Response = #response_enum;
         }
     }
 }

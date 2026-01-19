@@ -3,6 +3,7 @@ use crate::encoding::{Decoder, Encoder};
 use serde::{Serialize, de::DeserializeOwned};
 use std::io;
 
+#[derive(Clone, Debug, Default)]
 pub struct BincodeEncoding;
 
 impl<T: Serialize> Encoder<T> for BincodeEncoding {

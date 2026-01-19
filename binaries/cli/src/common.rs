@@ -11,7 +11,7 @@ use dora_message::{
 use eyre::{Context, ContextCompat, bail};
 use std::{
     env::current_dir,
-    net::{IpAddr, SocketAddr},
+    net::{IpAddr, SocketAddr, TcpStream},
     path::{Path, PathBuf},
 };
 use tokio::runtime::Builder;
@@ -89,7 +89,7 @@ impl CoordinatorOptions {
 pub(crate) fn connect_to_coordinator(
     coordinator_addr: SocketAddr,
 ) -> std::io::Result<CliToCoordinatorClient> {
-    CliToCoordinatorClient::new_tcp(coordinator_addr)
+    TcpStream::connect(coordinator_addr).map(CliToCoordinatorClient::from_io)
 }
 
 pub(crate) fn resolve_dataflow(dataflow: String) -> eyre::Result<PathBuf> {

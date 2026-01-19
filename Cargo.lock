@@ -1704,6 +1704,7 @@ dependencies = [
  "serde",
  "serde-with-expand-env",
  "serde_json",
+ "serde_with",
  "serde_yaml 0.9.34+deprecated",
  "tokio",
  "uhlc 0.5.2",

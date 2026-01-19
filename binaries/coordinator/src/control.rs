@@ -1,9 +1,9 @@
 use crate::{
     Coordinator, handler::CliRequestHandler, log_subscriber::LogSubscriber, send_log_message,
 };
-use communication_layer_request_reply::{AsyncTransport, transport::FramedTransport};
+use communication_layer_request_reply::{AsyncTransport, Protocol};
 use dora_message::cli_to_coordinator::{
-    CliToCoordinator, CliToCoordinatorEncoding, CliToCoordinatorRequest, CliToCoordinatorResponse,
+    CliToCoordinator, CliToCoordinatorProtocol, CliToCoordinatorRequest, CliToCoordinatorResponse,
 };
 use eyre::{Context, eyre};
 use futures::{
@@ -81,10 +81,7 @@ pub(crate) async fn listen(
 
 async fn handle_requests(state: Arc<ListenState>, connection: TcpStream) {
     let peer_addr = connection.peer_addr().ok();
-    let mut transport = FramedTransport::new(connection)
-        .with_encoding::<_, CliToCoordinatorResponse, CliToCoordinatorRequest>(
-            CliToCoordinatorEncoding,
-        );
+    let mut transport = CliToCoordinatorProtocol::bind_async(connection);
     loop {
         let next_request = transport.receive().map(Either::Left);
         let coordinator_stopped = state.cancel_token.cancelled().map(Either::Right);
@@ -101,7 +98,7 @@ async fn handle_requests(state: Arc<ListenState>, connection: TcpStream) {
                         tracing::trace!("Control connection closed");
                         break;
                     }
-                    err => {
+                    _ => {
                         let err = eyre!(err).wrap_err("failed to receive incoming message");
                         tracing::error!("{err}");
                         break;
@@ -145,10 +142,7 @@ async fn handle_requests(state: Arc<ListenState>, connection: TcpStream) {
                 _ => unreachable!(),
             };
 
-            log_subscribers.push(LogSubscriber::new(
-                level,
-                transport.into_inner(),
-            ));
+            log_subscribers.push(LogSubscriber::new(level, transport.into_inner()));
             let buffered = std::mem::take(buffered_log_messages);
             for message in buffered {
                 send_log_message(log_subscribers, &message).await;

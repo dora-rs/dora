@@ -9,14 +9,14 @@ use crate::{
     output::print_log_message,
     session::DataflowSession,
 };
-use communication_layer_request_reply::{Transport, transport::FramedTransport};
+use communication_layer_request_reply::{Protocol, Transport};
 use dora_core::{
     descriptor::{Descriptor, DescriptorExt},
     topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST},
 };
 use dora_message::{
     cli_to_coordinator::{
-        CliToCoordinatorClient, CliToCoordinatorEncoding, CliToCoordinatorRequest, StartReq,
+        CliToCoordinatorClient, CliToCoordinatorProtocol, CliToCoordinatorRequest, StartReq,
     },
     common::LogMessage,
 };
@@ -120,10 +120,8 @@ fn start_dataflow(
 
     let mut session = connect_to_coordinator(coordinator_socket)
         .wrap_err("failed to connect to dora coordinator")?;
-    let mut coordinator_client = CliToCoordinatorClient::new_tcp(coordinator_socket)?;
 
-    let local_working_dir =
-        local_working_dir(&dataflow, &dataflow_descriptor, &mut coordinator_client)?;
+    let local_working_dir = local_working_dir(&dataflow, &dataflow_descriptor, &mut session)?;
 
     let dataflow_id = session.start(StartReq {
         build_id: dataflow_session.build_id,
@@ -145,10 +143,10 @@ fn wait_until_dataflow_started(
     print_daemon_id: bool,
 ) -> eyre::Result<()> {
     // subscribe to log messages
-    let mut log_session = FramedTransport::new(
+    let mut log_session = CliToCoordinatorProtocol::connect(
         TcpStream::connect(coordinator_addr).wrap_err("failed to connect to dora coordinator")?,
     )
-    .with_encoding::<_, CliToCoordinatorRequest, LogMessage>(CliToCoordinatorEncoding);
+    .with_response::<LogMessage>();
     log_session
         .send(&CliToCoordinatorRequest::LogSubscribe {
             dataflow_id,

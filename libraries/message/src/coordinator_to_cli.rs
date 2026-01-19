@@ -1,12 +1,9 @@
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    net::IpAddr,
-};
+use std::collections::BTreeMap;
 
 use uuid::Uuid;
 
 pub use crate::common::{LogLevel, LogMessage, NodeError, NodeErrorCause, NodeExitStatus};
-use crate::{BuildId, common::DaemonId, descriptor::Descriptor, id::NodeId};
+use crate::{common::DaemonId, id::NodeId};
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct NodeInfo {

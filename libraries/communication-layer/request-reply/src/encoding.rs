@@ -56,6 +56,26 @@ impl<T, Encoding, Req: ?Sized, Resp> EncodedTransport<T, Encoding, Req, Resp> {
     pub fn into_inner(self) -> T {
         self.inner
     }
+
+    pub fn with_request<Req2: ?Sized>(self) -> EncodedTransport<T, Encoding, Req2, Resp> {
+        EncodedTransport {
+            inner: self.inner,
+            buf: self.buf,
+            encoding: self.encoding,
+            _phantom1: PhantomData,
+            _phantom2: PhantomData,
+        }
+    }
+
+    pub fn with_response<Resp2>(self) -> EncodedTransport<T, Encoding, Req, Resp2> {
+        EncodedTransport {
+            inner: self.inner,
+            buf: self.buf,
+            encoding: self.encoding,
+            _phantom1: PhantomData,
+            _phantom2: PhantomData,
+        }
+    }
 }
 
 impl<T, Encoding, Req: ?Sized, Resp> Transport<Req, Resp>

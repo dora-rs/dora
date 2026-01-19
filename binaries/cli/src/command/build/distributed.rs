@@ -1,9 +1,9 @@
-use communication_layer_request_reply::{Transport, transport::FramedTransport};
+use communication_layer_request_reply::{Protocol, Transport};
 use dora_core::descriptor::Descriptor;
 use dora_message::{
     BuildId,
     cli_to_coordinator::{
-        CliToCoordinatorClient, CliToCoordinatorEncoding, CliToCoordinatorRequest,
+        CliToCoordinatorClient, CliToCoordinatorProtocol, CliToCoordinatorRequest,
     },
     common::{GitSource, LogMessage},
     id::NodeId,
@@ -42,10 +42,10 @@ pub fn wait_until_dataflow_built(
     log_level: log::LevelFilter,
 ) -> eyre::Result<BuildId> {
     // subscribe to log messages
-    let mut log_session = FramedTransport::new(
+    let mut log_session = CliToCoordinatorProtocol::connect(
         TcpStream::connect(coordinator_socket).wrap_err("failed to connect to dora coordinator")?,
     )
-    .with_encoding::<_, CliToCoordinatorRequest, LogMessage>(CliToCoordinatorEncoding);
+    .with_response::<LogMessage>();
     log_session
         .send(&CliToCoordinatorRequest::BuildLogSubscribe {
             build_id,

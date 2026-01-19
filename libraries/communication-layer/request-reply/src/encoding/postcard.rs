@@ -3,6 +3,7 @@ use crate::encoding::{Decoder, Encoder};
 use serde::{Serialize, de::DeserializeOwned};
 use std::{io, mem};
 
+#[derive(Clone, Debug, Default)]
 pub struct PostcardEncoding;
 
 impl<T: Serialize> Encoder<T> for PostcardEncoding {

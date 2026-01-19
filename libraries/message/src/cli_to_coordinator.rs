@@ -5,6 +5,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
+use serde_with::{json::JsonString, serde_as};
 use uuid::Uuid;
 
 use crate::{
@@ -14,8 +15,6 @@ use crate::{
     descriptor::Descriptor,
     id::{NodeId, OperatorId},
 };
-
-pub use communication_layer_request_reply::encoding::JsonEncoding as CliToCoordinatorEncoding;
 
 #[dora_schema_macro::dora_schema]
 pub trait CliToCoordinator {
@@ -128,10 +127,12 @@ pub struct WaitForBuildResp {
     pub result: Result<(), String>,
 }
 
+#[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StartReq {
     pub build_id: Option<BuildId>,
     pub session_id: SessionId,
+    #[serde_as(as = "JsonString")]
     pub dataflow: Descriptor,
     pub name: Option<String>,
     /// Allows overwriting the base working dir when CLI and daemon are

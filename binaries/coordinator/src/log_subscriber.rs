@@ -1,14 +1,19 @@
 use communication_layer_request_reply::{
-    AsyncTransport, EncodedTransport, transport::FramedTransport,
+    AsyncTransport, EncodedTransport, Protocol, transport::FramedTransport,
 };
-use dora_message::{cli_to_coordinator::CliToCoordinatorEncoding, coordinator_to_cli::LogMessage};
+use dora_message::{cli_to_coordinator::CliToCoordinatorProtocol, coordinator_to_cli::LogMessage};
 use eyre::{Context, ContextCompat};
 use tokio::net::TcpStream;
 
 pub struct LogSubscriber {
     pub level: log::LevelFilter,
     transport: Option<
-        EncodedTransport<FramedTransport<TcpStream>, CliToCoordinatorEncoding, LogMessage, ()>,
+        EncodedTransport<
+            FramedTransport<TcpStream>,
+            <CliToCoordinatorProtocol as Protocol>::Encoding,
+            LogMessage,
+            (),
+        >,
     >,
 }
 
@@ -16,7 +21,7 @@ impl LogSubscriber {
     pub fn new(level: log::LevelFilter, transport: FramedTransport<TcpStream>) -> Self {
         Self {
             level,
-            transport: Some(transport.with_encoding(CliToCoordinatorEncoding)),
+            transport: Some(EncodedTransport::new(transport, Default::default())),
         }
     }
 

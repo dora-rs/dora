@@ -34,3 +34,4 @@ chrono = { version = "0.4", features = ["serde"] }
 
 dora-schema-macro = { workspace = true }
 communication-layer-request-reply = { workspace = true }
+serde_with = { version = "3.16.1", features = ["json"] }

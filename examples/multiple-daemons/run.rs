@@ -1,5 +1,4 @@
 use dora_cli::session::DataflowSession;
-use dora_coordinator::Event;
 use dora_core::{
     descriptor::{DescriptorExt, read_as_descriptor},
     topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, DORA_COORDINATOR_PORT_DEFAULT},
@@ -16,7 +15,7 @@ use std::{
     path::Path,
     time::Duration,
 };
-use tokio::task::JoinSet;
+use tokio::{net::TcpStream, task::JoinSet};
 use uuid::Uuid;
 
 #[tokio::main]
@@ -56,11 +55,9 @@ async fn main() -> eyre::Result<()> {
     tasks.spawn(daemon_a);
 
     tokio::time::sleep(Duration::from_secs(1)).await;
-    let mut client = CliToCoordinatorAsyncClient::new_tcp(SocketAddr::new(
-        coordinator_addr.into(),
-        DORA_COORDINATOR_PORT_CONTROL_DEFAULT,
-    ))
-    .await?;
+    let mut client = CliToCoordinatorAsyncClient::from_io(
+        TcpStream::connect((coordinator_addr, DORA_COORDINATOR_PORT_CONTROL_DEFAULT)).await?,
+    );
 
     tracing::info!("waiting until daemons are connected to coordinator");
     let mut retries = 0;
