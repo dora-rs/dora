@@ -247,7 +247,7 @@ pub fn metadata_to_pydict<'a>(
     py: Python<'a>,
 ) -> Result<pyo3::Bound<'a, PyDict>> {
     let dict = PyDict::new(py);
-    
+
     // Add timestamp as timezone-aware Python datetime (UTC)
     // Note: uhlc::Timestamp is a Hybrid Logical Clock. We use get_time().to_system_time()
     // which extracts the physical clock component. This pattern is used consistently
@@ -258,21 +258,19 @@ pub fn metadata_to_pydict<'a>(
     let duration_since_epoch = system_time
         .duration_since(UNIX_EPOCH)
         .context("Failed to calculate duration since epoch")?;
-    
+
     // Extract seconds and microseconds (Python datetime supports microsecond precision)
     let seconds = duration_since_epoch.as_secs() as i64;
     let microseconds = duration_since_epoch.subsec_micros() as u32;
-    
+
     // Get UTC timezone from Python's datetime module and create timezone-aware datetime
     // We use Python's datetime.fromtimestamp() to create a UTC-aware datetime object
     // This avoids float precision loss by using integer seconds and microseconds
-    let datetime_module = PyModule::import(py, "datetime")
-        .context("Failed to import datetime module")?;
+    let datetime_module =
+        PyModule::import(py, "datetime").context("Failed to import datetime module")?;
     let datetime_class = datetime_module.getattr("datetime")?;
-    let utc_timezone = datetime_module
-        .getattr("timezone")?
-        .getattr("utc")?;
-    
+    let utc_timezone = datetime_module.getattr("timezone")?.getattr("utc")?;
+
     // Create timezone-aware datetime using fromtimestamp
     // We compute total_seconds as float (required by fromtimestamp) but preserve
     // precision by computing from integer seconds and microseconds separately
@@ -280,10 +278,10 @@ pub fn metadata_to_pydict<'a>(
     let py_datetime = datetime_class
         .call_method1("fromtimestamp", (total_seconds, utc_timezone))
         .context("Failed to create Python datetime from timestamp")?;
-    
+
     dict.set_item("timestamp", py_datetime)
         .context("Could not insert timestamp into python dictionary")?;
-    
+
     // Add existing parameters
     for (k, v) in metadata.parameters.iter() {
         match v {
