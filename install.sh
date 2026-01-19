@@ -23,8 +23,8 @@ FLAGS:
     -f, --force     Force overwriting an existing binary
 
 OPTIONS:
-    --repo REPO     Github Repository to install the binary from  [default: dora-rs]
-    --bin BIN       Name of the binary to install  [default: dora]
+    --repo REPO     Github Repository to install the binary from  [default: dora-rs/dora]
+    --bin BIN       Name of the binary to install  [default: dora-cli]
     --tag TAG       Tag (version) of the bin to install, defaults to latest release
     --to LOCATION   Where to install the binary [default: ~/.dora/bin]
     --target TARGET
@@ -101,14 +101,14 @@ while test $# -gt 0; do
 done
 
 if [ -z "${repo-}" ]; then
-  repo="dora-rs"
+  repo="dora-rs/dora"
 fi
 
 if [ -z "${bin-}" ]; then
-  bin="dora"
+  bin="dora-cli"
 fi
 
-url=https://github.com/$repo/$bin
+url=https://github.com/$repo
 releases=$url/releases
 
 command -v curl > /dev/null 2>&1 ||
@@ -134,7 +134,7 @@ fi
 
 if [ -z "${tag-}" ]; then
   tag=$(
-    download https://api.github.com/repos/$repo/$bin/releases/latest - |
+    download https://api.github.com/repos/$repo/releases/latest - |
     grep tag_name |
     cut -d'"' -f4
   )
@@ -149,7 +149,7 @@ if [ -z "${target-}" ]; then
   uname_target="$(uname -m)-$kernel"
 
   case $uname_target in
-    aarch64-Linux) target=aarch64-unknown-linux-musl;;
+    aarch64-Linux) target=aarch64-unknown-linux-gnu;;
     arm64-Darwin) target=aarch64-apple-darwin;;
     armv7l-Linux) target=armv7-unknown-linux-musleabihf;;
     x86_64-Darwin) target=x86_64-apple-darwin;;
@@ -162,10 +162,11 @@ if [ -z "${target-}" ]; then
 fi
 
 case $target in
-  *) extension=zip; need unzip;;
+  *-windows-*) extension=zip; need unzip;;
+  *) extension=tar.gz; need tar;;
 esac
 
-archive="$releases/download/$tag/$bin-$tag-$target.$extension"
+archive="$releases/download/$tag/$bin-$target.$extension"
 say "Repository:  $url"
 say "Bin:         $bin"
 say "Tag:         $tag"
@@ -184,14 +185,18 @@ fi
 
 echo "Placing dora-rs cli in $dest"
 
-if [ -e "$dest/$bin" ] && [ "$force" = false ]; then
-  echo " Replacing \`$dest/$bin\` with downloaded version"
-  cp "$td/$bin" "$dest/$bin"
-  chmod 755 "$dest/$bin"
+# Binary is named 'dora' inside subdirectory '$bin-$target/'
+src_bin="$td/$bin-$target/dora"
+dest_bin="$dest/dora"
+
+if [ -e "$dest_bin" ] && [ "$force" = false ]; then
+  echo " Replacing \`$dest_bin\` with downloaded version"
+  cp "$src_bin" "$dest_bin"
+  chmod 755 "$dest_bin"
 else
   mkdir -p "$dest"
-  cp "$td/$bin" "$dest/$bin"
-  chmod 755 "$dest/$bin"
+  cp "$src_bin" "$dest_bin"
+  chmod 755 "$dest_bin"
   echo ""
 fi
 
