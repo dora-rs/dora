@@ -15,9 +15,18 @@ use crate::{
     event_stream::data_to_arrow_array,
 };
 
-#[derive(Default)]
 pub struct InteractiveEvents {
     stopped: bool,
+    clock: HLC,
+}
+
+impl Default for InteractiveEvents {
+    fn default() -> Self {
+        Self {
+            stopped: false,
+            clock: HLC::default(),
+        }
+    }
 }
 
 impl InteractiveEvents {
@@ -33,7 +42,7 @@ impl InteractiveEvents {
                 let events = if let Some(event) = self.next_event()? {
                     let event = Timestamped {
                         inner: event,
-                        timestamp: HLC::default().new_timestamp(),
+                        timestamp: self.clock.new_timestamp(),
                     };
                     vec![event]
                 } else {
@@ -139,7 +148,7 @@ impl InteractiveEvents {
 
             NodeEvent::Input {
                 id,
-                metadata: Metadata::new(HLC::default().new_timestamp(), type_info),
+                metadata: Metadata::new(self.clock.new_timestamp(), type_info),
                 data: data.map(|d| DataMessage::Vec(aligned_vec::AVec::from_slice(1, &d))),
             }
         };
