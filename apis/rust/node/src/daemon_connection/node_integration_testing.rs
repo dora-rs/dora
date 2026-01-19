@@ -69,7 +69,10 @@ impl IntegrationTestingEvents {
             .sort_by(|a, b| a.time_offset_secs.total_cmp(&b.time_offset_secs));
         let inputs = std::mem::take(&mut node_info.events).into_iter();
 
-        let clock = HLC::default();
+        let mut clock = HLC::default();
+        // Initialize the clock with current system time (first call)
+        let _ = clock.new_timestamp();
+        // Get the actual start timestamp (second call)
         let start_timestamp = clock.new_timestamp();
         let start_time = Instant::now();
         Ok(Self {

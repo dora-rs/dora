@@ -136,7 +136,10 @@ impl Daemon {
         machine_id: Option<String>,
         local_listen_port: u16,
     ) -> eyre::Result<()> {
-        let clock = Arc::new(HLC::default());
+        let mut clock_instance = HLC::default();
+        // Initialize the clock with current system time
+        let _ = clock_instance.new_timestamp();
+        let clock = Arc::new(clock_instance);
 
         let mut ctrlc_events = set_up_ctrlc_handler(clock.clone())?;
         let (remote_daemon_events_tx, remote_daemon_events_rx) = flume::bounded(10);
@@ -247,7 +250,10 @@ impl Daemon {
             write_events_to,
         };
 
-        let clock = Arc::new(HLC::default());
+        let mut clock_instance = HLC::default();
+        // Initialize the clock with current system time
+        let _ = clock_instance.new_timestamp();
+        let clock = Arc::new(clock_instance);
 
         let ctrlc_events = ReceiverStream::new(set_up_ctrlc_handler(clock.clone())?);
 
@@ -2740,7 +2746,9 @@ impl RunningDataflow {
             let clock = clock.clone();
             let task = async move {
                 let mut interval_stream = tokio::time::interval(interval);
-                let hlc = HLC::default();
+                let mut hlc = HLC::default();
+                // Initialize the clock with current system time
+                let _ = hlc.new_timestamp();
                 loop {
                     interval_stream.tick().await;
 

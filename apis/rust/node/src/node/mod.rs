@@ -209,7 +209,10 @@ impl DoraNode {
 
         let mut channel =
             DaemonChannel::new_tcp(daemon_address).context("Could not connect to the daemon")?;
-        let clock = Arc::new(uhlc::HLC::default());
+        let mut clock_instance = uhlc::HLC::default();
+        // Initialize the clock with current system time
+        let _ = clock_instance.new_timestamp();
+        let clock = Arc::new(clock_instance);
 
         let reply = channel
             .request(&Timestamped {
@@ -425,7 +428,10 @@ impl DoraNode {
             dynamic,
             write_events_to,
         } = node_config;
-        let clock = Arc::new(uhlc::HLC::default());
+        let mut clock_instance = uhlc::HLC::default();
+        // Initialize the clock with current system time
+        let _ = clock_instance.new_timestamp();
+        let clock = Arc::new(clock_instance);
         let input_config = run_config.inputs.clone();
 
         let daemon_communication = match daemon_communication {

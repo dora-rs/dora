@@ -190,7 +190,10 @@ async fn start_inner(
     events: impl Stream<Item = Event> + Unpin,
     tasks: &FuturesUnordered<JoinHandle<()>>,
 ) -> eyre::Result<()> {
-    let clock = Arc::new(HLC::default());
+    let mut clock_instance = HLC::default();
+    // Initialize the clock with current system time
+    let _ = clock_instance.new_timestamp();
+    let clock = Arc::new(clock_instance);
 
     let (daemon_events_tx, daemon_events) = tokio::sync::mpsc::channel(2);
     let mut daemon_events_tx = Some(daemon_events_tx);

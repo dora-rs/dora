@@ -22,9 +22,14 @@ pub struct InteractiveEvents {
 
 impl Default for InteractiveEvents {
     fn default() -> Self {
+        let mut clock = HLC::default();
+        // Call new_timestamp() once to initialize the clock with current system time
+        // The first call updates the internal state from NTP epoch to current time
+        let _ = clock.new_timestamp();
+
         Self {
             stopped: false,
-            clock: HLC::default(),
+            clock,
         }
     }
 }
