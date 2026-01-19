@@ -13,7 +13,7 @@ use futures::{Stream, StreamExt};
 use futures_concurrency::stream::Merge as _;
 use pyo3::{
     prelude::*,
-    types::{timezone_utc_bound, IntoPyDict, PyBool, PyDateTime, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple},
+    types::{IntoPyDict, PyBool, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple},
 };
 
 /// Dora Event
@@ -247,7 +247,9 @@ pub fn metadata_to_pydict<'a>(
 ) -> Result<pyo3::Bound<'a, PyDict>> {
     let dict = PyDict::new(py);
 
-    // Add timestamp as Python datetime
+    // Add timestamp as Unix timestamp (float)
+    // PyDateTime is not available with abi3-py37 (limited API), so we return a float
+    // that Python code can convert to datetime using datetime.fromtimestamp()
     let timestamp = metadata.timestamp();
     let ntp64 = timestamp.get_time().as_u64();
 
@@ -268,14 +270,7 @@ pub fn metadata_to_pydict<'a>(
         let unix_secs = ntp_secs - NTP_UNIX_OFFSET_SECS;
         let unix_timestamp = unix_secs as f64 + (nanos as f64 / 1_000_000_000.0);
 
-        let datetime = PyDateTime::from_timestamp_bound(
-            py,
-            unix_timestamp,
-            Some(&timezone_utc_bound(py)),
-        )
-        .context("Failed to create Python datetime from timestamp")?;
-
-        dict.set_item("timestamp", datetime)
+        dict.set_item("timestamp", unix_timestamp)
             .context("Could not insert timestamp into python dictionary")?;
     }
 
