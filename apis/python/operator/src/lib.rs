@@ -13,7 +13,7 @@ use futures::{Stream, StreamExt};
 use futures_concurrency::stream::Merge as _;
 use pyo3::{
     prelude::*,
-    types::{IntoPyDict, PyBool, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple},
+    types::{timezone_utc_bound, IntoPyDict, PyBool, PyDateTime, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple},
 };
 
 /// Dora Event
@@ -246,6 +246,39 @@ pub fn metadata_to_pydict<'a>(
     py: Python<'a>,
 ) -> Result<pyo3::Bound<'a, PyDict>> {
     let dict = PyDict::new(py);
+
+    // Add timestamp as Python datetime
+    let timestamp = metadata.timestamp();
+    let ntp64 = timestamp.get_time().as_u64();
+
+    // NTP64 format: upper 32 bits are seconds, lower 32 bits are fractional seconds
+    // NTP epoch is January 1, 1900, Unix epoch is January 1, 1970
+    // Difference is 2208988800 seconds
+    const NTP_UNIX_OFFSET_SECS: u64 = 2208988800;
+
+    let ntp_secs = ntp64 >> 32; // Upper 32 bits: seconds since NTP epoch
+    let ntp_frac = ntp64 & 0xFFFFFFFF; // Lower 32 bits: fractional seconds
+
+    // Convert fractional part to nanoseconds
+    // The fractional part represents 1/2^32 of a second
+    let nanos = (ntp_frac as u128 * 1_000_000_000) / (1u128 << 32);
+
+    // Convert to Unix timestamp
+    if ntp_secs >= NTP_UNIX_OFFSET_SECS {
+        let unix_secs = ntp_secs - NTP_UNIX_OFFSET_SECS;
+        let unix_timestamp = unix_secs as f64 + (nanos as f64 / 1_000_000_000.0);
+
+        let datetime = PyDateTime::from_timestamp_bound(
+            py,
+            unix_timestamp,
+            Some(&timezone_utc_bound(py)),
+        )
+        .context("Failed to create Python datetime from timestamp")?;
+
+        dict.set_item("timestamp", datetime)
+            .context("Could not insert timestamp into python dictionary")?;
+    }
+
     for (k, v) in metadata.parameters.iter() {
         match v {
             Parameter::Bool(bool) => dict
