@@ -254,6 +254,7 @@ impl Daemon {
         let exit_when_done = spawn_command
             .nodes
             .values()
+            .filter(|n| !n.kind.dynamic())
             .map(|n| (spawn_command.dataflow_id, n.id.clone()))
             .collect();
         let (reply_tx, reply_rx) = oneshot::channel();
@@ -337,7 +338,8 @@ impl Daemon {
         let zenoh_session = open_zenoh_session(coordinator_addr.map(|addr| addr.ip()))
             .await
             .wrap_err("failed to open zenoh session")?;
-        let (dora_events_tx, dora_events_rx) = mpsc::channel(5);
+        // Use a large channel capacity to prevent deadlock
+        let (dora_events_tx, dora_events_rx) = mpsc::channel(1000);
         let daemon = Self {
             logger: Logger {
                 destination: log_destination,
