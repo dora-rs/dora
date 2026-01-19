@@ -265,14 +265,12 @@ pub fn metadata_to_pydict<'a>(
     // The fractional part represents 1/2^32 of a second
     let nanos = (ntp_frac as u128 * 1_000_000_000) / (1u128 << 32);
 
-    // Convert to Unix timestamp
-    if ntp_secs >= NTP_UNIX_OFFSET_SECS {
-        let unix_secs = ntp_secs - NTP_UNIX_OFFSET_SECS;
-        let unix_timestamp = unix_secs as f64 + (nanos as f64 / 1_000_000_000.0);
+    // Convert to Unix timestamp (can be negative if before Unix epoch)
+    let unix_secs = (ntp_secs as i64) - (NTP_UNIX_OFFSET_SECS as i64);
+    let unix_timestamp = unix_secs as f64 + (nanos as f64 / 1_000_000_000.0);
 
-        dict.set_item("timestamp", unix_timestamp)
-            .context("Could not insert timestamp into python dictionary")?;
-    }
+    dict.set_item("timestamp", unix_timestamp)
+        .context("Could not insert timestamp into python dictionary")?;
 
     for (k, v) in metadata.parameters.iter() {
         match v {
