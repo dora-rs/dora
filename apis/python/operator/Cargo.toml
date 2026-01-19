@@ -13,7 +13,7 @@ repository.workspace = true
 
 [dependencies]
 dora-node-api = { workspace = true }
-pyo3 = { workspace = true, features = ["eyre", "abi3-py37"] }
+pyo3 = { workspace = true, features = ["eyre"] }
 eyre = "0.6"
 serde_yaml = { workspace = true }
 flume = "0.10.14"
