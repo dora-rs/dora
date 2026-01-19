@@ -15,6 +15,8 @@ use crate::{
     id::{NodeId, OperatorId},
 };
 
+pub use communication_layer_request_reply::encoding::JsonEncoding as CliToCoordinatorEncoding;
+
 #[dora_schema_macro::dora_schema]
 pub trait CliToCoordinator {
     /// Builds a dataflow by distributing build tasks to appropriate daemons.
@@ -48,10 +50,10 @@ pub trait CliToCoordinator {
     /// spawning of nodes across connected daemons and returns a [`UUID`] for tracking
     /// the dataflow execution.
     ///
-    /// # Response  
+    /// # Response
     /// A [`UUID`] that identifies this specific dataflow execution
     ///
-    /// # Error Handling  
+    /// # Error Handling
     ///
     /// Returns `ControlRequestReply::Error` if:
     /// - Dataflow name is already in use

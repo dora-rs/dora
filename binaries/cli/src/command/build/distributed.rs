@@ -1,10 +1,10 @@
-use communication_layer_request_reply::{
-    Transport, encoding::JsonEncoding, transport::FramedTransport,
-};
+use communication_layer_request_reply::{Transport, transport::FramedTransport};
 use dora_core::descriptor::Descriptor;
 use dora_message::{
     BuildId,
-    cli_to_coordinator::{CliToCoordinatorClient, CliToCoordinatorRequest},
+    cli_to_coordinator::{
+        CliToCoordinatorClient, CliToCoordinatorEncoding, CliToCoordinatorRequest,
+    },
     common::{GitSource, LogMessage},
     id::NodeId,
 };
@@ -45,7 +45,7 @@ pub fn wait_until_dataflow_built(
     let mut log_session = FramedTransport::new(
         TcpStream::connect(coordinator_socket).wrap_err("failed to connect to dora coordinator")?,
     )
-    .with_encoding::<_, CliToCoordinatorRequest, LogMessage>(JsonEncoding);
+    .with_encoding::<_, CliToCoordinatorRequest, LogMessage>(CliToCoordinatorEncoding);
     log_session
         .send(&CliToCoordinatorRequest::BuildLogSubscribe {
             build_id,

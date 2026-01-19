@@ -1,11 +1,9 @@
 use crate::{
     Coordinator, handler::CliRequestHandler, log_subscriber::LogSubscriber, send_log_message,
 };
-use communication_layer_request_reply::{
-    AsyncTransport, encoding::JsonEncoding, transport::FramedTransport,
-};
+use communication_layer_request_reply::{AsyncTransport, transport::FramedTransport};
 use dora_message::cli_to_coordinator::{
-    CliToCoordinator, CliToCoordinatorRequest, CliToCoordinatorResponse,
+    CliToCoordinator, CliToCoordinatorEncoding, CliToCoordinatorRequest, CliToCoordinatorResponse,
 };
 use eyre::{Context, eyre};
 use futures::{
@@ -84,7 +82,9 @@ pub(crate) async fn listen(
 async fn handle_requests(state: Arc<ListenState>, connection: TcpStream) {
     let peer_addr = connection.peer_addr().ok();
     let mut transport = FramedTransport::new(connection)
-        .with_encoding::<_, CliToCoordinatorResponse, CliToCoordinatorRequest>(JsonEncoding);
+        .with_encoding::<_, CliToCoordinatorResponse, CliToCoordinatorRequest>(
+            CliToCoordinatorEncoding,
+        );
     loop {
         let next_request = transport.receive().map(Either::Left);
         let coordinator_stopped = state.cancel_token.cancelled().map(Either::Right);
@@ -147,7 +147,7 @@ async fn handle_requests(state: Arc<ListenState>, connection: TcpStream) {
 
             log_subscribers.push(LogSubscriber::new(
                 level,
-                transport.into_inner().into_inner(),
+                transport.into_inner(),
             ));
             let buffered = std::mem::take(buffered_log_messages);
             for message in buffered {
