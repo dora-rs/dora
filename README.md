@@ -146,6 +146,12 @@ cargo install dora-cli
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/dora-rs/dora/releases/latest/download/dora-cli-installer.sh | sh
 ```
 
+To install a specific version:
+
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf https://raw.githubusercontent.com/dora-rs/dora/main/install.sh | sh -s -- --tag v0.3.12
+```
+
 ### With Github release for Windows
 
 ```powershell
