@@ -34,20 +34,27 @@ pub struct LogsArgs {
     #[clap(long, short)]
     pub follow: bool,
     /// Address of the dora coordinator
-    #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
-    pub coordinator_addr: std::net::IpAddr,
+    #[clap(long, value_name = "IP")]
+    pub coordinator_addr: Option<std::net::IpAddr>,
     /// Port number of the coordinator control server
-    #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
-    pub coordinator_port: u16,
+    #[clap(long, value_name = "PORT")]
+    pub coordinator_port: Option<u16>,
 }
 
 impl Executable for LogsArgs {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
 
-        let mut session =
-            connect_to_coordinator((self.coordinator_addr, self.coordinator_port).into())
-                .wrap_err("failed to connect to dora coordinator")?;
+        // Resolve coordinator address and port from CLI args, config, or defaults
+        use crate::common::resolve_coordinator_addr;
+        let (addr, port) = resolve_coordinator_addr(
+            self.coordinator_addr,
+            self.coordinator_port,
+            DORA_COORDINATOR_PORT_CONTROL_DEFAULT,
+        );
+
+        let mut session = connect_to_coordinator((addr, port).into())
+            .wrap_err("failed to connect to dora coordinator")?;
         let uuid =
             resolve_dataflow_identifier_interactive(&mut *session, self.dataflow.as_deref())?;
         logs(
@@ -56,7 +63,7 @@ impl Executable for LogsArgs {
             self.node,
             self.tail,
             self.follow,
-            (self.coordinator_addr, self.coordinator_port).into(),
+            (addr, port).into(),
         )
     }
 }

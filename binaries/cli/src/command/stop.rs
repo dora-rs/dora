@@ -38,19 +38,26 @@ pub struct Stop {
     #[clap(short, long, action, group = "strategy")]
     force: bool,
     /// Address of the dora coordinator
-    #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
-    coordinator_addr: IpAddr,
+    #[clap(long, value_name = "IP")]
+    coordinator_addr: Option<IpAddr>,
     /// Port number of the coordinator control server
-    #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
-    coordinator_port: u16,
+    #[clap(long, value_name = "PORT")]
+    coordinator_port: Option<u16>,
 }
 
 impl Executable for Stop {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
-        let mut session =
-            connect_to_coordinator((self.coordinator_addr, self.coordinator_port).into())
-                .wrap_err("could not connect to dora coordinator")?;
+
+        use crate::common::resolve_coordinator_addr;
+        let (addr, port) = resolve_coordinator_addr(
+            self.coordinator_addr,
+            self.coordinator_port,
+            DORA_COORDINATOR_PORT_CONTROL_DEFAULT,
+        );
+
+        let mut session = connect_to_coordinator((addr, port).into())
+            .wrap_err("could not connect to dora coordinator")?;
         match (self.uuid, self.name) {
             (Some(uuid), _) => stop_dataflow(uuid, self.grace_duration, self.force, &mut *session),
             (None, Some(name)) => {

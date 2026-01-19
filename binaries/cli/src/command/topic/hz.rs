@@ -67,6 +67,7 @@ impl Executable for Hz {
     fn execute(self) -> eyre::Result<()> {
         let mut session = self.coordinator.connect()?;
         let (dataflow_id, topics) = self.selector.resolve(session.as_mut())?;
+        let (coordinator_addr, _) = self.coordinator.resolve();
 
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -74,14 +75,7 @@ impl Executable for Hz {
             .context("tokio runtime failed")?;
         let terminal = ratatui::init();
         rt.block_on(async move {
-            run_hz(
-                terminal,
-                self.window,
-                dataflow_id,
-                topics,
-                self.coordinator.coordinator_addr,
-            )
-            .await
+            run_hz(terminal, self.window, dataflow_id, topics, coordinator_addr).await
         })
         .inspect(|_| {
             ratatui::restore();

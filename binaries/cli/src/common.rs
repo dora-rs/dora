@@ -83,19 +83,84 @@ pub(crate) fn resolve_dataflow_identifier_interactive(
 #[derive(Debug, clap::Args)]
 pub(crate) struct CoordinatorOptions {
     /// Address of the dora coordinator
-    #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
-    pub coordinator_addr: IpAddr,
+    #[clap(long, value_name = "IP")]
+    pub coordinator_addr: Option<IpAddr>,
     /// Port number of the coordinator control server
-    #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
-    pub coordinator_port: u16,
+    #[clap(long, value_name = "PORT")]
+    pub coordinator_port: Option<u16>,
 }
 
 impl CoordinatorOptions {
+    /// Resolve coordinator address and port from CLI args, config file, or defaults
+    /// Priority: CLI args > config file > hardcoded defaults
+    pub fn resolve(&self) -> (IpAddr, u16) {
+        use crate::command::config::DoraConfig;
+
+        // Try to load config (ignore errors, just use defaults)
+        let config = DoraConfig::load().ok();
+
+        let addr = self
+            .coordinator_addr
+            .or_else(|| {
+                config
+                    .as_ref()
+                    .and_then(|c| c.coordinator.as_ref())
+                    .and_then(|c| c.addr)
+            })
+            .unwrap_or(LOCALHOST);
+
+        let port = self
+            .coordinator_port
+            .or_else(|| {
+                config
+                    .as_ref()
+                    .and_then(|c| c.coordinator.as_ref())
+                    .and_then(|c| c.port)
+            })
+            .unwrap_or(DORA_COORDINATOR_PORT_CONTROL_DEFAULT);
+
+        (addr, port)
+    }
+
     pub fn connect(&self) -> eyre::Result<Box<TcpRequestReplyConnection>> {
-        let session = connect_to_coordinator((self.coordinator_addr, self.coordinator_port).into())
+        let (addr, port) = self.resolve();
+        let session = connect_to_coordinator((addr, port).into())
             .wrap_err("failed to connect to dora coordinator")?;
         Ok(session)
     }
+}
+
+/// Resolve coordinator address and port from optional CLI args, config file, or defaults
+/// Priority: CLI args > config file > hardcoded defaults
+pub(crate) fn resolve_coordinator_addr(
+    cli_addr: Option<IpAddr>,
+    cli_port: Option<u16>,
+    default_port: u16,
+) -> (IpAddr, u16) {
+    use crate::command::config::DoraConfig;
+
+    // Try to load config (ignore errors, just use defaults)
+    let config = DoraConfig::load().ok();
+
+    let addr = cli_addr
+        .or_else(|| {
+            config
+                .as_ref()
+                .and_then(|c| c.coordinator.as_ref())
+                .and_then(|c| c.addr)
+        })
+        .unwrap_or(LOCALHOST);
+
+    let port = cli_port
+        .or_else(|| {
+            config
+                .as_ref()
+                .and_then(|c| c.coordinator.as_ref())
+                .and_then(|c| c.port)
+        })
+        .unwrap_or(default_port);
+
+    (addr, port)
 }
 
 pub(crate) fn connect_to_coordinator(
