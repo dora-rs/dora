@@ -7,7 +7,7 @@ mod syntax;
 use proc_macro::TokenStream;
 use quote::quote;
 
-use crate::syntax::SchemaInput;
+use crate::syntax::{AttributeArgs, SchemaInput};
 
 /// Defines a protocol schema, generating the protocol enums, client, and server trait.
 ///
@@ -41,8 +41,11 @@ use crate::syntax::SchemaInput;
 /// ```
 ///
 #[proc_macro_attribute]
-pub fn dora_schema(_attr: TokenStream, input: TokenStream) -> TokenStream {
-    let schema = syn::parse_macro_input!(input as SchemaInput);
+pub fn dora_schema(attr: TokenStream, input: TokenStream) -> TokenStream {
+    let mut schema = syn::parse_macro_input!(input as SchemaInput);
+    let args = syn::parse_macro_input!(attr as AttributeArgs);
+
+    schema.encoding = args.encoding;
 
     let protocol_code = protocol::generate_protocol(&schema);
     let client_code = client::generate_client(&schema);

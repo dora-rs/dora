@@ -37,6 +37,10 @@ pub fn generate_protocol(schema: &SchemaInput) -> proc_macro2::TokenStream {
     let request_enum = request_enum_ident(schema);
     let response_enum = response_enum_ident(schema);
     let protocol_name = protocol_ident(schema);
+    let encoding = schema
+        .encoding
+        .clone()
+        .unwrap_or_else(|| format_ident!("PostcardEncoding"));
 
     // TODO: better eyre conversion
     quote! {
@@ -54,7 +58,7 @@ pub fn generate_protocol(schema: &SchemaInput) -> proc_macro2::TokenStream {
         pub struct #protocol_name;
 
         impl ::communication_layer_request_reply::Protocol for #protocol_name {
-            type Encoding = ::communication_layer_request_reply::encoding::PostcardEncoding;
+            type Encoding = ::communication_layer_request_reply::encoding::#encoding;
             type Request = #request_enum;
             type Response = #response_enum;
         }

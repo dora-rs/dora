@@ -3,7 +3,7 @@ use std::{collections::HashSet, mem};
 use convert_case::{Case, Casing};
 use quote::format_ident;
 use syn::{
-    Attribute, ItemTrait, Result,
+    Attribute, Ident, ItemTrait, Result,
     parse::{Parse, ParseStream},
 };
 
@@ -26,6 +26,7 @@ impl MethodDef {
 #[derive(Debug)]
 pub struct SchemaInput {
     pub item: ItemTrait,
+    pub encoding: Option<Ident>,
     pub methods: Vec<MethodDef>,
 }
 
@@ -79,7 +80,47 @@ impl Parse for SchemaInput {
             }
         }
 
-        Ok(SchemaInput { item, methods })
+        Ok(SchemaInput {
+            item,
+            methods,
+            encoding: None,
+        })
+    }
+}
+
+#[derive(Debug)]
+pub struct AttributeArgs {
+    pub encoding: Option<Ident>,
+}
+
+impl Parse for AttributeArgs {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let mut encoding = None;
+
+        while !input.is_empty() {
+            let lookahead = input.lookahead1();
+            if lookahead.peek(syn::Ident) {
+                let ident: Ident = input.parse()?;
+                if ident == "encoding" {
+                    let _eq_token: syn::Token![=] = input.parse()?;
+                    let value: Ident = input.parse()?;
+                    encoding = Some(value);
+                } else {
+                    return Err(syn::Error::new_spanned(
+                        ident.clone(),
+                        format!("Unknown attribute `{}`", ident),
+                    ));
+                }
+            } else {
+                return Err(lookahead.error());
+            }
+
+            if input.peek(syn::Token![,]) {
+                let _comma: syn::Token![,] = input.parse()?;
+            }
+        }
+
+        Ok(AttributeArgs { encoding })
     }
 }
 

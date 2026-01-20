@@ -16,7 +16,7 @@ use crate::{
     id::{NodeId, OperatorId},
 };
 
-#[dora_schema_macro::dora_schema]
+#[dora_schema_macro::dora_schema(encoding = PostcardEncoding)]
 pub trait CliToCoordinator {
     /// Builds a dataflow by distributing build tasks to appropriate daemons.
     ///
