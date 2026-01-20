@@ -66,7 +66,7 @@ pub struct Hz {
 impl Executable for Hz {
     fn execute(self) -> eyre::Result<()> {
         let mut session = self.coordinator.connect()?;
-        let (dataflow_id, topics) = self.selector.resolve(session.as_mut())?;
+        let (dataflow_id, topics) = self.selector.resolve(&mut session)?;
 
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -351,16 +351,6 @@ fn ui(
     start: Instant,
     window_dur: Duration,
 ) {
-    // Layout: table | charts | footer
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage(55),
-            Constraint::Percentage(44),
-            Constraint::Length(1),
-        ])
-        .split(f.area());
-
     // Table header: interval stats in ms + derived avg Hz
     let header = Row::new([
         "Output", "Avg (ms)", "Avg (Hz)", "Min (ms)", "Max (ms)", "Std (ms)",

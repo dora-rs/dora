@@ -12,3 +12,20 @@ repository.workspace = true
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
+
+[features]
+default = ["bincode", "postcard", "json", "yaml"]
+bincode = ["dep:bincode"]
+postcard = ["dep:postcard"]
+json = ["dep:serde_json"]
+yaml = ["dep:serde_yaml"]
+
+[dependencies]
+async-trait = { workspace = true }
+bincode = { version = "1.3.3", optional = true }
+postcard = { version = "1.1.3", features = ["use-std"], optional = true }
+serde = "1.0.228"
+serde_json = { version = "1.0.132", optional = true }
+serde_yaml = { version = "0.9.34", optional = true }
+shared-memory-server = { workspace = true }
+tokio = { version = "1.49.0", features = ["io-util"] }

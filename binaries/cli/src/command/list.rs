@@ -7,13 +7,11 @@ use crate::{
     formatting::OutputFormat,
 };
 use clap::Args;
-use communication_layer_request_reply::TcpRequestReplyConnection;
 use dora_core::topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT;
 use dora_message::{
-    cli_to_coordinator::ControlRequest,
-    coordinator_to_cli::{ControlRequestReply, DataflowStatus},
+    cli_to_coordinator::CliToCoordinatorClient, coordinator_to_cli::DataflowStatus,
 };
-use eyre::{Context, bail, eyre};
+use eyre::{Context, eyre};
 use serde::Serialize;
 use tabwriter::TabWriter;
 use uuid::Uuid;
@@ -50,7 +48,7 @@ impl Executable for ListArgs {
                 .map_err(|_| eyre!("Failed to connect to coordinator"))?;
 
         list(
-            &mut *session,
+            &mut session,
             self.format,
             self.status,
             self.name,
@@ -77,7 +75,7 @@ struct DataflowMetrics {
 }
 
 fn list(
-    session: &mut TcpRequestReplyConnection,
+    session: &mut CliToCoordinatorClient,
     format: OutputFormat,
     status_filter: Option<String>,
     name_filter: Option<String>,
@@ -86,27 +84,16 @@ fn list(
     let list = query_running_dataflows(session)?;
 
     // Get node information
-    let node_info_reply = session
-        .request(&serde_json::to_vec(&ControlRequest::GetNodeInfo).unwrap())
-        .wrap_err("failed to send GetNodeInfo request")?;
-
-    let reply: ControlRequestReply =
-        serde_json::from_slice(&node_info_reply).wrap_err("failed to parse node info reply")?;
-
-    let node_infos = match reply {
-        ControlRequestReply::NodeInfoList(infos) => infos,
-        ControlRequestReply::Error(err) => bail!("{err}"),
-        other => bail!("unexpected node info reply: {other:?}"),
-    };
+    let node_infos = session
+        .get_node_info()
+        .wrap_err("failed to call get_node_info")?;
 
     // Aggregate metrics by dataflow UUID
     let mut dataflow_metrics: std::collections::BTreeMap<Uuid, DataflowMetrics> =
         std::collections::BTreeMap::new();
 
     for node_info in node_infos {
-        let metrics = dataflow_metrics
-            .entry(node_info.dataflow_id)
-            .or_insert_with(DataflowMetrics::default);
+        let metrics = dataflow_metrics.entry(node_info.dataflow_id).or_default();
         metrics.node_count += 1;
 
         if let Some(node_metrics) = node_info.metrics {
@@ -197,7 +184,11 @@ fn list(
         OutputFormat::Table => {
             let mut tw = TabWriter::new(std::io::stdout().lock());
             // Header
-            tw.write_all(format!("UUID\tName\tStatus\tNodes\tCPU\tMemory\n").as_bytes())?;
+            tw.write_all(
+                "UUID\tName\tStatus\tNodes\tCPU\tMemory\n"
+                    .to_string()
+                    .as_bytes(),
+            )?;
             for entry in entries {
                 let status = match entry.status {
                     DataflowStatus::Running => "Running",
@@ -207,13 +198,8 @@ fn list(
 
                 tw.write_all(
                     format!(
-                        "{}\t{}\t{}\t{}\t{}\t{}\n",
-                        entry.uuid,
-                        entry.name,
-                        status,
-                        entry.nodes,
-                        format!("{:.1}%", entry.cpu),
-                        format!("{:.1} GB", entry.memory)
+                        "{}\t{}\t{}\t{}\t{:.1}%\t{:.1} GB\n",
+                        entry.uuid, entry.name, status, entry.nodes, entry.cpu, entry.memory
                     )
                     .as_bytes(),
                 )?;

@@ -1,18 +1,17 @@
 use crate::{LOCALHOST, formatting::FormatDataflowError};
-use communication_layer_request_reply::{RequestReplyLayer, TcpLayer, TcpRequestReplyConnection};
 use dora_core::{
     descriptor::{Descriptor, source_is_url},
     topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT,
 };
 use dora_download::download_file;
 use dora_message::{
-    cli_to_coordinator::ControlRequest,
-    coordinator_to_cli::{ControlRequestReply, DataflowList, DataflowResult},
+    cli_to_coordinator::CliToCoordinatorClient,
+    coordinator_to_cli::{DataflowList, DataflowResult},
 };
 use eyre::{Context, ContextCompat, bail};
 use std::{
     env::current_dir,
-    net::{IpAddr, SocketAddr},
+    net::{IpAddr, SocketAddr, TcpStream},
     path::{Path, PathBuf},
 };
 use tokio::runtime::Builder;
@@ -37,24 +36,13 @@ pub(crate) fn handle_dataflow_result(
 }
 
 pub(crate) fn query_running_dataflows(
-    session: &mut TcpRequestReplyConnection,
+    session: &mut CliToCoordinatorClient,
 ) -> eyre::Result<DataflowList> {
-    let reply_raw = session
-        .request(&serde_json::to_vec(&ControlRequest::List).unwrap())
-        .wrap_err("failed to send list message")?;
-    let reply: ControlRequestReply =
-        serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-    let ids = match reply {
-        ControlRequestReply::DataflowList(list) => list,
-        ControlRequestReply::Error(err) => bail!("{err}"),
-        other => bail!("unexpected list dataflow reply: {other:?}"),
-    };
-
-    Ok(ids)
+    session.list().map(DataflowList)
 }
 
 pub(crate) fn resolve_dataflow_identifier_interactive(
-    session: &mut TcpRequestReplyConnection,
+    session: &mut CliToCoordinatorClient,
     name_or_uuid: Option<&str>,
 ) -> eyre::Result<Uuid> {
     if let Some(uuid) = name_or_uuid.and_then(|s| Uuid::parse_str(s).ok()) {
@@ -91,7 +79,7 @@ pub(crate) struct CoordinatorOptions {
 }
 
 impl CoordinatorOptions {
-    pub fn connect(&self) -> eyre::Result<Box<TcpRequestReplyConnection>> {
+    pub fn connect(&self) -> eyre::Result<CliToCoordinatorClient> {
         let session = connect_to_coordinator((self.coordinator_addr, self.coordinator_port).into())
             .wrap_err("failed to connect to dora coordinator")?;
         Ok(session)
@@ -100,8 +88,8 @@ impl CoordinatorOptions {
 
 pub(crate) fn connect_to_coordinator(
     coordinator_addr: SocketAddr,
-) -> std::io::Result<Box<TcpRequestReplyConnection>> {
-    TcpLayer::new().connect(coordinator_addr)
+) -> std::io::Result<CliToCoordinatorClient> {
+    TcpStream::connect(coordinator_addr).map(CliToCoordinatorClient::from_io)
 }
 
 pub(crate) fn resolve_dataflow(dataflow: String) -> eyre::Result<PathBuf> {
@@ -123,14 +111,14 @@ pub(crate) fn resolve_dataflow(dataflow: String) -> eyre::Result<PathBuf> {
 pub(crate) fn local_working_dir(
     dataflow_path: &Path,
     dataflow_descriptor: &Descriptor,
-    coordinator_session: &mut TcpRequestReplyConnection,
+    coordinator_client: &mut CliToCoordinatorClient,
 ) -> eyre::Result<Option<PathBuf>> {
     Ok(
         if dataflow_descriptor
             .nodes
             .iter()
             .all(|n| n.deploy.as_ref().map(|d| d.machine.as_ref()).is_none())
-            && cli_and_daemon_on_same_machine(coordinator_session)?
+            && cli_and_daemon_on_same_machine(coordinator_client)?
         {
             Some(
                 dunce::canonicalize(dataflow_path)
@@ -146,22 +134,10 @@ pub(crate) fn local_working_dir(
 }
 
 pub(crate) fn cli_and_daemon_on_same_machine(
-    session: &mut TcpRequestReplyConnection,
+    coordinator_client: &mut CliToCoordinatorClient,
 ) -> eyre::Result<bool> {
-    let reply_raw = session
-        .request(&serde_json::to_vec(&ControlRequest::CliAndDefaultDaemonOnSameMachine).unwrap())
-        .wrap_err("failed to send start dataflow message")?;
-
-    let result: ControlRequestReply =
-        serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-    match result {
-        ControlRequestReply::CliAndDefaultDaemonIps {
-            default_daemon,
-            cli,
-        } => Ok(default_daemon.is_some() && default_daemon == cli),
-        ControlRequestReply::Error(err) => bail!("{err}"),
-        other => bail!("unexpected start dataflow reply: {other:?}"),
-    }
+    let resp = coordinator_client.cli_and_default_daemon_on_same_machine()?;
+    Ok(resp.default_daemon.is_some() && resp.default_daemon == resp.cli)
 }
 
 pub(crate) fn write_events_to() -> Option<PathBuf> {
