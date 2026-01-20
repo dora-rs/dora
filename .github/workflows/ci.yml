@@ -60,10 +60,12 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           docker system prune --all -f
-          docker builder prune -af 
-          Remove-Item "C:\Android" -Force -Recurse
+          docker builder prune -af
+          Remove-Item "C:\Android" -Force -Recurse -ErrorAction SilentlyContinue
           Remove-Item "C:\hostedtoolcache\windows\Ruby" -Force -Recurse -ErrorAction SilentlyContinue
           Remove-Item "C:\hostedtoolcache\windows\go" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\hostedtoolcache\windows\Java*" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\hostedtoolcache\windows\CodeQL" -Force -Recurse -ErrorAction SilentlyContinue
           Remove-Item "C:\Program Files (x86)\Microsoft SDKs\Azure" -Force -Recurse -ErrorAction SilentlyContinue
           Remove-Item "C:\Program Files\Azure Cosmos DB Emulator" -Force -Recurse -ErrorAction SilentlyContinue
           Remove-Item "C:\Program Files\MongoDB" -Force -Recurse -ErrorAction SilentlyContinue
@@ -71,6 +73,12 @@ jobs:
           Remove-Item "C:\Program Files\PostgreSQL" -Force -Recurse -ErrorAction SilentlyContinue
           Remove-Item "C:\Selenium" -Force -Recurse -ErrorAction SilentlyContinue
           Remove-Item "C:\SeleniumWebDrivers" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\Program Files\dotnet\sdk\*" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\Program Files\dotnet\shared" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\Program Files (x86)\Microsoft Visual Studio\2019" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\ProgramData\Chocolatey" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\mingw64" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\Strawberry" -Force -Recurse -ErrorAction SilentlyContinue
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -121,7 +129,25 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           docker system prune --all -f
-          Remove-Item "C:\Android" -Force -Recurse
+          docker builder prune -af
+          Remove-Item "C:\Android" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\hostedtoolcache\windows\Ruby" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\hostedtoolcache\windows\go" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\hostedtoolcache\windows\Java*" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\hostedtoolcache\windows\CodeQL" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\Program Files (x86)\Microsoft SDKs\Azure" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\Program Files\Azure Cosmos DB Emulator" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\Program Files\MongoDB" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\mysql*" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\Program Files\PostgreSQL" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\Selenium" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\SeleniumWebDrivers" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\Program Files\dotnet\sdk\*" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\Program Files\dotnet\shared" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\Program Files (x86)\Microsoft Visual Studio\2019" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\ProgramData\Chocolatey" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\mingw64" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\Strawberry" -Force -Recurse -ErrorAction SilentlyContinue
       - uses: Swatinem/rust-cache@v2
         with:
           cache-provider: buildjet
