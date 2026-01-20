@@ -390,4 +390,284 @@ check_pip_dora_rs() {
 
 check_pip_dora_rs
 
+# Check Cargo.toml dora-node-api version compatibility (recursive for workspaces)
+check_cargo_toml_version() {
+  # Check if any Cargo.toml files exist
+  if ! find . -name "Cargo.toml" -not -path "*/target/*" -print -quit 2>/dev/null | grep -q .; then
+    return
+  fi
+
+  # Extract version from tag (remove 'v' prefix if present)
+  tag_version=$(echo "$tag" | sed 's/^v//')
+  tag_major_minor=$(echo "$tag_version" | cut -d'.' -f1,2)
+
+  mismatched_files=""
+  mismatched_list=""
+  matched_version=""
+
+  # Use find with -exec to properly handle file paths
+  find . -name "Cargo.toml" -not -path "*/target/*" 2>/dev/null | while IFS= read -r cargo_toml; do
+    # Extract dora-node-api version from Cargo.toml
+    # Matches patterns like: dora-node-api = { version = "0.4.1" or dora-node-api = "0.4.1"
+    cargo_version=$(grep -E 'dora-node-api *=' "$cargo_toml" 2>/dev/null | head -1 | sed -n 's/.*version *= *"\([^"]*\)".*/\1/p' || true)
+    if [ -z "$cargo_version" ]; then
+      # Try simple format: dora-node-api = "0.4.1"
+      cargo_version=$(grep -E 'dora-node-api *=' "$cargo_toml" 2>/dev/null | head -1 | sed -n 's/.*= *"\([^"]*\)".*/\1/p' || true)
+    fi
+
+    # Check for git-based dependency with tag: dora-node-api = { git = "...", tag = "v0.3.12" }
+    cargo_git_tag=$(grep -E 'dora-node-api *=' "$cargo_toml" 2>/dev/null | head -1 | sed -n 's/.*tag *= *"\([^"]*\)".*/\1/p' || true)
+
+    if [ -z "$cargo_version" ] && [ -z "$cargo_git_tag" ]; then
+      continue
+    fi
+
+    # For git tags, remove 'v' prefix for comparison
+    if [ -n "$cargo_git_tag" ]; then
+      cargo_version_for_compare=$(echo "$cargo_git_tag" | sed 's/^v//')
+      cargo_display="git tag $cargo_git_tag"
+    else
+      cargo_version_for_compare="$cargo_version"
+      cargo_display="$cargo_version"
+    fi
+
+    # Extract major.minor from cargo version
+    cargo_major_minor=$(echo "$cargo_version_for_compare" | cut -d'.' -f1,2)
+
+    if [ "$cargo_major_minor" != "$tag_major_minor" ]; then
+      # Write to temp file to persist across subshell
+      echo "$cargo_toml" >> "${td}/mismatched_cargo_files"
+      echo "  - $cargo_toml (dora-node-api $cargo_display)" >> "${td}/mismatched_display"
+    else
+      echo "$cargo_version_for_compare" > "${td}/matched_version"
+    fi
+  done
+
+  # Read results from temp files
+  if [ -f "${td}/matched_version" ]; then
+    matched_version=$(cat "${td}/matched_version")
+  fi
+  if [ -f "${td}/mismatched_display" ]; then
+    mismatched_files=$(cat "${td}/mismatched_display")
+  fi
+  if [ -f "${td}/mismatched_cargo_files" ]; then
+    mismatched_list=$(cat "${td}/mismatched_cargo_files" | tr '\n' ' ')
+  fi
+
+  if [ -n "$matched_version" ] && [ -z "$mismatched_files" ]; then
+    echo ""
+    echo "Found Cargo.toml with dora-node-api version $matched_version - matches CLI version ($tag_version) - OK"
+  elif [ -n "$mismatched_files" ]; then
+    echo ""
+    echo "WARNING: Found Cargo.toml file(s) with dora-node-api version that does not match CLI version ($tag_version):"
+    echo "$mismatched_files"
+    echo ""
+    echo "This may cause compatibility issues when building your project."
+
+    # Only prompt if running interactively (not in CI)
+    if [ -z "${GITHUB_ACTIONS-}" ] && [ -t 0 ]; then
+      printf "Do you want to update these Cargo.toml files to use dora-node-api %s? [y/N] " "$tag_version"
+      read -r response
+      case "$response" in
+        [yY]|[yY][eE][sS])
+          for cargo_toml in $mismatched_list; do
+            echo "Updating $cargo_toml..."
+            # Update git tag format: { git = "...", tag = "vX.Y.Z" }
+            if grep -qE 'dora-node-api *= *\{[^}]*tag *=' "$cargo_toml" 2>/dev/null; then
+              sed -i.bak -E "s/(dora-node-api *= *\{[^}]*tag *= *\")[^\"]*(\")/\1$tag\2/" "$cargo_toml" && rm -f "$cargo_toml.bak"
+            # Update version in table format: { version = "X.Y.Z" }
+            elif grep -qE 'dora-node-api *= *\{[^}]*version *=' "$cargo_toml" 2>/dev/null; then
+              sed -i.bak -E "s/(dora-node-api *= *\{[^}]*version *= *\")[^\"]*(\")/\1$tag_version\2/" "$cargo_toml" && rm -f "$cargo_toml.bak"
+            # Update version in simple format: "X.Y.Z"
+            elif grep -qE 'dora-node-api *= *"' "$cargo_toml" 2>/dev/null; then
+              sed -i.bak -E "s/(dora-node-api *= *\")[^\"]*(\")/\1$tag_version\2/" "$cargo_toml" && rm -f "$cargo_toml.bak"
+            fi
+          done
+          echo "Cargo.toml files updated to dora-node-api $tag_version"
+          ;;
+        *)
+          echo "Skipping Cargo.toml updates."
+          echo "Consider updating manually or install a CLI version that matches your project."
+          ;;
+      esac
+    else
+      echo "Running in non-interactive mode."
+      echo "Consider updating your Cargo.toml dependencies to version $tag_version"
+      echo "or install a CLI version that matches your project."
+    fi
+  fi
+}
+
+check_cargo_toml_version
+
+# Check pyproject.toml dora-rs version compatibility
+check_pyproject_toml_version() {
+  # Check if any pyproject.toml files exist
+  if ! find . -name "pyproject.toml" -not -path "*/.*" -print -quit 2>/dev/null | grep -q .; then
+    return
+  fi
+
+  # Extract version from tag (remove 'v' prefix if present)
+  tag_version=$(echo "$tag" | sed 's/^v//')
+  tag_major_minor=$(echo "$tag_version" | cut -d'.' -f1,2)
+
+  # Use find to locate pyproject.toml files
+  find . -name "pyproject.toml" -not -path "*/.*" 2>/dev/null | while IFS= read -r pyproject; do
+    # Extract dora-rs version from pyproject.toml
+    # Matches patterns like: dora-rs==0.4.0, dora-rs>=0.4.0, dora-rs = "^0.4.0", "dora-rs==0.4.0"
+    pyproject_version=$(grep -E 'dora-rs' "$pyproject" 2>/dev/null | head -1 | sed -n 's/.*dora-rs[^0-9]*\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' || true)
+
+    if [ -z "$pyproject_version" ]; then
+      continue
+    fi
+
+    # Extract major.minor from pyproject version
+    pyproject_major_minor=$(echo "$pyproject_version" | cut -d'.' -f1,2)
+
+    if [ "$pyproject_major_minor" != "$tag_major_minor" ]; then
+      echo "$pyproject" >> "${td}/mismatched_pyproject_files"
+      echo "  - $pyproject (dora-rs $pyproject_version)" >> "${td}/mismatched_pyproject_display"
+    else
+      echo "$pyproject_version" > "${td}/matched_pyproject_version"
+    fi
+  done
+
+  # Read results from temp files
+  matched_pyproject_version=""
+  mismatched_pyproject_files=""
+  mismatched_pyproject_list=""
+
+  if [ -f "${td}/matched_pyproject_version" ]; then
+    matched_pyproject_version=$(cat "${td}/matched_pyproject_version")
+  fi
+  if [ -f "${td}/mismatched_pyproject_display" ]; then
+    mismatched_pyproject_files=$(cat "${td}/mismatched_pyproject_display")
+  fi
+  if [ -f "${td}/mismatched_pyproject_files" ]; then
+    mismatched_pyproject_list=$(cat "${td}/mismatched_pyproject_files" | tr '\n' ' ')
+  fi
+
+  if [ -n "$matched_pyproject_version" ] && [ -z "$mismatched_pyproject_files" ]; then
+    echo ""
+    echo "Found pyproject.toml with dora-rs version $matched_pyproject_version - matches CLI version ($tag_version) - OK"
+  elif [ -n "$mismatched_pyproject_files" ]; then
+    echo ""
+    echo "WARNING: Found pyproject.toml file(s) with dora-rs version that does not match CLI version ($tag_version):"
+    echo "$mismatched_pyproject_files"
+    echo ""
+    echo "This may cause compatibility issues when running your project."
+
+    # Only prompt if running interactively (not in CI)
+    if [ -z "${GITHUB_ACTIONS-}" ] && [ -t 0 ]; then
+      printf "Do you want to update these pyproject.toml files to use dora-rs %s? [y/N] " "$tag_version"
+      read -r response
+      case "$response" in
+        [yY]|[yY][eE][sS])
+          for pyproject in $mismatched_pyproject_list; do
+            echo "Updating $pyproject..."
+            # Update version patterns like dora-rs==X.Y.Z or dora-rs>=X.Y.Z
+            sed -i.bak -E "s/(dora-rs[><=]*)[0-9]+\.[0-9]+\.[0-9]+/\1$tag_version/g" "$pyproject" && rm -f "$pyproject.bak"
+          done
+          echo "pyproject.toml files updated to dora-rs $tag_version"
+          ;;
+        *)
+          echo "Skipping pyproject.toml updates."
+          echo "Consider updating manually or install a CLI version that matches your project."
+          ;;
+      esac
+    else
+      echo "Running in non-interactive mode."
+      echo "Consider updating your pyproject.toml dependencies to version $tag_version"
+      echo "or install a CLI version that matches your project."
+    fi
+  fi
+}
+
+check_pyproject_toml_version
+
+# Check requirements.txt dora-rs version compatibility
+check_requirements_txt_version() {
+  # Check if any requirements.txt files exist
+  if ! find . -name "requirements*.txt" -not -path "*/.*" -print -quit 2>/dev/null | grep -q .; then
+    return
+  fi
+
+  # Extract version from tag (remove 'v' prefix if present)
+  tag_version=$(echo "$tag" | sed 's/^v//')
+  tag_major_minor=$(echo "$tag_version" | cut -d'.' -f1,2)
+
+  # Use find to locate requirements.txt files (including requirements-dev.txt, etc.)
+  find . -name "requirements*.txt" -not -path "*/.*" 2>/dev/null | while IFS= read -r reqfile; do
+    # Extract dora-rs version from requirements.txt
+    # Matches patterns like: dora-rs==0.4.0, dora-rs>=0.4.0, dora-rs~=0.4.0
+    req_version=$(grep -E '^dora-rs' "$reqfile" 2>/dev/null | head -1 | sed -n 's/.*dora-rs[^0-9]*\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' || true)
+
+    if [ -z "$req_version" ]; then
+      continue
+    fi
+
+    # Extract major.minor from requirements version
+    req_major_minor=$(echo "$req_version" | cut -d'.' -f1,2)
+
+    if [ "$req_major_minor" != "$tag_major_minor" ]; then
+      echo "$reqfile" >> "${td}/mismatched_req_files"
+      echo "  - $reqfile (dora-rs $req_version)" >> "${td}/mismatched_req_display"
+    else
+      echo "$req_version" > "${td}/matched_req_version"
+    fi
+  done
+
+  # Read results from temp files
+  matched_req_version=""
+  mismatched_req_files=""
+  mismatched_req_list=""
+
+  if [ -f "${td}/matched_req_version" ]; then
+    matched_req_version=$(cat "${td}/matched_req_version")
+  fi
+  if [ -f "${td}/mismatched_req_display" ]; then
+    mismatched_req_files=$(cat "${td}/mismatched_req_display")
+  fi
+  if [ -f "${td}/mismatched_req_files" ]; then
+    mismatched_req_list=$(cat "${td}/mismatched_req_files" | tr '\n' ' ')
+  fi
+
+  if [ -n "$matched_req_version" ] && [ -z "$mismatched_req_files" ]; then
+    echo ""
+    echo "Found requirements.txt with dora-rs version $matched_req_version - matches CLI version ($tag_version) - OK"
+  elif [ -n "$mismatched_req_files" ]; then
+    echo ""
+    echo "WARNING: Found requirements.txt file(s) with dora-rs version that does not match CLI version ($tag_version):"
+    echo "$mismatched_req_files"
+    echo ""
+    echo "This may cause compatibility issues when running your project."
+
+    # Only prompt if running interactively (not in CI)
+    if [ -z "${GITHUB_ACTIONS-}" ] && [ -t 0 ]; then
+      printf "Do you want to update these requirements.txt files to use dora-rs %s? [y/N] " "$tag_version"
+      read -r response
+      case "$response" in
+        [yY]|[yY][eE][sS])
+          for reqfile in $mismatched_req_list; do
+            echo "Updating $reqfile..."
+            # Update version patterns like dora-rs==X.Y.Z or dora-rs>=X.Y.Z
+            sed -i.bak -E "s/^(dora-rs[><=~]*)[0-9]+\.[0-9]+\.[0-9]+/\1$tag_version/" "$reqfile" && rm -f "$reqfile.bak"
+          done
+          echo "requirements.txt files updated to dora-rs $tag_version"
+          ;;
+        *)
+          echo "Skipping requirements.txt updates."
+          echo "Consider updating manually or install a CLI version that matches your project."
+          ;;
+      esac
+    else
+      echo "Running in non-interactive mode."
+      echo "Consider updating your requirements.txt dependencies to version $tag_version"
+      echo "or install a CLI version that matches your project."
+    fi
+  fi
+}
+
+check_requirements_txt_version
+
 rm -rf "$td"
