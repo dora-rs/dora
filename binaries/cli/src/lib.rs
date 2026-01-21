@@ -35,7 +35,8 @@ fn build_version_string() -> String {
     let mut version_output = format!("{}\n", cli_version);
 
     // Add dora-message version
-    version_output.push_str(&format!("dora-message: {}\n", dora_message::VERSION));
+    // TODO: Uncomment later after publishing dora-message crate
+    // version_output.push_str(&format!("dora-message: {}\n", dora_message::VERSION));
 
     // Try to detect Python dora-rs version
     match get_python_dora_version() {
