@@ -8,14 +8,18 @@
 use super::Executable;
 use crate::{
     common::{handle_dataflow_result, resolve_dataflow, write_events_to},
+    hot_reload::setup_file_watcher,
     output::print_log_message,
     session::DataflowSession,
 };
+use dora_core::descriptor::{Descriptor, DescriptorExt};
 use dora_daemon::{Daemon, LogDestination, flume};
 use duration_str::parse as parse_duration_str;
 use eyre::Context;
+use std::sync::mpsc;
 use std::time::Duration;
 use tokio::runtime::Builder;
+use uuid::Uuid;
 
 #[derive(Debug, clap::Args)]
 /// Run a dataflow locally.
@@ -41,6 +45,9 @@ pub struct Run {
     #[clap(long, value_name = "DURATION", verbatim_doc_comment)]
     #[arg(value_parser = parse_duration_str)]
     pub stop_after: Option<Duration>,
+    /// Enable hot-reload: watch node binaries and restart on changes.
+    #[clap(long, action)]
+    pub hot_reload: bool,
 }
 
 impl Run {
@@ -49,18 +56,20 @@ impl Run {
             dataflow,
             uv: false,
             stop_after: None,
+            hot_reload: false,
         }
     }
 }
 
 #[deprecated(note = "use `run` instead")]
 pub fn run_func(dataflow: String, uv: bool) -> eyre::Result<()> {
-    run(dataflow, uv)
+    run(dataflow, uv, false)
 }
 
-pub fn run(dataflow: String, uv: bool) -> eyre::Result<()> {
+pub fn run(dataflow: String, uv: bool, hot_reload: bool) -> eyre::Result<()> {
     let mut run = Run::new(dataflow);
     run.uv = uv;
+    run.hot_reload = hot_reload;
     run.execute()
 }
 
@@ -89,6 +98,40 @@ impl Executable for Run {
         let dataflow_session = DataflowSession::read_session(&dataflow_path)
             .context("failed to read DataflowSession")?;
 
+        // Hot-reload file watcher setup
+        let (reload_receiver, _watcher) = if self.hot_reload {
+            let working_dir = dataflow_path
+                .canonicalize()
+                .context("failed to canonicalize dataflow path")?
+                .parent()
+                .ok_or_else(|| eyre::eyre!("canonicalized dataflow path has no parent"))?
+                .to_owned();
+
+            let descriptor =
+                Descriptor::blocking_read(&dataflow_path).context("could not read dataflow")?;
+            let nodes = descriptor.resolve_aliases_and_set_defaults()?;
+
+            // Use a temporary dataflow_id - the actual one is assigned in the daemon
+            let dataflow_id = Uuid::nil();
+
+            let (watcher, reload_rx) = setup_file_watcher(dataflow_id, &nodes, &working_dir)
+                .context("failed to setup file watcher")?;
+
+            // Create a channel to forward reload events to the daemon
+            let (tx, rx) = mpsc::channel();
+            std::thread::spawn(move || {
+                while let Ok(event) = reload_rx.recv() {
+                    if tx.send((event.node_id, event.operator_id)).is_err() {
+                        break;
+                    }
+                }
+            });
+
+            (Some(rx), Some(watcher))
+        } else {
+            (None, None)
+        };
+
         let (log_tx, log_rx) = flume::bounded(100);
         std::thread::spawn(move || {
             for message in log_rx {
@@ -105,6 +148,8 @@ impl Executable for Run {
             LogDestination::Channel { sender: log_tx },
             write_events_to(),
             self.stop_after,
+            self.hot_reload,
+            reload_receiver,
         ))?;
         handle_dataflow_result(result, None)
     }

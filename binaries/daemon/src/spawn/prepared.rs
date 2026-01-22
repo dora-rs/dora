@@ -49,6 +49,8 @@ pub struct PreparedNode {
     pub(super) clock: Arc<HLC>,
     pub(super) daemon_tx: mpsc::Sender<Timestamped<Event>>,
     pub(super) node_stderr_most_recent: Arc<ArrayQueue<String>>,
+    /// When true, custom nodes use restart=always for hot-reload support.
+    pub(super) hot_reload: bool,
 }
 
 impl PreparedNode {
@@ -94,7 +96,14 @@ impl PreparedNode {
 
     fn restart_policy(&self) -> RestartPolicy {
         match &self.node.kind {
-            dora_core::descriptor::CoreNodeKind::Custom(n) => n.restart_policy,
+            dora_core::descriptor::CoreNodeKind::Custom(n) => {
+                // When hot_reload is enabled, always restart custom nodes
+                if self.hot_reload {
+                    RestartPolicy::Always
+                } else {
+                    n.restart_policy
+                }
+            }
             dora_core::descriptor::CoreNodeKind::Runtime(_) => RestartPolicy::Never,
         }
     }

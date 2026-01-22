@@ -6,7 +6,7 @@ use dora_core::{
     config::{DataId, Input, InputMapping, NodeId, NodeRunConfig, OperatorId},
     descriptor::{
         CoreNodeKind, DYNAMIC_SOURCE, Descriptor, DescriptorExt, ResolvedNode, RuntimeNode,
-        read_as_descriptor,
+        SHELL_SOURCE, read_as_descriptor, resolve_path, source_is_url,
     },
     topics::{
         DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, LOCALHOST, open_zenoh_session,
@@ -196,6 +196,8 @@ impl Daemon {
         log_destination: LogDestination,
         write_events_to: Option<PathBuf>,
         stop_after: Option<Duration>,
+        hot_reload: bool,
+        reload_receiver: Option<std::sync::mpsc::Receiver<(NodeId, Option<OperatorId>)>>,
     ) -> eyre::Result<DataflowResult> {
         let working_dir = dataflow_path
             .canonicalize()
@@ -246,6 +248,7 @@ impl Daemon {
             dataflow_descriptor: descriptor,
             uv,
             write_events_to,
+            hot_reload,
         };
 
         let clock = Arc::new(HLC::default());
@@ -272,6 +275,39 @@ impl Daemon {
             ReceiverStream::new(tokio::sync::mpsc::channel(1).1)
         };
 
+        // Set up file watching for hot-reload
+        let (reload_tx, reload_rx) = tokio::sync::mpsc::channel::<(NodeId, Option<OperatorId>)>(10);
+
+        // If a reload receiver was provided, spawn a task to forward events
+        if let Some(receiver) = reload_receiver {
+            let tx = reload_tx;
+            tokio::task::spawn_blocking(move || {
+                while let Ok((node_id, operator_id)) = receiver.recv() {
+                    if tx.blocking_send((node_id, operator_id)).is_err() {
+                        break;
+                    }
+                }
+            });
+            tracing::info!("Hot-reload enabled: {} (file watching active)", hot_reload);
+        } else {
+            tracing::info!("Hot-reload enabled: {} (no file watcher provided)", hot_reload);
+        }
+
+        let reload_clock = clock.clone();
+        let reload_events = ReceiverStream::new(reload_rx).map(move |(node_id, operator_id)| {
+            Timestamped {
+                inner: Event::Coordinator(CoordinatorEvent {
+                    event: DaemonCoordinatorEvent::ReloadDataflow {
+                        dataflow_id,
+                        node_id,
+                        operator_id,
+                    },
+                    reply_tx: oneshot::channel().0, // Dummy reply channel
+                }),
+                timestamp: reload_clock.new_timestamp(),
+            }
+        });
+
         let all_nodes_dynamic = spawn_command.nodes.values().all(|n| n.kind.dynamic());
         let exit_when_done = spawn_command
             .nodes
@@ -295,6 +331,7 @@ impl Daemon {
             ctrlc_events,
             timeout_events,
             dynamic_node_events,
+            reload_events,
         )
             .merge();
         let run_result = Self::run_general(
@@ -739,6 +776,7 @@ impl Daemon {
                 spawn_nodes,
                 uv,
                 write_events_to,
+                hot_reload,
             }) => {
                 match dataflow_descriptor.communication.remote {
                     dora_core::config::RemoteCommunicationConfig::Tcp => {}
@@ -756,6 +794,7 @@ impl Daemon {
                         spawn_nodes,
                         uv,
                         write_events_to,
+                        hot_reload,
                     )
                     .await;
                 let (trigger_result, result_task) = match result {
@@ -889,9 +928,9 @@ impl Daemon {
                 let result = self.send_reload(dataflow_id, node_id, operator_id).await;
                 let reply =
                     DaemonCoordinatorReply::ReloadResult(result.map_err(|err| format!("{err:?}")));
-                let _ = reply_tx
-                    .send(Some(reply))
-                    .map_err(|_| error!("could not send reload reply from daemon to coordinator"));
+                // In `dora run` mode, there's no coordinator, so the reply channel may be a dummy
+                // that was dropped. This is expected, so we just ignore the send failure.
+                let _ = reply_tx.send(Some(reply));
                 RunStatus::Continue
             }
             DaemonCoordinatorEvent::StopDataflow {
@@ -1242,6 +1281,7 @@ impl Daemon {
         spawn_nodes: BTreeSet<NodeId>,
         uv: bool,
         write_events_to: Option<PathBuf>,
+        hot_reload: bool,
     ) -> eyre::Result<impl Future<Output = eyre::Result<()>> + use<>> {
         let mut logger = self
             .logger
@@ -1325,6 +1365,7 @@ impl Daemon {
             dataflow_descriptor,
             clock: self.clock.clone(),
             uv,
+            hot_reload,
         };
 
         let mut tasks = Vec::new();
@@ -1840,11 +1881,30 @@ impl Daemon {
         let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
             format!("Reload failed: no running dataflow with ID `{dataflow_id}`")
         })?;
-        if let Some(channel) = dataflow.subscribe_channels.get(&node_id) {
-            match send_with_timestamp(channel, NodeEvent::Reload { operator_id }, &self.clock) {
-                Ok(()) => {}
-                Err(_) => {
-                    dataflow.subscribe_channels.remove(&node_id);
+
+        // If operator_id is None, this is a custom node reload (hot-reload of binary)
+        // Use SoftKill (SIGTERM) to terminate the process directly - this is more ergonomic
+        // for development as it doesn't require nodes to handle STOP events.
+        // The node will restart because it was spawned with restart=always when hot_reload was enabled.
+        if operator_id.is_none() {
+            tracing::info!(
+                "Hot-reload: sending SIGTERM to custom node `{}` for restart",
+                node_id
+            );
+            if let Some(running_node) = dataflow.running_nodes.get(&node_id) {
+                if let Some(process) = &running_node.process {
+                    process.submit(ProcessOperation::SoftKill);
+                }
+            }
+        } else {
+            // For Python operators in Runtime nodes, send the reload event
+            let event = NodeEvent::Reload { operator_id };
+            if let Some(channel) = dataflow.subscribe_channels.get(&node_id) {
+                match send_with_timestamp(channel, event, &self.clock) {
+                    Ok(()) => {}
+                    Err(_) => {
+                        dataflow.subscribe_channels.remove(&node_id);
+                    }
                 }
             }
         }

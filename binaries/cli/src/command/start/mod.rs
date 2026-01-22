@@ -61,7 +61,7 @@ impl Executable for Start {
         let coordinator_socket = (self.coordinator_addr, self.coordinator_port).into();
 
         let (dataflow, dataflow_descriptor, mut session, dataflow_id) =
-            start_dataflow(self.dataflow, self.name, coordinator_socket, self.uv)?;
+            start_dataflow(self.dataflow, self.name, coordinator_socket, self.uv, self.hot_reload)?;
 
         let attach = match (self.attach, self.detach) {
             (true, true) => eyre::bail!("both `--attach` and `--detach` are given"),
@@ -108,6 +108,7 @@ fn start_dataflow(
     name: Option<String>,
     coordinator_socket: SocketAddr,
     uv: bool,
+    hot_reload: bool,
 ) -> Result<(PathBuf, Descriptor, Box<TcpRequestReplyConnection>, Uuid), eyre::Error> {
     let dataflow = resolve_dataflow(dataflow).context("could not resolve dataflow")?;
     let dataflow_descriptor =
@@ -133,6 +134,7 @@ fn start_dataflow(
                     local_working_dir,
                     uv,
                     write_events_to: write_events_to(),
+                    hot_reload,
                 })
                 .unwrap(),
             )
