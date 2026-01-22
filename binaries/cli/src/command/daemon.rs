@@ -5,9 +5,6 @@ use dora_core::topics::{
 };
 
 use dora_daemon::LogDestination;
-#[cfg(feature = "tracing")]
-use dora_tracing::TracingBuilder;
-
 use eyre::Context;
 use std::{
     net::{IpAddr, SocketAddr},
@@ -40,28 +37,37 @@ pub struct Daemon {
 
 impl Executable for Daemon {
     fn execute(self) -> eyre::Result<()> {
+        let rt = Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .context("tokio runtime failed")?;
+
         #[cfg(feature = "tracing")]
-        {
+        let _guard = {
+            let _enter = rt.enter();
+
             let name = "dora-daemon";
             let filename = self
                 .machine_id
                 .as_ref()
                 .map(|id| format!("{name}-{id}"))
                 .unwrap_or(name.to_string());
-            let mut builder = TracingBuilder::new(name);
-            if !self.quiet {
-                builder = builder.with_stdout("info,zenoh=warn", false);
-            }
-            builder = builder.with_file(filename, LevelFilter::INFO)?;
-            builder
-                .build()
-                .wrap_err("failed to set up tracing subscriber")?;
-        }
+            let quiet = self.quiet;
 
-        let rt = Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .context("tokio runtime failed")?;
+            let stdout_filter = if !quiet {
+                Some(std::env::var("RUST_LOG").unwrap_or("info".to_string()))
+            } else {
+                None
+            };
+
+            dora_tracing::init_tracing_subscriber(
+                name,
+                stdout_filter.as_deref(),
+                Some(&filename),
+                LevelFilter::INFO,
+            )
+            .context("failed to initialize tracing")?
+        };
         rt.block_on(async {
                 match self.run_dataflow {
                     Some(dataflow_path) => {
