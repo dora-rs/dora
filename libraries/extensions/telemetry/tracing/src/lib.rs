@@ -131,13 +131,14 @@ impl TracingBuilder {
             .or_else(|_| std::env::var("DORA_JAEGER_TRACING"))
             .wrap_err("DORA_OTLP_ENDPOINT or DORA_JAEGER_TRACING environment variable not set")?;
 
-        // Initialize OTLP tracing - this returns a tracer and sets the global provider
         let sdk_tracer_provider = crate::telemetry::init_tracing(&self.name, &endpoint);
+
+        opentelemetry::global::set_tracer_provider(sdk_tracer_provider.clone());
+
         let meter_provider = metrics::init_meter_provider();
 
         // TODO: Maybe this needs to be removed in favor of application level global.
         // global::set_meter_provider(meter_provider.clone());
-        // Use the specific tracer instance returned from init_tracing
         let tracer = sdk_tracer_provider.tracer("tracing-otel-subscriber");
 
         let guard = OtelGuard {
