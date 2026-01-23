@@ -35,6 +35,7 @@ serde = { version = "1.0.164", features = ["derive"] }
 serde_json = { version = "1.0" }
 serde-big-array = { version = "0.5.1", optional = true }
 arrow = { workspace = true, features = ["ffi"] }
+chrono = { version = "0.4", features = ["serde"] }
 
 [build-dependencies]
 cxx-build = "1.0.73"
