@@ -16,6 +16,7 @@ mod start;
 mod stop;
 mod system;
 mod topic;
+mod ui;
 mod up;
 
 pub use build::build;
@@ -41,6 +42,7 @@ use start::Start;
 use stop::Stop;
 use system::System;
 use topic::Topic;
+use ui::Ui;
 use up::Up;
 
 /// dora-rs cli client
@@ -77,6 +79,8 @@ pub enum Command {
     Topic(Topic),
     #[clap(subcommand)]
     Node(Node),
+    #[clap(subcommand)]
+    Ui(Ui),
 
     Completion(Completion),
     Self_ {
@@ -124,6 +128,7 @@ impl Executable for Command {
             Command::Runtime(args) => args.execute(),
             Command::Topic(args) => args.execute(),
             Command::Node(args) => args.execute(),
+            Command::Ui(args) => args.execute(),
             Command::Completion(args) => args.execute(),
         }
     }
