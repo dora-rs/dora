@@ -16,7 +16,7 @@ use pyo3::{
     prelude::*,
     types::{IntoPyDict, PyBool, PyDict, PyFloat, PyInt, PyList, PyModule, PyString, PyTuple},
 };
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 
 /// Dora Event
 pub struct PyEvent {
@@ -250,14 +250,15 @@ pub fn pydict_to_metadata(dict: Option<Bound<'_, PyDict>>) -> Result<MetadataPar
                     // Convert to chrono::DateTime<Utc>
                     // timestamp() returns seconds since epoch as float
                     // Convert to SystemTime first, then to DateTime<Utc>
-                    let seconds = timestamp_float as i64;
-                    let nanos = ((timestamp_float - seconds as f64) * 1_000_000_000.0) as u64;
-
-                    let system_time = if seconds >= 0 {
-                        UNIX_EPOCH + std::time::Duration::new(seconds as u64, nanos as u32)
+                    let system_time = if timestamp_float >= 0.0 {
+                        let duration = std::time::Duration::try_from_secs_f64(timestamp_float)
+                            .context("Failed to convert timestamp to Duration")?;
+                        UNIX_EPOCH + duration
                     } else {
+                        let duration = std::time::Duration::try_from_secs_f64(-timestamp_float)
+                            .context("Failed to convert timestamp to Duration")?;
                         UNIX_EPOCH
-                            .checked_sub(std::time::Duration::new((-seconds) as u64, nanos as u32))
+                            .checked_sub(duration)
                             .unwrap_or(UNIX_EPOCH)
                     };
 
