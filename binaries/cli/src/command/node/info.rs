@@ -184,20 +184,20 @@ fn info(
             if let Some(metrics) = &selected_node.metrics {
                 println!("PID: {}", metrics.pid);
                 if let Some(start_time) = metrics.start_time {
-                     let uptime = std::time::SystemTime::now()
+                    let uptime = std::time::SystemTime::now()
                         .duration_since(start_time.get_time().to_system_time())
                         .unwrap_or_default();
-                     let secs = uptime.as_secs();
-                     let hours = secs / 3600;
-                     let minutes = (secs % 3600) / 60;
-                     let seconds = secs % 60;
-                     if hours > 0 {
+                    let secs = uptime.as_secs();
+                    let hours = secs / 3600;
+                    let minutes = (secs % 3600) / 60;
+                    let seconds = secs % 60;
+                    if hours > 0 {
                         println!("Uptime: {}h {}m {}s", hours, minutes, seconds);
-                     } else if minutes > 0 {
+                    } else if minutes > 0 {
                         println!("Uptime: {}m {}s", minutes, seconds);
-                     } else {
+                    } else {
                         println!("Uptime: {}s", seconds);
-                     }
+                    }
                 }
             }
 
