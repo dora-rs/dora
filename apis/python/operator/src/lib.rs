@@ -257,9 +257,7 @@ pub fn pydict_to_metadata(dict: Option<Bound<'_, PyDict>>) -> Result<MetadataPar
                     } else {
                         let duration = std::time::Duration::try_from_secs_f64(-timestamp_float)
                             .context("Failed to convert timestamp to Duration")?;
-                        UNIX_EPOCH
-                            .checked_sub(duration)
-                            .unwrap_or(UNIX_EPOCH)
+                        UNIX_EPOCH.checked_sub(duration).unwrap_or(UNIX_EPOCH)
                     };
 
                     let dt = DateTime::<Utc>::from(system_time);
