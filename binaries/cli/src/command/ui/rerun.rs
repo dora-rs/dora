@@ -1,4 +1,7 @@
+use crate::LOCALHOST;
 use crate::command::Executable;
+use crate::common::{connect_to_coordinator, query_running_dataflows};
+use dora_core::topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT;
 use eyre::{Context, Result, bail};
 use std::process::Command;
 
@@ -12,11 +15,19 @@ pub struct Rerun {
     /// Connect to an existing Rerun viewer instead of spawning a new one
     #[clap(long)]
     connect: Option<String>,
+
+    /// Address of the dora coordinator
+    #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
+    coordinator_addr: std::net::IpAddr,
+
+    /// Port number of the coordinator control server
+    #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
+    coordinator_port: u16,
 }
 
 impl Executable for Rerun {
     fn execute(self) -> Result<()> {
-        println!("🔭 Starting Rerun visualization viewer...");
+        println!("🔭 Starting Rerun visualization viewer...\n");
 
         let rerun_check = Command::new("rerun").arg("--version").output();
 
@@ -31,6 +42,38 @@ impl Executable for Rerun {
                     pip install rerun-sdk\n\n\
                     For more information, see: https://rerun.io/docs/getting-started"
                 );
+            }
+        }
+
+        // Try to connect to dora coordinator and show active dataflows
+        let coordinator_addr = (self.coordinator_addr, self.coordinator_port).into();
+        match connect_to_coordinator(coordinator_addr) {
+            Ok(mut session) => {
+                println!("✓ Connected to dora coordinator at {}", coordinator_addr);
+
+                match query_running_dataflows(&mut *session) {
+                    Ok(list) => {
+                        let active = list.get_active();
+                        if active.is_empty() {
+                            println!("  No dataflows running\n");
+                        } else {
+                            println!("  Active dataflows:");
+                            for dataflow in &active {
+                                let name = dataflow.name.as_deref().unwrap_or("<unnamed>");
+                                println!("    • {} ({})", name, dataflow.uuid);
+                            }
+                            println!(
+                                "\n💡 Add 'dora-rerun' node to visualize: https://github.com/dora-rs/dora-hub/tree/main/node-hub/dora-rerun\n"
+                            );
+                        }
+                    }
+                    Err(_) => {
+                        println!("  Could not query dataflows\n");
+                    }
+                }
+            }
+            Err(_) => {
+                println!("  Coordinator not running. Start with: dora up\n");
             }
         }
 
