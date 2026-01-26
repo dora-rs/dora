@@ -3,11 +3,12 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     sync::Arc,
+    cell::RefCell,
 };
 
 use ::dora_ros2_bridge::{ros2_client, rustdds};
 use arrow::{
-    array::{ArrayData, make_array},
+    array::{ArrayData, make_array, ArrayRef},
     pyarrow::{FromPyArrow, ToPyArrow},
 };
 use dora_ros2_bridge_msg_gen::types::Message;
@@ -93,7 +94,12 @@ impl Ros2Context {
             .context("failed to parse ROS2 message types")?;
 
         let mut messages = HashMap::new();
-        for message in packages.into_iter().flat_map(|p| p.messages.into_iter()) {
+        for message in packages.into_iter().flat_map(|p| {
+            p.services
+                .into_iter()
+                .flat_map(|s| [s.request, s.response])
+                .chain(p.messages)
+        }) {
             let entry: &mut HashMap<String, Message> =
                 messages.entry(message.package.clone()).or_default();
             entry.insert(message.name.clone(), message);
@@ -255,6 +261,60 @@ impl Ros2Node {
         Ok(Ros2Subscription {
             subscription: Some(subscription),
             deserializer: StructDeserializer::new(Cow::Owned(topic.type_info.clone())),
+        })
+    }
+
+    /// Create a ROS2 service client
+    ///
+    /// :type name: str
+    /// :type service_type: str
+    /// :type qos: dora.Ros2QosPolicies, optional
+    /// :rtype: dora.Ros2Client
+    #[pyo3(signature = (name, service_type, qos=None))]
+    pub fn create_client(
+        &mut self,
+        name: &str,
+        service_type: String,
+        qos: Option<qos::Ros2QosPolicies>,
+    ) -> eyre::Result<Ros2Client> {
+        let (namespace_name, service_name) = match (
+            service_type.split_once('/'),
+            service_type.split_once("::"),
+        ) {
+            (Some(msg), None) => msg,
+            (None, Some(msg)) => msg,
+            _ => eyre::bail!(
+                "Expected service type in the format `namespace/service` or `namespace::service`, such as `example_interfaces/AddTwoInts` but got: {}",
+                service_type
+            ),
+        };
+
+        let request_type_info = TypeInfo {
+            package_name: namespace_name.to_owned().into(),
+            message_name: format!("{}_Request", service_name).into(),
+            messages: self.messages.clone(),
+        };
+        let response_type_info = TypeInfo {
+            package_name: namespace_name.to_owned().into(),
+            message_name: format!("{}_Response", service_name).into(),
+            messages: self.messages.clone(),
+        };
+
+        let client = self
+            .node
+            .create_client::<TypedService>(
+                ros2_client::ServiceMapping::Enhanced,
+                &ros2_client::Name::parse(name).map_err(|e| eyre::eyre!(e))?,
+                &ros2_client::ServiceTypeName::new(namespace_name, service_name),
+                qos.clone().map(Into::into).unwrap_or(rustdds::QosPolicies::builder().build()),
+                qos.map(Into::into).unwrap_or(rustdds::QosPolicies::builder().build()),
+            )
+            .map_err(|e| eyre::eyre!("failed to create updated service client: {e:?}"))?;
+
+        Ok(Ros2Client {
+            client,
+            request_type_info,
+            response_type_info,
         })
     }
 }
@@ -446,6 +506,152 @@ impl Stream for Ros2SubscriptionStream {
     }
 }
 
+
+thread_local! {
+    static CURRENT_TYPE_INFO: RefCell<Option<TypeInfo<'static>>> = RefCell::new(None);
+}
+
+#[derive(Debug, Clone)]
+pub struct OwnedTypedValue {
+    pub value: ArrayRef,
+    pub type_info: TypeInfo<'static>,
+}
+
+impl serde::Serialize for OwnedTypedValue {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let tv = TypedValue {
+            value: &self.value,
+            type_info: &self.type_info,
+        };
+        tv.serialize(serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for OwnedTypedValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let type_info = CURRENT_TYPE_INFO.with(|ti| ti.borrow().clone())
+            .ok_or_else(|| serde::de::Error::custom("No TypeInfo set"))?;
+        let seed = StructDeserializer::new(Cow::Owned(type_info.clone()));
+        use serde::de::DeserializeSeed;
+        let array_data = seed.deserialize(deserializer).map_err(serde::de::Error::custom)?;
+        Ok(OwnedTypedValue {
+            value: make_array(array_data),
+            type_info,
+        })
+    }
+}
+
+impl ros2_client::Message for OwnedTypedValue {}
+
+#[derive(Debug)]
+struct TypedService;
+
+impl ros2_client::Service for TypedService {
+    type Request = OwnedTypedValue;
+    type Response = OwnedTypedValue;
+
+    fn request_type_name(&self) -> &str {
+        "ignored"
+    }
+
+    fn response_type_name(&self) -> &str {
+        "ignored"
+    }
+}
+
+/// ROS2 Service Client
+///
+/// warnings:
+/// - dora Ros2 bridge functionality is considered **unstable**. It may be changed
+///   at any point without it being considered a breaking change.
+#[pyclass]
+#[derive(Str, Repr, Dir, Dict)]
+#[non_exhaustive]
+pub struct Ros2Client {
+    client: ros2_client::Client<TypedService>,
+    request_type_info: TypeInfo<'static>,
+    response_type_info: TypeInfo<'static>,
+}
+
+#[pymethods]
+impl Ros2Client {
+    pub fn wait_for_service(&self, node: &Ros2Node) -> eyre::Result<()> {
+        let service_ready = async {
+            for _ in 0..10 {
+                let ready = self.client.wait_for_service(&node.node);
+                futures::pin_mut!(ready);
+                let timeout = dora_ros2_bridge::futures_timer::Delay::new(std::time::Duration::from_secs(2));
+                match futures::future::select(ready, timeout).await {
+                    futures::future::Either::Left(((), _)) => return Ok(()),
+                    futures::future::Either::Right(_) => {
+                        // timeout, retry
+                    }
+                }
+            }
+            eyre::bail!("service not available");
+        };
+        futures::executor::block_on(service_ready)
+    }
+
+    pub fn call(&self, request: Bound<'_, PyAny>) -> eyre::Result<PyObject> {
+        let py = request.py();
+        let pyarrow = PyModule::import(py, "pyarrow")?;
+
+        let data = if request.is_instance_of::<PyDict>() {
+             pyarrow.getattr("scalar")?.call1((request,))?
+        } else {
+            request
+        };
+
+        let data = if data.is_instance(&pyarrow.getattr("StructScalar")?)? {
+            let list = PyList::new(data.py(), [data]).context("Failed to create Py::List")?;
+            pyarrow.getattr("array")?.call1((list,))?
+        } else {
+             data
+        };
+        
+        let value = arrow::array::ArrayData::from_pyarrow_bound(&data)?;
+        
+        let req = OwnedTypedValue {
+            value: make_array(value),
+            type_info: self.request_type_info.clone(), 
+        };
+        
+        let client = &self.client;
+        let response_type_info = self.response_type_info.clone();
+        
+        let res = futures::executor::block_on(async {
+             let req_id = client.async_send_request(req).await.map_err(|e| eyre::eyre!(e))?;
+             
+             CURRENT_TYPE_INFO.with(|ti| {
+                 *ti.borrow_mut() = Some(response_type_info);
+             });
+             
+             let result = client.async_receive_response(req_id).await.map_err(|e| eyre::eyre!(e));
+             
+             CURRENT_TYPE_INFO.with(|ti| {
+                 *ti.borrow_mut() = None;
+             });
+             
+             result
+        });
+        
+        match res {
+             Ok(response) => {
+                 let value = response.value.to_data(); 
+                 Ok(value.to_pyarrow(py)?)
+             }
+             Err(e) => Err(e),
+        }
+    }
+}
+
 pub fn create_dora_ros2_bridge_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Ros2Context>()?;
     m.add_class::<Ros2Node>()?;
@@ -453,9 +659,11 @@ pub fn create_dora_ros2_bridge_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Ros2Topic>()?;
     m.add_class::<Ros2Publisher>()?;
     m.add_class::<Ros2Subscription>()?;
+    m.add_class::<Ros2Client>()?; // Added
     m.add_class::<qos::Ros2QosPolicies>()?;
     m.add_class::<qos::Ros2Durability>()?;
     m.add_class::<qos::Ros2Liveliness>()?;
 
     Ok(())
 }
+
