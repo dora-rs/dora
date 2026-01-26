@@ -1,14 +1,14 @@
 use std::{
     borrow::Cow,
+    cell::RefCell,
     collections::HashMap,
     path::{Path, PathBuf},
     sync::Arc,
-    cell::RefCell,
 };
 
 use ::dora_ros2_bridge::{ros2_client, rustdds};
 use arrow::{
-    array::{ArrayData, make_array, ArrayRef},
+    array::{ArrayData, ArrayRef, make_array},
     pyarrow::{FromPyArrow, ToPyArrow},
 };
 use dora_ros2_bridge_msg_gen::types::Message;
@@ -306,8 +306,11 @@ impl Ros2Node {
                 ros2_client::ServiceMapping::Enhanced,
                 &ros2_client::Name::parse(name).map_err(|e| eyre::eyre!(e))?,
                 &ros2_client::ServiceTypeName::new(namespace_name, service_name),
-                qos.clone().map(Into::into).unwrap_or(rustdds::QosPolicies::builder().build()),
-                qos.map(Into::into).unwrap_or(rustdds::QosPolicies::builder().build()),
+                qos.clone()
+                    .map(Into::into)
+                    .unwrap_or(rustdds::QosPolicies::builder().build()),
+                qos.map(Into::into)
+                    .unwrap_or(rustdds::QosPolicies::builder().build()),
             )
             .map_err(|e| eyre::eyre!("failed to create updated service client: {e:?}"))?;
 
@@ -506,7 +509,6 @@ impl Stream for Ros2SubscriptionStream {
     }
 }
 
-
 thread_local! {
     static CURRENT_TYPE_INFO: RefCell<Option<TypeInfo<'static>>> = RefCell::new(None);
 }
@@ -535,11 +537,14 @@ impl<'de> serde::Deserialize<'de> for OwnedTypedValue {
     where
         D: serde::Deserializer<'de>,
     {
-        let type_info = CURRENT_TYPE_INFO.with(|ti| ti.borrow().clone())
+        let type_info = CURRENT_TYPE_INFO
+            .with(|ti| ti.borrow().clone())
             .ok_or_else(|| serde::de::Error::custom("No TypeInfo set"))?;
         let seed = StructDeserializer::new(Cow::Owned(type_info.clone()));
         use serde::de::DeserializeSeed;
-        let array_data = seed.deserialize(deserializer).map_err(serde::de::Error::custom)?;
+        let array_data = seed
+            .deserialize(deserializer)
+            .map_err(serde::de::Error::custom)?;
         Ok(OwnedTypedValue {
             value: make_array(array_data),
             type_info,
@@ -586,7 +591,8 @@ impl Ros2Client {
             for _ in 0..10 {
                 let ready = self.client.wait_for_service(&node.node);
                 futures::pin_mut!(ready);
-                let timeout = dora_ros2_bridge::futures_timer::Delay::new(std::time::Duration::from_secs(2));
+                let timeout =
+                    dora_ros2_bridge::futures_timer::Delay::new(std::time::Duration::from_secs(2));
                 match futures::future::select(ready, timeout).await {
                     futures::future::Either::Left(((), _)) => return Ok(()),
                     futures::future::Either::Right(_) => {
@@ -604,7 +610,7 @@ impl Ros2Client {
         let pyarrow = PyModule::import(py, "pyarrow")?;
 
         let data = if request.is_instance_of::<PyDict>() {
-             pyarrow.getattr("scalar")?.call1((request,))?
+            pyarrow.getattr("scalar")?.call1((request,))?
         } else {
             request
         };
@@ -613,41 +619,47 @@ impl Ros2Client {
             let list = PyList::new(data.py(), [data]).context("Failed to create Py::List")?;
             pyarrow.getattr("array")?.call1((list,))?
         } else {
-             data
+            data
         };
-        
+
         let value = arrow::array::ArrayData::from_pyarrow_bound(&data)?;
-        
+
         let req = OwnedTypedValue {
             value: make_array(value),
-            type_info: self.request_type_info.clone(), 
+            type_info: self.request_type_info.clone(),
         };
-        
+
         let client = &self.client;
         let response_type_info = self.response_type_info.clone();
-        
+
         let res = futures::executor::block_on(async {
-             let req_id = client.async_send_request(req).await.map_err(|e| eyre::eyre!(e))?;
-             
-             CURRENT_TYPE_INFO.with(|ti| {
-                 *ti.borrow_mut() = Some(response_type_info);
-             });
-             
-             let result = client.async_receive_response(req_id).await.map_err(|e| eyre::eyre!(e));
-             
-             CURRENT_TYPE_INFO.with(|ti| {
-                 *ti.borrow_mut() = None;
-             });
-             
-             result
+            let req_id = client
+                .async_send_request(req)
+                .await
+                .map_err(|e| eyre::eyre!(e))?;
+
+            CURRENT_TYPE_INFO.with(|ti| {
+                *ti.borrow_mut() = Some(response_type_info);
+            });
+
+            let result = client
+                .async_receive_response(req_id)
+                .await
+                .map_err(|e| eyre::eyre!(e));
+
+            CURRENT_TYPE_INFO.with(|ti| {
+                *ti.borrow_mut() = None;
+            });
+
+            result
         });
-        
+
         match res {
-             Ok(response) => {
-                 let value = response.value.to_data(); 
-                 Ok(value.to_pyarrow(py)?)
-             }
-             Err(e) => Err(e),
+            Ok(response) => {
+                let value = response.value.to_data();
+                Ok(value.to_pyarrow(py)?)
+            }
+            Err(e) => Err(e),
         }
     }
 }
@@ -666,4 +678,3 @@ pub fn create_dora_ros2_bridge_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     Ok(())
 }
-
