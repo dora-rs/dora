@@ -316,22 +316,24 @@ impl EventStream {
         if !self.use_scheduler {
             return self.receiver.next().await.map(Self::convert_event_item);
         }
+
         loop {
-            if self.scheduler.is_empty() {
-                if let Some(event) = self.receiver.next().await {
-                    self.add_event(event);
-                } else {
-                    break;
-                }
-            } else {
-                match self.receiver.next().now_or_never().flatten() {
-                    Some(event) => self.add_event(event),
-                    None => break, // no other ready events
-                };
+            // First, drain any immediately available events into scheduler
+            while let Some(event) = self.receiver.next().now_or_never().flatten() {
+                self.add_event(event);
+            }
+
+            // If scheduler has events, return one
+            if let Some(event) = self.scheduler.next() {
+                return Some(Self::convert_event_item(event));
+            }
+
+            // Scheduler is empty - wait for next event
+            match self.receiver.next().await {
+                Some(event) => self.add_event(event),
+                None => return None,
             }
         }
-        let event = self.scheduler.next();
-        event.map(Self::convert_event_item)
     }
 
     /// Check if there are any buffered events in the scheduler or the receiver.
