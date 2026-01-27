@@ -2061,10 +2061,12 @@ impl Daemon {
         })?;
         dataflow.running_nodes.remove(node_id);
         if !dataflow.pending_nodes.local_nodes_pending()
-            && dataflow
-                .running_nodes
-                .iter()
-                .all(|(_id, n)| n.node_config.dynamic)
+            && (dataflow.running_nodes.is_empty()
+                || (dataflow
+                    .running_nodes
+                    .iter()
+                    .all(|(_id, n)| n.node_config.dynamic)
+                    && !dataflow.stop_sent))
         {
             let result = DataflowDaemonResult {
                 timestamp: self.clock.new_timestamp(),
