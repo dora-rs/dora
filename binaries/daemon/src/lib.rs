@@ -2160,33 +2160,28 @@ impl Daemon {
     async fn check_dataflow_finished_after_stop(&mut self, dataflow_id: Uuid) -> eyre::Result<()> {
         let mut logger = self.logger.for_dataflow(dataflow_id);
 
-        // Check if dataflow still exists (might have been removed already)
-        let Some(dataflow) = self.running.get(&dataflow_id) else {
+        // Check if dataflow should finish
+        let should_finish = if let Some(dataflow) = self.running.get(&dataflow_id) {
+            // Only finish if:
+            // 1. No pending nodes
+            // 2. All running nodes are dynamic (they won't send SpawnedNodeResult)
+            // 3. Stop was sent (stop_all() was called)
+            !dataflow.pending_nodes.local_nodes_pending()
+                && dataflow
+                    .running_nodes
+                    .iter()
+                    .all(|(_id, n)| n.node_config.dynamic)
+                && dataflow.stop_sent
+        } else {
             return Ok(());
         };
 
-        // Only finish if:
-        // 1. No pending nodes
-        // 2. All running nodes are dynamic (they won't send SpawnedNodeResult)
-        // 3. Stop was sent (stop_all() was called)
-        let should_finish = !dataflow.pending_nodes.local_nodes_pending()
-            && dataflow
-                .running_nodes
-                .iter()
-                .all(|(_id, n)| n.node_config.dynamic)
-            && dataflow.stop_sent;
-
         if should_finish {
-            let dataflow = self
-                .running
-                .get(&dataflow_id)
-                .context("dataflow disappeared during finish check")?;
-
             let result = DataflowDaemonResult {
                 timestamp: self.clock.new_timestamp(),
                 node_results: self
                     .dataflow_node_results
-                    .get(&dataflow.id)
+                    .get(&dataflow_id)
                     .context("failed to get dataflow node results")?
                     .clone(),
             };
