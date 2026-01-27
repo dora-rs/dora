@@ -575,6 +575,86 @@ async fn start_inner(
                                     });
                             let _ = reply_sender.send(reply);
                         }
+                        ControlRequest::SpawnNode {
+                            dataflow_id,
+                            node_id,
+                            node,
+                            dataflow_descriptor,
+                        } => {
+                            let spawn = async {
+                                spawn_node_dynamically(
+                                    &running_dataflows,
+                                    dataflow_id,
+                                    node_id.clone(),
+                                    node,
+                                    dataflow_descriptor,
+                                    &mut daemon_connections,
+                                    clock.new_timestamp(),
+                                )
+                                .await?;
+                                Result::<_, eyre::Report>::Ok(())
+                            };
+                            let reply =
+                                spawn
+                                    .await
+                                    .map(|()| ControlRequestReply::NodeSpawned {
+                                        dataflow_id,
+                                        node_id,
+                                    });
+                            let _ = reply_sender.send(reply);
+                        }
+                        ControlRequest::StopNode {
+                            dataflow_id,
+                            node_id,
+                        } => {
+                            let stop = async {
+                                stop_node(
+                                    &running_dataflows,
+                                    dataflow_id,
+                                    node_id.clone(),
+                                    &mut daemon_connections,
+                                    clock.new_timestamp(),
+                                )
+                                .await?;
+                                Result::<_, eyre::Report>::Ok(())
+                            };
+                            let reply =
+                                stop
+                                    .await
+                                    .map(|()| ControlRequestReply::NodeStopped {
+                                        dataflow_id,
+                                        node_id,
+                                    });
+                            let _ = reply_sender.send(reply);
+                        }
+                        ControlRequest::RestartNode {
+                            dataflow_id,
+                            node_id,
+                            new_node,
+                            dataflow_descriptor,
+                        } => {
+                            let restart = async {
+                                restart_node_with_new_config(
+                                    &running_dataflows,
+                                    dataflow_id,
+                                    node_id.clone(),
+                                    new_node,
+                                    dataflow_descriptor,
+                                    &mut daemon_connections,
+                                    clock.new_timestamp(),
+                                )
+                                .await?;
+                                Result::<_, eyre::Report>::Ok(())
+                            };
+                            let reply =
+                                restart
+                                    .await
+                                    .map(|()| ControlRequestReply::NodeRestarted {
+                                        dataflow_id,
+                                        node_id,
+                                    });
+                            let _ = reply_sender.send(reply);
+                        }
                         ControlRequest::Stop {
                             dataflow_uuid,
                             grace_duration,
@@ -1294,6 +1374,154 @@ async fn reload_dataflow(
         }
     }
     tracing::info!("successfully reloaded dataflow `{dataflow_id}`");
+
+    Ok(())
+}
+
+async fn spawn_node_dynamically(
+    running_dataflows: &HashMap<Uuid, RunningDataflow>,
+    dataflow_id: Uuid,
+    node_id: NodeId,
+    node: ResolvedNode,
+    dataflow_descriptor: Descriptor,
+    daemon_connections: &mut DaemonConnections,
+    timestamp: uhlc::Timestamp,
+) -> eyre::Result<()> {
+    let Some(dataflow) = running_dataflows.get(&dataflow_id) else {
+        bail!("No running dataflow found with UUID `{dataflow_id}`")
+    };
+
+    let message = serde_json::to_vec(&Timestamped {
+        inner: DaemonCoordinatorEvent::DynamicSpawn {
+            dataflow_id,
+            node_id: node_id.clone(),
+            node,
+            dataflow_descriptor,
+        },
+        timestamp,
+    })?;
+
+    // Send to all daemons (or we could be smarter about routing based on deploy config)
+    for daemon_id in &dataflow.daemons {
+        let daemon_connection = daemon_connections
+            .get_mut(daemon_id)
+            .wrap_err("no daemon connection")?;
+        tcp_send(&mut daemon_connection.stream, &message)
+            .await
+            .wrap_err("failed to send dynamic spawn message to daemon")?;
+
+        // wait for reply
+        let reply_raw = tcp_receive(&mut daemon_connection.stream)
+            .await
+            .wrap_err("failed to receive dynamic spawn reply from daemon")?;
+        match serde_json::from_slice(&reply_raw)
+            .wrap_err("failed to deserialize dynamic spawn reply from daemon")?
+        {
+            DaemonCoordinatorReply::DynamicSpawnResult(result) => result
+                .map_err(|e| eyre!(e))
+                .wrap_err("failed to dynamically spawn node")?,
+            other => bail!("unexpected reply after sending dynamic spawn: {other:?}"),
+        }
+    }
+    tracing::info!(
+        "successfully spawned node `{node_id}` dynamically in dataflow `{dataflow_id}`"
+    );
+
+    Ok(())
+}
+
+async fn stop_node(
+    running_dataflows: &HashMap<Uuid, RunningDataflow>,
+    dataflow_id: Uuid,
+    node_id: NodeId,
+    daemon_connections: &mut DaemonConnections,
+    timestamp: uhlc::Timestamp,
+) -> eyre::Result<()> {
+    let Some(dataflow) = running_dataflows.get(&dataflow_id) else {
+        bail!("No running dataflow found with UUID `{dataflow_id}`")
+    };
+
+    let message = serde_json::to_vec(&Timestamped {
+        inner: DaemonCoordinatorEvent::StopNode {
+            dataflow_id,
+            node_id: node_id.clone(),
+        },
+        timestamp,
+    })?;
+
+    for daemon_id in &dataflow.daemons {
+        let daemon_connection = daemon_connections
+            .get_mut(daemon_id)
+            .wrap_err("no daemon connection")?;
+        tcp_send(&mut daemon_connection.stream, &message)
+            .await
+            .wrap_err("failed to send stop node message to daemon")?;
+
+        // wait for reply
+        let reply_raw = tcp_receive(&mut daemon_connection.stream)
+            .await
+            .wrap_err("failed to receive stop node reply from daemon")?;
+        match serde_json::from_slice(&reply_raw)
+            .wrap_err("failed to deserialize stop node reply from daemon")?
+        {
+            DaemonCoordinatorReply::StopNodeResult(result) => result
+                .map_err(|e| eyre!(e))
+                .wrap_err("failed to stop node")?,
+            other => bail!("unexpected reply after sending stop node: {other:?}"),
+        }
+    }
+    tracing::info!("successfully stopped node `{node_id}` in dataflow `{dataflow_id}`");
+
+    Ok(())
+}
+
+async fn restart_node_with_new_config(
+    running_dataflows: &HashMap<Uuid, RunningDataflow>,
+    dataflow_id: Uuid,
+    node_id: NodeId,
+    new_node: ResolvedNode,
+    dataflow_descriptor: Descriptor,
+    daemon_connections: &mut DaemonConnections,
+    timestamp: uhlc::Timestamp,
+) -> eyre::Result<()> {
+    let Some(dataflow) = running_dataflows.get(&dataflow_id) else {
+        bail!("No running dataflow found with UUID `{dataflow_id}`")
+    };
+
+    let message = serde_json::to_vec(&Timestamped {
+        inner: DaemonCoordinatorEvent::RestartNode {
+            dataflow_id,
+            node_id: node_id.clone(),
+            new_node,
+            dataflow_descriptor,
+        },
+        timestamp,
+    })?;
+
+    for daemon_id in &dataflow.daemons {
+        let daemon_connection = daemon_connections
+            .get_mut(daemon_id)
+            .wrap_err("no daemon connection")?;
+        tcp_send(&mut daemon_connection.stream, &message)
+            .await
+            .wrap_err("failed to send restart node message to daemon")?;
+
+        // wait for reply
+        let reply_raw = tcp_receive(&mut daemon_connection.stream)
+            .await
+            .wrap_err("failed to receive restart node reply from daemon")?;
+        match serde_json::from_slice(&reply_raw)
+            .wrap_err("failed to deserialize restart node reply from daemon")?
+        {
+            DaemonCoordinatorReply::RestartNodeResult(result) => result
+                .map_err(|e| eyre!(e))
+                .wrap_err("failed to restart node with new config")?,
+            other => bail!("unexpected reply after sending restart node: {other:?}"),
+        }
+    }
+    tracing::info!(
+        "successfully restarted node `{node_id}` with new config in dataflow `{dataflow_id}`"
+    );
 
     Ok(())
 }

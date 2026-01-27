@@ -14,7 +14,7 @@ use tracing::{error, info};
 use uuid::Uuid;
 
 use crate::common::handle_dataflow_result;
-use crate::hot_reload::{setup_file_watcher, ReloadEvent};
+use crate::hot_reload::{setup_comprehensive_watcher, DataflowChangeEvent, HotReloadEvent};
 use crate::output::print_log_message;
 
 pub fn attach_dataflow(
@@ -42,17 +42,82 @@ pub fn attach_dataflow(
     // Setup dataflow file watcher if reload option is set.
     let watcher_tx = tx.clone();
     let _watcher = if hot_reload {
-        let (watcher, reload_rx) = setup_file_watcher(dataflow_id, &nodes, &working_dir)
-            .context("failed to setup file watcher")?;
+        let (watcher, hot_reload_rx) = setup_comprehensive_watcher(
+            dataflow_id,
+            &dataflow_path,
+            &nodes,
+            &working_dir,
+        )
+        .context("failed to setup comprehensive file watcher")?;
 
         // Spawn a thread to forward reload events to the main channel
         std::thread::spawn(move || {
-            while let Ok(event) = reload_rx.recv() {
-                let _ = watcher_tx.send(AttachEvent::Control(ControlRequest::Reload {
-                    dataflow_id: event.dataflow_id,
-                    node_id: event.node_id,
-                    operator_id: event.operator_id,
-                }));
+            while let Ok(event) = hot_reload_rx.recv() {
+                match event {
+                    HotReloadEvent::FileChanged(reload_event) => {
+                        let _ = watcher_tx.send(AttachEvent::Control(ControlRequest::Reload {
+                            dataflow_id: reload_event.dataflow_id,
+                            node_id: reload_event.node_id,
+                            operator_id: reload_event.operator_id,
+                        }));
+                    }
+                    HotReloadEvent::DataflowChanged {
+                        changes,
+                        new_descriptor,
+                        new_nodes,
+                    } => {
+                        // Handle dataflow YAML changes
+                        for change in changes {
+                            let control_request = match change {
+                                DataflowChangeEvent::NodeAdded { node_id, .. } => {
+                                    if let Some(node) = new_nodes.get(&node_id) {
+                                        info!(
+                                            "Hot-reload: spawning new node '{}' from YAML",
+                                            node_id
+                                        );
+                                        ControlRequest::SpawnNode {
+                                            dataflow_id,
+                                            node_id,
+                                            node: node.clone(),
+                                            dataflow_descriptor: new_descriptor.clone(),
+                                        }
+                                    } else {
+                                        tracing::warn!(
+                                            "Hot-reload: node '{}' added but not found in resolved nodes",
+                                            node_id
+                                        );
+                                        continue;
+                                    }
+                                }
+                                DataflowChangeEvent::NodeRemoved { node_id } => {
+                                    info!(
+                                        "Hot-reload: stopping removed node '{}' from YAML",
+                                        node_id
+                                    );
+                                    ControlRequest::StopNode {
+                                        dataflow_id,
+                                        node_id,
+                                    }
+                                }
+                                DataflowChangeEvent::NodeChanged { node_id, new_node } => {
+                                    info!(
+                                        "Hot-reload: restarting node '{}' with new config",
+                                        node_id
+                                    );
+                                    ControlRequest::RestartNode {
+                                        dataflow_id,
+                                        node_id,
+                                        new_node,
+                                        dataflow_descriptor: new_descriptor.clone(),
+                                    }
+                                }
+                            };
+                            if watcher_tx.send(AttachEvent::Control(control_request)).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
             }
         });
 
@@ -143,6 +208,15 @@ pub fn attach_dataflow(
             }
             ControlRequestReply::DataflowReloaded { uuid } => {
                 info!("dataflow {uuid} reloaded")
+            }
+            ControlRequestReply::NodeSpawned { dataflow_id, node_id } => {
+                info!("node {node_id} spawned in dataflow {dataflow_id}")
+            }
+            ControlRequestReply::NodeStopped { dataflow_id, node_id } => {
+                info!("node {node_id} stopped in dataflow {dataflow_id}")
+            }
+            ControlRequestReply::NodeRestarted { dataflow_id, node_id } => {
+                info!("node {node_id} restarted with new config in dataflow {dataflow_id}")
             }
             other => error!("Received unexpected Coordinator Reply: {:#?}", other),
         };

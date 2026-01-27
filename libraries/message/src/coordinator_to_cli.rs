@@ -28,6 +28,18 @@ pub enum ControlRequestReply {
     DataflowReloaded {
         uuid: Uuid,
     },
+    NodeSpawned {
+        dataflow_id: Uuid,
+        node_id: NodeId,
+    },
+    NodeStopped {
+        dataflow_id: Uuid,
+        node_id: NodeId,
+    },
+    NodeRestarted {
+        dataflow_id: Uuid,
+        node_id: NodeId,
+    },
     DataflowStopped {
         uuid: Uuid,
         result: DataflowResult,

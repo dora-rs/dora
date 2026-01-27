@@ -43,7 +43,7 @@ use shared_memory_server::ShmemConf;
 use socket_stream_utils::socket_stream_send;
 use spawn::Spawner;
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
     env::current_dir,
     future::Future,
     io,
@@ -72,6 +72,30 @@ use uuid::{NoContext, Timestamp, Uuid};
 
 pub use flume;
 pub use log::LogDestination;
+
+/// Events sent to the daemon for hot-reload actions.
+#[derive(Debug, Clone)]
+pub enum DaemonHotReloadEvent {
+    /// Reload a node (file changed - restart with same config)
+    Reload {
+        node_id: NodeId,
+        operator_id: Option<OperatorId>,
+    },
+    /// Stop a node (removed from YAML)
+    StopNode { node_id: NodeId },
+    /// Spawn a new node (added to YAML)
+    SpawnNode {
+        node_id: NodeId,
+        node: ResolvedNode,
+        new_descriptor: Descriptor,
+    },
+    /// Restart a node with new config (config changed in YAML)
+    RestartNode {
+        node_id: NodeId,
+        new_node: ResolvedNode,
+        new_descriptor: Descriptor,
+    },
+}
 
 mod coordinator;
 mod extract_err_from_stderr;
@@ -197,7 +221,7 @@ impl Daemon {
         write_events_to: Option<PathBuf>,
         stop_after: Option<Duration>,
         hot_reload: bool,
-        reload_receiver: Option<std::sync::mpsc::Receiver<(NodeId, Option<OperatorId>)>>,
+        reload_receiver: Option<std::sync::mpsc::Receiver<DaemonHotReloadEvent>>,
     ) -> eyre::Result<DataflowResult> {
         let working_dir = dataflow_path
             .canonicalize()
@@ -276,14 +300,14 @@ impl Daemon {
         };
 
         // Set up file watching for hot-reload
-        let (reload_tx, reload_rx) = tokio::sync::mpsc::channel::<(NodeId, Option<OperatorId>)>(10);
+        let (reload_tx, reload_rx) = tokio::sync::mpsc::channel::<DaemonHotReloadEvent>(10);
 
         // If a reload receiver was provided, spawn a task to forward events
         if let Some(receiver) = reload_receiver {
             let tx = reload_tx;
             tokio::task::spawn_blocking(move || {
-                while let Ok((node_id, operator_id)) = receiver.recv() {
-                    if tx.blocking_send((node_id, operator_id)).is_err() {
+                while let Ok(event) = receiver.recv() {
+                    if tx.blocking_send(event).is_err() {
                         break;
                     }
                 }
@@ -294,14 +318,44 @@ impl Daemon {
         }
 
         let reload_clock = clock.clone();
-        let reload_events = ReceiverStream::new(reload_rx).map(move |(node_id, operator_id)| {
+        let reload_events = ReceiverStream::new(reload_rx).map(move |event| {
+            let coordinator_event = match event {
+                DaemonHotReloadEvent::Reload {
+                    node_id,
+                    operator_id,
+                } => DaemonCoordinatorEvent::ReloadDataflow {
+                    dataflow_id,
+                    node_id,
+                    operator_id,
+                },
+                DaemonHotReloadEvent::StopNode { node_id } => DaemonCoordinatorEvent::StopNode {
+                    dataflow_id,
+                    node_id,
+                },
+                DaemonHotReloadEvent::SpawnNode {
+                    node_id,
+                    node,
+                    new_descriptor,
+                } => DaemonCoordinatorEvent::DynamicSpawn {
+                    dataflow_id,
+                    node_id,
+                    node,
+                    dataflow_descriptor: new_descriptor,
+                },
+                DaemonHotReloadEvent::RestartNode {
+                    node_id,
+                    new_node,
+                    new_descriptor,
+                } => DaemonCoordinatorEvent::RestartNode {
+                    dataflow_id,
+                    node_id,
+                    new_node,
+                    dataflow_descriptor: new_descriptor,
+                },
+            };
             Timestamped {
                 inner: Event::Coordinator(CoordinatorEvent {
-                    event: DaemonCoordinatorEvent::ReloadDataflow {
-                        dataflow_id,
-                        node_id,
-                        operator_id,
-                    },
+                    event: coordinator_event,
                     reply_tx: oneshot::channel().0, // Dummy reply channel
                 }),
                 timestamp: reload_clock.new_timestamp(),
@@ -782,11 +836,12 @@ impl Daemon {
                     dora_core::config::RemoteCommunicationConfig::Tcp => {}
                 }
 
-                let base_working_dir = self.base_working_dir(local_working_dir, session_id)?;
+                let base_working_dir = self.base_working_dir(local_working_dir, session_id.clone())?;
 
                 let result = self
                     .spawn_dataflow(
                         build_id,
+                        session_id,
                         dataflow_id,
                         base_working_dir,
                         nodes,
@@ -930,6 +985,59 @@ impl Daemon {
                     DaemonCoordinatorReply::ReloadResult(result.map_err(|err| format!("{err:?}")));
                 // In `dora run` mode, there's no coordinator, so the reply channel may be a dummy
                 // that was dropped. This is expected, so we just ignore the send failure.
+                let _ = reply_tx.send(Some(reply));
+                RunStatus::Continue
+            }
+            DaemonCoordinatorEvent::StopNode {
+                dataflow_id,
+                node_id,
+            } => {
+                let result = self.stop_single_node(dataflow_id, node_id.clone()).await;
+                let reply = DaemonCoordinatorReply::StopNodeResult(
+                    result.map_err(|err| format!("{err:?}")),
+                );
+                let _ = reply_tx.send(Some(reply));
+                RunStatus::Continue
+            }
+            DaemonCoordinatorEvent::DynamicSpawn {
+                dataflow_id,
+                node_id,
+                node,
+                dataflow_descriptor,
+            } => {
+                let result = self
+                    .dynamic_spawn_node(dataflow_id, node_id, node, dataflow_descriptor)
+                    .await;
+                let reply = DaemonCoordinatorReply::DynamicSpawnResult(
+                    result.map_err(|err| format!("{err:?}")),
+                );
+                let _ = reply_tx.send(Some(reply));
+                RunStatus::Continue
+            }
+            DaemonCoordinatorEvent::RestartNode {
+                dataflow_id,
+                node_id,
+                new_node,
+                dataflow_descriptor,
+            } => {
+                tracing::info!(
+                    "Hot-reload: received RestartNode event for node `{}` in dataflow `{}`",
+                    node_id,
+                    dataflow_id
+                );
+                let result = self
+                    .restart_node_with_new_config(dataflow_id, node_id.clone(), new_node, dataflow_descriptor)
+                    .await;
+                if let Err(ref e) = result {
+                    tracing::error!(
+                        "Hot-reload: failed to restart node `{}`: {:?}",
+                        node_id,
+                        e
+                    );
+                }
+                let reply = DaemonCoordinatorReply::RestartNodeResult(
+                    result.map_err(|err| format!("{err:?}")),
+                );
                 let _ = reply_tx.send(Some(reply));
                 RunStatus::Continue
             }
@@ -1274,6 +1382,7 @@ impl Daemon {
     async fn spawn_dataflow(
         &mut self,
         build_id: Option<BuildId>,
+        session_id: SessionId,
         dataflow_id: DataflowId,
         base_working_dir: PathBuf,
         nodes: BTreeMap<NodeId, ResolvedNode>,
@@ -1911,6 +2020,340 @@ impl Daemon {
         Ok(())
     }
 
+    /// Stop a single node within a running dataflow (for hot-reload when node is removed from YAML)
+    async fn stop_single_node(
+        &mut self,
+        dataflow_id: Uuid,
+        node_id: NodeId,
+    ) -> Result<(), eyre::ErrReport> {
+        let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
+            format!("Stop node failed: no running dataflow with ID `{dataflow_id}`")
+        })?;
+
+        tracing::info!(
+            "Hot-reload: stopping removed node `{}` in dataflow `{}`",
+            node_id,
+            dataflow_id
+        );
+
+        // Send stop event to the node
+        if let Some(channel) = dataflow.subscribe_channels.get(&node_id) {
+            let event = NodeEvent::Stop;
+            let _ = send_with_timestamp(channel, event, &self.clock);
+        }
+
+        // Also send SIGTERM to ensure the process stops
+        if let Some(running_node) = dataflow.running_nodes.get(&node_id) {
+            // Disable restart so it doesn't come back
+            running_node
+                .disable_restart
+                .store(true, std::sync::atomic::Ordering::Release);
+            if let Some(process) = &running_node.process {
+                process.submit(ProcessOperation::SoftKill);
+            }
+        }
+
+        // Clean up mappings - remove this node as a receiver from all outputs
+        for receivers in dataflow.mappings.values_mut() {
+            receivers.retain(|(receiver_id, _)| receiver_id != &node_id);
+        }
+
+        // Clean up output mappings - remove mappings where this node is the source
+        dataflow.mappings.retain(|output_id, _| output_id.0 != node_id);
+
+        // Clean up open_inputs for this node
+        dataflow.open_inputs.remove(&node_id);
+
+        // Clean up timers for this node
+        for timer_receivers in dataflow.timers.values_mut() {
+            timer_receivers.retain(|(receiver_id, _)| receiver_id != &node_id);
+        }
+
+        // Clean up subscribe channels
+        dataflow.subscribe_channels.remove(&node_id);
+        dataflow.drop_channels.remove(&node_id);
+
+        // Remove from running_nodes
+        dataflow.running_nodes.remove(&node_id);
+
+        // Track that this node was stopped via hot-reload, so we can skip cleanup
+        // when the old process exits
+        dataflow.hot_reload_stopped_nodes.insert(node_id.clone());
+
+        tracing::info!(
+            "Hot-reload: node `{}` fully stopped and cleaned up",
+            node_id
+        );
+
+        Ok(())
+    }
+
+    /// Dynamically spawn a new node to a running dataflow (for hot-reload when node is added to YAML)
+    async fn dynamic_spawn_node(
+        &mut self,
+        dataflow_id: Uuid,
+        node_id: NodeId,
+        node: ResolvedNode,
+        new_dataflow_descriptor: Descriptor,
+    ) -> Result<(), eyre::ErrReport> {
+        tracing::info!(
+            "Hot-reload: dynamically spawning node `{}` in dataflow `{}`",
+            node_id,
+            dataflow_id
+        );
+
+        // Get working dir for this dataflow
+        let working_dir = self
+            .working_dir
+            .get(&dataflow_id)
+            .cloned()
+            .unwrap_or_else(|| PathBuf::from("."));
+
+        // Get info from the running dataflow
+        let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
+            format!("Dynamic spawn failed: no running dataflow with ID `{dataflow_id}`")
+        })?;
+
+        // Update the dataflow descriptor
+        dataflow.descriptor = new_dataflow_descriptor.clone();
+
+        // Set up input mappings for the new node so it can receive data from existing nodes
+        let inputs = node_inputs(&node);
+        for (input_id, input) in inputs {
+            // Add to open_inputs
+            dataflow
+                .open_inputs
+                .entry(node_id.clone())
+                .or_default()
+                .insert(input_id.clone());
+
+            // Add to mappings so the node receives outputs from other nodes
+            match input.mapping {
+                InputMapping::User(mapping) => {
+                    tracing::info!(
+                        "Hot-reload: setting up input mapping for node '{}': {}:{} -> {}",
+                        node_id,
+                        mapping.source,
+                        mapping.output,
+                        input_id
+                    );
+                    dataflow
+                        .mappings
+                        .entry(OutputId(mapping.source, mapping.output))
+                        .or_default()
+                        .insert((node_id.clone(), input_id));
+                }
+                InputMapping::Timer { interval } => {
+                    dataflow
+                        .timers
+                        .entry(interval)
+                        .or_default()
+                        .insert((node_id.clone(), input_id));
+                }
+            }
+        }
+
+        // Create a logger for this spawn
+        let mut dataflow_logger = self
+            .logger
+            .for_dataflow(dataflow_id)
+            .try_clone()
+            .await
+            .context("failed to clone logger")?;
+        let mut logger = dataflow_logger.reborrow().for_node(node_id.clone());
+
+        // Create a spawner for the new node - hot_reload is always true here
+        let spawner = Spawner {
+            dataflow_id,
+            daemon_tx: self.events_tx.clone(),
+            dataflow_descriptor: new_dataflow_descriptor,
+            clock: self.clock.clone(),
+            uv: false, // TODO: Get from dataflow settings
+            hot_reload: true,
+        };
+
+        // Mark node as pending
+        dataflow.pending_nodes.insert(node_id.clone());
+
+        // Get or create stderr queue
+        let node_stderr_most_recent = dataflow
+            .node_stderr_most_recent
+            .entry(node_id.clone())
+            .or_insert_with(|| Arc::new(ArrayQueue::new(STDERR_LOG_LINES_MAX)))
+            .clone();
+
+        // Spawn the node task
+        let task = spawner
+            .spawn_node(node, working_dir, node_stderr_most_recent, None, &mut logger)
+            .await
+            .with_context(|| format!("failed to spawn node `{}`", node_id))?;
+
+        // Prepare the node
+        let prepared_node = task
+            .await
+            .with_context(|| format!("failed to prepare node `{}`", node_id))?;
+
+        // Clone logger for actual spawn
+        let spawn_logger = logger
+            .try_clone()
+            .await
+            .context("failed to clone NodeLogger")?;
+
+        // Actually spawn the node
+        tracing::debug!("Hot-reload: prepared node `{}`, now spawning process", node_id);
+        let running_node = prepared_node
+            .spawn(spawn_logger)
+            .await
+            .with_context(|| format!("failed to spawn node `{}`", node_id))?;
+
+        tracing::info!(
+            "Hot-reload: node `{}` process spawned successfully, waiting for it to subscribe",
+            node_id
+        );
+
+        // Get a fresh reference to dataflow since we dropped the borrow
+        let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
+            format!("Dynamic spawn failed: no running dataflow with ID `{dataflow_id}`")
+        })?;
+
+        dataflow.running_nodes.insert(node_id.clone(), running_node);
+
+        tracing::debug!(
+            "Hot-reload: node `{}` added to running_nodes, mappings count: {}",
+            node_id,
+            dataflow.mappings.len()
+        );
+
+        Ok(())
+    }
+
+    /// Restart a node with new configuration (for hot-reload when node config changed in YAML)
+    /// This stops the old node completely and spawns a new one with the updated config.
+    async fn restart_node_with_new_config(
+        &mut self,
+        dataflow_id: Uuid,
+        node_id: NodeId,
+        new_node: ResolvedNode,
+        new_dataflow_descriptor: Descriptor,
+    ) -> Result<(), eyre::ErrReport> {
+        tracing::info!(
+            "Hot-reload: restarting node `{}` with new config in dataflow `{}`",
+            node_id,
+            dataflow_id
+        );
+
+        // Get info about the old node's outputs before stopping
+        // We need to preserve the output mappings (who receives from this node)
+        let output_mappings: Vec<(OutputId, BTreeSet<InputId>)> = {
+            let dataflow = self.running.get(&dataflow_id).wrap_err_with(|| {
+                format!("Restart failed: no running dataflow with ID `{dataflow_id}`")
+            })?;
+
+            // Collect all mappings where this node is the source
+            let mappings: Vec<_> = dataflow
+                .mappings
+                .iter()
+                .filter(|(output_id, _)| output_id.0 == node_id)
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+
+            tracing::debug!(
+                "Hot-reload: preserving {} output mappings for node `{}`",
+                mappings.len(),
+                node_id
+            );
+            mappings
+        };
+
+        // Stop the old node - this will clean up input mappings but leave output mappings
+        // We manually handle output mappings below
+        tracing::debug!("Hot-reload: stopping old node `{}`", node_id);
+        self.stop_single_node_for_restart(dataflow_id, node_id.clone()).await?;
+
+        // Wait for the old process to fully terminate
+        tracing::debug!("Hot-reload: waiting for old node `{}` to terminate", node_id);
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        // Spawn the new node with new config
+        tracing::debug!("Hot-reload: spawning new node `{}` with updated config", node_id);
+        self.dynamic_spawn_node(dataflow_id, node_id.clone(), new_node, new_dataflow_descriptor)
+            .await
+            .wrap_err_with(|| format!("Failed to spawn new node `{node_id}` during restart"))?;
+
+        // Restore output mappings - other nodes should continue to receive from this node
+        {
+            let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
+                format!("Restart failed: no running dataflow with ID `{dataflow_id}`")
+            })?;
+
+            for (output_id, receivers) in output_mappings {
+                // Only restore if the output still exists in the new node config
+                // (We could check this, but for now we just restore all mappings)
+                dataflow.mappings.entry(output_id).or_default().extend(receivers);
+            }
+        }
+
+        tracing::info!(
+            "Hot-reload: node `{}` restarted successfully with new config",
+            node_id
+        );
+
+        Ok(())
+    }
+
+    /// Stop a single node for restart - similar to stop_single_node but preserves output mappings
+    async fn stop_single_node_for_restart(
+        &mut self,
+        dataflow_id: Uuid,
+        node_id: NodeId,
+    ) -> Result<(), eyre::ErrReport> {
+        let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
+            format!("Stop node for restart failed: no running dataflow with ID `{dataflow_id}`")
+        })?;
+
+        tracing::info!(
+            "Hot-reload: stopping node `{}` for restart in dataflow `{}`",
+            node_id,
+            dataflow_id
+        );
+
+        // Send stop event to the node
+        if let Some(channel) = dataflow.subscribe_channels.get(&node_id) {
+            let event = NodeEvent::Stop;
+            let _ = send_with_timestamp(channel, event, &self.clock);
+        }
+
+        // Send SIGTERM and disable restart
+        if let Some(running_node) = dataflow.running_nodes.get(&node_id) {
+            running_node
+                .disable_restart
+                .store(true, std::sync::atomic::Ordering::Release);
+            if let Some(process) = &running_node.process {
+                process.submit(ProcessOperation::SoftKill);
+            }
+        }
+
+        // Clean up input mappings - remove this node as a receiver
+        // NOTE: We do NOT clean up output mappings here - they are preserved for the new node
+        for receivers in dataflow.mappings.values_mut() {
+            receivers.retain(|(receiver_id, _)| receiver_id != &node_id);
+        }
+
+        // Clean up open_inputs
+        dataflow.open_inputs.remove(&node_id);
+
+        // Clean up timer inputs
+        for timer_receivers in dataflow.timers.values_mut() {
+            timer_receivers.retain(|(receiver_id, _)| receiver_id != &node_id);
+        }
+
+        // Clean up subscribe channels
+        dataflow.subscribe_channels.remove(&node_id);
+        dataflow.drop_channels.remove(&node_id);
+
+        Ok(())
+    }
+
     async fn send_out(
         &mut self,
         dataflow_id: Uuid,
@@ -2172,6 +2615,17 @@ impl Daemon {
                 "failed to get downstream nodes: no running dataflow with ID `{dataflow_id}`"
             ),
         };
+
+        // Check if this node was stopped via hot-reload (stop_single_node).
+        // If so, the cleanup was already done and a new node with the same ID might exist,
+        // so we should skip normal cleanup here.
+        if dataflow.hot_reload_stopped_nodes.remove(node_id) {
+            tracing::debug!(
+                "Hot-reload: node `{}` was stopped via hot-reload, skipping exit cleanup",
+                node_id
+            );
+            return Ok(());
+        }
 
         dataflow
             .pending_nodes
@@ -2818,6 +3272,11 @@ pub struct RunningDataflow {
     open_inputs: BTreeMap<NodeId, BTreeSet<DataId>>,
     running_nodes: BTreeMap<NodeId, RunningNode>,
 
+    /// Nodes that were intentionally stopped via hot-reload (stop_single_node).
+    /// When these nodes' processes exit, we should skip normal cleanup because
+    /// the cleanup was already done and a new node with the same ID might exist.
+    hot_reload_stopped_nodes: HashSet<NodeId>,
+
     /// List of all dynamic node IDs.
     ///
     /// We want to treat dynamic nodes differently in some cases, so we need
@@ -2877,6 +3336,7 @@ impl RunningDataflow {
             timers: BTreeMap::new(),
             open_inputs: BTreeMap::new(),
             running_nodes: BTreeMap::new(),
+            hot_reload_stopped_nodes: HashSet::new(),
             dynamic_nodes: BTreeSet::new(),
             open_external_mappings: Default::default(),
             pending_drop_tokens: HashMap::new(),
