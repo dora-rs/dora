@@ -57,6 +57,25 @@ pub enum ControlRequest {
         node_id: NodeId,
         operator_id: Option<OperatorId>,
     },
+    /// Dynamically spawn a new node to a running dataflow (for hot-reload when node is added in YAML)
+    SpawnNode {
+        dataflow_id: Uuid,
+        node_id: NodeId,
+        node: crate::descriptor::ResolvedNode,
+        dataflow_descriptor: crate::descriptor::Descriptor,
+    },
+    /// Stop a single node within a running dataflow (for hot-reload when node is removed from YAML)
+    StopNode {
+        dataflow_id: Uuid,
+        node_id: NodeId,
+    },
+    /// Restart a node with new configuration (for hot-reload when node config changed in YAML)
+    RestartNode {
+        dataflow_id: Uuid,
+        node_id: NodeId,
+        new_node: crate::descriptor::ResolvedNode,
+        dataflow_descriptor: crate::descriptor::Descriptor,
+    },
     Check {
         dataflow_uuid: Uuid,
     },

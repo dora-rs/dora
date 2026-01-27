@@ -50,6 +50,25 @@ pub enum DaemonCoordinatorEvent {
         node_id: NodeId,
         operator_id: Option<OperatorId>,
     },
+    /// Stop a single node within a running dataflow (for hot-reload when node is removed)
+    StopNode {
+        dataflow_id: DataflowId,
+        node_id: NodeId,
+    },
+    /// Dynamically spawn additional nodes to a running dataflow (for hot-reload when node is added)
+    DynamicSpawn {
+        dataflow_id: DataflowId,
+        node_id: NodeId,
+        node: ResolvedNode,
+        dataflow_descriptor: Descriptor,
+    },
+    /// Restart a node with new configuration (for hot-reload when node config changed in YAML)
+    RestartNode {
+        dataflow_id: DataflowId,
+        node_id: NodeId,
+        new_node: ResolvedNode,
+        dataflow_descriptor: Descriptor,
+    },
     Logs {
         dataflow_id: DataflowId,
         node_id: NodeId,

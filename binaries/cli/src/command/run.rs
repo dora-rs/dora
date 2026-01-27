@@ -8,12 +8,12 @@
 use super::Executable;
 use crate::{
     common::{handle_dataflow_result, resolve_dataflow, write_events_to},
-    hot_reload::setup_file_watcher,
+    hot_reload::{setup_comprehensive_watcher, DataflowChangeEvent, HotReloadEvent},
     output::print_log_message,
     session::DataflowSession,
 };
 use dora_core::descriptor::{Descriptor, DescriptorExt};
-use dora_daemon::{Daemon, LogDestination, flume};
+use dora_daemon::{Daemon, DaemonHotReloadEvent, LogDestination, flume};
 use dora_tracing::TracingBuilder;
 use eyre::Context;
 use std::sync::mpsc;
@@ -71,15 +71,84 @@ pub fn run(dataflow: String, uv: bool, hot_reload: bool) -> eyre::Result<()> {
         // Use a temporary dataflow_id - the actual one is assigned in the daemon
         let dataflow_id = Uuid::nil();
 
-        let (watcher, reload_rx) = setup_file_watcher(dataflow_id, &nodes, &working_dir)
-            .context("failed to setup file watcher")?;
+        let (watcher, hot_reload_rx) = setup_comprehensive_watcher(
+            dataflow_id,
+            &dataflow_path,
+            &nodes,
+            &working_dir,
+        )
+        .context("failed to setup comprehensive file watcher")?;
 
         // Create a channel to forward reload events to the daemon
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::channel::<DaemonHotReloadEvent>();
         std::thread::spawn(move || {
-            while let Ok(event) = reload_rx.recv() {
-                if tx.send((event.node_id, event.operator_id)).is_err() {
-                    break;
+            while let Ok(event) = hot_reload_rx.recv() {
+                match event {
+                    HotReloadEvent::FileChanged(reload_event) => {
+                        // Forward file change events to the daemon
+                        if tx
+                            .send(DaemonHotReloadEvent::Reload {
+                                node_id: reload_event.node_id,
+                                operator_id: reload_event.operator_id,
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    HotReloadEvent::DataflowChanged {
+                        changes,
+                        new_descriptor,
+                        new_nodes,
+                    } => {
+                        // Handle dataflow YAML changes
+                        for change in changes {
+                            let event = match change {
+                                DataflowChangeEvent::NodeAdded { node_id, .. } => {
+                                    // Get the node from new_nodes
+                                    if let Some(node) = new_nodes.get(&node_id) {
+                                        tracing::info!(
+                                            "Hot-reload: spawning new node '{}' from YAML",
+                                            node_id
+                                        );
+                                        DaemonHotReloadEvent::SpawnNode {
+                                            node_id,
+                                            node: node.clone(),
+                                            new_descriptor: new_descriptor.clone(),
+                                        }
+                                    } else {
+                                        tracing::warn!(
+                                            "Hot-reload: node '{}' added but not found in resolved nodes",
+                                            node_id
+                                        );
+                                        continue;
+                                    }
+                                }
+                                DataflowChangeEvent::NodeRemoved { node_id } => {
+                                    tracing::info!(
+                                        "Hot-reload: stopping removed node '{}' from YAML",
+                                        node_id
+                                    );
+                                    DaemonHotReloadEvent::StopNode { node_id }
+                                }
+                                DataflowChangeEvent::NodeChanged { node_id, new_node } => {
+                                    // For config changes, restart with new config
+                                    tracing::info!(
+                                        "Hot-reload: restarting node '{}' with new config",
+                                        node_id
+                                    );
+                                    DaemonHotReloadEvent::RestartNode {
+                                        node_id,
+                                        new_node,
+                                        new_descriptor: new_descriptor.clone(),
+                                    }
+                                }
+                            };
+                            if tx.send(event).is_err() {
+                                break;
+                            }
+                        }
+                    }
                 }
             }
         });
