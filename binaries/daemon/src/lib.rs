@@ -631,9 +631,12 @@ impl Daemon {
     }
 
     async fn trigger_manual_stop(&mut self) -> eyre::Result<()> {
+        // Collect dataflow IDs that need immediate finishing
+        let mut dataflows_to_finish = Vec::new();
+
         for dataflow in self.running.values_mut() {
             let mut logger = self.logger.for_dataflow(dataflow.id);
-            dataflow
+            let finish_when = dataflow
                 .stop_all(
                     &mut self.coordinator_connection,
                     &self.clock,
@@ -642,9 +645,18 @@ impl Daemon {
                     &mut logger,
                 )
                 .await?;
-            // After stop_all, check if dataflow should finish (for all-dynamic nodes case)
-            self.check_dataflow_finished_after_stop(dataflow_id).await?;
+
+            // If stop_all returns Now, we need to finish this dataflow
+            if matches!(finish_when, FinishDataflowWhen::Now) {
+                dataflows_to_finish.push(dataflow.id);
+            }
         }
+
+        // Finish dataflows after the loop to avoid borrow checker issues
+        for dataflow_id in dataflows_to_finish {
+            self.finish_dataflow(dataflow_id).await?;
+        }
+
         self.exit_when_all_finished = true;
         Ok(())
     }
