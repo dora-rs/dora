@@ -33,23 +33,24 @@ pub fn adjust_shared_library_path(path: &Path) -> Result<std::path::PathBuf, eyr
 }
 
 // Search for python binary.
-// 1. If `uv` is available, use `uv run which python`
+// 1. If `uv` is available, use `uv python find` to get the Python path
 // 2. Otherwise, try `python` and check it's not Python 2
 // 3. Fall back to `python3` if `python` is Python 2
 pub fn get_python_path() -> Result<std::path::PathBuf, eyre::ErrReport> {
     // First, try using uv if available
     if let Ok(uv_path) = get_uv_path() {
         let output = std::process::Command::new(&uv_path)
-            .args(["run", "which", "python"])
+            .args(["python", "find"])
             .output();
 
         if let Ok(output) = output {
             if output.status.success() {
-                let python_path = String::from_utf8_lossy(&output.stdout)
-                    .trim()
-                    .to_string();
+                let python_path = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 if !python_path.is_empty() {
-                    return Ok(std::path::PathBuf::from(python_path));
+                    let path = std::path::PathBuf::from(&python_path);
+                    if path.exists() {
+                        return Ok(path);
+                    }
                 }
             }
         }
@@ -64,8 +65,9 @@ pub fn get_python_path() -> Result<std::path::PathBuf, eyre::ErrReport> {
     }
 
     // Fall back to python3
-    which::which("python3")
-        .context("failed to find a valid Python 3 installation. Make sure that python3 is available.")
+    which::which("python3").context(
+        "failed to find a valid Python 3 installation. Make sure that python3 is available.",
+    )
 }
 
 fn is_python2(python_path: &std::path::Path) -> bool {

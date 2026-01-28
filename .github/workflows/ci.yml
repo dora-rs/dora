@@ -526,7 +526,6 @@ jobs:
           # Test C++ template Project
           dora new test_cxx_project --lang cxx --internal-create-with-path-dependencies
           cd test_cxx_project
-          dora list
           cmake -B build
           cmake --build build
           cmake --install build
