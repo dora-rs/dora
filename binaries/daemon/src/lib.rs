@@ -195,6 +195,7 @@ impl Daemon {
         uv: bool,
         log_destination: LogDestination,
         write_events_to: Option<PathBuf>,
+        stop_after: Option<Duration>,
     ) -> eyre::Result<DataflowResult> {
         let working_dir = dataflow_path
             .canonicalize()
@@ -251,6 +252,26 @@ impl Daemon {
 
         let ctrlc_events = ReceiverStream::new(set_up_ctrlc_handler(clock.clone())?);
 
+        // Set up optional timeout for --stop-after
+        let timeout_events = if let Some(duration) = stop_after {
+            let clock = clock.clone();
+            let (tx, rx) = tokio::sync::mpsc::channel(1);
+            tokio::spawn(async move {
+                tokio::time::sleep(duration).await;
+                tracing::info!("stop-after timeout reached ({duration:?}) -> stopping dataflow");
+                let _ = tx
+                    .send(Timestamped {
+                        inner: Event::StopAfter(duration),
+                        timestamp: clock.new_timestamp(),
+                    })
+                    .await;
+            });
+            ReceiverStream::new(rx)
+        } else {
+            // Create an empty stream that never emits events
+            ReceiverStream::new(tokio::sync::mpsc::channel(1).1)
+        };
+
         let exit_when_done = spawn_command
             .nodes
             .values()
@@ -268,7 +289,13 @@ impl Daemon {
                 timestamp,
             }
         });
-        let events = (coordinator_events, ctrlc_events, dynamic_node_events).merge();
+        let events = (
+            coordinator_events,
+            ctrlc_events,
+            timeout_events,
+            dynamic_node_events,
+        )
+            .merge();
         let run_result = Self::run_general(
             Box::pin(events),
             None,
@@ -453,19 +480,7 @@ impl Daemon {
                 }
                 Event::CtrlC => {
                     tracing::info!("received ctrlc signal -> stopping all dataflows");
-                    for dataflow in self.running.values_mut() {
-                        let mut logger = self.logger.for_dataflow(dataflow.id);
-                        dataflow
-                            .stop_all(
-                                &mut self.coordinator_connection,
-                                &self.clock,
-                                None,
-                                false,
-                                &mut logger,
-                            )
-                            .await?;
-                    }
-                    self.exit_when_all_finished = true;
+                    self.trigger_manual_stop().await?;
                     if self.running.is_empty() {
                         break;
                     }
@@ -473,6 +488,13 @@ impl Daemon {
                 Event::SecondCtrlC => {
                     tracing::warn!("received second ctrlc signal -> exit immediately");
                     bail!("received second ctrl-c signal");
+                }
+                Event::StopAfter(duration) => {
+                    tracing::info!("stopping after {duration:?} as requested");
+                    self.trigger_manual_stop().await?;
+                    if self.running.is_empty() {
+                        break;
+                    }
                 }
                 Event::DaemonError(err) => {
                     tracing::error!("Daemon error: {err:?}");
@@ -595,6 +617,23 @@ impl Daemon {
         }
 
         Ok(self.dataflow_node_results)
+    }
+
+    async fn trigger_manual_stop(&mut self) -> eyre::Result<()> {
+        for dataflow in self.running.values_mut() {
+            let mut logger = self.logger.for_dataflow(dataflow.id);
+            dataflow
+                .stop_all(
+                    &mut self.coordinator_connection,
+                    &self.clock,
+                    None,
+                    false,
+                    &mut logger,
+                )
+                .await?;
+        }
+        self.exit_when_all_finished = true;
+        Ok(())
     }
 
     async fn handle_coordinator_event(
@@ -2932,6 +2971,7 @@ pub enum Event {
     HeartbeatInterval,
     MetricsInterval,
     CtrlC,
+    StopAfter(Duration),
     SecondCtrlC,
     DaemonError(eyre::Report),
     SpawnNodeResult {
@@ -2972,6 +3012,7 @@ impl Event {
             Event::HeartbeatInterval => "HeartbeatInterval",
             Event::MetricsInterval => "MetricsInterval",
             Event::CtrlC => "CtrlC",
+            Event::StopAfter(_) => "StopAfter",
             Event::SecondCtrlC => "SecondCtrlC",
             Event::DaemonError(_) => "DaemonError",
             Event::SpawnNodeResult { .. } => "SpawnNodeResult",

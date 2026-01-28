@@ -454,8 +454,14 @@ def build(
 ) -> None:
     """Build a Dataflow, exactly the same way as `dora build` command line tool."""
 
-def run(dataflow_path: str, uv: bool = None) -> None:
-    """Run a Dataflow, exactly the same way as `dora run` command line tool."""
+def run(dataflow_path: str, uv: bool = None, stop_after: float = None) -> None:
+    """Run a Dataflow, exactly the same way as `dora run` command line tool.
+
+    Args:
+        dataflow_path: Path to the dataflow YAML file
+        uv: Use UV to run Python nodes (optional)
+        stop_after: Automatically stop the dataflow after the given duration in seconds (optional)
+    """
 
 def start_runtime() -> None:
     """Start a runtime for Operators"""
