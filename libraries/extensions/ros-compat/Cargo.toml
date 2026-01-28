@@ -1,0 +1,22 @@
+[package]
+name = "dora-ros-compat"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+documentation.workspace = true
+readme = "README.md"
+description = "Minimal ROS message format compatibility layer for dora-rs"
+
+[features]
+default = []
+python = ["pyo3", "arrow/pyarrow"]
+
+[dependencies]
+arrow = { workspace = true }
+arrow-schema = { workspace = true }
+arrow-array = { workspace = true }
+pyo3 = { workspace = true, optional = true }
+dora-ros2-bridge-msg-gen = { workspace = true }
+eyre = "0.6"
+

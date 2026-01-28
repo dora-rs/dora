@@ -1,0 +1,13 @@
+nodes:
+  - id: control
+    path: control_node.py
+    outputs:
+      - direction
+
+  - id: bridge
+    path: turtle_bridge.py
+    inputs:
+      direction: control/direction
+    env:
+      ROS_HOST: localhost
+      ROS_PORT: 9090
