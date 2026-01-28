@@ -275,6 +275,7 @@ impl Daemon {
         let exit_when_done = spawn_command
             .nodes
             .values()
+            .filter(|n| !n.kind.dynamic())
             .map(|n| (spawn_command.dataflow_id, n.id.clone()))
             .collect();
         let (reply_tx, reply_rx) = oneshot::channel();
@@ -364,7 +365,8 @@ impl Daemon {
         let zenoh_session = open_zenoh_session(coordinator_addr.map(|addr| addr.ip()))
             .await
             .wrap_err("failed to open zenoh session")?;
-        let (dora_events_tx, dora_events_rx) = mpsc::channel(5);
+        // Use a large channel capacity to prevent deadlock
+        let (dora_events_tx, dora_events_rx) = mpsc::channel(1000);
         let daemon = Self {
             logger: Logger {
                 destination: log_destination,
@@ -1211,8 +1213,11 @@ impl Daemon {
             .try_clone()
             .await
             .context("failed to clone logger")?;
-        let dataflow =
-            RunningDataflow::new(dataflow_id, self.daemon_id.clone(), &dataflow_descriptor);
+        let dataflow = RunningDataflow::new(
+            dataflow_id,
+            self.daemon_id.clone(),
+            dataflow_descriptor.clone(),
+        );
         let dataflow = match self.running.entry(dataflow_id) {
             std::collections::hash_map::Entry::Vacant(entry) => {
                 self.working_dir
@@ -1964,7 +1969,13 @@ impl Daemon {
             if let Some(node) = dataflow.running_nodes.get_mut(&node_id) {
                 node.disable_restart();
             }
-            let _ = send_with_timestamp(&event_sender, NodeEvent::AllInputsClosed, clock);
+            if let Some(node) = dataflow.descriptor.nodes.iter().find(|n| n.id == node_id) {
+                if node.inputs.is_empty() {
+                    // do not send AllInputsClosed for source nodes
+                } else {
+                    let _ = send_with_timestamp(&event_sender, NodeEvent::AllInputsClosed, clock);
+                }
+            }
         }
 
         // if a stop event was already sent for the dataflow, send it to
@@ -2676,6 +2687,9 @@ impl Drop for ProcessHandle {
 
 pub struct RunningDataflow {
     id: Uuid,
+
+    descriptor: Descriptor,
+
     /// Local nodes that are not started yet
     pending_nodes: PendingNodes,
 
@@ -2724,7 +2738,7 @@ impl RunningDataflow {
     fn new(
         dataflow_id: Uuid,
         daemon_id: DaemonId,
-        dataflow_descriptor: &Descriptor,
+        dataflow_descriptor: Descriptor,
     ) -> RunningDataflow {
         let (finished_tx, _) = broadcast::channel(1);
         Self {
@@ -2749,6 +2763,7 @@ impl RunningDataflow {
             publishers: Default::default(),
             finished_tx,
             publish_all_messages_to_zenoh: dataflow_descriptor.debug.publish_all_messages_to_zenoh,
+            descriptor: dataflow_descriptor,
         }
     }
 

@@ -12,7 +12,6 @@ use crate::{
     session::DataflowSession,
 };
 use dora_daemon::{Daemon, LogDestination, flume};
-use dora_tracing::TracingBuilder;
 use duration_str::parse as parse_duration_str;
 use eyre::Context;
 use std::time::Duration;
@@ -50,22 +49,27 @@ pub fn run_func(dataflow: String, uv: bool) -> eyre::Result<()> {
 }
 
 pub fn run(dataflow: String, uv: bool, stop_after: Option<Duration>) -> eyre::Result<()> {
-    #[cfg(feature = "tracing")]
-    {
-        let log_level = std::env::var("RUST_LOG").ok().unwrap_or("info".to_string());
-        TracingBuilder::new("run")
-            .with_stdout(log_level, false)
-            .build()
-            .wrap_err("failed to set up tracing subscriber")?;
-    }
-
-    let dataflow_path = resolve_dataflow(dataflow).context("could not resolve dataflow")?;
-    let dataflow_session =
-        DataflowSession::read_session(&dataflow_path).context("failed to read DataflowSession")?;
     let rt = Builder::new_multi_thread()
         .enable_all()
         .build()
         .context("tokio runtime failed")?;
+
+    #[cfg(feature = "tracing")]
+    let _guard = {
+        let _enter = rt.enter();
+        let env_log = std::env::var("RUST_LOG").unwrap_or("info".to_string());
+        dora_tracing::init_tracing_subscriber(
+            "dora-run",
+            Some(&env_log),
+            None,
+            tracing::metadata::LevelFilter::INFO,
+        )
+        .context("failed to initialize tracing")?
+    };
+
+    let dataflow_path = resolve_dataflow(dataflow).context("could not resolve dataflow")?;
+    let dataflow_session =
+        DataflowSession::read_session(&dataflow_path).context("failed to read DataflowSession")?;
 
     let (log_tx, log_rx) = flume::bounded(100);
     std::thread::spawn(move || {
