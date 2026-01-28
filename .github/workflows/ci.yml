@@ -406,6 +406,14 @@ jobs:
             echo "UV_PROJECT_ENVIRONMENT=$PWD/.venv" >> "$GITHUB_ENV"
           fi
 
+          ## If not Windows
+          if [ "$RUNNER_OS" != "Windows" ]; then
+            source .venv/bin/activate
+          else
+            source .venv/Scripts/activate
+          fi
+          uv pip install pyarrow
+
           uv pip install -e apis/python/node
           uv pip install ruff pytest
 
