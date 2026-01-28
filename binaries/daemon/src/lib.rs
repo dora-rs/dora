@@ -887,7 +887,7 @@ impl Daemon {
                 grace_duration,
                 force,
             } => {
-                let stop_succeeded = {
+                let finish_when = {
                     let mut logger = self.logger.for_dataflow(dataflow_id);
                     let dataflow = self
                         .running
@@ -914,16 +914,15 @@ impl Daemon {
                         });
 
                     if let Some(future) = future {
-                        future.await?;
-                        true
+                        Some(future.await?)
                     } else {
-                        false
+                        None
                     }
                 };
 
-                // After stop_all, check if dataflow should finish (for all-dynamic nodes case)
-                if stop_succeeded {
-                    self.check_dataflow_finished_after_stop(dataflow_id).await?;
+                // If stop_all returns Now, finish the dataflow immediately
+                if matches!(finish_when, Some(FinishDataflowWhen::Now)) {
+                    self.finish_dataflow(dataflow_id).await?;
                 }
 
                 RunStatus::Continue
@@ -2119,132 +2118,78 @@ impl Daemon {
         self.handle_outputs_done(dataflow_id, node_id, might_restart)
             .await?;
 
-        let mut logger = self.logger.for_dataflow(dataflow_id);
-        let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
-            format!("failed to get downstream nodes: no running dataflow with ID `{dataflow_id}`")
-        })?;
-        dataflow.running_nodes.remove(node_id);
-        if !dataflow.pending_nodes.local_nodes_pending()
-            && dataflow
-                .running_nodes
-                .iter()
-                .all(|(_id, n)| n.node_config.dynamic)
-        {
-            let result = DataflowDaemonResult {
-                timestamp: self.clock.new_timestamp(),
-                node_results: self
-                    .dataflow_node_results
-                    .get(&dataflow.id)
-                    .context("failed to get dataflow node results")?
-                    .clone(),
-            };
-
-            self.git_manager
-                .clones_in_use
-                .values_mut()
-                .for_each(|dataflows| {
-                    dataflows.remove(&dataflow_id);
-                });
-
-            logger
-                .log(
-                    LogLevel::Info,
-                    None,
-                    Some("daemon".into()),
-                    format!("dataflow finished on machine `{}`", self.daemon_id),
+        let should_finish = {
+            let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
+                format!(
+                    "failed to get downstream nodes: no running dataflow with ID `{dataflow_id}`"
                 )
-                .await;
-            if let Some(connection) = &mut self.coordinator_connection {
-                let msg = serde_json::to_vec(&Timestamped {
-                    inner: CoordinatorRequest::Event {
-                        daemon_id: self.daemon_id.clone(),
-                        event: DaemonEvent::AllNodesFinished {
-                            dataflow_id,
-                            result,
-                        },
-                    },
-                    timestamp: self.clock.new_timestamp(),
-                })?;
-                socket_stream_send(connection, &msg)
-                    .await
-                    .wrap_err("failed to report dataflow finish to dora-coordinator")?;
-            }
-            self.running.remove(&dataflow_id);
+            })?;
+            dataflow.running_nodes.remove(node_id);
+            // Check if all remaining nodes are dynamic (won't send SpawnedNodeResult)
+            !dataflow.pending_nodes.local_nodes_pending()
+                && dataflow
+                    .running_nodes
+                    .iter()
+                    .all(|(_id, n)| n.node_config.dynamic)
+        };
+
+        if should_finish {
+            self.finish_dataflow(dataflow_id).await?;
         }
 
         Ok(())
     }
 
-    /// Check if a dataflow should be marked as finished after stop_all() is called.
-    /// This is needed for dataflows with only dynamic nodes, which don't send
-    /// SpawnedNodeResult events and thus never trigger the normal finish check.
-    async fn check_dataflow_finished_after_stop(&mut self, dataflow_id: Uuid) -> eyre::Result<()> {
+    /// Mark a dataflow as finished and perform cleanup.
+    /// This should be called when:
+    /// - `stop_all()` returns `FinishDataflowWhen::Now`, or
+    /// - All non-dynamic nodes have sent `SpawnedNodeResult` events
+    async fn finish_dataflow(&mut self, dataflow_id: Uuid) -> eyre::Result<()> {
         let mut logger = self.logger.for_dataflow(dataflow_id);
 
-        // Check if dataflow should finish
-        let should_finish = {
-            if let Some(dataflow) = self.running.get(&dataflow_id) {
-                // Only finish if:
-                // 1. No pending nodes
-                // 2. All running nodes are dynamic (they won't send SpawnedNodeResult)
-                // 3. Stop was sent (stop_all() was called)
-                !dataflow.pending_nodes.local_nodes_pending()
-                    && dataflow
-                        .running_nodes
-                        .iter()
-                        .all(|(_id, n)| n.node_config.dynamic)
-                    && dataflow.stop_sent
-            } else {
-                return Ok(());
-            }
+        // Dynamic nodes don't send SpawnedNodeResult events, so there may be no entry
+        // in dataflow_node_results. An empty map means all dynamic nodes handled stop successfully.
+        let result = DataflowDaemonResult {
+            timestamp: self.clock.new_timestamp(),
+            node_results: self
+                .dataflow_node_results
+                .get(&dataflow_id)
+                .cloned()
+                .unwrap_or_default(),
         };
 
-        if should_finish {
-            // We verified above that all running nodes are dynamic. Dynamic nodes don't
-            // send SpawnedNodeResult events, so there may be no entry in dataflow_node_results.
-            // An empty map means all dynamic nodes handled stop successfully.
-            let result = DataflowDaemonResult {
-                timestamp: self.clock.new_timestamp(),
-                node_results: self
-                    .dataflow_node_results
-                    .get(&dataflow_id)
-                    .cloned()
-                    .unwrap_or_default(),
-            };
+        self.git_manager
+            .clones_in_use
+            .values_mut()
+            .for_each(|dataflows| {
+                dataflows.remove(&dataflow_id);
+            });
 
-            self.git_manager
-                .clones_in_use
-                .values_mut()
-                .for_each(|dataflows| {
-                    dataflows.remove(&dataflow_id);
-                });
+        logger
+            .log(
+                LogLevel::Info,
+                None,
+                Some("daemon".into()),
+                format!("dataflow finished on machine `{}`", self.daemon_id),
+            )
+            .await;
 
-            logger
-                .log(
-                    LogLevel::Info,
-                    None,
-                    Some("daemon".into()),
-                    format!("dataflow finished on machine `{}`", self.daemon_id),
-                )
-                .await;
-
-            if let Some(connection) = &mut self.coordinator_connection {
-                let msg = serde_json::to_vec(&Timestamped {
-                    inner: CoordinatorRequest::Event {
-                        daemon_id: self.daemon_id.clone(),
-                        event: DaemonEvent::AllNodesFinished {
-                            dataflow_id,
-                            result,
-                        },
+        if let Some(connection) = &mut self.coordinator_connection {
+            let msg = serde_json::to_vec(&Timestamped {
+                inner: CoordinatorRequest::Event {
+                    daemon_id: self.daemon_id.clone(),
+                    event: DaemonEvent::AllNodesFinished {
+                        dataflow_id,
+                        result,
                     },
-                    timestamp: self.clock.new_timestamp(),
-                })?;
-                socket_stream_send(connection, &msg)
-                    .await
-                    .wrap_err("failed to report dataflow finish to dora-coordinator")?;
-            }
-            self.running.remove(&dataflow_id);
+                },
+                timestamp: self.clock.new_timestamp(),
+            })?;
+            socket_stream_send(connection, &msg)
+                .await
+                .wrap_err("failed to report dataflow finish to dora-coordinator")?;
         }
+        self.running.remove(&dataflow_id);
 
         Ok(())
     }
@@ -2833,6 +2778,16 @@ pub struct RunningDataflow {
     publish_all_messages_to_zenoh: bool,
 }
 
+/// Indicates whether a dataflow should be finished immediately after stop_all()
+/// or whether to wait for SpawnedNodeResult events from running nodes.
+#[must_use]
+pub enum FinishDataflowWhen {
+    /// Finish the dataflow immediately (all nodes are dynamic or no nodes running)
+    Now,
+    /// Wait for SpawnedNodeResult events from non-dynamic nodes
+    WaitForNodes,
+}
+
 impl RunningDataflow {
     fn new(
         dataflow_id: Uuid,
@@ -2931,7 +2886,7 @@ impl RunningDataflow {
         grace_duration: Option<Duration>,
         force: bool,
         logger: &mut DataflowLogger<'_>,
-    ) -> eyre::Result<()> {
+    ) -> eyre::Result<FinishDataflowWhen> {
         self.pending_nodes
             .handle_dataflow_stop(
                 coordinator_connection,
@@ -2992,7 +2947,30 @@ impl RunningDataflow {
             });
         }
         self.stop_sent = true;
-        Ok(())
+
+        // Determine if we should finish immediately or wait for nodes
+        Ok(self.should_finish_immediately())
+    }
+
+    /// Check if dataflow should finish immediately after stop_all().
+    /// Returns `Now` if all running nodes are dynamic (they won't send SpawnedNodeResult).
+    /// Returns `WaitForNodes` if there are non-dynamic nodes to wait for.
+    fn should_finish_immediately(&self) -> FinishDataflowWhen {
+        // Only finish immediately if:
+        // 1. No pending nodes
+        // 2. All running nodes are dynamic (they won't send SpawnedNodeResult)
+        // 3. Stop was sent (stop_all() was called)
+        if !self.pending_nodes.local_nodes_pending()
+            && self
+                .running_nodes
+                .iter()
+                .all(|(_id, n)| n.node_config.dynamic)
+            && self.stop_sent
+        {
+            FinishDataflowWhen::Now
+        } else {
+            FinishDataflowWhen::WaitForNodes
+        }
     }
 
     fn open_inputs(&self, node_id: &NodeId) -> &BTreeSet<DataId> {
