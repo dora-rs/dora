@@ -1553,7 +1553,7 @@ async fn destroy_daemon(
 
     tcp_send(&mut daemon_connection.stream, &message)
         .await
-        .wrap_err("failed to send destroy message to daemon")?;
+        .wrap_err_with(|| format!("failed to send destroy message to daemon `{daemon_id}`"))?;
 
     // wait for reply
     let reply_raw = tcp_receive(&mut daemon_connection.stream)
