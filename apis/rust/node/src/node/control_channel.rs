@@ -9,7 +9,7 @@ use dora_message::{
     DataflowId,
     daemon_to_node::{DaemonCommunication, DaemonReply},
     metadata::Metadata,
-    node_to_daemon::{DaemonRequest, DataMessage, Timestamped},
+    node_to_daemon::{DaemonRequest, DataMessage, NodeFailureError, Timestamped},
 };
 use eyre::{Context, bail, eyre};
 
@@ -123,6 +123,20 @@ impl ControlChannel {
         match reply {
             DaemonReply::Empty => Ok(()),
             other => bail!("unexpected SendMessage reply: {other:?}"),
+        }
+    }
+
+    pub fn report_failure(&mut self, failure: NodeFailureError) -> eyre::Result<()> {
+        let reply = self
+            .channel
+            .request(&Timestamped {
+                inner: DaemonRequest::Fail(failure),
+                timestamp: self.clock.new_timestamp(),
+            })
+            .wrap_err("failed to report node failure to dora-daemon")?;
+        match reply {
+            DaemonReply::Empty => Ok(()),
+            other => bail!("unexpected Fail reply: {other:?}"),
         }
     }
 }

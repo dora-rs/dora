@@ -7,7 +7,10 @@ use eyre::Context as _;
 use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::{BuildId, DataflowId, daemon_to_daemon::InterDaemonEvent, id::NodeId};
+use crate::{
+    BuildId, DataflowId, daemon_to_daemon::InterDaemonEvent, id::NodeId,
+    node_to_daemon::NodeFailureError,
+};
 
 pub use log::Level as LogLevel;
 
@@ -167,6 +170,8 @@ impl std::fmt::Display for NodeError {
                 let stderr = stderr.trim_end();
                 write!(f, " with stderr output:\n{line}{stderr}\n{line}")?
             }
+            NodeErrorCause::DataflowNotFound => write!(f, " <dataflow not found>")?,
+            NodeErrorCause::Failure(failure) => write!(f, ": {failure}")?,
         }
 
         Ok(())
@@ -182,9 +187,13 @@ pub enum NodeErrorCause {
         caused_by_node: NodeId,
     },
     FailedToSpawn(String),
+    /// Node reported an explicit failure reason.
+    Failure(NodeFailureError),
     Other {
         stderr: String,
     },
+    /// We cannot find out why the node failed because the dataflow is not known.
+    DataflowNotFound,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]

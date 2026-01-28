@@ -92,6 +92,7 @@ pub use dora_core::{self, uhlc};
 pub use dora_message::{
     DataflowId,
     metadata::{Metadata, MetadataParameters, Parameter},
+    node_to_daemon::NodeFailureError,
 };
 use dora_message::{
     common::Timestamped,
@@ -112,6 +113,7 @@ use tokio::sync::oneshot;
 mod daemon_connection;
 mod event_stream;
 pub mod integration_testing;
+mod macros;
 mod node;
 
 #[derive(Debug)]
