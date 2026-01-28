@@ -4,6 +4,7 @@ use std::{
 };
 
 use arrow::pyarrow::ToPyArrow;
+use chrono::{DateTime, Utc};
 use dora_node_api::{
     DoraNode, Event, EventStream, Metadata, MetadataParameters, Parameter, StopCause,
     merged::{MergeExternalSend, MergedEvent},
@@ -15,7 +16,7 @@ use pyo3::{
     prelude::*,
     types::{IntoPyDict, PyBool, PyDict, PyFloat, PyInt, PyList, PyModule, PyString, PyTuple},
 };
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 
 /// Dora Event
 pub struct PyEvent {
@@ -234,8 +235,38 @@ pub fn pydict_to_metadata(dict: Option<Bound<'_, PyDict>>) -> Result<MetadataPar
                 let list: Vec<String> = value.extract()?;
                 parameters.insert(key, Parameter::ListString(list))
             } else {
-                println!("could not convert type {value}");
-                parameters.insert(key, Parameter::String(value.str()?.to_string()))
+                // Check if it's a datetime.datetime object
+                let datetime_module = PyModule::import(value.py(), "datetime")
+                    .context("Failed to import datetime module")?;
+                let datetime_class = datetime_module.getattr("datetime")?;
+
+                if value.is_instance(datetime_class.as_ref())? {
+                    // Extract timestamp using timestamp() method
+                    let timestamp_float: f64 = value
+                        .call_method0("timestamp")?
+                        .extract()
+                        .context("Failed to extract timestamp from datetime")?;
+
+                    // Convert to chrono::DateTime<Utc>
+                    // timestamp() returns seconds since epoch as float
+                    // Convert to SystemTime first, then to DateTime<Utc>
+                    let system_time = if timestamp_float >= 0.0 {
+                        let duration = std::time::Duration::try_from_secs_f64(timestamp_float)
+                            .context("Failed to convert timestamp to Duration")?;
+                        UNIX_EPOCH + duration
+                    } else {
+                        let duration = std::time::Duration::try_from_secs_f64(-timestamp_float)
+                            .context("Failed to convert timestamp to Duration")?;
+                        UNIX_EPOCH.checked_sub(duration).unwrap_or(UNIX_EPOCH)
+                    };
+
+                    let dt = DateTime::<Utc>::from(system_time);
+
+                    parameters.insert(key, Parameter::Timestamp(dt))
+                } else {
+                    println!("could not convert type {value}");
+                    parameters.insert(key, Parameter::String(value.str()?.to_string()))
+                }
             };
         }
     }
@@ -306,6 +337,26 @@ pub fn metadata_to_pydict<'a>(
             Parameter::ListString(l) => dict
                 .set_item(k, l)
                 .context("Could not insert metadata into python dictionary")?,
+            Parameter::Timestamp(dt) => {
+                // Convert chrono::DateTime<Utc> to Python datetime.datetime
+                let timestamp = dt.timestamp();
+                let microseconds = dt.timestamp_subsec_micros();
+
+                // Get UTC timezone from Python's datetime module
+                let datetime_module =
+                    PyModule::import(py, "datetime").context("Failed to import datetime module")?;
+                let datetime_class = datetime_module.getattr("datetime")?;
+                let utc_timezone = datetime_module.getattr("timezone")?.getattr("utc")?;
+
+                // Create timezone-aware datetime using fromtimestamp
+                let total_seconds = timestamp as f64 + microseconds as f64 / 1_000_000.0;
+                let py_datetime = datetime_class
+                    .call_method1("fromtimestamp", (total_seconds, utc_timezone))
+                    .context("Failed to create Python datetime from timestamp")?;
+
+                dict.set_item(k, py_datetime)
+                    .context("Could not insert timestamp into python dictionary")?
+            }
         }
     }
 
