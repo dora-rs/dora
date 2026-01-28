@@ -4,12 +4,12 @@ use eyre::Result;
 fn main() -> Result<()> {
     let (_node, mut events) = DoraNode::init_from_env()?;
 
-    println!("[Consumer] Starting...");
+    println!("Starting...");
 
     while let Some(event) = events.recv() {
         match event {
             Event::Input { id, .. } => {
-                println!("[Consumer] Received input on {}", id);
+                println!("Received input on {}", id);
             }
             Event::NodeFailed {
                 affected_input_ids,
@@ -17,10 +17,10 @@ fn main() -> Result<()> {
                 source_node_id,
             } => {
                 println!(
-                    "[Consumer] ⚠️  Received error from node '{}' affecting inputs {:?}: {}",
+                    "⚠️  Received error from node '{}' affecting inputs {:?}: {}",
                     source_node_id, affected_input_ids, error
                 );
-                println!("[Consumer] Handling error gracefully - using cached data...");
+                println!("Handling error in some way...");
                 // In a real application, you could:
                 // - Use cached/backup data
                 // - Switch to alternative input source
@@ -28,17 +28,16 @@ fn main() -> Result<()> {
                 // - Implement retry logic
             }
             Event::InputClosed { id } => {
-                println!("[Consumer] Input {} closed", id);
+                println!("Input {} closed", id);
             }
             Event::Stop(_) => {
-                println!("[Consumer] Received stop signal");
+                println!("Received stop signal");
                 break;
             }
             _ => {}
         }
     }
 
-    println!("[Consumer] Exiting");
+    println!("Exiting");
     Ok(())
 }
-
