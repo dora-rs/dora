@@ -1,0 +1,8 @@
+[package]
+name = "error-propagation-consumer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dora-node-api = { workspace = true }
+eyre = "0.6"
