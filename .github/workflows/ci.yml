@@ -359,7 +359,7 @@ jobs:
         shell: bash
         run: |
           cargo install --path binaries/cli --locked
-      - name: "Test CLI (Rust)"
+      - name: "Test Rust template Project"
         timeout-minutes: 45
         # fail-fast by using bash shell explicitly
         shell: bash
@@ -368,12 +368,15 @@ jobs:
           dora new test_rust_project --internal-create-with-path-dependencies
           cd test_rust_project
           cargo build --all
+          dora run dataflow.yml --stop-after 10s
+          cd ..
+      - name: "Test Dynamic Rust Dataflow example"
+        timeout-minutes: 45
+        # fail-fast by using bash shell explicitly
+        shell: bash
+        run: |
           dora up
           dora list
-          dora start dataflow.yml --name ci-rust-test --detach
-          sleep 10
-          dora stop --name ci-rust-test  --grace-duration 5s
-          cd ..
           dora build examples/rust-dataflow/dataflow_dynamic.yml
           dora start examples/rust-dataflow/dataflow_dynamic.yml --name ci-rust-dynamic --detach
           cargo run -p rust-dataflow-example-sink-dynamic
@@ -396,12 +399,16 @@ jobs:
         run: |
           uv venv --seed -p 3.12
 
-          # Set UV_PROJECT_ENVIRONMENT for all following steps
+          # Set VIRTUAL_ENV for all following steps
+          echo "VIRTUAL_ENV=$PWD/.venv" >> "$GITHUB_ENV"
+
+          ## If not Windows
           if [ "$RUNNER_OS" != "Windows" ]; then
-            echo "UV_PROJECT_ENVIRONMENT=$PWD/.venv" >> "$GITHUB_ENV"
+            source .venv/bin/activate
           else
-            echo "UV_PROJECT_ENVIRONMENT=$PWD/.venv" >> "$GITHUB_ENV"
+            source .venv/Scripts/activate
           fi
+          uv pip install pyarrow
 
           uv pip install -e apis/python/node
           uv pip install ruff pytest
@@ -415,8 +422,6 @@ jobs:
           dora new test_python_project --lang python --internal-create-with-path-dependencies
           cd test_python_project
 
-          echo "Running dora up"
-          dora up
           echo "Running dora build"
           dora build dataflow.yml --uv
 
@@ -425,16 +430,9 @@ jobs:
           uv run pytest
 
           export OPERATING_MODE=SAVE
-          echo "Running dora list"
-          dora list
           dora build dataflow.yml --uv
           echo "Running CI Python Test"
-          dora start dataflow.yml --name ci-python-test --detach --uv
-          sleep 10
-          echo "Running dora stop"
-          dora stop --name ci-python-test  --grace-duration 5s
-          dora destroy
-          sleep 5
+          dora run dataflow.yml --uv --stop-after 10s
 
           cd ..
       - name: "Test CLI (Python): Node example"
@@ -445,12 +443,8 @@ jobs:
           RUST_LOG: info
         run: |
           echo "Running Python Node Example"
-          dora up
           dora build examples/python-dataflow/dataflow.yml --uv
-          dora start examples/python-dataflow/dataflow.yml --name ci-python --detach --uv
-          sleep 10
-          echo "Running dora stop"
-          dora stop --name ci-python  --grace-duration 30s
+          dora run examples/python-dataflow/dataflow.yml --uv --stop-after 10s
       - name: "Test CLI (Python): Dynamic Node example"
         timeout-minutes: 20
         # fail-fast by using bash shell explicitly
@@ -458,11 +452,14 @@ jobs:
         run: |
           echo "Running Python Node Dynamic Example"
           dora build examples/python-dataflow/dataflow_dynamic.yml --uv
+          dora up
           dora start examples/python-dataflow/dataflow_dynamic.yml --name ci-python-dynamic --detach --uv
           uv run opencv-plot
           sleep 10
           echo "Running dora stop"
           dora stop --name ci-python-dynamic  --grace-duration 30s
+          dora destroy
+
       - name: "Test CLI (Python): Operator example"
         timeout-minutes: 20
         # fail-fast by using bash shell explicitly
@@ -470,26 +467,14 @@ jobs:
         run: |
           echo "Running CI Operator Test"
           dora build examples/python-operator-dataflow/dataflow.yml --uv
-          dora start examples/python-operator-dataflow/dataflow.yml --name ci-python-operator --detach --uv
-          sleep 10
-          echo "Running dora stop"
-          dora stop --name ci-python-operator  --grace-duration 30s
+          dora run examples/python-operator-dataflow/dataflow.yml --uv --stop-after 10s
 
       - name: "Test Python Example: Multiple Arrays"
         timeout-minutes: 30
         run: |
           dora build examples/python-multiple-arrays/dataflow.yml --uv
-          dora start examples/python-multiple-arrays/dataflow.yml --uv --name ci-python-multi-array --detach
-          sleep 30
-          dora stop --name ci-python-multi-array  --grace-duration 30s
+          dora run examples/python-multiple-arrays/dataflow.yml --uv --stop-after 30s
 
-      - name: "Test CLI (Python): Dora destroy"
-        timeout-minutes: 5
-        # fail-fast by using bash shell explicitly
-        shell: bash
-        run: |
-          dora destroy
-          sleep 5
       - name: "Test CLI (Python): Async Example"
         timeout-minutes: 30
         ## TODO: Fix async Windows support
@@ -527,15 +512,10 @@ jobs:
           # Test C template Project
           dora new test_c_project --lang c --internal-create-with-path-dependencies
           cd test_c_project
-          dora up
-          dora list
           cmake -B build
           cmake --build build
           cmake --install build
-          dora start dataflow.yml --name ci-c-test --detach
-          sleep 10
-          dora stop --name ci-c-test  --grace-duration 5s
-          dora destroy
+          dora run dataflow.yml --stop-after 10s
 
       - name: "Test CLI (C++)"
         timeout-minutes: 45
@@ -546,15 +526,10 @@ jobs:
           # Test C++ template Project
           dora new test_cxx_project --lang cxx --internal-create-with-path-dependencies
           cd test_cxx_project
-          dora up
-          dora list
           cmake -B build
           cmake --build build
           cmake --install build
-          dora start dataflow.yml --name ci-cxx-test --detach
-          sleep 10
-          dora stop --name ci-cxx-test  --grace-duration 5s
-          dora destroy
+          dora run dataflow.yml --stop-after 10s
 
   clippy:
     name: "Clippy"
