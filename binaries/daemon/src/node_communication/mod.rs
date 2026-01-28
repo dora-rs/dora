@@ -294,23 +294,6 @@ impl Listener {
                     tracing::warn!("{err:?}");
                 }
                 Ok(None) => {
-                    // Deserialization failed or connection closed
-                    // The node has likely sent a request and is waiting for a reply
-                    // Try to send an error reply before closing so the node doesn't hang
-                    // We check subscribed_drop_events to determine if it's likely a SubscribeDrop request
-                    let error_msg = if self.subscribed_drop_events.is_none() {
-                        // Node hasn't subscribed to drop stream yet, likely waiting for SubscribeDrop reply
-                        "failed to deserialize SubscribeDrop request: connection error or version mismatch"
-                    } else {
-                        // Node has already subscribed, might be a different request
-                        "failed to deserialize request: connection error or version mismatch"
-                    };
-                    let error_reply = DaemonReply::Result(Err(error_msg.into()));
-                    if let Err(err) = self.send_reply(error_reply, &mut connection).await {
-                        tracing::debug!(
-                            "failed to send error reply after deserialization failure: {err:?}"
-                        );
-                    }
                     break; // disconnected
                 }
             }
@@ -520,18 +503,9 @@ impl Listener {
             .await
             .map_err(|_| eyre!("failed to send event to daemon"))?;
         let reply = if let Some(reply) = reply {
-            match reply.await {
-                Ok(reply) => reply,
-                Err(_) => {
-                    // If the daemon main loop didn't send a reply (e.g., it crashed or returned an error),
-                    // send an error reply to the node so it doesn't hang waiting
-                    tracing::warn!(
-                        "daemon main loop did not send reply for node `{}`, sending error reply",
-                        self.node_id
-                    );
-                    DaemonReply::Result(Err("daemon failed to process request".into()))
-                }
-            }
+            reply
+                .await
+                .map_err(|_| eyre!("failed to receive reply from daemon"))?
         } else {
             DaemonReply::Empty
         };
