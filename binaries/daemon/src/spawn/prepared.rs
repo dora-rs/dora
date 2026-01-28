@@ -85,6 +85,7 @@ impl PreparedNode {
                     Some(pid.clone())
                 }
             },
+            start_time: Some(self.clock.new_timestamp()),
         };
 
         tokio::spawn(self.restart_loop(logger, finished_rx, disable_restart, pid));
