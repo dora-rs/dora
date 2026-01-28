@@ -16,7 +16,7 @@ fn main() -> eyre::Result<()> {
 
     build(dataflow.clone(), None, None, false, true)?;
 
-    run(dataflow, false, None)?;
+    run(dataflow, false)?;
 
     Ok(())
 }
