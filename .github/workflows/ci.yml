@@ -399,12 +399,8 @@ jobs:
         run: |
           uv venv --seed -p 3.12
 
-          # Set UV_PROJECT_ENVIRONMENT for all following steps
-          if [ "$RUNNER_OS" != "Windows" ]; then
-            echo "UV_PROJECT_ENVIRONMENT=$PWD/.venv" >> "$GITHUB_ENV"
-          else
-            echo "UV_PROJECT_ENVIRONMENT=$PWD/.venv" >> "$GITHUB_ENV"
-          fi
+          # Set VIRTUAL_ENV for all following steps
+          echo "VIRTUAL_ENV=$PWD/.venv" >> "$GITHUB_ENV"
 
           ## If not Windows
           if [ "$RUNNER_OS" != "Windows" ]; then
