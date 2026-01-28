@@ -381,6 +381,14 @@ jobs:
           dora stop --name ci-rust-dynamic  --grace-duration 5s
           dora destroy
 
+      - name: "Error Event Example"
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          dora build examples/error-propagation/dataflow.yml
+          # ignore error since example is supposed to produce error
+          dora run examples/error-propagation/dataflow.yml || true
+
       - uses: actions/setup-python@v5
         with:
           # TODO: Support Python 3.13 when https://github.com/pytorch/pytorch/issues/130249 is fixed
