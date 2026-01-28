@@ -23,6 +23,8 @@ members = [
     "examples/multiple-daemons/node",
     "examples/multiple-daemons/operator",
     "examples/multiple-daemons/sink",
+    "examples/error-propagation/producer",
+    "examples/error-propagation/consumer",
     "libraries/arrow-convert",
     "libraries/communication-layer/*",
     "libraries/core",

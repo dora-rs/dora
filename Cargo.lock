@@ -2046,6 +2046,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "error-propagation-consumer"
+version = "0.1.0"
+dependencies = [
+ "dora-node-api",
+ "eyre",
+]
+
+[[package]]
+name = "error-propagation-producer"
+version = "0.1.0"
+dependencies = [
+ "dora-node-api",
+ "eyre",
+]
+
+[[package]]
 name = "event-listener"
 version = "5.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
