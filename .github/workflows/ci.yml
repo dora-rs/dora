@@ -407,6 +407,7 @@ jobs:
           fi
 
           uv pip install -e apis/python/node
+          uv pip install -e apis/python/operator
           uv pip install ruff pytest
 
       - name: "Test CLI (Python): Template Project"
