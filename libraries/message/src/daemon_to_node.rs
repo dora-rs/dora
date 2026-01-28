@@ -78,6 +78,9 @@ pub enum NodeEvent {
         error: String,
         source_node_id: NodeId,
     },
+    /// Notifies a node that all its inputs have been closed.
+    ///
+    /// This event is only sent to nodes that have at least one input.
     AllInputsClosed,
 }
 

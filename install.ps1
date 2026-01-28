@@ -1,6 +1,6 @@
 param (
-    [string]$repo = "dora-rs",
-    [string]$bin = "dora",
+    [string]$repo = "dora-rs/dora",
+    [string]$bin = "dora-cli",
     [string]$tag,
     [string]$target,
     [string]$to = "$HOME\.dora\bin",
@@ -34,8 +34,8 @@ FLAGS:
     -f, --force     Force overwriting an existing binary
 
 OPTIONS:
-    --repo REPO     Github Repository to install the binary from  [default: dora-rs]
-    --bin BIN       Name of the binary to install  [default: dora]
+    --repo REPO     Github Repository to install the binary from  [default: dora-rs/dora]
+    --bin BIN       Name of the binary to install  [default: dora-cli]
     --tag TAG       Tag (version) of the bin to install, defaults to latest release
     --to LOCATION   Where to install the binary [default: $HOME\.dora\bin]
     --target TARGET
@@ -88,7 +88,7 @@ function Download-File {
 Need-Command mkdir
 Need-Command Expand-Archive
 
-$url="https://api.github.com/repos/$repo/$bin"
+$url="https://api.github.com/repos/$repo"
 $releases="$url/releases"
 
 $tmp = New-Temp-Dir
@@ -100,7 +100,7 @@ if (-not $tag) {
 }
 
 $target = "x86_64-pc-windows-msvc"
-$archive = "https://github.com/$repo/$bin/releases/download/$tag/$bin-$tag-$target.zip"
+$archive = "https://github.com/$repo/releases/download/$tag/$bin-$target.zip"
 
 Write-Host "Repository https://github.com/$repo"
 Write-Host "Binary $bin"
@@ -109,7 +109,7 @@ Write-Host "Target $target"
 Write-Host "Destination $to"
 Write-Host "Archive $archive"
 
-$zip = "$tmp\$bin-$tag-$target.zip"
+$zip = "$tmp\$bin-$target.zip"
 Download-File $archive $zip
 
 Write-Host "Placing dora-rs cli in ", $to

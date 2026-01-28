@@ -61,16 +61,7 @@ pub enum Event {
     ///
     /// The [`StopCause`] field contains the reason for the event stream closure.
     ///
-    /// Typically, nodes should exit once the event stream closes. One notable
-    /// exception are nodes with no inputs, which will receive aa
-    /// `Event::Stop(StopCause::AllInputsClosed)` right at startup. Source nodes
-    /// might want to keep producing outputs still. (There is currently an open
-    /// discussion of changing this behavior and not sending `AllInputsClosed`
-    /// to nodes without inputs.)
-    ///
-    /// Note: Stop events with `StopCause::Manual` indicate a manual stop operation
-    /// issued through `dora stop` or a `ctrl-c`. Nodes **must exit** once receiving
-    /// such a stop event, otherwise they will be killed by Dora.
+    /// Nodes should exit once the event stream closes.
     Stop(StopCause),
     /// Instructs the node to reload itself or one of its operators.
     ///
@@ -103,5 +94,7 @@ pub enum StopCause {
     /// receiving such a stop event.
     Manual,
     /// The event stream is closed because all of the node's inputs were closed.
+    ///
+    /// This stop event type is only sent for nodes that have at least one input.
     AllInputsClosed,
 }

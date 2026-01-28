@@ -195,6 +195,7 @@ impl Daemon {
         uv: bool,
         log_destination: LogDestination,
         write_events_to: Option<PathBuf>,
+        stop_after: Option<Duration>,
     ) -> eyre::Result<DataflowResult> {
         let working_dir = dataflow_path
             .canonicalize()
@@ -251,9 +252,30 @@ impl Daemon {
 
         let ctrlc_events = ReceiverStream::new(set_up_ctrlc_handler(clock.clone())?);
 
+        // Set up optional timeout for --stop-after
+        let timeout_events = if let Some(duration) = stop_after {
+            let clock = clock.clone();
+            let (tx, rx) = tokio::sync::mpsc::channel(1);
+            tokio::spawn(async move {
+                tokio::time::sleep(duration).await;
+                tracing::info!("stop-after timeout reached ({duration:?}) -> stopping dataflow");
+                let _ = tx
+                    .send(Timestamped {
+                        inner: Event::StopAfter(duration),
+                        timestamp: clock.new_timestamp(),
+                    })
+                    .await;
+            });
+            ReceiverStream::new(rx)
+        } else {
+            // Create an empty stream that never emits events
+            ReceiverStream::new(tokio::sync::mpsc::channel(1).1)
+        };
+
         let exit_when_done = spawn_command
             .nodes
             .values()
+            .filter(|n| !n.kind.dynamic())
             .map(|n| (spawn_command.dataflow_id, n.id.clone()))
             .collect();
         let (reply_tx, reply_rx) = oneshot::channel();
@@ -267,7 +289,13 @@ impl Daemon {
                 timestamp,
             }
         });
-        let events = (coordinator_events, ctrlc_events, dynamic_node_events).merge();
+        let events = (
+            coordinator_events,
+            ctrlc_events,
+            timeout_events,
+            dynamic_node_events,
+        )
+            .merge();
         let run_result = Self::run_general(
             Box::pin(events),
             None,
@@ -337,7 +365,8 @@ impl Daemon {
         let zenoh_session = open_zenoh_session(coordinator_addr.map(|addr| addr.ip()))
             .await
             .wrap_err("failed to open zenoh session")?;
-        let (dora_events_tx, dora_events_rx) = mpsc::channel(5);
+        // Use a large channel capacity to prevent deadlock
+        let (dora_events_tx, dora_events_rx) = mpsc::channel(1000);
         let daemon = Self {
             logger: Logger {
                 destination: log_destination,
@@ -451,19 +480,7 @@ impl Daemon {
                 }
                 Event::CtrlC => {
                     tracing::info!("received ctrlc signal -> stopping all dataflows");
-                    for dataflow in self.running.values_mut() {
-                        let mut logger = self.logger.for_dataflow(dataflow.id);
-                        dataflow
-                            .stop_all(
-                                &mut self.coordinator_connection,
-                                &self.clock,
-                                None,
-                                false,
-                                &mut logger,
-                            )
-                            .await?;
-                    }
-                    self.exit_when_all_finished = true;
+                    self.trigger_manual_stop().await?;
                     if self.running.is_empty() {
                         break;
                     }
@@ -471,6 +488,13 @@ impl Daemon {
                 Event::SecondCtrlC => {
                     tracing::warn!("received second ctrlc signal -> exit immediately");
                     bail!("received second ctrl-c signal");
+                }
+                Event::StopAfter(duration) => {
+                    tracing::info!("stopping after {duration:?} as requested");
+                    self.trigger_manual_stop().await?;
+                    if self.running.is_empty() {
+                        break;
+                    }
                 }
                 Event::DaemonError(err) => {
                     tracing::error!("Daemon error: {err:?}");
@@ -605,6 +629,23 @@ impl Daemon {
         }
 
         Ok(self.dataflow_node_results)
+    }
+
+    async fn trigger_manual_stop(&mut self) -> eyre::Result<()> {
+        for dataflow in self.running.values_mut() {
+            let mut logger = self.logger.for_dataflow(dataflow.id);
+            dataflow
+                .stop_all(
+                    &mut self.coordinator_connection,
+                    &self.clock,
+                    None,
+                    false,
+                    &mut logger,
+                )
+                .await?;
+        }
+        self.exit_when_all_finished = true;
+        Ok(())
     }
 
     async fn handle_coordinator_event(
@@ -1217,8 +1258,11 @@ impl Daemon {
             .try_clone()
             .await
             .context("failed to clone logger")?;
-        let dataflow =
-            RunningDataflow::new(dataflow_id, self.daemon_id.clone(), &dataflow_descriptor);
+        let dataflow = RunningDataflow::new(
+            dataflow_id,
+            self.daemon_id.clone(),
+            dataflow_descriptor.clone(),
+        );
         let dataflow = match self.running.entry(dataflow_id) {
             std::collections::hash_map::Entry::Vacant(entry) => {
                 self.working_dir
@@ -2094,7 +2138,13 @@ impl Daemon {
             if let Some(node) = dataflow.running_nodes.get_mut(&node_id) {
                 node.disable_restart();
             }
-            let _ = send_with_timestamp(&event_sender, NodeEvent::AllInputsClosed, clock);
+            if let Some(node) = dataflow.descriptor.nodes.iter().find(|n| n.id == node_id) {
+                if node.inputs.is_empty() {
+                    // do not send AllInputsClosed for source nodes
+                } else {
+                    let _ = send_with_timestamp(&event_sender, NodeEvent::AllInputsClosed, clock);
+                }
+            }
         }
 
         // if a stop event was already sent for the dataflow, send it to
@@ -2827,6 +2877,9 @@ impl Drop for ProcessHandle {
 
 pub struct RunningDataflow {
     id: Uuid,
+
+    descriptor: Descriptor,
+
     /// Local nodes that are not started yet
     pending_nodes: PendingNodes,
 
@@ -2875,7 +2928,7 @@ impl RunningDataflow {
     fn new(
         dataflow_id: Uuid,
         daemon_id: DaemonId,
-        dataflow_descriptor: &Descriptor,
+        dataflow_descriptor: Descriptor,
     ) -> RunningDataflow {
         let (finished_tx, _) = broadcast::channel(1);
         Self {
@@ -2900,6 +2953,7 @@ impl RunningDataflow {
             publishers: Default::default(),
             finished_tx,
             publish_all_messages_to_zenoh: dataflow_descriptor.debug.publish_all_messages_to_zenoh,
+            descriptor: dataflow_descriptor,
         }
     }
 
@@ -3107,6 +3161,7 @@ pub enum Event {
     HeartbeatInterval,
     MetricsInterval,
     CtrlC,
+    StopAfter(Duration),
     SecondCtrlC,
     DaemonError(eyre::Report),
     SpawnNodeResult {
@@ -3147,6 +3202,7 @@ impl Event {
             Event::HeartbeatInterval => "HeartbeatInterval",
             Event::MetricsInterval => "MetricsInterval",
             Event::CtrlC => "CtrlC",
+            Event::StopAfter(_) => "StopAfter",
             Event::SecondCtrlC => "SecondCtrlC",
             Event::DaemonError(_) => "DaemonError",
             Event::SpawnNodeResult { .. } => "SpawnNodeResult",

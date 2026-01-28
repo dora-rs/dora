@@ -60,10 +60,12 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           docker system prune --all -f
-          docker builder prune -af 
-          Remove-Item "C:\Android" -Force -Recurse
+          docker builder prune -af
+          Remove-Item "C:\Android" -Force -Recurse -ErrorAction SilentlyContinue
           Remove-Item "C:\hostedtoolcache\windows\Ruby" -Force -Recurse -ErrorAction SilentlyContinue
           Remove-Item "C:\hostedtoolcache\windows\go" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\hostedtoolcache\windows\Java*" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\hostedtoolcache\windows\CodeQL" -Force -Recurse -ErrorAction SilentlyContinue
           Remove-Item "C:\Program Files (x86)\Microsoft SDKs\Azure" -Force -Recurse -ErrorAction SilentlyContinue
           Remove-Item "C:\Program Files\Azure Cosmos DB Emulator" -Force -Recurse -ErrorAction SilentlyContinue
           Remove-Item "C:\Program Files\MongoDB" -Force -Recurse -ErrorAction SilentlyContinue
@@ -71,6 +73,12 @@ jobs:
           Remove-Item "C:\Program Files\PostgreSQL" -Force -Recurse -ErrorAction SilentlyContinue
           Remove-Item "C:\Selenium" -Force -Recurse -ErrorAction SilentlyContinue
           Remove-Item "C:\SeleniumWebDrivers" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\Program Files\dotnet\sdk\*" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\Program Files\dotnet\shared" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\Program Files (x86)\Microsoft Visual Studio\2019" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\ProgramData\Chocolatey" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\mingw64" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\Strawberry" -Force -Recurse -ErrorAction SilentlyContinue
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -121,7 +129,25 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           docker system prune --all -f
-          Remove-Item "C:\Android" -Force -Recurse
+          docker builder prune -af
+          Remove-Item "C:\Android" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\hostedtoolcache\windows\Ruby" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\hostedtoolcache\windows\go" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\hostedtoolcache\windows\Java*" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\hostedtoolcache\windows\CodeQL" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\Program Files (x86)\Microsoft SDKs\Azure" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\Program Files\Azure Cosmos DB Emulator" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\Program Files\MongoDB" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\mysql*" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\Program Files\PostgreSQL" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\Selenium" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\SeleniumWebDrivers" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\Program Files\dotnet\sdk\*" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\Program Files\dotnet\shared" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\Program Files (x86)\Microsoft Visual Studio\2019" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\ProgramData\Chocolatey" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\mingw64" -Force -Recurse -ErrorAction SilentlyContinue
+          Remove-Item "C:\Strawberry" -Force -Recurse -ErrorAction SilentlyContinue
       - uses: Swatinem/rust-cache@v2
         with:
           cache-provider: buildjet
@@ -132,7 +158,7 @@ jobs:
       # CLI tests
       - name: "Build cli and binaries"
         timeout-minutes: 45
-        # fail-fast by using bash shell explictly
+        # fail-fast by using bash shell explicitly
         shell: bash
         run: |
           cargo install --path binaries/cli --locked
@@ -329,13 +355,13 @@ jobs:
       # CLI tests
       - name: "Build cli and binaries"
         timeout-minutes: 45
-        # fail-fast by using bash shell explictly
+        # fail-fast by using bash shell explicitly
         shell: bash
         run: |
           cargo install --path binaries/cli --locked
       - name: "Test CLI (Rust)"
         timeout-minutes: 45
-        # fail-fast by using bash shell explictly
+        # fail-fast by using bash shell explicitly
         shell: bash
         run: |
           # Test Rust template Project
@@ -365,23 +391,29 @@ jobs:
         with:
           enable-cache: true
 
-      - name: "Test CLI (Python)"
+      - name: "Set up venv"
+        shell: bash
+        run: |
+          uv venv --seed -p 3.12
+
+          # Set UV_PROJECT_ENVIRONMENT for all following steps
+          if [ "$RUNNER_OS" != "Windows" ]; then
+            echo "UV_PROJECT_ENVIRONMENT=$PWD/.venv" >> "$GITHUB_ENV"
+          else
+            echo "UV_PROJECT_ENVIRONMENT=$PWD/.venv" >> "$GITHUB_ENV"
+          fi
+
+          uv pip install -e apis/python/node
+          uv pip install ruff pytest
+
+      - name: "Test CLI (Python): Template Project"
         timeout-minutes: 80
-        # fail-fast by using bash shell explictly
+        # fail-fast by using bash shell explicitly
         shell: bash
         run: |
           # Test Python template Project
           dora new test_python_project --lang python --internal-create-with-path-dependencies
           cd test_python_project
-          uv venv --seed -p 3.12
-          ## If not Windows
-          if [ "$RUNNER_OS" != "Windows" ]; then
-            source .venv/bin/activate
-          else
-            source .venv/Scripts/activate
-          fi
-          uv pip install -e ../apis/python/node
-          uv pip install ruff pytest
 
           echo "Running dora up"
           dora up
@@ -405,8 +437,13 @@ jobs:
           sleep 5
 
           cd ..
-
-          # Run Python Node Example
+      - name: "Test CLI (Python): Node example"
+        timeout-minutes: 20
+        # fail-fast by using bash shell explicitly
+        shell: bash
+        env:
+          RUST_LOG: info
+        run: |
           echo "Running Python Node Example"
           dora up
           dora build examples/python-dataflow/dataflow.yml --uv
@@ -414,8 +451,11 @@ jobs:
           sleep 10
           echo "Running dora stop"
           dora stop --name ci-python  --grace-duration 30s
-
-          # Run Python Dynamic Node Example
+      - name: "Test CLI (Python): Dynamic Node example"
+        timeout-minutes: 20
+        # fail-fast by using bash shell explicitly
+        shell: bash
+        run: |
           echo "Running Python Node Dynamic Example"
           dora build examples/python-dataflow/dataflow_dynamic.yml --uv
           dora start examples/python-dataflow/dataflow_dynamic.yml --name ci-python-dynamic --detach --uv
@@ -423,39 +463,56 @@ jobs:
           sleep 10
           echo "Running dora stop"
           dora stop --name ci-python-dynamic  --grace-duration 30s
-
-          # Run Python Operator Example
+      - name: "Test CLI (Python): Operator example"
+        timeout-minutes: 20
+        # fail-fast by using bash shell explicitly
+        shell: bash
+        run: |
           echo "Running CI Operator Test"
+          dora build examples/python-operator-dataflow/dataflow.yml --uv
           dora start examples/python-operator-dataflow/dataflow.yml --name ci-python-operator --detach --uv
           sleep 10
           echo "Running dora stop"
           dora stop --name ci-python-operator  --grace-duration 30s
 
+      - name: "Test Python Example: Multiple Arrays"
+        timeout-minutes: 30
+        run: |
+          dora build examples/python-multiple-arrays/dataflow.yml --uv
+          dora start examples/python-multiple-arrays/dataflow.yml --uv --name ci-python-multi-array --detach
+          sleep 30
+          dora stop --name ci-python-multi-array  --grace-duration 30s
+
+      - name: "Test CLI (Python): Dora destroy"
+        timeout-minutes: 5
+        # fail-fast by using bash shell explicitly
+        shell: bash
+        run: |
           dora destroy
           sleep 5
+      - name: "Test CLI (Python): Async Example"
+        timeout-minutes: 30
+        ## TODO: Fix async Windows support
+        if: runner.os != 'Windows'
+        env:
+          RUST_LOG: debug
+        run: dora run examples/python-async/dataflow.yaml --uv
+      - name: "Test Python Example: Drain"
+        timeout-minutes: 30
+        run: dora run examples/python-drain/dataflow.yaml --uv
+      - name: "Test Python Example: Dataflow Builder"
+        timeout-minutes: 30
+        run: uv run examples/python-dataflow-builder/simple_example.py
+      - name: "Python Queue Latency Test"
+        timeout-minutes: 30
+        run: dora run tests/queue_size_latest_data_python/dataflow.yaml --uv
+      - name: "Python Queue Latency + Timeout Test"
+        timeout-minutes: 30
+        run: dora run tests/queue_size_and_timeout_python/dataflow.yaml --uv
 
-          # Run Python async
-          echo "Running CI Async test"
-          ## TODO: Fix async Windows support
-          if [ "$RUNNER_OS" != "Windows" ]; then
-            dora run examples/python-async/dataflow.yaml --uv
-          fi
-
-          # Run Python drain
-          echo "Running CI Drain Test"
-          dora run examples/python-drain/dataflow.yaml --uv
-
-          # Test Dora Python Dataflow builder
-          uv run examples/python-dataflow-builder/simple_example.py
-
-          # Run Python queue latency test
-          echo "Running CI Queue Latency Test"
-          dora run tests/queue_size_latest_data_python/dataflow.yaml --uv
-
-          # Run Python queue latency test + timeout
-          echo "Running CI Queue + Timeout Test"
-          dora run tests/queue_size_and_timeout_python/dataflow.yaml --uv
-
+      - name: "Rust Queue Latency Test"
+        timeout-minutes: 30
+        run: |
           # Run Rust queue latency test
           echo "Running CI Queue Size Latest Data Rust Test"
           dora build tests/queue_size_latest_data_rust/dataflow.yaml --uv
@@ -463,7 +520,7 @@ jobs:
 
       - name: "Test CLI (C)"
         timeout-minutes: 45
-        # fail-fast by using bash shell explictly
+        # fail-fast by using bash shell explicitly
         shell: bash
         if: runner.os == 'Linux'
         run: |
@@ -482,7 +539,7 @@ jobs:
 
       - name: "Test CLI (C++)"
         timeout-minutes: 45
-        # fail-fast by using bash shell explictly
+        # fail-fast by using bash shell explicitly
         shell: bash
         if: runner.os == 'Linux'
         run: |
