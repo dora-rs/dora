@@ -504,10 +504,10 @@ impl Metadata {
         // Convert nanoseconds since Unix epoch to chrono::DateTime<Utc>
         let secs = value / 1_000_000_000;
         let subsec_nanos = (value % 1_000_000_000) as u32;
-        
+
         let dt = DateTime::from_timestamp(secs, subsec_nanos)
             .ok_or_else(|| eyre!("Invalid timestamp: out of range (nanos: {value})"))?;
-        
+
         self.insert_parameter(key, DoraParameter::Timestamp(dt))
     }
 
