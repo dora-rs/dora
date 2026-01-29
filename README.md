@@ -37,6 +37,8 @@
 <a href="https://trendshift.io/repositories/9190" target="_blank"><img src="https://trendshift.io/api/badge/repositories/9190" alt="dora-rs%2Fdora | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
 </div>
 
+English [简体中文](./README_zh.md)
+
 ## Highlights
 
 - 🚀 dora-rs is a framework to run realtime multi-AI and multi-hardware applications.
@@ -315,7 +317,3 @@ This project is licensed under Apache-2.0. Check out [NOTICE.md](NOTICE.md) for 
 - [Zenoh Documentation](https://zenoh.io/docs/getting-started/first-app/)
 - [DORA Zenoh Discussion (GitHub Issue #512)](https://github.com/dora-rs/dora/issues/512)
 - [Dora Autoware Localization Demo](https://github.com/dora-rs/dora-autoware-localization-demo)
-
-```
-
-```
