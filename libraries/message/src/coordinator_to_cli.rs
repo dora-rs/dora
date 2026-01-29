@@ -73,6 +73,13 @@ pub struct NodeMetricsInfo {
     pub disk_write_mb_s: Option<f64>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum NodeStatus {
+    Running,
+    Failed,
+    Stopped,
+}
+
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct DataflowResult {
     pub uuid: Uuid,

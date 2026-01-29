@@ -1,7 +1,13 @@
 use super::Executable;
 use dora_core::descriptor::{Descriptor, DescriptorExt};
+use dora_message::{
+    cli_to_coordinator::ControlRequest,
+    coordinator_to_cli::{ControlRequestReply, NodeStatus},
+    id::NodeId,
+};
 use eyre::Context;
 use std::{
+    collections::HashMap,
     fs::File,
     io::Write,
     path::{Path, PathBuf},
@@ -21,15 +27,33 @@ pub struct Graph {
     /// Open the HTML visualization in the browser
     #[clap(long, action)]
     open: bool,
+    /// Live mode with auto-refresh
+    #[clap(long, action)]
+    live: bool,
+    /// Output file path
+    #[clap(long, short = 'o')]
+    output: Option<PathBuf>,
 }
 
 impl Executable for Graph {
     fn execute(self) -> eyre::Result<()> {
-        create(self.dataflow, self.mermaid, self.open)
+        create(
+            self.dataflow,
+            self.mermaid,
+            self.open,
+            self.output,
+            self.live,
+        )
     }
 }
 
-fn create(dataflow: std::path::PathBuf, mermaid: bool, open: bool) -> eyre::Result<()> {
+fn create(
+    dataflow: std::path::PathBuf,
+    mermaid: bool,
+    open: bool,
+    output: Option<PathBuf>,
+    live: bool,
+) -> eyre::Result<()> {
     if mermaid {
         let visualized = visualize_as_mermaid(&dataflow)?;
         println!("{visualized}");
@@ -38,27 +62,35 @@ fn create(dataflow: std::path::PathBuf, mermaid: bool, open: bool) -> eyre::Resu
             ```mermaid code block on GitHub to display it."
         );
     } else {
-        let html = visualize_as_html(&dataflow)?;
+        let mut html = visualize_as_html(&dataflow)?;
+        if live {
+            html = html.replace(
+                "<head>",
+                "<head>\n    <meta http-equiv=\"refresh\" content=\"2\">",
+            );
+        }
 
-        let working_dir = std::env::current_dir().wrap_err("failed to get current working dir")?;
-        let graph_filename = match dataflow.file_stem().and_then(|n| n.to_str()) {
-            Some(name) => format!("{name}-graph"),
-            None => "graph".into(),
-        };
-        let mut extra = 0;
-        let path = loop {
-            let adjusted_file_name = if extra == 0 {
-                format!("{graph_filename}.html")
-            } else {
-                format!("{graph_filename}.{extra}.html")
+        let path = output.unwrap_or_else(|| {
+            let working_dir = std::env::current_dir().unwrap();
+            let graph_filename = match dataflow.file_stem().and_then(|n| n.to_str()) {
+                Some(name) => format!("{name}-graph"),
+                None => "graph".into(),
             };
-            let path = working_dir.join(&adjusted_file_name);
-            if path.exists() {
-                extra += 1;
-            } else {
-                break path;
+            let mut extra = 0;
+            loop {
+                let adjusted_file_name = if extra == 0 {
+                    format!("{graph_filename}.html")
+                } else {
+                    format!("{graph_filename}.{extra}.html")
+                };
+                let p = working_dir.join(&adjusted_file_name);
+                if p.exists() {
+                    extra += 1;
+                } else {
+                    break p;
+                }
             }
-        };
+        });
 
         let mut file = File::create(&path).context("failed to create graph HTML file")?;
         file.write_all(html.as_bytes())?;
