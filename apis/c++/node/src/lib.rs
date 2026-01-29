@@ -2,7 +2,7 @@ use std::{any::Any, collections::BTreeMap, vec};
 
 use crate::ffi::MetadataValueType;
 
-use chrono::{DateTime, Utc};
+use chrono::DateTime;
 use dora_node_api::{
     self, Event, EventStream, Metadata as DoraMetadata,
     MetadataParameters as DoraMetadataParameters, Parameter as DoraParameter,
@@ -142,7 +142,7 @@ mod ffi {
         fn get_list_int(self: &Metadata, key: &str) -> Result<Vec<i64>>;
         fn get_list_float(self: &Metadata, key: &str) -> Result<Vec<f64>>;
         fn get_list_string(self: &Metadata, key: &str) -> Result<Vec<String>>;
-        fn get_timestamp(self: &Metadata, key: &str) -> Result<String>;
+        fn get_timestamp(self: &Metadata, key: &str) -> Result<i64>;
         fn get_json(self: &Metadata, key: &str) -> Result<String>;
         fn to_json(self: &Metadata) -> String;
         fn list_keys(self: &Metadata) -> Vec<String>;
@@ -153,7 +153,7 @@ mod ffi {
         fn set_list_int(self: &mut Metadata, key: &str, value: Vec<i64>) -> Result<()>;
         fn set_list_float(self: &mut Metadata, key: &str, value: Vec<f64>) -> Result<()>;
         fn set_list_string(self: &mut Metadata, key: &str, value: Vec<String>) -> Result<()>;
-        fn set_timestamp(self: &mut Metadata, key: &str, value: String) -> Result<()>;
+        fn set_timestamp(self: &mut Metadata, key: &str, value: i64) -> Result<()>;
         #[cxx_name = "type"]
         fn value_type(self: &Metadata, key: &str) -> Result<MetadataValueType>;
     }
@@ -432,10 +432,14 @@ impl Metadata {
         }
     }
 
-    pub fn get_timestamp(&self, key: &str) -> EyreResult<String> {
+    pub fn get_timestamp(&self, key: &str) -> EyreResult<i64> {
         let parameter = self.expect_parameter(key)?;
         match parameter {
-            DoraParameter::Timestamp(dt) => Ok(dt.to_rfc3339()),
+            DoraParameter::Timestamp(dt) => {
+                // Convert chrono::DateTime<Utc> to nanoseconds since Unix epoch
+                dt.timestamp_nanos_opt()
+                    .ok_or_else(|| eyre!("Timestamp out of range for conversion to nanoseconds"))
+            }
             other => Err(eyre!(
                 "metadata key '{key}' has type '{}', expected 'timestamp'",
                 Metadata::parameter_type_name(other)
@@ -496,10 +500,14 @@ impl Metadata {
         self.insert_parameter(key, DoraParameter::ListString(value))
     }
 
-    pub fn set_timestamp(&mut self, key: &str, value: String) -> EyreResult<()> {
-        let dt = DateTime::parse_from_rfc3339(&value)
-            .map_err(|e| eyre!("Failed to parse timestamp '{value}': {e}"))?
-            .with_timezone(&Utc);
+    pub fn set_timestamp(&mut self, key: &str, value: i64) -> EyreResult<()> {
+        // Convert nanoseconds since Unix epoch to chrono::DateTime<Utc>
+        let secs = value / 1_000_000_000;
+        let subsec_nanos = (value % 1_000_000_000) as u32;
+        
+        let dt = DateTime::from_timestamp(secs, subsec_nanos)
+            .ok_or_else(|| eyre!("Invalid timestamp: out of range (nanos: {value})"))?;
+        
         self.insert_parameter(key, DoraParameter::Timestamp(dt))
     }
 
