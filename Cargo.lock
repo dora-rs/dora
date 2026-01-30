@@ -1726,6 +1726,7 @@ name = "dora-node-api-cxx"
 version = "0.4.1"
 dependencies = [
  "arrow",
+ "chrono",
  "cxx",
  "cxx-build",
  "dora-node-api",
@@ -1804,6 +1805,7 @@ dependencies = [
  "aligned-vec",
  "arrow",
  "arrow-schema",
+ "chrono",
  "dora-node-api",
  "eyre",
  "flume 0.10.14",
