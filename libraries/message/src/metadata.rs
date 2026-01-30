@@ -1,5 +1,5 @@
-use std::{collections::BTreeMap, fmt};
 use std::convert::TryFrom;
+use std::{collections::BTreeMap, fmt};
 
 use arrow_schema::DataType;
 use serde::{Deserialize, Serialize};
@@ -37,24 +37,21 @@ impl Metadata {
         self.timestamp
     }
 
-    pub fn get(&self,key: &str) -> Option<&Parameter>{
+    pub fn get(&self, key: &str) -> Option<&Parameter> {
         self.parameters.get(key)
     }
 
     pub fn try_get<T>(&self, key: &str) -> Result<Option<T>, MetadataError>
     where
-        T: for<'a>TryFrom<&'a Parameter, Error = MetadataError>,
+        T: for<'a> TryFrom<&'a Parameter, Error = MetadataError>,
     {
-        self.parameters
-            .get(key)
-            .map(T::try_from)
-            .transpose()
+        self.parameters.get(key).map(T::try_from).transpose()
     }
     pub fn open_telemetry_context(&self) -> String {
         self.try_get::<String>("open_telemetry_context")
-           .ok()
-           .flatten()
-           .unwrap_or_default()
+            .ok()
+            .flatten()
+            .unwrap_or_default()
     }
 }
 
@@ -71,7 +68,6 @@ pub struct ArrowTypeInfo {
     pub buffer_offsets: Vec<BufferOffset>,
     pub child_data: Vec<ArrowTypeInfo>,
 }
-
 
 #[derive(Debug, Clone)]
 pub enum MetadataError {
@@ -106,55 +102,57 @@ pub enum Parameter {
     ListString(Vec<String>),
 }
 
-
 impl Parameter {
     pub(crate) fn variant_name(&self) -> &'static str {
-        match self{
+        match self {
             Parameter::Bool(_) => "bool",
             Parameter::Integer(_) => "integer",
             Parameter::String(_) => "string",
             Parameter::ListInt(_) => "list<i64>",
             Parameter::Float(_) => "float",
             Parameter::ListFloat(_) => "list<f64>",
-            Parameter::ListString(_) => "list<string>"
+            Parameter::ListString(_) => "list<string>",
         }
     }
 }
 
-impl TryFrom<&Parameter> for bool{
+impl TryFrom<&Parameter> for bool {
     type Error = MetadataError;
     fn try_from(value: &Parameter) -> Result<Self, Self::Error> {
-        match value{
-            Parameter::Bool(value ) => Ok(*value),
-            other  => Err(MetadataError::TypeMismatch { 
-                expected: "bool", 
-                found: other.variant_name()
-            })
+        match value {
+            Parameter::Bool(value) => Ok(*value),
+            other => Err(MetadataError::TypeMismatch {
+                expected: "bool",
+                found: other.variant_name(),
+            }),
         }
     }
 }
-
 
 impl TryFrom<&Parameter> for String {
     type Error = MetadataError;
 
-    fn try_from(value: &Parameter) -> Result<Self, Self::Error>{
-        match value{
+    fn try_from(value: &Parameter) -> Result<Self, Self::Error> {
+        match value {
             Parameter::String(val) => Ok(val.clone()),
             other => Err(MetadataError::TypeMismatch {
-                 expected: "string", found: other.variant_name()
-            })
+                expected: "string",
+                found: other.variant_name(),
+            }),
         }
     }
 }
 
-impl TryFrom<&Parameter> for i64{
+impl TryFrom<&Parameter> for i64 {
     type Error = MetadataError;
 
-    fn try_from(value :&Parameter) -> Result<Self, Self::Error>{
-        match value{
+    fn try_from(value: &Parameter) -> Result<Self, Self::Error> {
+        match value {
             Parameter::Integer(v) => Ok(v.clone()),
-            other => Err(MetadataError::TypeMismatch { expected: "i64", found: other.variant_name() })
+            other => Err(MetadataError::TypeMismatch {
+                expected: "i64",
+                found: other.variant_name(),
+            }),
         }
     }
 }
@@ -162,35 +160,41 @@ impl TryFrom<&Parameter> for i64{
 impl TryFrom<&Parameter> for f64 {
     type Error = MetadataError;
 
-    fn try_from(value : &Parameter) -> Result<Self, Self::Error>{
-        match value{
+    fn try_from(value: &Parameter) -> Result<Self, Self::Error> {
+        match value {
             Parameter::Float(val) => Ok(val.clone()),
-            other => Err(MetadataError::TypeMismatch { expected: "f64", found: other.variant_name() })
+            other => Err(MetadataError::TypeMismatch {
+                expected: "f64",
+                found: other.variant_name(),
+            }),
         }
     }
 }
-
-
 
 impl TryFrom<&Parameter> for Vec<i64> {
     type Error = MetadataError;
 
-    fn try_from(value : &Parameter) -> Result<Self, Self::Error> {
-        match value{
+    fn try_from(value: &Parameter) -> Result<Self, Self::Error> {
+        match value {
             Parameter::ListInt(v) => Ok(v.clone()),
-            other => Err(MetadataError::TypeMismatch { expected: "list<i64>", found: other.variant_name() })
+            other => Err(MetadataError::TypeMismatch {
+                expected: "list<i64>",
+                found: other.variant_name(),
+            }),
         }
     }
 }
 
-
 impl TryFrom<&Parameter> for Vec<f64> {
     type Error = MetadataError;
 
-    fn try_from(value: &Parameter) -> Result<Self, Self::Error>{
-        match value{
+    fn try_from(value: &Parameter) -> Result<Self, Self::Error> {
+        match value {
             Parameter::ListFloat(val) => Ok(val.clone()),
-            other => Err(MetadataError::TypeMismatch { expected: "list<f64>", found:other.variant_name() })
+            other => Err(MetadataError::TypeMismatch {
+                expected: "list<f64>",
+                found: other.variant_name(),
+            }),
         }
     }
 }
@@ -198,10 +202,13 @@ impl TryFrom<&Parameter> for Vec<f64> {
 impl TryFrom<&Parameter> for Vec<String> {
     type Error = MetadataError;
 
-    fn try_from(value : &Parameter) -> Result<Self, Self::Error>{
-        match value{
+    fn try_from(value: &Parameter) -> Result<Self, Self::Error> {
+        match value {
             Parameter::ListString(v) => Ok(v.clone()),
-            other => Err(MetadataError::TypeMismatch { expected: "list<string>", found: other.variant_name() })
+            other => Err(MetadataError::TypeMismatch {
+                expected: "list<string>",
+                found: other.variant_name(),
+            }),
         }
     }
 }
@@ -211,7 +218,6 @@ pub struct BufferOffset {
     pub offset: usize,
     pub len: usize,
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -229,14 +235,12 @@ mod tests {
             child_data: Vec::new(),
         }
     }
-   fn dummy_timestamp() -> uhlc::Timestamp {
-       use uhlc::HLC;
-       let hlc = HLC::default();
-       hlc.new_timestamp()
-   }
+    fn dummy_timestamp() -> uhlc::Timestamp {
+        use uhlc::HLC;
+        let hlc = HLC::default();
+        hlc.new_timestamp()
+    }
 
-
-    
     #[test]
     fn try_from_bool_ok() {
         let p = Parameter::Bool(true);
@@ -251,8 +255,7 @@ mod tests {
         assert!(err.to_string().contains("expected bool"));
     }
 
-
-     #[test]
+    #[test]
     fn try_from_i64_ok() {
         let p = Parameter::Integer(42);
         let v = i64::try_from(&p).unwrap();
@@ -267,32 +270,32 @@ mod tests {
     }
 
     #[test]
-    fn try_from_f64_ok(){
-        let p= Parameter::Float(1.0);
+    fn try_from_f64_ok() {
+        let p = Parameter::Float(1.0);
         let val = f64::try_from(&p).unwrap();
         assert_eq!(val, 1.0);
     }
 
     #[test]
-    fn try_from_f64_type_mismatch(){
+    fn try_from_f64_type_mismatch() {
         let p = Parameter::Integer(50);
         let err = f64::try_from(&p).unwrap_err();
         assert!(err.to_string().contains("expected f64"));
     }
 
-   #[test]
-   fn try_from_string_ok(){
-      let p = Parameter::String(String::from("welcome"));
-      let val = String::try_from(&p).unwrap();
-      assert_eq!(val, String::from("welcome"));
-   }
+    #[test]
+    fn try_from_string_ok() {
+        let p = Parameter::String(String::from("welcome"));
+        let val = String::try_from(&p).unwrap();
+        assert_eq!(val, String::from("welcome"));
+    }
 
-   #[test]
-   fn try_from_string_type_mismatch(){
-     let p = Parameter::Integer(5);
-     let err = String::try_from(&p).unwrap_err();
-     assert!(err.to_string().contains("expected string"));
-   }
+    #[test]
+    fn try_from_string_type_mismatch() {
+        let p = Parameter::Integer(5);
+        let err = String::try_from(&p).unwrap_err();
+        assert!(err.to_string().contains("expected string"));
+    }
 
     #[test]
     fn try_from_vec_i64_ok() {
@@ -308,7 +311,6 @@ mod tests {
         assert!(err.to_string().contains("list<i64>"));
     }
 
-
     #[test]
     fn try_from_vec_f64_ok() {
         let p = Parameter::ListFloat(vec![1.0, 2.0]);
@@ -322,7 +324,6 @@ mod tests {
         let err = Vec::<f64>::try_from(&p).unwrap_err();
         assert!(err.to_string().contains("list<f64>"));
     }
-
 
     #[test]
     fn try_from_vec_string_ok() {
@@ -343,11 +344,7 @@ mod tests {
         let mut params = MetadataParameters::new();
         params.insert("wait".into(), Parameter::Bool(true));
 
-        let metadata = Metadata::from_parameters(
-            dummy_timestamp(),
-            dummy_type_info(),
-            params,
-        );
+        let metadata = Metadata::from_parameters(dummy_timestamp(), dummy_type_info(), params);
 
         let v = metadata.try_get::<bool>("wait").unwrap();
         assert_eq!(v, Some(true));
@@ -355,10 +352,7 @@ mod tests {
 
     #[test]
     fn try_get_missing_key() {
-        let metadata = Metadata::new(
-            dummy_timestamp(),
-            dummy_type_info(),
-        );
+        let metadata = Metadata::new(dummy_timestamp(), dummy_type_info());
 
         let v = metadata.try_get::<bool>("wait").unwrap();
         assert!(v.is_none());
@@ -369,15 +363,9 @@ mod tests {
         let mut params = MetadataParameters::new();
         params.insert("wait".into(), Parameter::String("yes".into()));
 
-        let metadata = Metadata::from_parameters(
-            dummy_timestamp(),
-            dummy_type_info(),
-            params
-        );
+        let metadata = Metadata::from_parameters(dummy_timestamp(), dummy_type_info(), params);
 
         let err = metadata.try_get::<bool>("wait").unwrap_err();
         assert!(err.to_string().contains("expected bool"));
     }
-
 }
-
