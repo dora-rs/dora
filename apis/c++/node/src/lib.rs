@@ -347,7 +347,8 @@ impl Metadata {
                     .map(|value| JsonValue::String(value.clone()))
                     .collect(),
             )),
-            DoraParameter::Timestamp(dt) => Ok(JsonValue::String(dt.to_rfc3339())),
+            DoraParameter::Timestamp(dt) => serde_json::to_value(dt)
+                .map_err(|e| eyre!("failed to serialize timestamp: {e}")),
         }
     }
 
