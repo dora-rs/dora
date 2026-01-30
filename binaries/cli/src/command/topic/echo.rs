@@ -230,7 +230,7 @@ async fn log_to_terminal(
                             Parameter::ListFloat(value) => serde_json::to_string(value).unwrap(),
                             Parameter::ListString(value) => serde_json::to_string(value).unwrap(),
                             Parameter::Timestamp(dt) => {
-                                serde_json::to_string(&dt.to_rfc3339()).unwrap()
+                                serde_json::to_string(dt).unwrap()
                             }
                         };
                         write!(output, "{}:{value}", serde_json::Value::String(k.clone()),)
