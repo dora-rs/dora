@@ -68,9 +68,12 @@ fn register_operator_impl(item: &TokenStream2) -> syn::Result<TokenStream2> {
 
     // On Windows, we need to explicitly export symbols when linking a Rust staticlib
     // into a C++ DLL. This embeds linker directives directly into the object file.
+    // SAFETY: The `.drectve` section is specifically designed for passing linker
+    // directives on Windows. The content is a valid null-terminated string of
+    // MSVC linker options that only affects symbol visibility.
     let windows_exports = quote! {
         #[cfg(target_os = "windows")]
-        #[link_section = ".drectve"]
+        #[unsafe(link_section = ".drectve")]
         #[used]
         static _DORA_EXPORTS: [u8; 75] =
             *b" /EXPORT:dora_init_operator /EXPORT:dora_drop_operator /EXPORT:dora_on_event ";
