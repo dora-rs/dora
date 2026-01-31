@@ -191,18 +191,26 @@ fn build_cxx_operator(paths: &[&Path], out_name: &str, link_args: &[&str]) -> ey
         compile.arg("-fPIC");
         #[cfg(target_os = "windows")]
         {
+            // Use dynamic CRT linkage for consistency with the Rust libraries
             compile.arg("-D_DLL");
-            compile.arg("-Wl,-nodefaultlib:libcmt");
         }
         if let Some(parent) = path.parent() {
             compile.current_dir(parent);
         }
+        println!("Compiling operator: {:?}", path);
         if !compile.status()?.success() {
             bail!("failed to compile cxx operator");
         };
+        if !object_file_path.exists() {
+            bail!(
+                "object file was not created: {}",
+                object_file_path.display()
+            );
+        }
         object_file_paths.push(object_file_path);
     }
 
+    let output_path = Path::new("../build").join(format!("{DLL_PREFIX}{out_name}{DLL_SUFFIX}"));
     let mut link = std::process::Command::new("clang++");
     link.arg("-shared").args(&object_file_paths);
     link.args(link_args);
@@ -235,9 +243,15 @@ fn build_cxx_operator(paths: &[&Path], out_name: &str, link_args: &[&str]) -> ey
         link.arg("-luser32");
         link.arg("-lwinspool");
 
+        // Use dynamic CRT and avoid conflicts with static CRT
         link.arg("-Wl,-nodefaultlib:libcmt");
-        link.arg("-D_DLL");
         link.arg("-lmsvcrt");
+
+        // Export all symbols from the static library so that dora runtime can load them
+        // This is needed because Rust staticlib symbols are not automatically exported on Windows
+        link.arg("-Wl,/EXPORT:dora_init_operator");
+        link.arg("-Wl,/EXPORT:dora_drop_operator");
+        link.arg("-Wl,/EXPORT:dora_on_event");
     }
     #[cfg(target_os = "macos")]
     {
@@ -249,14 +263,32 @@ fn build_cxx_operator(paths: &[&Path], out_name: &str, link_args: &[&str]) -> ey
         link.arg("-l").arg("c");
         link.arg("-l").arg("m");
     }
-    link.arg("-o")
-        .arg(Path::new("../build").join(format!("{DLL_PREFIX}{out_name}{DLL_SUFFIX}")));
+    link.arg("-o").arg(&output_path);
     if let Some(parent) = paths[0].parent() {
         link.current_dir(parent);
     }
+    println!("Linking operator: {} -> {:?}", out_name, output_path);
     if !link.status()?.success() {
         bail!("failed to create shared library from cxx operator (c api)");
     };
+
+    // Verify the shared library was created
+    let final_path = if let Some(parent) = paths[0].parent() {
+        parent.join(&output_path)
+    } else {
+        output_path.clone()
+    };
+    if !final_path.exists() {
+        bail!(
+            "shared library was not created: {} (expected at {})",
+            out_name,
+            final_path.display()
+        );
+    }
+    println!(
+        "Successfully built operator shared library: {}",
+        final_path.display()
+    );
 
     Ok(())
 }
