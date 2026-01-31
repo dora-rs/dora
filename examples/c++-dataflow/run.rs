@@ -246,12 +246,6 @@ fn build_cxx_operator(paths: &[&Path], out_name: &str, link_args: &[&str]) -> ey
         // Use dynamic CRT and avoid conflicts with static CRT
         link.arg("-Wl,-nodefaultlib:libcmt");
         link.arg("-lmsvcrt");
-
-        // Export all symbols from the static library so that dora runtime can load them
-        // This is needed because Rust staticlib symbols are not automatically exported on Windows
-        link.arg("-Wl,/EXPORT:dora_init_operator");
-        link.arg("-Wl,/EXPORT:dora_drop_operator");
-        link.arg("-Wl,/EXPORT:dora_on_event");
     }
     #[cfg(target_os = "macos")]
     {
