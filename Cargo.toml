@@ -23,6 +23,8 @@ members = [
     "examples/multiple-daemons/node",
     "examples/multiple-daemons/operator",
     "examples/multiple-daemons/sink",
+    "examples/error-propagation/producer",
+    "examples/error-propagation/consumer",
     "libraries/arrow-convert",
     "libraries/communication-layer/*",
     "libraries/core",
@@ -71,7 +73,7 @@ dora-ros2-bridge = { version = "0.4.1", path = "libraries/extensions/ros2-bridge
 dora-ros2-bridge-msg-gen = { version = "0.4.1", path = "libraries/extensions/ros2-bridge/msg-gen" }
 dora-ros2-bridge-python = { path = "libraries/extensions/ros2-bridge/python" }
 # versioned independently from the other dora crates
-dora-message = { version = "0.7.0", path = "libraries/message" }
+dora-message = { version = "0.8.0-alpha", path = "libraries/message" }
 arrow = { version = "54.2.1" }
 arrow-schema = { version = "54.2.1" }
 arrow-data = { version = "54.2.1" }

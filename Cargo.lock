@@ -1648,7 +1648,7 @@ dependencies = [
 
 [[package]]
 name = "dora-message"
-version = "0.7.0"
+version = "0.8.0-alpha"
 dependencies = [
  "aligned-vec",
  "arrow-data",
@@ -2043,6 +2043,22 @@ checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "error-propagation-consumer"
+version = "0.1.0"
+dependencies = [
+ "dora-node-api",
+ "eyre",
+]
+
+[[package]]
+name = "error-propagation-producer"
+version = "0.1.0"
+dependencies = [
+ "dora-node-api",
+ "eyre",
 ]
 
 [[package]]
