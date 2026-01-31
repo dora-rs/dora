@@ -76,6 +76,11 @@ int main()
     std::cout << "HELLO FROM C++ (using C API)" << std::endl;
 
     auto dora_context = init_dora_context_from_env();
+    if (dora_context == NULL)
+    {
+        std::cerr << "failed to init dora context" << std::endl;
+        return 1;
+    }
     auto ret = run(dora_context);
     free_dora_context(dora_context);
 
