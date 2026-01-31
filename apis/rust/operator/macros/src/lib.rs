@@ -75,7 +75,7 @@ fn register_operator_impl(item: &TokenStream2) -> syn::Result<TokenStream2> {
         #[cfg(target_os = "windows")]
         #[unsafe(link_section = ".drectve")]
         #[used]
-        static _DORA_EXPORTS: [u8; 75] =
+        static _DORA_EXPORTS: [u8; 77] =
             *b" /EXPORT:dora_init_operator /EXPORT:dora_drop_operator /EXPORT:dora_on_event ";
     };
 
