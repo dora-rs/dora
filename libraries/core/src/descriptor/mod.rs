@@ -1,6 +1,6 @@
 use dora_message::{
     config::{Input, InputMapping, NodeRunConfig},
-    descriptor::{GitRepoRev, NodeSource},
+    descriptor::{EnvValue, GitRepoRev, NodeSource},
     id::{DataId, NodeId, OperatorId},
 };
 use eyre::{Context, OptionExt, Result, bail};
@@ -34,6 +34,22 @@ pub trait DescriptorExt {
 }
 
 pub const SINGLE_OPERATOR_DEFAULT_ID: &str = "op";
+
+fn merge_env(
+    global: &Option<BTreeMap<String, EnvValue>>,
+    node: &Option<BTreeMap<String, EnvValue>>,
+) -> Option<BTreeMap<String, EnvValue>> {
+    match (global, node) {
+        (None, None) => None,
+        (Some(g), None) => Some(g.clone()),
+        (None, Some(n)) => Some(n.clone()),
+        (Some(g), Some(n)) => {
+            let mut merged = g.clone();
+            merged.extend(n.clone());
+            Some(merged)
+        }
+    }
+}
 
 impl DescriptorExt for Descriptor {
     fn resolve_aliases_and_set_defaults(&self) -> eyre::Result<BTreeMap<NodeId, ResolvedNode>> {
@@ -104,13 +120,15 @@ impl DescriptorExt for Descriptor {
                 }),
             };
 
+            let env = merge_env(&self.env, &node.env);
+
             resolved.insert(
                 node.id.clone(),
                 ResolvedNode {
                     id: node.id,
                     name: node.name,
                     description: node.description,
-                    env: node.env,
+                    env,
                     deploy: node.deploy,
                     kind,
                 },
