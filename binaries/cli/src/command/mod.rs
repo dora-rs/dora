@@ -19,8 +19,8 @@ mod topic;
 mod up;
 
 pub use build::build;
-#[allow(deprecated)]
-pub use run::{run, run_func};
+pub use run::{Run, run, run_func};
+pub use system::check_environment;
 
 use build::Build;
 use completion::Completion;
@@ -34,7 +34,6 @@ use list::ListArgs;
 use logs::LogsArgs;
 use new::NewArgs;
 use node::Node;
-use run::Run;
 use runtime::Runtime;
 use self_::SelfSubCommand;
 use start::Start;

@@ -52,7 +52,19 @@ pub fn run(
     };
 
     let closure = AssertUnwindSafe(|| {
-        let bindings = Bindings::init(&library).context("failed to init operator")?;
+        let bindings = match Bindings::init(&library) {
+            Ok(b) => b,
+            Err(err) => {
+                let err = err.wrap_err(format!(
+                    "failed to init operator bindings from `{}`. \
+                        On Windows, ensure that the shared library exports the required symbols \
+                        (dora_init_operator, dora_drop_operator, dora_on_event).",
+                    path.display()
+                ));
+                let _ = init_done.send(Err(eyre!("{err:?}")));
+                return Err(err);
+            }
+        };
 
         let operator = SharedLibraryOperator {
             incoming_events,

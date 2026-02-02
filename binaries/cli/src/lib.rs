@@ -1,5 +1,4 @@
 use colored::Colorize;
-use command::Executable;
 use std::{
     net::{IpAddr, Ipv4Addr},
     path::PathBuf,
@@ -13,8 +12,7 @@ pub mod session;
 mod template;
 
 pub use command::build;
-#[allow(deprecated)]
-pub use command::{run, run_func};
+pub use command::{Executable, Run as RunCommand, run, run_func};
 
 const LOCALHOST: IpAddr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
 const LISTEN_WILDCARD: IpAddr = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0));
@@ -36,7 +34,8 @@ fn build_version_string() -> String {
     let mut version_output = format!("{}\n", cli_version);
 
     // Add dora-message version
-    version_output.push_str(&format!("dora-message: {}\n", dora_message::VERSION));
+    // TODO: Uncomment later after publishing dora-message crate
+    // version_output.push_str(&format!("dora-message: {}\n", dora_message::VERSION));
 
     // Try to detect Python dora-rs version
     match get_python_dora_version() {
