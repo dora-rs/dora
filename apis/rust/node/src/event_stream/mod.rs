@@ -12,7 +12,7 @@ use dora_message::{
     id::DataId,
     node_to_daemon::{DaemonRequest, Timestamped},
 };
-pub use event::{Event, StopCause};
+pub use event::{Event, StopReason};
 use futures::{
     FutureExt, Stream, StreamExt,
     future::{Either, select},
@@ -348,7 +348,7 @@ impl EventStream {
         if let Some(write_events_to) = &mut self.write_events_to {
             let event_json = match event {
                 EventItem::NodeEvent { event, .. } => match event {
-                    NodeEvent::Stop => {
+                    NodeEvent::Stop { .. } => {
                         let time_offset = self
                             .clock
                             .new_timestamp()
@@ -483,7 +483,9 @@ impl EventStream {
     fn convert_event_item(item: EventItem) -> Event {
         match item {
             EventItem::NodeEvent { event, ack_channel } => match event {
-                NodeEvent::Stop => Event::Stop(event::StopCause::Manual),
+                NodeEvent::Stop { reason } => {
+                    Event::Stop(reason.unwrap_or(StopReason::Manual))
+                }
                 NodeEvent::Reload { operator_id } => Event::Reload { operator_id },
                 NodeEvent::InputClosed { id } => Event::InputClosed { id },
                 NodeEvent::Input { id, metadata, data } => {
@@ -497,7 +499,7 @@ impl EventStream {
                         Err(err) => Event::Error(format!("{err:?}")),
                     }
                 }
-                NodeEvent::AllInputsClosed => Event::Stop(event::StopCause::AllInputsClosed),
+                NodeEvent::AllInputsClosed => Event::Stop(StopReason::AllInputsClosed),
             },
 
             EventItem::FatalError(err) => {

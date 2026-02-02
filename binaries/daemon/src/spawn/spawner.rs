@@ -19,7 +19,14 @@ use dora_message::{
     daemon_to_node::{NodeConfig, RuntimeConfig},
 };
 use eyre::{ContextCompat, WrapErr, bail};
-use std::{future::Future, path::PathBuf, sync::Arc};
+use std::{
+    future::Future,
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::AtomicBool,
+    },
+};
 use tokio::sync::mpsc;
 
 #[derive(Clone)]
@@ -30,8 +37,6 @@ pub struct Spawner {
     /// clock is required for generating timestamps when dropping messages early because queue is full
     pub clock: Arc<HLC>,
     pub uv: bool,
-    /// When true, custom nodes will be spawned with restart=always for hot-reload.
-    pub hot_reload: bool,
 }
 
 impl Spawner {
@@ -311,7 +316,7 @@ impl Spawner {
             clock: self.clock,
             daemon_tx: self.daemon_tx,
             node_stderr_most_recent,
-            hot_reload: self.hot_reload,
+            pending_hot_reload: Arc::new(AtomicBool::new(false)),
         })
     }
 }

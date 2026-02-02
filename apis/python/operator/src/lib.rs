@@ -5,7 +5,7 @@ use std::{
 
 use arrow::pyarrow::ToPyArrow;
 use dora_node_api::{
-    DoraNode, Event, EventStream, Metadata, MetadataParameters, Parameter, StopCause,
+    DoraNode, Event, EventStream, Metadata, MetadataParameters, Parameter, StopReason,
     merged::{MergeExternalSend, MergedEvent},
 };
 use eyre::{Context, Result};
@@ -159,9 +159,10 @@ impl PyEvent {
         match event {
             Event::Input { id, .. } => Some(id),
             Event::InputClosed { id } => Some(id),
-            Event::Stop(cause) => match cause {
-                StopCause::Manual => Some("MANUAL"),
-                StopCause::AllInputsClosed => Some("ALL_INPUTS_CLOSED"),
+            Event::Stop(reason) => match reason {
+                StopReason::Manual => Some("MANUAL"),
+                StopReason::AllInputsClosed => Some("ALL_INPUTS_CLOSED"),
+                StopReason::HotReload => Some("HOT_RELOAD"),
                 &_ => None,
             },
             _ => None,

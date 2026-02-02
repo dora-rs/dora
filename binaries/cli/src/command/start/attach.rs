@@ -14,7 +14,7 @@ use tracing::{error, info};
 use uuid::Uuid;
 
 use crate::common::handle_dataflow_result;
-use crate::hot_reload::{setup_comprehensive_watcher, DataflowChangeEvent, HotReloadEvent};
+use crate::hot_reload::{setup_yaml_watcher, DataflowChangeEvent};
 use crate::output::print_log_message;
 
 pub fn attach_dataflow(
@@ -39,83 +39,68 @@ pub fn attach_dataflow(
         .ok_or_else(|| eyre::eyre!("canonicalized dataflow path has no parent"))?
         .to_owned();
 
-    // Setup dataflow file watcher if reload option is set.
+    // Setup YAML-only file watcher if hot-reload option is set.
+    // Binary file watching is handled by the daemon directly.
     let watcher_tx = tx.clone();
     let _watcher = if hot_reload {
-        let (watcher, hot_reload_rx) = setup_comprehensive_watcher(
-            dataflow_id,
+        let (watcher, yaml_change_rx) = setup_yaml_watcher(
             &dataflow_path,
             &nodes,
             &working_dir,
         )
-        .context("failed to setup comprehensive file watcher")?;
+        .context("failed to setup YAML file watcher")?;
 
-        // Spawn a thread to forward reload events to the main channel
+        // Spawn a thread to forward YAML change events to the main channel
         std::thread::spawn(move || {
-            while let Ok(event) = hot_reload_rx.recv() {
-                match event {
-                    HotReloadEvent::FileChanged(reload_event) => {
-                        let _ = watcher_tx.send(AttachEvent::Control(ControlRequest::Reload {
-                            dataflow_id: reload_event.dataflow_id,
-                            node_id: reload_event.node_id,
-                            operator_id: reload_event.operator_id,
-                        }));
-                    }
-                    HotReloadEvent::DataflowChanged {
-                        changes,
-                        new_descriptor,
-                        new_nodes,
-                    } => {
-                        // Handle dataflow YAML changes
-                        for change in changes {
-                            let control_request = match change {
-                                DataflowChangeEvent::NodeAdded { node_id, .. } => {
-                                    if let Some(node) = new_nodes.get(&node_id) {
-                                        info!(
-                                            "Hot-reload: spawning new node '{}' from YAML",
-                                            node_id
-                                        );
-                                        ControlRequest::SpawnNode {
-                                            dataflow_id,
-                                            node_id,
-                                            node: node.clone(),
-                                            dataflow_descriptor: new_descriptor.clone(),
-                                        }
-                                    } else {
-                                        tracing::warn!(
-                                            "Hot-reload: node '{}' added but not found in resolved nodes",
-                                            node_id
-                                        );
-                                        continue;
-                                    }
+            while let Ok(event) = yaml_change_rx.recv() {
+                let DataflowChangeEvent { changes, new_descriptor, new_nodes } = event;
+                for change in changes {
+                    let control_request = match change {
+                        crate::hot_reload::NodeChange::NodeAdded { node_id } => {
+                            if let Some(node) = new_nodes.get(&node_id) {
+                                info!(
+                                    "Hot-reload: spawning new node '{}' from YAML",
+                                    node_id
+                                );
+                                ControlRequest::SpawnNode {
+                                    dataflow_id,
+                                    node_id,
+                                    node: node.clone(),
+                                    dataflow_descriptor: new_descriptor.clone(),
                                 }
-                                DataflowChangeEvent::NodeRemoved { node_id } => {
-                                    info!(
-                                        "Hot-reload: stopping removed node '{}' from YAML",
-                                        node_id
-                                    );
-                                    ControlRequest::StopNode {
-                                        dataflow_id,
-                                        node_id,
-                                    }
-                                }
-                                DataflowChangeEvent::NodeChanged { node_id, new_node } => {
-                                    info!(
-                                        "Hot-reload: restarting node '{}' with new config",
-                                        node_id
-                                    );
-                                    ControlRequest::RestartNode {
-                                        dataflow_id,
-                                        node_id,
-                                        new_node,
-                                        dataflow_descriptor: new_descriptor.clone(),
-                                    }
-                                }
-                            };
-                            if watcher_tx.send(AttachEvent::Control(control_request)).is_err() {
-                                break;
+                            } else {
+                                tracing::warn!(
+                                    "Hot-reload: node '{}' added but not found in resolved nodes",
+                                    node_id
+                                );
+                                continue;
                             }
                         }
+                        crate::hot_reload::NodeChange::NodeRemoved { node_id } => {
+                            info!(
+                                "Hot-reload: stopping removed node '{}' from YAML",
+                                node_id
+                            );
+                            ControlRequest::StopNode {
+                                dataflow_id,
+                                node_id,
+                            }
+                        }
+                        crate::hot_reload::NodeChange::NodeChanged { node_id, new_node } => {
+                            info!(
+                                "Hot-reload: restarting node '{}' with new config",
+                                node_id
+                            );
+                            ControlRequest::RestartNode {
+                                dataflow_id,
+                                node_id,
+                                new_node,
+                                dataflow_descriptor: new_descriptor.clone(),
+                            }
+                        }
+                    };
+                    if watcher_tx.send(AttachEvent::Control(control_request)).is_err() {
+                        break;
                     }
                 }
             }

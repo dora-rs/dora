@@ -1,5 +1,6 @@
 use dora_arrow_convert::ArrowData;
 use dora_core::config::{DataId, OperatorId};
+pub use dora_message::daemon_to_node::StopReason;
 use dora_message::metadata::Metadata;
 
 /// Represents an incoming Dora event.
@@ -43,10 +44,10 @@ pub enum Event {
     },
     /// Notification that the event stream is about to close.
     ///
-    /// The [`StopCause`] field contains the reason for the event stream closure.
+    /// The [`StopReason`] field contains the reason for the event stream closure.
     ///
     /// Nodes should exit once the event stream closes.
-    Stop(StopCause),
+    Stop(StopReason),
     /// Instructs the node to reload itself or one of its operators.
     ///
     /// This event is currently only used for reloading Python operators that are
@@ -64,21 +65,3 @@ pub enum Event {
     Error(String),
 }
 
-/// The reason for closing the event stream.
-///
-/// This enum is marked as `non_exhaustive` because we might add additional
-/// variants in the future.
-#[derive(Debug, Clone)]
-#[non_exhaustive]
-pub enum StopCause {
-    /// The dataflow is stopped early after a `dora stop` command (or on `ctrl-c`).
-    ///
-    /// Nodes should exit as soon as possible if they receive a stop event of
-    /// this type. Dora will kill nodes that keep running for too long after
-    /// receiving such a stop event.
-    Manual,
-    /// The event stream is closed because all of the node's inputs were closed.
-    ///
-    /// This stop event type is only sent for nodes that have at least one input.
-    AllInputsClosed,
-}

@@ -52,7 +52,7 @@
 //!
 //! Once the event stream finished, nodes should exit.
 //! Note that Dora kills nodes that don't exit quickly after a [`Event::Stop`] of type
-//! [`StopCause::Manual`] was received.
+//! [`StopReason::Manual`] was received.
 //!
 //!
 //!
@@ -98,7 +98,7 @@ use dora_message::{
     daemon_to_node::{DaemonCommunication, DaemonReply},
     node_to_daemon::DaemonRequest,
 };
-pub use event_stream::{Event, EventScheduler, EventStream, StopCause, TryRecvError, merged};
+pub use event_stream::{Event, EventScheduler, EventStream, StopReason, TryRecvError, merged};
 pub use flume;
 pub use flume::Receiver;
 pub use futures;

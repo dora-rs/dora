@@ -3823,6 +3823,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4d3d07927151ff8575b7087f245456e549fea62edf0ec4e565a5ee50c8402bc3"
 dependencies = [
  "bitflags 2.10.0",
+ "fsevent-sys",
  "inotify 0.11.0",
  "kqueue",
  "libc",

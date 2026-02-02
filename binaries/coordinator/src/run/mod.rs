@@ -59,6 +59,7 @@ pub(super) async fn spawn_dataflow(
             uv,
             write_events_to: write_events_to.clone(),
             hot_reload,
+            dataflow_path: None,
         };
         let message = serde_json::to_vec(&Timestamped {
             inner: DaemonCoordinatorEvent::Spawn(spawn_command),

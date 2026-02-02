@@ -115,8 +115,10 @@ pub struct SpawnDataflowNodes {
     pub spawn_nodes: BTreeSet<NodeId>,
     pub uv: bool,
     pub write_events_to: Option<PathBuf>,
-    /// When true, custom nodes will be spawned with restart=always
-    /// to support hot-reload functionality.
+    /// When true, hot-reload file watching is enabled for this dataflow.
     #[serde(default)]
     pub hot_reload: bool,
+    /// Path to the dataflow YAML file, used for hot-reload YAML watching.
+    #[serde(default)]
+    pub dataflow_path: Option<PathBuf>,
 }

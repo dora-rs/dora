@@ -31,6 +31,7 @@ use std::{
         Arc,
         atomic::{self, AtomicBool, AtomicU32},
     },
+    time::Duration,
 };
 use tokio::{
     fs::File,
@@ -49,8 +50,8 @@ pub struct PreparedNode {
     pub(super) clock: Arc<HLC>,
     pub(super) daemon_tx: mpsc::Sender<Timestamped<Event>>,
     pub(super) node_stderr_most_recent: Arc<ArrayQueue<String>>,
-    /// When true, custom nodes use restart=always for hot-reload support.
-    pub(super) hot_reload: bool,
+    /// Flag set before sending Stop(HotReload) to force restart regardless of policy.
+    pub(super) pending_hot_reload: Arc<AtomicBool>,
 }
 
 impl PreparedNode {
@@ -80,6 +81,7 @@ impl PreparedNode {
             node_config: self.node_config.clone(),
             restart_policy: self.restart_policy(),
             disable_restart: disable_restart.clone(),
+            pending_hot_reload: self.pending_hot_reload.clone(),
             pid: match kind {
                 NodeKind::Dynamic => None,
                 NodeKind::Spawned { pid: new_pid } => {
@@ -96,14 +98,7 @@ impl PreparedNode {
 
     fn restart_policy(&self) -> RestartPolicy {
         match &self.node.kind {
-            dora_core::descriptor::CoreNodeKind::Custom(n) => {
-                // When hot_reload is enabled, always restart custom nodes
-                if self.hot_reload {
-                    RestartPolicy::Always
-                } else {
-                    n.restart_policy
-                }
-            }
+            dora_core::descriptor::CoreNodeKind::Custom(n) => n.restart_policy,
             dora_core::descriptor::CoreNodeKind::Runtime(_) => RestartPolicy::Never,
         }
     }
@@ -115,6 +110,7 @@ impl PreparedNode {
         disable_restart: Arc<AtomicBool>,
         pid: Arc<AtomicU32>,
     ) {
+        let mut last_spawn = std::time::Instant::now();
         loop {
             let Ok(NodeProcessFinished { exit_status, op_rx }) = finished_rx.await else {
                 logger
@@ -127,11 +123,15 @@ impl PreparedNode {
                 break;
             };
 
-            let restart = match self.restart_policy() {
-                RestartPolicy::Always => true,
-                RestartPolicy::OnFailure if exit_status.is_success() => false,
-                RestartPolicy::OnFailure => true,
-                RestartPolicy::Never => false,
+            let restart = if self.pending_hot_reload.swap(false, atomic::Ordering::AcqRel) {
+                true // Hot-reload requested: always restart regardless of policy
+            } else {
+                match self.restart_policy() {
+                    RestartPolicy::Always => true,
+                    RestartPolicy::OnFailure if exit_status.is_success() => false,
+                    RestartPolicy::OnFailure => true,
+                    RestartPolicy::Never => false,
+                }
             };
 
             let restart_disabled = disable_restart.load(atomic::Ordering::Acquire);
@@ -189,6 +189,28 @@ impl PreparedNode {
                         )
                         .await;
                 }
+                // Drain buffered operations from previous run
+                while op_rx.try_recv().is_ok() {}
+
+                // Cooldown to avoid rapid crash-restart loops
+                let min_restart_interval = Duration::from_secs(2);
+                let elapsed = last_spawn.elapsed();
+                if elapsed < min_restart_interval {
+                    let wait = min_restart_interval - elapsed;
+                    logger
+                        .log(
+                            LogLevel::Info,
+                            Some("daemon".into()),
+                            format!(
+                                "node crashed quickly, waiting {:.1}s before restarting",
+                                wait.as_secs_f64()
+                            ),
+                        )
+                        .await;
+                    tokio::time::sleep(wait).await;
+                }
+
+                last_spawn = std::time::Instant::now();
                 let (finished_tx, finished_rx_new) = oneshot::channel();
                 let result = self
                     .clone()

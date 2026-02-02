@@ -8,18 +8,14 @@
 use super::Executable;
 use crate::{
     common::{handle_dataflow_result, resolve_dataflow, write_events_to},
-    hot_reload::{setup_comprehensive_watcher, DataflowChangeEvent, HotReloadEvent},
     output::print_log_message,
     session::DataflowSession,
 };
-use dora_core::descriptor::{Descriptor, DescriptorExt};
-use dora_daemon::{Daemon, DaemonHotReloadEvent, LogDestination, flume};
+use dora_daemon::{Daemon, LogDestination, flume};
 use duration_str::parse as parse_duration_str;
 use eyre::Context;
-use std::sync::mpsc;
 use std::time::Duration;
 use tokio::runtime::Builder;
-use uuid::Uuid;
 
 #[derive(Debug, clap::Args)]
 /// Run a dataflow locally.
@@ -97,105 +93,6 @@ impl Executable for Run {
         let dataflow_session = DataflowSession::read_session(&dataflow_path)
             .context("failed to read DataflowSession")?;
 
-        // Hot-reload file watcher setup
-        let (reload_receiver, _watcher) = if self.hot_reload {
-            let working_dir = dataflow_path
-                .canonicalize()
-                .context("failed to canonicalize dataflow path")?
-                .parent()
-                .ok_or_else(|| eyre::eyre!("canonicalized dataflow path has no parent"))?
-                .to_owned();
-
-            let descriptor =
-                Descriptor::blocking_read(&dataflow_path).context("could not read dataflow")?;
-            let nodes = descriptor.resolve_aliases_and_set_defaults()?;
-
-            // Use a temporary dataflow_id - the actual one is assigned in the daemon
-            let dataflow_id = Uuid::nil();
-
-            let (watcher, hot_reload_rx) = setup_comprehensive_watcher(
-                dataflow_id,
-                &dataflow_path,
-                &nodes,
-                &working_dir,
-            )
-            .context("failed to setup comprehensive file watcher")?;
-
-            // Create a channel to forward reload events to the daemon
-            let (tx, rx) = mpsc::channel::<DaemonHotReloadEvent>();
-            std::thread::spawn(move || {
-                while let Ok(event) = hot_reload_rx.recv() {
-                    match event {
-                        HotReloadEvent::FileChanged(reload_event) => {
-                            if tx
-                                .send(DaemonHotReloadEvent::Reload {
-                                    node_id: reload_event.node_id,
-                                    operator_id: reload_event.operator_id,
-                                })
-                                .is_err()
-                            {
-                                break;
-                            }
-                        }
-                        HotReloadEvent::DataflowChanged {
-                            changes,
-                            new_descriptor,
-                            new_nodes,
-                        } => {
-                            for change in changes {
-                                let event = match change {
-                                    DataflowChangeEvent::NodeAdded { node_id, .. } => {
-                                        if let Some(node) = new_nodes.get(&node_id) {
-                                            tracing::info!(
-                                                "Hot-reload: spawning new node '{}' from YAML",
-                                                node_id
-                                            );
-                                            DaemonHotReloadEvent::SpawnNode {
-                                                node_id,
-                                                node: node.clone(),
-                                                new_descriptor: new_descriptor.clone(),
-                                            }
-                                        } else {
-                                            tracing::warn!(
-                                                "Hot-reload: node '{}' added but not found in resolved nodes",
-                                                node_id
-                                            );
-                                            continue;
-                                        }
-                                    }
-                                    DataflowChangeEvent::NodeRemoved { node_id } => {
-                                        tracing::info!(
-                                            "Hot-reload: stopping removed node '{}' from YAML",
-                                            node_id
-                                        );
-                                        DaemonHotReloadEvent::StopNode { node_id }
-                                    }
-                                    DataflowChangeEvent::NodeChanged { node_id, new_node } => {
-                                        tracing::info!(
-                                            "Hot-reload: restarting node '{}' with new config",
-                                            node_id
-                                        );
-                                        DaemonHotReloadEvent::RestartNode {
-                                            node_id,
-                                            new_node,
-                                            new_descriptor: new_descriptor.clone(),
-                                        }
-                                    }
-                                };
-                                if tx.send(event).is_err() {
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-            });
-
-            (Some(rx), Some(watcher))
-        } else {
-            (None, None)
-        };
-
         let (log_tx, log_rx) = flume::bounded(100);
         std::thread::spawn(move || {
             for message in log_rx {
@@ -213,7 +110,6 @@ impl Executable for Run {
             write_events_to(),
             self.stop_after,
             self.hot_reload,
-            reload_receiver,
         ))?;
         handle_dataflow_result(result, None)
     }
