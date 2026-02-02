@@ -123,7 +123,10 @@ impl PreparedNode {
                 break;
             };
 
-            let restart = if self.pending_hot_reload.swap(false, atomic::Ordering::AcqRel) {
+            let restart = if self
+                .pending_hot_reload
+                .swap(false, atomic::Ordering::AcqRel)
+            {
                 true // Hot-reload requested: always restart regardless of policy
             } else {
                 match self.restart_policy() {

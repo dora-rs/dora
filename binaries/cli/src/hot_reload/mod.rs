@@ -107,10 +107,7 @@ pub fn setup_yaml_watcher(
                                 }
                             }
                             Err(e) => {
-                                tracing::warn!(
-                                    "Hot-reload: failed to read dataflow YAML: {}",
-                                    e
-                                );
+                                tracing::warn!("Hot-reload: failed to read dataflow YAML: {}", e);
                             }
                         }
                     }
@@ -135,10 +132,7 @@ pub fn setup_yaml_watcher(
             watcher
                 .watch(dataflow_parent, RecursiveMode::NonRecursive)
                 .with_context(|| {
-                    format!(
-                        "failed to watch dataflow directory {:?}",
-                        dataflow_parent
-                    )
+                    format!("failed to watch dataflow directory {:?}", dataflow_parent)
                 })?;
         }
     }

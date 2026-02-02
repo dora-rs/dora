@@ -1,6 +1,8 @@
 use crate::DaemonHotReloadEvent;
 use dora_core::config::{NodeId, OperatorId};
-use dora_core::descriptor::{CoreNodeKind, Descriptor, DescriptorExt, OperatorSource, ResolvedNode};
+use dora_core::descriptor::{
+    CoreNodeKind, Descriptor, DescriptorExt, OperatorSource, ResolvedNode,
+};
 use eyre::{Context, Result};
 use notify::{Config, Event as NotifyEvent, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -54,8 +56,7 @@ pub fn setup_daemon_watcher(
                                 "Hot-reload: watching Python operator '{}' at {:?}",
                                 op.id, path
                             );
-                            node_path_lookup
-                                .insert(path, (node_id.clone(), Some(op.id.clone())));
+                            node_path_lookup.insert(path, (node_id.clone(), Some(op.id.clone())));
                         }
                     }
                 }
@@ -64,8 +65,7 @@ pub fn setup_daemon_watcher(
     }
 
     // Optionally track the dataflow YAML path
-    let dataflow_path_canonical = dataflow_path
-        .and_then(|p| p.canonicalize().ok());
+    let dataflow_path_canonical = dataflow_path.and_then(|p| p.canonicalize().ok());
 
     let current_node_ids = std::sync::Arc::new(std::sync::RwLock::new(
         nodes.keys().cloned().collect::<BTreeSet<NodeId>>(),
@@ -146,11 +146,8 @@ pub fn setup_daemon_watcher(
 
                                             for change in changes {
                                                 let event = match change {
-                                                    DataflowChangeEvent::NodeAdded {
-                                                        node_id,
-                                                    } => {
-                                                        if let Some(node) =
-                                                            new_nodes.get(&node_id)
+                                                    DataflowChangeEvent::NodeAdded { node_id } => {
+                                                        if let Some(node) = new_nodes.get(&node_id)
                                                         {
                                                             DaemonHotReloadEvent::SpawnNode {
                                                                 node_id,
@@ -164,9 +161,7 @@ pub fn setup_daemon_watcher(
                                                     }
                                                     DataflowChangeEvent::NodeRemoved {
                                                         node_id,
-                                                    } => {
-                                                        DaemonHotReloadEvent::StopNode { node_id }
-                                                    }
+                                                    } => DaemonHotReloadEvent::StopNode { node_id },
                                                     DataflowChangeEvent::NodeChanged {
                                                         node_id,
                                                         new_node,
@@ -191,10 +186,7 @@ pub fn setup_daemon_watcher(
                                 }
                             }
                             Err(e) => {
-                                tracing::warn!(
-                                    "Hot-reload: failed to read dataflow YAML: {}",
-                                    e
-                                );
+                                tracing::warn!("Hot-reload: failed to read dataflow YAML: {}", e);
                             }
                         }
                     }
@@ -243,9 +235,16 @@ pub fn setup_daemon_watcher(
 }
 
 enum DataflowChangeEvent {
-    NodeAdded { node_id: NodeId },
-    NodeRemoved { node_id: NodeId },
-    NodeChanged { node_id: NodeId, new_node: ResolvedNode },
+    NodeAdded {
+        node_id: NodeId,
+    },
+    NodeRemoved {
+        node_id: NodeId,
+    },
+    NodeChanged {
+        node_id: NodeId,
+        new_node: ResolvedNode,
+    },
 }
 
 fn detect_changes(

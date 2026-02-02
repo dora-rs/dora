@@ -483,9 +483,7 @@ impl EventStream {
     fn convert_event_item(item: EventItem) -> Event {
         match item {
             EventItem::NodeEvent { event, ack_channel } => match event {
-                NodeEvent::Stop { reason } => {
-                    Event::Stop(reason.unwrap_or(StopReason::Manual))
-                }
+                NodeEvent::Stop { reason } => Event::Stop(reason.unwrap_or(StopReason::Manual)),
                 NodeEvent::Reload { operator_id } => Event::Reload { operator_id },
                 NodeEvent::InputClosed { id } => Event::InputClosed { id },
                 NodeEvent::Input { id, metadata, data } => {

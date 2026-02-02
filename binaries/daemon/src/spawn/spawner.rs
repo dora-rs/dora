@@ -22,10 +22,7 @@ use eyre::{ContextCompat, WrapErr, bail};
 use std::{
     future::Future,
     path::PathBuf,
-    sync::{
-        Arc,
-        atomic::AtomicBool,
-    },
+    sync::{Arc, atomic::AtomicBool},
 };
 use tokio::sync::mpsc;
 

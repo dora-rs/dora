@@ -4,17 +4,17 @@ use dora_message::cli_to_coordinator::ControlRequest;
 use dora_message::common::LogMessage;
 use dora_message::coordinator_to_cli::ControlRequestReply;
 use eyre::Context;
+use std::path::PathBuf;
 use std::{
     net::{SocketAddr, TcpStream},
     sync::mpsc,
     time::Duration,
 };
-use std::path::PathBuf;
 use tracing::{error, info};
 use uuid::Uuid;
 
 use crate::common::handle_dataflow_result;
-use crate::hot_reload::{setup_yaml_watcher, DataflowChangeEvent};
+use crate::hot_reload::{DataflowChangeEvent, setup_yaml_watcher};
 use crate::output::print_log_message;
 
 pub fn attach_dataflow(
@@ -43,25 +43,22 @@ pub fn attach_dataflow(
     // Binary file watching is handled by the daemon directly.
     let watcher_tx = tx.clone();
     let _watcher = if hot_reload {
-        let (watcher, yaml_change_rx) = setup_yaml_watcher(
-            &dataflow_path,
-            &nodes,
-            &working_dir,
-        )
-        .context("failed to setup YAML file watcher")?;
+        let (watcher, yaml_change_rx) = setup_yaml_watcher(&dataflow_path, &nodes, &working_dir)
+            .context("failed to setup YAML file watcher")?;
 
         // Spawn a thread to forward YAML change events to the main channel
         std::thread::spawn(move || {
             while let Ok(event) = yaml_change_rx.recv() {
-                let DataflowChangeEvent { changes, new_descriptor, new_nodes } = event;
+                let DataflowChangeEvent {
+                    changes,
+                    new_descriptor,
+                    new_nodes,
+                } = event;
                 for change in changes {
                     let control_request = match change {
                         crate::hot_reload::NodeChange::NodeAdded { node_id } => {
                             if let Some(node) = new_nodes.get(&node_id) {
-                                info!(
-                                    "Hot-reload: spawning new node '{}' from YAML",
-                                    node_id
-                                );
+                                info!("Hot-reload: spawning new node '{}' from YAML", node_id);
                                 ControlRequest::SpawnNode {
                                     dataflow_id,
                                     node_id,
@@ -77,20 +74,14 @@ pub fn attach_dataflow(
                             }
                         }
                         crate::hot_reload::NodeChange::NodeRemoved { node_id } => {
-                            info!(
-                                "Hot-reload: stopping removed node '{}' from YAML",
-                                node_id
-                            );
+                            info!("Hot-reload: stopping removed node '{}' from YAML", node_id);
                             ControlRequest::StopNode {
                                 dataflow_id,
                                 node_id,
                             }
                         }
                         crate::hot_reload::NodeChange::NodeChanged { node_id, new_node } => {
-                            info!(
-                                "Hot-reload: restarting node '{}' with new config",
-                                node_id
-                            );
+                            info!("Hot-reload: restarting node '{}' with new config", node_id);
                             ControlRequest::RestartNode {
                                 dataflow_id,
                                 node_id,
@@ -99,7 +90,10 @@ pub fn attach_dataflow(
                             }
                         }
                     };
-                    if watcher_tx.send(AttachEvent::Control(control_request)).is_err() {
+                    if watcher_tx
+                        .send(AttachEvent::Control(control_request))
+                        .is_err()
+                    {
                         break;
                     }
                 }
@@ -194,13 +188,22 @@ pub fn attach_dataflow(
             ControlRequestReply::DataflowReloaded { uuid } => {
                 info!("dataflow {uuid} reloaded")
             }
-            ControlRequestReply::NodeSpawned { dataflow_id, node_id } => {
+            ControlRequestReply::NodeSpawned {
+                dataflow_id,
+                node_id,
+            } => {
                 info!("node {node_id} spawned in dataflow {dataflow_id}")
             }
-            ControlRequestReply::NodeStopped { dataflow_id, node_id } => {
+            ControlRequestReply::NodeStopped {
+                dataflow_id,
+                node_id,
+            } => {
                 info!("node {node_id} stopped in dataflow {dataflow_id}")
             }
-            ControlRequestReply::NodeRestarted { dataflow_id, node_id } => {
+            ControlRequestReply::NodeRestarted {
+                dataflow_id,
+                node_id,
+            } => {
                 info!("node {node_id} restarted with new config in dataflow {dataflow_id}")
             }
             other => error!("Received unexpected Coordinator Reply: {:#?}", other),

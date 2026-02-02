@@ -64,4 +64,3 @@ pub enum Event {
     /// It's a good idea to output or log this error for debugging.
     Error(String),
 }
-

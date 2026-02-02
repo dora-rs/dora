@@ -60,8 +60,13 @@ impl Executable for Start {
         default_tracing()?;
         let coordinator_socket = (self.coordinator_addr, self.coordinator_port).into();
 
-        let (dataflow, dataflow_descriptor, mut session, dataflow_id) =
-            start_dataflow(self.dataflow, self.name, coordinator_socket, self.uv, self.hot_reload)?;
+        let (dataflow, dataflow_descriptor, mut session, dataflow_id) = start_dataflow(
+            self.dataflow,
+            self.name,
+            coordinator_socket,
+            self.uv,
+            self.hot_reload,
+        )?;
 
         let attach = match (self.attach, self.detach) {
             (true, true) => eyre::bail!("both `--attach` and `--detach` are given"),

@@ -774,7 +774,8 @@ impl Daemon {
                     dora_core::config::RemoteCommunicationConfig::Tcp => {}
                 }
 
-                let base_working_dir = self.base_working_dir(local_working_dir, session_id.clone())?;
+                let base_working_dir =
+                    self.base_working_dir(local_working_dir, session_id.clone())?;
 
                 let result = self
                     .spawn_dataflow(
@@ -934,7 +935,9 @@ impl Daemon {
                 dataflow_id,
                 node_id,
             } => {
-                let result = self.stop_single_node(dataflow_id, node_id.clone(), false).await;
+                let result = self
+                    .stop_single_node(dataflow_id, node_id.clone(), false)
+                    .await;
                 let reply = DaemonCoordinatorReply::StopNodeResult(
                     result.map_err(|err| format!("{err:?}")),
                 );
@@ -968,14 +971,15 @@ impl Daemon {
                     dataflow_id
                 );
                 let result = self
-                    .restart_node_with_new_config(dataflow_id, node_id.clone(), new_node, dataflow_descriptor)
+                    .restart_node_with_new_config(
+                        dataflow_id,
+                        node_id.clone(),
+                        new_node,
+                        dataflow_descriptor,
+                    )
                     .await;
                 if let Err(ref e) = result {
-                    tracing::error!(
-                        "Hot-reload: failed to restart node `{}`: {:?}",
-                        node_id,
-                        e
-                    );
+                    tracing::error!("Hot-reload: failed to restart node `{}`: {:?}", node_id, e);
                 }
                 let reply = DaemonCoordinatorReply::RestartNodeResult(
                     result.map_err(|err| format!("{err:?}")),
@@ -1421,8 +1425,7 @@ impl Daemon {
 
         // Set up daemon-side hot-reload file watching
         if hot_reload {
-            let (reload_tx, mut reload_rx) =
-                tokio::sync::mpsc::channel::<DaemonHotReloadEvent>(10);
+            let (reload_tx, mut reload_rx) = tokio::sync::mpsc::channel::<DaemonHotReloadEvent>(10);
             let watcher = hot_reload::setup_daemon_watcher(
                 dataflow_path.as_deref(),
                 &nodes,
@@ -2089,7 +2092,11 @@ impl Daemon {
             format!("Stop node failed: no running dataflow with ID `{dataflow_id}`")
         })?;
 
-        tracing::info!("Hot-reload: stopping node `{}` in dataflow `{}`", node_id, dataflow_id);
+        tracing::info!(
+            "Hot-reload: stopping node `{}` in dataflow `{}`",
+            node_id,
+            dataflow_id
+        );
 
         let stop_reason = if preserve_output_mappings {
             StopReason::HotReload
@@ -2099,7 +2106,9 @@ impl Daemon {
         if let Some(channel) = dataflow.subscribe_channels.get(&node_id) {
             let _ = send_with_timestamp(
                 channel,
-                NodeEvent::Stop { reason: Some(stop_reason) },
+                NodeEvent::Stop {
+                    reason: Some(stop_reason),
+                },
                 &self.clock,
             );
         }
@@ -2117,7 +2126,9 @@ impl Daemon {
             receivers.retain(|(receiver_id, _)| receiver_id != &node_id);
         }
         if !preserve_output_mappings {
-            dataflow.mappings.retain(|output_id, _| output_id.0 != node_id);
+            dataflow
+                .mappings
+                .retain(|output_id, _| output_id.0 != node_id);
         }
 
         dataflow.open_inputs.remove(&node_id);
@@ -2212,7 +2223,13 @@ impl Daemon {
             .clone();
 
         let task = spawner
-            .spawn_node(node, working_dir, node_stderr_most_recent, None, &mut logger)
+            .spawn_node(
+                node,
+                working_dir,
+                node_stderr_most_recent,
+                None,
+                &mut logger,
+            )
             .await
             .with_context(|| format!("failed to spawn node `{}`", node_id))?;
 
@@ -2266,19 +2283,29 @@ impl Daemon {
                 .collect()
         };
 
-        self.stop_single_node(dataflow_id, node_id.clone(), true).await?;
+        self.stop_single_node(dataflow_id, node_id.clone(), true)
+            .await?;
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-        self.dynamic_spawn_node(dataflow_id, node_id.clone(), new_node, new_dataflow_descriptor)
-            .await
-            .wrap_err_with(|| format!("Failed to spawn new node `{node_id}` during restart"))?;
+        self.dynamic_spawn_node(
+            dataflow_id,
+            node_id.clone(),
+            new_node,
+            new_dataflow_descriptor,
+        )
+        .await
+        .wrap_err_with(|| format!("Failed to spawn new node `{node_id}` during restart"))?;
 
         // Restore output mappings so downstream nodes keep receiving from this node
         let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
             format!("Restart failed: no running dataflow with ID `{dataflow_id}`")
         })?;
         for (output_id, receivers) in output_mappings {
-            dataflow.mappings.entry(output_id).or_default().extend(receivers);
+            dataflow
+                .mappings
+                .entry(output_id)
+                .or_default()
+                .extend(receivers);
         }
 
         tracing::info!("Hot-reload: node `{}` restarted with new config", node_id);

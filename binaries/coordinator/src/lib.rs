@@ -594,13 +594,10 @@ async fn start_inner(
                                 .await?;
                                 Result::<_, eyre::Report>::Ok(())
                             };
-                            let reply =
-                                spawn
-                                    .await
-                                    .map(|()| ControlRequestReply::NodeSpawned {
-                                        dataflow_id,
-                                        node_id,
-                                    });
+                            let reply = spawn.await.map(|()| ControlRequestReply::NodeSpawned {
+                                dataflow_id,
+                                node_id,
+                            });
                             let _ = reply_sender.send(reply);
                         }
                         ControlRequest::StopNode {
@@ -618,13 +615,10 @@ async fn start_inner(
                                 .await?;
                                 Result::<_, eyre::Report>::Ok(())
                             };
-                            let reply =
-                                stop
-                                    .await
-                                    .map(|()| ControlRequestReply::NodeStopped {
-                                        dataflow_id,
-                                        node_id,
-                                    });
+                            let reply = stop.await.map(|()| ControlRequestReply::NodeStopped {
+                                dataflow_id,
+                                node_id,
+                            });
                             let _ = reply_sender.send(reply);
                         }
                         ControlRequest::RestartNode {
@@ -647,12 +641,10 @@ async fn start_inner(
                                 Result::<_, eyre::Report>::Ok(())
                             };
                             let reply =
-                                restart
-                                    .await
-                                    .map(|()| ControlRequestReply::NodeRestarted {
-                                        dataflow_id,
-                                        node_id,
-                                    });
+                                restart.await.map(|()| ControlRequestReply::NodeRestarted {
+                                    dataflow_id,
+                                    node_id,
+                                });
                             let _ = reply_sender.send(reply);
                         }
                         ControlRequest::Stop {
@@ -1423,9 +1415,7 @@ async fn spawn_node_dynamically(
             other => bail!("unexpected reply after sending dynamic spawn: {other:?}"),
         }
     }
-    tracing::info!(
-        "successfully spawned node `{node_id}` dynamically in dataflow `{dataflow_id}`"
-    );
+    tracing::info!("successfully spawned node `{node_id}` dynamically in dataflow `{dataflow_id}`");
 
     Ok(())
 }

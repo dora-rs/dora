@@ -155,6 +155,7 @@ async fn start_dataflow(
                 name: None,
                 uv: false,
                 write_events_to: None,
+                hot_reload: false,
             },
             reply_sender,
         }))
