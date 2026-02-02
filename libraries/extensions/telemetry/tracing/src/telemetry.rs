@@ -39,15 +39,19 @@ impl Extractor for MetadataMap<'_> {
 /// docker run -d -p 4317:4317 -p 4318:4318 -p 16686:16686 jaegertracing/all-in-one:latest
 /// ```
 ///
-pub fn init_tracing(_name: &str, endpoint: &str) -> sdktrace::SdkTracerProvider {
+pub fn init_tracing(name: &str, endpoint: &str) -> sdktrace::SdkTracerProvider {
     let exporter = opentelemetry_otlp::SpanExporter::builder()
         .with_tonic()
         .with_endpoint(endpoint)
         .build()
         .unwrap();
 
+    let resource = opentelemetry_sdk::Resource::builder()
+        .with_service_name(name.to_string())
+        .build();
+
     SdkTracerProvider::builder()
-        // Customize sampling strategy
+        .with_resource(resource)
         .with_batch_exporter(exporter)
         .build()
 }
