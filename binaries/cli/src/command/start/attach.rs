@@ -4,7 +4,6 @@ use dora_message::cli_to_coordinator::ControlRequest;
 use dora_message::common::LogMessage;
 use dora_message::coordinator_to_cli::ControlRequestReply;
 use eyre::Context;
-use std::path::PathBuf;
 use std::{
     net::{SocketAddr, TcpStream},
     sync::mpsc,
@@ -14,15 +13,12 @@ use tracing::{error, info};
 use uuid::Uuid;
 
 use crate::common::handle_dataflow_result;
-use crate::hot_reload::{DataflowChangeEvent, setup_yaml_watcher};
 use crate::output::print_log_message;
 
 pub fn attach_dataflow(
     dataflow: Descriptor,
-    dataflow_path: PathBuf,
     dataflow_id: Uuid,
     session: &mut TcpRequestReplyConnection,
-    hot_reload: bool,
     coordinator_socket: SocketAddr,
     log_level: log::LevelFilter,
 ) -> Result<(), eyre::ErrReport> {
@@ -31,79 +27,6 @@ pub fn attach_dataflow(
     let nodes = dataflow.resolve_aliases_and_set_defaults()?;
 
     let print_daemon_name = nodes.values().any(|n| n.deploy.is_some());
-
-    let working_dir = dataflow_path
-        .canonicalize()
-        .context("failed to canonicalize dataflow path")?
-        .parent()
-        .ok_or_else(|| eyre::eyre!("canonicalized dataflow path has no parent"))?
-        .to_owned();
-
-    // Setup YAML-only file watcher if hot-reload option is set.
-    // Binary file watching is handled by the daemon directly.
-    let watcher_tx = tx.clone();
-    let _watcher = if hot_reload {
-        let (watcher, yaml_change_rx) = setup_yaml_watcher(&dataflow_path, &nodes, &working_dir)
-            .context("failed to setup YAML file watcher")?;
-
-        // Spawn a thread to forward YAML change events to the main channel
-        std::thread::spawn(move || {
-            while let Ok(event) = yaml_change_rx.recv() {
-                let DataflowChangeEvent {
-                    changes,
-                    new_descriptor,
-                    new_nodes,
-                } = event;
-                for change in changes {
-                    let control_request = match change {
-                        crate::hot_reload::NodeChange::NodeAdded { node_id } => {
-                            if let Some(node) = new_nodes.get(&node_id) {
-                                info!("Hot-reload: spawning new node '{}' from YAML", node_id);
-                                ControlRequest::SpawnNode {
-                                    dataflow_id,
-                                    node_id,
-                                    node: node.clone(),
-                                    dataflow_descriptor: new_descriptor.clone(),
-                                }
-                            } else {
-                                tracing::warn!(
-                                    "Hot-reload: node '{}' added but not found in resolved nodes",
-                                    node_id
-                                );
-                                continue;
-                            }
-                        }
-                        crate::hot_reload::NodeChange::NodeRemoved { node_id } => {
-                            info!("Hot-reload: stopping removed node '{}' from YAML", node_id);
-                            ControlRequest::StopNode {
-                                dataflow_id,
-                                node_id,
-                            }
-                        }
-                        crate::hot_reload::NodeChange::NodeChanged { node_id, new_node } => {
-                            info!("Hot-reload: restarting node '{}' with new config", node_id);
-                            ControlRequest::RestartNode {
-                                dataflow_id,
-                                node_id,
-                                new_node,
-                                dataflow_descriptor: new_descriptor.clone(),
-                            }
-                        }
-                    };
-                    if watcher_tx
-                        .send(AttachEvent::Control(control_request))
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-            }
-        });
-
-        Some(watcher)
-    } else {
-        None
-    };
 
     // Setup Ctrlc Watcher to stop dataflow after ctrlc
     let ctrlc_tx = tx.clone();
@@ -187,24 +110,6 @@ pub fn attach_dataflow(
             }
             ControlRequestReply::DataflowReloaded { uuid } => {
                 info!("dataflow {uuid} reloaded")
-            }
-            ControlRequestReply::NodeSpawned {
-                dataflow_id,
-                node_id,
-            } => {
-                info!("node {node_id} spawned in dataflow {dataflow_id}")
-            }
-            ControlRequestReply::NodeStopped {
-                dataflow_id,
-                node_id,
-            } => {
-                info!("node {node_id} stopped in dataflow {dataflow_id}")
-            }
-            ControlRequestReply::NodeRestarted {
-                dataflow_id,
-                node_id,
-            } => {
-                info!("node {node_id} restarted with new config in dataflow {dataflow_id}")
             }
             other => error!("Received unexpected Coordinator Reply: {:#?}", other),
         };

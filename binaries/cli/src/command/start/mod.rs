@@ -60,7 +60,7 @@ impl Executable for Start {
         default_tracing()?;
         let coordinator_socket = (self.coordinator_addr, self.coordinator_port).into();
 
-        let (dataflow, dataflow_descriptor, mut session, dataflow_id) = start_dataflow(
+        let (_dataflow, dataflow_descriptor, mut session, dataflow_id) = start_dataflow(
             self.dataflow,
             self.name,
             coordinator_socket,
@@ -87,10 +87,8 @@ impl Executable for Start {
 
             attach_dataflow(
                 dataflow_descriptor,
-                dataflow,
                 dataflow_id,
                 &mut *session,
-                self.hot_reload,
                 coordinator_socket,
                 log_level,
             )
