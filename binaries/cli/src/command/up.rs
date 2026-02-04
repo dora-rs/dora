@@ -2,7 +2,10 @@ use super::system::status::daemon_running;
 use super::{Executable, default_tracing};
 use crate::{LOCALHOST, common::connect_to_coordinator};
 use dora_core::topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT;
-use dora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply};
+use dora_message::{
+    cli_to_coordinator::{ControlRequest, DestroyRequest},
+    coordinator_to_cli::ControlRequestReply,
+};
 use eyre::{Context, ContextCompat, bail};
 use std::path::PathBuf;
 use std::{fs, net::SocketAddr, path::Path, process::Command, time::Duration};
@@ -75,7 +78,7 @@ pub(crate) fn destroy(
         Ok(mut session) => {
             // send destroy command to dora-coordinator
             let reply_raw = session
-                .request(&serde_json::to_vec(&ControlRequest::Destroy).unwrap())
+                .request(&serde_json::to_vec(&ControlRequest::Destroy(DestroyRequest)).unwrap())
                 .wrap_err("failed to send destroy message")?;
             let result: ControlRequestReply =
                 serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;

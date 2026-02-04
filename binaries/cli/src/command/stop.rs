@@ -2,7 +2,7 @@ use super::{Executable, default_tracing};
 use crate::common::{connect_to_coordinator, handle_dataflow_result, query_running_dataflows};
 use communication_layer_request_reply::TcpRequestReplyConnection;
 use dora_core::topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST};
-use dora_message::cli_to_coordinator::ControlRequest;
+use dora_message::cli_to_coordinator::{ControlRequest, StopByNameRequest, StopRequest};
 use dora_message::coordinator_to_cli::ControlRequestReply;
 use duration_str::parse;
 use eyre::{Context, bail};
@@ -88,11 +88,11 @@ fn stop_dataflow(
 ) -> Result<(), eyre::ErrReport> {
     let reply_raw = session
         .request(
-            &serde_json::to_vec(&ControlRequest::Stop {
+            &serde_json::to_vec(&ControlRequest::Stop(StopRequest {
                 dataflow_uuid: uuid,
                 grace_duration,
                 force,
-            })
+            }))
             .unwrap(),
         )
         .wrap_err("failed to send dataflow stop message")?;
@@ -115,11 +115,11 @@ fn stop_dataflow_by_name(
 ) -> Result<(), eyre::ErrReport> {
     let reply_raw = session
         .request(
-            &serde_json::to_vec(&ControlRequest::StopByName {
+            &serde_json::to_vec(&ControlRequest::StopByName(StopByNameRequest {
                 name,
                 grace_duration,
                 force,
-            })
+            }))
             .unwrap(),
         )
         .wrap_err("failed to send dataflow stop_by_name message")?;

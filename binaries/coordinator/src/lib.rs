@@ -11,7 +11,12 @@ use dora_core::{
 };
 use dora_message::{
     BuildId, DataflowId, SessionId,
-    cli_to_coordinator::{BuildRequest, ControlRequest, WaitForBuild},
+    cli_to_coordinator::{
+        BuildLogSubscribe, CheckRequest, CliAndDefaultDaemonOnSameMachineRequest,
+        ConnectedMachinesRequest, ControlRequest, DaemonConnectedRequest, DestroyRequest,
+        GetNodeInfoRequest, InfoRequest, ListRequest, LogSubscribe, LogsRequest, ReloadRequest,
+        StartRequest, StopByNameRequest, StopRequest, WaitForBuild, WaitForSpawn,
+    },
     common::{DaemonId, GitSource},
     coordinator_to_cli::{
         ControlRequestReply, DataflowBuildFinished, DataflowIdAndName, DataflowList,
@@ -192,6 +197,10 @@ impl DaemonConnections {
 struct Coordinator {
     clock: Arc<HLC>,
     running_builds: HashMap<BuildId, RunningBuild>,
+    finished_builds: HashMap<BuildId, CachedResult>,
+    running_dataflows: HashMap<DataflowId, RunningDataflow>,
+    dataflow_results: HashMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>>,
+    archived_dataflows: HashMap<DataflowId, ArchivedDataflow>,
     daemon_connections: DaemonConnections,
 }
 
@@ -225,6 +234,7 @@ impl Coordinator {
         let mut dataflow_results: HashMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
             HashMap::new();
         let mut archived_dataflows: HashMap<DataflowId, ArchivedDataflow> = HashMap::new();
+        let mut daemon_connections = DaemonConnections::default();
 
         while let Some(event) = events.next().await {
             // used below for measuring the event handling duration
@@ -442,9 +452,16 @@ impl Coordinator {
                     } => {
                         match request {
                             ControlRequest::Build(request) => {
-                                let reply = self.handle_request(request).await;
+                                let reply = self.handle_request(request.into_owned()).await;
+                                let reply = reply
+                                    .map(|r| ControlRequestReply::DataflowBuildTriggered {
+                                        build_id: r.build_id,
+                                    })
+                                    .map_err(|e| eyre!(e));
+                                let _ = reply_sender.send(reply);
                             }
-                            ControlRequest::WaitForBuild(WaitForBuild { build_id }) => {
+                            ControlRequest::WaitForBuild(request) => {
+                                let WaitForBuild { build_id } = request.as_ref();
                                 if let Some(build) = running_builds.get_mut(&build_id) {
                                     build.build_result.register(reply_sender);
                                 } else if let Some(result) = finished_builds.get_mut(&build_id) {
@@ -454,7 +471,7 @@ impl Coordinator {
                                         .send(Err(eyre!("unknown build id {build_id}")));
                                 }
                             }
-                            ControlRequest::Start {
+                            ControlRequest::Start(StartRequest {
                                 build_id,
                                 session_id,
                                 dataflow,
@@ -462,7 +479,7 @@ impl Coordinator {
                                 local_working_dir,
                                 uv,
                                 write_events_to,
-                            } => {
+                            }) => {
                                 let name = name.or_else(|| petname(2, "-"));
 
                                 let inner = async {
@@ -503,7 +520,7 @@ impl Coordinator {
                                     }
                                 }
                             }
-                            ControlRequest::WaitForSpawn { dataflow_id } => {
+                            ControlRequest::WaitForSpawn(WaitForSpawn { dataflow_id }) => {
                                 if let Some(dataflow) = running_dataflows.get_mut(&dataflow_id) {
                                     dataflow.spawn_result.register(reply_sender);
                                 } else {
@@ -511,7 +528,7 @@ impl Coordinator {
                                         .send(Err(eyre!("unknown dataflow {dataflow_id}")));
                                 }
                             }
-                            ControlRequest::Check { dataflow_uuid } => {
+                            ControlRequest::Check(CheckRequest { dataflow_uuid }) => {
                                 let status = match &running_dataflows.get(&dataflow_uuid) {
                                     Some(_) => ControlRequestReply::DataflowSpawned {
                                         uuid: dataflow_uuid,
@@ -531,11 +548,11 @@ impl Coordinator {
                                 };
                                 let _ = reply_sender.send(Ok(status));
                             }
-                            ControlRequest::Reload {
+                            ControlRequest::Reload(ReloadRequest {
                                 dataflow_id,
                                 node_id,
                                 operator_id,
-                            } => {
+                            }) => {
                                 let reload = async {
                                     reload_dataflow(
                                         &running_dataflows,
@@ -556,11 +573,11 @@ impl Coordinator {
                                         });
                                 let _ = reply_sender.send(reply);
                             }
-                            ControlRequest::Stop {
+                            ControlRequest::Stop(StopRequest {
                                 dataflow_uuid,
                                 grace_duration,
                                 force,
-                            } => {
+                            }) => {
                                 if let Some(result) = dataflow_results.get(&dataflow_uuid) {
                                     let reply = ControlRequestReply::DataflowStopped {
                                         uuid: dataflow_uuid,
@@ -590,11 +607,11 @@ impl Coordinator {
                                     }
                                 }
                             }
-                            ControlRequest::StopByName {
+                            ControlRequest::StopByName(StopByNameRequest {
                                 name,
                                 grace_duration,
                                 force,
-                            } => {
+                            }) => {
                                 match resolve_name(name, &running_dataflows, &archived_dataflows) {
                                     Ok(dataflow_uuid) => {
                                         if let Some(result) = dataflow_results.get(&dataflow_uuid) {
@@ -635,12 +652,12 @@ impl Coordinator {
                                     }
                                 }
                             }
-                            ControlRequest::Logs {
+                            ControlRequest::Logs(LogsRequest {
                                 uuid,
                                 name,
                                 node,
                                 tail,
-                            } => {
+                            }) => {
                                 let dataflow_uuid = if let Some(uuid) = uuid {
                                     Ok(uuid)
                                 } else if let Some(name) = name {
@@ -669,7 +686,7 @@ impl Coordinator {
                                     }
                                 }
                             }
-                            ControlRequest::Info { dataflow_uuid } => {
+                            ControlRequest::Info(InfoRequest { dataflow_uuid }) => {
                                 if let Some(dataflow) = running_dataflows.get(&dataflow_uuid) {
                                     let _ =
                                         reply_sender.send(Ok(ControlRequestReply::DataflowInfo {
@@ -683,7 +700,7 @@ impl Coordinator {
                                     )));
                                 }
                             }
-                            ControlRequest::Destroy => {
+                            ControlRequest::Destroy(DestroyRequest) => {
                                 tracing::info!("Received destroy command");
 
                                 let reply = handle_destroy(
@@ -697,7 +714,7 @@ impl Coordinator {
                                 .map(|()| ControlRequestReply::DestroyOk);
                                 let _ = reply_sender.send(reply);
                             }
-                            ControlRequest::List => {
+                            ControlRequest::List(ListRequest) => {
                                 let mut dataflows: Vec<_> = running_dataflows.values().collect();
                                 dataflows.sort_by_key(|d| (&d.name, d.uuid));
 
@@ -727,28 +744,30 @@ impl Coordinator {
                                 )));
                                 let _ = reply_sender.send(reply);
                             }
-                            ControlRequest::DaemonConnected => {
+                            ControlRequest::DaemonConnected(DaemonConnectedRequest) => {
                                 let running = !self.daemon_connections.is_empty();
                                 let _ = reply_sender
                                     .send(Ok(ControlRequestReply::DaemonConnected(running)));
                             }
-                            ControlRequest::ConnectedMachines => {
+                            ControlRequest::ConnectedMachines(ConnectedMachinesRequest) => {
                                 let reply = Ok(ControlRequestReply::ConnectedDaemons(
                                     self.daemon_connections.keys().cloned().collect(),
                                 ));
                                 let _ = reply_sender.send(reply);
                             }
-                            ControlRequest::LogSubscribe { .. } => {
+                            ControlRequest::LogSubscribe(LogSubscribe { .. }) => {
                                 let _ = reply_sender.send(Err(eyre::eyre!(
                                     "LogSubscribe request should be handled separately"
                                 )));
                             }
-                            ControlRequest::BuildLogSubscribe { .. } => {
+                            ControlRequest::BuildLogSubscribe(BuildLogSubscribe { .. }) => {
                                 let _ = reply_sender.send(Err(eyre::eyre!(
                                     "BuildLogSubscribe request should be handled separately"
                                 )));
                             }
-                            ControlRequest::CliAndDefaultDaemonOnSameMachine => {
+                            ControlRequest::CliAndDefaultDaemonOnSameMachine(
+                                CliAndDefaultDaemonOnSameMachineRequest,
+                            ) => {
                                 let mut default_daemon_ip = None;
                                 if let Some(default_id) = self.daemon_connections.unnamed().next() {
                                     if let Some(connection) =
@@ -766,7 +785,7 @@ impl Coordinator {
                                     },
                                 ));
                             }
-                            ControlRequest::GetNodeInfo => {
+                            ControlRequest::GetNodeInfo(GetNodeInfoRequest) => {
                                 use dora_message::coordinator_to_cli::{NodeInfo, NodeMetricsInfo};
 
                                 let mut node_infos = Vec::new();

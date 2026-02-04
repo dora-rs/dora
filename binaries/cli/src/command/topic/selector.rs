@@ -9,7 +9,7 @@ use communication_layer_request_reply::TcpRequestReplyConnection;
 use dora_core::{config::InputMapping, descriptor::Descriptor};
 use dora_message::{
     DataflowId,
-    cli_to_coordinator::ControlRequest,
+    cli_to_coordinator::{ControlRequest, InfoRequest},
     coordinator_to_cli::ControlRequestReply,
     id::{DataId, NodeId},
 };
@@ -32,9 +32,9 @@ impl DataflowSelector {
             resolve_dataflow_identifier_interactive(&mut *session, self.dataflow.as_deref())?;
         let reply_raw = session
             .request(
-                &serde_json::to_vec(&ControlRequest::Info {
+                &serde_json::to_vec(&ControlRequest::Info(InfoRequest {
                     dataflow_uuid: dataflow_id,
-                })
+                }))
                 .unwrap(),
             )
             .wrap_err("failed to send message")?;

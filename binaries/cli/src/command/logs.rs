@@ -12,8 +12,10 @@ use clap::Args;
 use communication_layer_request_reply::{TcpConnection, TcpRequestReplyConnection};
 use dora_core::topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST};
 use dora_message::{
-    cli_to_coordinator::ControlRequest, common::LogMessage,
-    coordinator_to_cli::ControlRequestReply, id::NodeId,
+    cli_to_coordinator::{ControlRequest, LogSubscribe, LogsRequest},
+    common::LogMessage,
+    coordinator_to_cli::ControlRequestReply,
+    id::NodeId,
 };
 use eyre::{Context, Result, bail};
 use uuid::Uuid;
@@ -72,12 +74,12 @@ pub fn logs(
     let logs = {
         let reply_raw = session
             .request(
-                &serde_json::to_vec(&ControlRequest::Logs {
+                &serde_json::to_vec(&ControlRequest::Logs(LogsRequest {
                     uuid: Some(uuid),
                     name: None,
                     node: node.to_string(),
                     tail,
-                })
+                }))
                 .wrap_err("")?,
             )
             .wrap_err("failed to send Logs request message")?;
@@ -109,10 +111,10 @@ pub fn logs(
     };
     log_session
         .send(
-            &serde_json::to_vec(&ControlRequest::LogSubscribe {
+            &serde_json::to_vec(&ControlRequest::LogSubscribe(LogSubscribe {
                 dataflow_id: uuid,
                 level: log_level,
-            })
+            }))
             .wrap_err("failed to serialize message")?,
         )
         .wrap_err("failed to send log subscribe request to coordinator")?;

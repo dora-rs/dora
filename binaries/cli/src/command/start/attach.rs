@@ -1,6 +1,8 @@
 use communication_layer_request_reply::{TcpConnection, TcpRequestReplyConnection};
 use dora_core::descriptor::{CoreNodeKind, Descriptor, DescriptorExt, resolve_path};
-use dora_message::cli_to_coordinator::ControlRequest;
+use dora_message::cli_to_coordinator::{
+    CheckRequest, ControlRequest, LogSubscribe, ReloadRequest, StopRequest,
+};
 use dora_message::common::LogMessage;
 use dora_message::coordinator_to_cli::ControlRequestReply;
 use eyre::Context;
@@ -79,11 +81,11 @@ pub fn attach_dataflow(
                 for path in paths {
                     if let Some((dataflow_id, node_id, operator_id)) = node_path_lookup.get(&path) {
                         watcher_tx
-                            .send(AttachEvent::Control(ControlRequest::Reload {
+                            .send(AttachEvent::Control(ControlRequest::Reload(ReloadRequest {
                                 dataflow_id: *dataflow_id,
                                 node_id: node_id.clone(),
                                 operator_id: operator_id.clone(),
-                            }))
+                            })))
                             .context("Could not send reload request to the cli loop")
                             .unwrap();
                     }
@@ -111,20 +113,20 @@ pub fn attach_dataflow(
     ctrlc::set_handler(move || {
         if ctrlc_sent {
             ctrlc_tx
-                .send(AttachEvent::Control(ControlRequest::Stop {
+                .send(AttachEvent::Control(ControlRequest::Stop(StopRequest {
                     dataflow_uuid: dataflow_id,
                     grace_duration: None,
                     force: true,
-                }))
+                })))
                 .ok();
             std::process::abort();
         } else {
             if ctrlc_tx
-                .send(AttachEvent::Control(ControlRequest::Stop {
+                .send(AttachEvent::Control(ControlRequest::Stop(StopRequest {
                     dataflow_uuid: dataflow_id,
                     grace_duration: None,
                     force: false,
-                }))
+                })))
                 .is_err()
             {
                 // bail!("failed to report ctrl-c event to dora-daemon");
@@ -141,10 +143,10 @@ pub fn attach_dataflow(
     };
     log_session
         .send(
-            &serde_json::to_vec(&ControlRequest::LogSubscribe {
+            &serde_json::to_vec(&ControlRequest::LogSubscribe(LogSubscribe {
                 dataflow_id,
                 level: log_level,
-            })
+            }))
             .wrap_err("failed to serialize message")?,
         )
         .wrap_err("failed to send log subscribe request to coordinator")?;
@@ -160,9 +162,9 @@ pub fn attach_dataflow(
 
     loop {
         let control_request = match rx.recv_timeout(Duration::from_secs(1)) {
-            Err(_err) => ControlRequest::Check {
+            Err(_err) => ControlRequest::Check(CheckRequest {
                 dataflow_uuid: dataflow_id,
-            },
+            }),
             Ok(AttachEvent::Control(control_request)) => control_request,
             Ok(AttachEvent::Log(Ok(log_message))) => {
                 print_log_message(log_message, false, print_daemon_name);

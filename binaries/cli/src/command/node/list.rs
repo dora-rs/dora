@@ -12,7 +12,7 @@ use crate::{
 };
 use communication_layer_request_reply::TcpRequestReplyConnection;
 use dora_message::{
-    cli_to_coordinator::ControlRequest,
+    cli_to_coordinator::{ControlRequest, GetNodeInfoRequest},
     coordinator_to_cli::{ControlRequestReply, NodeInfo},
 };
 use eyre::{Context, bail};
@@ -71,7 +71,7 @@ fn list(
 ) -> eyre::Result<()> {
     // Request node information from coordinator
     let reply_raw = session
-        .request(&serde_json::to_vec(&ControlRequest::GetNodeInfo).unwrap())
+        .request(&serde_json::to_vec(&ControlRequest::GetNodeInfo(GetNodeInfoRequest)).unwrap())
         .wrap_err("failed to send GetNodeInfo request")?;
 
     let reply: ControlRequestReply =

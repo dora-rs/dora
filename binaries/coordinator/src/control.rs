@@ -3,7 +3,9 @@ use crate::{
     tcp_utils::{tcp_receive, tcp_send},
 };
 use dora_message::{
-    BuildId, cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply,
+    BuildId,
+    cli_to_coordinator::{BuildLogSubscribe, ControlRequest, LogSubscribe},
+    coordinator_to_cli::ControlRequestReply,
 };
 use eyre::{Context, eyre};
 use futures::{
@@ -106,7 +108,8 @@ async fn handle_requests(
         let request =
             serde_json::from_slice(&raw).wrap_err("failed to deserialize incoming message");
 
-        if let Ok(ControlRequest::LogSubscribe { dataflow_id, level }) = request {
+        if let Ok(ControlRequest::LogSubscribe(request)) = request {
+            let LogSubscribe { dataflow_id, level } = request.into_owned();
             let _ = tx
                 .send(ControlEvent::LogSubscribe {
                     dataflow_id,
@@ -117,7 +120,8 @@ async fn handle_requests(
             break;
         }
 
-        if let Ok(ControlRequest::BuildLogSubscribe { build_id, level }) = request {
+        if let Ok(ControlRequest::BuildLogSubscribe(request)) = request {
+            let BuildLogSubscribe { build_id, level } = request.into_owned();
             let _ = tx
                 .send(ControlEvent::BuildLogSubscribe {
                     build_id,
@@ -171,7 +175,7 @@ async fn handle_requests(
 }
 
 async fn handle_request(
-    request: ControlRequest,
+    request: ControlRequest<'static>,
     tx: &mpsc::Sender<ControlEvent>,
 ) -> eyre::Result<ControlRequestReply> {
     let (reply_tx, reply_rx) = oneshot::channel();
@@ -192,7 +196,7 @@ async fn handle_request(
 #[derive(Debug)]
 pub enum ControlEvent {
     IncomingRequest {
-        request: ControlRequest,
+        request: ControlRequest<'static>,
         reply_sender: oneshot::Sender<eyre::Result<ControlRequestReply>>,
     },
     LogSubscribe {

@@ -10,7 +10,7 @@ use clap::Args;
 use communication_layer_request_reply::TcpRequestReplyConnection;
 use dora_core::topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT;
 use dora_message::{
-    cli_to_coordinator::ControlRequest,
+    cli_to_coordinator::{ControlRequest, GetNodeInfoRequest},
     coordinator_to_cli::{ControlRequestReply, DataflowStatus},
 };
 use eyre::{Context, bail, eyre};
@@ -87,7 +87,7 @@ fn list(
 
     // Get node information
     let node_info_reply = session
-        .request(&serde_json::to_vec(&ControlRequest::GetNodeInfo).unwrap())
+        .request(&serde_json::to_vec(&ControlRequest::GetNodeInfo(GetNodeInfoRequest)).unwrap())
         .wrap_err("failed to send GetNodeInfo request")?;
 
     let reply: ControlRequestReply =

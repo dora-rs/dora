@@ -6,7 +6,7 @@ use dora_core::{
 };
 use dora_download::download_file;
 use dora_message::{
-    cli_to_coordinator::ControlRequest,
+    cli_to_coordinator::{CliAndDefaultDaemonOnSameMachineRequest, ControlRequest, ListRequest},
     coordinator_to_cli::{ControlRequestReply, DataflowList, DataflowResult},
 };
 use eyre::{Context, ContextCompat, bail};
@@ -40,7 +40,7 @@ pub(crate) fn query_running_dataflows(
     session: &mut TcpRequestReplyConnection,
 ) -> eyre::Result<DataflowList> {
     let reply_raw = session
-        .request(&serde_json::to_vec(&ControlRequest::List).unwrap())
+        .request(&serde_json::to_vec(&ControlRequest::List(ListRequest)).unwrap())
         .wrap_err("failed to send list message")?;
     let reply: ControlRequestReply =
         serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
@@ -149,7 +149,12 @@ pub(crate) fn cli_and_daemon_on_same_machine(
     session: &mut TcpRequestReplyConnection,
 ) -> eyre::Result<bool> {
     let reply_raw = session
-        .request(&serde_json::to_vec(&ControlRequest::CliAndDefaultDaemonOnSameMachine).unwrap())
+        .request(
+            &serde_json::to_vec(&ControlRequest::CliAndDefaultDaemonOnSameMachine(
+                CliAndDefaultDaemonOnSameMachineRequest,
+            ))
+            .unwrap(),
+        )
         .wrap_err("failed to send start dataflow message")?;
 
     let result: ControlRequestReply =

@@ -5,10 +5,10 @@ use dora_core::descriptor::Descriptor;
 use dora_message::{
     BuildId,
     cli_to_coordinator::{
-        BuildLogSubscribe, BuildRequest, ControlRequest, DataflowBuildTriggered, WaitForBuild,
+        BuildLogSubscribe, BuildRequest, ControlRequest, DataflowBuildFinished,
+        DataflowBuildTriggered, WaitForBuild,
     },
     common::{GitSource, LogMessage},
-    coordinator_to_cli::{ControlRequestReply, DataflowBuildFinished},
     id::NodeId,
 };
 use eyre::{Context, bail};
@@ -96,7 +96,7 @@ pub fn wait_until_dataflow_built(
         .wrap_err("failed to send WaitForBuild message")?;
 
     match reply {
-        Ok(DataflowBuildFinished(DataflowBuildFinished { build_id, result })) => match result {
+        Ok(DataflowBuildFinished { build_id, result }) => match result {
             Ok(()) => {
                 eprintln!("dataflow build finished successfully");
                 Ok(build_id)
@@ -104,6 +104,5 @@ pub fn wait_until_dataflow_built(
             Err(err) => bail!("{err}"),
         },
         Err(err) => bail!("{err}"),
-        other => bail!("unexpected start dataflow reply: {other:?}"),
     }
 }
