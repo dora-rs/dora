@@ -75,3 +75,56 @@ pub trait RequestReplyConnection: Send + Sync {
 
     fn request(&mut self, request: &Self::RequestData) -> Result<Self::ReplyData, Self::Error>;
 }
+
+pub trait TypedRequestReplyConnection {
+    type RequestEnum;
+    type Error;
+
+    fn request<Req>(&mut self, request: &Req) -> Result<Req::Response, Self::Error>
+    where
+        Req: Request,
+        for<'a> Self::RequestEnum: From<&'a Req>,
+    {
+        self.enum_request(request.into())
+    }
+
+    fn enum_request<Res>(&mut self, request: Self::RequestEnum) -> Result<Res, Self::Error>;
+}
+
+pub trait FooTypedRequestReplyConnection: Send + Sync {
+    type RequestData: Request;
+    type RequestWrapper: for<'a> From<&'a Self::RequestData>
+        + serde::Serialize
+        + serde::de::DeserializeOwned;
+    type Error;
+
+    fn request(
+        &mut self,
+        request: &Self::RequestData,
+    ) -> Result<<Self::RequestData as Request>::Response, Self::Error> {
+        let wrapped: Self::RequestWrapper = request.into();
+        self.request_wrapped(wrapped)
+    }
+
+    fn request_wrapped(
+        &mut self,
+        request: Self::RequestWrapper,
+    ) -> Result<<Self::RequestData as Request>::Response, Self::Error>;
+}
+
+pub trait GenericTypedRequestReplyConnection<Req>
+where
+    Req: Request,
+{
+    fn request(&mut self, request: &Req) -> <Req as Request>::Response;
+}
+
+pub trait EnumGenericTypedRequestReplyConnection<Req, Res> {
+    fn request(&mut self, request: &Req) -> Res;
+}
+
+pub trait Request {
+    type Response: serde::de::DeserializeOwned + serde::Serialize;
+}
+
+pub trait EnumRequest {}

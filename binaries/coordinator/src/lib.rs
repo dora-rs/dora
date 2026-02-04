@@ -1,4 +1,5 @@
 use crate::{
+    handle_request::HandleRequest,
     run::spawn_dataflow,
     tcp_utils::{tcp_receive, tcp_send},
 };
@@ -10,11 +11,11 @@ use dora_core::{
 };
 use dora_message::{
     BuildId, DataflowId, SessionId,
-    cli_to_coordinator::ControlRequest,
+    cli_to_coordinator::{BuildRequest, ControlRequest, WaitForBuild},
     common::{DaemonId, GitSource},
     coordinator_to_cli::{
-        ControlRequestReply, DataflowIdAndName, DataflowList, DataflowListEntry, DataflowResult,
-        DataflowStatus, LogLevel, LogMessage,
+        ControlRequestReply, DataflowBuildFinished, DataflowIdAndName, DataflowList,
+        DataflowListEntry, DataflowResult, DataflowStatus, LogLevel, LogMessage,
     },
     coordinator_to_daemon::{
         BuildDataflowNodes, DaemonCoordinatorEvent, RegisterResult, Timestamped,
@@ -45,6 +46,7 @@ use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
 use uuid::Uuid;
 
 mod control;
+mod handle_request;
 mod listener;
 mod log_subscriber;
 mod run;
@@ -83,7 +85,7 @@ pub async fn start(
         .merge();
 
     let future = async move {
-        start_inner(events, &tasks).await?;
+        Coordinator::default().start_inner(events, &tasks).await?;
 
         tracing::debug!("coordinator main loop finished, waiting on spawned tasks");
         while let Some(join_result) = tasks.next().await {
@@ -186,433 +188,379 @@ impl DaemonConnections {
     }
 }
 
-async fn start_inner(
-    events: impl Stream<Item = Event> + Unpin,
-    tasks: &FuturesUnordered<JoinHandle<()>>,
-) -> eyre::Result<()> {
-    let clock = Arc::new(HLC::default());
+#[derive(Default)]
+struct Coordinator {
+    clock: Arc<HLC>,
+    running_builds: HashMap<BuildId, RunningBuild>,
+    daemon_connections: DaemonConnections,
+}
 
-    let (daemon_events_tx, daemon_events) = tokio::sync::mpsc::channel(2);
-    let mut daemon_events_tx = Some(daemon_events_tx);
-    let daemon_events = ReceiverStream::new(daemon_events);
+impl Coordinator {
+    async fn start_inner(
+        &mut self,
+        events: impl Stream<Item = Event> + Unpin,
+        tasks: &FuturesUnordered<JoinHandle<()>>,
+    ) -> eyre::Result<()> {
+        let clock = Arc::new(HLC::default());
 
-    let daemon_heartbeat_interval =
-        tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(Duration::from_secs(3)))
-            .map(|_| Event::DaemonHeartbeatInterval);
+        let (daemon_events_tx, daemon_events) = tokio::sync::mpsc::channel(2);
+        let mut daemon_events_tx = Some(daemon_events_tx);
+        let daemon_events = ReceiverStream::new(daemon_events);
 
-    // events that should be aborted on `dora destroy`
-    let (abortable_events, abort_handle) =
-        futures::stream::abortable((events, daemon_heartbeat_interval).merge());
+        let daemon_heartbeat_interval = tokio_stream::wrappers::IntervalStream::new(
+            tokio::time::interval(Duration::from_secs(3)),
+        )
+        .map(|_| Event::DaemonHeartbeatInterval);
 
-    let mut events = (abortable_events, daemon_events).merge();
+        // events that should be aborted on `dora destroy`
+        let (abortable_events, abort_handle) =
+            futures::stream::abortable((events, daemon_heartbeat_interval).merge());
 
-    let mut running_builds: HashMap<BuildId, RunningBuild> = HashMap::new();
-    let mut finished_builds: HashMap<BuildId, CachedResult> = HashMap::new();
+        let mut events = (abortable_events, daemon_events).merge();
 
-    let mut running_dataflows: HashMap<DataflowId, RunningDataflow> = HashMap::new();
-    let mut dataflow_results: HashMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
-        HashMap::new();
-    let mut archived_dataflows: HashMap<DataflowId, ArchivedDataflow> = HashMap::new();
-    let mut daemon_connections = DaemonConnections::default();
+        let mut running_builds: HashMap<BuildId, RunningBuild> = HashMap::new();
+        let mut finished_builds: HashMap<BuildId, CachedResult> = HashMap::new();
 
-    while let Some(event) = events.next().await {
-        // used below for measuring the event handling duration
-        let start = Instant::now();
-        let event_kind = event.kind();
+        let mut running_dataflows: HashMap<DataflowId, RunningDataflow> = HashMap::new();
+        let mut dataflow_results: HashMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
+            HashMap::new();
+        let mut archived_dataflows: HashMap<DataflowId, ArchivedDataflow> = HashMap::new();
 
-        if event.log() {
-            tracing::trace!("Handling event {event:?}");
-        }
-        match event {
-            Event::NewDaemonConnection(connection) => {
-                connection.set_nodelay(true)?;
-                let events_tx = daemon_events_tx.clone();
-                if let Some(events_tx) = events_tx {
-                    let task = tokio::spawn(listener::handle_connection(
-                        connection,
-                        events_tx,
-                        clock.clone(),
-                    ));
-                    tasks.push(task);
-                } else {
-                    tracing::warn!(
-                        "ignoring new daemon connection because events_tx was closed already"
-                    );
-                }
+        while let Some(event) = events.next().await {
+            // used below for measuring the event handling duration
+            let start = Instant::now();
+            let event_kind = event.kind();
+
+            if event.log() {
+                tracing::trace!("Handling event {event:?}");
             }
-            Event::DaemonConnectError(err) => {
-                tracing::warn!("{:?}", err.wrap_err("failed to connect to dora-daemon"));
-            }
-            Event::Daemon(event) => match event {
-                DaemonRequest::Register {
-                    machine_id,
-                    mut connection,
-                    version_check_result,
-                } => {
-                    let existing = match &machine_id {
-                        Some(id) => daemon_connections.get_matching_daemon_id(id),
-                        None => daemon_connections.unnamed().next(),
-                    };
-                    let existing_result = if existing.is_some() {
-                        Err(format!(
-                            "There is already a connected daemon with machine ID `{machine_id:?}`"
-                        ))
+            match event {
+                Event::NewDaemonConnection(connection) => {
+                    connection.set_nodelay(true)?;
+                    let events_tx = daemon_events_tx.clone();
+                    if let Some(events_tx) = events_tx {
+                        let task = tokio::spawn(listener::handle_connection(
+                            connection,
+                            events_tx,
+                            clock.clone(),
+                        ));
+                        tasks.push(task);
                     } else {
-                        Ok(())
-                    };
+                        tracing::warn!(
+                            "ignoring new daemon connection because events_tx was closed already"
+                        );
+                    }
+                }
+                Event::DaemonConnectError(err) => {
+                    tracing::warn!("{:?}", err.wrap_err("failed to connect to dora-daemon"));
+                }
+                Event::Daemon(event) => match event {
+                    DaemonRequest::Register {
+                        machine_id,
+                        mut connection,
+                        version_check_result,
+                    } => {
+                        let existing = match &machine_id {
+                            Some(id) => self.daemon_connections.get_matching_daemon_id(id),
+                            None => self.daemon_connections.unnamed().next(),
+                        };
+                        let existing_result = if existing.is_some() {
+                            Err(format!(
+                                "There is already a connected daemon with machine ID `{machine_id:?}`"
+                            ))
+                        } else {
+                            Ok(())
+                        };
 
-                    // assign a unique ID to the daemon
-                    let daemon_id = DaemonId::new(machine_id);
+                        // assign a unique ID to the daemon
+                        let daemon_id = DaemonId::new(machine_id);
 
-                    let reply: Timestamped<RegisterResult> = Timestamped {
-                        inner: match version_check_result.as_ref().and(existing_result.as_ref()) {
-                            Ok(_) => RegisterResult::Ok {
-                                daemon_id: daemon_id.clone(),
-                            },
-                            Err(err) => RegisterResult::Err(err.clone()),
-                        },
-                        timestamp: clock.new_timestamp(),
-                    };
-
-                    let send_result = tcp_send(&mut connection, &serde_json::to_vec(&reply)?)
-                        .await
-                        .context("tcp send failed");
-                    match version_check_result.map_err(|e| eyre!(e)).and(send_result) {
-                        Ok(()) => {
-                            daemon_connections.add(
-                                daemon_id.clone(),
-                                DaemonConnection {
-                                    stream: connection,
-                                    last_heartbeat: Instant::now(),
+                        let reply: Timestamped<RegisterResult> = Timestamped {
+                            inner: match version_check_result.as_ref().and(existing_result.as_ref())
+                            {
+                                Ok(_) => RegisterResult::Ok {
+                                    daemon_id: daemon_id.clone(),
                                 },
-                            );
-                        }
-                        Err(err) => {
-                            tracing::warn!(
-                                "failed to register daemon connection for daemon `{daemon_id}`: {err}"
-                            );
+                                Err(err) => RegisterResult::Err(err.clone()),
+                            },
+                            timestamp: clock.new_timestamp(),
+                        };
+
+                        let send_result = tcp_send(&mut connection, &serde_json::to_vec(&reply)?)
+                            .await
+                            .context("tcp send failed");
+                        match version_check_result.map_err(|e| eyre!(e)).and(send_result) {
+                            Ok(()) => {
+                                self.daemon_connections.add(
+                                    daemon_id.clone(),
+                                    DaemonConnection {
+                                        stream: connection,
+                                        last_heartbeat: Instant::now(),
+                                    },
+                                );
+                            }
+                            Err(err) => {
+                                tracing::warn!(
+                                    "failed to register daemon connection for daemon `{daemon_id}`: {err}"
+                                );
+                            }
                         }
                     }
-                }
-            },
-            Event::Dataflow { uuid, event } => match event {
-                DataflowEvent::ReadyOnDaemon {
-                    daemon_id,
-                    exited_before_subscribe,
-                } => {
-                    match running_dataflows.entry(uuid) {
-                        std::collections::hash_map::Entry::Occupied(mut entry) => {
-                            let dataflow = entry.get_mut();
-                            dataflow.pending_daemons.remove(&daemon_id);
-                            dataflow
-                                .exited_before_subscribe
-                                .extend(exited_before_subscribe);
-                            if dataflow.pending_daemons.is_empty() {
-                                tracing::debug!("sending all nodes ready message to daemons");
-                                let message = serde_json::to_vec(&Timestamped {
-                                    inner: DaemonCoordinatorEvent::AllNodesReady {
-                                        dataflow_id: uuid,
-                                        exited_before_subscribe: dataflow
-                                            .exited_before_subscribe
-                                            .clone(),
-                                    },
-                                    timestamp: clock.new_timestamp(),
-                                })
-                                .wrap_err("failed to serialize AllNodesReady message")?;
+                },
+                Event::Dataflow { uuid, event } => match event {
+                    DataflowEvent::ReadyOnDaemon {
+                        daemon_id,
+                        exited_before_subscribe,
+                    } => {
+                        match running_dataflows.entry(uuid) {
+                            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                                let dataflow = entry.get_mut();
+                                dataflow.pending_daemons.remove(&daemon_id);
+                                dataflow
+                                    .exited_before_subscribe
+                                    .extend(exited_before_subscribe);
+                                if dataflow.pending_daemons.is_empty() {
+                                    tracing::debug!("sending all nodes ready message to daemons");
+                                    let message = serde_json::to_vec(&Timestamped {
+                                        inner: DaemonCoordinatorEvent::AllNodesReady {
+                                            dataflow_id: uuid,
+                                            exited_before_subscribe: dataflow
+                                                .exited_before_subscribe
+                                                .clone(),
+                                        },
+                                        timestamp: clock.new_timestamp(),
+                                    })
+                                    .wrap_err("failed to serialize AllNodesReady message")?;
 
-                                // notify all machines that run parts of the dataflow
-                                for daemon_id in &dataflow.daemons {
-                                    let Some(connection) = daemon_connections.get_mut(daemon_id)
-                                    else {
-                                        tracing::warn!(
-                                            "no daemon connection found for machine `{daemon_id}`"
-                                        );
-                                        continue;
-                                    };
-                                    tcp_send(&mut connection.stream, &message)
-                                        .await
-                                        .wrap_err_with(|| {
-                                            format!(
-                                                "failed to send AllNodesReady({uuid}) message \
+                                    // notify all machines that run parts of the dataflow
+                                    for daemon_id in &dataflow.daemons {
+                                        let Some(connection) =
+                                            self.daemon_connections.get_mut(daemon_id)
+                                        else {
+                                            tracing::warn!(
+                                                "no daemon connection found for machine `{daemon_id}`"
+                                            );
+                                            continue;
+                                        };
+                                        tcp_send(&mut connection.stream, &message)
+                                            .await
+                                            .wrap_err_with(|| {
+                                                format!(
+                                                    "failed to send AllNodesReady({uuid}) message \
                                             to machine {daemon_id}"
-                                            )
-                                        })?;
+                                                )
+                                            })?;
+                                    }
                                 }
                             }
-                        }
-                        std::collections::hash_map::Entry::Vacant(_) => {
-                            tracing::warn!("dataflow not running on ReadyOnMachine");
+                            std::collections::hash_map::Entry::Vacant(_) => {
+                                tracing::warn!("dataflow not running on ReadyOnMachine");
+                            }
                         }
                     }
-                }
-                DataflowEvent::DataflowFinishedOnDaemon { daemon_id, result } => {
-                    tracing::debug!(
-                        "coordinator received DataflowFinishedOnDaemon ({daemon_id:?}, result: {result:?})"
-                    );
-                    match running_dataflows.entry(uuid) {
-                        std::collections::hash_map::Entry::Occupied(mut entry) => {
-                            let dataflow = entry.get_mut();
-                            dataflow.daemons.remove(&daemon_id);
-                            tracing::info!(
-                                "removed machine id: {daemon_id} from dataflow: {:#?}",
-                                dataflow.uuid
-                            );
-                            dataflow_results
-                                .entry(uuid)
-                                .or_default()
-                                .insert(daemon_id, result);
-
-                            if dataflow.daemons.is_empty() {
-                                // Archive finished dataflow
-                                archived_dataflows
+                    DataflowEvent::DataflowFinishedOnDaemon { daemon_id, result } => {
+                        tracing::debug!(
+                            "coordinator received DataflowFinishedOnDaemon ({daemon_id:?}, result: {result:?})"
+                        );
+                        match running_dataflows.entry(uuid) {
+                            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                                let dataflow = entry.get_mut();
+                                dataflow.daemons.remove(&daemon_id);
+                                tracing::info!(
+                                    "removed machine id: {daemon_id} from dataflow: {:#?}",
+                                    dataflow.uuid
+                                );
+                                dataflow_results
                                     .entry(uuid)
-                                    .or_insert_with(|| ArchivedDataflow::from(entry.get()));
-                                let mut finished_dataflow = entry.remove();
-                                let dataflow_id = finished_dataflow.uuid;
-                                send_log_message(
-                                    &mut finished_dataflow.log_subscribers,
-                                    &LogMessage {
-                                        build_id: None,
-                                        dataflow_id: Some(dataflow_id),
-                                        node_id: None,
-                                        daemon_id: None,
-                                        level: LogLevel::Info.into(),
-                                        target: Some("coordinator".into()),
-                                        module_path: None,
-                                        file: None,
-                                        line: None,
-                                        message: "dataflow finished".into(),
-                                        timestamp: clock
-                                            .new_timestamp()
-                                            .get_time()
-                                            .to_system_time()
-                                            .into(),
-                                        fields: None,
-                                    },
-                                )
-                                .await;
+                                    .or_default()
+                                    .insert(daemon_id, result);
 
-                                let reply = ControlRequestReply::DataflowStopped {
-                                    uuid,
-                                    result: dataflow_results
-                                        .get(&uuid)
-                                        .map(|r| dataflow_result(r, uuid, &clock))
-                                        .unwrap_or_else(|| {
-                                            DataflowResult::ok_empty(uuid, clock.new_timestamp())
-                                        }),
-                                };
-                                for sender in finished_dataflow.stop_reply_senders {
-                                    let _ = sender.send(Ok(reply.clone()));
-                                }
-                                if !matches!(
-                                    finished_dataflow.spawn_result,
-                                    CachedResult::Cached { .. }
-                                ) {
-                                    log::error!("pending spawn result on dataflow finish");
+                                if dataflow.daemons.is_empty() {
+                                    // Archive finished dataflow
+                                    archived_dataflows
+                                        .entry(uuid)
+                                        .or_insert_with(|| ArchivedDataflow::from(entry.get()));
+                                    let mut finished_dataflow = entry.remove();
+                                    let dataflow_id = finished_dataflow.uuid;
+                                    send_log_message(
+                                        &mut finished_dataflow.log_subscribers,
+                                        &LogMessage {
+                                            build_id: None,
+                                            dataflow_id: Some(dataflow_id),
+                                            node_id: None,
+                                            daemon_id: None,
+                                            level: LogLevel::Info.into(),
+                                            target: Some("coordinator".into()),
+                                            module_path: None,
+                                            file: None,
+                                            line: None,
+                                            message: "dataflow finished".into(),
+                                            timestamp: clock
+                                                .new_timestamp()
+                                                .get_time()
+                                                .to_system_time()
+                                                .into(),
+                                            fields: None,
+                                        },
+                                    )
+                                    .await;
+
+                                    let reply = ControlRequestReply::DataflowStopped {
+                                        uuid,
+                                        result: dataflow_results
+                                            .get(&uuid)
+                                            .map(|r| dataflow_result(r, uuid, &clock))
+                                            .unwrap_or_else(|| {
+                                                DataflowResult::ok_empty(
+                                                    uuid,
+                                                    clock.new_timestamp(),
+                                                )
+                                            }),
+                                    };
+                                    for sender in finished_dataflow.stop_reply_senders {
+                                        let _ = sender.send(Ok(reply.clone()));
+                                    }
+                                    if !matches!(
+                                        finished_dataflow.spawn_result,
+                                        CachedResult::Cached { .. }
+                                    ) {
+                                        log::error!("pending spawn result on dataflow finish");
+                                    }
                                 }
                             }
-                        }
-                        std::collections::hash_map::Entry::Vacant(_) => {
-                            tracing::warn!("dataflow not running on DataflowFinishedOnDaemon");
+                            std::collections::hash_map::Entry::Vacant(_) => {
+                                tracing::warn!("dataflow not running on DataflowFinishedOnDaemon");
+                            }
                         }
                     }
-                }
-            },
+                },
 
-            Event::Control(event) => match event {
-                ControlEvent::IncomingRequest {
-                    request,
-                    reply_sender,
-                } => {
-                    match request {
-                        ControlRequest::Build {
-                            session_id,
-                            dataflow,
-                            git_sources,
-                            prev_git_sources,
-                            local_working_dir,
-                            uv,
-                        } => {
-                            // assign a random build id
-                            let build_id = BuildId::generate();
-
-                            let result = build_dataflow(
+                Event::Control(event) => match event {
+                    ControlEvent::IncomingRequest {
+                        request,
+                        reply_sender,
+                    } => {
+                        match request {
+                            ControlRequest::Build(request) => {
+                                let reply = self.handle_request(request).await;
+                            }
+                            ControlRequest::WaitForBuild(WaitForBuild { build_id }) => {
+                                if let Some(build) = running_builds.get_mut(&build_id) {
+                                    build.build_result.register(reply_sender);
+                                } else if let Some(result) = finished_builds.get_mut(&build_id) {
+                                    result.register(reply_sender);
+                                } else {
+                                    let _ = reply_sender
+                                        .send(Err(eyre!("unknown build id {build_id}")));
+                                }
+                            }
+                            ControlRequest::Start {
                                 build_id,
                                 session_id,
                                 dataflow,
-                                git_sources,
-                                prev_git_sources,
+                                name,
                                 local_working_dir,
-                                &clock,
                                 uv,
-                                &mut daemon_connections,
-                            )
-                            .await;
-                            match result {
-                                Ok(build) => {
-                                    running_builds.insert(build_id, build);
-                                    let _ = reply_sender.send(Ok(
-                                        ControlRequestReply::DataflowBuildTriggered { build_id },
-                                    ));
-                                }
-                                Err(err) => {
-                                    let _ = reply_sender.send(Err(err));
-                                }
-                            }
-                        }
-                        ControlRequest::WaitForBuild { build_id } => {
-                            if let Some(build) = running_builds.get_mut(&build_id) {
-                                build.build_result.register(reply_sender);
-                            } else if let Some(result) = finished_builds.get_mut(&build_id) {
-                                result.register(reply_sender);
-                            } else {
-                                let _ =
-                                    reply_sender.send(Err(eyre!("unknown build id {build_id}")));
-                            }
-                        }
-                        ControlRequest::Start {
-                            build_id,
-                            session_id,
-                            dataflow,
-                            name,
-                            local_working_dir,
-                            uv,
-                            write_events_to,
-                        } => {
-                            let name = name.or_else(|| petname(2, "-"));
+                                write_events_to,
+                            } => {
+                                let name = name.or_else(|| petname(2, "-"));
 
-                            let inner = async {
-                                if let Some(name) = name.as_deref() {
-                                    // check that name is unique
-                                    if running_dataflows
-                                        .values()
-                                        .any(|d: &RunningDataflow| d.name.as_deref() == Some(name))
-                                    {
-                                        bail!(
-                                            "there is already a running dataflow with name `{name}`"
-                                        );
+                                let inner = async {
+                                    if let Some(name) = name.as_deref() {
+                                        // check that name is unique
+                                        if running_dataflows.values().any(|d: &RunningDataflow| {
+                                            d.name.as_deref() == Some(name)
+                                        }) {
+                                            bail!(
+                                                "there is already a running dataflow with name `{name}`"
+                                            );
+                                        }
+                                    }
+                                    let dataflow = start_dataflow(
+                                        build_id,
+                                        session_id,
+                                        dataflow,
+                                        local_working_dir,
+                                        name,
+                                        &mut daemon_connections,
+                                        &clock,
+                                        uv,
+                                        write_events_to,
+                                    )
+                                    .await?;
+                                    Ok(dataflow)
+                                };
+                                match inner.await {
+                                    Ok(dataflow) => {
+                                        let uuid = dataflow.uuid;
+                                        running_dataflows.insert(uuid, dataflow);
+                                        let _ = reply_sender.send(Ok(
+                                            ControlRequestReply::DataflowStartTriggered { uuid },
+                                        ));
+                                    }
+                                    Err(err) => {
+                                        let _ = reply_sender.send(Err(err));
                                     }
                                 }
-                                let dataflow = start_dataflow(
-                                    build_id,
-                                    session_id,
-                                    dataflow,
-                                    local_working_dir,
-                                    name,
-                                    &mut daemon_connections,
-                                    &clock,
-                                    uv,
-                                    write_events_to,
-                                )
-                                .await?;
-                                Ok(dataflow)
-                            };
-                            match inner.await {
-                                Ok(dataflow) => {
-                                    let uuid = dataflow.uuid;
-                                    running_dataflows.insert(uuid, dataflow);
-                                    let _ = reply_sender.send(Ok(
-                                        ControlRequestReply::DataflowStartTriggered { uuid },
-                                    ));
-                                }
-                                Err(err) => {
-                                    let _ = reply_sender.send(Err(err));
+                            }
+                            ControlRequest::WaitForSpawn { dataflow_id } => {
+                                if let Some(dataflow) = running_dataflows.get_mut(&dataflow_id) {
+                                    dataflow.spawn_result.register(reply_sender);
+                                } else {
+                                    let _ = reply_sender
+                                        .send(Err(eyre!("unknown dataflow {dataflow_id}")));
                                 }
                             }
-                        }
-                        ControlRequest::WaitForSpawn { dataflow_id } => {
-                            if let Some(dataflow) = running_dataflows.get_mut(&dataflow_id) {
-                                dataflow.spawn_result.register(reply_sender);
-                            } else {
-                                let _ =
-                                    reply_sender.send(Err(eyre!("unknown dataflow {dataflow_id}")));
-                            }
-                        }
-                        ControlRequest::Check { dataflow_uuid } => {
-                            let status = match &running_dataflows.get(&dataflow_uuid) {
-                                Some(_) => ControlRequestReply::DataflowSpawned {
-                                    uuid: dataflow_uuid,
-                                },
-                                None => ControlRequestReply::DataflowStopped {
-                                    uuid: dataflow_uuid,
-                                    result: dataflow_results
-                                        .get(&dataflow_uuid)
-                                        .map(|r| dataflow_result(r, dataflow_uuid, &clock))
-                                        .unwrap_or_else(|| {
-                                            DataflowResult::ok_empty(
-                                                dataflow_uuid,
-                                                clock.new_timestamp(),
-                                            )
-                                        }),
-                                },
-                            };
-                            let _ = reply_sender.send(Ok(status));
-                        }
-                        ControlRequest::Reload {
-                            dataflow_id,
-                            node_id,
-                            operator_id,
-                        } => {
-                            let reload = async {
-                                reload_dataflow(
-                                    &running_dataflows,
-                                    dataflow_id,
-                                    node_id,
-                                    operator_id,
-                                    &mut daemon_connections,
-                                    clock.new_timestamp(),
-                                )
-                                .await?;
-                                Result::<_, eyre::Report>::Ok(())
-                            };
-                            let reply =
-                                reload
-                                    .await
-                                    .map(|()| ControlRequestReply::DataflowReloaded {
-                                        uuid: dataflow_id,
-                                    });
-                            let _ = reply_sender.send(reply);
-                        }
-                        ControlRequest::Stop {
-                            dataflow_uuid,
-                            grace_duration,
-                            force,
-                        } => {
-                            if let Some(result) = dataflow_results.get(&dataflow_uuid) {
-                                let reply = ControlRequestReply::DataflowStopped {
-                                    uuid: dataflow_uuid,
-                                    result: dataflow_result(result, dataflow_uuid, &clock),
+                            ControlRequest::Check { dataflow_uuid } => {
+                                let status = match &running_dataflows.get(&dataflow_uuid) {
+                                    Some(_) => ControlRequestReply::DataflowSpawned {
+                                        uuid: dataflow_uuid,
+                                    },
+                                    None => ControlRequestReply::DataflowStopped {
+                                        uuid: dataflow_uuid,
+                                        result: dataflow_results
+                                            .get(&dataflow_uuid)
+                                            .map(|r| dataflow_result(r, dataflow_uuid, &clock))
+                                            .unwrap_or_else(|| {
+                                                DataflowResult::ok_empty(
+                                                    dataflow_uuid,
+                                                    clock.new_timestamp(),
+                                                )
+                                            }),
+                                    },
                                 };
-                                let _ = reply_sender.send(Ok(reply));
-
-                                continue;
+                                let _ = reply_sender.send(Ok(status));
                             }
-
-                            let dataflow = stop_dataflow(
-                                &mut running_dataflows,
+                            ControlRequest::Reload {
+                                dataflow_id,
+                                node_id,
+                                operator_id,
+                            } => {
+                                let reload = async {
+                                    reload_dataflow(
+                                        &running_dataflows,
+                                        dataflow_id,
+                                        node_id,
+                                        operator_id,
+                                        &mut daemon_connections,
+                                        clock.new_timestamp(),
+                                    )
+                                    .await?;
+                                    Result::<_, eyre::Report>::Ok(())
+                                };
+                                let reply =
+                                    reload
+                                        .await
+                                        .map(|()| ControlRequestReply::DataflowReloaded {
+                                            uuid: dataflow_id,
+                                        });
+                                let _ = reply_sender.send(reply);
+                            }
+                            ControlRequest::Stop {
                                 dataflow_uuid,
-                                &mut daemon_connections,
-                                clock.new_timestamp(),
                                 grace_duration,
                                 force,
-                            )
-                            .await;
-
-                            match dataflow {
-                                Ok(dataflow) => {
-                                    dataflow.stop_reply_senders.push(reply_sender);
-                                }
-                                Err(err) => {
-                                    let _ = reply_sender.send(Err(err));
-                                }
-                            }
-                        }
-                        ControlRequest::StopByName {
-                            name,
-                            grace_duration,
-                            force,
-                        } => match resolve_name(name, &running_dataflows, &archived_dataflows) {
-                            Ok(dataflow_uuid) => {
+                            } => {
                                 if let Some(result) = dataflow_results.get(&dataflow_uuid) {
                                     let reply = ControlRequestReply::DataflowStopped {
                                         uuid: dataflow_uuid,
@@ -642,375 +590,431 @@ async fn start_inner(
                                     }
                                 }
                             }
-                            Err(err) => {
-                                let _ = reply_sender.send(Err(err));
-                            }
-                        },
-                        ControlRequest::Logs {
-                            uuid,
-                            name,
-                            node,
-                            tail,
-                        } => {
-                            let dataflow_uuid = if let Some(uuid) = uuid {
-                                Ok(uuid)
-                            } else if let Some(name) = name {
-                                resolve_name(name, &running_dataflows, &archived_dataflows)
-                            } else {
-                                Err(eyre!("No uuid"))
-                            };
+                            ControlRequest::StopByName {
+                                name,
+                                grace_duration,
+                                force,
+                            } => {
+                                match resolve_name(name, &running_dataflows, &archived_dataflows) {
+                                    Ok(dataflow_uuid) => {
+                                        if let Some(result) = dataflow_results.get(&dataflow_uuid) {
+                                            let reply = ControlRequestReply::DataflowStopped {
+                                                uuid: dataflow_uuid,
+                                                result: dataflow_result(
+                                                    result,
+                                                    dataflow_uuid,
+                                                    &clock,
+                                                ),
+                                            };
+                                            let _ = reply_sender.send(Ok(reply));
 
-                            match dataflow_uuid {
-                                Ok(uuid) => {
-                                    let reply = retrieve_logs(
-                                        &running_dataflows,
-                                        &archived_dataflows,
-                                        uuid,
-                                        node.into(),
-                                        &mut daemon_connections,
-                                        clock.new_timestamp(),
-                                        tail,
-                                    )
-                                    .await
-                                    .map(ControlRequestReply::Logs);
-                                    let _ = reply_sender.send(reply);
-                                }
-                                Err(err) => {
-                                    let _ = reply_sender.send(Err(err));
+                                            continue;
+                                        }
+
+                                        let dataflow = stop_dataflow(
+                                            &mut running_dataflows,
+                                            dataflow_uuid,
+                                            &mut daemon_connections,
+                                            clock.new_timestamp(),
+                                            grace_duration,
+                                            force,
+                                        )
+                                        .await;
+
+                                        match dataflow {
+                                            Ok(dataflow) => {
+                                                dataflow.stop_reply_senders.push(reply_sender);
+                                            }
+                                            Err(err) => {
+                                                let _ = reply_sender.send(Err(err));
+                                            }
+                                        }
+                                    }
+                                    Err(err) => {
+                                        let _ = reply_sender.send(Err(err));
+                                    }
                                 }
                             }
-                        }
-                        ControlRequest::Info { dataflow_uuid } => {
-                            if let Some(dataflow) = running_dataflows.get(&dataflow_uuid) {
-                                let _ = reply_sender.send(Ok(ControlRequestReply::DataflowInfo {
-                                    uuid: dataflow.uuid,
-                                    name: dataflow.name.clone(),
-                                    descriptor: dataflow.descriptor.clone(),
-                                }));
-                            } else {
-                                let _ = reply_sender.send(Err(eyre!(
-                                    "No running dataflow with uuid `{dataflow_uuid}`"
+                            ControlRequest::Logs {
+                                uuid,
+                                name,
+                                node,
+                                tail,
+                            } => {
+                                let dataflow_uuid = if let Some(uuid) = uuid {
+                                    Ok(uuid)
+                                } else if let Some(name) = name {
+                                    resolve_name(name, &running_dataflows, &archived_dataflows)
+                                } else {
+                                    Err(eyre!("No uuid"))
+                                };
+
+                                match dataflow_uuid {
+                                    Ok(uuid) => {
+                                        let reply = retrieve_logs(
+                                            &running_dataflows,
+                                            &archived_dataflows,
+                                            uuid,
+                                            node.into(),
+                                            &mut daemon_connections,
+                                            clock.new_timestamp(),
+                                            tail,
+                                        )
+                                        .await
+                                        .map(ControlRequestReply::Logs);
+                                        let _ = reply_sender.send(reply);
+                                    }
+                                    Err(err) => {
+                                        let _ = reply_sender.send(Err(err));
+                                    }
+                                }
+                            }
+                            ControlRequest::Info { dataflow_uuid } => {
+                                if let Some(dataflow) = running_dataflows.get(&dataflow_uuid) {
+                                    let _ =
+                                        reply_sender.send(Ok(ControlRequestReply::DataflowInfo {
+                                            uuid: dataflow.uuid,
+                                            name: dataflow.name.clone(),
+                                            descriptor: dataflow.descriptor.clone(),
+                                        }));
+                                } else {
+                                    let _ = reply_sender.send(Err(eyre!(
+                                        "No running dataflow with uuid `{dataflow_uuid}`"
+                                    )));
+                                }
+                            }
+                            ControlRequest::Destroy => {
+                                tracing::info!("Received destroy command");
+
+                                let reply = handle_destroy(
+                                    &mut running_dataflows,
+                                    &mut daemon_connections,
+                                    &abort_handle,
+                                    &mut daemon_events_tx,
+                                    &clock,
+                                )
+                                .await
+                                .map(|()| ControlRequestReply::DestroyOk);
+                                let _ = reply_sender.send(reply);
+                            }
+                            ControlRequest::List => {
+                                let mut dataflows: Vec<_> = running_dataflows.values().collect();
+                                dataflows.sort_by_key(|d| (&d.name, d.uuid));
+
+                                let running = dataflows.into_iter().map(|d| DataflowListEntry {
+                                    id: DataflowIdAndName {
+                                        uuid: d.uuid,
+                                        name: d.name.clone(),
+                                    },
+                                    status: DataflowStatus::Running,
+                                });
+                                let finished_failed =
+                                    dataflow_results.iter().map(|(&uuid, results)| {
+                                        let name = archived_dataflows
+                                            .get(&uuid)
+                                            .and_then(|d| d.name.clone());
+                                        let id = DataflowIdAndName { uuid, name };
+                                        let status = if results.values().all(|r| r.is_ok()) {
+                                            DataflowStatus::Finished
+                                        } else {
+                                            DataflowStatus::Failed
+                                        };
+                                        DataflowListEntry { id, status }
+                                    });
+
+                                let reply = Ok(ControlRequestReply::DataflowList(DataflowList(
+                                    running.chain(finished_failed).collect(),
+                                )));
+                                let _ = reply_sender.send(reply);
+                            }
+                            ControlRequest::DaemonConnected => {
+                                let running = !self.daemon_connections.is_empty();
+                                let _ = reply_sender
+                                    .send(Ok(ControlRequestReply::DaemonConnected(running)));
+                            }
+                            ControlRequest::ConnectedMachines => {
+                                let reply = Ok(ControlRequestReply::ConnectedDaemons(
+                                    self.daemon_connections.keys().cloned().collect(),
+                                ));
+                                let _ = reply_sender.send(reply);
+                            }
+                            ControlRequest::LogSubscribe { .. } => {
+                                let _ = reply_sender.send(Err(eyre::eyre!(
+                                    "LogSubscribe request should be handled separately"
                                 )));
                             }
-                        }
-                        ControlRequest::Destroy => {
-                            tracing::info!("Received destroy command");
-
-                            let reply = handle_destroy(
-                                &mut running_dataflows,
-                                &mut daemon_connections,
-                                &abort_handle,
-                                &mut daemon_events_tx,
-                                &clock,
-                            )
-                            .await
-                            .map(|()| ControlRequestReply::DestroyOk);
-                            let _ = reply_sender.send(reply);
-                        }
-                        ControlRequest::List => {
-                            let mut dataflows: Vec<_> = running_dataflows.values().collect();
-                            dataflows.sort_by_key(|d| (&d.name, d.uuid));
-
-                            let running = dataflows.into_iter().map(|d| DataflowListEntry {
-                                id: DataflowIdAndName {
-                                    uuid: d.uuid,
-                                    name: d.name.clone(),
-                                },
-                                status: DataflowStatus::Running,
-                            });
-                            let finished_failed =
-                                dataflow_results.iter().map(|(&uuid, results)| {
-                                    let name =
-                                        archived_dataflows.get(&uuid).and_then(|d| d.name.clone());
-                                    let id = DataflowIdAndName { uuid, name };
-                                    let status = if results.values().all(|r| r.is_ok()) {
-                                        DataflowStatus::Finished
-                                    } else {
-                                        DataflowStatus::Failed
-                                    };
-                                    DataflowListEntry { id, status }
-                                });
-
-                            let reply = Ok(ControlRequestReply::DataflowList(DataflowList(
-                                running.chain(finished_failed).collect(),
-                            )));
-                            let _ = reply_sender.send(reply);
-                        }
-                        ControlRequest::DaemonConnected => {
-                            let running = !daemon_connections.is_empty();
-                            let _ = reply_sender
-                                .send(Ok(ControlRequestReply::DaemonConnected(running)));
-                        }
-                        ControlRequest::ConnectedMachines => {
-                            let reply = Ok(ControlRequestReply::ConnectedDaemons(
-                                daemon_connections.keys().cloned().collect(),
-                            ));
-                            let _ = reply_sender.send(reply);
-                        }
-                        ControlRequest::LogSubscribe { .. } => {
-                            let _ = reply_sender.send(Err(eyre::eyre!(
-                                "LogSubscribe request should be handled separately"
-                            )));
-                        }
-                        ControlRequest::BuildLogSubscribe { .. } => {
-                            let _ = reply_sender.send(Err(eyre::eyre!(
-                                "BuildLogSubscribe request should be handled separately"
-                            )));
-                        }
-                        ControlRequest::CliAndDefaultDaemonOnSameMachine => {
-                            let mut default_daemon_ip = None;
-                            if let Some(default_id) = daemon_connections.unnamed().next() {
-                                if let Some(connection) = daemon_connections.get(default_id) {
-                                    if let Ok(addr) = connection.stream.peer_addr() {
-                                        default_daemon_ip = Some(addr.ip());
+                            ControlRequest::BuildLogSubscribe { .. } => {
+                                let _ = reply_sender.send(Err(eyre::eyre!(
+                                    "BuildLogSubscribe request should be handled separately"
+                                )));
+                            }
+                            ControlRequest::CliAndDefaultDaemonOnSameMachine => {
+                                let mut default_daemon_ip = None;
+                                if let Some(default_id) = self.daemon_connections.unnamed().next() {
+                                    if let Some(connection) =
+                                        self.daemon_connections.get(default_id)
+                                    {
+                                        if let Ok(addr) = connection.stream.peer_addr() {
+                                            default_daemon_ip = Some(addr.ip());
+                                        }
                                     }
                                 }
-                            }
-                            let _ = reply_sender.send(Ok(
-                                ControlRequestReply::CliAndDefaultDaemonIps {
-                                    default_daemon: default_daemon_ip,
-                                    cli: None, // filled later
-                                },
-                            ));
-                        }
-                        ControlRequest::GetNodeInfo => {
-                            use dora_message::coordinator_to_cli::{NodeInfo, NodeMetricsInfo};
-
-                            let mut node_infos = Vec::new();
-                            for dataflow in running_dataflows.values() {
-                                for (node_id, _node) in &dataflow.nodes {
-                                    // Get the specific daemon this node is running on
-                                    if let Some(daemon_id) = dataflow.node_to_daemon.get(node_id) {
-                                        // Get metrics if available
-                                        let metrics = dataflow.node_metrics.get(node_id).map(|m| {
-                                            NodeMetricsInfo {
-                                                pid: m.pid,
-                                                cpu_usage: m.cpu_usage,
-                                                // Use 1000 for MB (megabytes) instead of 1024 (mebibytes)
-                                                memory_mb: m.memory_bytes as f64 / 1000.0 / 1000.0,
-                                                disk_read_mb_s: m
-                                                    .disk_read_bytes
-                                                    .map(|b| b as f64 / 1000.0 / 1000.0),
-                                                disk_write_mb_s: m
-                                                    .disk_write_bytes
-                                                    .map(|b| b as f64 / 1000.0 / 1000.0),
-                                            }
-                                        });
-
-                                        node_infos.push(NodeInfo {
-                                            dataflow_id: dataflow.uuid,
-                                            dataflow_name: dataflow.name.clone(),
-                                            node_id: node_id.clone(),
-                                            daemon_id: daemon_id.clone(),
-                                            metrics,
-                                        });
-                                    }
-                                }
-                            }
-                            let _ = reply_sender
-                                .send(Ok(ControlRequestReply::NodeInfoList(node_infos)));
-                        }
-                    }
-                }
-                ControlEvent::Error(err) => tracing::error!("{err:?}"),
-                ControlEvent::LogSubscribe {
-                    dataflow_id,
-                    level,
-                    connection,
-                } => {
-                    if let Some(dataflow) = running_dataflows.get_mut(&dataflow_id) {
-                        dataflow
-                            .log_subscribers
-                            .push(LogSubscriber::new(level, connection));
-                        let buffered = std::mem::take(&mut dataflow.buffered_log_messages);
-                        for message in buffered {
-                            send_log_message(&mut dataflow.log_subscribers, &message).await;
-                        }
-                    }
-                }
-                ControlEvent::BuildLogSubscribe {
-                    build_id,
-                    level,
-                    connection,
-                } => {
-                    if let Some(build) = running_builds.get_mut(&build_id) {
-                        build
-                            .log_subscribers
-                            .push(LogSubscriber::new(level, connection));
-                        let buffered = std::mem::take(&mut build.buffered_log_messages);
-                        for message in buffered {
-                            send_log_message(&mut build.log_subscribers, &message).await;
-                        }
-                    }
-                }
-            },
-            Event::DaemonHeartbeatInterval => {
-                let mut disconnected = BTreeSet::new();
-                for (machine_id, connection) in daemon_connections.iter_mut() {
-                    if connection.last_heartbeat.elapsed() > Duration::from_secs(15) {
-                        tracing::warn!(
-                            "no heartbeat message from machine `{machine_id}` since {:?}",
-                            connection.last_heartbeat.elapsed()
-                        )
-                    }
-                    if connection.last_heartbeat.elapsed() > Duration::from_secs(30) {
-                        disconnected.insert(machine_id.clone());
-                        continue;
-                    }
-                    let result: eyre::Result<()> = tokio::time::timeout(
-                        Duration::from_millis(500),
-                        send_heartbeat_message(&mut connection.stream, clock.new_timestamp()),
-                    )
-                    .await
-                    .wrap_err("timeout")
-                    .and_then(|r| r)
-                    .wrap_err_with(|| {
-                        format!("failed to send heartbeat message to daemon at `{machine_id}`")
-                    });
-                    if let Err(err) = result {
-                        tracing::warn!("{err:?}");
-                        disconnected.insert(machine_id.clone());
-                    }
-                }
-                if !disconnected.is_empty() {
-                    tracing::error!("Disconnecting daemons that failed watchdog: {disconnected:?}");
-                    for machine_id in disconnected {
-                        daemon_connections.remove(&machine_id);
-                    }
-                }
-            }
-            Event::CtrlC => {
-                tracing::info!("Destroying coordinator after receiving Ctrl-C signal");
-                handle_destroy(
-                    &mut running_dataflows,
-                    &mut daemon_connections,
-                    &abort_handle,
-                    &mut daemon_events_tx,
-                    &clock,
-                )
-                .await?;
-            }
-            Event::DaemonHeartbeat {
-                daemon_id: machine_id,
-            } => {
-                if let Some(connection) = daemon_connections.get_mut(&machine_id) {
-                    connection.last_heartbeat = Instant::now();
-                }
-            }
-            Event::Log(message) => {
-                if let Some(dataflow_id) = &message.dataflow_id {
-                    if let Some(dataflow) = running_dataflows.get_mut(dataflow_id) {
-                        if dataflow.log_subscribers.is_empty() {
-                            // buffer log message until there are subscribers
-                            dataflow.buffered_log_messages.push(message);
-                        } else {
-                            send_log_message(&mut dataflow.log_subscribers, &message).await;
-                        }
-                    }
-                } else if let Some(build_id) = &message.build_id {
-                    if let Some(build) = running_builds.get_mut(build_id) {
-                        if build.log_subscribers.is_empty() {
-                            // buffer log message until there are subscribers
-                            build.buffered_log_messages.push(message);
-                        } else {
-                            send_log_message(&mut build.log_subscribers, &message).await;
-                        }
-                    }
-                }
-            }
-            Event::DaemonExit { daemon_id } => {
-                tracing::info!("Daemon `{daemon_id}` exited");
-                daemon_connections.remove(&daemon_id);
-            }
-            Event::NodeMetrics {
-                dataflow_id,
-                metrics,
-            } => {
-                // Store metrics for this dataflow
-                if let Some(dataflow) = running_dataflows.get_mut(&dataflow_id) {
-                    for (node_id, node_metrics) in metrics {
-                        dataflow.node_metrics.insert(node_id, node_metrics);
-                    }
-                }
-            }
-            Event::DataflowBuildResult {
-                build_id,
-                daemon_id,
-                result,
-            } => match running_builds.get_mut(&build_id) {
-                Some(build) => {
-                    build.pending_build_results.remove(&daemon_id);
-                    match result {
-                        Ok(()) => {}
-                        Err(err) => {
-                            build.errors.push(format!("{err:?}"));
-                        }
-                    };
-                    if build.pending_build_results.is_empty() {
-                        tracing::info!("dataflow build finished: `{build_id}`");
-                        let mut build = running_builds.remove(&build_id).unwrap();
-                        let result = if build.errors.is_empty() {
-                            Ok(())
-                        } else {
-                            Err(format!("build failed: {}", build.errors.join("\n\n")))
-                        };
-
-                        build.build_result.set_result(Ok(
-                            ControlRequestReply::DataflowBuildFinished { build_id, result },
-                        ));
-
-                        finished_builds.insert(build_id, build.build_result);
-                    }
-                }
-                None => {
-                    tracing::warn!(
-                        "received DataflowSpawnResult, but no matching dataflow in `running_dataflows` map"
-                    );
-                }
-            },
-            Event::DataflowSpawnResult {
-                dataflow_id,
-                daemon_id,
-                result,
-            } => match running_dataflows.get_mut(&dataflow_id) {
-                Some(dataflow) => {
-                    dataflow.pending_spawn_results.remove(&daemon_id);
-                    match result {
-                        Ok(()) => {
-                            if dataflow.pending_spawn_results.is_empty() {
-                                tracing::info!("successfully spawned dataflow `{dataflow_id}`",);
-                                dataflow.spawn_result.set_result(Ok(
-                                    ControlRequestReply::DataflowSpawned { uuid: dataflow_id },
+                                let _ = reply_sender.send(Ok(
+                                    ControlRequestReply::CliAndDefaultDaemonIps {
+                                        default_daemon: default_daemon_ip,
+                                        cli: None, // filled later
+                                    },
                                 ));
                             }
+                            ControlRequest::GetNodeInfo => {
+                                use dora_message::coordinator_to_cli::{NodeInfo, NodeMetricsInfo};
+
+                                let mut node_infos = Vec::new();
+                                for dataflow in running_dataflows.values() {
+                                    for (node_id, _node) in &dataflow.nodes {
+                                        // Get the specific daemon this node is running on
+                                        if let Some(daemon_id) =
+                                            dataflow.node_to_daemon.get(node_id)
+                                        {
+                                            // Get metrics if available
+                                            let metrics =
+                                                dataflow.node_metrics.get(node_id).map(|m| {
+                                                    NodeMetricsInfo {
+                                                        pid: m.pid,
+                                                        cpu_usage: m.cpu_usage,
+                                                        // Use 1000 for MB (megabytes) instead of 1024 (mebibytes)
+                                                        memory_mb: m.memory_bytes as f64
+                                                            / 1000.0
+                                                            / 1000.0,
+                                                        disk_read_mb_s: m
+                                                            .disk_read_bytes
+                                                            .map(|b| b as f64 / 1000.0 / 1000.0),
+                                                        disk_write_mb_s: m
+                                                            .disk_write_bytes
+                                                            .map(|b| b as f64 / 1000.0 / 1000.0),
+                                                    }
+                                                });
+
+                                            node_infos.push(NodeInfo {
+                                                dataflow_id: dataflow.uuid,
+                                                dataflow_name: dataflow.name.clone(),
+                                                node_id: node_id.clone(),
+                                                daemon_id: daemon_id.clone(),
+                                                metrics,
+                                            });
+                                        }
+                                    }
+                                }
+                                let _ = reply_sender
+                                    .send(Ok(ControlRequestReply::NodeInfoList(node_infos)));
+                            }
                         }
-                        Err(err) => {
-                            tracing::warn!("error while spawning dataflow `{dataflow_id}`");
-                            dataflow.spawn_result.set_result(Err(err));
+                    }
+                    ControlEvent::Error(err) => tracing::error!("{err:?}"),
+                    ControlEvent::LogSubscribe {
+                        dataflow_id,
+                        level,
+                        connection,
+                    } => {
+                        if let Some(dataflow) = running_dataflows.get_mut(&dataflow_id) {
+                            dataflow
+                                .log_subscribers
+                                .push(LogSubscriber::new(level, connection));
+                            let buffered = std::mem::take(&mut dataflow.buffered_log_messages);
+                            for message in buffered {
+                                send_log_message(&mut dataflow.log_subscribers, &message).await;
+                            }
                         }
-                    };
+                    }
+                    ControlEvent::BuildLogSubscribe {
+                        build_id,
+                        level,
+                        connection,
+                    } => {
+                        if let Some(build) = running_builds.get_mut(&build_id) {
+                            build
+                                .log_subscribers
+                                .push(LogSubscriber::new(level, connection));
+                            let buffered = std::mem::take(&mut build.buffered_log_messages);
+                            for message in buffered {
+                                send_log_message(&mut build.log_subscribers, &message).await;
+                            }
+                        }
+                    }
+                },
+                Event::DaemonHeartbeatInterval => {
+                    let mut disconnected = BTreeSet::new();
+                    for (machine_id, connection) in self.daemon_connections.iter_mut() {
+                        if connection.last_heartbeat.elapsed() > Duration::from_secs(15) {
+                            tracing::warn!(
+                                "no heartbeat message from machine `{machine_id}` since {:?}",
+                                connection.last_heartbeat.elapsed()
+                            )
+                        }
+                        if connection.last_heartbeat.elapsed() > Duration::from_secs(30) {
+                            disconnected.insert(machine_id.clone());
+                            continue;
+                        }
+                        let result: eyre::Result<()> = tokio::time::timeout(
+                            Duration::from_millis(500),
+                            send_heartbeat_message(&mut connection.stream, clock.new_timestamp()),
+                        )
+                        .await
+                        .wrap_err("timeout")
+                        .and_then(|r| r)
+                        .wrap_err_with(|| {
+                            format!("failed to send heartbeat message to daemon at `{machine_id}`")
+                        });
+                        if let Err(err) = result {
+                            tracing::warn!("{err:?}");
+                            disconnected.insert(machine_id.clone());
+                        }
+                    }
+                    if !disconnected.is_empty() {
+                        tracing::error!(
+                            "Disconnecting daemons that failed watchdog: {disconnected:?}"
+                        );
+                        for machine_id in disconnected {
+                            self.daemon_connections.remove(&machine_id);
+                        }
+                    }
                 }
-                None => {
-                    tracing::warn!(
-                        "received DataflowSpawnResult, but no matching dataflow in `running_dataflows` map"
-                    );
+                Event::CtrlC => {
+                    tracing::info!("Destroying coordinator after receiving Ctrl-C signal");
+                    handle_destroy(
+                        &mut running_dataflows,
+                        &mut daemon_connections,
+                        &abort_handle,
+                        &mut daemon_events_tx,
+                        &clock,
+                    )
+                    .await?;
                 }
-            },
+                Event::DaemonHeartbeat {
+                    daemon_id: machine_id,
+                } => {
+                    if let Some(connection) = self.daemon_connections.get_mut(&machine_id) {
+                        connection.last_heartbeat = Instant::now();
+                    }
+                }
+                Event::Log(message) => {
+                    if let Some(dataflow_id) = &message.dataflow_id {
+                        if let Some(dataflow) = running_dataflows.get_mut(dataflow_id) {
+                            if dataflow.log_subscribers.is_empty() {
+                                // buffer log message until there are subscribers
+                                dataflow.buffered_log_messages.push(message);
+                            } else {
+                                send_log_message(&mut dataflow.log_subscribers, &message).await;
+                            }
+                        }
+                    } else if let Some(build_id) = &message.build_id {
+                        if let Some(build) = running_builds.get_mut(build_id) {
+                            if build.log_subscribers.is_empty() {
+                                // buffer log message until there are subscribers
+                                build.buffered_log_messages.push(message);
+                            } else {
+                                send_log_message(&mut build.log_subscribers, &message).await;
+                            }
+                        }
+                    }
+                }
+                Event::DaemonExit { daemon_id } => {
+                    tracing::info!("Daemon `{daemon_id}` exited");
+                    self.daemon_connections.remove(&daemon_id);
+                }
+                Event::NodeMetrics {
+                    dataflow_id,
+                    metrics,
+                } => {
+                    // Store metrics for this dataflow
+                    if let Some(dataflow) = running_dataflows.get_mut(&dataflow_id) {
+                        for (node_id, node_metrics) in metrics {
+                            dataflow.node_metrics.insert(node_id, node_metrics);
+                        }
+                    }
+                }
+                Event::DataflowBuildResult {
+                    build_id,
+                    daemon_id,
+                    result,
+                } => match running_builds.get_mut(&build_id) {
+                    Some(build) => {
+                        build.pending_build_results.remove(&daemon_id);
+                        match result {
+                            Ok(()) => {}
+                            Err(err) => {
+                                build.errors.push(format!("{err:?}"));
+                            }
+                        };
+                        if build.pending_build_results.is_empty() {
+                            tracing::info!("dataflow build finished: `{build_id}`");
+                            let mut build = running_builds.remove(&build_id).unwrap();
+                            let result = if build.errors.is_empty() {
+                                Ok(())
+                            } else {
+                                Err(format!("build failed: {}", build.errors.join("\n\n")))
+                            };
+
+                            build.build_result.set_result(Ok(
+                                ControlRequestReply::DataflowBuildFinished(DataflowBuildFinished {
+                                    build_id,
+                                    result,
+                                }),
+                            ));
+
+                            finished_builds.insert(build_id, build.build_result);
+                        }
+                    }
+                    None => {
+                        tracing::warn!(
+                            "received DataflowSpawnResult, but no matching dataflow in `running_dataflows` map"
+                        );
+                    }
+                },
+                Event::DataflowSpawnResult {
+                    dataflow_id,
+                    daemon_id,
+                    result,
+                } => match running_dataflows.get_mut(&dataflow_id) {
+                    Some(dataflow) => {
+                        dataflow.pending_spawn_results.remove(&daemon_id);
+                        match result {
+                            Ok(()) => {
+                                if dataflow.pending_spawn_results.is_empty() {
+                                    tracing::info!("successfully spawned dataflow `{dataflow_id}`",);
+                                    dataflow.spawn_result.set_result(Ok(
+                                        ControlRequestReply::DataflowSpawned { uuid: dataflow_id },
+                                    ));
+                                }
+                            }
+                            Err(err) => {
+                                tracing::warn!("error while spawning dataflow `{dataflow_id}`");
+                                dataflow.spawn_result.set_result(Err(err));
+                            }
+                        };
+                    }
+                    None => {
+                        tracing::warn!(
+                            "received DataflowSpawnResult, but no matching dataflow in `running_dataflows` map"
+                        );
+                    }
+                },
+            }
+
+            // warn if event handling took too long -> the main loop should never be blocked for too long
+            let elapsed = start.elapsed();
+            if elapsed > Duration::from_millis(100) {
+                tracing::warn!(
+                    "Coordinator took {}ms for handling event: {event_kind}",
+                    elapsed.as_millis()
+                );
+            }
         }
 
-        // warn if event handling took too long -> the main loop should never be blocked for too long
-        let elapsed = start.elapsed();
-        if elapsed > Duration::from_millis(100) {
-            tracing::warn!(
-                "Coordinator took {}ms for handling event: {event_kind}",
-                elapsed.as_millis()
-            );
-        }
+        tracing::info!("stopped");
+
+        Ok(())
     }
-
-    tracing::info!("stopped");
-
-    Ok(())
 }
 
 async fn send_log_message(log_subscribers: &mut Vec<LogSubscriber>, message: &LogMessage) {

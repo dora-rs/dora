@@ -9,6 +9,9 @@ description.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[dependencies]
+serde = { version = "1.0.228" }
+
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]

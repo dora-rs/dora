@@ -30,3 +30,5 @@ serde-with-expand-env = "1.1.0"
 bincode = "1.3.3"
 serde_json = { workspace = true }
 chrono = { version = "0.4", features = ["serde"] }
+communication-layer-request-reply = { workspace = true }
+derive_more = { version = "2.1.1", features = ["from"] }

@@ -9,26 +9,19 @@ use crate::{
     id::{NodeId, OperatorId},
 };
 
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub use build::*;
+
+mod build;
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, derive_more::From)]
 pub enum ControlRequest {
-    Build {
-        session_id: SessionId,
-        dataflow: Descriptor,
-        git_sources: BTreeMap<NodeId, GitSource>,
-        prev_git_sources: BTreeMap<NodeId, GitSource>,
-        /// Allows overwriting the base working dir when CLI and daemon are
-        /// running on the same machine.
-        ///
-        /// Must not be used for multi-machine dataflows.
-        ///
-        /// Note that nodes with git sources still use a subdirectory of
-        /// the base working dir.
-        local_working_dir: Option<PathBuf>,
-        uv: bool,
-    },
-    WaitForBuild {
-        build_id: BuildId,
-    },
+    Build(BuildRequest),
+    WaitForBuild(WaitForBuild),
+    BuildLogSubscribe(BuildLogSubscribe),
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub enum ControlRequestOld {
     Start {
         build_id: Option<BuildId>,
         session_id: SessionId,
@@ -85,10 +78,7 @@ pub enum ControlRequest {
         dataflow_id: Uuid,
         level: log::LevelFilter,
     },
-    BuildLogSubscribe {
-        build_id: BuildId,
-        level: log::LevelFilter,
-    },
+
     CliAndDefaultDaemonOnSameMachine,
     GetNodeInfo,
 }

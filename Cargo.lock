@@ -796,6 +796,9 @@ dependencies = [
 [[package]]
 name = "communication-layer-request-reply"
 version = "0.4.1"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "compact_str"
@@ -1655,6 +1658,8 @@ dependencies = [
  "arrow-schema",
  "bincode",
  "chrono",
+ "communication-layer-request-reply",
+ "derive_more",
  "eyre",
  "log",
  "once_cell",

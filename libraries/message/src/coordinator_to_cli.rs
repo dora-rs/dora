@@ -9,16 +9,19 @@ pub use crate::common::{LogLevel, LogMessage, NodeError, NodeErrorCause, NodeExi
 use crate::{BuildId, common::DaemonId, descriptor::Descriptor, id::NodeId};
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct DataflowBuildFinished {
+    pub build_id: BuildId,
+    pub result: Result<(), String>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub enum ControlRequestReply {
     Error(String),
     CoordinatorStopped,
     DataflowBuildTriggered {
         build_id: BuildId,
     },
-    DataflowBuildFinished {
-        build_id: BuildId,
-        result: Result<(), String>,
-    },
+    DataflowBuildFinished(DataflowBuildFinished),
     DataflowStartTriggered {
         uuid: Uuid,
     },
