@@ -104,13 +104,24 @@ impl DescriptorExt for Descriptor {
                 }),
             };
 
+            let mut all_env = self.env.clone().unwrap_or_default();
+            if let Some(node_env) = node.env {
+                all_env.extend(node_env);
+            }
+
+            let env = if all_env.is_empty() {
+                None
+            } else {
+                Some(all_env)
+            };
+
             resolved.insert(
                 node.id.clone(),
                 ResolvedNode {
                     id: node.id,
                     name: node.name,
                     description: node.description,
-                    env: node.env,
+                    env,
                     deploy: node.deploy,
                     kind,
                 },
