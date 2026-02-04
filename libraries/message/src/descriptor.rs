@@ -91,7 +91,7 @@ pub struct Descriptor {
     ///     # ... (see below)
     /// ```
     ///
-    /// Note that, If there is an env at the node level, Node level env will have more priortiy than the global env
+    /// Note that, If there is an env at the node level, Node level env will have more priority than the global env
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env: Option<BTreeMap<String, EnvValue>>,
 
