@@ -84,7 +84,7 @@ pyo3 = { version = "0.23", features = [
     "multiple-pymethods",
 ] }
 pythonize = "0.23"
-git2 = { version = "0.18.0", features = ["vendored-openssl"] }
+git2 = { version = "0.20.4", features = ["vendored-openssl"] }
 serde_yaml = "0.9.33"
 zenoh = "1.1.1"
 serde_json = "1.0.145"
