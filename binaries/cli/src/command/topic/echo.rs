@@ -74,7 +74,7 @@ fn inspect(
     format: OutputFormat,
 ) -> eyre::Result<()> {
     let mut session = coordinator.connect()?;
-    let (dataflow_id, topics) = selector.resolve(session.as_mut())?;
+    let (dataflow_id, topics) = selector.resolve(&mut session)?;
 
     let rt = Builder::new_multi_thread()
         .enable_all()

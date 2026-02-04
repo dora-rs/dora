@@ -54,6 +54,7 @@ memchr = "2.7.5"
 chrono = { version = "0.4", features = ["serde"] }
 shellexpand = "3.1.1"
 sysinfo = "0.36.1"
+communication-layer-request-reply = { workspace = true }
 clonable-command = "0.2.0"
 
 [target.'cfg(windows)'.dependencies]

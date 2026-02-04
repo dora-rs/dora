@@ -1,11 +1,11 @@
 use crate::command::{Executable, default_tracing};
 use crate::{LOCALHOST, common::connect_to_coordinator};
-use communication_layer_request_reply::TcpRequestReplyConnection;
-use dora_core::descriptor::DescriptorExt;
-use dora_core::{descriptor::Descriptor, topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT};
+use dora_core::{
+    descriptor::{Descriptor, DescriptorExt},
+    topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT,
+};
 use dora_message::{
-    cli_to_coordinator::ControlRequest,
-    coordinator_to_cli::{ControlRequestReply, DataflowStatus},
+    cli_to_coordinator::CliToCoordinatorClient, coordinator_to_cli::DataflowStatus,
 };
 use eyre::{Context, bail};
 use std::{
@@ -51,7 +51,10 @@ pub fn check_environment(coordinator_addr: SocketAddr) -> eyre::Result<()> {
     };
 
     // Daemon status
-    let daemon_running = session.as_deref_mut().map(daemon_running).transpose()?;
+    let daemon_running = session
+        .as_mut()
+        .map(|it| it.daemon_connected())
+        .transpose()?;
 
     if daemon_running == Some(true) {
         let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Green)));
@@ -74,7 +77,7 @@ pub fn check_environment(coordinator_addr: SocketAddr) -> eyre::Result<()> {
 
     // Dataflow count
     if let Some(ref mut sess) = session {
-        if let Ok(count) = query_running_dataflow_count(&mut **sess) {
+        if let Ok(count) = query_running_dataflow_count(&mut *sess) {
             writeln!(stdout, "Active dataflows: {}", count)?;
         }
     }
@@ -86,38 +89,14 @@ pub fn check_environment(coordinator_addr: SocketAddr) -> eyre::Result<()> {
     Ok(())
 }
 
-pub fn daemon_running(session: &mut TcpRequestReplyConnection) -> Result<bool, eyre::ErrReport> {
-    let reply_raw = session
-        .request(&serde_json::to_vec(&ControlRequest::DaemonConnected).unwrap())
-        .wrap_err("failed to send DaemonConnected message")?;
-
-    let reply = serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-    let running = match reply {
-        ControlRequestReply::DaemonConnected(running) => running,
-        other => bail!("unexpected reply to daemon connection check: {other:?}"),
-    };
-
-    Ok(running)
-}
-
 fn query_running_dataflow_count(
-    session: &mut TcpRequestReplyConnection,
+    session: &mut CliToCoordinatorClient,
 ) -> Result<usize, eyre::ErrReport> {
-    let reply_raw = session
-        .request(&serde_json::to_vec(&ControlRequest::List).unwrap())
-        .wrap_err("failed to send List message")?;
-
-    let reply: ControlRequestReply =
-        serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-
-    match reply {
-        ControlRequestReply::DataflowList(list) => Ok(list
-            .0
-            .iter()
-            .filter(|d| d.status == DataflowStatus::Running)
-            .count()),
-        other => bail!("unexpected reply to list request: {other:?}"),
-    }
+    Ok(session
+        .list()?
+        .iter()
+        .filter(|d| d.status == DataflowStatus::Running)
+        .count())
 }
 
 #[derive(Debug, clap::Args)]

@@ -9,15 +9,18 @@ use crate::{
     output::print_log_message,
     session::DataflowSession,
 };
-use communication_layer_request_reply::{TcpConnection, TcpRequestReplyConnection};
+use communication_layer_request_reply::{Protocol, Transport};
 use dora_core::{
     descriptor::{Descriptor, DescriptorExt},
     topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST},
 };
 use dora_message::{
-    cli_to_coordinator::ControlRequest, common::LogMessage, coordinator_to_cli::ControlRequestReply,
+    cli_to_coordinator::{
+        CliToCoordinatorClient, CliToCoordinatorProtocol, CliToCoordinatorRequest, StartReq,
+    },
+    common::LogMessage,
 };
-use eyre::{Context, bail};
+use eyre::Context;
 use std::{
     net::{IpAddr, SocketAddr, TcpStream},
     path::PathBuf,
@@ -84,7 +87,7 @@ impl Executable for Start {
                 dataflow_descriptor,
                 dataflow,
                 dataflow_id,
-                &mut *session,
+                &mut session,
                 self.hot_reload,
                 coordinator_socket,
                 log_level,
@@ -108,7 +111,7 @@ fn start_dataflow(
     name: Option<String>,
     coordinator_socket: SocketAddr,
     uv: bool,
-) -> Result<(PathBuf, Descriptor, Box<TcpRequestReplyConnection>, Uuid), eyre::Error> {
+) -> Result<(PathBuf, Descriptor, CliToCoordinatorClient, Uuid), eyre::Error> {
     let dataflow = resolve_dataflow(dataflow).context("could not resolve dataflow")?;
     let dataflow_descriptor =
         Descriptor::blocking_read(&dataflow).wrap_err("Failed to read yaml dataflow")?;
@@ -118,88 +121,45 @@ fn start_dataflow(
     let mut session = connect_to_coordinator(coordinator_socket)
         .wrap_err("failed to connect to dora coordinator")?;
 
-    let local_working_dir = local_working_dir(&dataflow, &dataflow_descriptor, &mut *session)?;
+    let local_working_dir = local_working_dir(&dataflow, &dataflow_descriptor, &mut session)?;
 
-    let dataflow_id = {
-        let dataflow = dataflow_descriptor.clone();
-        let session: &mut TcpRequestReplyConnection = &mut *session;
-        let reply_raw = session
-            .request(
-                &serde_json::to_vec(&ControlRequest::Start {
-                    build_id: dataflow_session.build_id,
-                    session_id: dataflow_session.session_id,
-                    dataflow,
-                    name,
-                    local_working_dir,
-                    uv,
-                    write_events_to: write_events_to(),
-                })
-                .unwrap(),
-            )
-            .wrap_err("failed to send start dataflow message")?;
-
-        let result: ControlRequestReply =
-            serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-        match result {
-            ControlRequestReply::DataflowStartTriggered { uuid } => {
-                eprintln!("dataflow start triggered: {uuid}");
-                uuid
-            }
-            ControlRequestReply::Error(err) => bail!("{err}"),
-            other => bail!("unexpected start dataflow reply: {other:?}"),
-        }
-    };
+    let dataflow_id = session.start(StartReq {
+        build_id: dataflow_session.build_id,
+        session_id: dataflow_session.session_id,
+        dataflow: dataflow_descriptor.clone(),
+        name,
+        local_working_dir,
+        uv,
+        write_events_to: write_events_to(),
+    })?;
     Ok((dataflow, dataflow_descriptor, session, dataflow_id))
 }
 
 fn wait_until_dataflow_started(
     dataflow_id: Uuid,
-    session: &mut Box<TcpRequestReplyConnection>,
+    session: &mut CliToCoordinatorClient,
     coordinator_addr: SocketAddr,
     log_level: log::LevelFilter,
     print_daemon_id: bool,
 ) -> eyre::Result<()> {
     // subscribe to log messages
-    let mut log_session = TcpConnection {
-        stream: TcpStream::connect(coordinator_addr)
-            .wrap_err("failed to connect to dora coordinator")?,
-    };
+    let mut log_session = CliToCoordinatorProtocol::connect(
+        TcpStream::connect(coordinator_addr).wrap_err("failed to connect to dora coordinator")?,
+    )
+    .with_response::<LogMessage>();
     log_session
-        .send(
-            &serde_json::to_vec(&ControlRequest::LogSubscribe {
-                dataflow_id,
-                level: log_level,
-            })
-            .wrap_err("failed to serialize message")?,
-        )
+        .send(&CliToCoordinatorRequest::LogSubscribe {
+            dataflow_id,
+            level: log_level,
+        })
         .wrap_err("failed to send log subscribe request to coordinator")?;
     std::thread::spawn(move || {
-        while let Ok(raw) = log_session.receive() {
-            let parsed: eyre::Result<LogMessage> =
-                serde_json::from_slice(&raw).context("failed to parse log message");
-            match parsed {
-                Ok(log_message) => {
-                    print_log_message(log_message, false, print_daemon_id);
-                }
-                Err(err) => {
-                    tracing::warn!("failed to parse log message: {err:?}")
-                }
-            }
+        while let Ok(Some(message)) = log_session.receive() {
+            print_log_message(message, false, print_daemon_id);
         }
     });
 
-    let reply_raw = session
-        .request(&serde_json::to_vec(&ControlRequest::WaitForSpawn { dataflow_id }).unwrap())
-        .wrap_err("failed to send start dataflow message")?;
-
-    let result: ControlRequestReply =
-        serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-    match result {
-        ControlRequestReply::DataflowSpawned { uuid } => {
-            eprintln!("dataflow started: {uuid}");
-        }
-        ControlRequestReply::Error(err) => bail!("{err}"),
-        other => bail!("unexpected start dataflow reply: {other:?}"),
-    }
+    let uuid = session.wait_for_spawn(dataflow_id)?;
+    eprintln!("dataflow started: {uuid}");
     Ok(())
 }

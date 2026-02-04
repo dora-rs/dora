@@ -4,7 +4,7 @@ use std::{
 };
 
 use eyre::{Context, ContextCompat, eyre};
-use shared_memory_server::{ShmemClient, ShmemConf, ShmemServer};
+use shared_memory_server::{ShmemChannel, ShmemConf};
 
 fn main() -> eyre::Result<()> {
     let mut args = std::env::args();
@@ -26,7 +26,8 @@ fn server(executable: String) -> eyre::Result<()> {
         .create()
         .wrap_err("failed to create shmem region")?;
     let shmem_id = shmem.get_os_id().to_owned();
-    let mut server = unsafe { ShmemServer::new(shmem) }.wrap_err("failed to create ShmemServer")?;
+    let mut server =
+        unsafe { ShmemChannel::new_server(shmem) }.wrap_err("failed to create ShmemServer")?;
 
     let mut client = Command::new(executable);
     client.arg("client").arg(shmem_id);
@@ -55,11 +56,15 @@ enum Reply {
     Pong,
 }
 
-fn server_loop(server: &mut ShmemServer<Request, Reply>) -> eyre::Result<()> {
-    while let Some(request) = server.listen().wrap_err("failed to receive next message")? {
+fn server_loop(server: &mut ShmemChannel) -> eyre::Result<()> {
+    while let Some(request) = server
+        .receive(None)
+        .wrap_err("failed to receive next message")?
+    {
+        let request = bincode::deserialize::<Request>(&request)?;
         match request {
             Request::Ping => server
-                .send_reply(&Reply::Pong)
+                .send(&bincode::serialize(&Reply::Pong)?)
                 .wrap_err("failed to send reply")?,
         }
     }
@@ -71,20 +76,23 @@ fn client(shmem_id: String) -> eyre::Result<()> {
         .os_id(shmem_id)
         .open()
         .wrap_err("failed to open shmem region")?;
-    let mut client = unsafe { ShmemClient::new(shmem, Some(Duration::from_secs(2))) }
-        .wrap_err("failed to create ShmemClient")?;
+    let mut client =
+        unsafe { ShmemChannel::new_client(shmem) }.wrap_err("failed to create ShmemClient")?;
 
     client_loop(&mut client).wrap_err("client loop failed")?;
 
     Ok(())
 }
 
-fn client_loop(client: &mut ShmemClient<Request, Reply>) -> eyre::Result<()> {
+fn client_loop(client: &mut ShmemChannel) -> eyre::Result<()> {
     let mut latencies = Vec::new();
     for _ in 0..10_000_000 {
         let start = Instant::now();
-        let reply = client.request(&Request::Ping).wrap_err("ping failed")?;
-        match reply {
+        client
+            .send(&bincode::serialize(&Request::Ping)?)
+            .wrap_err("ping failed")?;
+        let reply = client.receive(Some(Duration::from_secs(2)))?.unwrap();
+        match bincode::deserialize::<Reply>(&reply)? {
             Reply::Pong => {
                 latencies.push(start.elapsed());
             }

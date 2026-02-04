@@ -47,12 +47,11 @@
 //!       - random
 //! ```
 
-use communication_layer_request_reply::TcpRequestReplyConnection;
 use dora_core::{
     descriptor::{CoreNodeKind, CustomNode, Descriptor, DescriptorExt},
     topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST},
 };
-use dora_message::{BuildId, descriptor::NodeSource};
+use dora_message::{BuildId, cli_to_coordinator::CliToCoordinatorClient, descriptor::NodeSource};
 use eyre::Context;
 use std::{collections::BTreeMap, net::IpAddr};
 
@@ -193,10 +192,10 @@ pub fn build(
             let local_working_dir = local_working_dir(
                 &dataflow_path,
                 &dataflow_descriptor,
-                &mut *coordinator_session,
+                &mut coordinator_session,
             )?;
             let build_id = build_distributed_dataflow(
-                &mut *coordinator_session,
+                &mut coordinator_session,
                 dataflow_descriptor,
                 &git_sources,
                 &dataflow_session,
@@ -213,7 +212,7 @@ pub fn build(
 
             wait_until_dataflow_built(
                 build_id,
-                &mut *coordinator_session,
+                &mut coordinator_session,
                 coordinator_socket(coordinator_addr, coordinator_port),
                 log::LevelFilter::Info,
             )?;
@@ -232,14 +231,14 @@ pub fn build(
 enum BuildKind {
     Local,
     ThroughCoordinator {
-        coordinator_session: Box<TcpRequestReplyConnection>,
+        coordinator_session: CliToCoordinatorClient,
     },
 }
 
 fn connect_to_coordinator_with_defaults(
     coordinator_addr: Option<std::net::IpAddr>,
     coordinator_port: Option<u16>,
-) -> std::io::Result<Box<TcpRequestReplyConnection>> {
+) -> std::io::Result<CliToCoordinatorClient> {
     let coordinator_socket = coordinator_socket(coordinator_addr, coordinator_port);
     connect_to_coordinator(coordinator_socket)
 }

@@ -5,9 +5,6 @@ use std::{
 
 use crate::{ListenConnection, RequestReplyConnection, RequestReplyLayer};
 
-pub type TcpRequestReplyConnection =
-    dyn RequestReplyConnection<RequestData = Vec<u8>, ReplyData = Vec<u8>, Error = std::io::Error>;
-
 pub struct TcpLayer {}
 
 impl TcpLayer {

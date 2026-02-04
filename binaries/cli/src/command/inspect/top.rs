@@ -10,12 +10,8 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use dora_core::topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT;
-use dora_message::{
-    cli_to_coordinator::ControlRequest,
-    coordinator_to_cli::{ControlRequestReply, NodeInfo},
-    id::NodeId,
-};
-use eyre::{Context, eyre};
+use dora_message::{coordinator_to_cli::NodeInfo, id::NodeId};
+use eyre::Context;
 use ratatui::{
     Frame, Terminal,
     backend::{Backend, CrosstermBackend},
@@ -256,30 +252,12 @@ fn run_app<B: Backend>(
 ) -> eyre::Result<()> {
     let mut app = App::new();
     let mut last_update = Instant::now();
-    let mut node_infos: Vec<NodeInfo> = Vec::new();
 
     // Reuse coordinator connection
     let mut session = connect_to_coordinator((coordinator_addr, coordinator_port).into())
         .wrap_err("Failed to connect to coordinator")?;
 
-    // Query node info once initially
-    let request = ControlRequest::GetNodeInfo;
-    let reply_raw = session
-        .request(&serde_json::to_vec(&request).unwrap())
-        .wrap_err("failed to send initial request to coordinator")?;
-
-    let reply: ControlRequestReply =
-        serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-
-    node_infos = match reply {
-        ControlRequestReply::NodeInfoList(infos) => infos,
-        ControlRequestReply::Error(err) => {
-            return Err(eyre!("coordinator error: {err}"));
-        }
-        _ => {
-            return Err(eyre!("unexpected reply from coordinator"));
-        }
-    };
+    app.update_stats(session.get_node_info()?);
 
     loop {
         terminal.draw(|f| ui(f, &mut app, refresh_duration))?;
@@ -324,29 +302,7 @@ fn run_app<B: Backend>(
 
         // Update data if refresh interval has passed
         if last_update.elapsed() >= refresh_duration {
-            // Query node info every refresh interval to get updated metrics
-            let request = ControlRequest::GetNodeInfo;
-            let reply_raw = session
-                .request(&serde_json::to_vec(&request).unwrap())
-                .wrap_err("failed to send request to coordinator")?;
-
-            let reply: ControlRequestReply =
-                serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-
-            match reply {
-                ControlRequestReply::NodeInfoList(infos) => {
-                    node_infos = infos;
-                }
-                ControlRequestReply::Error(err) => {
-                    return Err(eyre!("coordinator error: {err}"));
-                }
-                _ => {
-                    return Err(eyre!("unexpected reply from coordinator"));
-                }
-            }
-
-            // Update stats with current node info
-            app.update_stats(node_infos.clone());
+            app.update_stats(session.get_node_info()?);
             last_update = Instant::now();
         }
     }
@@ -365,7 +321,7 @@ fn ui(f: &mut Frame, app: &mut App, refresh_duration: Duration) {
         }
     };
 
-    let header_strings = vec![
+    let header_strings = [
         format!("NODE{}", sort_indicator(SortColumn::Node)),
         "DATAFLOW".to_string(),
         "PID".to_string(),

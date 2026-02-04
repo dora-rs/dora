@@ -2,7 +2,6 @@ use clap::{CommandFactory, ValueEnum};
 use clap_complete::Shell;
 
 use crate::command::Executable;
-use sysinfo;
 
 #[derive(Debug, clap::Args)]
 #[command(after_help = r#"

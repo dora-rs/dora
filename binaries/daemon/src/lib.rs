@@ -220,8 +220,7 @@ impl Daemon {
         let (events_tx, events_rx) = flume::bounded(10);
         if nodes
             .iter()
-            .find(|(_n, resolved_nodes)| resolved_nodes.kind.dynamic())
-            .is_some()
+            .any(|(_n, resolved_nodes)| resolved_nodes.kind.dynamic())
         {
             // Spawn local listener for dynamic nodes
             let _listen_port = local_listener::spawn_listener_loop(
@@ -1647,7 +1646,9 @@ impl Daemon {
                 };
 
                 let reply = DaemonReply::NodeConfig {
-                    result: node_config,
+                    result: node_config.and_then(|config| {
+                        serde_json::to_string(&config).map_err(|err| err.to_string())
+                    }),
                 };
                 let _ = reply_tx.send(Some(reply)).map_err(|_| {
                     error!("could not send node info reply from daemon to coordinator")

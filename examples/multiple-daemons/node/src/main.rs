@@ -1,8 +1,6 @@
 use dora_node_api::{self, DoraNode, Event, IntoArrow, dora_core::config::DataId};
 
 fn main() -> eyre::Result<()> {
-    println!("hello");
-
     let output = DataId::from("random".to_owned());
 
     let (mut node, mut events) = DoraNode::init_from_env()?;

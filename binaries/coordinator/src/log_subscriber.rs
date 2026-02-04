@@ -1,18 +1,27 @@
-use dora_message::coordinator_to_cli::LogMessage;
+use communication_layer_request_reply::{
+    AsyncTransport, EncodedTransport, Protocol, transport::FramedTransport,
+};
+use dora_message::{cli_to_coordinator::CliToCoordinatorProtocol, coordinator_to_cli::LogMessage};
 use eyre::{Context, ContextCompat};
-
-use crate::tcp_utils::tcp_send;
+use tokio::net::TcpStream;
 
 pub struct LogSubscriber {
     pub level: log::LevelFilter,
-    connection: Option<tokio::net::TcpStream>,
+    transport: Option<
+        EncodedTransport<
+            FramedTransport<TcpStream>,
+            <CliToCoordinatorProtocol as Protocol>::Encoding,
+            LogMessage,
+            (),
+        >,
+    >,
 }
 
 impl LogSubscriber {
-    pub fn new(level: log::LevelFilter, connection: tokio::net::TcpStream) -> Self {
+    pub fn new(level: log::LevelFilter, transport: FramedTransport<TcpStream>) -> Self {
         Self {
             level,
-            connection: Some(connection),
+            transport: Some(EncodedTransport::new(transport, Default::default())),
         }
     }
 
@@ -26,19 +35,19 @@ impl LogSubscriber {
             dora_core::build::LogLevelOrStdout::Stdout => {}
         }
 
-        let message = serde_json::to_vec(&message)?;
-        let connection = self.connection.as_mut().context("connection is closed")?;
-        tcp_send(connection, &message)
+        let connection = self.transport.as_mut().context("connection is closed")?;
+        connection
+            .send(message)
             .await
             .context("failed to send message")?;
         Ok(())
     }
 
     pub fn is_closed(&self) -> bool {
-        self.connection.is_none()
+        self.transport.is_none()
     }
 
     pub fn close(&mut self) {
-        self.connection = None;
+        self.transport = None;
     }
 }

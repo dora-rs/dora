@@ -7,9 +7,21 @@
 //!
 //! TODO
 
+pub use encoding::EncodedTransport;
 pub use tcp::*;
+pub use transport::{AsyncTransport, Transport};
 
+use crate::{
+    encoding::{Decoder, Encoder},
+    transport::{ClientTransport, FramedTransport, ServerTransport},
+};
+
+pub mod encoding;
 mod tcp;
+pub mod transport;
+
+pub type TcpRequestReplyConnection =
+    dyn RequestReplyConnection<RequestData = Vec<u8>, ReplyData = Vec<u8>, Error = std::io::Error>;
 
 /// Abstraction trait for different publisher/subscriber implementations.
 pub trait RequestReplyLayer: Send + Sync {
@@ -74,4 +86,49 @@ pub trait RequestReplyConnection: Send + Sync {
     type Error;
 
     fn request(&mut self, request: &Self::RequestData) -> Result<Self::ReplyData, Self::Error>;
+}
+
+impl<T: RequestReplyConnection + ?Sized> RequestReplyConnection for &mut T {
+    type RequestData = T::RequestData;
+    type ReplyData = T::ReplyData;
+    type Error = T::Error;
+    fn request(&mut self, request: &Self::RequestData) -> Result<Self::ReplyData, Self::Error> {
+        (**self).request(request)
+    }
+}
+
+pub trait Protocol {
+    type Encoding: Encoder<Self::Request>
+        + Decoder<Self::Request>
+        + Encoder<Self::Response>
+        + Decoder<Self::Response>
+        + Default;
+    type Request;
+    type Response;
+
+    fn bind<IO>(io: IO) -> ServerTransport<IO, Self>
+    where
+        IO: std::io::Read + std::io::Write,
+    {
+        EncodedTransport::new(FramedTransport::new(io), Self::Encoding::default())
+    }
+    fn bind_async<IO>(io: IO) -> ServerTransport<IO, Self>
+    where
+        IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send,
+    {
+        EncodedTransport::new(FramedTransport::new(io), Self::Encoding::default())
+    }
+
+    fn connect<IO>(io: IO) -> ClientTransport<IO, Self>
+    where
+        IO: std::io::Read + std::io::Write,
+    {
+        EncodedTransport::new(FramedTransport::new(io), Self::Encoding::default())
+    }
+    fn connect_async<IO>(io: IO) -> ClientTransport<IO, Self>
+    where
+        IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send,
+    {
+        EncodedTransport::new(FramedTransport::new(io), Self::Encoding::default())
+    }
 }

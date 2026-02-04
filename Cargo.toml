@@ -27,6 +27,7 @@ members = [
     "libraries/communication-layer/*",
     "libraries/core",
     "libraries/message",
+    "libraries/dora-schema-macro",
     "libraries/shared-memory-server",
     "libraries/extensions/download",
     "libraries/extensions/telemetry/*",
@@ -72,11 +73,15 @@ dora-ros2-bridge-msg-gen = { version = "0.4.1", path = "libraries/extensions/ros
 dora-ros2-bridge-python = { path = "libraries/extensions/ros2-bridge/python" }
 # versioned independently from the other dora crates
 dora-message = { version = "0.7.0", path = "libraries/message" }
+dora-schema-macro = { path = "libraries/dora-schema-macro" }
 arrow = { version = "54.2.1" }
 arrow-schema = { version = "54.2.1" }
 arrow-data = { version = "54.2.1" }
 arrow-array = { version = "54.2.1" }
 arrow-json = { version = "54.2.1" }
+async-trait = "0.1.89"
+eyre = "0.6.12"
+git2 = { version = "0.18.0", features = ["vendored-openssl"] }
 parquet = { version = "54.2.1" }
 pyo3 = { version = "0.23", features = [
     "eyre",
@@ -84,10 +89,11 @@ pyo3 = { version = "0.23", features = [
     "multiple-pymethods",
 ] }
 pythonize = "0.23"
-git2 = { version = "0.18.0", features = ["vendored-openssl"] }
-serde_yaml = "0.9.33"
-zenoh = "1.1.1"
+serde = "1.0.228"
 serde_json = "1.0.145"
+serde_yaml = "0.9.33"
+tokio = { version = "1.49.0", features = ["full"] }
+zenoh = "1.1.1"
 
 [package]
 name = "dora-examples"

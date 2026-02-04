@@ -36,38 +36,11 @@ pub enum DaemonRequest {
 }
 
 impl DaemonRequest {
-    pub fn expects_tcp_bincode_reply(&self) -> bool {
-        #[allow(clippy::match_like_matches_macro)]
-        match self {
-            DaemonRequest::SendMessage { .. }
-            | DaemonRequest::NodeConfig { .. }
-            | DaemonRequest::ReportDropTokens { .. } => false,
-            DaemonRequest::Register(NodeRegisterRequest { .. })
-            | DaemonRequest::Subscribe
-            | DaemonRequest::CloseOutputs(_)
-            | DaemonRequest::OutputsDone
-            | DaemonRequest::NextEvent { .. }
-            | DaemonRequest::SubscribeDrop
-            | DaemonRequest::NextFinishedDropTokens
-            | DaemonRequest::EventStreamDropped => true,
-        }
-    }
-
-    pub fn expects_tcp_json_reply(&self) -> bool {
-        #[allow(clippy::match_like_matches_macro)]
-        match self {
-            DaemonRequest::NodeConfig { .. } => true,
-            DaemonRequest::Register(NodeRegisterRequest { .. })
-            | DaemonRequest::Subscribe
-            | DaemonRequest::CloseOutputs(_)
-            | DaemonRequest::OutputsDone
-            | DaemonRequest::NextEvent { .. }
-            | DaemonRequest::SubscribeDrop
-            | DaemonRequest::NextFinishedDropTokens
-            | DaemonRequest::ReportDropTokens { .. }
-            | DaemonRequest::SendMessage { .. }
-            | DaemonRequest::EventStreamDropped => false,
-        }
+    pub fn should_ignore_response(&self) -> bool {
+        matches!(
+            self,
+            DaemonRequest::SendMessage { .. } | DaemonRequest::ReportDropTokens { .. }
+        )
     }
 }
 

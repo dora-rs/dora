@@ -5,15 +5,13 @@ use std::{
 };
 
 use crate::common::resolve_dataflow_identifier_interactive;
-use communication_layer_request_reply::TcpRequestReplyConnection;
 use dora_core::{config::InputMapping, descriptor::Descriptor};
 use dora_message::{
     DataflowId,
-    cli_to_coordinator::ControlRequest,
-    coordinator_to_cli::ControlRequestReply,
+    cli_to_coordinator::CliToCoordinatorClient,
     id::{DataId, NodeId},
 };
-use eyre::{Context, ContextCompat, bail};
+use eyre::{ContextCompat, bail};
 use uuid::Uuid;
 
 #[derive(Debug, clap::Args)]
@@ -26,25 +24,12 @@ pub struct DataflowSelector {
 impl DataflowSelector {
     pub fn resolve(
         &self,
-        session: &mut TcpRequestReplyConnection,
+        session: &mut CliToCoordinatorClient,
     ) -> eyre::Result<(Uuid, Descriptor)> {
         let dataflow_id =
-            resolve_dataflow_identifier_interactive(&mut *session, self.dataflow.as_deref())?;
-        let reply_raw = session
-            .request(
-                &serde_json::to_vec(&ControlRequest::Info {
-                    dataflow_uuid: dataflow_id,
-                })
-                .unwrap(),
-            )
-            .wrap_err("failed to send message")?;
-        let reply: ControlRequestReply =
-            serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-        match reply {
-            ControlRequestReply::DataflowInfo { descriptor, .. } => Ok((dataflow_id, descriptor)),
-            ControlRequestReply::Error(err) => bail!("{err}"),
-            other => bail!("unexpected list dataflow reply: {other:?}"),
-        }
+            resolve_dataflow_identifier_interactive(session, self.dataflow.as_deref())?;
+        let info = session.info(dataflow_id)?;
+        Ok((info.uuid, info.descriptor))
     }
 }
 
@@ -72,7 +57,7 @@ impl fmt::Display for TopicIdentifier {
 impl TopicSelector {
     pub fn resolve(
         &self,
-        session: &mut TcpRequestReplyConnection,
+        session: &mut CliToCoordinatorClient,
     ) -> eyre::Result<(DataflowId, BTreeSet<TopicIdentifier>)> {
         let (dataflow_id, dataflow_descriptor) = self.dataflow.resolve(session)?;
         if !dataflow_descriptor.debug.publish_all_messages_to_zenoh {
