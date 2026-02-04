@@ -951,7 +951,7 @@ impl Daemon {
                 dataflow_descriptor,
             } => {
                 let result = self
-                    .dynamic_spawn_node(dataflow_id, node_id, node, dataflow_descriptor)
+                    .dynamic_spawn_node(dataflow_id, node_id, *node, *dataflow_descriptor)
                     .await;
                 let reply = DaemonCoordinatorReply::DynamicSpawnResult(
                     result.map_err(|err| format!("{err:?}")),
@@ -974,8 +974,8 @@ impl Daemon {
                     .restart_node_with_new_config(
                         dataflow_id,
                         node_id.clone(),
-                        new_node,
-                        dataflow_descriptor,
+                        *new_node,
+                        *dataflow_descriptor,
                     )
                     .await;
                 if let Err(ref e) = result {
@@ -1462,8 +1462,8 @@ impl Daemon {
                         } => DaemonCoordinatorEvent::DynamicSpawn {
                             dataflow_id,
                             node_id,
-                            node,
-                            dataflow_descriptor: new_descriptor,
+                            node: Box::new(node),
+                            dataflow_descriptor: Box::new(new_descriptor),
                         },
                         DaemonHotReloadEvent::RestartNode {
                             node_id,
@@ -1472,8 +1472,8 @@ impl Daemon {
                         } => DaemonCoordinatorEvent::RestartNode {
                             dataflow_id,
                             node_id,
-                            new_node,
-                            dataflow_descriptor: new_descriptor,
+                            new_node: Box::new(new_node),
+                            dataflow_descriptor: Box::new(new_descriptor),
                         },
                     };
                     let event = Timestamped {

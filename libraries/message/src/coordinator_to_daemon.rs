@@ -59,15 +59,15 @@ pub enum DaemonCoordinatorEvent {
     DynamicSpawn {
         dataflow_id: DataflowId,
         node_id: NodeId,
-        node: ResolvedNode,
-        dataflow_descriptor: Descriptor,
+        node: Box<ResolvedNode>,
+        dataflow_descriptor: Box<Descriptor>,
     },
     /// Restart a node with new configuration (for hot-reload when node config changed in YAML)
     RestartNode {
         dataflow_id: DataflowId,
         node_id: NodeId,
-        new_node: ResolvedNode,
-        dataflow_descriptor: Descriptor,
+        new_node: Box<ResolvedNode>,
+        dataflow_descriptor: Box<Descriptor>,
     },
     Logs {
         dataflow_id: DataflowId,
