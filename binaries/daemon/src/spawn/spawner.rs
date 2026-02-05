@@ -19,7 +19,11 @@ use dora_message::{
     daemon_to_node::{NodeConfig, RuntimeConfig},
 };
 use eyre::{ContextCompat, WrapErr, bail};
-use std::{future::Future, path::PathBuf, sync::Arc};
+use std::{
+    future::Future,
+    path::PathBuf,
+    sync::{Arc, atomic::AtomicBool},
+};
 use tokio::sync::mpsc;
 
 #[derive(Clone)]
@@ -309,6 +313,7 @@ impl Spawner {
             clock: self.clock,
             daemon_tx: self.daemon_tx,
             node_stderr_most_recent,
+            pending_hot_reload: Arc::new(AtomicBool::new(false)),
         })
     }
 }

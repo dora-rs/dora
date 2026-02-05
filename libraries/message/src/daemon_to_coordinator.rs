@@ -106,6 +106,12 @@ pub enum DaemonCoordinatorReply {
     TriggerSpawnResult(Result<(), String>),
     ReloadResult(Result<(), String>),
     StopResult(Result<(), String>),
+    /// Result of stopping a single node
+    StopNodeResult(Result<(), String>),
+    /// Result of dynamically spawning a node
+    DynamicSpawnResult(Result<(), String>),
+    /// Result of restarting a node with new config
+    RestartNodeResult(Result<(), String>),
     DestroyResult {
         result: Result<(), String>,
         #[serde(skip)]

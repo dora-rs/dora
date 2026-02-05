@@ -59,9 +59,22 @@ pub enum DaemonReply {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub enum StopReason {
+    Manual,
+    HotReload,
+    AllInputsClosed,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[allow(clippy::large_enum_variant)]
 pub enum NodeEvent {
-    Stop,
+    Stop {
+        /// `Option` for backwards compatibility: older serialized messages lack this
+        /// field, so `#[serde(default)]` deserializes them as `None`.
+        #[serde(default)]
+        reason: Option<StopReason>,
+    },
     Reload {
         operator_id: Option<OperatorId>,
     },

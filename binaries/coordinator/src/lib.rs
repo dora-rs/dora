@@ -478,6 +478,7 @@ async fn start_inner(
                             local_working_dir,
                             uv,
                             write_events_to,
+                            hot_reload,
                         } => {
                             let name = name.or_else(|| petname(2, "-"));
 
@@ -503,6 +504,7 @@ async fn start_inner(
                                     &clock,
                                     uv,
                                     write_events_to,
+                                    hot_reload,
                                 )
                                 .await?;
                                 Ok(dataflow)
@@ -1501,6 +1503,7 @@ async fn start_dataflow(
     clock: &HLC,
     uv: bool,
     write_events_to: Option<PathBuf>,
+    hot_reload: bool,
 ) -> eyre::Result<RunningDataflow> {
     let SpawnedDataflow {
         uuid,
@@ -1516,6 +1519,7 @@ async fn start_dataflow(
         clock,
         uv,
         write_events_to,
+        hot_reload,
     )
     .await?;
     Ok(RunningDataflow {

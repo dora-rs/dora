@@ -1,16 +1,14 @@
 use communication_layer_request_reply::{TcpConnection, TcpRequestReplyConnection};
-use dora_core::descriptor::{CoreNodeKind, Descriptor, DescriptorExt, resolve_path};
+use dora_core::descriptor::{Descriptor, DescriptorExt};
 use dora_message::cli_to_coordinator::ControlRequest;
 use dora_message::common::LogMessage;
 use dora_message::coordinator_to_cli::ControlRequestReply;
 use eyre::Context;
-use notify::event::ModifyKind;
-use notify::{Config, Event as NotifyEvent, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::{
-    collections::HashMap,
     net::{SocketAddr, TcpStream},
+    sync::mpsc,
+    time::Duration,
 };
-use std::{path::PathBuf, sync::mpsc, time::Duration};
 use tracing::{error, info};
 use uuid::Uuid;
 
@@ -19,91 +17,16 @@ use crate::output::print_log_message;
 
 pub fn attach_dataflow(
     dataflow: Descriptor,
-    dataflow_path: PathBuf,
     dataflow_id: Uuid,
     session: &mut TcpRequestReplyConnection,
-    hot_reload: bool,
     coordinator_socket: SocketAddr,
     log_level: log::LevelFilter,
 ) -> Result<(), eyre::ErrReport> {
     let (tx, rx) = mpsc::channel();
 
-    // Generate path hashmap
-    let mut node_path_lookup = HashMap::new();
-
     let nodes = dataflow.resolve_aliases_and_set_defaults()?;
 
     let print_daemon_name = nodes.values().any(|n| n.deploy.is_some());
-
-    let working_dir = dataflow_path
-        .canonicalize()
-        .context("failed to canonicalize dataflow path")?
-        .parent()
-        .ok_or_else(|| eyre::eyre!("canonicalized dataflow path has no parent"))?
-        .to_owned();
-
-    for node in nodes.into_values() {
-        match node.kind {
-            // Reloading Custom Nodes is not supported. See: https://github.com/dora-rs/dora/pull/239#discussion_r1154313139
-            CoreNodeKind::Custom(_cn) => (),
-            CoreNodeKind::Runtime(rn) => {
-                for op in rn.operators.iter() {
-                    if let dora_core::descriptor::OperatorSource::Python(python_source) =
-                        &op.config.source
-                    {
-                        let path = resolve_path(&python_source.source, &working_dir)
-                            .wrap_err_with(|| {
-                                format!("failed to resolve node source `{}`", python_source.source)
-                            })?;
-                        node_path_lookup
-                            .insert(path, (dataflow_id, node.id.clone(), Some(op.id.clone())));
-                    }
-                    // Reloading non-python operator is not supported. See: https://github.com/dora-rs/dora/pull/239#discussion_r1154313139
-                }
-            }
-        }
-    }
-
-    // Setup dataflow file watcher if reload option is set.
-    let watcher_tx = tx.clone();
-    let _watcher = if hot_reload {
-        let hash = node_path_lookup.clone();
-        let paths = hash.keys();
-        let notifier = move |event| {
-            if let Ok(NotifyEvent {
-                paths,
-                kind: EventKind::Modify(ModifyKind::Data(_data)),
-                ..
-            }) = event
-            {
-                for path in paths {
-                    if let Some((dataflow_id, node_id, operator_id)) = node_path_lookup.get(&path) {
-                        watcher_tx
-                            .send(AttachEvent::Control(ControlRequest::Reload {
-                                dataflow_id: *dataflow_id,
-                                node_id: node_id.clone(),
-                                operator_id: operator_id.clone(),
-                            }))
-                            .context("Could not send reload request to the cli loop")
-                            .unwrap();
-                    }
-                }
-                // TODO: Manage different file event
-            }
-        };
-
-        let mut watcher = RecommendedWatcher::new(
-            notifier,
-            Config::default().with_poll_interval(Duration::from_secs(1)),
-        )?;
-
-        for path in paths {
-            watcher.watch(path, RecursiveMode::Recursive)?;
-        }
-        Some(watcher)
-    } else {
-        None
-    };
 
     // Setup Ctrlc Watcher to stop dataflow after ctrlc
     let ctrlc_tx = tx.clone();

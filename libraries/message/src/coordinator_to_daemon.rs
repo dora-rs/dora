@@ -50,6 +50,25 @@ pub enum DaemonCoordinatorEvent {
         node_id: NodeId,
         operator_id: Option<OperatorId>,
     },
+    /// Stop a single node within a running dataflow (for hot-reload when node is removed)
+    StopNode {
+        dataflow_id: DataflowId,
+        node_id: NodeId,
+    },
+    /// Dynamically spawn additional nodes to a running dataflow (for hot-reload when node is added)
+    DynamicSpawn {
+        dataflow_id: DataflowId,
+        node_id: NodeId,
+        node: Box<ResolvedNode>,
+        dataflow_descriptor: Box<Descriptor>,
+    },
+    /// Restart a node with new configuration (for hot-reload when node config changed in YAML)
+    RestartNode {
+        dataflow_id: DataflowId,
+        node_id: NodeId,
+        new_node: Box<ResolvedNode>,
+        dataflow_descriptor: Box<Descriptor>,
+    },
     Logs {
         dataflow_id: DataflowId,
         node_id: NodeId,
@@ -96,4 +115,10 @@ pub struct SpawnDataflowNodes {
     pub spawn_nodes: BTreeSet<NodeId>,
     pub uv: bool,
     pub write_events_to: Option<PathBuf>,
+    /// When true, hot-reload file watching is enabled for this dataflow.
+    #[serde(default)]
+    pub hot_reload: bool,
+    /// Path to the dataflow YAML file, used for hot-reload YAML watching.
+    #[serde(default)]
+    pub dataflow_path: Option<PathBuf>,
 }

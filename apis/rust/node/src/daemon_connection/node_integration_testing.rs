@@ -178,7 +178,7 @@ impl IntegrationTestingEvents {
         );
 
         let converted = match event {
-            IncomingEvent::Stop => NodeEvent::Stop,
+            IncomingEvent::Stop => NodeEvent::Stop { reason: None },
             IncomingEvent::Input { id, metadata, data } => {
                 let (data, type_info) = if let Some(data) = data {
                     let array = read_input_data(*data).with_context(|| {
