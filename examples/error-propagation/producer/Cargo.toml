@@ -1,0 +1,9 @@
+[package]
+name = "error-propagation-producer"
+version = "0.1.0"
+edition = "2021"
+rust-version.workspace = true
+
+[dependencies]
+dora-node-api = { workspace = true }
+eyre = "0.6"

@@ -1,0 +1,12 @@
+nodes:
+  - id: producer
+    build: cargo build -p error-propagation-producer
+    path: ../../target/debug/error-propagation-producer
+    outputs:
+      - data
+
+  - id: consumer
+    build: cargo build -p error-propagation-consumer
+    path: ../../target/debug/error-propagation-consumer
+    inputs:
+      data: producer/data
