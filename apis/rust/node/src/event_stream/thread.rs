@@ -21,9 +21,15 @@ pub fn init(
     channel: DaemonChannel,
     clock: Arc<uhlc::HLC>,
 ) -> eyre::Result<EventStreamThreadHandle> {
+    let (shutdown_tx, shutdown_rx) = flume::bounded(1);
     let node_id_cloned = node_id.clone();
-    let join_handle = std::thread::spawn(|| event_stream_loop(node_id_cloned, tx, channel, clock));
-    Ok(EventStreamThreadHandle::new(node_id, join_handle))
+    let join_handle =
+        std::thread::spawn(|| event_stream_loop(node_id_cloned, tx, channel, clock, shutdown_rx));
+    Ok(EventStreamThreadHandle::new(
+        node_id,
+        join_handle,
+        shutdown_tx,
+    ))
 }
 
 #[derive(Debug)]
@@ -40,10 +46,15 @@ pub enum EventItem {
 pub struct EventStreamThreadHandle {
     node_id: NodeId,
     handle: flume::Receiver<std::thread::Result<()>>,
+    shutdown_tx: flume::Sender<()>,
 }
 
 impl EventStreamThreadHandle {
-    fn new(node_id: NodeId, join_handle: std::thread::JoinHandle<()>) -> Self {
+    fn new(
+        node_id: NodeId,
+        join_handle: std::thread::JoinHandle<()>,
+        shutdown_tx: flume::Sender<()>,
+    ) -> Self {
         let (tx, rx) = flume::bounded(1);
         std::thread::spawn(move || {
             let _ = tx.send(join_handle.join());
@@ -51,12 +62,16 @@ impl EventStreamThreadHandle {
         Self {
             node_id,
             handle: rx,
+            shutdown_tx,
         }
     }
 }
 
 impl Drop for EventStreamThreadHandle {
     fn drop(&mut self) {
+        // Signal the event stream thread to shutdown gracefully
+        let _ = self.shutdown_tx.send(());
+
         if self.handle.is_empty() {
             tracing::trace!("waiting for event stream thread");
         }
@@ -84,12 +99,13 @@ impl Drop for EventStreamThreadHandle {
     }
 }
 
-#[tracing::instrument(skip(tx, channel, clock))]
+#[tracing::instrument(skip(tx, channel, clock, shutdown_rx))]
 fn event_stream_loop(
     node_id: NodeId,
     tx: flume::Sender<EventItem>,
     mut channel: DaemonChannel,
     clock: Arc<uhlc::HLC>,
+    shutdown_rx: flume::Receiver<()>,
 ) {
     let mut tx = Some(tx);
     let mut close_tx = false;
@@ -97,6 +113,12 @@ fn event_stream_loop(
     let mut drop_tokens = Vec::new();
 
     let result = 'outer: loop {
+        // Check if shutdown was requested
+        if shutdown_rx.try_recv().is_ok() {
+            tracing::debug!("shutdown signal received, exiting event stream loop");
+            break 'outer Ok(());
+        }
+
         if let Err(err) = handle_pending_drop_tokens(&mut pending_drop_tokens, &mut drop_tokens) {
             break 'outer Err(err);
         }
