@@ -1319,10 +1319,20 @@ impl Daemon {
             }
         }
 
+        let dataflow_descriptor_with_env = {
+            let mut desc = dataflow_descriptor.clone();
+            for node in desc.nodes.iter_mut() {
+                if let Some(resolved_node) = nodes.get(&node.id) {
+                    node.env = resolved_node.env.clone();
+                }
+            }
+            desc
+        };
+
         let spawner = Spawner {
             dataflow_id,
             daemon_tx: self.events_tx.clone(),
-            dataflow_descriptor,
+            dataflow_descriptor: dataflow_descriptor_with_env,
             clock: self.clock.clone(),
             uv,
         };

@@ -53,6 +53,9 @@ pub const DYNAMIC_SOURCE: &str = "dynamic";
 #[serde(deny_unknown_fields)]
 #[schemars(title = "dora-rs specification")]
 pub struct Descriptor {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<BTreeMap<String, EnvValue>>,
+
     /// List of nodes in the dataflow
     ///
     /// This is the most important field of the dataflow specification.
