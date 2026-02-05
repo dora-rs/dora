@@ -8,7 +8,9 @@ fn main() {
     #[cfg(feature = "ros2-bridge")]
     bridge_files.extend(ros2::generate());
 
-    let _build = cxx_build::bridges(&bridge_files);
+    let mut build = cxx_build::bridges(&bridge_files);
+    build.flag("-std=c++20");
+    build.flag_if_supported("-Wno-deprecated-declarations");
     println!("cargo:rerun-if-changed=src/lib.rs");
 
     // rename header files

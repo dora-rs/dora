@@ -2,6 +2,8 @@
 
 Dora supports nodes written in C++ through this API crate.
 
+**Note:** This API requires C++20 for timestamp support with `std::chrono::utc_clock`.
+
 ## Build
 
 - Clone the `dora` repository:
@@ -102,6 +104,40 @@ std::cout << "Input ID: " << input_info.id << std::endl;
 // Access metadata via the provided helper type
 auto metadata = std::move(input_info.metadata);
 std::cout << "Metadata timestamp: " << metadata->timestamp() << std::endl;
+
+// Working with timestamp metadata (C++20 required)
+// The API uses i64 (nanoseconds since Unix epoch) for timestamp parameters
+// You can convert to/from std::chrono::time_point<std::chrono::utc_clock>:
+
+#include <chrono>
+
+// Getting a timestamp parameter
+auto nanos_result = metadata->get_timestamp("sensor_time");
+if (nanos_result.has_value()) {
+    int64_t nanos = nanos_result.value();
+    
+    // Convert to C++20 std::chrono::time_point<std::chrono::utc_clock>
+    auto tp = std::chrono::utc_clock::time_point(std::chrono::nanoseconds(nanos));
+    
+    // Use the time_point as needed
+    // For example, convert to system_clock for display:
+    auto sys_tp = std::chrono::utc_clock::to_sys(tp);
+    auto time_t = std::chrono::system_clock::to_time_t(sys_tp);
+    std::cout << "Sensor time: " << std::ctime(&time_t) << std::endl;
+}
+
+// Setting a timestamp parameter
+// Create a time_point from current time
+auto now = std::chrono::utc_clock::now();
+auto nanos_since_epoch = std::chrono::duration_cast<std::chrono::nanoseconds>(
+    now.time_since_epoch()
+).count();
+
+// Set the timestamp
+auto set_result = metadata->set_timestamp("event_time", nanos_since_epoch);
+if (!set_result.error.empty()) {
+    std::cerr << "Error setting timestamp: " << set_result.error << std::endl;
+}
 
 auto keys = metadata->list_keys();
 for (std::size_t i = 0; i < keys.size(); i++) {

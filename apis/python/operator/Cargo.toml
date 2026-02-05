@@ -22,3 +22,4 @@ arrow-schema = { workspace = true }
 aligned-vec = "0.5.0"
 futures = "0.3.28"
 futures-concurrency = "7.3.0"
+chrono = { version = "0.4", features = ["serde"] }

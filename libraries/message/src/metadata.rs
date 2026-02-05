@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use arrow_schema::DataType;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 /// Additional data that is sent as part of output messages.
@@ -69,6 +70,7 @@ pub enum Parameter {
     Float(f64),
     ListFloat(Vec<f64>),
     ListString(Vec<String>),
+    Timestamp(DateTime<Utc>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
