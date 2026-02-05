@@ -74,6 +74,27 @@ pub struct Descriptor {
     /// Most of the other node fields are optional, but you typically want to specify at least some `inputs` and/or `outputs`.
     pub nodes: Vec<Node>,
 
+    /// Global Environment variables inherited by all nodes (optional)
+    ///
+    /// ## Example
+    ///
+    /// ```yaml
+    /// env:
+    ///     MY_VAR: "my_var"
+    ///
+    /// nodes:
+    ///   - id: foo
+    ///     path: path/to/the/executable
+    ///     # ... (see below)
+    ///   - id: bar
+    ///     path: path/to/another/executable
+    ///     # ... (see below)
+    /// ```
+    ///
+    /// Note that, If there is an env at the node level, Node level env will have more priority than the global env
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<BTreeMap<String, EnvValue>>,
+
     /// Communication configuration (optional, uses defaults)
     #[schemars(skip)]
     #[serde(default)]
