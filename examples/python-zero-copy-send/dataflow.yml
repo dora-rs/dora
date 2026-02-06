@@ -1,0 +1,14 @@
+nodes:
+    - id: zero_copy_sender
+      path: node.py
+      inputs:
+          tick: dora/timer/millis/100
+      outputs:
+          - large_output
+          - rgb_image
+
+    - id: receiver
+      path: receiver.py
+      inputs:
+          large_output: zero_copy_sender/large_output
+          rgb_image: zero_copy_sender/rgb_image
