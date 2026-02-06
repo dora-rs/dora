@@ -15,44 +15,6 @@ pub struct DataflowBuildFinished {
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-pub enum ControlRequestReply {
-    Error(String),
-    CoordinatorStopped,
-    DataflowBuildTriggered {
-        build_id: BuildId,
-    },
-    DataflowBuildFinished(DataflowBuildFinished),
-    DataflowStartTriggered {
-        uuid: Uuid,
-    },
-    DataflowSpawned {
-        uuid: Uuid,
-    },
-    DataflowReloaded {
-        uuid: Uuid,
-    },
-    DataflowStopped {
-        uuid: Uuid,
-        result: DataflowResult,
-    },
-    DataflowList(DataflowList),
-    DataflowInfo {
-        uuid: Uuid,
-        name: Option<String>,
-        descriptor: Descriptor,
-    },
-    DestroyOk,
-    DaemonConnected(bool),
-    ConnectedDaemons(BTreeSet<DaemonId>),
-    Logs(Vec<u8>),
-    CliAndDefaultDaemonIps {
-        default_daemon: Option<IpAddr>,
-        cli: Option<IpAddr>,
-    },
-    NodeInfoList(Vec<NodeInfo>),
-}
-
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct NodeInfo {
     pub dataflow_id: Uuid,
     pub dataflow_name: Option<String>,

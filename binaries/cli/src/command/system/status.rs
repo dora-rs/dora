@@ -88,7 +88,7 @@ pub fn check_environment(coordinator_addr: SocketAddr) -> eyre::Result<()> {
 
 pub fn daemon_running(session: &mut TcpRequestReplyConnection) -> Result<bool, eyre::ErrReport> {
     let reply_raw = session
-        .request(&serde_json::to_vec(&ControlRequest::DaemonConnected(DaemonConnectedRequest)).unwrap())
+        .request(&serde_json::to_vec(&ControlRequest::from(DaemonConnectedRequest)).unwrap())
         .wrap_err("failed to send DaemonConnected message")?;
 
     let reply = serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
@@ -104,7 +104,7 @@ fn query_running_dataflow_count(
     session: &mut TcpRequestReplyConnection,
 ) -> Result<usize, eyre::ErrReport> {
     let reply_raw = session
-        .request(&serde_json::to_vec(&ControlRequest::List(ListRequest)).unwrap())
+        .request(&serde_json::to_vec(&ControlRequest::from(ListRequest)).unwrap())
         .wrap_err("failed to send List message")?;
 
     let reply: ControlRequestReply =

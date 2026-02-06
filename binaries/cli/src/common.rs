@@ -40,7 +40,7 @@ pub(crate) fn query_running_dataflows(
     session: &mut TcpRequestReplyConnection,
 ) -> eyre::Result<DataflowList> {
     let reply_raw = session
-        .request(&serde_json::to_vec(&ControlRequest::List(ListRequest)).unwrap())
+        .request(&serde_json::to_vec(&ControlRequest::from(ListRequest)).unwrap())
         .wrap_err("failed to send list message")?;
     let reply: ControlRequestReply =
         serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
@@ -150,7 +150,7 @@ pub(crate) fn cli_and_daemon_on_same_machine(
 ) -> eyre::Result<bool> {
     let reply_raw = session
         .request(
-            &serde_json::to_vec(&ControlRequest::CliAndDefaultDaemonOnSameMachine(
+            &serde_json::to_vec(&ControlRequest::from(
                 CliAndDefaultDaemonOnSameMachineRequest,
             ))
             .unwrap(),

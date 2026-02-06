@@ -1,14 +1,12 @@
-use communication_layer_request_reply::{
-    RequestReplyConnection, TcpConnection, TcpRequestReplyConnection, TypedRequestReplyConnection,
-};
+use communication_layer_request_reply::{TcpConnection, TcpRequestReplyConnection};
 use dora_core::descriptor::Descriptor;
 use dora_message::{
     BuildId,
     cli_to_coordinator::{
-        BuildLogSubscribe, BuildRequest, ControlRequest, DataflowBuildFinished,
-        DataflowBuildTriggered, WaitForBuild,
+        BuildLogSubscribe, BuildRequest, ControlRequest, WaitForBuild,
     },
     common::{GitSource, LogMessage},
+    coordinator_to_cli::{ControlRequestReply, DataflowBuildFinished},
     id::NodeId,
 };
 use eyre::{Context, bail};
@@ -20,7 +18,7 @@ use std::{
 use crate::{output::print_log_message, session::DataflowSession};
 
 pub fn build_distributed_dataflow(
-    session: &mut impl TypedRequestReplyConnection<RequestEnum = ControlRequest, Error = std::io::Error>,
+    session: &mut TcpRequestReplyConnection,
     dataflow: Descriptor,
     git_sources: &BTreeMap<NodeId, GitSource>,
     dataflow_session: &DataflowSession,
@@ -28,23 +26,28 @@ pub fn build_distributed_dataflow(
     uv: bool,
 ) -> eyre::Result<BuildId> {
     let build_id = {
-        let result = session
-            .request(&BuildRequest {
-                session_id: dataflow_session.session_id,
-                dataflow,
-                git_sources: git_sources.clone(),
-                prev_git_sources: dataflow_session.git_sources.clone(),
-                local_working_dir,
-                uv,
-            })
+        let reply_raw = session
+            .request(
+                &serde_json::to_vec(&ControlRequest::from(BuildRequest {
+                    session_id: dataflow_session.session_id,
+                    dataflow,
+                    git_sources: git_sources.clone(),
+                    prev_git_sources: dataflow_session.git_sources.clone(),
+                    local_working_dir,
+                    uv,
+                }))
+                .unwrap(),
+            )
             .wrap_err("failed to send start dataflow message")?;
 
+        let result: ControlRequestReply =
+            serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
         match result {
-            Ok(DataflowBuildTriggered { build_id }) => {
+            ControlRequestReply::DataflowBuildTriggered { build_id } => {
                 eprintln!("dataflow build triggered: {build_id}");
                 build_id
             }
-            Err(err) => bail!("{err}"),
+            ControlRequestReply::Error(err) => bail!("{err}"),
             other => bail!("unexpected start dataflow reply: {other:?}"),
         }
     };
@@ -53,7 +56,7 @@ pub fn build_distributed_dataflow(
 
 pub fn wait_until_dataflow_built(
     build_id: BuildId,
-    session: &mut impl TypedRequestReplyConnection<RequestEnum = ControlRequest, Error = std::io::Error>,
+    session: &mut TcpRequestReplyConnection,
     coordinator_socket: SocketAddr,
     log_level: log::LevelFilter,
 ) -> eyre::Result<BuildId> {
@@ -62,20 +65,15 @@ pub fn wait_until_dataflow_built(
         stream: TcpStream::connect(coordinator_socket)
             .wrap_err("failed to connect to dora coordinator")?,
     };
-    let log_session: impl TypedRequestReplyConnection<
-        RequestEnum = ControlRequest,
-        Error = std::io::Error,
-    > = todo!();
-    let reply = log_session
-        .request(&BuildLogSubscribe {
-            build_id,
-            level: log_level,
-        })
+    log_session
+        .send(
+            &serde_json::to_vec(&ControlRequest::from(BuildLogSubscribe {
+                build_id,
+                level: log_level,
+            }))
+            .wrap_err("failed to serialize message")?,
+        )
         .wrap_err("failed to send build log subscribe request to coordinator")?;
-    match reply {
-        Ok(()) => {}
-        Err(err) => bail!("failed to subscribe to build log messages: {err}"),
-    }
     std::thread::spawn(move || {
         while let Ok(raw) = log_session.receive() {
             let parsed: eyre::Result<LogMessage> =
@@ -91,18 +89,23 @@ pub fn wait_until_dataflow_built(
         }
     });
 
-    let reply = session
-        .request(&WaitForBuild { build_id })
+    let reply_raw = session
+        .request(&serde_json::to_vec(&ControlRequest::from(WaitForBuild { build_id })).unwrap())
         .wrap_err("failed to send WaitForBuild message")?;
 
-    match reply {
-        Ok(DataflowBuildFinished { build_id, result }) => match result {
-            Ok(()) => {
-                eprintln!("dataflow build finished successfully");
-                Ok(build_id)
+    let result: ControlRequestReply =
+        serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
+    match result {
+        ControlRequestReply::DataflowBuildFinished(DataflowBuildFinished { build_id, result }) => {
+            match result {
+                Ok(()) => {
+                    eprintln!("dataflow build finished successfully");
+                    Ok(build_id)
+                }
+                Err(err) => bail!("{err}"),
             }
-            Err(err) => bail!("{err}"),
-        },
-        Err(err) => bail!("{err}"),
+        }
+        ControlRequestReply::Error(err) => bail!("{err}"),
+        other => bail!("unexpected start dataflow reply: {other:?}"),
     }
 }

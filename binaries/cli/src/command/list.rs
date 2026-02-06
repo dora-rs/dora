@@ -87,7 +87,7 @@ fn list(
 
     // Get node information
     let node_info_reply = session
-        .request(&serde_json::to_vec(&ControlRequest::GetNodeInfo(GetNodeInfoRequest)).unwrap())
+        .request(&serde_json::to_vec(&ControlRequest::from(GetNodeInfoRequest)).unwrap())
         .wrap_err("failed to send GetNodeInfo request")?;
 
     let reply: ControlRequestReply =

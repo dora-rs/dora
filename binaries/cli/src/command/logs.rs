@@ -74,7 +74,7 @@ pub fn logs(
     let logs = {
         let reply_raw = session
             .request(
-                &serde_json::to_vec(&ControlRequest::Logs(LogsRequest {
+                &serde_json::to_vec(&ControlRequest::from(LogsRequest {
                     uuid: Some(uuid),
                     name: None,
                     node: node.to_string(),
@@ -111,7 +111,7 @@ pub fn logs(
     };
     log_session
         .send(
-            &serde_json::to_vec(&ControlRequest::LogSubscribe(LogSubscribe {
+            &serde_json::to_vec(&ControlRequest::from(LogSubscribe {
                 dataflow_id: uuid,
                 level: log_level,
             }))

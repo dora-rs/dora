@@ -14,6 +14,51 @@ pub use build::*;
 
 mod build;
 
+macro_rules! RequestEnum {
+    // Take a list of variants, each with a request type, and generate an enum with those variants, where each variant contains the corresponding request type.
+    ($($variant:ident($request_ty:ty)),* $(,)?) => {
+        #[derive(Debug, Clone, serde::Deserialize, serde::Serialize, derive_more::From)]
+        pub enum ControlRequest<'a> {
+            $(
+                $variant(Cow<'a, $request_ty>),
+            )*
+        }
+
+        impl ControlRequest<'_> {
+            pub fn type_str(&self) -> &'static str {
+                match self {
+                    $(
+                        ControlRequest::$variant(_) => stringify!($variant),
+                    )*
+                }
+            }
+        }
+
+        #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+        pub enum ControlRequestWithReplyChannel<'a> {
+            $(
+                $variant{
+                    request: $request_ty>
+                    reply_sender: oneshot::Sender<<$request_ty as Request>::Response>,
+                }
+            )*
+        }
+
+        impl ControlRequestWithReplyChannel<'_> {
+            pub fn new(request: ControlRequest) -> (Self, oneshot::Receiver<<impl Request>::Response>) {
+                match request {
+                    $(
+                        ControlRequest::$variant(req) => ControlRequestWithReplyChannel::$variant {
+                            request: req,
+                            reply_sender: <$request_ty as Request>::new_reply_channel().0,
+                        },
+                    )*
+                }
+            }
+        }
+    };
+}
+
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize, derive_more::From)]
 pub enum ControlRequest<'a> {
     Build(Cow<'a, BuildRequest>),
@@ -34,6 +79,35 @@ pub enum ControlRequest<'a> {
     LogSubscribe(Cow<'a, LogSubscribe>),
     CliAndDefaultDaemonOnSameMachine(Cow<'a, CliAndDefaultDaemonOnSameMachineRequest>),
     GetNodeInfo(Cow<'a, GetNodeInfoRequest>),
+}
+
+impl ControlRequest<'_> {
+    pub fn type_str(&self) -> Cow<'static, str> {
+        match self {
+            ControlRequest::Build(_) => "Build".into(),
+            ControlRequest::WaitForBuild(r) => format!("WaitForBuild({})", r.build_id).into(),
+            ControlRequest::BuildLogSubscribe(r) => {
+                format!("BuildLogSubscribe({}, {})", r.build_id, r.level).into()
+            }
+            ControlRequest::Start(_) => "Start".into(),
+            ControlRequest::WaitForSpawn(_) => "WaitForSpawn".into(),
+            ControlRequest::Reload(_) => "Reload".into(),
+            ControlRequest::Check(_) => "Check".into(),
+            ControlRequest::Stop(_) => "Stop".into(),
+            ControlRequest::StopByName(_) => "StopByName".into(),
+            ControlRequest::Logs(_) => "Logs".into(),
+            ControlRequest::Destroy(_) => "Destroy".into(),
+            ControlRequest::List(_) => "List".into(),
+            ControlRequest::Info(_) => "Info".into(),
+            ControlRequest::DaemonConnected(_) => "DaemonConnected".into(),
+            ControlRequest::ConnectedMachines(_) => "ConnectedMachines".into(),
+            ControlRequest::LogSubscribe(_) => "LogSubscribe".into(),
+            ControlRequest::CliAndDefaultDaemonOnSameMachine(_) => {
+                "CliAndDefaultDaemonOnSameMachine".into()
+            }
+            ControlRequest::GetNodeInfo(_) => "GetNodeInfo".into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]

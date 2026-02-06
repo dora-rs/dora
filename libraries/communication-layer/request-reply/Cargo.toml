@@ -11,6 +11,7 @@ repository.workspace = true
 
 [dependencies]
 serde = { version = "1.0.228" }
+futures-channel = "0.3.31"
 
 [package.metadata.docs.rs]
 all-features = true

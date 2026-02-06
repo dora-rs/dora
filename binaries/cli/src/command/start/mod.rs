@@ -127,7 +127,7 @@ fn start_dataflow(
         let session: &mut TcpRequestReplyConnection = &mut *session;
         let reply_raw = session
             .request(
-                &serde_json::to_vec(&ControlRequest::Start(StartRequest {
+                &serde_json::to_vec(&ControlRequest::from(StartRequest {
                     build_id: dataflow_session.build_id,
                     session_id: dataflow_session.session_id,
                     dataflow,
@@ -168,7 +168,7 @@ fn wait_until_dataflow_started(
     };
     log_session
         .send(
-            &serde_json::to_vec(&ControlRequest::LogSubscribe(LogSubscribe {
+            &serde_json::to_vec(&ControlRequest::from(LogSubscribe {
                 dataflow_id,
                 level: log_level,
             }))
@@ -191,7 +191,7 @@ fn wait_until_dataflow_started(
     });
 
     let reply_raw = session
-        .request(&serde_json::to_vec(&ControlRequest::WaitForSpawn(WaitForSpawn { dataflow_id })).unwrap())
+        .request(&serde_json::to_vec(&ControlRequest::from(WaitForSpawn { dataflow_id })).unwrap())
         .wrap_err("failed to send start dataflow message")?;
 
     let result: ControlRequestReply =

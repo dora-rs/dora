@@ -7,6 +7,7 @@
 //!
 //! TODO
 
+use futures_channel::oneshot;
 pub use tcp::*;
 
 mod tcp;
@@ -125,6 +126,13 @@ pub trait EnumGenericTypedRequestReplyConnection<Req, Res> {
 
 pub trait Request {
     type Response: serde::de::DeserializeOwned + serde::Serialize;
+
+    fn new_reply_channel() -> (
+        oneshot::Sender<Self::Response>,
+        oneshot::Receiver<Self::Response>,
+    ) {
+        oneshot::channel()
+    }
 }
 
 pub trait EnumRequest {}

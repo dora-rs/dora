@@ -88,7 +88,7 @@ fn stop_dataflow(
 ) -> Result<(), eyre::ErrReport> {
     let reply_raw = session
         .request(
-            &serde_json::to_vec(&ControlRequest::Stop(StopRequest {
+            &serde_json::to_vec(&ControlRequest::from(StopRequest {
                 dataflow_uuid: uuid,
                 grace_duration,
                 force,
@@ -115,7 +115,7 @@ fn stop_dataflow_by_name(
 ) -> Result<(), eyre::ErrReport> {
     let reply_raw = session
         .request(
-            &serde_json::to_vec(&ControlRequest::StopByName(StopByNameRequest {
+            &serde_json::to_vec(&ControlRequest::from(StopByNameRequest {
                 name,
                 grace_duration,
                 force,

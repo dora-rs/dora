@@ -797,6 +797,7 @@ dependencies = [
 name = "communication-layer-request-reply"
 version = "0.4.1"
 dependencies = [
+ "futures-channel",
  "serde",
 ]
 
@@ -1541,6 +1542,7 @@ dependencies = [
  "itertools 0.14.0",
  "log",
  "petname",
+ "serde",
  "serde_json",
  "tokio",
  "tokio-stream",

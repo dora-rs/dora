@@ -32,7 +32,7 @@ impl DataflowSelector {
             resolve_dataflow_identifier_interactive(&mut *session, self.dataflow.as_deref())?;
         let reply_raw = session
             .request(
-                &serde_json::to_vec(&ControlRequest::Info(InfoRequest {
+                &serde_json::to_vec(&ControlRequest::from(InfoRequest {
                     dataflow_uuid: dataflow_id,
                 }))
                 .unwrap(),

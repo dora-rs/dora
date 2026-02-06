@@ -263,7 +263,7 @@ fn run_app<B: Backend>(
         .wrap_err("Failed to connect to coordinator")?;
 
     // Query node info once initially
-    let request = ControlRequest::GetNodeInfo(GetNodeInfoRequest);
+    let request = ControlRequest::from(GetNodeInfoRequest);
     let reply_raw = session
         .request(&serde_json::to_vec(&request).unwrap())
         .wrap_err("failed to send initial request to coordinator")?;
@@ -325,7 +325,7 @@ fn run_app<B: Backend>(
         // Update data if refresh interval has passed
         if last_update.elapsed() >= refresh_duration {
             // Query node info every refresh interval to get updated metrics
-            let request = ControlRequest::GetNodeInfo(GetNodeInfoRequest);
+            let request = ControlRequest::from(GetNodeInfoRequest);
             let reply_raw = session
                 .request(&serde_json::to_vec(&request).unwrap())
                 .wrap_err("failed to send request to coordinator")?;

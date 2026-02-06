@@ -78,7 +78,7 @@ pub(crate) fn destroy(
         Ok(mut session) => {
             // send destroy command to dora-coordinator
             let reply_raw = session
-                .request(&serde_json::to_vec(&ControlRequest::Destroy(DestroyRequest)).unwrap())
+                .request(&serde_json::to_vec(&ControlRequest::from(DestroyRequest)).unwrap())
                 .wrap_err("failed to send destroy message")?;
             let result: ControlRequestReply =
                 serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;

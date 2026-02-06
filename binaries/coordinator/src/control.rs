@@ -14,6 +14,7 @@ use futures::{
     stream::FuturesUnordered,
 };
 use futures_concurrency::future::Race;
+use serde::Serialize;
 use std::{io::ErrorKind, net::SocketAddr};
 use tokio::{
     net::{TcpListener, TcpStream},
@@ -177,27 +178,32 @@ async fn handle_requests(
 async fn handle_request(
     request: ControlRequest<'static>,
     tx: &mpsc::Sender<ControlEvent>,
-) -> eyre::Result<ControlRequestReply> {
+) -> Result<Box<dyn Serialize>, HandleRequestError> {
     let (reply_tx, reply_rx) = oneshot::channel();
+    let request_ty = request.type_str();
     let event = ControlEvent::IncomingRequest {
-        request: request.clone(),
+        request,
         reply_sender: reply_tx,
     };
 
     if tx.send(event).await.is_err() {
-        return Ok(ControlRequestReply::CoordinatorStopped);
+        return Err(HandleRequestError::CoordinatorStopped);
     }
 
     reply_rx
         .await
-        .wrap_err_with(|| format!("no coordinator reply to {request:?}"))?
+        .wrap_err_with(|| format!("no coordinator reply to {request_ty}"))?
+}
+
+enum HandleRequestError {
+    CoordinatorStopped,
 }
 
 #[derive(Debug)]
 pub enum ControlEvent {
     IncomingRequest {
         request: ControlRequest<'static>,
-        reply_sender: oneshot::Sender<eyre::Result<ControlRequestReply>>,
+        reply_sender: oneshot::Sender<Box<dyn Serialize>>,
     },
     LogSubscribe {
         dataflow_id: Uuid,

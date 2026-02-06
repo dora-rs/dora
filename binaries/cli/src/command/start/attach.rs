@@ -81,7 +81,7 @@ pub fn attach_dataflow(
                 for path in paths {
                     if let Some((dataflow_id, node_id, operator_id)) = node_path_lookup.get(&path) {
                         watcher_tx
-                            .send(AttachEvent::Control(ControlRequest::Reload(ReloadRequest {
+                            .send(AttachEvent::Control(ControlRequest::from(ReloadRequest {
                                 dataflow_id: *dataflow_id,
                                 node_id: node_id.clone(),
                                 operator_id: operator_id.clone(),
@@ -113,7 +113,7 @@ pub fn attach_dataflow(
     ctrlc::set_handler(move || {
         if ctrlc_sent {
             ctrlc_tx
-                .send(AttachEvent::Control(ControlRequest::Stop(StopRequest {
+                .send(AttachEvent::Control(ControlRequest::from(StopRequest {
                     dataflow_uuid: dataflow_id,
                     grace_duration: None,
                     force: true,
@@ -122,7 +122,7 @@ pub fn attach_dataflow(
             std::process::abort();
         } else {
             if ctrlc_tx
-                .send(AttachEvent::Control(ControlRequest::Stop(StopRequest {
+                .send(AttachEvent::Control(ControlRequest::from(StopRequest {
                     dataflow_uuid: dataflow_id,
                     grace_duration: None,
                     force: false,
@@ -143,7 +143,7 @@ pub fn attach_dataflow(
     };
     log_session
         .send(
-            &serde_json::to_vec(&ControlRequest::LogSubscribe(LogSubscribe {
+            &serde_json::to_vec(&ControlRequest::from(LogSubscribe {
                 dataflow_id,
                 level: log_level,
             }))
@@ -162,7 +162,7 @@ pub fn attach_dataflow(
 
     loop {
         let control_request = match rx.recv_timeout(Duration::from_secs(1)) {
-            Err(_err) => ControlRequest::Check(CheckRequest {
+            Err(_err) => ControlRequest::from(CheckRequest {
                 dataflow_uuid: dataflow_id,
             }),
             Ok(AttachEvent::Control(control_request)) => control_request,
@@ -195,7 +195,7 @@ pub fn attach_dataflow(
     }
 }
 
-enum AttachEvent {
-    Control(ControlRequest),
+enum AttachEvent<'a> {
+    Control(ControlRequest<'a>),
     Log(eyre::Result<LogMessage>),
 }
