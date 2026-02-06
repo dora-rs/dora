@@ -15,7 +15,9 @@ use dora_core::{
     topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST},
 };
 use dora_message::{
-    cli_to_coordinator::ControlRequest, common::LogMessage, coordinator_to_cli::ControlRequestReply,
+    cli_to_coordinator::{ControlRequest, StartRequest},
+    common::LogMessage,
+    coordinator_to_cli::ControlRequestReply,
 };
 use eyre::{Context, bail};
 use std::{
@@ -125,7 +127,7 @@ fn start_dataflow(
         let session: &mut TcpRequestReplyConnection = &mut *session;
         let reply_raw = session
             .request(
-                &serde_json::to_vec(&ControlRequest::Start {
+                &serde_json::to_vec(&ControlRequest::Start(StartRequest(StartRequest {
                     build_id: dataflow_session.build_id,
                     session_id: dataflow_session.session_id,
                     dataflow,
@@ -133,7 +135,7 @@ fn start_dataflow(
                     local_working_dir,
                     uv,
                     write_events_to: write_events_to(),
-                })
+                })))
                 .unwrap(),
             )
             .wrap_err("failed to send start dataflow message")?;

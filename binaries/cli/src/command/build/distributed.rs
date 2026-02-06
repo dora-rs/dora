@@ -2,7 +2,7 @@ use communication_layer_request_reply::{TcpConnection, TcpRequestReplyConnection
 use dora_core::descriptor::Descriptor;
 use dora_message::{
     BuildId,
-    cli_to_coordinator::ControlRequest,
+    cli_to_coordinator::{BuildRequest, ControlRequest},
     common::{GitSource, LogMessage},
     coordinator_to_cli::ControlRequestReply,
     id::NodeId,
@@ -26,14 +26,14 @@ pub fn build_distributed_dataflow(
     let build_id = {
         let reply_raw = session
             .request(
-                &serde_json::to_vec(&ControlRequest::Build {
+                &serde_json::to_vec(&ControlRequest::Build(BuildRequest(BuildRequest {
                     session_id: dataflow_session.session_id,
                     dataflow,
                     git_sources: git_sources.clone(),
                     prev_git_sources: dataflow_session.git_sources.clone(),
                     local_working_dir,
                     uv,
-                })
+                })))
                 .unwrap(),
             )
             .wrap_err("failed to send start dataflow message")?;

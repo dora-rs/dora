@@ -5,7 +5,7 @@ use dora_core::{
     topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, DORA_COORDINATOR_PORT_DEFAULT},
 };
 use dora_message::{
-    cli_to_coordinator::ControlRequest,
+    cli_to_coordinator::{ControlRequest, StartRequest},
     common::DaemonId,
     coordinator_to_cli::{ControlRequestReply, DataflowIdAndName},
 };
@@ -147,15 +147,19 @@ async fn start_dataflow(
     let (reply_sender, reply) = oneshot::channel();
     coordinator_events_tx
         .send(Event::Control(ControlEvent::IncomingRequest {
-            request: ControlRequest::Start {
-                build_id: dataflow_session.build_id,
-                session_id: dataflow_session.session_id,
-                dataflow: dataflow_descriptor,
-                local_working_dir: Some(working_dir),
-                name: None,
-                uv: false,
-                write_events_to: None,
-            },
+            request: ControlRequest::Start(StartRequest(StartRequest(StartRequest(StartRequest(
+                StartRequest(StartRequest(StartRequest(StartRequest(StartRequest(
+                    StartRequest(StartRequest(StartRequest {
+                        build_id: dataflow_session.build_id,
+                        session_id: dataflow_session.session_id,
+                        dataflow: dataflow_descriptor,
+                        local_working_dir: Some(working_dir),
+                        name: None,
+                        uv: false,
+                        write_events_to: None,
+                    })),
+                ))))),
+            ))))),
             reply_sender,
         }))
         .await?;

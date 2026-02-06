@@ -10,41 +10,47 @@ use crate::{
 };
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct BuildRequest {
+    pub session_id: SessionId,
+    pub dataflow: Descriptor,
+    pub git_sources: BTreeMap<NodeId, GitSource>,
+    pub prev_git_sources: BTreeMap<NodeId, GitSource>,
+    /// Allows overwriting the base working dir when CLI and daemon are
+    /// running on the same machine.
+    ///
+    /// Must not be used for multi-machine dataflows.
+    ///
+    /// Note that nodes with git sources still use a subdirectory of
+    /// the base working dir.
+    pub local_working_dir: Option<PathBuf>,
+    pub uv: bool,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct StartRequest {
+    pub build_id: Option<BuildId>,
+    pub session_id: SessionId,
+    pub dataflow: Descriptor,
+    pub name: Option<String>,
+    /// Allows overwriting the base working dir when CLI and daemon are
+    /// running on the same machine.
+    ///
+    /// Must not be used for multi-machine dataflows.
+    ///
+    /// Note that nodes with git sources still use a subdirectory of
+    /// the base working dir.
+    pub local_working_dir: Option<PathBuf>,
+    pub uv: bool,
+    pub write_events_to: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub enum ControlRequest {
-    Build {
-        session_id: SessionId,
-        dataflow: Descriptor,
-        git_sources: BTreeMap<NodeId, GitSource>,
-        prev_git_sources: BTreeMap<NodeId, GitSource>,
-        /// Allows overwriting the base working dir when CLI and daemon are
-        /// running on the same machine.
-        ///
-        /// Must not be used for multi-machine dataflows.
-        ///
-        /// Note that nodes with git sources still use a subdirectory of
-        /// the base working dir.
-        local_working_dir: Option<PathBuf>,
-        uv: bool,
-    },
+    Build(BuildRequest),
     WaitForBuild {
         build_id: BuildId,
     },
-    Start {
-        build_id: Option<BuildId>,
-        session_id: SessionId,
-        dataflow: Descriptor,
-        name: Option<String>,
-        /// Allows overwriting the base working dir when CLI and daemon are
-        /// running on the same machine.
-        ///
-        /// Must not be used for multi-machine dataflows.
-        ///
-        /// Note that nodes with git sources still use a subdirectory of
-        /// the base working dir.
-        local_working_dir: Option<PathBuf>,
-        uv: bool,
-        write_events_to: Option<PathBuf>,
-    },
+    Start(StartRequest),
     WaitForSpawn {
         dataflow_id: Uuid,
     },
@@ -91,4 +97,12 @@ pub enum ControlRequest {
     },
     CliAndDefaultDaemonOnSameMachine,
     GetNodeInfo,
+}
+
+#[tarpc::service]
+pub trait CliControl {
+    async fn build(request: BuildRequest) -> eyre::Result<BuildId>;
+    async fn wait_for_build(build_id: BuildId) -> eyre::Result<()>;
+    async fn start(request: StartRequest) -> eyre::Result<Uuid>;
+    async fn wait_for_spawn(dataflow_id: Uuid) -> eyre::Result<()>;
 }

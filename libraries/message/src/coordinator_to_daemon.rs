@@ -97,3 +97,8 @@ pub struct SpawnDataflowNodes {
     pub uv: bool,
     pub write_events_to: Option<PathBuf>,
 }
+
+#[tarpc::service]
+pub trait CoordinatorToDaemon {
+    async fn build(request: BuildDataflowNodes) -> eyre::Result<()>;
+}

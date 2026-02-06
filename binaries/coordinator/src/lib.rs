@@ -10,7 +10,7 @@ use dora_core::{
 };
 use dora_message::{
     BuildId, DataflowId, SessionId,
-    cli_to_coordinator::ControlRequest,
+    cli_to_coordinator::{BuildRequest, ControlRequest, StartRequest},
     common::{DaemonId, GitSource},
     coordinator_to_cli::{
         ControlRequestReply, DataflowIdAndName, DataflowList, DataflowListEntry, DataflowResult,
@@ -48,6 +48,7 @@ mod control;
 mod listener;
 mod log_subscriber;
 mod run;
+mod server;
 mod tcp_utils;
 
 pub async fn start(
@@ -425,29 +426,13 @@ async fn start_inner(
                     reply_sender,
                 } => {
                     match request {
-                        ControlRequest::Build {
-                            session_id,
-                            dataflow,
-                            git_sources,
-                            prev_git_sources,
-                            local_working_dir,
-                            uv,
-                        } => {
+                        ControlRequest::Build(request) => {
                             // assign a random build id
                             let build_id = BuildId::generate();
 
-                            let result = build_dataflow(
-                                build_id,
-                                session_id,
-                                dataflow,
-                                git_sources,
-                                prev_git_sources,
-                                local_working_dir,
-                                &clock,
-                                uv,
-                                &mut daemon_connections,
-                            )
-                            .await;
+                            let result =
+                                build_dataflow(request, build_id, &clock, &mut daemon_connections)
+                                    .await;
                             match result {
                                 Ok(build) => {
                                     running_builds.insert(build_id, build);
@@ -470,7 +455,7 @@ async fn start_inner(
                                     reply_sender.send(Err(eyre!("unknown build id {build_id}")));
                             }
                         }
-                        ControlRequest::Start {
+                        ControlRequest::Start(StartRequest {
                             build_id,
                             session_id,
                             dataflow,
@@ -478,7 +463,7 @@ async fn start_inner(
                             local_working_dir,
                             uv,
                             write_events_to,
-                        } => {
+                        }) => {
                             let name = name.or_else(|| petname(2, "-"));
 
                             let inner = async {
@@ -1374,19 +1359,22 @@ async fn retrieve_logs(
     reply_logs.map_err(|err| eyre!(err))
 }
 
-#[allow(clippy::too_many_arguments)]
 #[tracing::instrument(skip(daemon_connections, clock))]
 async fn build_dataflow(
+    build_request: BuildRequest,
     build_id: BuildId,
-    session_id: SessionId,
-    dataflow: Descriptor,
-    git_sources: BTreeMap<NodeId, GitSource>,
-    prev_git_sources: BTreeMap<NodeId, GitSource>,
-    local_working_dir: Option<PathBuf>,
     clock: &HLC,
-    uv: bool,
     daemon_connections: &mut DaemonConnections,
 ) -> eyre::Result<RunningBuild> {
+    let BuildRequest {
+        session_id,
+        dataflow,
+        git_sources,
+        prev_git_sources,
+        local_working_dir,
+        uv,
+    } = build_request;
+
     let nodes = dataflow.resolve_aliases_and_set_defaults()?;
 
     let mut git_sources_by_daemon = git_sources

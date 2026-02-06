@@ -6,6 +6,7 @@
 /// The version of the dora-message crate
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+pub use tarpc;
 pub use uhlc;
 
 pub mod common;
