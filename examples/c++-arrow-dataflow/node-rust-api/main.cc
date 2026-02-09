@@ -97,6 +97,11 @@ std::shared_ptr<arrow::Array> receive_and_print_input(rust::cxxbridge1::Box<Dora
                 std::cout << "]" << std::endl;
                 break;
             }
+            case MetadataValueType::Timestamp: {
+                auto nanos = metadata->get_timestamp(key);
+                std::cout << "Metadata[" << key << "] (timestamp) = " << nanos << " ns" << std::endl;
+                break;
+            }
             default:
                 std::cout << "Metadata[" << key << "] has unsupported type" << std::endl;
                 break;
