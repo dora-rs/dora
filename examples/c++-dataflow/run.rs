@@ -111,7 +111,7 @@ fn build_package(package: &str) -> eyre::Result<()> {
 fn build_cxx_node(root: &Path, paths: &[&Path], out_name: &str, args: &[&str]) -> eyre::Result<()> {
     let mut clang = std::process::Command::new("clang++");
     clang.args(paths);
-    clang.arg("-std=c++17");
+    clang.arg("-std=c++20");
     #[cfg(target_os = "linux")]
     {
         clang.arg("-l").arg("m");
@@ -184,7 +184,7 @@ fn build_cxx_operator(paths: &[&Path], out_name: &str, link_args: &[&str]) -> ey
     for path in paths {
         let mut compile = std::process::Command::new("clang++");
         compile.arg("-c").arg(path);
-        compile.arg("-std=c++17");
+        compile.arg("-std=c++20");
         let object_file_path = path.with_extension("o");
         compile.arg("-o").arg(&object_file_path);
         #[cfg(unix)]
