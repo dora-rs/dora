@@ -481,7 +481,7 @@ jobs:
         if: runner.os != 'Windows'
         env:
           RUST_LOG: debug
-        run: dora run examples/python-async/dataflow.yaml --uv
+        run: dora run examples/python-async/dataflow.yaml --uv --stop-after 5m
       - name: "Test Python Example: Drain"
         timeout-minutes: 30
         run: dora run examples/python-drain/dataflow.yaml --uv
