@@ -30,14 +30,19 @@ impl Executable for Graph {
 }
 
 fn create(dataflow: std::path::PathBuf, mermaid: bool, open: bool) -> eyre::Result<()> {
+    let progress = crate::progress::ProgressReporter::new();
+    
     if mermaid {
+        let spinner = progress.spinner("Generating mermaid diagram...");
         let visualized = visualize_as_mermaid(&dataflow)?;
+        spinner.finish_and_clear();
         println!("{visualized}");
         println!(
             "Paste the above output on https://mermaid.live/ or in a \
             ```mermaid code block on GitHub to display it."
         );
     } else {
+        let spinner = progress.spinner("Generating graph visualization...");
         let html = visualize_as_html(&dataflow)?;
 
         let working_dir = std::env::current_dir().wrap_err("failed to get current working dir")?;
@@ -63,13 +68,15 @@ fn create(dataflow: std::path::PathBuf, mermaid: bool, open: bool) -> eyre::Resu
         let mut file = File::create(&path).context("failed to create graph HTML file")?;
         file.write_all(html.as_bytes())?;
 
-        println!(
-            "View graph by opening the following in your browser:\n  file://{}",
-            path.display()
-        );
+        spinner.finish_with_message(format!("✓ Graph saved to: {}", path.display()));
 
         if open {
             webbrowser::open(path.as_os_str().to_str().unwrap())?;
+        } else {
+            println!(
+                "View graph by opening the following in your browser:\n  file://{}",
+                path.display()
+            );
         }
     }
     Ok(())
