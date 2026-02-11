@@ -36,11 +36,13 @@ impl ProgressReporter {
             ProgressHandle {
                 inner: Some(pb),
                 enabled: true,
+                state: std::cell::Cell::new(ProgressState::Active),
             }
         } else {
             ProgressHandle {
                 inner: None,
                 enabled: false,
+                state: std::cell::Cell::new(ProgressState::Active),
             }
         }
     }
@@ -62,11 +64,13 @@ impl ProgressReporter {
             ProgressHandle {
                 inner: Some(pb),
                 enabled: true,
+                state: std::cell::Cell::new(ProgressState::Active),
             }
         } else {
             ProgressHandle {
                 inner: None,
                 enabled: false,
+                state: std::cell::Cell::new(ProgressState::Active),
             }
         }
     }
@@ -78,13 +82,28 @@ impl Default for ProgressReporter {
     }
 }
 
+/// State of a progress operation
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProgressState {
+    /// Operation is still active (default state)
+    Active,
+    /// Operation completed successfully
+    Success,
+    /// Operation failed or was abandoned
+    Failed,
+}
+
 /// Handle to a progress indicator
 /// 
 /// This wraps an optional indicatif ProgressBar and provides a unified interface
 /// that works in both interactive and non-interactive modes.
+/// 
+/// IMPORTANT: Success must be explicit via `finish_with_message()`.
+/// If dropped without explicit success, the operation is treated as failed.
 pub struct ProgressHandle {
     inner: Option<ProgressBar>,
     enabled: bool,
+    state: std::cell::Cell<ProgressState>,
 }
 
 impl ProgressHandle {
@@ -110,21 +129,31 @@ impl ProgressHandle {
     }
 
     /// Finish the progress indicator with a success message
+    /// 
+    /// This marks the operation as successful. If not called, Drop will treat
+    /// the operation as failed.
     pub fn finish_with_message(&self, message: impl Into<String>) {
+        self.state.set(ProgressState::Success);
         if let Some(pb) = &self.inner {
             pb.finish_with_message(message.into());
         }
     }
 
     /// Finish the progress indicator and clear it
+    /// 
+    /// This marks the operation as successful without a message.
     pub fn finish_and_clear(&self) {
+        self.state.set(ProgressState::Success);
         if let Some(pb) = &self.inner {
             pb.finish_and_clear();
         }
     }
 
-    /// Abandon the progress indicator (for errors)
+    /// Abandon the progress indicator with a failure message
+    /// 
+    /// This explicitly marks the operation as failed.
     pub fn abandon_with_message(&self, message: impl Into<String>) {
+        self.state.set(ProgressState::Failed);
         if let Some(pb) = &self.inner {
             pb.abandon_with_message(message.into());
         }
@@ -138,11 +167,15 @@ impl ProgressHandle {
 
 impl Drop for ProgressHandle {
     fn drop(&mut self) {
-        // Ensure progress bar is cleaned up on drop
-        if let Some(pb) = &self.inner {
-            if !pb.is_finished() {
+        // If the operation was not explicitly marked as success or failure,
+        // treat it as failed (e.g., due to early return or panic)
+        if self.state.get() == ProgressState::Active {
+            if let Some(pb) = &self.inner {
+                // Silently clear the progress bar to avoid showing success
+                // when the operation didn't complete successfully
                 pb.finish_and_clear();
             }
         }
     }
 }
+
