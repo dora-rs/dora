@@ -58,6 +58,9 @@ pub fn wait_until_dataflow_built(
     coordinator_socket: SocketAddr,
     log_level: log::LevelFilter,
 ) -> eyre::Result<BuildId> {
+    let progress = crate::progress::ProgressReporter::new();
+    let spinner = progress.spinner("Building dataflow on coordinator...");
+
     // subscribe to log messages
     let mut log_session = TcpConnection {
         stream: TcpStream::connect(coordinator_socket)
@@ -93,15 +96,27 @@ pub fn wait_until_dataflow_built(
 
     let result: ControlRequestReply =
         serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-    match result {
+    
+    let build_result = match result {
         ControlRequestReply::DataflowBuildFinished { build_id, result } => match result {
             Ok(()) => {
-                eprintln!("dataflow build finished successfully");
+                spinner.finish_with_message("✓ Dataflow build finished successfully");
                 Ok(build_id)
             }
-            Err(err) => bail!("{err}"),
+            Err(err) => {
+                spinner.abandon_with_message("✗ Dataflow build failed");
+                bail!("{err}")
+            }
         },
-        ControlRequestReply::Error(err) => bail!("{err}"),
-        other => bail!("unexpected start dataflow reply: {other:?}"),
-    }
+        ControlRequestReply::Error(err) => {
+            spinner.abandon_with_message("✗ Dataflow build failed");
+            bail!("{err}")
+        }
+        other => {
+            spinner.abandon_with_message("✗ Unexpected response");
+            bail!("unexpected start dataflow reply: {other:?}")
+        }
+    };
+
+    build_result
 }

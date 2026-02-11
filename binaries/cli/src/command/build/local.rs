@@ -47,6 +47,11 @@ async fn build_dataflow(
 
     let mut tasks = Vec::new();
 
+    // Create progress bar for node builds
+    let progress = crate::progress::ProgressReporter::new();
+    let total_nodes = nodes.len() as u64;
+    let progress_bar = progress.progress_bar(total_nodes, "Building nodes");
+
     // build nodes
     for node in nodes.into_values() {
         let node_id = node.id.clone();
@@ -76,13 +81,16 @@ async fn build_dataflow(
     let mut info = BuildInfo {
         node_working_dirs: Default::default(),
     };
-    for (node_id, task) in tasks {
+    for (idx, (node_id, task)) in tasks.into_iter().enumerate() {
         let node = task
             .await
             .with_context(|| format!("failed to build node `{node_id}`"))?;
         info.node_working_dirs
             .insert(node_id, node.node_working_dir);
+        progress_bar.set_position((idx + 1) as u64);
     }
+    
+    progress_bar.finish_with_message(format!("✓ Built {} nodes", total_nodes));
     Ok(info)
 }
 
