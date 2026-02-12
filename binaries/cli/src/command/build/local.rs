@@ -89,8 +89,8 @@ async fn build_dataflow(
             .insert(node_id, node.node_working_dir);
         progress_bar.set_position((idx + 1) as u64);
     }
-    
-    progress_bar.finish_with_message(format!("✓ Built {} nodes", total_nodes));
+
+    progress_bar.finish_with_message(format!("Built {} nodes", total_nodes));
     Ok(info)
 }
 

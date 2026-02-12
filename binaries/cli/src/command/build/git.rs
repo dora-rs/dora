@@ -49,8 +49,8 @@ pub fn fetch_commit_hash(repo_url: String, rev: Option<GitRepoRev>) -> eyre::Res
     })();
 
     match &result {
-        Ok(_) => spinner.finish_with_message(format!("✓ Fetched git repository: {}", repo_url)),
-        Err(_) => spinner.abandon_with_message(format!("✗ Failed to fetch: {}", repo_url)),
+        Ok(_) => spinner.finish_with_message(format!("Fetched git repository: {}", repo_url)),
+        Err(_) => spinner.abandon_with_message(format!("Failed to fetch: {}", repo_url)),
     }
 
     result

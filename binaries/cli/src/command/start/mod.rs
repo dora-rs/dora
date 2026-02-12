@@ -147,15 +147,15 @@ fn start_dataflow(
             serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
         match result {
             ControlRequestReply::DataflowStartTriggered { uuid } => {
-                spinner.finish_with_message(format!("✓ Dataflow start triggered: {uuid}"));
+                spinner.finish_with_message(format!("Dataflow start triggered: {uuid}"));
                 uuid
             }
             ControlRequestReply::Error(err) => {
-                spinner.abandon_with_message("✗ Failed to start dataflow");
+                spinner.abandon_with_message("Failed to start dataflow");
                 bail!("{err}")
             }
             other => {
-                spinner.abandon_with_message("✗ Unexpected response");
+                spinner.abandon_with_message("Unexpected response");
                 bail!("unexpected start dataflow reply: {other:?}")
             }
         }
@@ -210,14 +210,14 @@ fn wait_until_dataflow_started(
         serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
     match result {
         ControlRequestReply::DataflowSpawned { uuid } => {
-            spinner.finish_with_message(format!("✓ Dataflow started: {uuid}"));
+            spinner.finish_with_message(format!("Dataflow started: {uuid}"));
         }
         ControlRequestReply::Error(err) => {
-            spinner.abandon_with_message("✗ Failed to start dataflow");
+            spinner.abandon_with_message("Failed to start dataflow");
             bail!("{err}")
         }
         other => {
-            spinner.abandon_with_message("✗ Unexpected response");
+            spinner.abandon_with_message("Unexpected response");
             bail!("unexpected start dataflow reply: {other:?}")
         }
     }

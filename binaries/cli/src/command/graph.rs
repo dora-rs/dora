@@ -31,7 +31,7 @@ impl Executable for Graph {
 
 fn create(dataflow: std::path::PathBuf, mermaid: bool, open: bool) -> eyre::Result<()> {
     let progress = crate::progress::ProgressReporter::new();
-    
+
     if mermaid {
         let spinner = progress.spinner("Generating mermaid diagram...");
         let visualized = visualize_as_mermaid(&dataflow)?;
@@ -68,7 +68,7 @@ fn create(dataflow: std::path::PathBuf, mermaid: bool, open: bool) -> eyre::Resu
         let mut file = File::create(&path).context("failed to create graph HTML file")?;
         file.write_all(html.as_bytes())?;
 
-        spinner.finish_with_message(format!("✓ Graph saved to: {}", path.display()));
+        spinner.finish_with_message(format!("Graph saved to: {}", path.display()));
 
         if open {
             webbrowser::open(path.as_os_str().to_str().unwrap())?;

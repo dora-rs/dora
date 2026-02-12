@@ -96,24 +96,24 @@ pub fn wait_until_dataflow_built(
 
     let result: ControlRequestReply =
         serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-    
+
     let build_result = match result {
         ControlRequestReply::DataflowBuildFinished { build_id, result } => match result {
             Ok(()) => {
-                spinner.finish_with_message("✓ Dataflow build finished successfully");
+                spinner.finish_with_message("Dataflow build finished successfully");
                 Ok(build_id)
             }
             Err(err) => {
-                spinner.abandon_with_message("✗ Dataflow build failed");
+                spinner.abandon_with_message("Dataflow build failed");
                 bail!("{err}")
             }
         },
         ControlRequestReply::Error(err) => {
-            spinner.abandon_with_message("✗ Dataflow build failed");
+            spinner.abandon_with_message("Dataflow build failed");
             bail!("{err}")
         }
         other => {
-            spinner.abandon_with_message("✗ Unexpected response");
+            spinner.abandon_with_message("Unexpected response");
             bail!("unexpected start dataflow reply: {other:?}")
         }
     };

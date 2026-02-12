@@ -9,7 +9,7 @@ pub struct ProgressReporter {
 
 impl ProgressReporter {
     /// Create a new progress reporter
-    /// 
+    ///
     /// Progress bars are enabled only when stdout is a TTY (interactive terminal).
     /// This ensures progress bars don't pollute output in CI or when piped.
     pub fn new() -> Self {
@@ -19,17 +19,23 @@ impl ProgressReporter {
     }
 
     /// Create a spinner with the given message
-    /// 
+    ///
     /// Returns a ProgressHandle that will show a spinner in interactive mode,
     /// or be a no-op in non-interactive mode.
     pub fn spinner(&self, message: impl Into<String>) -> ProgressHandle {
         if self.enabled {
             let pb = ProgressBar::new_spinner();
+            // Use ASCII-safe spinner on Windows to avoid console issues
+            let tick_strings: &[&str] = if cfg!(windows) {
+                &["|", "/", "-", "\\"]
+            } else {
+                &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+            };
             pb.set_style(
                 ProgressStyle::default_spinner()
                     .template("{spinner:.green} {msg}")
                     .unwrap()
-                    .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]),
+                    .tick_strings(tick_strings),
             );
             pb.set_message(message.into());
             pb.enable_steady_tick(Duration::from_millis(100));
@@ -48,7 +54,7 @@ impl ProgressReporter {
     }
 
     /// Create a progress bar with the given total and message
-    /// 
+    ///
     /// Returns a ProgressHandle that will show a progress bar in interactive mode,
     /// or be a no-op in non-interactive mode.
     pub fn progress_bar(&self, total: u64, message: impl Into<String>) -> ProgressHandle {
@@ -94,10 +100,10 @@ enum ProgressState {
 }
 
 /// Handle to a progress indicator
-/// 
+///
 /// This wraps an optional indicatif ProgressBar and provides a unified interface
 /// that works in both interactive and non-interactive modes.
-/// 
+///
 /// IMPORTANT: Success must be explicit via `finish_with_message()`.
 /// If dropped without explicit success, the operation is treated as failed.
 pub struct ProgressHandle {
@@ -129,7 +135,7 @@ impl ProgressHandle {
     }
 
     /// Finish the progress indicator with a success message
-    /// 
+    ///
     /// This marks the operation as successful. If not called, Drop will treat
     /// the operation as failed.
     pub fn finish_with_message(&self, message: impl Into<String>) {
@@ -140,7 +146,7 @@ impl ProgressHandle {
     }
 
     /// Finish the progress indicator and clear it
-    /// 
+    ///
     /// This marks the operation as successful without a message.
     pub fn finish_and_clear(&self) {
         self.state.set(ProgressState::Success);
@@ -150,7 +156,7 @@ impl ProgressHandle {
     }
 
     /// Abandon the progress indicator with a failure message
-    /// 
+    ///
     /// This explicitly marks the operation as failed.
     pub fn abandon_with_message(&self, message: impl Into<String>) {
         self.state.set(ProgressState::Failed);
@@ -172,10 +178,12 @@ impl Drop for ProgressHandle {
         if self.state.get() == ProgressState::Active {
             if let Some(pb) = &self.inner {
                 // Silently clear the progress bar to avoid showing success
-                // when the operation didn't complete successfully
+                // when the operation didn't complete successfully.
+                // Use finish_and_clear() instead of abandon to avoid any
+                // potential stdout/stderr writes during Drop that could
+                // interfere with process shutdown on Windows.
                 pb.finish_and_clear();
             }
         }
     }
 }
-
