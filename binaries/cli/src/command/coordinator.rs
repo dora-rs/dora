@@ -33,30 +33,66 @@ pub struct Coordinator {
 
 impl Executable for Coordinator {
     fn execute(self) -> eyre::Result<()> {
+        let enable_otlp = std::env::var("DORA_OTLP_ENDPOINT").is_ok()
+            || std::env::var("DORA_JAEGER_TRACING").is_ok();
+
         #[cfg(feature = "tracing")]
         {
-            let name = "dora-coordinator";
-            let mut builder = TracingBuilder::new(name);
-            if !self.quiet {
-                builder = builder.with_stdout("info", false);
+            // Only initialize basic tracing if OTLP is NOT requested
+            // If OTLP is requested, we'll initialize everything inside the runtime
+            if !enable_otlp {
+                let name = "dora-coordinator";
+                let mut builder = TracingBuilder::new(name);
+                if !self.quiet {
+                    builder = builder.with_stdout("info", false);
+                }
+                builder = builder.with_file(name, LevelFilter::INFO)?;
+                builder
+                    .build()
+                    .wrap_err("failed to set up tracing subscriber")?;
             }
-            builder = builder.with_file(name, LevelFilter::INFO)?;
-            builder
-                .build()
-                .wrap_err("failed to set up tracing subscriber")?;
         }
 
         let rt = Builder::new_multi_thread()
             .enable_all()
             .build()
             .context("tokio runtime failed")?;
-        rt.block_on(async {
+
+        let quiet = self.quiet;
+
+        rt.block_on(async move {
+            #[cfg(feature = "tracing")]
+            let _otel_guard = if enable_otlp {
+                let name = "dora-coordinator";
+                let mut builder = TracingBuilder::new(name);
+
+                builder = builder
+                    .with_otlp_tracing()
+                    .wrap_err("failed to set up OTLP tracing")?;
+
+                if !quiet {
+                    builder = builder.with_stdout("info", false);
+                }
+                builder = builder.with_file(name, LevelFilter::INFO)?;
+
+                let guard = builder.guard.take();
+
+                builder
+                    .build()
+                    .wrap_err("failed to set up tracing subscriber with OTLP")?;
+
+                tracing::info!("OTLP tracing enabled for coordinator");
+                guard
+            } else {
+                None
+            };
+
             let bind = SocketAddr::new(self.interface, self.port);
             let bind_control = SocketAddr::new(self.control_interface, self.control_port);
             let (port, task) =
                 dora_coordinator::start(bind, bind_control, futures::stream::empty::<Event>())
                     .await?;
-            if !self.quiet {
+            if !quiet {
                 println!("Listening for incoming daemon connection on {port}");
             }
             task.await
