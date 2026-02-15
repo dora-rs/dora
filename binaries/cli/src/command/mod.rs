@@ -20,7 +20,6 @@ mod up;
 
 pub use build::build;
 pub use run::{Run, run, run_func};
-pub use system::check_environment;
 
 use build::Build;
 use completion::Completion;

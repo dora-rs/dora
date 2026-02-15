@@ -352,7 +352,7 @@ fn ui(
     window_dur: Duration,
 ) {
     // Layout: table | charts | footer
-    let chunks = Layout::default()
+    let _chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Percentage(55),

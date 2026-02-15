@@ -32,7 +32,7 @@ pub struct NodeLogger<'a> {
 }
 
 impl NodeLogger<'_> {
-    pub fn inner(&self) -> &DataflowLogger {
+    pub fn inner(&self) -> &DataflowLogger<'_> {
         &self.logger
     }
 
@@ -68,7 +68,7 @@ impl<'a> DataflowLogger<'a> {
         }
     }
 
-    pub fn reborrow(&mut self) -> DataflowLogger {
+    pub fn reborrow(&mut self) -> DataflowLogger<'_> {
         DataflowLogger {
             dataflow_id: self.dataflow_id,
             logger: CowMut::Borrowed(&mut self.logger),
@@ -153,14 +153,14 @@ pub struct DaemonLogger {
 }
 
 impl DaemonLogger {
-    pub fn for_dataflow(&mut self, dataflow_id: Uuid) -> DataflowLogger {
+    pub fn for_dataflow(&mut self, dataflow_id: Uuid) -> DataflowLogger<'_> {
         DataflowLogger {
             dataflow_id,
             logger: CowMut::Borrowed(self),
         }
     }
 
-    pub fn for_node_build(&mut self, build_id: BuildId, node_id: NodeId) -> NodeBuildLogger {
+    pub fn for_node_build(&mut self, build_id: BuildId, node_id: NodeId) -> NodeBuildLogger<'_> {
         NodeBuildLogger {
             build_id,
             node_id,
