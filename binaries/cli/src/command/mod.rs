@@ -124,10 +124,7 @@ impl Executable for Command {
                 coordinator_port,
             } => {
                 default_tracing()?;
-                system::stop::stop_system(
-                    (coordinator_addr, coordinator_port).into(),
-                    true,
-                )
+                system::stop::stop_system((coordinator_addr, coordinator_port).into(), true)
             }
             Command::Start(args) => args.execute(),
             Command::Stop(args) => args.execute(),

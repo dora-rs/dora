@@ -36,7 +36,6 @@ pub(crate) fn stop_system(coordinator_addr: SocketAddr, force: bool) -> eyre::Re
         Err(_) => bail!("Could not connect to dora-coordinator"),
     };
 
-
     let running =
         query_running_dataflows(&mut *session).wrap_err("failed to query running dataflows")?;
     let active = running.get_active();
@@ -74,7 +73,6 @@ pub(crate) fn stop_system(coordinator_addr: SocketAddr, force: bool) -> eyre::Re
         }
         println!("✓ All dataflows stopped");
     }
-
 
     let reply_raw = session
         .request(&serde_json::to_vec(&ControlRequest::Destroy).unwrap())
