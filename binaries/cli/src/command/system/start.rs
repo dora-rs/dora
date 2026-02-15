@@ -1,39 +1,44 @@
-use super::system::status::daemon_running;
-use super::{Executable, default_tracing};
-use crate::{LOCALHOST, common::connect_to_coordinator};
+use super::status::daemon_running;
+use crate::LOCALHOST;
+use crate::command::{Executable, default_tracing};
+use crate::common::connect_to_coordinator;
 use dora_core::topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT;
-use dora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply};
-use eyre::{Context, ContextCompat, bail};
+use eyre::{Context, ContextCompat};
 use std::path::PathBuf;
-use std::{fs, net::SocketAddr, path::Path, process::Command, time::Duration};
+use std::time::Duration;
+use std::{fs, path::Path, process::Command};
 
 #[derive(Debug, clap::Args)]
 /// Spawn coordinator and daemon in local mode (with default config)
-pub struct Up {
+pub struct Start {
     /// Use a custom configuration
     #[clap(long, hide = true, value_name = "PATH", value_hint = clap::ValueHint::FilePath)]
     config: Option<PathBuf>,
 }
 
-impl Executable for Up {
+impl Executable for Start {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
-        up(self.config.as_deref())
+        start_system(self.config.as_deref())
     }
 }
 
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 struct UpConfig {}
 
-pub(crate) fn up(config_path: Option<&Path>) -> eyre::Result<()> {
+pub(crate) fn start_system(config_path: Option<&Path>) -> eyre::Result<()> {
     let UpConfig {} = parse_dora_config(config_path)?;
     let coordinator_addr = (LOCALHOST, DORA_COORDINATOR_PORT_CONTROL_DEFAULT).into();
+
     let mut session = match connect_to_coordinator(coordinator_addr) {
-        Ok(session) => session,
+        Ok(session) => {
+            println!("✓ Coordinator is already running on {}", coordinator_addr);
+            session
+        }
         Err(_) => {
             start_coordinator().wrap_err("failed to start dora-coordinator")?;
 
-            loop {
+            let session = loop {
                 match connect_to_coordinator(coordinator_addr) {
                     Ok(session) => break session,
                     Err(_) => {
@@ -41,7 +46,9 @@ pub(crate) fn up(config_path: Option<&Path>) -> eyre::Result<()> {
                         std::thread::sleep(Duration::from_millis(50));
                     }
                 }
-            }
+            };
+            println!("✓ Coordinator started on {}", coordinator_addr);
+            session
         }
     };
 
@@ -61,45 +68,15 @@ pub(crate) fn up(config_path: Option<&Path>) -> eyre::Result<()> {
             }
             std::thread::sleep(Duration::from_secs_f32(WAIT_S));
         }
+        println!("✓ Daemon started");
+    } else {
+        println!("✓ Daemon is already running");
     }
 
     Ok(())
 }
 
-pub(crate) fn destroy(
-    config_path: Option<&Path>,
-    coordinator_addr: SocketAddr,
-) -> Result<(), eyre::ErrReport> {
-    let UpConfig {} = parse_dora_config(config_path)?;
-    match connect_to_coordinator(coordinator_addr) {
-        Ok(mut session) => {
-            // send destroy command to dora-coordinator
-            let reply_raw = session
-                .request(&serde_json::to_vec(&ControlRequest::Destroy).unwrap())
-                .wrap_err("failed to send destroy message")?;
-            let result: ControlRequestReply =
-                serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-            match result {
-                ControlRequestReply::DestroyOk => {
-                    println!("Coordinator and daemons destroyed successfully");
-                }
-                ControlRequestReply::Error(err) => {
-                    bail!("Destroy command failed with error: {}", err);
-                }
-                _ => {
-                    bail!("Unexpected reply from dora-coordinator");
-                }
-            }
-        }
-        Err(_) => {
-            bail!("Could not connect to dora-coordinator");
-        }
-    }
-
-    Ok(())
-}
-
-fn parse_dora_config(config_path: Option<&Path>) -> Result<UpConfig, eyre::ErrReport> {
+fn parse_dora_config(config_path: Option<&Path>) -> eyre::Result<UpConfig> {
     let path = config_path.or_else(|| Some(Path::new("dora-config.yml")).filter(|p| p.exists()));
     let config = match path {
         Some(path) => {
@@ -128,8 +105,6 @@ fn start_coordinator() -> eyre::Result<()> {
     cmd.arg("--quiet");
     cmd.spawn().wrap_err("failed to run `dora coordinator`")?;
 
-    println!("started dora coordinator");
-
     Ok(())
 }
 
@@ -147,8 +122,6 @@ fn start_daemon() -> eyre::Result<()> {
     cmd.arg("daemon");
     cmd.arg("--quiet");
     cmd.spawn().wrap_err("failed to run `dora daemon`")?;
-
-    println!("started dora daemon");
 
     Ok(())
 }

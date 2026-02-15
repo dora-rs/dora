@@ -2,7 +2,6 @@ mod build;
 mod completion;
 mod coordinator;
 mod daemon;
-mod destroy;
 mod graph;
 mod inspect;
 mod list;
@@ -16,7 +15,6 @@ mod start;
 mod stop;
 mod system;
 mod topic;
-mod up;
 
 pub use build::build;
 pub use run::{Run, run, run_func};
@@ -26,7 +24,7 @@ use build::Build;
 use completion::Completion;
 use coordinator::Coordinator;
 use daemon::Daemon;
-use destroy::Destroy;
+use dora_core::topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST};
 use eyre::Context;
 use graph::Graph;
 use inspect::Inspect;
@@ -37,10 +35,10 @@ use node::Node;
 use runtime::Runtime;
 use self_::SelfSubCommand;
 use start::Start;
+use std::net::IpAddr;
 use stop::Stop;
 use system::System;
 use topic::Topic;
-use up::Up;
 
 /// dora-rs cli client
 #[derive(Debug, clap::Subcommand)]
@@ -53,8 +51,17 @@ pub enum Command {
     Build(Build),
     New(NewArgs),
     Run(Run),
-    Up(Up),
-    Destroy(Destroy),
+    /// Alias for `system start`
+    Up(system::start::Start),
+    /// Alias for `system stop` (uses --force by default for backward compatibility)
+    Destroy {
+        /// Address of the dora coordinator
+        #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
+        coordinator_addr: IpAddr,
+        /// Port number of the coordinator control server
+        #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
+        coordinator_port: u16,
+    },
     Start(Start),
     Stop(Stop),
     #[clap(alias = "ps")]
@@ -112,7 +119,16 @@ impl Executable for Command {
             Command::New(args) => args.execute(),
             Command::Run(args) => args.execute(),
             Command::Up(args) => args.execute(),
-            Command::Destroy(args) => args.execute(),
+            Command::Destroy {
+                coordinator_addr,
+                coordinator_port,
+            } => {
+                default_tracing()?;
+                system::stop::stop_system(
+                    (coordinator_addr, coordinator_port).into(),
+                    true, // force=true: backward compat, no prompt
+                )
+            }
             Command::Start(args) => args.execute(),
             Command::Stop(args) => args.execute(),
             Command::List(args) => args.execute(),
