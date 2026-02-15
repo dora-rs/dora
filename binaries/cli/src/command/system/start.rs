@@ -42,7 +42,6 @@ pub(crate) fn start_system(config_path: Option<&Path>) -> eyre::Result<()> {
                 match connect_to_coordinator(coordinator_addr) {
                     Ok(session) => break session,
                     Err(_) => {
-                        // sleep a bit until the coordinator accepts connections
                         std::thread::sleep(Duration::from_millis(50));
                     }
                 }
@@ -55,7 +54,6 @@ pub(crate) fn start_system(config_path: Option<&Path>) -> eyre::Result<()> {
     if !daemon_running(&mut *session)? {
         start_daemon().wrap_err("failed to start dora-daemon")?;
 
-        // wait a bit until daemon is connected
         let mut i = 0;
         const WAIT_S: f32 = 0.1;
         loop {

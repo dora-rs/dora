@@ -126,7 +126,7 @@ impl Executable for Command {
                 default_tracing()?;
                 system::stop::stop_system(
                     (coordinator_addr, coordinator_port).into(),
-                    true, // force=true: backward compat, no prompt
+                    true,
                 )
             }
             Command::Start(args) => args.execute(),
