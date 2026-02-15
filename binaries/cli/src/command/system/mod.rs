@@ -1,6 +1,5 @@
 pub mod status;
 
-pub use status::check_environment;
 
 use super::Executable;
 use status::Status;
