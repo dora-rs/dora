@@ -486,6 +486,35 @@ pub struct Node {
     #[serde(default)]
     pub restart_policy: RestartPolicy,
 
+    /// Maximum number of restart attempts. 0 means unlimited.
+    ///
+    /// When combined with `restart_window`, this limits restarts within the window period.
+    /// For example, `max_restarts: 5` with `restart_window: 300` means "5 restarts per 5 minutes".
+    #[serde(default)]
+    pub max_restarts: u32,
+
+    /// Initial delay in seconds before restarting. Doubles each attempt (exponential backoff).
+    ///
+    /// For example, with `restart_delay: 1.0`, delays will be 1s, 2s, 4s, 8s, ...
+    /// Use `max_restart_delay` to cap the backoff.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restart_delay: Option<f64>,
+
+    /// Maximum delay in seconds for exponential backoff.
+    ///
+    /// Caps the exponentially growing `restart_delay`. For example, with
+    /// `restart_delay: 1.0` and `max_restart_delay: 30.0`, delays grow as
+    /// 1s, 2s, 4s, 8s, 16s, 30s, 30s, ...
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_restart_delay: Option<f64>,
+
+    /// Time window in seconds for counting restarts.
+    ///
+    /// When set, the restart counter resets after this period of time elapses since the
+    /// first restart in the current window. This enables "N restarts within M seconds" semantics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restart_window: Option<f64>,
+
     /// Unstable machine deployment configuration
     #[schemars(skip)]
     #[serde(rename = "_unstable_deploy")]
@@ -671,6 +700,22 @@ pub struct CustomNode {
 
     #[serde(default)]
     pub restart_policy: RestartPolicy,
+
+    /// Maximum number of restart attempts. 0 means unlimited.
+    #[serde(default)]
+    pub max_restarts: u32,
+
+    /// Initial delay in seconds before restarting (exponential backoff).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restart_delay: Option<f64>,
+
+    /// Maximum delay in seconds for exponential backoff.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_restart_delay: Option<f64>,
+
+    /// Time window in seconds for counting restarts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restart_window: Option<f64>,
 
     #[serde(flatten)]
     pub run_config: NodeRunConfig,

@@ -2301,6 +2301,7 @@ impl Daemon {
                 dynamic_node,
                 exit_status,
                 restart,
+                restart_count,
             } => {
                 let mut logger = self
                     .logger
@@ -2310,7 +2311,7 @@ impl Daemon {
                     .log(
                         LogLevel::Debug,
                         Some("daemon".into()),
-                        format!("handling node stop with exit status {exit_status:?} (restart: {restart})"),
+                        format!("handling node stop with exit status {exit_status:?} (restart: {restart}, restart_count: {restart_count})"),
                     )
                     .await;
 
@@ -2387,7 +2388,7 @@ impl Daemon {
                         .log(
                             LogLevel::Info,
                             Some("daemon".into()),
-                            "node will be restarted",
+                            format!("node will be restarted (attempt {})", restart_count + 1),
                         )
                         .await;
                 } else {
@@ -3163,6 +3164,8 @@ pub enum AdoraEvent {
         exit_status: NodeExitStatus,
         /// Whether the node will be restarted
         restart: bool,
+        /// How many times this node has been restarted so far
+        restart_count: u32,
     },
 }
 

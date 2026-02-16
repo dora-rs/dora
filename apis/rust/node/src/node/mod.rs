@@ -84,6 +84,7 @@ pub struct AdoraNode {
     dataflow_descriptor: serde_yaml::Result<Descriptor>,
     warned_unknown_output: BTreeSet<DataId>,
     interactive: bool,
+    restart_count: u32,
 }
 
 impl AdoraNode {
@@ -364,6 +365,7 @@ impl AdoraNode {
             dataflow_descriptor: serde_yaml::Value::Null,
             dynamic: false,
             write_events_to: None,
+            restart_count: 0,
         };
         let (mut node, events) = Self::init(node_config)?;
         node.interactive = true;
@@ -393,6 +395,7 @@ impl AdoraNode {
             dataflow_descriptor: serde_yaml::Value::Null,
             dynamic: false,
             write_events_to: None,
+            restart_count: 0,
         };
         let testing_comm = TestingCommunication {
             input,
@@ -424,6 +427,7 @@ impl AdoraNode {
             dataflow_descriptor,
             dynamic,
             write_events_to,
+            restart_count,
         } = node_config;
         let clock = Arc::new(uhlc::HLC::default());
         let input_config = run_config.inputs.clone();
@@ -486,6 +490,7 @@ impl AdoraNode {
             dataflow_descriptor: serde_yaml::from_value(dataflow_descriptor),
             warned_unknown_output: BTreeSet::new(),
             interactive: false,
+            restart_count,
         };
 
         if dynamic {
@@ -723,6 +728,20 @@ impl AdoraNode {
     /// Returns the input and output configuration of this node.
     pub fn node_config(&self) -> &NodeRunConfig {
         &self.node_config
+    }
+
+    /// Returns true if this node was restarted after a previous exit or failure.
+    ///
+    /// Nodes can use this to decide whether to restore saved state or start fresh.
+    pub fn is_restart(&self) -> bool {
+        self.restart_count > 0
+    }
+
+    /// Returns how many times this node has been restarted.
+    ///
+    /// Returns 0 on the first run, 1 after the first restart, etc.
+    pub fn restart_count(&self) -> u32 {
+        self.restart_count
     }
 
     /// Allocates a [`DataSample`] of the specified size.

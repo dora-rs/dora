@@ -74,6 +74,7 @@ impl Spawner {
                 .context("failed to serialize dataflow descriptor to YAML")?,
             dynamic: node.kind.dynamic(),
             write_events_to,
+            restart_count: 0,
         };
 
         let mut logger = logger

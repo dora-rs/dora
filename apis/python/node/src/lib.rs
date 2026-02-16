@@ -408,6 +408,24 @@ impl Node {
         self.dataflow_id.to_string()
     }
 
+    /// Returns True if this node was restarted after a previous exit or failure.
+    ///
+    /// Nodes can use this to decide whether to restore saved state or start fresh.
+    ///
+    /// :rtype: bool
+    pub fn is_restart(&self) -> bool {
+        self.node.get_mut().is_restart()
+    }
+
+    /// Returns how many times this node has been restarted.
+    ///
+    /// Returns 0 on the first run, 1 after the first restart, etc.
+    ///
+    /// :rtype: int
+    pub fn restart_count(&self) -> u32 {
+        self.node.get_mut().restart_count()
+    }
+
     /// Merge an external event stream with adora main loop.
     /// This currently only work with ROS2.
     ///

@@ -96,6 +96,16 @@ class Node:
     def dataflow_id(self) -> str:
         """Returns the dataflow id."""
 
+    def is_restart(self) -> bool:
+        """Returns True if this node was restarted after a previous exit or failure.
+
+        Nodes can use this to decide whether to restore saved state or start fresh."""
+
+    def restart_count(self) -> int:
+        """Returns how many times this node has been restarted.
+
+        Returns 0 on the first run, 1 after the first restart, etc."""
+
     def merge_external_events(self, subscription: dora.Ros2Subscription) -> None:
         """Merge an external event stream with dora main loop.
         This currently only work with ROS2."""

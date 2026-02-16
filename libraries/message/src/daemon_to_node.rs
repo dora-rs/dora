@@ -26,6 +26,9 @@ pub struct NodeConfig {
     pub dataflow_descriptor: serde_yaml::Value,
     pub dynamic: bool,
     pub write_events_to: Option<PathBuf>,
+    /// Number of times this node has been restarted. 0 on first run.
+    #[serde(default)]
+    pub restart_count: u32,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

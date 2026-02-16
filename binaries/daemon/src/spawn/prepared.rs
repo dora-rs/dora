@@ -31,12 +31,21 @@ use std::{
         Arc,
         atomic::{self, AtomicBool, AtomicU32},
     },
+    time::Duration,
 };
 use tokio::{
     fs::File,
     io::{AsyncBufReadExt, AsyncWriteExt},
     sync::{mpsc, oneshot},
 };
+
+#[derive(Clone, Default)]
+struct RestartConfig {
+    max_restarts: u32,
+    restart_delay: Option<Duration>,
+    max_restart_delay: Option<Duration>,
+    restart_window: Option<Duration>,
+}
 
 #[derive(Clone)]
 pub struct PreparedNode {
@@ -99,13 +108,30 @@ impl PreparedNode {
         }
     }
 
+    fn restart_config(&self) -> RestartConfig {
+        match &self.node.kind {
+            adora_core::descriptor::CoreNodeKind::Custom(n) => RestartConfig {
+                max_restarts: n.max_restarts,
+                restart_delay: n.restart_delay.map(Duration::from_secs_f64),
+                max_restart_delay: n.max_restart_delay.map(Duration::from_secs_f64),
+                restart_window: n.restart_window.map(Duration::from_secs_f64),
+            },
+            adora_core::descriptor::CoreNodeKind::Runtime(_) => RestartConfig::default(),
+        }
+    }
+
     async fn restart_loop(
-        self,
+        mut self,
         mut logger: NodeLogger<'static>,
         mut finished_rx: oneshot::Receiver<NodeProcessFinished>,
         disable_restart: Arc<AtomicBool>,
         pid: Arc<AtomicU32>,
     ) {
+        let config = self.restart_config();
+        let mut restart_count: u32 = 0;
+        let mut window_start = tokio::time::Instant::now();
+        let mut window_count: u32 = 0;
+
         loop {
             let Ok(NodeProcessFinished { exit_status, op_rx }) = finished_rx.await else {
                 logger
@@ -148,12 +174,44 @@ impl PreparedNode {
                 tracing::error!("node exited with error: {:?}", exit_status);
             }
 
+            // Check restart limits before committing to restart
+            let restart = if restart {
+                // Reset window if expired
+                if let Some(window) = config.restart_window {
+                    if window_start.elapsed() > window {
+                        window_count = 0;
+                        window_start = tokio::time::Instant::now();
+                    }
+                }
+                window_count += 1;
+
+                // Check max restarts
+                if config.max_restarts > 0 && window_count > config.max_restarts {
+                    logger
+                        .log(
+                            LogLevel::Error,
+                            Some("daemon".into()),
+                            format!(
+                                "max restarts ({}) exceeded, giving up",
+                                config.max_restarts,
+                            ),
+                        )
+                        .await;
+                    false
+                } else {
+                    true
+                }
+            } else {
+                false
+            };
+
             let event = AdoraEvent::SpawnedNodeResult {
                 dataflow_id: self.dataflow_id,
                 node_id: self.node.id.clone(),
                 exit_status,
                 dynamic_node: self.node.kind.dynamic(),
                 restart,
+                restart_count,
             }
             .into();
             let event = Timestamped {
@@ -163,12 +221,48 @@ impl PreparedNode {
             let _ = self.daemon_tx.clone().send(event).await;
 
             if restart {
+                // Exponential backoff
+                if let Some(base_delay) = config.restart_delay {
+                    let exp = (window_count - 1).min(16); // cap exponent to avoid overflow
+                    let backoff = base_delay.mul_f64(2f64.powi(exp as i32));
+                    let backoff =
+                        config.max_restart_delay.map_or(backoff, |max| backoff.min(max));
+                    logger
+                        .log(
+                            LogLevel::Info,
+                            Some("daemon".into()),
+                            format!(
+                                "waiting {backoff:?} before restart (attempt {})",
+                                restart_count + 1,
+                            ),
+                        )
+                        .await;
+                    tokio::time::sleep(backoff).await;
+
+                    // Re-check disable_restart after sleep (may have changed)
+                    if disable_restart.load(atomic::Ordering::Acquire) {
+                        logger
+                            .log(
+                                LogLevel::Info,
+                                Some("daemon".into()),
+                                "restart cancelled: inputs closed during backoff wait".to_string(),
+                            )
+                            .await;
+                        break;
+                    }
+                }
+
+                restart_count += 1;
+                self.node_config.restart_count = restart_count;
+
                 if success {
                     logger
                         .log(
                             LogLevel::Info,
                             Some("daemon".into()),
-                            "restarting node after successful exit".to_string(),
+                            format!(
+                                "restarting node after successful exit (attempt {restart_count})",
+                            ),
                         )
                         .await;
                 } else {
@@ -176,7 +270,7 @@ impl PreparedNode {
                         .log(
                             LogLevel::Warn,
                             Some("daemon".into()),
-                            "restarting node after failure".to_string(),
+                            format!("restarting node after failure (attempt {restart_count})"),
                         )
                         .await;
                 }
