@@ -3444,6 +3444,438 @@ fn runtime_node_outputs(n: &RuntimeNode) -> BTreeSet<DataId> {
         .collect()
 }
 
+#[cfg(test)]
+mod fault_tolerance_tests {
+    use super::*;
+    use adora_message::{
+        config::CommunicationConfig,
+        daemon_to_node::NodeEvent,
+        descriptor::{Debug as DescriptorDebug, Descriptor},
+    };
+
+    fn test_dataflow() -> RunningDataflow {
+        let descriptor = Descriptor {
+            nodes: vec![],
+            communication: CommunicationConfig::default(),
+            deploy: None,
+            debug: DescriptorDebug::default(),
+        };
+        RunningDataflow::new(Uuid::nil(), DaemonId::new(None), descriptor)
+    }
+
+    fn test_running_node() -> RunningNode {
+        RunningNode {
+            process: None,
+            node_config: NodeConfig {
+                dataflow_id: Uuid::nil().into(),
+                node_id: NodeId::from("test".to_string()),
+                run_config: NodeRunConfig {
+                    inputs: BTreeMap::new(),
+                    outputs: BTreeSet::new(),
+                },
+                daemon_communication: None,
+                dataflow_descriptor: serde_yaml::Value::Null,
+                dynamic: false,
+                write_events_to: None,
+                restart_count: 0,
+            },
+            pid: None,
+            restart_policy: RestartPolicy::Never,
+            disable_restart: Arc::new(AtomicBool::new(false)),
+            last_activity: Arc::new(AtomicU64::new(0)),
+            health_check_timeout: None,
+        }
+    }
+
+    fn test_clock() -> HLC {
+        HLC::default()
+    }
+
+    fn drain_events(
+        rx: &mut mpsc::UnboundedReceiver<Timestamped<NodeEvent>>,
+    ) -> Vec<NodeEvent> {
+        let mut events = Vec::new();
+        while let Ok(timestamped) = rx.try_recv() {
+            events.push(timestamped.inner);
+        }
+        events
+    }
+
+    fn matches_event(event: &NodeEvent, expected: &str) -> bool {
+        match (event, expected) {
+            (NodeEvent::InputClosed { .. }, "InputClosed") => true,
+            (NodeEvent::InputRecovered { .. }, "InputRecovered") => true,
+            (NodeEvent::AllInputsClosed, "AllInputsClosed") => true,
+            (NodeEvent::Input { .. }, "Input") => true,
+            _ => false,
+        }
+    }
+
+    // -- Test 1: close_input removes input, sends InputClosed, no AllInputsClosed with remaining inputs --
+
+    #[test]
+    fn close_input_removes_from_open_inputs() {
+        let mut df = test_dataflow();
+        let clock = test_clock();
+        let node_a: NodeId = "node_a".to_string().into();
+        let input_x: DataId = "input_x".to_string().into();
+        let input_y: DataId = "input_y".to_string().into();
+
+        // Setup: node_a has two open inputs
+        df.open_inputs
+            .entry(node_a.clone())
+            .or_default()
+            .insert(input_x.clone());
+        df.open_inputs
+            .entry(node_a.clone())
+            .or_default()
+            .insert(input_y.clone());
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        df.subscribe_channels.insert(node_a.clone(), tx);
+
+        // Act: permanently close input_x
+        close_input(&mut df, &node_a, &input_x, &clock);
+
+        // Assert: input_x removed, input_y still open
+        let open = df.open_inputs(&node_a);
+        assert!(!open.contains(&input_x));
+        assert!(open.contains(&input_y));
+
+        // Assert: only InputClosed sent (no AllInputsClosed)
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert!(matches_event(&events[0], "InputClosed"));
+    }
+
+    // -- Test 2: close_input sends AllInputsClosed + disable_restart on last input --
+
+    #[test]
+    fn close_input_sends_all_inputs_closed() {
+        let mut df = test_dataflow();
+        let clock = test_clock();
+        let node_a: NodeId = "node_a".to_string().into();
+        let input_x: DataId = "input_x".to_string().into();
+
+        df.open_inputs
+            .entry(node_a.clone())
+            .or_default()
+            .insert(input_x.clone());
+
+        let running = test_running_node();
+        let disable_restart = running.disable_restart.clone();
+        df.running_nodes.insert(node_a.clone(), running);
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        df.subscribe_channels.insert(node_a.clone(), tx);
+
+        close_input(&mut df, &node_a, &input_x, &clock);
+
+        assert!(df.open_inputs(&node_a).is_empty());
+
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 2);
+        assert!(matches_event(&events[0], "InputClosed"));
+        assert!(matches_event(&events[1], "AllInputsClosed"));
+        assert!(disable_restart.load(atomic::Ordering::Acquire));
+    }
+
+    // -- Test 3: close_input defers AllInputsClosed when broken_inputs exist --
+
+    #[test]
+    fn close_input_deferred_by_broken_inputs() {
+        let mut df = test_dataflow();
+        let clock = test_clock();
+        let node_a: NodeId = "node_a".to_string().into();
+        let input_x: DataId = "input_x".to_string().into();
+        let input_y: DataId = "input_y".to_string().into();
+
+        // node_a has input_x open, input_y is broken
+        df.open_inputs
+            .entry(node_a.clone())
+            .or_default()
+            .insert(input_x.clone());
+        df.broken_inputs.insert(
+            (node_a.clone(), input_y.clone()),
+            Duration::from_secs(10),
+        );
+
+        let running = test_running_node();
+        let disable_restart = running.disable_restart.clone();
+        df.running_nodes.insert(node_a.clone(), running);
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        df.subscribe_channels.insert(node_a.clone(), tx);
+
+        // Close last open input — but broken input still exists
+        close_input(&mut df, &node_a, &input_x, &clock);
+
+        let events = drain_events(&mut rx);
+        // Only InputClosed, NO AllInputsClosed (broken input might recover)
+        assert_eq!(events.len(), 1);
+        assert!(matches_event(&events[0], "InputClosed"));
+        assert!(!disable_restart.load(atomic::Ordering::Acquire));
+    }
+
+    // -- Test 4: close_input on already-broken input --
+
+    #[test]
+    fn close_input_on_already_broken_input() {
+        let mut df = test_dataflow();
+        let clock = test_clock();
+        let node_a: NodeId = "node_a".to_string().into();
+        let input_x: DataId = "input_x".to_string().into();
+
+        // input_x is broken (not in open_inputs)
+        df.broken_inputs.insert(
+            (node_a.clone(), input_x.clone()),
+            Duration::from_secs(10),
+        );
+
+        let running = test_running_node();
+        let disable_restart = running.disable_restart.clone();
+        df.running_nodes.insert(node_a.clone(), running);
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        df.subscribe_channels.insert(node_a.clone(), tx);
+
+        // Permanently close the broken input (upstream exited)
+        close_input(&mut df, &node_a, &input_x, &clock);
+
+        // broken_inputs cleaned up
+        assert!(!df.broken_inputs.contains_key(&(node_a.clone(), input_x.clone())));
+
+        let events = drain_events(&mut rx);
+        // No InputClosed (was already sent when it broke), just AllInputsClosed
+        assert_eq!(events.len(), 1);
+        assert!(matches_event(&events[0], "AllInputsClosed"));
+        assert!(disable_restart.load(atomic::Ordering::Acquire));
+    }
+
+    // -- Test 5: break_input sends InputClosed --
+
+    #[test]
+    fn break_input_sends_input_closed() {
+        let mut df = test_dataflow();
+        let clock = test_clock();
+        let node_a: NodeId = "node_a".to_string().into();
+        let input_x: DataId = "input_x".to_string().into();
+
+        df.open_inputs
+            .entry(node_a.clone())
+            .or_default()
+            .insert(input_x.clone());
+
+        // Pre-populate broken_inputs (as check_input_timeouts does before calling break_input)
+        df.broken_inputs.insert(
+            (node_a.clone(), input_x.clone()),
+            Duration::from_secs(5),
+        );
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        df.subscribe_channels.insert(node_a.clone(), tx);
+
+        break_input(&mut df, &node_a, &input_x, &clock);
+
+        // Removed from open_inputs
+        assert!(!df.open_inputs(&node_a).contains(&input_x));
+
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert!(matches_event(&events[0], "InputClosed"));
+    }
+
+    // -- Test 6: break_input defers AllInputsClosed when broken_inputs has entry --
+
+    #[test]
+    fn break_input_defers_all_inputs_closed() {
+        let mut df = test_dataflow();
+        let clock = test_clock();
+        let node_a: NodeId = "node_a".to_string().into();
+        let input_x: DataId = "input_x".to_string().into();
+
+        // Only one input, and it's open
+        df.open_inputs
+            .entry(node_a.clone())
+            .or_default()
+            .insert(input_x.clone());
+
+        // Caller inserts into broken_inputs before calling break_input
+        df.broken_inputs.insert(
+            (node_a.clone(), input_x.clone()),
+            Duration::from_secs(5),
+        );
+
+        let running = test_running_node();
+        let disable_restart = running.disable_restart.clone();
+        df.running_nodes.insert(node_a.clone(), running);
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        df.subscribe_channels.insert(node_a.clone(), tx);
+
+        break_input(&mut df, &node_a, &input_x, &clock);
+
+        let events = drain_events(&mut rx);
+        // Only InputClosed — AllInputsClosed deferred because broken_inputs has entry
+        assert_eq!(events.len(), 1);
+        assert!(matches_event(&events[0], "InputClosed"));
+        assert!(!disable_restart.load(atomic::Ordering::Acquire));
+    }
+
+    // -- Test 7: Circuit breaker recovery via send_output_to_local_receivers --
+
+    #[tokio::test]
+    async fn circuit_breaker_recovery() {
+        let mut df = test_dataflow();
+        let clock = test_clock();
+        let sender: NodeId = "sender".to_string().into();
+        let receiver: NodeId = "receiver".to_string().into();
+        let output: DataId = "output".to_string().into();
+        let input: DataId = "input".to_string().into();
+
+        // Setup mapping: sender/output -> receiver/input
+        df.mappings
+            .entry(OutputId(sender.clone(), output.clone()))
+            .or_default()
+            .insert((receiver.clone(), input.clone()));
+
+        // Input is broken (timed out earlier)
+        let timeout = Duration::from_secs(5);
+        df.broken_inputs
+            .insert((receiver.clone(), input.clone()), timeout);
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        df.subscribe_channels.insert(receiver.clone(), tx);
+
+        // Send data from upstream
+        let metadata = metadata::Metadata::new(
+            clock.new_timestamp(),
+            ArrowTypeInfo {
+                data_type: DataType::UInt8,
+                len: 0,
+                null_count: 0,
+                validity: None,
+                offset: 0,
+                buffer_offsets: vec![],
+                child_data: vec![],
+            },
+        );
+
+        let result =
+            send_output_to_local_receivers(sender, output, &mut df, &metadata, None, &clock)
+                .await;
+        assert!(result.is_ok());
+
+        // Assert: broken input recovered
+        assert!(!df.broken_inputs.contains_key(&(receiver.clone(), input.clone())));
+
+        // Assert: re-added to open_inputs
+        assert!(df.open_inputs(&receiver).contains(&input));
+
+        // Assert: deadline recreated
+        assert!(df.input_deadlines.contains_key(&(receiver.clone(), input.clone())));
+        let deadline = &df.input_deadlines[&(receiver.clone(), input.clone())];
+        assert_eq!(deadline.timeout, timeout);
+
+        // Assert: events — Input + InputRecovered
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 2);
+        assert!(matches_event(&events[0], "Input"));
+        assert!(matches_event(&events[1], "InputRecovered"));
+    }
+
+    // -- Test 8: Full circuit breaker cycle: open -> break -> recover --
+
+    #[tokio::test]
+    async fn full_circuit_breaker_cycle() {
+        let mut df = test_dataflow();
+        let clock = test_clock();
+        let sender: NodeId = "sender".to_string().into();
+        let receiver: NodeId = "receiver".to_string().into();
+        let output: DataId = "output".to_string().into();
+        let input: DataId = "input".to_string().into();
+
+        // Setup: receiver has one open input with timeout
+        df.open_inputs
+            .entry(receiver.clone())
+            .or_default()
+            .insert(input.clone());
+        let timeout = Duration::from_secs(5);
+        df.input_deadlines.insert(
+            (receiver.clone(), input.clone()),
+            InputDeadline {
+                timeout,
+                last_received: Instant::now(),
+            },
+        );
+
+        // Setup mapping
+        df.mappings
+            .entry(OutputId(sender.clone(), output.clone()))
+            .or_default()
+            .insert((receiver.clone(), input.clone()));
+
+        let running = test_running_node();
+        let disable_restart = running.disable_restart.clone();
+        df.running_nodes.insert(receiver.clone(), running);
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        df.subscribe_channels.insert(receiver.clone(), tx);
+
+        // Step 1: Simulate timeout — insert into broken_inputs then break
+        df.broken_inputs
+            .insert((receiver.clone(), input.clone()), timeout);
+        break_input(&mut df, &receiver, &input, &clock);
+        df.input_deadlines
+            .remove(&(receiver.clone(), input.clone()));
+
+        // Verify broken state
+        assert!(!df.open_inputs(&receiver).contains(&input));
+        assert!(df.broken_inputs.contains_key(&(receiver.clone(), input.clone())));
+        assert!(!disable_restart.load(atomic::Ordering::Acquire)); // deferred
+
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert!(matches_event(&events[0], "InputClosed"));
+
+        // Step 2: Upstream sends data again — recovery
+        let metadata = metadata::Metadata::new(
+            clock.new_timestamp(),
+            ArrowTypeInfo {
+                data_type: DataType::UInt8,
+                len: 0,
+                null_count: 0,
+                validity: None,
+                offset: 0,
+                buffer_offsets: vec![],
+                child_data: vec![],
+            },
+        );
+
+        let result = send_output_to_local_receivers(
+            sender,
+            output,
+            &mut df,
+            &metadata,
+            None,
+            &clock,
+        )
+        .await;
+        assert!(result.is_ok());
+
+        // Verify recovered state
+        assert!(df.open_inputs(&receiver).contains(&input));
+        assert!(!df.broken_inputs.contains_key(&(receiver.clone(), input.clone())));
+        assert!(df.input_deadlines.contains_key(&(receiver.clone(), input.clone())));
+        assert!(!disable_restart.load(atomic::Ordering::Acquire));
+
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 2);
+        assert!(matches_event(&events[0], "Input"));
+        assert!(matches_event(&events[1], "InputRecovered"));
+    }
+}
+
 trait CoreNodeKindExt {
     fn run_config(&self) -> NodeRunConfig;
     fn dynamic(&self) -> bool;
