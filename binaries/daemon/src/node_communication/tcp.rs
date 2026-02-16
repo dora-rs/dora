@@ -1,4 +1,11 @@
-use std::{collections::BTreeMap, io::ErrorKind, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    io::ErrorKind,
+    sync::{
+        Arc,
+        atomic::AtomicU64,
+    },
+};
 
 use super::{Connection, Listener};
 use crate::{
@@ -15,12 +22,13 @@ use tokio::{
     sync::mpsc,
 };
 
-#[tracing::instrument(skip(listener, daemon_tx, clock), level = "trace")]
+#[tracing::instrument(skip(listener, daemon_tx, clock, last_activity), level = "trace")]
 pub async fn listener_loop(
     listener: TcpListener,
     daemon_tx: mpsc::Sender<Timestamped<Event>>,
     queue_sizes: BTreeMap<DataId, usize>,
     clock: Arc<HLC>,
+    last_activity: Arc<AtomicU64>,
 ) {
     loop {
         match listener
@@ -37,24 +45,26 @@ pub async fn listener_loop(
                     daemon_tx.clone(),
                     queue_sizes.clone(),
                     clock.clone(),
+                    last_activity.clone(),
                 ));
             }
         }
     }
 }
 
-#[tracing::instrument(skip(connection, daemon_tx, clock), level = "trace")]
+#[tracing::instrument(skip(connection, daemon_tx, clock, last_activity), level = "trace")]
 async fn handle_connection_loop(
     connection: TcpStream,
     daemon_tx: mpsc::Sender<Timestamped<Event>>,
     queue_sizes: BTreeMap<DataId, usize>,
     clock: Arc<HLC>,
+    last_activity: Arc<AtomicU64>,
 ) {
     if let Err(err) = connection.set_nodelay(true) {
         tracing::warn!("failed to set nodelay for connection: {err}");
     }
 
-    Listener::run(TcpConnection(connection), daemon_tx, clock).await
+    Listener::run(TcpConnection(connection), daemon_tx, clock, last_activity).await
 }
 
 struct TcpConnection(TcpStream);

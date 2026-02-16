@@ -16,7 +16,10 @@ use shared_memory_server::{ShmemConf, ShmemServer};
 use std::{
     collections::{BTreeMap, VecDeque},
     mem,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     task::Poll,
 };
 #[cfg(unix)]
@@ -35,6 +38,13 @@ pub mod tcp;
 #[cfg(unix)]
 pub mod unix_domain;
 
+pub fn current_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
 pub async fn spawn_listener_loop(
     dataflow_id: &DataflowId,
     node_id: &NodeId,
@@ -42,6 +52,7 @@ pub async fn spawn_listener_loop(
     config: LocalCommunicationConfig,
     queue_sizes: BTreeMap<DataId, usize>,
     clock: Arc<uhlc::HLC>,
+    last_activity: Arc<AtomicU64>,
 ) -> eyre::Result<DaemonCommunication> {
     match config {
         LocalCommunicationConfig::Tcp => {
@@ -60,7 +71,7 @@ pub async fn spawn_listener_loop(
             let event_loop_node_id = format!("{dataflow_id}/{node_id}");
             let daemon_tx = daemon_tx.clone();
             tokio::spawn(async move {
-                tcp::listener_loop(socket, daemon_tx, queue_sizes, clock).await;
+                tcp::listener_loop(socket, daemon_tx, queue_sizes, clock, last_activity).await;
                 tracing::debug!("event listener loop finished for `{event_loop_node_id}`");
             });
 
@@ -94,7 +105,8 @@ pub async fn spawn_listener_loop(
                 let daemon_tx = daemon_tx.clone();
                 let queue_sizes = queue_sizes.clone();
                 let clock = clock.clone();
-                tokio::spawn(shmem::listener_loop(server, daemon_tx, queue_sizes, clock));
+                let last_activity = last_activity.clone();
+                tokio::spawn(shmem::listener_loop(server, daemon_tx, queue_sizes, clock, last_activity));
             }
 
             {
@@ -104,8 +116,9 @@ pub async fn spawn_listener_loop(
                 let daemon_tx = daemon_tx.clone();
                 let queue_sizes = queue_sizes.clone();
                 let clock = clock.clone();
+                let last_activity = last_activity.clone();
                 tokio::task::spawn(async move {
-                    shmem::listener_loop(server, daemon_tx, queue_sizes, clock).await;
+                    shmem::listener_loop(server, daemon_tx, queue_sizes, clock, last_activity).await;
                     tracing::debug!("event listener loop finished for `{event_loop_node_id}`");
                 });
             }
@@ -117,8 +130,9 @@ pub async fn spawn_listener_loop(
                 let daemon_tx = daemon_tx.clone();
                 let queue_sizes = queue_sizes.clone();
                 let clock = clock.clone();
+                let last_activity = last_activity.clone();
                 tokio::task::spawn(async move {
-                    shmem::listener_loop(server, daemon_tx, queue_sizes, clock).await;
+                    shmem::listener_loop(server, daemon_tx, queue_sizes, clock, last_activity).await;
                     tracing::debug!("drop listener loop finished for `{drop_loop_node_id}`");
                 });
             }
@@ -130,7 +144,7 @@ pub async fn spawn_listener_loop(
                 let daemon_tx = daemon_tx.clone();
                 let clock = clock.clone();
                 tokio::task::spawn(async move {
-                    shmem::listener_loop(server, daemon_tx, queue_sizes, clock).await;
+                    shmem::listener_loop(server, daemon_tx, queue_sizes, clock, last_activity).await;
                     tracing::debug!(
                         "events close listener loop finished for `{drop_loop_node_id}`"
                     );
@@ -164,7 +178,7 @@ pub async fn spawn_listener_loop(
             let event_loop_node_id = format!("{dataflow_id}/{node_id}");
             let daemon_tx = daemon_tx.clone();
             tokio::spawn(async move {
-                unix_domain::listener_loop(socket, daemon_tx, queue_sizes, clock).await;
+                unix_domain::listener_loop(socket, daemon_tx, queue_sizes, clock, last_activity).await;
                 tracing::debug!("event listener loop finished for `{event_loop_node_id}`");
             });
 
@@ -185,6 +199,7 @@ struct Listener {
     subscribed_drop_events: Option<UnboundedReceiver<Timestamped<NodeDropEvent>>>,
     queue: VecDeque<Box<Option<Timestamped<NodeEvent>>>>,
     clock: Arc<uhlc::HLC>,
+    last_activity: Arc<AtomicU64>,
 }
 
 impl Listener {
@@ -192,6 +207,7 @@ impl Listener {
         mut connection: C,
         daemon_tx: mpsc::Sender<Timestamped<Event>>,
         hlc: Arc<uhlc::HLC>,
+        last_activity: Arc<AtomicU64>,
     ) {
         // receive the first message
         let message = match connection
@@ -233,6 +249,7 @@ impl Listener {
                             subscribed_drop_events: None,
                             queue: VecDeque::new(),
                             clock: hlc.clone(),
+                            last_activity,
                         };
                         match listener
                             .run_inner(connection)
@@ -316,6 +333,7 @@ impl Listener {
         message: Timestamped<DaemonRequest>,
         connection: &mut C,
     ) -> eyre::Result<()> {
+        self.last_activity.store(current_millis(), Ordering::Release);
         let timestamp = message.timestamp;
         if let Err(err) = self.clock.update_with_timestamp(&timestamp) {
             tracing::warn!("failed to update HLC: {err}");

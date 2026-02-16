@@ -1,4 +1,11 @@
-use std::{collections::BTreeMap, io::ErrorKind, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    io::ErrorKind,
+    sync::{
+        Arc,
+        atomic::AtomicU64,
+    },
+};
 
 use adora_core::{config::DataId, uhlc::HLC};
 use adora_message::{
@@ -17,12 +24,13 @@ use crate::{
 
 use super::{Connection, Listener};
 
-#[tracing::instrument(skip(listener, daemon_tx, clock), level = "trace")]
+#[tracing::instrument(skip(listener, daemon_tx, clock, last_activity), level = "trace")]
 pub async fn listener_loop(
     listener: UnixListener,
     daemon_tx: mpsc::Sender<Timestamped<Event>>,
     queue_sizes: BTreeMap<DataId, usize>,
     clock: Arc<HLC>,
+    last_activity: Arc<AtomicU64>,
 ) {
     loop {
         match listener
@@ -39,20 +47,22 @@ pub async fn listener_loop(
                     daemon_tx.clone(),
                     queue_sizes.clone(),
                     clock.clone(),
+                    last_activity.clone(),
                 ));
             }
         }
     }
 }
 
-#[tracing::instrument(skip(connection, daemon_tx, clock), level = "trace")]
+#[tracing::instrument(skip(connection, daemon_tx, clock, last_activity), level = "trace")]
 async fn handle_connection_loop(
     connection: UnixStream,
     daemon_tx: mpsc::Sender<Timestamped<Event>>,
     queue_sizes: BTreeMap<DataId, usize>,
     clock: Arc<HLC>,
+    last_activity: Arc<AtomicU64>,
 ) {
-    Listener::run(UnixConnection(connection), daemon_tx, clock).await
+    Listener::run(UnixConnection(connection), daemon_tx, clock, last_activity).await
 }
 
 struct UnixConnection(UnixStream);

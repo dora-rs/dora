@@ -515,6 +515,14 @@ pub struct Node {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub restart_window: Option<f64>,
 
+    /// Health check timeout in seconds.
+    ///
+    /// When set, the daemon monitors this node for activity. If the node does not
+    /// communicate with the daemon within this timeout, it is killed and the restart
+    /// policy is evaluated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health_check_timeout: Option<f64>,
+
     /// Unstable machine deployment configuration
     #[schemars(skip)]
     #[serde(rename = "_unstable_deploy")]
@@ -716,6 +724,14 @@ pub struct CustomNode {
     /// Time window in seconds for counting restarts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub restart_window: Option<f64>,
+
+    /// Health check timeout in seconds.
+    ///
+    /// When set, the daemon monitors this node for activity. If the node does not
+    /// communicate with the daemon within this timeout, it is killed and the restart
+    /// policy is evaluated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health_check_timeout: Option<f64>,
 
     #[serde(flatten)]
     pub run_config: NodeRunConfig,

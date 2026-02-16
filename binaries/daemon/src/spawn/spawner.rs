@@ -19,7 +19,14 @@ use adora_message::{
     daemon_to_node::{NodeConfig, RuntimeConfig},
 };
 use eyre::{ContextCompat, WrapErr, bail};
-use std::{future::Future, path::PathBuf, sync::Arc};
+use std::{
+    future::Future,
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::AtomicU64,
+    },
+};
 use tokio::sync::mpsc;
 
 #[derive(Clone)]
@@ -55,6 +62,9 @@ impl Spawner {
             .into_iter()
             .map(|(k, v)| (k, v.queue_size.unwrap_or(10)))
             .collect();
+        let last_activity = Arc::new(AtomicU64::new(
+            crate::node_communication::current_millis(),
+        ));
         let daemon_communication = spawn_listener_loop(
             &dataflow_id,
             &node_id,
@@ -62,6 +72,7 @@ impl Spawner {
             self.dataflow_descriptor.communication.local,
             queue_sizes,
             self.clock.clone(),
+            last_activity.clone(),
         )
         .await?;
 
@@ -89,6 +100,7 @@ impl Spawner {
                 dataflow_id,
                 node_config,
                 node_stderr_most_recent,
+                last_activity,
             )
             .await
         };
@@ -103,6 +115,7 @@ impl Spawner {
         dataflow_id: uuid::Uuid,
         node_config: NodeConfig,
         node_stderr_most_recent: Arc<ArrayQueue<String>>,
+        last_activity: Arc<AtomicU64>,
     ) -> eyre::Result<PreparedNode> {
         std::fs::create_dir_all(&node_working_dir)
             .context("failed to create node working directory")?;
@@ -310,6 +323,7 @@ impl Spawner {
             clock: self.clock,
             daemon_tx: self.daemon_tx,
             node_stderr_most_recent,
+            last_activity,
         })
     }
 }

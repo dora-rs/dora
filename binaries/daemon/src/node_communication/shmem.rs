@@ -1,4 +1,10 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    sync::{
+        Arc,
+        atomic::AtomicU64,
+    },
+};
 
 use super::{Connection, Listener};
 use crate::Event;
@@ -10,12 +16,13 @@ use eyre::eyre;
 use shared_memory_server::ShmemServer;
 use tokio::sync::{mpsc, oneshot};
 
-#[tracing::instrument(skip(server, daemon_tx, clock), level = "trace")]
+#[tracing::instrument(skip(server, daemon_tx, clock, last_activity), level = "trace")]
 pub async fn listener_loop(
     mut server: ShmemServer<Timestamped<DaemonRequest>, DaemonReply>,
     daemon_tx: mpsc::Sender<Timestamped<Event>>,
     queue_sizes: BTreeMap<DataId, usize>,
     clock: Arc<HLC>,
+    last_activity: Arc<AtomicU64>,
 ) {
     let (tx, rx) = flume::bounded(0);
     tokio::task::spawn_blocking(move || {
@@ -39,7 +46,7 @@ pub async fn listener_loop(
         }
     });
     let connection = ShmemConnection(tx);
-    Listener::run(connection, daemon_tx, clock).await
+    Listener::run(connection, daemon_tx, clock, last_activity).await
 }
 
 #[allow(clippy::large_enum_variant)]

@@ -97,6 +97,7 @@ impl DescriptorExt for Descriptor {
                     restart_delay: node.restart_delay,
                     max_restart_delay: node.max_restart_delay,
                     restart_window: node.restart_window,
+                    health_check_timeout: node.health_check_timeout,
                 }),
                 NodeKindMut::Custom(node) => CoreNodeKind::Custom(node.clone()),
                 NodeKindMut::Runtime(node) => CoreNodeKind::Runtime(node.clone()),

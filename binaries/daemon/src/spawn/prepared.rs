@@ -29,7 +29,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{self, AtomicBool, AtomicU32},
+        atomic::{self, AtomicBool, AtomicU32, AtomicU64},
     },
     time::Duration,
 };
@@ -58,6 +58,7 @@ pub struct PreparedNode {
     pub(super) clock: Arc<HLC>,
     pub(super) daemon_tx: mpsc::Sender<Timestamped<Event>>,
     pub(super) node_stderr_most_recent: Arc<ArrayQueue<String>>,
+    pub(super) last_activity: Arc<AtomicU64>,
 }
 
 impl PreparedNode {
@@ -94,6 +95,8 @@ impl PreparedNode {
                     Some(pid.clone())
                 }
             },
+            last_activity: self.last_activity.clone(),
+            health_check_timeout: self.health_check_timeout(),
         };
 
         tokio::spawn(self.restart_loop(logger, finished_rx, disable_restart, pid));
@@ -105,6 +108,15 @@ impl PreparedNode {
         match &self.node.kind {
             adora_core::descriptor::CoreNodeKind::Custom(n) => n.restart_policy,
             adora_core::descriptor::CoreNodeKind::Runtime(_) => RestartPolicy::Never,
+        }
+    }
+
+    fn health_check_timeout(&self) -> Option<Duration> {
+        match &self.node.kind {
+            adora_core::descriptor::CoreNodeKind::Custom(n) => {
+                n.health_check_timeout.map(Duration::from_secs_f64)
+            }
+            adora_core::descriptor::CoreNodeKind::Runtime(_) => None,
         }
     }
 

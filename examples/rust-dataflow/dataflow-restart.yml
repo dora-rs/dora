@@ -14,6 +14,7 @@ nodes:
     max_restarts: 5
     restart_delay: 1.0
     max_restart_delay: 10.0
+    health_check_timeout: 30.0
     inputs:
       tick: adora/timer/millis/100
       fail: adora/timer/millis/400

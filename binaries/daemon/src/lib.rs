@@ -52,7 +52,7 @@ use std::{
     pin::pin,
     sync::{
         Arc,
-        atomic::{self, AtomicBool, AtomicU32},
+        atomic::{self, AtomicBool, AtomicU32, AtomicU64},
     },
     time::{Duration, Instant},
 };
@@ -422,11 +422,22 @@ impl Daemon {
             timestamp: metrics_clock.new_timestamp(),
         });
 
+        let health_check_clock = daemon.clock.clone();
+        let health_check_interval =
+            tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(
+                Duration::from_secs(5),
+            ))
+            .map(|_| Timestamped {
+                inner: Event::NodeHealthCheckInterval,
+                timestamp: health_check_clock.new_timestamp(),
+            });
+
         let events = (
             external_events,
             adora_events,
             watchdog_interval,
             metrics_interval,
+            health_check_interval,
         )
             .merge();
         daemon.run_inner(events).await
@@ -488,6 +499,9 @@ impl Daemon {
                 }
                 Event::MetricsInterval => {
                     self.collect_and_send_metrics().await?;
+                }
+                Event::NodeHealthCheckInterval => {
+                    self.check_node_health();
                 }
                 Event::CtrlC => {
                     tracing::info!("received ctrlc signal -> stopping all dataflows");
@@ -962,6 +976,32 @@ impl Daemon {
             }
         };
         Ok(status)
+    }
+
+    fn check_node_health(&self) {
+        let now_millis = node_communication::current_millis();
+        for (_dataflow_id, dataflow) in &self.running {
+            for (node_id, node) in &dataflow.running_nodes {
+                let Some(timeout) = node.health_check_timeout else {
+                    continue;
+                };
+                let last = node.last_activity.load(atomic::Ordering::Acquire);
+                if last == 0 {
+                    continue; // not yet connected
+                }
+                let elapsed_ms = now_millis.saturating_sub(last);
+                let timeout_ms = timeout.as_millis() as u64;
+                if elapsed_ms > timeout_ms {
+                    tracing::warn!(
+                        "node `{node_id}` unresponsive for {}ms (timeout: {timeout:?}), killing",
+                        elapsed_ms,
+                    );
+                    if let Some(process) = &node.process {
+                        process.submit(ProcessOperation::Kill);
+                    }
+                }
+            }
+        }
     }
 
     async fn collect_and_send_metrics(&mut self) -> eyre::Result<()> {
@@ -2659,6 +2699,10 @@ pub struct RunningNode {
     /// This flag is set when all inputs of the node were closed and when a manual stop command
     /// was sent.
     disable_restart: Arc<AtomicBool>,
+    /// Shared timestamp (millis since epoch) updated by the node's Listener on every request.
+    last_activity: Arc<AtomicU64>,
+    /// If set, the daemon kills this node when it hasn't communicated within this duration.
+    health_check_timeout: Option<Duration>,
 }
 
 impl RunningNode {
@@ -3060,6 +3104,7 @@ pub enum Event {
     DynamicNode(DynamicNodeEventWrapper),
     HeartbeatInterval,
     MetricsInterval,
+    NodeHealthCheckInterval,
     CtrlC,
     StopAfter(Duration),
     SecondCtrlC,
@@ -3101,6 +3146,7 @@ impl Event {
             Event::DynamicNode(_) => "DynamicNode",
             Event::HeartbeatInterval => "HeartbeatInterval",
             Event::MetricsInterval => "MetricsInterval",
+            Event::NodeHealthCheckInterval => "NodeHealthCheckInterval",
             Event::CtrlC => "CtrlC",
             Event::StopAfter(_) => "StopAfter",
             Event::SecondCtrlC => "SecondCtrlC",
