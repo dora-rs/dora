@@ -32,5 +32,7 @@ nodes:
     restart_delay: 0.5
     restart_window: 60.0
     inputs:
-      exit: rust-status-node/triggered-exit
+      exit:
+        source: rust-status-node/triggered-exit
+        input_timeout: 10.0
       message: rust-status-node/status

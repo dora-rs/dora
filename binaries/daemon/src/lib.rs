@@ -502,6 +502,7 @@ impl Daemon {
                 }
                 Event::NodeHealthCheckInterval => {
                     self.check_node_health();
+                    self.check_input_timeouts();
                 }
                 Event::CtrlC => {
                     tracing::info!("received ctrlc signal -> stopping all dataflows");
@@ -1004,6 +1005,31 @@ impl Daemon {
         }
     }
 
+    fn check_input_timeouts(&mut self) {
+        let clock = self.clock.clone();
+        for dataflow in self.running.values_mut() {
+            let mut timed_out = Vec::new();
+            for ((node_id, input_id), deadline) in &dataflow.input_deadlines {
+                if deadline.last_received.elapsed() > deadline.timeout {
+                    timed_out.push((node_id.clone(), input_id.clone()));
+                }
+            }
+            for (node_id, input_id) in &timed_out {
+                tracing::warn!(
+                    "input `{node_id}/{input_id}` timed out after {:?}, closing",
+                    dataflow
+                        .input_deadlines
+                        .get(&(node_id.clone(), input_id.clone()))
+                        .map(|d| d.timeout),
+                );
+                close_input(dataflow, node_id, input_id, &clock);
+            }
+            for key in timed_out {
+                dataflow.input_deadlines.remove(&key);
+            }
+        }
+    }
+
     async fn collect_and_send_metrics(&mut self) -> eyre::Result<()> {
         use adora_message::daemon_to_coordinator::NodeMetrics;
         use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate};
@@ -1337,6 +1363,15 @@ impl Daemon {
                         .insert(input_id.clone());
                     match input.mapping {
                         InputMapping::User(mapping) => {
+                            if let Some(timeout) = input.input_timeout {
+                                dataflow.input_deadlines.insert(
+                                    (node.id.clone(), input_id.clone()),
+                                    InputDeadline {
+                                        timeout: Duration::from_secs_f64(timeout),
+                                        last_received: Instant::now(),
+                                    },
+                                );
+                            }
                             dataflow
                                 .mappings
                                 .entry(OutputId(mapping.source, mapping.output))
@@ -2600,6 +2635,12 @@ async fn send_output_to_local_receivers(
                 timestamp,
             }) {
                 Ok(()) => {
+                    if let Some(deadline) = dataflow
+                        .input_deadlines
+                        .get_mut(&(receiver_id.clone(), input_id.clone()))
+                    {
+                        deadline.last_received = Instant::now();
+                    }
                     if let Some(token) = data.as_ref().and_then(|d| d.drop_token()) {
                         dataflow
                             .pending_drop_tokens
@@ -2686,6 +2727,11 @@ fn close_input(
             let _ = send_with_timestamp(channel, NodeEvent::AllInputsClosed, clock);
         }
     }
+}
+
+struct InputDeadline {
+    timeout: Duration,
+    last_received: Instant,
 }
 
 #[derive(Debug)]
@@ -2801,6 +2847,7 @@ pub struct RunningDataflow {
     mappings: HashMap<OutputId, BTreeSet<InputId>>,
     timers: BTreeMap<Duration, BTreeSet<InputId>>,
     open_inputs: BTreeMap<NodeId, BTreeSet<DataId>>,
+    input_deadlines: HashMap<(NodeId, DataId), InputDeadline>,
     running_nodes: BTreeMap<NodeId, RunningNode>,
 
     /// List of all dynamic node IDs.
@@ -2861,6 +2908,7 @@ impl RunningDataflow {
             mappings: HashMap::new(),
             timers: BTreeMap::new(),
             open_inputs: BTreeMap::new(),
+            input_deadlines: HashMap::new(),
             running_nodes: BTreeMap::new(),
             dynamic_nodes: BTreeSet::new(),
             open_external_mappings: Default::default(),

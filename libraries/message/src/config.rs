@@ -37,37 +37,69 @@ pub struct NodeRunConfig {
     pub outputs: BTreeSet<DataId>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(from = "InputDef", into = "InputDef")]
 pub struct Input {
     pub mapping: InputMapping,
     pub queue_size: Option<usize>,
+    pub input_timeout: Option<f64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+impl PartialEq for Input {
+    fn eq(&self, other: &Self) -> bool {
+        self.mapping == other.mapping
+            && self.queue_size == other.queue_size
+            && self.input_timeout.map(f64::to_bits) == other.input_timeout.map(f64::to_bits)
+    }
+}
+
+impl Eq for Input {}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum InputDef {
     MappingOnly(InputMapping),
     WithOptions {
         source: InputMapping,
         queue_size: Option<usize>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        input_timeout: Option<f64>,
     },
 }
 
+impl PartialEq for InputDef {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::MappingOnly(a), Self::MappingOnly(b)) => a == b,
+            (
+                Self::WithOptions {
+                    source: s1,
+                    queue_size: q1,
+                    input_timeout: t1,
+                },
+                Self::WithOptions {
+                    source: s2,
+                    queue_size: q2,
+                    input_timeout: t2,
+                },
+            ) => s1 == s2 && q1 == q2 && t1.map(f64::to_bits) == t2.map(f64::to_bits),
+            _ => false,
+        }
+    }
+}
+
+impl Eq for InputDef {}
+
 impl From<Input> for InputDef {
     fn from(input: Input) -> Self {
-        match input {
-            Input {
-                mapping,
-                queue_size: None,
-            } => Self::MappingOnly(mapping),
-            Input {
-                mapping,
-                queue_size,
-            } => Self::WithOptions {
-                source: mapping,
-                queue_size,
-            },
+        if input.queue_size.is_none() && input.input_timeout.is_none() {
+            Self::MappingOnly(input.mapping)
+        } else {
+            Self::WithOptions {
+                source: input.mapping,
+                queue_size: input.queue_size,
+                input_timeout: input.input_timeout,
+            }
         }
     }
 }
@@ -78,10 +110,16 @@ impl From<InputDef> for Input {
             InputDef::MappingOnly(mapping) => Self {
                 mapping,
                 queue_size: None,
+                input_timeout: None,
             },
-            InputDef::WithOptions { source, queue_size } => Self {
+            InputDef::WithOptions {
+                source,
+                queue_size,
+                input_timeout,
+            } => Self {
                 mapping: source,
                 queue_size,
+                input_timeout,
             },
         }
     }
