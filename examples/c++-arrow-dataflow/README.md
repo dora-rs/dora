@@ -1,6 +1,6 @@
-# Dora C++ Dataflow Example 2
+# Adora C++ Dataflow Example 2
 
-This example demonstrates how to exchange data between Dora's Rust-based runtime and C++ using Apache Arrow arrays. Through the `event_as_arrow_input()` and `send_arrow_output()` functions exposed in the `dora-node-api.h` header, your C++ nodes can efficiently receive and send structured data within the Dora dataflow system. These functions leverage Apache Arrow's memory-efficient serialization format, allowing data to move seamlessly across language boundaries.
+This example demonstrates how to exchange data between Adora's Rust-based runtime and C++ using Apache Arrow arrays. Through the `event_as_arrow_input()` and `send_arrow_output()` functions exposed in the `adora-node-api.h` header, your C++ nodes can efficiently receive and send structured data within the Adora dataflow system. These functions leverage Apache Arrow's memory-efficient serialization format, allowing data to move seamlessly across language boundaries.
 
 ## Attaching Metadata To Outputs
 

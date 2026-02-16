@@ -1,19 +1,19 @@
 [package]
-name = "dora-ros2-bridge"
+name = "adora-ros2-bridge"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 documentation.workspace = true
 readme.workspace = true
-description = "ROS2 bridge for dora-rs"
-links = "dora-ros2-bridge"
+description = "ROS2 bridge for adora-rs"
+links = "adora-ros2-bridge"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
 default = ["generate-messages"]
-generate-messages = ["dep:dora-ros2-bridge-msg-gen", "dep:rust-format"]
+generate-messages = ["dep:adora-ros2-bridge-msg-gen", "dep:rust-format"]
 
 [dependencies]
 array-init = "2.1.0"
@@ -30,16 +30,16 @@ futures = { version = "0.3.21", features = ["thread-pool"] }
 futures-timer = "3.0.3"
 
 [dev-dependencies]
-dora-daemon = { workspace = true }
+adora-daemon = { workspace = true }
 tokio = { version = "1.29.1", features = ["full"] }
-dora-cli = { workspace = true }
+adora-cli = { workspace = true }
 dunce = "1.0.2"
 rand = "0.8.5"
 futures = { version = "0.3.28", default-features = false }
 process-wrap = { version = "8.2.1", features = ["std", "tokio1"] }
 
 [build-dependencies]
-dora-ros2-bridge-msg-gen = { workspace = true, optional = true }
+adora-ros2-bridge-msg-gen = { workspace = true, optional = true }
 rust-format = { version = "0.3.4", features = [
     "pretty_please",
 ], optional = true }

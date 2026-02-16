@@ -42,7 +42,7 @@ use system::System;
 use topic::Topic;
 use up::Up;
 
-/// dora-rs cli client
+/// adora-rs cli client
 #[derive(Debug, clap::Subcommand)]
 pub enum Command {
     #[clap(subcommand)]
@@ -87,9 +87,9 @@ pub enum Command {
 fn default_tracing() -> eyre::Result<()> {
     #[cfg(feature = "tracing")]
     {
-        use dora_tracing::TracingBuilder;
+        use adora_tracing::TracingBuilder;
 
-        TracingBuilder::new("dora-cli")
+        TracingBuilder::new("adora-cli")
             .with_stdout("warn", false)
             .build()
             .wrap_err("failed to set up tracing subscriber")?;

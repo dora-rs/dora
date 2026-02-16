@@ -1,4 +1,4 @@
-# How to contribute to `dora-rs`
+# How to contribute to `adora-rs`
 
 We welcome bug reports, feature requests, and pull requests!
 
@@ -7,9 +7,9 @@ This way, we can avoid unnecessary work on both sides.
 
 ## Building
 
-The `dora` project is set up as a [cargo workspace](https://doc.rust-lang.org/cargo/reference/workspaces.html).
+The `adora` project is set up as a [cargo workspace](https://doc.rust-lang.org/cargo/reference/workspaces.html).
 You can use the standard `cargo check`, `cargo build`, `cargo run`, and `cargo test` commands.
-To run a command for a specific package only, pass e.g. `--package dora-daemon`.
+To run a command for a specific package only, pass e.g. `--package adora-daemon`.
 Running a command for the whole workspace is possible by passing `--workspace`.
 
 
@@ -28,22 +28,22 @@ We're currently running the following kind of checks:
 - **CI / Examples:** Builds and runs the Rust, C, and C++ dataflows from the `examples` subdirectory. This check is run on Linux, Windows, and macOS.
 - **CI-python / Python Examples:** Builds and runs the Python dataflows from the `examples` subdirectory. This check is run on Linux only.
 - **github pages / deploy:** Generates our website from the `docs` subfolder.
-- **CI / CLI Test:** Runs some basic tests of the `dora` command-line application. This check is run on Linux, Windows, and macOS.
+- **CI / CLI Test:** Runs some basic tests of the `adora` command-line application. This check is run on Linux, Windows, and macOS.
 - **CI / Clippy:** Runs the additional checks of the [`clippy`](https://github.com/rust-lang/rust-clippy) project.
 - **CI / Formatting:** Ensures that the code is formatted using `rustfmt` (see [below](#style))
 - **CI / License Checks:** Scans the dependency tree and tries to detect possible license incompatibilities.
 
 ## Issue Management
 
-### Dora Bot
+### Adora Bot
 
 We use a custom Github Action to help manage issue assignments. You can interact with this action using the following:
 
-- `@dora-bot assign me` - Assigns the current issue to you.
-- `@dora-bot unassign me` - Removes yourself from the issue assignment.
+- `@adora-bot assign me` - Assigns the current issue to you.
+- `@adora-bot unassign me` - Removes yourself from the issue assignment.
 
 For maintainers only:
-- `dora-bot unassign @username` - Allows maintainers to unassign other contributors
+- `adora-bot unassign @username` - Allows maintainers to unassign other contributors
 Note: All issue assignments will be removed automatically after 2 weeks of inactivity.
 
 ## Style
@@ -54,6 +54,6 @@ Our CI will run an automatic formatting check of your code.
 
 ## Publishing new Versions
 
-The maintainers are responsible for publishing new versions of the `dora` crates.
+The maintainers are responsible for publishing new versions of the `adora` crates.
 Please don't open unsolicited pull requests to create new releases.
 Instead, request a new version by opening an issue or by leaving a comment on a merged PR.

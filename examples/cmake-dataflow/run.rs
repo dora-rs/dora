@@ -15,7 +15,7 @@ fn main() -> eyre::Result<()> {
 
     std::fs::create_dir_all("build")?;
     let mut cmd = std::process::Command::new("cmake");
-    cmd.arg(format!("-DDORA_ROOT_DIR={}", root.display()));
+    cmd.arg(format!("-DADORA_ROOT_DIR={}", root.display()));
     cmd.arg("-B").arg("build");
     cmd.arg(".");
     if !cmd.status()?.success() {
@@ -34,9 +34,9 @@ fn main() -> eyre::Result<()> {
         bail!("failed to build a cmake-generated project binary tree");
     }
 
-    build_package("dora-runtime")?;
+    build_package("adora-runtime")?;
 
-    dora_cli::run("dataflow.yml".to_string(), false)?;
+    adora_cli::run("dataflow.yml".to_string(), false)?;
 
     Ok(())
 }

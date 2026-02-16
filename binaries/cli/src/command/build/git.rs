@@ -1,4 +1,4 @@
-use dora_message::{common::GitSource, descriptor::GitRepoRev};
+use adora_message::{common::GitSource, descriptor::GitRepoRev};
 use eyre::Context;
 
 pub fn fetch_commit_hash(repo_url: String, rev: Option<GitRepoRev>) -> eyre::Result<GitSource> {

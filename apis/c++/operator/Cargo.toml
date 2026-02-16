@@ -1,5 +1,5 @@
 [package]
-name = "dora-operator-api-cxx"
+name = "adora-operator-api-cxx"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -14,7 +14,7 @@ crate-type = ["staticlib"]
 
 [dependencies]
 cxx = "1.0.73"
-dora-operator-api = { workspace = true }
+adora-operator-api = { workspace = true }
 
 [build-dependencies]
 cxx-build = "1.0.73"

@@ -55,9 +55,9 @@ jobs:
           # target: ppc64le
         repository:
           - path: apis/python/node
-            name: dora-node-api
+            name: adora-node-api
           - path: binaries/cli
-            name: dora-rs-cli
+            name: adora-rs-cli
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -99,9 +99,9 @@ jobs:
             target: aarch64
         repository:
           - path: apis/python/node
-            name: dora-node-api
+            name: adora-node-api
           - path: binaries/cli
-            name: dora-rs-cli
+            name: adora-rs-cli
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -137,9 +137,9 @@ jobs:
           ]
         repository:
           - path: apis/python/node
-            name: dora-node-api
+            name: adora-node-api
           - path: binaries/cli
-            name: dora-rs-cli
+            name: adora-rs-cli
     container:
       image: docker://messense/rust-musl-cross:${{ matrix.platform.image_tag }}
       env:
@@ -174,9 +174,9 @@ jobs:
             target: x64
         repository:
           - path: apis/python/node
-            name: dora-node-api
+            name: adora-node-api
           - path: binaries/cli
-            name: dora-rs-cli
+            name: adora-rs-cli
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -207,9 +207,9 @@ jobs:
             target: aarch64
         repository:
           - path: apis/python/node
-            name: dora-node-api
+            name: adora-node-api
           - path: binaries/cli
-            name: dora-rs-cli
+            name: adora-rs-cli
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -235,9 +235,9 @@ jobs:
       matrix:
         repository:
           - path: apis/python/node
-            name: dora-node-api
+            name: adora-node-api
           - path: binaries/cli
-            name: dora-rs-cli
+            name: adora-rs-cli
     steps:
       - uses: actions/checkout@v3
       - name: Build sdist
@@ -263,9 +263,9 @@ jobs:
       matrix:
         repository:
           - path: apis/python/node
-            name: dora-node-api
+            name: adora-node-api
           - path: binaries/cli
-            name: dora-rs-cli
+            name: adora-rs-cli
     steps:
       - uses: actions/download-artifact@v4
       - name: Publish to PyPI

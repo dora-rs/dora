@@ -9,7 +9,7 @@ fn main() {
     use rust_format::Formatter;
     let paths = ament_prefix_paths();
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
-    let generated = dora_ros2_bridge_msg_gen::generate(paths.as_slice(), &out_dir, false);
+    let generated = adora_ros2_bridge_msg_gen::generate(paths.as_slice(), &out_dir, false);
     let generated_string = rust_format::PrettyPlease::default()
         .format_tokens(generated)
         .unwrap();

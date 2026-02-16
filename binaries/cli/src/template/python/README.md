@@ -4,13 +4,13 @@
 
 ```bash
 uv venv -p 3.11 --seed
-dora build dataflow.yml --uv
+adora build dataflow.yml --uv
 ```
 
 - Run it with:
 
 ```bash
-dora run dataflow.yml --uv
+adora run dataflow.yml --uv
 ```
 
 ## Contribution Guide

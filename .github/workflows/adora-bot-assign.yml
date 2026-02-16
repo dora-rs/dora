@@ -1,4 +1,4 @@
-name: "Dora Bot"
+name: "Adora Bot"
 
 on:
   issue_comment:
@@ -25,7 +25,7 @@ jobs:
           AUTHOR_ASSOCIATION: "${{ github.event.comment.author_association }}"
         run: |
           # For assigning
-          if [[ "$COMMENT_BODY" == "@dora-bot assign me" ]]; then
+          if [[ "$COMMENT_BODY" == "@adora-bot assign me" ]]; then
             echo "Assigning $COMMENT_AUTHOR to issue #$ISSUE_NUMBER"
             curl -X POST \
               -H "Authorization: Bearer $GITHUB_TOKEN" \
@@ -41,7 +41,7 @@ jobs:
               -d "{\"body\":\"Hello @$COMMENT_AUTHOR, this issue is now assigned to you!\"}"
 
           # for unassigning(self)
-          elif [[ "$COMMENT_BODY" == "@dora-bot unassign me" ]]; then
+          elif [[ "$COMMENT_BODY" == "@adora-bot unassign me" ]]; then
             echo "Unassigning $COMMENT_AUTHOR from issue #$ISSUE_NUMBER"
             curl -X DELETE \
               -H "Authorization: Bearer $GITHUB_TOKEN" \
@@ -57,7 +57,7 @@ jobs:
               -d "{\"body\":\"Hello @$COMMENT_AUTHOR, you have been unassigned from this issue.\"}"
 
           # Command to help maintainers to unassign 
-          elif [[ "$COMMENT_BODY" =~ @dora-bot\ unassign\ [@]?([a-zA-Z0-9_-]+) ]]; then
+          elif [[ "$COMMENT_BODY" =~ @adora-bot\ unassign\ [@]?([a-zA-Z0-9_-]+) ]]; then
             TARGET_USER="${BASH_REMATCH[1]}"
 
             # Checking that the comment author has proper permissions

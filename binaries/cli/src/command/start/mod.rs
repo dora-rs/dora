@@ -1,6 +1,6 @@
-//! The `dora start` command is used to spawn a dataflow in a pre-existing _dora network_. To create a dora network, spawn a `dora coordinator` and one or multiple `dora daemon` instances.
+//! The `adora start` command is used to spawn a dataflow in a pre-existing _adora network_. To create a adora network, spawn a `adora coordinator` and one or multiple `adora daemon` instances.
 //!
-//! The `dora start` command does not run any build commands, nor update git dependencies or similar. Use `dora build` for that.
+//! The `adora start` command does not run any build commands, nor update git dependencies or similar. Use `adora build` for that.
 
 use super::{Executable, default_tracing};
 use crate::{
@@ -10,11 +10,11 @@ use crate::{
     session::DataflowSession,
 };
 use communication_layer_request_reply::{TcpConnection, TcpRequestReplyConnection};
-use dora_core::{
+use adora_core::{
     descriptor::{Descriptor, DescriptorExt},
-    topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST},
+    topics::{ADORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST},
 };
-use dora_message::{
+use adora_message::{
     cli_to_coordinator::ControlRequest, common::LogMessage, coordinator_to_cli::ControlRequestReply,
 };
 use eyre::{Context, bail};
@@ -35,11 +35,11 @@ pub struct Start {
     /// Assign a name to the dataflow
     #[clap(long)]
     name: Option<String>,
-    /// Address of the dora coordinator
+    /// Address of the adora coordinator
     #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
     coordinator_addr: IpAddr,
     /// Port number of the coordinator control server
-    #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
+    #[clap(long, value_name = "PORT", default_value_t = ADORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
     coordinator_port: u16,
     /// Attach to the dataflow and wait for its completion
     #[clap(long, action)]
@@ -116,7 +116,7 @@ fn start_dataflow(
         DataflowSession::read_session(&dataflow).context("failed to read DataflowSession")?;
 
     let mut session = connect_to_coordinator(coordinator_socket)
-        .wrap_err("failed to connect to dora coordinator")?;
+        .wrap_err("failed to connect to adora coordinator")?;
 
     let local_working_dir = local_working_dir(&dataflow, &dataflow_descriptor, &mut *session)?;
 
@@ -162,7 +162,7 @@ fn wait_until_dataflow_started(
     // subscribe to log messages
     let mut log_session = TcpConnection {
         stream: TcpStream::connect(coordinator_addr)
-            .wrap_err("failed to connect to dora coordinator")?,
+            .wrap_err("failed to connect to adora coordinator")?,
     };
     log_session
         .send(

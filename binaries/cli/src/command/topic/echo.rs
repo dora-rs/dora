@@ -3,8 +3,8 @@ use std::{ptr::NonNull, sync::Arc, time::SystemTime};
 use arrow::{buffer::OffsetBuffer, datatypes::Field};
 use clap::Args;
 use colored::Colorize;
-use dora_core::topics::{open_zenoh_session, zenoh_output_publish_topic};
-use dora_message::{
+use adora_core::topics::{open_zenoh_session, zenoh_output_publish_topic};
+use adora_message::{
     common::Timestamped,
     daemon_to_daemon::InterDaemonEvent,
     id::{DataId, NodeId},
@@ -31,13 +31,13 @@ use crate::{
 /// Examples:
 ///
 /// Echo a single topic:
-///   dora topic echo -d my-dataflow robot1/pose
+///   adora topic echo -d my-dataflow robot1/pose
 ///
 /// Echo multiple topics:
-///   dora topic echo -d my-dataflow robot1/pose robot2/vel
+///   adora topic echo -d my-dataflow robot1/pose robot2/vel
 ///
 /// Emit JSON lines:
-///   dora topic echo -d my-dataflow robot1/pose --format json
+///   adora topic echo -d my-dataflow robot1/pose --format json
 ///
 /// Note: The dataflow descriptor must include the following snippet so that
 /// runtime messages can be inspected:

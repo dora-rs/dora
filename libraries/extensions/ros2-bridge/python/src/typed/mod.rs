@@ -1,4 +1,4 @@
-use dora_ros2_bridge_msg_gen::types::Message;
+use adora_ros2_bridge_msg_gen::types::Message;
 use std::{borrow::Cow, collections::HashMap, sync::Arc};
 
 pub use serialize::TypedValue;

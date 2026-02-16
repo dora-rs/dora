@@ -75,7 +75,7 @@ impl DaemonRequest {
 pub struct NodeRegisterRequest {
     pub dataflow_id: DataflowId,
     pub node_id: NodeId,
-    dora_version: semver::Version,
+    adora_version: semver::Version,
 }
 
 impl NodeRegisterRequest {
@@ -83,13 +83,13 @@ impl NodeRegisterRequest {
         Self {
             dataflow_id,
             node_id,
-            dora_version: semver::Version::parse(env!("CARGO_PKG_VERSION")).unwrap(),
+            adora_version: semver::Version::parse(env!("CARGO_PKG_VERSION")).unwrap(),
         }
     }
 
     pub fn check_version(&self) -> Result<(), String> {
         let crate_version = current_crate_version();
-        let specified_version = &self.dora_version;
+        let specified_version = &self.adora_version;
 
         if versions_compatible(&crate_version, specified_version)? {
             Ok(())
@@ -97,7 +97,7 @@ impl NodeRegisterRequest {
             Err(format!(
                 "version mismatch: message format v{} is not compatible \
                 with expected message format v{crate_version}",
-                self.dora_version
+                self.adora_version
             ))
         }
     }

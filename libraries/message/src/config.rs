@@ -95,11 +95,11 @@ pub enum InputMapping {
 
 impl InputMapping {
     pub fn source(&self) -> &NodeId {
-        static DORA_NODE_ID: OnceCell<NodeId> = OnceCell::new();
+        static ADORA_NODE_ID: OnceCell<NodeId> = OnceCell::new();
 
         match self {
             InputMapping::User(mapping) => &mapping.source,
-            InputMapping::Timer { .. } => DORA_NODE_ID.get_or_init(|| NodeId("dora".to_string())),
+            InputMapping::Timer { .. } => ADORA_NODE_ID.get_or_init(|| NodeId("adora".to_string())),
         }
     }
 }
@@ -109,7 +109,7 @@ impl fmt::Display for InputMapping {
         match self {
             InputMapping::Timer { interval } => {
                 let duration = format_duration(*interval);
-                write!(f, "dora/timer/{duration}")
+                write!(f, "adora/timer/{duration}")
             }
             InputMapping::User(mapping) => {
                 write!(f, "{}/{}", mapping.source, mapping.output)
@@ -127,7 +127,7 @@ impl FromStr for InputMapping {
             .ok_or("input must start with `<source>/`")?;
 
         let mapping = match source {
-            "dora" => match output.split_once('/') {
+            "adora" => match output.split_once('/') {
                 Some(("timer", output)) => {
                     let (unit, value) = output.split_once('/').ok_or(
                         "timer input must specify unit and value (e.g. `secs/5` or `millis/100`)",
@@ -154,9 +154,9 @@ impl FromStr for InputMapping {
                     Self::Timer { interval }
                 }
                 Some((other, _)) => {
-                    return Err(format!("unknown dora input `{other}`"));
+                    return Err(format!("unknown adora input `{other}`"));
                 }
-                None => return Err("dora input has invalid format".into()),
+                None => return Err("adora input has invalid format".into()),
             },
             _ => Self::User(UserInputMapping {
                 source: source.to_owned().into(),

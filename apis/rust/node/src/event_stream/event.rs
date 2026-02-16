@@ -1,16 +1,16 @@
-use dora_arrow_convert::ArrowData;
-use dora_core::config::{DataId, OperatorId};
-use dora_message::metadata::Metadata;
+use adora_arrow_convert::ArrowData;
+use adora_core::config::{DataId, OperatorId};
+use adora_message::metadata::Metadata;
 
-/// Represents an incoming Dora event.
+/// Represents an incoming Adora event.
 ///
-/// Events might be triggered by other nodes, by Dora itself, or by some external user input.
+/// Events might be triggered by other nodes, by Adora itself, or by some external user input.
 ///
 /// It's safe to ignore event types that are not relevant to the node.
 ///
 /// This enum is marked as `non_exhaustive` because we might add additional
 /// variants in the future. Please ignore unknown event types instead of throwing an
-/// error to avoid breakage when updating Dora.
+/// error to avoid breakage when updating Adora.
 #[derive(Debug)]
 #[non_exhaustive]
 #[allow(clippy::large_enum_variant)]
@@ -50,7 +50,7 @@ pub enum Event {
     /// Instructs the node to reload itself or one of its operators.
     ///
     /// This event is currently only used for reloading Python operators that are
-    /// started by a `dora runtime` process. So this event should not be sent to normal
+    /// started by a `adora runtime` process. So this event should not be sent to normal
     /// nodes yet.
     Reload {
         /// The ID of the operator that should be reloaded.
@@ -58,7 +58,7 @@ pub enum Event {
         /// There is currently no case where `operator_id` is `None`.
         operator_id: Option<OperatorId>,
     },
-    /// Notifies the node about an unexpected error that happened inside Dora.
+    /// Notifies the node about an unexpected error that happened inside Adora.
     ///
     /// It's a good idea to output or log this error for debugging.
     Error(String),
@@ -71,10 +71,10 @@ pub enum Event {
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum StopCause {
-    /// The dataflow is stopped early after a `dora stop` command (or on `ctrl-c`).
+    /// The dataflow is stopped early after a `adora stop` command (or on `ctrl-c`).
     ///
     /// Nodes should exit as soon as possible if they receive a stop event of
-    /// this type. Dora will kill nodes that keep running for too long after
+    /// this type. Adora will kill nodes that keep running for too long after
     /// receiving such a stop event.
     Manual,
     /// The event stream is closed because all of the node's inputs were closed.

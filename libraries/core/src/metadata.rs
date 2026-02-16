@@ -1,4 +1,4 @@
-use dora_message::{
+use adora_message::{
     arrow_data::ArrayData,
     arrow_schema::DataType,
     metadata::{ArrowTypeInfo, BufferOffset},

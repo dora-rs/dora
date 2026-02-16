@@ -2,7 +2,7 @@
 """TODO: Add docstring."""
 
 
-from dora import Node, Ros2Context, Ros2NodeOptions, Ros2QosPolicies
+from adora import Node, Ros2Context, Ros2NodeOptions, Ros2QosPolicies
 
 CHECK_TICK = 50
 
@@ -27,11 +27,11 @@ twist_writer = ros2_node.create_publisher(turtle_twist_topic)
 turtle_pose_topic = ros2_node.create_topic("/turtle1/pose", "turtlesim/Pose", topic_qos)
 pose_reader = ros2_node.create_subscription(turtle_pose_topic)
 
-# Create a dora node
-dora_node = Node()
+# Create a adora node
+adora_node = Node()
 
 # Listen for both stream on the same loop as Python does not handle well multiprocessing
-dora_node.merge_external_events(pose_reader)
+adora_node.merge_external_events(pose_reader)
 
 print("looping", flush=True)
 
@@ -42,12 +42,12 @@ min_y = 1000
 max_y = 0
 
 for i in range(500):
-    event = dora_node.next()
+    event = adora_node.next()
     if event is None:
         break
     event_kind = event["kind"]
-    # Dora event
-    if event_kind == "dora":
+    # Adora event
+    if event_kind == "adora":
         event_type = event["type"]
         if event_type == "INPUT":
             event_id = event["id"]
@@ -61,6 +61,6 @@ for i in range(500):
         max_x = max([max_x, pose["x"]])
         min_y = min([min_y, pose["y"]])
         max_y = max([max_y, pose["y"]])
-        dora_node.send_output("turtle_pose", event["value"])
+        adora_node.send_output("turtle_pose", event["value"])
 
 assert max_x - min_x > 1 or max_y - min_y > 1, "no turtle movement"

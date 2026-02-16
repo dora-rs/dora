@@ -25,9 +25,9 @@ fn test_crate(crate_name: &str, inputs: &Path, expected_output: &Path) {
     // run the crate in integration test mode
     let exit_status = std::process::Command::new("cargo")
         .args(["run", "-p", crate_name])
-        .env("DORA_TEST_WITH_INPUTS", inputs)
-        .env("DORA_TEST_NO_OUTPUT_TIME_OFFSET", "1")
-        .env("DORA_TEST_WRITE_OUTPUTS_TO", outputs_file.path())
+        .env("ADORA_TEST_WITH_INPUTS", inputs)
+        .env("ADORA_TEST_NO_OUTPUT_TIME_OFFSET", "1")
+        .env("ADORA_TEST_WRITE_OUTPUTS_TO", outputs_file.path())
         .status()
         .unwrap();
     assert!(exit_status.success());

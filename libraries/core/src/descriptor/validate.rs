@@ -4,7 +4,7 @@ use crate::{
     get_python_path,
 };
 
-use dora_message::{
+use adora_message::{
     config::{Input, InputMapping, UserInputMapping},
     descriptor::{CoreNodeKind, DYNAMIC_SOURCE, OperatorSource, ResolvedNode, SHELL_SOURCE},
     id::{DataId, NodeId, OperatorId},
@@ -29,7 +29,7 @@ pub fn check_dataflow(
     for node in nodes.values() {
         match &node.kind {
             descriptor::CoreNodeKind::Custom(custom) => match &custom.source {
-                dora_message::descriptor::NodeSource::Local => match custom.path.as_str() {
+                adora_message::descriptor::NodeSource::Local => match custom.path.as_str() {
                     SHELL_SOURCE => (),
                     DYNAMIC_SOURCE => (),
                     source => {
@@ -54,7 +54,7 @@ pub fn check_dataflow(
                         };
                     }
                 },
-                dora_message::descriptor::NodeSource::GitBranch { .. } => {
+                adora_message::descriptor::NodeSource::GitBranch { .. } => {
                     info!("skipping check for node with git source");
                 }
             },
@@ -215,28 +215,28 @@ fn check_input(
 }
 
 fn check_python_runtime() -> eyre::Result<()> {
-    // Check if python dora-rs is installed and match cli version
+    // Check if python adora-rs is installed and match cli version
     let reinstall_command =
-        format!("Please reinstall it with: `pip install dora-rs=={VERSION} --force`");
+        format!("Please reinstall it with: `pip install adora-rs=={VERSION} --force`");
     let mut command = Command::new(get_python_path().context("Could not get python binary")?);
     command.args([
         "-c",
         &format!(
             "
-import dora;
-assert dora.__version__=='{VERSION}',  'Python dora-rs should be {VERSION}, but current version is %s. {reinstall_command}' % (dora.__version__)
+import adora;
+assert adora.__version__=='{VERSION}',  'Python adora-rs should be {VERSION}, but current version is %s. {reinstall_command}' % (adora.__version__)
         "
         ),
     ]);
     let mut result = command
         .spawn()
-        .wrap_err("Could not spawn python dora-rs command.")?;
+        .wrap_err("Could not spawn python adora-rs command.")?;
     let status = result
         .wait()
-        .wrap_err("Could not get exit status when checking python dora-rs")?;
+        .wrap_err("Could not get exit status when checking python adora-rs")?;
 
     if !status.success() {
-        bail!("Something went wrong with Python dora-rs. {reinstall_command}")
+        bail!("Something went wrong with Python adora-rs. {reinstall_command}")
     }
 
     Ok(())

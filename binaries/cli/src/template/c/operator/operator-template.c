@@ -4,25 +4,25 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-DoraInitResult_t dora_init_operator(void)
+AdoraInitResult_t adora_init_operator(void)
 {
     // allocate memory for storing context across function calls (optional)
     void *context = malloc(10);
     // TODO initialize context memory
 
-    DoraInitResult_t result = {.operator_context = context};
+    AdoraInitResult_t result = {.operator_context = context};
     return result;
 }
 
-DoraResult_t dora_drop_operator(void *operator_context)
+AdoraResult_t adora_drop_operator(void *operator_context)
 {
     free(operator_context);
 
-    DoraResult_t result = {};
+    AdoraResult_t result = {};
     return result;
 }
 
-OnEventResult_t dora_on_event(
+OnEventResult_t adora_on_event(
     RawEvent_t *event,
     const SendOutput_t *send_output,
     void *operator_context)
@@ -49,9 +49,9 @@ OnEventResult_t dora_on_event(
                                    .cap = strlen(out_id_heap) + 1,
                                },
                                .data = {.ptr = (uint8_t *)out_data, .len = strlen(out_data), .cap = data_alloc_size}};
-            DoraResult_t res = (send_output->send_output.call)(send_output->send_output.env_ptr, output);
+            AdoraResult_t res = (send_output->send_output.call)(send_output->send_output.env_ptr, output);
 
-            OnEventResult_t result = {.result = res, .status = DORA_STATUS_CONTINUE};
+            OnEventResult_t result = {.result = res, .status = ADORA_STATUS_CONTINUE};
             return result;
         }
     }
@@ -59,6 +59,6 @@ OnEventResult_t dora_on_event(
     {
         printf("C operator received stop event\n");
     }
-    OnEventResult_t result = {.status = DORA_STATUS_CONTINUE};
+    OnEventResult_t result = {.status = ADORA_STATUS_CONTINUE};
     return result;
 }

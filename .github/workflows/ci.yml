@@ -91,9 +91,9 @@ jobs:
       - name: "Check"
         run: cargo check --all
       - name: "Build  (Without Python dep as it is build with maturin)"
-        run: cargo build --all --exclude dora-node-api-python --exclude dora-operator-api-python --exclude dora-ros2-bridge-python
+        run: cargo build --all --exclude adora-node-api-python --exclude adora-operator-api-python --exclude adora-ros2-bridge-python
       - name: "Test"
-        run: cargo test --all --exclude dora-node-api-python --exclude dora-operator-api-python --exclude dora-ros2-bridge-python
+        run: cargo test --all --exclude adora-node-api-python --exclude adora-operator-api-python --exclude adora-ros2-bridge-python
 
   # Run examples as separate job because otherwise we will exhaust the disk
   # space of the GitHub action runners.
@@ -254,14 +254,14 @@ jobs:
       - name: Install pyarrow
         run: pip install pyarrow
       - name: "Test"
-        run: cargo test -p dora-ros2-bridge-python
+        run: cargo test -p adora-ros2-bridge-python
       - name: "Rust ROS2 Bridge example"
         timeout-minutes: 30
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
           source /opt/ros/humble/setup.bash &&
-          cargo run -p dora-ros2-bridge --example rust-ros2-dataflow
+          cargo run -p adora-ros2-bridge --example rust-ros2-dataflow
       - uses: actions/setup-python@v5
         if: runner.os != 'Windows'
         with:
@@ -285,14 +285,14 @@ jobs:
           fi
           uv pip install -e apis/python/node
           uv pip install pyarrow
-          cargo run -p dora-ros2-bridge --example python-ros2-dataflow
+          cargo run -p adora-ros2-bridge --example python-ros2-dataflow
       - name: "c++-ros2-dataflow"
         timeout-minutes: 30
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
           source /opt/ros/humble/setup.bash &&
-          cargo run -p dora-ros2-bridge --example cxx-ros2-dataflow
+          cargo run -p adora-ros2-bridge --example cxx-ros2-dataflow
 
   bench:
     name: "Bench"
@@ -365,24 +365,24 @@ jobs:
         shell: bash
         run: |
           # Test Rust template Project
-          dora new test_rust_project --internal-create-with-path-dependencies
+          adora new test_rust_project --internal-create-with-path-dependencies
           cd test_rust_project
           cargo build --all
-          dora run dataflow.yml --stop-after 10s
+          adora run dataflow.yml --stop-after 10s
           cd ..
       - name: "Test Dynamic Rust Dataflow example"
         timeout-minutes: 45
         # fail-fast by using bash shell explicitly
         shell: bash
         run: |
-          dora up
-          dora list
-          dora build examples/rust-dataflow/dataflow_dynamic.yml
-          dora start examples/rust-dataflow/dataflow_dynamic.yml --name ci-rust-dynamic --detach
+          adora up
+          adora list
+          adora build examples/rust-dataflow/dataflow_dynamic.yml
+          adora start examples/rust-dataflow/dataflow_dynamic.yml --name ci-rust-dynamic --detach
           cargo run -p rust-dataflow-example-sink-dynamic
           sleep 5
-          dora stop --name ci-rust-dynamic  --grace-duration 5s
-          dora destroy
+          adora stop --name ci-rust-dynamic  --grace-duration 5s
+          adora destroy
 
       - uses: actions/setup-python@v5
         with:
@@ -419,20 +419,20 @@ jobs:
         shell: bash
         run: |
           # Test Python template Project
-          dora new test_python_project --lang python --internal-create-with-path-dependencies
+          adora new test_python_project --lang python --internal-create-with-path-dependencies
           cd test_python_project
 
-          echo "Running dora build"
-          dora build dataflow.yml --uv
+          echo "Running adora build"
+          adora build dataflow.yml --uv
 
           # Check Compliancy
           uv run ruff check .
           uv run pytest
 
           export OPERATING_MODE=SAVE
-          dora build dataflow.yml --uv
+          adora build dataflow.yml --uv
           echo "Running CI Python Test"
-          dora run dataflow.yml --uv --stop-after 10s
+          adora run dataflow.yml --uv --stop-after 10s
 
           cd ..
       - name: "Test CLI (Python): Node example"
@@ -443,22 +443,22 @@ jobs:
           RUST_LOG: info
         run: |
           echo "Running Python Node Example"
-          dora build examples/python-dataflow/dataflow.yml --uv
-          dora run examples/python-dataflow/dataflow.yml --uv --stop-after 10s
+          adora build examples/python-dataflow/dataflow.yml --uv
+          adora run examples/python-dataflow/dataflow.yml --uv --stop-after 10s
       - name: "Test CLI (Python): Dynamic Node example"
         timeout-minutes: 20
         # fail-fast by using bash shell explicitly
         shell: bash
         run: |
           echo "Running Python Node Dynamic Example"
-          dora build examples/python-dataflow/dataflow_dynamic.yml --uv
-          dora up
-          dora start examples/python-dataflow/dataflow_dynamic.yml --name ci-python-dynamic --detach --uv
+          adora build examples/python-dataflow/dataflow_dynamic.yml --uv
+          adora up
+          adora start examples/python-dataflow/dataflow_dynamic.yml --name ci-python-dynamic --detach --uv
           uv run opencv-plot
           sleep 10
-          echo "Running dora stop"
-          dora stop --name ci-python-dynamic  --grace-duration 30s
-          dora destroy
+          echo "Running adora stop"
+          adora stop --name ci-python-dynamic  --grace-duration 30s
+          adora destroy
 
       - name: "Test CLI (Python): Operator example"
         timeout-minutes: 20
@@ -466,14 +466,14 @@ jobs:
         shell: bash
         run: |
           echo "Running CI Operator Test"
-          dora build examples/python-operator-dataflow/dataflow.yml --uv
-          dora run examples/python-operator-dataflow/dataflow.yml --uv --stop-after 10s
+          adora build examples/python-operator-dataflow/dataflow.yml --uv
+          adora run examples/python-operator-dataflow/dataflow.yml --uv --stop-after 10s
 
       - name: "Test Python Example: Multiple Arrays"
         timeout-minutes: 30
         run: |
-          dora build examples/python-multiple-arrays/dataflow.yml --uv
-          dora run examples/python-multiple-arrays/dataflow.yml --uv --stop-after 30s
+          adora build examples/python-multiple-arrays/dataflow.yml --uv
+          adora run examples/python-multiple-arrays/dataflow.yml --uv --stop-after 30s
 
       - name: "Test CLI (Python): Async Example"
         timeout-minutes: 30
@@ -481,27 +481,27 @@ jobs:
         if: runner.os != 'Windows'
         env:
           RUST_LOG: debug
-        run: dora run examples/python-async/dataflow.yaml --uv --stop-after 5m
+        run: adora run examples/python-async/dataflow.yaml --uv --stop-after 5m
       - name: "Test Python Example: Drain"
         timeout-minutes: 30
-        run: dora run examples/python-drain/dataflow.yaml --uv
+        run: adora run examples/python-drain/dataflow.yaml --uv
       - name: "Test Python Example: Dataflow Builder"
         timeout-minutes: 30
         run: uv run examples/python-dataflow-builder/simple_example.py
       - name: "Python Queue Latency Test"
         timeout-minutes: 30
-        run: dora run tests/queue_size_latest_data_python/dataflow.yaml --uv
+        run: adora run tests/queue_size_latest_data_python/dataflow.yaml --uv
       - name: "Python Queue Latency + Timeout Test"
         timeout-minutes: 30
-        run: dora run tests/queue_size_and_timeout_python/dataflow.yaml --uv
+        run: adora run tests/queue_size_and_timeout_python/dataflow.yaml --uv
 
       - name: "Rust Queue Latency Test"
         timeout-minutes: 30
         run: |
           # Run Rust queue latency test
           echo "Running CI Queue Size Latest Data Rust Test"
-          dora build tests/queue_size_latest_data_rust/dataflow.yaml --uv
-          dora run tests/queue_size_latest_data_rust/dataflow.yaml --uv
+          adora build tests/queue_size_latest_data_rust/dataflow.yaml --uv
+          adora run tests/queue_size_latest_data_rust/dataflow.yaml --uv
 
       - name: "Test CLI (C)"
         timeout-minutes: 45
@@ -510,12 +510,12 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           # Test C template Project
-          dora new test_c_project --lang c --internal-create-with-path-dependencies
+          adora new test_c_project --lang c --internal-create-with-path-dependencies
           cd test_c_project
           cmake -B build
           cmake --build build
           cmake --install build
-          dora run dataflow.yml --stop-after 10s
+          adora run dataflow.yml --stop-after 10s
 
       - name: "Test CLI (C++)"
         timeout-minutes: 45
@@ -524,12 +524,12 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           # Test C++ template Project
-          dora new test_cxx_project --lang cxx --internal-create-with-path-dependencies
+          adora new test_cxx_project --lang cxx --internal-create-with-path-dependencies
           cd test_cxx_project
           cmake -B build
           cmake --build build
           cmake --install build
-          dora run dataflow.yml --stop-after 10s
+          adora run dataflow.yml --stop-after 10s
 
   clippy:
     name: "Clippy"
@@ -544,10 +544,10 @@ jobs:
         run: cargo clippy --all
       - name: "Clippy (tracing feature)"
         run: cargo clippy --all --features tracing
-        if: false # only the dora-runtime has this feature, but it is currently commented out
+        if: false # only the adora-runtime has this feature, but it is currently commented out
       - name: "Clippy (metrics feature)"
         run: cargo clippy --all --features metrics
-        if: false # only the dora-runtime has this feature, but it is currently commented out
+        if: false # only the adora-runtime has this feature, but it is currently commented out
 
   rustfmt:
     name: "Formatting"
@@ -626,7 +626,7 @@ jobs:
         with:
           use-cross: true
           command: check
-          args: --target  ${{ matrix.platform.target }} --all --exclude dora-node-api-python --exclude dora-operator-api-python --exclude dora-ros2-bridge-python
+          args: --target  ${{ matrix.platform.target }} --all --exclude adora-node-api-python --exclude adora-operator-api-python --exclude adora-ros2-bridge-python
 
   # copied from https://github.com/rust-lang/cargo/blob/6833aa715d724437dc1247d0166afe314ab6854e/.github/workflows/main.yml#L291
   msrv:

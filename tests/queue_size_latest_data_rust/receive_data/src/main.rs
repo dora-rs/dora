@@ -1,7 +1,7 @@
 use std::{thread::sleep, time::Duration};
 
-use dora_node_api::{
-    self, DoraNode,
+use adora_node_api::{
+    self, AdoraNode,
     arrow::{
         array::{AsArray, PrimitiveArray},
         datatypes::UInt64Type,
@@ -9,13 +9,13 @@ use dora_node_api::{
 };
 
 fn main() -> eyre::Result<()> {
-    let (_node, mut events) = DoraNode::init_from_env()?;
+    let (_node, mut events) = AdoraNode::init_from_env()?;
 
     // Voluntarily sleep for 5 seconds to ensure that the node is dropping the oldest input
     sleep(Duration::from_secs(5));
 
     while let Some(event) = events.recv() {
-        if let dora_node_api::Event::Input {
+        if let adora_node_api::Event::Input {
             id: _,
             metadata,
             data,

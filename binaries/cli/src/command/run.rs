@@ -1,9 +1,9 @@
-//! The `dora run` command is a quick and easy way to run a dataflow locally.
+//! The `adora run` command is a quick and easy way to run a dataflow locally.
 //! It does not support distributed dataflows and will throw an error if there are any `deploy` keys in the YAML file.
 //!
-//! The `dora run` command does not interact with any `dora coordinator` or `dora daemon` instances, or with any other parallel `dora run` commands.
+//! The `adora run` command does not interact with any `adora coordinator` or `adora daemon` instances, or with any other parallel `adora run` commands.
 //!
-//! Use `dora build --local` or manual build commands to build your nodes.
+//! Use `adora build --local` or manual build commands to build your nodes.
 
 use super::Executable;
 use crate::{
@@ -11,7 +11,7 @@ use crate::{
     output::print_log_message,
     session::DataflowSession,
 };
-use dora_daemon::{Daemon, LogDestination, flume};
+use adora_daemon::{Daemon, LogDestination, flume};
 use duration_str::parse as parse_duration_str;
 use eyre::Context;
 use std::time::Duration;
@@ -20,7 +20,7 @@ use tokio::runtime::Builder;
 #[derive(Debug, clap::Args)]
 /// Run a dataflow locally.
 ///
-/// Directly runs the given dataflow without connecting to a dora
+/// Directly runs the given dataflow without connecting to a adora
 /// coordinator or daemon. The dataflow is executed on the local machine.
 pub struct Run {
     /// Path to the dataflow descriptor file
@@ -75,8 +75,8 @@ impl Executable for Run {
         let _guard = {
             let _enter = rt.enter();
             let env_log = std::env::var("RUST_LOG").unwrap_or("info".to_string());
-            dora_tracing::init_tracing_subscriber(
-                "dora-run",
+            adora_tracing::init_tracing_subscriber(
+                "adora-run",
                 Some(&env_log),
                 None,
                 tracing::metadata::LevelFilter::INFO,

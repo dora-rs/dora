@@ -4,12 +4,12 @@ use std::{
     sync::Arc,
 };
 
-use dora_core::{
+use adora_core::{
     build::{BuildLogger, LogLevelOrStdout},
     config::NodeId,
     uhlc,
 };
-use dora_message::{
+use adora_message::{
     BuildId,
     common::{DaemonId, LogLevel, LogMessage, Timestamped},
     daemon_to_coordinator::{CoordinatorRequest, DaemonEvent},
@@ -389,7 +389,7 @@ impl Logger {
         let msg = serde_json::to_vec(&message).expect("failed to serialize log message");
         match socket_stream_send(connection, &msg)
             .await
-            .wrap_err("failed to send log message to dora-coordinator")
+            .wrap_err("failed to send log message to adora-coordinator")
         {
             Ok(()) => (),
             Err(err) => tracing::warn!("{err:?}"),

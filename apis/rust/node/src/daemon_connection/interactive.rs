@@ -1,8 +1,8 @@
 use std::{io::stdout, time::Duration};
 
 use colored::Colorize;
-use dora_core::{metadata::ArrowTypeInfoExt, uhlc::HLC};
-use dora_message::{
+use adora_core::{metadata::ArrowTypeInfoExt, uhlc::HLC};
+use adora_message::{
     common::{DataMessage, Timestamped},
     daemon_to_node::{DaemonReply, NodeEvent},
     metadata::{ArrowTypeInfo, Metadata},

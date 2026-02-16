@@ -2,7 +2,7 @@ nodes:
   - id: cxx-node-rust-api
     path: build/node_rust_api
     inputs:
-      tick: dora/timer/millis/300
+      tick: adora/timer/millis/300
     outputs:
       - counter
 

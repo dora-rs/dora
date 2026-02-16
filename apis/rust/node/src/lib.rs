@@ -1,28 +1,28 @@
-//! This crate enables you to create nodes for the [Dora] dataflow framework.
+//! This crate enables you to create nodes for the [Adora] dataflow framework.
 //!
-//! [Dora]: https://dora-rs.ai/
+//! [Adora]: https://adora-rs.ai/
 //!
-//! ## The Dora Framework
+//! ## The Adora Framework
 //!
-//! Dora is a dataflow frame work that models applications as a directed graph, with nodes
+//! Adora is a dataflow frame work that models applications as a directed graph, with nodes
 //! representing operations and edges representing data transfer.
-//! The layout of the dataflow graph is defined through a YAML file in Dora.
-//! For details, see our [Dataflow Specification](https://dora-rs.ai/docs/api/dataflow-config/)
+//! The layout of the dataflow graph is defined through a YAML file in Adora.
+//! For details, see our [Dataflow Specification](https://adora-rs.ai/docs/api/dataflow-config/)
 //! chapter.
 //!
-//! Dora nodes are typically spawned by the Dora framework, instead of spawning them manually.
+//! Adora nodes are typically spawned by the Adora framework, instead of spawning them manually.
 //! If you want to spawn a node manually, define it as a [_dynamic_ node](#dynamic-nodes).
 //!
 //! ## Normal Usage
 //!
-//! In order to connect your executable to Dora, you need to initialize a [`DoraNode`].
-//! For standard nodes, the recommended initialization function is [`init_from_env`][`DoraNode::init_from_env`].
-//! This function will return two values, a [`DoraNode`] instance and an [`EventStream`]:
+//! In order to connect your executable to Adora, you need to initialize a [`AdoraNode`].
+//! For standard nodes, the recommended initialization function is [`init_from_env`][`AdoraNode::init_from_env`].
+//! This function will return two values, a [`AdoraNode`] instance and an [`EventStream`]:
 //!
 //! ```no_run
-//! use dora_node_api::DoraNode;
+//! use adora_node_api::AdoraNode;
 //!
-//! let (mut node, mut events) = DoraNode::init_from_env()?;
+//! let (mut node, mut events) = AdoraNode::init_from_env()?;
 //! # Ok::<(), eyre::Report>(())
 //! ```
 //!
@@ -32,7 +32,7 @@
 //!
 //! ### Sending Outputs
 //!
-//! The [`DoraNode`] instance enables you to send outputs in different formats.
+//! The [`AdoraNode`] instance enables you to send outputs in different formats.
 //! For best performance, use the [Arrow](https://arrow.apache.org/docs/index.html) data format
 //! and one of the output functions that utilizes shared memory.
 //!
@@ -51,7 +51,7 @@
 //! [`EventStream`] to combine the stream with an external one.)_
 //!
 //! Once the event stream finished, nodes should exit.
-//! Note that Dora kills nodes that don't exit quickly after a [`Event::Stop`] of type
+//! Note that Adora kills nodes that don't exit quickly after a [`Event::Stop`] of type
 //! [`StopCause::Manual`] was received.
 //!
 //!
@@ -65,15 +65,15 @@
 //! </div>
 //!
 //! Nodes can be defined as `dynamic` by setting their `path` attribute to `dynamic` in the
-//! dataflow YAML file. Dynamic nodes are not spawned by the Dora framework and need to be started
+//! dataflow YAML file. Dynamic nodes are not spawned by the Adora framework and need to be started
 //! manually.
 //!
-//! Dynamic nodes cannot use the [`DoraNode::init_from_env`] function for initialization.
-//! Instead, they can be initialized through the [`DoraNode::init_from_node_id`] function.
+//! Dynamic nodes cannot use the [`AdoraNode::init_from_env`] function for initialization.
+//! Instead, they can be initialized through the [`AdoraNode::init_from_node_id`] function.
 //!
 //! ### Limitations
 //!
-//! - Dynamic nodes **don't work with `dora run`**.
+//! - Dynamic nodes **don't work with `adora run`**.
 //! - As dynamic nodes are identified by their node ID, this **ID must be unique**
 //!   across all running dataflows.
 //! - For distributed dataflows, nodes need to be manually spawned on the correct machine.
@@ -81,19 +81,19 @@
 //!
 //! ## Node Integration Testing
 //!
-//! Dora provides built-in support for integration testing of nodes. See the [integration_testing]
+//! Adora provides built-in support for integration testing of nodes. See the [integration_testing]
 //! module for details.
 
 #![warn(missing_docs)]
 
 pub use arrow;
-pub use dora_arrow_convert::*;
-pub use dora_core::{self, uhlc};
-pub use dora_message::{
+pub use adora_arrow_convert::*;
+pub use adora_core::{self, uhlc};
+pub use adora_message::{
     DataflowId,
     metadata::{Metadata, MetadataParameters, Parameter},
 };
-use dora_message::{
+use adora_message::{
     common::Timestamped,
     daemon_to_node::{DaemonCommunication, DaemonReply},
     node_to_daemon::DaemonRequest,
@@ -104,7 +104,7 @@ pub use flume::Receiver;
 pub use futures;
 #[cfg(feature = "tracing")]
 pub use node::init_tracing;
-pub use node::{DataSample, DoraNode, ZERO_COPY_THRESHOLD, arrow_utils};
+pub use node::{DataSample, AdoraNode, ZERO_COPY_THRESHOLD, arrow_utils};
 
 pub use serde_json;
 use tokio::sync::oneshot;

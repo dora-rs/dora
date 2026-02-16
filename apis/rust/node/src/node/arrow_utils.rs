@@ -1,7 +1,7 @@
 //! Utility functions for converting Arrow arrays to/from raw data.
 //!
 use arrow::array::{ArrayData, BufferSpec};
-use dora_message::metadata::{ArrowTypeInfo, BufferOffset};
+use adora_message::metadata::{ArrowTypeInfo, BufferOffset};
 use eyre::Context;
 
 /// Calculates the data size in bytes required for storing a continuous copy of the given Arrow

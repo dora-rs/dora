@@ -1,15 +1,15 @@
-use dora_cli::session::DataflowSession;
-use dora_coordinator::{ControlEvent, Event};
-use dora_core::{
+use adora_cli::session::DataflowSession;
+use adora_coordinator::{ControlEvent, Event};
+use adora_core::{
     descriptor::{DescriptorExt, read_as_descriptor},
-    topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, DORA_COORDINATOR_PORT_DEFAULT},
+    topics::{ADORA_COORDINATOR_PORT_CONTROL_DEFAULT, ADORA_COORDINATOR_PORT_DEFAULT},
 };
-use dora_message::{
+use adora_message::{
     cli_to_coordinator::ControlRequest,
     common::DaemonId,
     coordinator_to_cli::{ControlRequestReply, DataflowIdAndName},
 };
-use dora_tracing::TracingBuilder;
+use adora_tracing::TracingBuilder;
 use eyre::{Context, bail};
 
 use std::{
@@ -44,13 +44,13 @@ async fn main() -> eyre::Result<()> {
     let (coordinator_events_tx, coordinator_events_rx) = mpsc::channel(1);
     let coordinator_bind = SocketAddr::new(
         IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
-        DORA_COORDINATOR_PORT_DEFAULT,
+        ADORA_COORDINATOR_PORT_DEFAULT,
     );
     let coordinator_control_bind = SocketAddr::new(
         IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
-        DORA_COORDINATOR_PORT_CONTROL_DEFAULT,
+        ADORA_COORDINATOR_PORT_CONTROL_DEFAULT,
     );
-    let (coordinator_port, coordinator) = dora_coordinator::start(
+    let (coordinator_port, coordinator) = adora_coordinator::start(
         coordinator_bind,
         coordinator_control_bind,
         ReceiverStream::new(coordinator_events_rx),
@@ -240,7 +240,7 @@ async fn build_dataflow(dataflow: &Path) -> eyre::Result<()> {
     let cargo = std::env::var("CARGO").unwrap();
     let mut cmd = tokio::process::Command::new(&cargo);
     cmd.arg("run");
-    cmd.arg("--package").arg("dora-cli");
+    cmd.arg("--package").arg("adora-cli");
     cmd.arg("--release");
     cmd.arg("--").arg("build").arg(dataflow);
     if !cmd.status().await?.success() {
@@ -253,7 +253,7 @@ async fn run_daemon(coordinator: String, machine_id: &str) -> eyre::Result<()> {
     let cargo = std::env::var("CARGO").unwrap();
     let mut cmd = tokio::process::Command::new(&cargo);
     cmd.arg("run");
-    cmd.arg("--package").arg("dora-cli");
+    cmd.arg("--package").arg("adora-cli");
     cmd.arg("--release");
     cmd.arg("--")
         .arg("daemon")

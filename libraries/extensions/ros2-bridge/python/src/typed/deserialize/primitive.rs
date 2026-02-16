@@ -4,7 +4,7 @@ use arrow::array::{
     UInt64Builder,
 };
 use core::fmt;
-use dora_ros2_bridge_msg_gen::types::primitives::BasicType;
+use adora_ros2_bridge_msg_gen::types::primitives::BasicType;
 
 pub struct PrimitiveDeserializer<'a>(pub &'a BasicType);
 

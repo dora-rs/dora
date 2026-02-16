@@ -9,7 +9,7 @@ pub fn register_operator(item: TokenStream) -> TokenStream {
     // convert from `TokenStream` to `TokenStream2`, which is used by the
     // `syn` crate
     let item = TokenStream2::from(item);
-    // generate the dora wrapper functions
+    // generate the adora wrapper functions
     let generated = register_operator_impl(&item).unwrap_or_else(|err| err.to_compile_error());
     // output the generated functions
     let tokens = quote! {
@@ -27,42 +27,42 @@ fn register_operator_impl(item: &TokenStream2) -> syn::Result<TokenStream2> {
 
     let init = quote! {
         #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn dora_init_operator() -> dora_operator_api::types::DoraInitResult {
-            dora_operator_api::raw::dora_init_operator::<#operator_ty>()
+        pub unsafe extern "C" fn adora_init_operator() -> adora_operator_api::types::AdoraInitResult {
+            adora_operator_api::raw::adora_init_operator::<#operator_ty>()
         }
 
-        const _DORA_INIT_OPERATOR: dora_operator_api::types::DoraInitOperator = dora_operator_api::types::DoraInitOperator {
-            init_operator: dora_init_operator,
+        const _ADORA_INIT_OPERATOR: adora_operator_api::types::AdoraInitOperator = adora_operator_api::types::AdoraInitOperator {
+            init_operator: adora_init_operator,
         };
     };
 
     let drop = quote! {
         #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn dora_drop_operator(operator_context: *mut std::ffi::c_void)
-            -> dora_operator_api::types::DoraResult
+        pub unsafe extern "C" fn adora_drop_operator(operator_context: *mut std::ffi::c_void)
+            -> adora_operator_api::types::AdoraResult
         {
-            dora_operator_api::raw::dora_drop_operator::<#operator_ty>(operator_context)
+            adora_operator_api::raw::adora_drop_operator::<#operator_ty>(operator_context)
         }
 
-        const _DORA_DROP_OPERATOR: dora_operator_api::types::DoraDropOperator = dora_operator_api::types::DoraDropOperator {
-            drop_operator: dora_drop_operator,
+        const _ADORA_DROP_OPERATOR: adora_operator_api::types::AdoraDropOperator = adora_operator_api::types::AdoraDropOperator {
+            drop_operator: adora_drop_operator,
         };
     };
 
     let on_event = quote! {
         #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn dora_on_event(
-            event: &mut dora_operator_api::types::RawEvent,
-            send_output: &dora_operator_api::types::SendOutput,
+        pub unsafe extern "C" fn adora_on_event(
+            event: &mut adora_operator_api::types::RawEvent,
+            send_output: &adora_operator_api::types::SendOutput,
             operator_context: *mut std::ffi::c_void,
-        ) -> dora_operator_api::types::OnEventResult {
-            dora_operator_api::raw::dora_on_event::<#operator_ty>(
+        ) -> adora_operator_api::types::OnEventResult {
+            adora_operator_api::raw::adora_on_event::<#operator_ty>(
                 event, send_output, operator_context
             )
         }
 
-        const _DORA_ON_EVENT: dora_operator_api::types::DoraOnEvent = dora_operator_api::types::DoraOnEvent {
-            on_event: dora_operator_api::types::OnEventFn(dora_on_event),
+        const _ADORA_ON_EVENT: adora_operator_api::types::AdoraOnEvent = adora_operator_api::types::AdoraOnEvent {
+            on_event: adora_operator_api::types::OnEventFn(adora_on_event),
         };
     };
 
@@ -75,8 +75,8 @@ fn register_operator_impl(item: &TokenStream2) -> syn::Result<TokenStream2> {
         #[cfg(target_os = "windows")]
         #[unsafe(link_section = ".drectve")]
         #[used]
-        static _DORA_EXPORTS: [u8; 77] =
-            *b" /EXPORT:dora_init_operator /EXPORT:dora_drop_operator /EXPORT:dora_on_event ";
+        static _ADORA_EXPORTS: [u8; 77] =
+            *b" /EXPORT:adora_init_operator /EXPORT:adora_drop_operator /EXPORT:adora_on_event ";
     };
 
     Ok(quote! {

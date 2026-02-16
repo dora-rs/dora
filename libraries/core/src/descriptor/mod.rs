@@ -1,4 +1,4 @@
-use dora_message::{
+use adora_message::{
     config::{Input, InputMapping, NodeRunConfig},
     descriptor::{GitRepoRev, NodeSource},
     id::{DataId, NodeId, OperatorId},
@@ -13,13 +13,13 @@ use std::{
 use tokio::process::Command;
 
 // reexport for compatibility
-pub use dora_message::descriptor::{
+pub use adora_message::descriptor::{
     CoreNodeKind, CustomNode, DYNAMIC_SOURCE, Descriptor, Node, OperatorConfig, OperatorDefinition,
     OperatorSource, PythonSource, ResolvedNode, RuntimeNode, SHELL_SOURCE,
     SingleOperatorDefinition,
 };
 pub use validate::ResolvedNodeExt;
-pub use visualize::collect_dora_timers;
+pub use visualize::collect_adora_timers;
 
 mod validate;
 mod visualize;
@@ -269,7 +269,7 @@ impl NodeExt for Node {
 #[derive(Debug)]
 pub enum NodeKind<'a> {
     Standard(&'a String),
-    /// Dora runtime node
+    /// Adora runtime node
     Runtime(&'a RuntimeNode),
     Custom(&'a CustomNode),
     Operator(&'a SingleOperatorDefinition),
@@ -282,7 +282,7 @@ enum NodeKindMut<'a> {
         source: NodeSource,
         inputs: &'a mut BTreeMap<DataId, Input>,
     },
-    /// Dora runtime node
+    /// Adora runtime node
     Runtime(&'a mut RuntimeNode),
     Custom(&'a mut CustomNode),
     Operator(&'a mut SingleOperatorDefinition),

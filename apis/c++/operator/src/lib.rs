@@ -1,27 +1,27 @@
 #![cfg(not(test))]
 #![warn(unsafe_op_in_unsafe_fn)]
 
-use dora_operator_api::{
-    self, DoraOperator, DoraOutputSender, DoraStatus, Event, IntoArrow, register_operator,
+use adora_operator_api::{
+    self, AdoraOperator, AdoraOutputSender, AdoraStatus, Event, IntoArrow, register_operator,
 };
-use ffi::DoraSendOutputResult;
+use ffi::AdoraSendOutputResult;
 
 #[cxx::bridge]
 #[allow(unsafe_op_in_unsafe_fn)]
 mod ffi {
-    struct DoraOnInputResult {
+    struct AdoraOnInputResult {
         error: String,
         stop: bool,
     }
 
-    struct DoraSendOutputResult {
+    struct AdoraSendOutputResult {
         error: String,
     }
 
     extern "Rust" {
         type OutputSender<'a, 'b>;
 
-        fn send_output(sender: &mut OutputSender, id: &str, data: &[u8]) -> DoraSendOutputResult;
+        fn send_output(sender: &mut OutputSender, id: &str, data: &[u8]) -> AdoraSendOutputResult;
     }
 
     unsafe extern "C++" {
@@ -36,19 +36,19 @@ mod ffi {
             id: &str,
             data: &[u8],
             output_sender: &mut OutputSender,
-        ) -> DoraOnInputResult;
+        ) -> AdoraOnInputResult;
     }
 }
 
-pub struct OutputSender<'a, 'b>(&'a mut DoraOutputSender<'b>);
+pub struct OutputSender<'a, 'b>(&'a mut AdoraOutputSender<'b>);
 
-fn send_output(sender: &mut OutputSender, id: &str, data: &[u8]) -> DoraSendOutputResult {
+fn send_output(sender: &mut OutputSender, id: &str, data: &[u8]) -> AdoraSendOutputResult {
     let error = sender
         .0
         .send(id.into(), data.to_owned().into_arrow())
         .err()
         .unwrap_or_default();
-    DoraSendOutputResult { error }
+    AdoraSendOutputResult { error }
 }
 
 register_operator!(OperatorWrapper);
@@ -65,12 +65,12 @@ impl Default for OperatorWrapper {
     }
 }
 
-impl DoraOperator for OperatorWrapper {
+impl AdoraOperator for OperatorWrapper {
     fn on_event(
         &mut self,
         event: &Event,
-        output_sender: &mut DoraOutputSender,
-    ) -> Result<DoraStatus, std::string::String> {
+        output_sender: &mut AdoraOutputSender,
+    ) -> Result<AdoraStatus, std::string::String> {
         match event {
             Event::Input { id, data } => {
                 let operator = self.operator.as_mut().unwrap();
@@ -82,8 +82,8 @@ impl DoraOperator for OperatorWrapper {
                 let result = ffi::on_input(operator, id, data, &mut output_sender);
                 if result.error.is_empty() {
                     Ok(match result.stop {
-                        false => DoraStatus::Continue,
-                        true => DoraStatus::Stop,
+                        false => AdoraStatus::Continue,
+                        true => AdoraStatus::Stop,
                     })
                 } else {
                     Err(result.error)
@@ -91,7 +91,7 @@ impl DoraOperator for OperatorWrapper {
             }
             _ => {
                 // ignore other events for now
-                Ok(DoraStatus::Continue)
+                Ok(AdoraStatus::Continue)
             }
         }
     }

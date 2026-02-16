@@ -1,5 +1,5 @@
 {
-  description = "Dora CLI package for Nix";
+  description = "Adora CLI package for Nix";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -15,13 +15,13 @@
       pkgs = import nixpkgs {inherit system;};
     in {
       packages = {
-        dora-cli = pkgs.rustPlatform.buildRustPackage rec {
-          pname = "dora-cli";
+        adora-cli = pkgs.rustPlatform.buildRustPackage rec {
+          pname = "adora-cli";
           version = "0.3.6";
 
           src = pkgs.fetchFromGitHub {
-            owner = "dora-rs";
-            repo = "dora";
+            owner = "adora-rs";
+            repo = "adora";
             rev = "v${version}";
             hash = "sha256-YwEqwA7Eqz7ZJYFfKoPTWkmgsudKpoATcFE6OOwxpbU=";
           };
@@ -31,21 +31,21 @@
           buildInputs = [pkgs.openssl];
           OPENSSL_NO_VENDOR = 1;
           buildPhase = ''
-            cargo build --release -p dora-cli
+            cargo build --release -p adora-cli
           '';
 
 
           installPhase = ''
             mkdir -p $out/bin
-            cp target/release/dora $out/bin
+            cp target/release/adora $out/bin
           '';
 
           doCheck = false;
 
           meta = {
             description = "Making robotic applications fast and simple!";
-            homepage = "https://dora-rs.ai/";
-            changelog = "https://github.com/dora-rs/dora/blob/main/Changelog.md";
+            homepage = "https://adora-rs.ai/";
+            changelog = "https://github.com/adora-rs/adora/blob/main/Changelog.md";
             license = pkgs.lib.licenses.asl20;
           };
         };

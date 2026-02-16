@@ -1,4 +1,4 @@
-use dora_cli::{build, run};
+use adora_cli::{build, run};
 use eyre::Context;
 use std::path::Path;
 

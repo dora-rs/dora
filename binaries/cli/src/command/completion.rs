@@ -7,17 +7,17 @@ use sysinfo;
 #[derive(Debug, clap::Args)]
 #[command(after_help = r#"
 USAGE:
-  eval $(dora completion)              # Auto-detect shell
-  eval $(dora completion <SHELL>)      # Specify shell explicitly
+  eval $(adora completion)              # Auto-detect shell
+  eval $(adora completion <SHELL>)      # Specify shell explicitly
 
 PERSIST COMPLETION:
 
   Bash:
-    echo 'eval "$(dora completion bash)"' >> ~/.bashrc
+    echo 'eval "$(adora completion bash)"' >> ~/.bashrc
     # Then restart shell
 
   Zsh:
-    echo 'eval "$(dora completion zsh)"' >> ~/.zshrc
+    echo 'eval "$(adora completion zsh)"' >> ~/.zshrc
     # Then restart shell
 
     # If you get 'command not found: compdef', add this before the eval line:
@@ -27,7 +27,7 @@ PERSIST COMPLETION:
   Fish:
     # Add to ~/.config/fish/config.fish
     if status is-interactive
-        eval "$(dora completion fish)"
+        eval "$(adora completion fish)"
     end
     # Then restart shell
 
@@ -52,7 +52,7 @@ impl Executable for Completion {
         clap_complete::generate(
             shell,
             &mut crate::Args::command(),
-            "dora",
+            "adora",
             &mut std::io::stdout(),
         );
         Ok(())

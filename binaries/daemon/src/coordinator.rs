@@ -2,8 +2,8 @@ use crate::{
     DaemonCoordinatorEvent,
     socket_stream_utils::{socket_stream_receive, socket_stream_send},
 };
-use dora_core::uhlc::HLC;
-use dora_message::{
+use adora_core::uhlc::HLC;
+use adora_message::{
     common::{DaemonId, Timestamped},
     coordinator_to_daemon::RegisterResult,
     daemon_to_coordinator::{CoordinatorRequest, DaemonCoordinatorReply, DaemonRegisterRequest},
@@ -34,7 +34,7 @@ pub async fn register(
     let mut stream = loop {
         match TcpStream::connect(addr)
             .await
-            .wrap_err("failed to connect to dora-coordinator")
+            .wrap_err("failed to connect to adora-coordinator")
         {
             Err(err) => {
                 warn!(
@@ -56,18 +56,18 @@ pub async fn register(
     })?;
     socket_stream_send(&mut stream, &register)
         .await
-        .wrap_err("failed to send register request to dora-coordinator")?;
+        .wrap_err("failed to send register request to adora-coordinator")?;
     let reply_raw = socket_stream_receive(&mut stream)
         .await
-        .wrap_err("failed to register reply from dora-coordinator")?;
+        .wrap_err("failed to register reply from adora-coordinator")?;
     let result: Timestamped<RegisterResult> = serde_json::from_slice(&reply_raw)
-        .wrap_err("failed to deserialize dora-coordinator reply")?;
+        .wrap_err("failed to deserialize adora-coordinator reply")?;
     let daemon_id = result.inner.to_result()?;
     if let Err(err) = clock.update_with_timestamp(&result.timestamp) {
         tracing::warn!("failed to update timestamp after register: {err}");
     }
 
-    tracing::info!("Connected to dora-coordinator at {:?}", addr);
+    tracing::info!("Connected to adora-coordinator at {:?}", addr);
 
     let (tx, rx) = mpsc::channel(1);
     tokio::spawn(async move {

@@ -5,12 +5,12 @@ use std::{
     sync::Arc,
 };
 
-use ::dora_ros2_bridge::{ros2_client, rustdds};
+use ::adora_ros2_bridge::{ros2_client, rustdds};
 use arrow::{
     array::{ArrayData, make_array},
     pyarrow::{FromPyArrow, ToPyArrow},
 };
-use dora_ros2_bridge_msg_gen::types::Message;
+use adora_ros2_bridge_msg_gen::types::Message;
 use eyre::{Context, ContextCompat, Result, eyre};
 use futures::{Stream, StreamExt};
 use pyo3::{
@@ -36,7 +36,7 @@ pub mod typed;
 /// You can also use `ros_paths` if you don't want to use env variable.
 ///
 /// warning::
-///     dora Ros2 bridge functionality is considered **unstable**. It may be changed
+///     adora Ros2 bridge functionality is considered **unstable**. It may be changed
 ///     at any point without it being considered a breaking change.
 ///
 /// ```python
@@ -63,7 +63,7 @@ impl Ros2Context {
                 .import("warnings")
                 .wrap_err("failed to import `warnings` module")?;
             warnings
-            .call_method1("warn", ("dora-rs ROS2 Bridge is unstable and may change at any point without it being considered a breaking change",))
+            .call_method1("warn", ("adora-rs ROS2 Bridge is unstable and may change at any point without it being considered a breaking change",))
             .wrap_err("failed to call `warnings.warn` module")?;
             Ok(())
         })?;
@@ -88,7 +88,7 @@ impl Ros2Context {
             }
         };
 
-        let packages = dora_ros2_bridge_msg_gen::get_packages(&paths)
+        let packages = adora_ros2_bridge_msg_gen::get_packages(&paths)
             .map_err(|err| eyre!(err))
             .context("failed to parse ROS2 message types")?;
 
@@ -116,13 +116,13 @@ impl Ros2Context {
     /// ```
     ///
     /// warning::
-    ///     dora Ros2 bridge functionality is considered **unstable**. It may be changed
+    ///     adora Ros2 bridge functionality is considered **unstable**. It may be changed
     ///     at any point without it being considered a breaking change.
     ///
     /// :type name: str
     /// :type namespace: str
-    /// :type options: dora.Ros2NodeOptions
-    /// :rtype: dora.Ros2Node
+    /// :type options: adora.Ros2NodeOptions
+    /// :rtype: adora.Ros2Node
     pub fn new_node(
         &self,
         name: &str,
@@ -144,7 +144,7 @@ impl Ros2Context {
 /// ROS2 Node
 ///
 /// warnings::
-/// - dora Ros2 bridge functionality is considered **unstable**. It may be changed
+/// - adora Ros2 bridge functionality is considered **unstable**. It may be changed
 ///   at any point without it being considered a breaking change.
 /// - There's a known issue about ROS2 nodes not being discoverable by ROS2
 ///   See: https://github.com/jhelovuo/ros2-client/issues/4
@@ -168,8 +168,8 @@ impl Ros2Node {
     ///
     /// :type name: str
     /// :type message_type: str
-    /// :type qos: dora.Ros2QosPolicies
-    /// :rtype: dora.Ros2Topic
+    /// :type qos: adora.Ros2QosPolicies
+    /// :rtype: adora.Ros2Topic
     pub fn create_topic(
         &self,
         name: &str,
@@ -209,12 +209,12 @@ impl Ros2Node {
     /// pose_publisher = ros2_node.create_publisher(turtle_pose_topic)
     /// ```
     /// warnings:
-    /// - dora Ros2 bridge functionality is considered **unstable**. It may be changed
+    /// - adora Ros2 bridge functionality is considered **unstable**. It may be changed
     ///   at any point without it being considered a breaking change.
     ///
-    /// :type topic: dora.Ros2Topic
-    /// :type qos: dora.Ros2QosPolicies, optional
-    /// :rtype: dora.Ros2Publisher
+    /// :type topic: adora.Ros2Topic
+    /// :type qos: adora.Ros2QosPolicies, optional
+    /// :rtype: adora.Ros2Publisher
     #[pyo3(signature = (topic, qos=None))]
     pub fn create_publisher(
         &mut self,
@@ -237,12 +237,12 @@ impl Ros2Node {
     /// ```
     ///
     /// warnings:
-    /// - dora Ros2 bridge functionality is considered **unstable**. It may be changed
+    /// - adora Ros2 bridge functionality is considered **unstable**. It may be changed
     ///   at any point without it being considered a breaking change.
     ///
-    /// :type topic: dora.Ros2Topic
-    /// :type qos: dora.Ros2QosPolicies, optional
-    /// :rtype: dora.Ros2Subscription
+    /// :type topic: adora.Ros2Topic
+    /// :type qos: adora.Ros2QosPolicies, optional
+    /// :rtype: adora.Ros2Subscription
     #[pyo3(signature = (topic, qos=None))]
     pub fn create_subscription(
         &mut self,
@@ -290,7 +290,7 @@ impl From<Ros2NodeOptions> for ros2_client::NodeOptions {
 /// :type rosout: bool, optional
 ///
 /// warnings:
-/// - dora Ros2 bridge functionality is considered **unstable**. It may be changed
+/// - adora Ros2 bridge functionality is considered **unstable**. It may be changed
 ///   at any point without it being considered a breaking change.
 #[pyclass]
 #[derive(Str, Repr, Dir, Dict)]
@@ -303,7 +303,7 @@ pub struct Ros2Topic {
 /// ROS2 Publisher
 ///
 /// warnings:
-/// - dora Ros2 bridge functionality is considered **unstable**. It may be changed
+/// - adora Ros2 bridge functionality is considered **unstable**. It may be changed
 ///   at any point without it being considered a breaking change.
 #[pyclass]
 #[derive(Str, Repr, Dir, Dict)]
@@ -374,7 +374,7 @@ impl Ros2Publisher {
 ///
 ///
 /// warnings:
-/// - dora Ros2 bridge functionality is considered **unstable**. It may be changed
+/// - adora Ros2 bridge functionality is considered **unstable**. It may be changed
 ///   at any point without it being considered a breaking change.
 #[pyclass]
 #[derive(Str, Repr, Dir, Dict)]
@@ -446,7 +446,7 @@ impl Stream for Ros2SubscriptionStream {
     }
 }
 
-pub fn create_dora_ros2_bridge_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
+pub fn create_adora_ros2_bridge_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Ros2Context>()?;
     m.add_class::<Ros2Node>()?;
     m.add_class::<Ros2NodeOptions>()?;

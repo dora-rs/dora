@@ -2,13 +2,13 @@ nodes:
   - id: talker_1
     path: bin/talker_1
     inputs:
-      tick: dora/timer/millis/100
+      tick: adora/timer/millis/100
     outputs:
       - speech
   - id: talker_2
     path: bin/talker_2
     inputs:
-      tick: dora/timer/secs/2
+      tick: adora/timer/secs/2
     outputs:
       - speech
 

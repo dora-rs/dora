@@ -4,9 +4,9 @@ import yaml
 
 
 class DataflowBuilder:
-    """A dora dataflow."""
+    """A adora dataflow."""
 
-    def __init__(self, name: str = "dora-dataflow"):
+    def __init__(self, name: str = "adora-dataflow"):
         self.name = name
         self.nodes = []
 
@@ -45,7 +45,7 @@ class Output:
 
 
 class Node:
-    """A node in a dora dataflow."""
+    """A node in a adora dataflow."""
 
     def __init__(self, id: str, **kwargs):
         self.id = id
@@ -134,7 +134,7 @@ class Node:
 
 
 class Operator:
-    """An operator in a dora dataflow."""
+    """An operator in a adora dataflow."""
 
     def __init__(
         self,

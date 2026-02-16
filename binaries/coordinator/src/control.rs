@@ -2,7 +2,7 @@ use crate::{
     Event,
     tcp_utils::{tcp_receive, tcp_send},
 };
-use dora_message::{
+use adora_message::{
     BuildId, cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply,
 };
 use eyre::{Context, eyre};

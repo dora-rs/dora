@@ -7,13 +7,13 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 
 use arrow::pyarrow::{FromPyArrow, ToPyArrow};
-use dora_download::download_file;
-use dora_node_api::dora_core::config::NodeId;
-use dora_node_api::dora_core::descriptor::source_is_url;
-use dora_node_api::merged::{MergeExternalSend, MergedEvent};
-use dora_node_api::{DataflowId, DoraNode, EventStream, TryRecvError, init_tracing};
-use dora_operator_api_python::{DelayedCleanup, NodeCleanupHandle, PyEvent, pydict_to_metadata};
-use dora_ros2_bridge_python::Ros2Subscription;
+use adora_download::download_file;
+use adora_node_api::adora_core::config::NodeId;
+use adora_node_api::adora_core::descriptor::source_is_url;
+use adora_node_api::merged::{MergeExternalSend, MergedEvent};
+use adora_node_api::{DataflowId, AdoraNode, EventStream, TryRecvError, init_tracing};
+use adora_operator_api_python::{DelayedCleanup, NodeCleanupHandle, PyEvent, pydict_to_metadata};
+use adora_ros2_bridge_python::Ros2Subscription;
 use eyre::{Context, ContextCompat};
 
 use futures::{Stream, StreamExt};
@@ -42,23 +42,23 @@ fn host_log<'py>(record: Bound<'py, PyAny>) -> PyResult<()> {
 
     RUNTIME.spawn(async move {
     if level.ge(&40u8) {
-        let span = span!(Level::ERROR, "dora.python.log.error", file=pathname, line=lineno, %target, %message);
+        let span = span!(Level::ERROR, "adora.python.log.error", file=pathname, line=lineno, %target, %message);
         let _enter = span.enter();
         tracing::event!(tracing::Level::ERROR, file=pathname, line=lineno, %target, %message);
     } else if level.ge(&30u8) {
-        let span = span!(Level::ERROR, "dora.python.log.warn", file=pathname, line=lineno, %target, %message);
+        let span = span!(Level::ERROR, "adora.python.log.warn", file=pathname, line=lineno, %target, %message);
         let _enter = span.enter();
         tracing::event!(tracing::Level::WARN, file=pathname, line=lineno, %target, %message);
     } else if level.ge(&20u8){
-        let span = span!(Level::INFO, "dora.python.log.info", file=pathname, line=lineno, %target, %message);
+        let span = span!(Level::INFO, "adora.python.log.info", file=pathname, line=lineno, %target, %message);
         let _enter = span.enter();
         tracing::event!(tracing::Level::INFO, file=pathname, line=lineno, %target, %message);
     } else if level.ge(&10u8) {
-        let span = span!(Level::DEBUG, "dora.python.log.debug", file=pathname, line=lineno, %target, %message);
+        let span = span!(Level::DEBUG, "adora.python.log.debug", file=pathname, line=lineno, %target, %message);
         let _enter = span.enter();
         tracing::event!(tracing::Level::DEBUG, file=pathname, line=lineno, %target, %message);
     } else {
-        let span = span!(Level::TRACE, "dora.python.log.trace", file=pathname, line=lineno, %target, %message);
+        let span = span!(Level::TRACE, "adora.python.log.trace", file=pathname, line=lineno, %target, %message);
         let _enter = span.enter();
         tracing::event!(tracing::Level::TRACE, file=pathname, line=lineno, %target, %message);
     }
@@ -108,13 +108,13 @@ def basicConfig(*pargs, **kwargs):
 
     Ok(())
 }
-/// The custom node API lets you integrate `dora` into your application.
+/// The custom node API lets you integrate `adora` into your application.
 /// It allows you to retrieve input and send output in any fashion you want.
 ///
 /// Use with:
 ///
 /// ```python
-/// from dora import Node
+/// from adora import Node
 ///
 /// node = Node()
 /// ```
@@ -124,7 +124,7 @@ def basicConfig(*pargs, **kwargs):
 #[derive(Dir, Dict, Str, Repr)]
 pub struct Node {
     events: Events,
-    node: DelayedCleanup<DoraNode>,
+    node: DelayedCleanup<AdoraNode>,
 
     dataflow_id: DataflowId,
     node_id: NodeId,
@@ -136,10 +136,10 @@ impl Node {
     #[pyo3(signature = (node_id=None))]
     pub fn new(node_id: Option<String>) -> eyre::Result<Self> {
         let (node, events) = if let Some(node_id) = node_id {
-            DoraNode::init_flexible(NodeId::from(node_id))
+            AdoraNode::init_flexible(NodeId::from(node_id))
                 .context("Could not setup node from node id. Make sure to have a running dataflow with this dynamic node")?
         } else {
-            DoraNode::init_from_env().context("Could not initiate node from environment variable. For dynamic node, please add a node id in the initialization function.")?
+            AdoraNode::init_from_env().context("Could not initiate node from environment variable. For dynamic node, please add a node id in the initialization function.")?
         };
         let id = node.id().clone();
         let dataflow_id = node.dataflow_id().clone();
@@ -165,7 +165,7 @@ impl Node {
 
         Ok(Node {
             events: Events {
-                inner: Arc::new(Mutex::new(EventsInner::Dora(events))),
+                inner: Arc::new(Mutex::new(EventsInner::Adora(events))),
                 _cleanup_handle: cleanup_handle,
             },
             dataflow_id,
@@ -408,10 +408,10 @@ impl Node {
         self.dataflow_id.to_string()
     }
 
-    /// Merge an external event stream with dora main loop.
+    /// Merge an external event stream with adora main loop.
     /// This currently only work with ROS2.
     ///
-    /// :type subscription: dora.Ros2Subscription
+    /// :type subscription: adora.Ros2Subscription
     /// :rtype: None
     pub fn merge_external_events(&self, subscription: &mut Ros2Subscription) -> eyre::Result<()> {
         let subscription = subscription.into_stream()?;
@@ -461,9 +461,9 @@ impl Events {
     fn recv(&self, timeout: Option<Duration>) -> Option<PyEvent> {
         let mut inner = self.inner.blocking_lock();
         let event = match &mut *inner {
-            EventsInner::Dora(events) => match timeout {
-                Some(timeout) => events.recv_timeout(timeout).map(MergedEvent::Dora),
-                None => events.recv().map(MergedEvent::Dora),
+            EventsInner::Adora(events) => match timeout {
+                Some(timeout) => events.recv_timeout(timeout).map(MergedEvent::Adora),
+                None => events.recv().map(MergedEvent::Adora),
             },
             EventsInner::Merged(events) => futures::executor::block_on(events.next()),
         };
@@ -473,7 +473,7 @@ impl Events {
     fn try_recv(&self) -> Result<PyEvent, TryRecvError> {
         let mut inner = self.inner.blocking_lock();
         let event = match &mut *inner {
-            EventsInner::Dora(events) => events.try_recv().map(MergedEvent::Dora),
+            EventsInner::Adora(events) => events.try_recv().map(MergedEvent::Adora),
             EventsInner::Merged(_events) => {
                 todo!("try_recv on external event stream is not yet implemented!")
             }
@@ -484,12 +484,12 @@ impl Events {
     async fn recv_async_timeout(&self, timeout: Option<Duration>) -> Option<PyEvent> {
         let mut inner = self.inner.lock().await;
         let event = match &mut *inner {
-            EventsInner::Dora(events) => match timeout {
+            EventsInner::Adora(events) => match timeout {
                 Some(timeout) => events
                     .recv_async_timeout(timeout)
                     .await
-                    .map(MergedEvent::Dora),
-                None => events.recv_async().await.map(MergedEvent::Dora),
+                    .map(MergedEvent::Adora),
+                None => events.recv_async().await.map(MergedEvent::Adora),
             },
             EventsInner::Merged(events) => events.next().await,
         };
@@ -499,12 +499,12 @@ impl Events {
     fn drain(&self) -> Option<Vec<PyEvent>> {
         let mut inner = self.inner.blocking_lock();
         match &mut *inner {
-            EventsInner::Dora(events) => match events.drain() {
+            EventsInner::Adora(events) => match events.drain() {
                 Some(items) => {
                     return Some(
                         items
                             .into_iter()
-                            .map(MergedEvent::Dora)
+                            .map(MergedEvent::Adora)
                             .map(|event| PyEvent { event })
                             .collect(),
                     );
@@ -520,7 +520,7 @@ impl Events {
     fn is_empty(&self) -> bool {
         let inner = self.inner.blocking_lock();
         match &*inner {
-            EventsInner::Dora(events) => events.is_empty(),
+            EventsInner::Adora(events) => events.is_empty(),
             EventsInner::Merged(_events) => {
                 todo!("is_empty on external event stream is not yet implemented!")
             }
@@ -530,7 +530,7 @@ impl Events {
 
 #[allow(clippy::large_enum_variant)]
 enum EventsInner {
-    Dora(EventStream),
+    Adora(EventStream),
     Merged(Box<dyn Stream<Item = MergedEvent<PyObject>> + Unpin + Send + Sync>),
 }
 
@@ -542,11 +542,11 @@ impl<'a> MergeExternalSend<'a, PyObject> for EventsInner {
         external_events: impl Stream<Item = PyObject> + Unpin + Send + Sync + 'a,
     ) -> Box<dyn Stream<Item = Self::Item> + Unpin + Send + Sync + 'a> {
         match self {
-            EventsInner::Dora(events) => events.merge_external_send(external_events),
+            EventsInner::Adora(events) => events.merge_external_send(external_events),
             EventsInner::Merged(events) => {
                 let merged = events.merge_external_send(external_events);
                 Box::new(merged.map(|event| match event {
-                    MergedEvent::Dora(e) => MergedEvent::Dora(e),
+                    MergedEvent::Adora(e) => MergedEvent::Adora(e),
                     MergedEvent::External(e) => MergedEvent::External(e.flatten()),
                 }))
             }
@@ -565,7 +565,7 @@ impl Node {
 /// :rtype: None
 #[pyfunction]
 pub fn start_runtime() -> eyre::Result<()> {
-    dora_runtime::main().wrap_err("Dora Runtime raised an error.")
+    adora_runtime::main().wrap_err("Adora Runtime raised an error.")
 }
 
 pub fn resolve_dataflow(dataflow: String) -> eyre::Result<PathBuf> {
@@ -584,7 +584,7 @@ pub fn resolve_dataflow(dataflow: String) -> eyre::Result<PathBuf> {
     Ok(dataflow)
 }
 
-/// Build a Dataflow, exactly the same way as `dora build` command line tool.
+/// Build a Dataflow, exactly the same way as `adora build` command line tool.
 ///
 ///
 /// :type dataflow_path: str
@@ -602,7 +602,7 @@ pub fn build(
     coordinator_port: Option<u16>,
     force_local: bool,
 ) -> eyre::Result<()> {
-    dora_cli::build(
+    adora_cli::build(
         dataflow_path,
         coordinator_addr.map(|addr| addr.parse().unwrap()),
         coordinator_port,
@@ -611,7 +611,7 @@ pub fn build(
     )
 }
 
-/// Run a Dataflow, exactly the same way as `dora run` command line tool.
+/// Run a Dataflow, exactly the same way as `adora run` command line tool.
 ///
 /// :type dataflow_path: str
 /// :type uv: bool, optional
@@ -620,10 +620,10 @@ pub fn build(
 #[pyfunction]
 #[pyo3(signature = (dataflow_path, uv=None, stop_after=None))]
 pub fn run(dataflow_path: String, uv: Option<bool>, stop_after: Option<f64>) -> eyre::Result<()> {
-    use dora_cli::Executable;
+    use adora_cli::Executable;
 
     let stop_after_duration = stop_after.map(std::time::Duration::from_secs_f64);
-    let mut run = dora_cli::RunCommand::new(dataflow_path);
+    let mut run = adora_cli::RunCommand::new(dataflow_path);
     if let Some(uv) = uv {
         run.uv = uv;
     }
@@ -634,15 +634,15 @@ pub fn run(dataflow_path: String, uv: Option<bool>, stop_after: Option<f64>) -> 
 }
 
 #[pymodule]
-fn dora(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
-    dora_ros2_bridge_python::create_dora_ros2_bridge_module(&m)?;
+fn adora(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
+    adora_ros2_bridge_python::create_adora_ros2_bridge_module(&m)?;
 
     m.add_function(wrap_pyfunction!(start_runtime, &m)?)?;
     m.add_function(wrap_pyfunction!(run, &m)?)?;
     m.add_function(wrap_pyfunction!(build, &m)?)?;
     m.add_class::<Node>()?;
     m.setattr("__version__", env!("CARGO_PKG_VERSION"))?;
-    m.setattr("__author__", "Dora-rs Authors")?;
+    m.setattr("__author__", "Adora-rs Authors")?;
 
     Ok(())
 }

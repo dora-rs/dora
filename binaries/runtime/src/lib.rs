@@ -1,13 +1,13 @@
 #![warn(unsafe_op_in_unsafe_fn)]
 
-use dora_core::{
+use adora_core::{
     config::{DataId, OperatorId},
     descriptor::OperatorConfig,
 };
-use dora_message::daemon_to_node::{NodeConfig, RuntimeConfig};
-use dora_metrics::run_metrics_monitor;
-use dora_node_api::{DoraNode, Event};
-use dora_tracing::TracingBuilder;
+use adora_message::daemon_to_node::{NodeConfig, RuntimeConfig};
+use adora_metrics::run_metrics_monitor;
+use adora_node_api::{AdoraNode, Event};
+use adora_tracing::TracingBuilder;
 use eyre::{Context, Result, bail};
 use futures::{Stream, StreamExt};
 use futures_concurrency::stream::Merge;
@@ -26,8 +26,8 @@ mod operator;
 
 pub fn main() -> eyre::Result<()> {
     let config: RuntimeConfig = {
-        let raw = std::env::var("DORA_RUNTIME_CONFIG")
-            .wrap_err("env variable DORA_RUNTIME_CONFIG must be set")?;
+        let raw = std::env::var("ADORA_RUNTIME_CONFIG")
+            .wrap_err("env variable ADORA_RUNTIME_CONFIG must be set")?;
         serde_yaml::from_str(&raw).context("failed to deserialize runtime config")?
     };
     let RuntimeConfig {
@@ -135,7 +135,7 @@ async fn run(
         .wrap_err("failed to init an operator")?;
     tracing::info!("All operators are ready, starting runtime");
 
-    let (mut node, mut daemon_events) = DoraNode::init(config)?;
+    let (mut node, mut daemon_events) = AdoraNode::init(config)?;
     let (daemon_events_tx, daemon_event_stream) = flume::bounded(1);
     tokio::task::spawn_blocking(move || {
         while let Some(event) = daemon_events.recv() {
@@ -169,12 +169,12 @@ async fn run(
                     }
                     OperatorEvent::Finished { reason } => {
                         if let StopReason::ExplicitStopAll = reason {
-                            // let hlc = dora_core::message::uhlc::HLC::default();
-                            // let metadata = dora_core::message::Metadata::new(hlc.new_timestamp());
+                            // let hlc = adora_core::message::uhlc::HLC::default();
+                            // let metadata = adora_core::message::Metadata::new(hlc.new_timestamp());
                             // let data = metadata
                             // .serialize()
                             // .wrap_err("failed to serialize stop message")?;
-                            todo!("instruct dora-daemon/dora-coordinator to stop other nodes");
+                            todo!("instruct adora-daemon/adora-coordinator to stop other nodes");
                             // manual_stop_publisher
                             //     .publish(&data)
                             //     .map_err(|err| eyre::eyre!(err))

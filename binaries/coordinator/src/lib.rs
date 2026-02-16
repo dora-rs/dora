@@ -3,12 +3,12 @@ use crate::{
     tcp_utils::{tcp_receive, tcp_send},
 };
 pub use control::ControlEvent;
-use dora_core::{
+use adora_core::{
     config::{NodeId, OperatorId},
     descriptor::DescriptorExt,
     uhlc::{self, HLC},
 };
-use dora_message::{
+use adora_message::{
     BuildId, DataflowId, SessionId,
     cli_to_coordinator::ControlRequest,
     common::{DaemonId, GitSource},
@@ -200,7 +200,7 @@ async fn start_inner(
         tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(Duration::from_secs(3)))
             .map(|_| Event::DaemonHeartbeatInterval);
 
-    // events that should be aborted on `dora destroy`
+    // events that should be aborted on `adora destroy`
     let (abortable_events, abort_handle) =
         futures::stream::abortable((events, daemon_heartbeat_interval).merge());
 
@@ -241,7 +241,7 @@ async fn start_inner(
                 }
             }
             Event::DaemonConnectError(err) => {
-                tracing::warn!("{:?}", err.wrap_err("failed to connect to dora-daemon"));
+                tracing::warn!("{:?}", err.wrap_err("failed to connect to adora-daemon"));
             }
             Event::Daemon(event) => match event {
                 DaemonRequest::Register {
@@ -774,7 +774,7 @@ async fn start_inner(
                             ));
                         }
                         ControlRequest::GetNodeInfo => {
-                            use dora_message::coordinator_to_cli::{NodeInfo, NodeMetricsInfo};
+                            use adora_message::coordinator_to_cli::{NodeInfo, NodeMetricsInfo};
 
                             let mut node_infos = Vec::new();
                             for dataflow in running_dataflows.values() {
@@ -1114,7 +1114,7 @@ struct RunningDataflow {
     /// Maps each node to the daemon it's running on
     node_to_daemon: BTreeMap<NodeId, DaemonId>,
     /// Latest metrics for each node (from daemons)
-    node_metrics: BTreeMap<NodeId, dora_message::daemon_to_coordinator::NodeMetrics>,
+    node_metrics: BTreeMap<NodeId, adora_message::daemon_to_coordinator::NodeMetrics>,
 
     spawn_result: CachedResult,
     stop_reply_senders: Vec<tokio::sync::oneshot::Sender<eyre::Result<ControlRequestReply>>>,
@@ -1609,7 +1609,7 @@ pub enum Event {
     CtrlC,
     Log(LogMessage),
     DaemonExit {
-        daemon_id: dora_message::common::DaemonId,
+        daemon_id: adora_message::common::DaemonId,
     },
     DataflowBuildResult {
         build_id: BuildId,
@@ -1623,7 +1623,7 @@ pub enum Event {
     },
     NodeMetrics {
         dataflow_id: uuid::Uuid,
-        metrics: BTreeMap<NodeId, dora_message::daemon_to_coordinator::NodeMetrics>,
+        metrics: BTreeMap<NodeId, adora_message::daemon_to_coordinator::NodeMetrics>,
     },
 }
 
@@ -1688,7 +1688,7 @@ fn set_up_ctrlc_handler() -> Result<impl Stream<Item = Event>, eyre::ErrReport> 
         } else {
             tracing::info!("received ctrlc signal");
             if ctrlc_tx.blocking_send(Event::CtrlC).is_err() {
-                tracing::error!("failed to report ctrl-c event to dora-coordinator");
+                tracing::error!("failed to report ctrl-c event to adora-coordinator");
             }
 
             ctrlc_sent = true;

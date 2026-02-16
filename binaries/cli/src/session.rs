@@ -3,8 +3,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use dora_core::build::BuildInfo;
-use dora_message::{BuildId, SessionId, common::GitSource, id::NodeId};
+use adora_core::build::BuildInfo;
+use adora_message::{BuildId, SessionId, common::GitSource, id::NodeId};
 use eyre::{Context, ContextCompat};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -34,7 +34,7 @@ impl DataflowSession {
                 return Ok(parsed);
             } else {
                 tracing::warn!(
-                    "failed to read dataflow session file, regenerating (you might need to run `dora build` again)"
+                    "failed to read dataflow session file, regenerating (you might need to run `adora build` again)"
                 );
             }
         }
@@ -95,6 +95,6 @@ fn session_file_path(dataflow_path: &Path) -> eyre::Result<PathBuf> {
         .wrap_err("dataflow file stem is not valid utf-8")?;
     let session_file = dataflow_path
         .with_file_name("out")
-        .join(format!("{file_stem}.dora-session.yaml"));
+        .join(format!("{file_stem}.adora-session.yaml"));
     Ok(session_file)
 }

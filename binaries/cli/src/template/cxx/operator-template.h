@@ -9,8 +9,8 @@ public:
     unsigned char counter;
 };
 
-#include "dora-operator-api.h" // adjust this path if necessary
+#include "adora-operator-api.h" // adjust this path if necessary
 
 std::unique_ptr<Operator> new_operator();
 
-DoraOnInputResult on_input(Operator &op, rust::Str id, rust::Slice<const uint8_t> data, OutputSender &output_sender);
+AdoraOnInputResult on_input(Operator &op, rust::Str id, rust::Slice<const uint8_t> data, OutputSender &output_sender);

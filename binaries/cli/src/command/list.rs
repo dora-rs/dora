@@ -8,8 +8,8 @@ use crate::{
 };
 use clap::Args;
 use communication_layer_request_reply::TcpRequestReplyConnection;
-use dora_core::topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT;
-use dora_message::{
+use adora_core::topics::ADORA_COORDINATOR_PORT_CONTROL_DEFAULT;
+use adora_message::{
     cli_to_coordinator::ControlRequest,
     coordinator_to_cli::{ControlRequestReply, DataflowStatus},
 };
@@ -21,11 +21,11 @@ use uuid::Uuid;
 #[derive(Debug, Args)]
 /// List running dataflows.
 pub struct ListArgs {
-    /// Address of the dora coordinator
+    /// Address of the adora coordinator
     #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
     pub coordinator_addr: std::net::IpAddr,
     /// Port number of the coordinator control server
-    #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
+    #[clap(long, value_name = "PORT", default_value_t = ADORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
     pub coordinator_port: u16,
     /// Output format
     #[clap(long, value_name = "FORMAT", default_value_t = OutputFormat::Table)]

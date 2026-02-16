@@ -12,4 +12,4 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
-dora-operator-api = { workspace = true }
+adora-operator-api = { workspace = true }

@@ -3,8 +3,8 @@ use crate::{
     tcp_utils::{tcp_receive, tcp_send},
 };
 
-use dora_core::{descriptor::DescriptorExt, uhlc::HLC};
-use dora_message::{
+use adora_core::{descriptor::DescriptorExt, uhlc::HLC};
+use adora_message::{
     BuildId, SessionId,
     common::DaemonId,
     coordinator_to_daemon::{DaemonCoordinatorEvent, SpawnDataflowNodes, Timestamped},

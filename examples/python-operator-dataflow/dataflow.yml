@@ -4,7 +4,7 @@ nodes:
       build: pip install -r requirements.txt
       python: webcam.py
       inputs:
-        tick: dora/timer/millis/50
+        tick: adora/timer/millis/50
       outputs:
         - image
 

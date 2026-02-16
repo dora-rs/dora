@@ -1,7 +1,7 @@
 import os
 
-from dora import build, run
-from dora.builder import DataflowBuilder
+from adora import build, run
+from adora.builder import DataflowBuilder
 
 # Get the directory of the current script
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -19,13 +19,13 @@ camera = dataflow.add_node(
         "IMAGE_HEIGHT": "480",
     },
 )
-camera.add_input("tick", "dora/timer/millis/20")
+camera.add_input("tick", "adora/timer/millis/20")
 camera_image = camera.add_output("image")
 
 object_detection = dataflow.add_node(
     id="object-detection",
-    path="dora-yolo",
-    build="pip install dora-yolo",
+    path="adora-yolo",
+    build="pip install adora-yolo",
 )
 object_detection.add_input("image", camera_image)
 bbox_output = object_detection.add_output("bbox")

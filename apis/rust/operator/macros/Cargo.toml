@@ -1,9 +1,9 @@
 [package]
-name = "dora-operator-api-macros"
+name = "adora-operator-api-macros"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Rust API Macros for Dora Operator"
+description = "Rust API Macros for Adora Operator"
 documentation.workspace = true
 license.workspace = true
 repository.workspace = true

@@ -3,10 +3,10 @@ use std::{
     sync::Arc,
 };
 
-use dora_node_api::{
-    DoraNode, Event, IntoArrow,
+use adora_node_api::{
+    AdoraNode, Event, IntoArrow,
     arrow::array::{Array, NullArray},
-    dora_core::config::DataId,
+    adora_core::config::DataId,
     flume,
     integration_testing::{
         self, IntegrationTestInput, TestingOptions,
@@ -17,12 +17,12 @@ use dora_node_api::{
 
 #[test]
 fn test_main_function() -> eyre::Result<()> {
-    let inputs = dora_node_api::integration_testing::TestingInput::FromJsonFile(
+    let inputs = adora_node_api::integration_testing::TestingInput::FromJsonFile(
         "../../../tests/sample-inputs/inputs-rust-node.json".into(),
     );
     let mut output_file = Arc::new(tempfile::tempfile()?);
     let testing_output =
-        dora_node_api::integration_testing::TestingOutput::ToWriter(Box::new(output_file.clone()));
+        adora_node_api::integration_testing::TestingOutput::ToWriter(Box::new(output_file.clone()));
     let options = TestingOptions {
         skip_output_time_offsets: true,
     };
@@ -44,17 +44,17 @@ fn test_main_function() -> eyre::Result<()> {
 
 #[test]
 fn test_run_function() -> eyre::Result<()> {
-    let inputs = dora_node_api::integration_testing::TestingInput::FromJsonFile(
+    let inputs = adora_node_api::integration_testing::TestingInput::FromJsonFile(
         "../../../tests/sample-inputs/inputs-rust-node.json".into(),
     );
     let mut output_file = Arc::new(tempfile::tempfile()?);
     let testing_output =
-        dora_node_api::integration_testing::TestingOutput::ToWriter(Box::new(output_file.clone()));
+        adora_node_api::integration_testing::TestingOutput::ToWriter(Box::new(output_file.clone()));
     let options = TestingOptions {
         skip_output_time_offsets: true,
     };
 
-    let (node, events) = DoraNode::init_testing(inputs, testing_output, options)?;
+    let (node, events) = AdoraNode::init_testing(inputs, testing_output, options)?;
 
     crate::run(node, events)?;
 
@@ -93,14 +93,14 @@ fn test_sample_output() -> eyre::Result<()> {
             event: IncomingEvent::Stop,
         },
     ];
-    let inputs = dora_node_api::integration_testing::TestingInput::Input(
+    let inputs = adora_node_api::integration_testing::TestingInput::Input(
         IntegrationTestInput::new("node_id".parse().unwrap(), events),
     );
 
     let (tx, rx) = flume::unbounded();
-    let testing_output = dora_node_api::integration_testing::TestingOutput::ToChannel(tx);
+    let testing_output = adora_node_api::integration_testing::TestingOutput::ToChannel(tx);
     let (mut node, mut events) =
-        DoraNode::init_testing(inputs, testing_output, Default::default())?;
+        AdoraNode::init_testing(inputs, testing_output, Default::default())?;
 
     let output = DataId::from("i");
 

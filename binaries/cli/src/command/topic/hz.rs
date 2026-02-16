@@ -1,6 +1,6 @@
 use crossterm::event::{Event, KeyCode, KeyModifiers};
-use dora_core::topics::{open_zenoh_session, zenoh_output_publish_topic};
-use dora_message::{common::Timestamped, daemon_to_daemon::InterDaemonEvent};
+use adora_core::topics::{open_zenoh_session, zenoh_output_publish_topic};
+use adora_message::{common::Timestamped, daemon_to_daemon::InterDaemonEvent};
 use eyre::{Context, eyre};
 use itertools::Itertools;
 use ratatui::{DefaultTerminal, prelude::*, widgets::*};
@@ -34,13 +34,13 @@ use crate::{
 /// Examples:
 ///
 /// Measure a single topic:
-///   dora topic hz -d my-dataflow robot1/pose
+///   adora topic hz -d my-dataflow robot1/pose
 ///
 /// Measure multiple topics with a short window:
-///   dora topic hz -d my-dataflow robot1/pose robot2/vel --window 5
+///   adora topic hz -d my-dataflow robot1/pose robot2/vel --window 5
 ///
 /// Measure all topics:
-///   dora topic hz -d my-dataflow --window 10
+///   adora topic hz -d my-dataflow --window 10
 ///
 /// Note: The dataflow descriptor must include the following snippet so that
 /// runtime messages can be inspected:

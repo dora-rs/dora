@@ -1,5 +1,5 @@
 [package]
-name = "dora-tracing"
+name = "adora-tracing"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

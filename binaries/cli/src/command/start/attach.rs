@@ -1,8 +1,8 @@
 use communication_layer_request_reply::{TcpConnection, TcpRequestReplyConnection};
-use dora_core::descriptor::{CoreNodeKind, Descriptor, DescriptorExt, resolve_path};
-use dora_message::cli_to_coordinator::ControlRequest;
-use dora_message::common::LogMessage;
-use dora_message::coordinator_to_cli::ControlRequestReply;
+use adora_core::descriptor::{CoreNodeKind, Descriptor, DescriptorExt, resolve_path};
+use adora_message::cli_to_coordinator::ControlRequest;
+use adora_message::common::LogMessage;
+use adora_message::coordinator_to_cli::ControlRequestReply;
 use eyre::Context;
 use notify::event::ModifyKind;
 use notify::{Config, Event as NotifyEvent, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -44,11 +44,11 @@ pub fn attach_dataflow(
 
     for node in nodes.into_values() {
         match node.kind {
-            // Reloading Custom Nodes is not supported. See: https://github.com/dora-rs/dora/pull/239#discussion_r1154313139
+            // Reloading Custom Nodes is not supported. See: https://github.com/adora-rs/adora/pull/239#discussion_r1154313139
             CoreNodeKind::Custom(_cn) => (),
             CoreNodeKind::Runtime(rn) => {
                 for op in rn.operators.iter() {
-                    if let dora_core::descriptor::OperatorSource::Python(python_source) =
+                    if let adora_core::descriptor::OperatorSource::Python(python_source) =
                         &op.config.source
                     {
                         let path = resolve_path(&python_source.source, &working_dir)
@@ -58,7 +58,7 @@ pub fn attach_dataflow(
                         node_path_lookup
                             .insert(path, (dataflow_id, node.id.clone(), Some(op.id.clone())));
                     }
-                    // Reloading non-python operator is not supported. See: https://github.com/dora-rs/dora/pull/239#discussion_r1154313139
+                    // Reloading non-python operator is not supported. See: https://github.com/adora-rs/adora/pull/239#discussion_r1154313139
                 }
             }
         }
@@ -127,7 +127,7 @@ pub fn attach_dataflow(
                 }))
                 .is_err()
             {
-                // bail!("failed to report ctrl-c event to dora-daemon");
+                // bail!("failed to report ctrl-c event to adora-daemon");
             }
             ctrlc_sent = true;
         }
@@ -137,7 +137,7 @@ pub fn attach_dataflow(
     // subscribe to log messages
     let mut log_session = TcpConnection {
         stream: TcpStream::connect(coordinator_socket)
-            .wrap_err("failed to connect to dora coordinator")?,
+            .wrap_err("failed to connect to adora coordinator")?,
     };
     log_session
         .send(

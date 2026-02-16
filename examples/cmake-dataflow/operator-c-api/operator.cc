@@ -17,21 +17,21 @@ public:
 
 Operator::Operator() {}
 
-extern "C" DoraInitResult_t dora_init_operator()
+extern "C" AdoraInitResult_t adora_init_operator()
 {
     Operator *op = std::make_unique<Operator>().release();
 
-    DoraInitResult_t result = {.operator_context = (void *)op};
+    AdoraInitResult_t result = {.operator_context = (void *)op};
     return result;
 }
 
-extern "C" DoraResult_t dora_drop_operator(void *operator_context)
+extern "C" AdoraResult_t adora_drop_operator(void *operator_context)
 {
     delete (Operator *)operator_context;
     return {};
 }
 
-extern "C" OnEventResult_t dora_on_event(
+extern "C" OnEventResult_t adora_on_event(
     RawEvent_t *event,
     const SendOutput_t *send_output,
     void *operator_context)
@@ -40,9 +40,9 @@ extern "C" OnEventResult_t dora_on_event(
     {
         // input event
         Input_t *input = event->input;
-        char *id = dora_read_input_id(input);
+        char *id = adora_read_input_id(input);
 
-        Vec_uint8_t data = dora_read_data(input);
+        Vec_uint8_t data = adora_read_data(input);
         assert(data.ptr != NULL);
 
         std::cout
@@ -60,12 +60,12 @@ extern "C" OnEventResult_t dora_on_event(
         uint8_t *out_data_heap = (uint8_t *)malloc(out_data_len);
         *out_data_heap = *data.ptr / 2;
 
-        DoraResult_t send_result = dora_send_operator_output(send_output, out_id_heap, out_data_heap, out_data_len);
+        AdoraResult_t send_result = adora_send_operator_output(send_output, out_id_heap, out_data_heap, out_data_len);
 
-        OnEventResult_t result = {.result = send_result, .status = DORA_STATUS_CONTINUE};
+        OnEventResult_t result = {.result = send_result, .status = ADORA_STATUS_CONTINUE};
 
-        dora_free_data(data);
-        dora_free_input_id(id);
+        adora_free_data(data);
+        adora_free_input_id(id);
 
         return result;
     }
@@ -74,6 +74,6 @@ extern "C" OnEventResult_t dora_on_event(
         printf("C operator received stop event\n");
     }
 
-    OnEventResult_t result = {.status = DORA_STATUS_CONTINUE};
+    OnEventResult_t result = {.status = ADORA_STATUS_CONTINUE};
     return result;
 }

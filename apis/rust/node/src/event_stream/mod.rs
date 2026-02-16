@@ -6,7 +6,7 @@ use std::{
     time::Duration,
 };
 
-use dora_message::{
+use adora_message::{
     DataflowId,
     daemon_to_node::{DaemonCommunication, DaemonReply, DataMessage, NodeEvent},
     id::DataId,
@@ -26,7 +26,7 @@ use crate::{
     daemon_connection::{DaemonChannel, node_integration_testing::convert_output_to_json},
     event_stream::data_conversion::{MappedInputData, RawData, SharedMemoryData},
 };
-use dora_core::{
+use adora_core::{
     config::{Input, NodeId},
     uhlc,
 };
@@ -57,7 +57,7 @@ mod thread;
 /// [`EventStream`] to combine the stream with an external one.)_
 ///
 /// Once the event stream finished, nodes should exit.
-/// Note that Dora kills nodes that don't exit quickly after a [`Event::Stop`] of type
+/// Note that Adora kills nodes that don't exit quickly after a [`Event::Stop`] of type
 /// [`StopCause::Manual`] was received.
 pub struct EventStream {
     node_id: NodeId,
@@ -219,7 +219,7 @@ impl EventStream {
                 timestamp: clock.new_timestamp(),
             })
             .map_err(|e| eyre!(e))
-            .wrap_err("failed to create subscription with dora-daemon")?;
+            .wrap_err("failed to create subscription with adora-daemon")?;
 
         match reply {
             DaemonReply::Result(Ok(())) => {}
@@ -521,7 +521,7 @@ pub enum TryRecvError {
 
 pub fn data_to_arrow_array(
     data: Option<DataMessage>,
-    metadata: &dora_message::metadata::Metadata,
+    metadata: &adora_message::metadata::Metadata,
     drop_channel: flume::Sender<()>,
 ) -> eyre::Result<Arc<dyn arrow::array::Array>> {
     let data = match data {
@@ -572,7 +572,7 @@ impl Drop for EventStream {
             .close_channel
             .request(&request)
             .map_err(|e| eyre!(e))
-            .wrap_err("failed to signal event stream closure to dora-daemon")
+            .wrap_err("failed to signal event stream closure to adora-daemon")
             .and_then(|r| match r {
                 DaemonReply::Result(Ok(())) => Ok(()),
                 DaemonReply::Result(Err(err)) => Err(eyre!("EventStreamClosed failed: {err}")),

@@ -1,9 +1,9 @@
 use crate::command::{Executable, default_tracing};
 use crate::{LOCALHOST, common::connect_to_coordinator};
 use communication_layer_request_reply::TcpRequestReplyConnection;
-use dora_core::descriptor::DescriptorExt;
-use dora_core::{descriptor::Descriptor, topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT};
-use dora_message::{
+use adora_core::descriptor::DescriptorExt;
+use adora_core::{descriptor::Descriptor, topics::ADORA_COORDINATOR_PORT_CONTROL_DEFAULT};
+use adora_message::{
     cli_to_coordinator::ControlRequest,
     coordinator_to_cli::{ControlRequestReply, DataflowStatus},
 };
@@ -125,11 +125,11 @@ pub struct Status {
     /// Path to the dataflow descriptor file (enables additional checks)
     #[clap(long, value_name = "PATH", value_hint = clap::ValueHint::FilePath)]
     dataflow: Option<PathBuf>,
-    /// Address of the dora coordinator
+    /// Address of the adora coordinator
     #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
     coordinator_addr: IpAddr,
     /// Port number of the coordinator control server
-    #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
+    #[clap(long, value_name = "PORT", default_value_t = ADORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
     coordinator_port: u16,
 }
 

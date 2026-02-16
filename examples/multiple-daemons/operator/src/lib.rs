@@ -1,7 +1,7 @@
 #![warn(unsafe_op_in_unsafe_fn)]
 
-use dora_operator_api::{
-    DoraOperator, DoraOutputSender, DoraStatus, Event, IntoArrow, register_operator,
+use adora_operator_api::{
+    AdoraOperator, AdoraOutputSender, AdoraStatus, Event, IntoArrow, register_operator,
 };
 
 register_operator!(ExampleOperator);
@@ -11,12 +11,12 @@ struct ExampleOperator {
     ticks: usize,
 }
 
-impl DoraOperator for ExampleOperator {
+impl AdoraOperator for ExampleOperator {
     fn on_event(
         &mut self,
         event: &Event,
-        output_sender: &mut DoraOutputSender,
-    ) -> Result<DoraStatus, String> {
+        output_sender: &mut AdoraOutputSender,
+    ) -> Result<AdoraStatus, String> {
         match event {
             Event::Input { id, data } => match *id {
                 "tick" => {
@@ -39,7 +39,7 @@ impl DoraOperator for ExampleOperator {
                 println!("input `{id}` was closed");
                 if *id == "random" {
                     println!("`random` input was closed -> exiting");
-                    return Ok(DoraStatus::Stop);
+                    return Ok(AdoraStatus::Stop);
                 }
             }
             other => {
@@ -47,6 +47,6 @@ impl DoraOperator for ExampleOperator {
             }
         }
 
-        Ok(DoraStatus::Continue)
+        Ok(AdoraStatus::Continue)
     }
 }

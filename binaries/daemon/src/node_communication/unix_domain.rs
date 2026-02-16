@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, io::ErrorKind, sync::Arc};
 
-use dora_core::{config::DataId, uhlc::HLC};
-use dora_message::{
+use adora_core::{config::DataId, uhlc::HLC};
+use adora_message::{
     common::Timestamped, daemon_to_node::DaemonReply, node_to_daemon::DaemonRequest,
 };
 use eyre::Context;

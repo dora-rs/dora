@@ -4,7 +4,7 @@ use arrow::{
     array::{Array, ArrayRef, AsArray, OffsetSizeTrait, PrimitiveArray},
     datatypes::{self, ArrowPrimitiveType},
 };
-use dora_ros2_bridge_msg_gen::types::{
+use adora_ros2_bridge_msg_gen::types::{
     primitives::{BasicType, GenericString, NestableType},
     sequences,
 };

@@ -4,7 +4,7 @@ use arrow::{
     array::{Array, ArrayRef, AsArray, OffsetSizeTrait, PrimitiveArray},
     datatypes::{self, ArrowPrimitiveType, UInt8Type},
 };
-use dora_ros2_bridge_msg_gen::types::primitives::{BasicType, GenericString, NestableType};
+use adora_ros2_bridge_msg_gen::types::primitives::{BasicType, GenericString, NestableType};
 use serde::ser::{SerializeSeq, SerializeTuple};
 
 use crate::typed::TypeInfo;

@@ -1,11 +1,11 @@
 use std::time::Duration;
 
-use dora_node_api::{
-    self, DoraNode, Event,
-    dora_core::config::DataId,
+use adora_node_api::{
+    self, AdoraNode, Event,
+    adora_core::config::DataId,
     merged::{MergeExternal, MergedEvent},
 };
-use dora_ros2_bridge::{
+use adora_ros2_bridge::{
     messages::{
         example_interfaces::service::{AddTwoInts, AddTwoIntsRequest},
         geometry_msgs::msg::{Twist, Vector3},
@@ -74,9 +74,9 @@ fn main() -> eyre::Result<()> {
 
     let output = DataId::from("pose".to_owned());
 
-    let (mut node, dora_events) = DoraNode::init_from_env()?;
+    let (mut node, adora_events) = AdoraNode::init_from_env()?;
 
-    let merged = dora_events.merge_external(Box::pin(turtle_pose_reader.async_stream()));
+    let merged = adora_events.merge_external(Box::pin(turtle_pose_reader.async_stream()));
     let mut events = futures::executor::block_on_stream(merged);
 
     for i in 0..600 {
@@ -86,7 +86,7 @@ fn main() -> eyre::Result<()> {
         };
 
         match event {
-            MergedEvent::Dora(event) => match event {
+            MergedEvent::Adora(event) => match event {
                 Event::Input {
                     id,
                     metadata: _,

@@ -1,27 +1,27 @@
 nodes:
   - id: rust-node
-    git: https://github.com/dora-rs/dora.git
+    git: https://github.com/adora-rs/adora.git
     tag: v0.4.0 # pinned tag, update this when changing the message crate
     build: cargo build -p rust-dataflow-example-node
     path: target/debug/rust-dataflow-example-node
     inputs:
-      tick: dora/timer/millis/10
+      tick: adora/timer/millis/10
     outputs:
       - random
 
   - id: rust-status-node
-    git: https://github.com/dora-rs/dora.git
+    git: https://github.com/adora-rs/adora.git
     tag: v0.4.0 # pinned tag, update this when changing the message crate
     build: cargo build -p rust-dataflow-example-status-node
     path: target/debug/rust-dataflow-example-status-node
     inputs:
-      tick: dora/timer/millis/100
+      tick: adora/timer/millis/100
       random: rust-node/random
     outputs:
       - status
 
   - id: rust-sink
-    git: https://github.com/dora-rs/dora.git
+    git: https://github.com/adora-rs/adora.git
     tag: v0.4.0 # pinned tag, update this when changing the message crate
     build: cargo build -p rust-dataflow-example-sink
     path: target/debug/rust-dataflow-example-sink

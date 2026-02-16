@@ -1,6 +1,6 @@
 use std::{env, path::Path};
 
-use dora_message::descriptor::Descriptor;
+use adora_message::descriptor::Descriptor;
 use schemars::schema_for;
 
 fn main() {
@@ -35,7 +35,7 @@ fn main() {
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is not set");
 
     // Create the path for the new file next to Cargo.toml
-    let new_file_path = Path::new(&manifest_dir).join("dora-schema.json");
+    let new_file_path = Path::new(&manifest_dir).join("adora-schema.json");
 
     // write to file
     std::fs::write(new_file_path, raw_schema).expect("Could not write schema to file");

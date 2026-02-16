@@ -103,13 +103,13 @@ fn create_custom_node(
         .with_context(|| format!("failed to create directory `{}`", src.display()))?;
 
     let dep = if use_path_deps {
-        r#"dora-node-api = { path = "../../apis/rust/node" }"#.to_string()
+        r#"adora-node-api = { path = "../../apis/rust/node" }"#.to_string()
     } else {
-        format!(r#"dora-node-api = "{VERSION}""#)
+        format!(r#"adora-node-api = "{VERSION}""#)
     };
     let cargo_toml = CARGO_TOML
         .replace("___name___", &name)
-        .replace("dora-node-api = {}", &dep);
+        .replace("adora-node-api = {}", &dep);
     let cargo_toml_path = root.join("Cargo.toml");
     fs::write(&cargo_toml_path, cargo_toml)
         .with_context(|| format!("failed to write `{}`", cargo_toml_path.display()))?;

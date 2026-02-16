@@ -11,7 +11,7 @@ use crate::{
     formatting::OutputFormat,
 };
 use communication_layer_request_reply::TcpRequestReplyConnection;
-use dora_message::{
+use adora_message::{
     cli_to_coordinator::ControlRequest,
     coordinator_to_cli::{ControlRequestReply, NodeInfo},
 };
@@ -22,13 +22,13 @@ use eyre::{Context, bail};
 /// Examples:
 ///
 /// List all nodes:
-///   dora node list
+///   adora node list
 ///
 /// List nodes in a specific dataflow:
-///   dora node list --dataflow my-dataflow
+///   adora node list --dataflow my-dataflow
 ///
 /// List nodes as JSON:
-///   dora node list --format json
+///   adora node list --format json
 #[derive(Debug, Args)]
 #[clap(verbatim_doc_comment)]
 pub struct List {

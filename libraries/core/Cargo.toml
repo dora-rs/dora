@@ -1,5 +1,5 @@
 [package]
-name = "dora-core"
+name = "adora-core"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -16,7 +16,7 @@ build = ["dep:git2", "dep:url"]
 zenoh = ["dep:zenoh"]
 
 [dependencies]
-dora-message = { workspace = true }
+adora-message = { workspace = true }
 eyre = "0.6.8"
 serde = { version = "1.0.136", features = ["derive"] }
 serde_yaml = { workspace = true }

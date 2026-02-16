@@ -6,8 +6,8 @@ use std::{
 
 use crate::common::resolve_dataflow_identifier_interactive;
 use communication_layer_request_reply::TcpRequestReplyConnection;
-use dora_core::{config::InputMapping, descriptor::Descriptor};
-use dora_message::{
+use adora_core::{config::InputMapping, descriptor::Descriptor};
+use adora_message::{
     DataflowId,
     cli_to_coordinator::ControlRequest,
     coordinator_to_cli::ControlRequestReply,

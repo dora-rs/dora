@@ -1,9 +1,9 @@
 [package]
-name = "dora-operator-api-c"
+name = "adora-operator-api-c"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "C API implementation for Dora Operator"
+description = "C API implementation for Adora Operator"
 documentation.workspace = true
 readme.workspace = true
 license.workspace = true
@@ -13,7 +13,7 @@ repository.workspace = true
 crate-type = ["staticlib", "lib"]
 
 [dependencies]
-dora-operator-api-types = { workspace = true }
+adora-operator-api-types = { workspace = true }
 
 [build-dependencies]
-dora-operator-api-types = { workspace = true }
+adora-operator-api-types = { workspace = true }

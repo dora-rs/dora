@@ -1,11 +1,11 @@
 use crate::{LOCALHOST, formatting::FormatDataflowError};
 use communication_layer_request_reply::{RequestReplyLayer, TcpLayer, TcpRequestReplyConnection};
-use dora_core::{
+use adora_core::{
     descriptor::{Descriptor, source_is_url},
-    topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT,
+    topics::ADORA_COORDINATOR_PORT_CONTROL_DEFAULT,
 };
-use dora_download::download_file;
-use dora_message::{
+use adora_download::download_file;
+use adora_message::{
     cli_to_coordinator::ControlRequest,
     coordinator_to_cli::{ControlRequestReply, DataflowList, DataflowResult},
 };
@@ -62,7 +62,7 @@ pub(crate) fn resolve_dataflow_identifier_interactive(
     }
 
     let list = query_running_dataflows(session).wrap_err("failed to query running dataflows")?;
-    let active: Vec<dora_message::coordinator_to_cli::DataflowIdAndName> = list.get_active();
+    let active: Vec<adora_message::coordinator_to_cli::DataflowIdAndName> = list.get_active();
     if let Some(name) = name_or_uuid {
         let Some(dataflow) = active.iter().find(|it| it.name.as_deref() == Some(name)) else {
             bail!("No dataflow with name `{name}` is running");
@@ -82,18 +82,18 @@ pub(crate) fn resolve_dataflow_identifier_interactive(
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct CoordinatorOptions {
-    /// Address of the dora coordinator
+    /// Address of the adora coordinator
     #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
     pub coordinator_addr: IpAddr,
     /// Port number of the coordinator control server
-    #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
+    #[clap(long, value_name = "PORT", default_value_t = ADORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
     pub coordinator_port: u16,
 }
 
 impl CoordinatorOptions {
     pub fn connect(&self) -> eyre::Result<Box<TcpRequestReplyConnection>> {
         let session = connect_to_coordinator((self.coordinator_addr, self.coordinator_port).into())
-            .wrap_err("failed to connect to dora coordinator")?;
+            .wrap_err("failed to connect to adora coordinator")?;
         Ok(session)
     }
 }
@@ -165,7 +165,7 @@ pub(crate) fn cli_and_daemon_on_same_machine(
 }
 
 pub(crate) fn write_events_to() -> Option<PathBuf> {
-    std::env::var("DORA_WRITE_EVENTS_TO")
+    std::env::var("ADORA_WRITE_EVENTS_TO")
         .ok()
         .map(PathBuf::from)
 }

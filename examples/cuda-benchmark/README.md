@@ -3,7 +3,7 @@
 ## Install
 
 ```bash
-pip install dora-rs-cli # if not already present
+pip install adora-rs-cli # if not already present
 
 # Install pyarrow with gpu support
 conda install pyarrow "arrow-cpp-proc=*=cuda" -c conda-forge
@@ -27,9 +27,9 @@ python -c "import torch; assert torch.cuda.is_available()"
 ## Run
 
 ```bash
-dora run cpu_bench.yml
+adora run cpu_bench.yml
 
-dora run cuda_bench.yml
+adora run cuda_bench.yml
 
 cat benchmark_data.csv
 ```
@@ -37,8 +37,8 @@ cat benchmark_data.csv
 ## To run the demo code
 
 ```bash
-dora up
-dora start demo_bench.yml --detach
+adora up
+adora start demo_bench.yml --detach
 python demo_receiver.py
-dora destroy
+adora destroy
 ```

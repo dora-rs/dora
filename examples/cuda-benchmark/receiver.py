@@ -6,8 +6,8 @@ import time
 
 import pyarrow as pa
 import torch
-from dora import Node
-from dora.cuda import ipc_buffer_to_ipc_handle, open_ipc_handle
+from adora import Node
+from adora.cuda import ipc_buffer_to_ipc_handle, open_ipc_handle
 from helper import record_results
 from tqdm import tqdm
 
@@ -25,7 +25,7 @@ i = 0
 latencies = []
 DEVICE = os.getenv("DEVICE", "cuda")
 
-NAME = f"dora torch {DEVICE}"
+NAME = f"adora torch {DEVICE}"
 
 while True:
     event = node.next()

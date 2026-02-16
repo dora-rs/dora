@@ -4,7 +4,7 @@ use arrow::{
     array::{Array, ArrayRef, AsArray},
     error,
 };
-use dora_ros2_bridge_msg_gen::types::{
+use adora_ros2_bridge_msg_gen::types::{
     MemberType,
     primitives::{GenericString, NestableType},
 };
@@ -103,7 +103,7 @@ impl serde::Serialize for TypedValue<'_> {
 impl TypedValue<'_> {
     fn serialize_field<S>(
         &self,
-        field: &dora_ros2_bridge_msg_gen::types::Member,
+        field: &adora_ros2_bridge_msg_gen::types::Member,
         column: Cow<'_, std::sync::Arc<dyn Array>>,
         s: &mut S::SerializeTupleStruct,
     ) -> Result<(), S::Error>
@@ -170,21 +170,21 @@ impl TypedValue<'_> {
                     }
                 },
             },
-            dora_ros2_bridge_msg_gen::types::MemberType::Array(a) => {
+            adora_ros2_bridge_msg_gen::types::MemberType::Array(a) => {
                 s.serialize_field(&array::ArraySerializeWrapper {
                     array_info: a,
                     column: column.as_ref(),
                     type_info: self.type_info,
                 })?;
             }
-            dora_ros2_bridge_msg_gen::types::MemberType::Sequence(v) => {
+            adora_ros2_bridge_msg_gen::types::MemberType::Sequence(v) => {
                 s.serialize_field(&sequence::SequenceSerializeWrapper {
                     item_type: &v.value_type,
                     column: column.as_ref(),
                     type_info: self.type_info,
                 })?;
             }
-            dora_ros2_bridge_msg_gen::types::MemberType::BoundedSequence(v) => {
+            adora_ros2_bridge_msg_gen::types::MemberType::BoundedSequence(v) => {
                 s.serialize_field(&sequence::SequenceSerializeWrapper {
                     item_type: &v.value_type,
                     column: column.as_ref(),

@@ -20,6 +20,6 @@ source /opt/ros/humble/setup.bash && ros2 run turtlesim turtlesim_node
 
 # cd examples/python-ros2-dataflow
 uv pip install -e ../.../apis/python/node --reinstall
-dora build dataflow.yml --uv
-dora run dataflow.yml --uv
+adora build dataflow.yml --uv
+adora run dataflow.yml --uv
 ```

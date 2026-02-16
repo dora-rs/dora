@@ -1,4 +1,4 @@
-#include "dora-node-api.h"
+#include "adora-node-api.h"
 #include "ros2-bridge/impl.h"
 #include "ros2-bridge/msg/example_interfaces.h"
 #include "ros2-bridge/msg/sensor_msgs.h"
@@ -13,8 +13,8 @@ int main()
 {
     std::cout << "HELLO FROM C++" << std::endl;
 
-    auto dora_node = init_dora_node();
-    auto merged_events = dora_events_into_combined(std::move(dora_node.events));
+    auto adora_node = init_adora_node();
+    auto merged_events = adora_events_into_combined(std::move(adora_node.events));
 
     auto qos = qos_default();
     qos.durability = Ros2Durability::Volatile;
@@ -47,19 +47,19 @@ int main()
     {
         auto event = merged_events.next();
 
-        if (event.is_dora())
+        if (event.is_adora())
         {
-            auto dora_event = downcast_dora(std::move(event));
+            auto adora_event = downcast_adora(std::move(event));
 
-            auto ty = event_type(dora_event);
+            auto ty = event_type(adora_event);
 
-            if (ty == DoraEventType::AllInputsClosed)
+            if (ty == AdoraEventType::AllInputsClosed)
             {
                 break;
             }
-            else if (ty == DoraEventType::Input)
+            else if (ty == AdoraEventType::Input)
             {
-                auto input = event_as_input(std::move(dora_event));
+                auto input = event_as_input(std::move(adora_event));
                 received_ticks += 1;
 
                 std::cout << "Received input " << std::string(input.id) << std::endl;
@@ -72,7 +72,7 @@ int main()
                 example_interfaces::AddTwoInts_Request request = {.a = 4, .b = 5};
                 add_two_ints->send_request(request);
             }
-            else if (ty == DoraEventType::Stop)
+            else if (ty == AdoraEventType::Stop)
             {
                 std::cout << "Received stop event" << std::endl;
                 break;

@@ -48,7 +48,7 @@ def ipc_buffer_to_ipc_handle(handle_buffer: pa.array, metadata: dict) -> IpcHand
 
     example use:
     ```python
-    from dora.cuda import ipc_buffer_to_ipc_handle, open_ipc_handle
+    from adora.cuda import ipc_buffer_to_ipc_handle, open_ipc_handle
 
     event = node.next()
 
@@ -74,7 +74,7 @@ def open_ipc_handle(
 
     example use:
     ```python
-    from dora.cuda import ipc_buffer_to_ipc_handle, open_ipc_handle
+    from adora.cuda import ipc_buffer_to_ipc_handle, open_ipc_handle
 
     event = node.next()
 

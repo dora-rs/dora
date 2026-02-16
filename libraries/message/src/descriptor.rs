@@ -15,12 +15,12 @@ use std::{
 
 pub const SHELL_SOURCE: &str = "shell";
 /// Set the [`Node::path`] field to this value to treat the node as a
-/// [_dynamic node_](https://docs.rs/dora-node-api/latest/dora_node_api/).
+/// [_dynamic node_](https://docs.rs/adora-node-api/latest/adora_node_api/).
 pub const DYNAMIC_SOURCE: &str = "dynamic";
 
 /// # Dataflow Specification
 ///
-/// The main configuration structure for defining a Dora dataflow. Dataflows are
+/// The main configuration structure for defining a Adora dataflow. Dataflows are
 /// specified through YAML files that describe the nodes, their connections, and
 /// execution parameters.
 ///
@@ -40,7 +40,7 @@ pub const DYNAMIC_SOURCE: &str = "dynamic";
 ///     operator:
 ///       python: webcam.py
 ///       inputs:
-///         tick: dora/timer/millis/100
+///         tick: adora/timer/millis/100
 ///       outputs:
 ///         - image
 ///   - id: plot
@@ -51,7 +51,7 @@ pub const DYNAMIC_SOURCE: &str = "dynamic";
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-#[schemars(title = "dora-rs specification")]
+#[schemars(title = "adora-rs specification")]
 pub struct Descriptor {
     /// List of nodes in the dataflow
     ///
@@ -70,7 +70,7 @@ pub struct Descriptor {
     ///     # ... (see below)
     /// ```
     ///
-    /// For each node, you need to specify the `path` of the executable or script that Dora should run when starting the node.
+    /// For each node, you need to specify the `path` of the executable or script that Adora should run when starting the node.
     /// Most of the other node fields are optional, but you typically want to specify at least some `inputs` and/or `outputs`.
     pub nodes: Vec<Node>,
 
@@ -103,7 +103,7 @@ pub enum RestartPolicy {
     ///
     /// The node will not be restarted on the following conditions:
     ///
-    /// - The node was stopped by the user (e.g., via `dora stop`).
+    /// - The node was stopped by the user (e.g., via `adora stop`).
     /// - All inputs to the node have been closed and the node finished with a non-zero exit code.
     Always,
 }
@@ -124,9 +124,9 @@ pub struct Debug {
     pub publish_all_messages_to_zenoh: bool,
 }
 
-/// # Dora Node Configuration
+/// # Adora Node Configuration
 ///
-/// A node represents a computational unit in a Dora dataflow. Each node runs as a
+/// A node represents a computational unit in a Adora dataflow. Each node runs as a
 /// separate process and can communicate with other nodes through inputs and outputs.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -175,12 +175,12 @@ pub struct Node {
 
     /// Path to executable or script that should be run.
     ///
-    /// Specifies the path of the executable or script that Dora should run when starting the
+    /// Specifies the path of the executable or script that Adora should run when starting the
     /// dataflow.
     /// This can point to a normal executable (e.g. when using a compiled language such as Rust) or
     /// a Python script.
     ///
-    /// Dora will automatically append a `.exe` extension on Windows systems when the specified
+    /// Adora will automatically append a `.exe` extension on Windows systems when the specified
     /// file name has no extension.
     ///
     /// ## Example
@@ -196,7 +196,7 @@ pub struct Node {
     /// ## URL as Path
     ///
     /// The `path` field can also point to a URL instead of a local path.
-    /// In this case, Dora will download the given file when starting the dataflow.
+    /// In this case, Adora will download the given file when starting the dataflow.
     ///
     /// Note that this is quite an old feature and using this functionality is **not recommended**
     /// anymore. Instead, we recommend using a [`git`][Self::git] and/or [`build`](Self::build)
@@ -293,7 +293,7 @@ pub struct Node {
     ///
     /// List of output identifiers that the node sends.
     /// Must contain all `output_id` values that the node uses when sending output, e.g. through the
-    /// [`send_output`](https://docs.rs/dora-node-api/latest/dora_node_api/struct.DoraNode.html#method.send_output)
+    /// [`send_output`](https://docs.rs/adora-node-api/latest/adora_node_api/struct.AdoraNode.html#method.send_output)
     /// function.
     ///
     /// ## Example
@@ -321,7 +321,7 @@ pub struct Node {
     ///   - `input_id` is the local identifier that should be used for this input.
     ///
     ///     This will map to the `id` field of
-    ///     [`Event::Input`](https://docs.rs/dora-node-api/latest/dora_node_api/enum.Event.html#variant.Input)
+    ///     [`Event::Input`](https://docs.rs/adora-node-api/latest/adora_node_api/enum.Event.html#variant.Input)
     ///     events sent to the node event loop.
     ///   - `source_node_id` should be the `id` field of the node that sends the output that we want
     ///     to subscribe to
@@ -345,7 +345,7 @@ pub struct Node {
 
     /// Redirect stdout/stderr to a data output.
     ///
-    /// This field can be used to send all stdout and stderr output of the node as a Dora output.
+    /// This field can be used to send all stdout and stderr output of the node as a Adora output.
     /// Each output line is sent as a separate message.
     ///
     ///
@@ -362,7 +362,7 @@ pub struct Node {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub send_stdout_as: Option<String>,
 
-    /// Build commands executed during `dora build`. Each line runs separately.
+    /// Build commands executed during `adora build`. Each line runs separately.
     ///
     /// The `build` key specifies the command that should be invoked for building the node.
     /// The key expects a single- or multi-line string.
@@ -376,7 +376,7 @@ pub struct Node {
     /// ## Special treatment of `pip`
     ///
     /// Build lines that start with `pip` or `pip3` are treated in a special way:
-    /// If the `--uv` argument is passed to the `dora build` command, all `pip`/`pip3` commands are
+    /// If the `--uv` argument is passed to the `adora build` command, all `pip`/`pip3` commands are
     /// run through the [`uv` package manager](https://docs.astral.sh/uv/).
     ///
     /// ## Example
@@ -394,7 +394,7 @@ pub struct Node {
     /// ```
     ///
     /// In the above example, the `pip` commands will be replaced by `uv pip` when run through
-    /// `dora build --uv`.
+    /// `adora build --uv`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build: Option<String>,
 
@@ -403,7 +403,7 @@ pub struct Node {
     /// The `git` key allows downloading nodes (i.e. their source code) from git repositories.
     /// This can be especially useful for distributed dataflows.
     ///
-    /// When a `git` key is specified, `dora build` automatically clones the specified repository
+    /// When a `git` key is specified, `adora build` automatically clones the specified repository
     /// (or reuse an existing clone).
     /// Then it checks out the specified [`branch`](Self::branch), [`tag`](Self::tag), or
     /// [`rev`](Self::rev), or the default branch if none of them are specified.
@@ -417,14 +417,14 @@ pub struct Node {
     /// ```yaml
     /// nodes:
     ///   - id: rust-node
-    ///     git: https://github.com/dora-rs/dora.git
+    ///     git: https://github.com/adora-rs/adora.git
     ///     build: cargo build -p rust-dataflow-example-node
     ///     path: target/debug/rust-dataflow-example-node
     /// ```
     ///
-    /// In the above example, `dora build` will first clone the specified `git` repository and then
+    /// In the above example, `adora build` will first clone the specified `git` repository and then
     /// run the specified `build` inside the local clone directory.
-    /// When `dora run` or `dora start` is invoked, the working directory will be the git clone
+    /// When `adora run` or `adora start` is invoked, the working directory will be the git clone
     /// directory too. So a relative `path` will start from the clone directory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git: Option<String>,
@@ -440,7 +440,7 @@ pub struct Node {
     /// ```yaml
     /// nodes:
     ///   - id: rust-node
-    ///     git: https://github.com/dora-rs/dora.git
+    ///     git: https://github.com/adora-rs/adora.git
     ///     branch: some-branch-name
     /// ```
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -457,7 +457,7 @@ pub struct Node {
     /// ```yaml
     /// nodes:
     ///   - id: rust-node
-    ///     git: https://github.com/dora-rs/dora.git
+    ///     git: https://github.com/adora-rs/adora.git
     ///     tag: v0.3.0
     /// ```
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -474,7 +474,7 @@ pub struct Node {
     /// ```yaml
     /// nodes:
     ///   - id: rust-node
-    ///     git: https://github.com/dora-rs/dora.git
+    ///     git: https://github.com/adora-rs/adora.git
     ///     rev: 64ab0d7c
     /// ```
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -519,7 +519,7 @@ impl ResolvedNode {
 #[serde(rename_all = "lowercase")]
 #[allow(clippy::large_enum_variant)]
 pub enum CoreNodeKind {
-    /// Dora runtime node
+    /// Adora runtime node
     #[serde(rename = "operators")]
     Runtime(RuntimeNode),
     Custom(CustomNode),

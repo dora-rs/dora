@@ -1,11 +1,11 @@
 use std::net::{IpAddr, Ipv4Addr};
 
 pub const LOCALHOST: IpAddr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-pub const DORA_COORDINATOR_PORT_DEFAULT: u16 = 53290;
-pub const DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT: u16 = 53291;
-pub const DORA_COORDINATOR_PORT_CONTROL_DEFAULT: u16 = 6012;
+pub const ADORA_COORDINATOR_PORT_DEFAULT: u16 = 53290;
+pub const ADORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT: u16 = 53291;
+pub const ADORA_COORDINATOR_PORT_CONTROL_DEFAULT: u16 = 6012;
 
-pub const MANUAL_STOP: &str = "dora/stop";
+pub const MANUAL_STOP: &str = "adora/stop";
 
 #[cfg(feature = "zenoh")]
 pub async fn open_zenoh_session(coordinator_addr: Option<IpAddr>) -> eyre::Result<zenoh::Session> {
@@ -65,9 +65,9 @@ pub async fn open_zenoh_session(coordinator_addr: Option<IpAddr>) -> eyre::Resul
 #[cfg(feature = "zenoh")]
 pub fn zenoh_output_publish_topic(
     dataflow_id: uuid::Uuid,
-    node_id: &dora_message::id::NodeId,
-    output_id: &dora_message::id::DataId,
+    node_id: &adora_message::id::NodeId,
+    output_id: &adora_message::id::DataId,
 ) -> String {
     let network_id = "default";
-    format!("dora/{network_id}/{dataflow_id}/output/{node_id}/{output_id}")
+    format!("adora/{network_id}/{dataflow_id}/output/{node_id}/{output_id}")
 }

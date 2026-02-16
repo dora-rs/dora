@@ -1,9 +1,9 @@
 param (
-    [string]$repo = "dora-rs/dora",
-    [string]$bin = "dora-cli",
+    [string]$repo = "adora-rs/adora",
+    [string]$bin = "adora-cli",
     [string]$tag,
     [string]$target,
-    [string]$to = "$HOME\.dora\bin",
+    [string]$to = "$HOME\.adora\bin",
     [switch]$force
 )
 
@@ -34,10 +34,10 @@ FLAGS:
     -f, --force     Force overwriting an existing binary
 
 OPTIONS:
-    --repo REPO     Github Repository to install the binary from  [default: dora-rs/dora]
-    --bin BIN       Name of the binary to install  [default: dora-cli]
+    --repo REPO     Github Repository to install the binary from  [default: adora-rs/adora]
+    --bin BIN       Name of the binary to install  [default: adora-cli]
     --tag TAG       Tag (version) of the bin to install, defaults to latest release
-    --to LOCATION   Where to install the binary [default: $HOME\.dora\bin]
+    --to LOCATION   Where to install the binary [default: $HOME\.adora\bin]
     --target TARGET
 "@
 }
@@ -112,7 +112,7 @@ Write-Host "Archive $archive"
 $zip = "$tmp\$bin-$target.zip"
 Download-File $archive $zip
 
-Write-Host "Placing dora-rs cli in ", $to
+Write-Host "Placing adora-rs cli in ", $to
 
 Expand-Archive -Path $zip -DestinationPath $to -Force
 Remove-Item -Path $tmp -Recurse -Force
@@ -145,7 +145,7 @@ function Confirm-AddToPath {
         Add-PathToEnv -newPath $newPath
     } else {
         Write-Host "You chose not to add", $newPath, " to your PATH."
-        Write-Host "To run dora CLI without adding to PATH, use: '~/.dora/bin/dora'"
+        Write-Host "To run adora CLI without adding to PATH, use: '~/.adora/bin/adora'"
     }
 }
 

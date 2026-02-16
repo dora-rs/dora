@@ -1,4 +1,4 @@
-#include <dora-node-api.h>
+#include <adora-node-api.h>
 #include <arrow/api.h>
 #include <arrow/c/bridge.h>
 #include <cstdint>
@@ -7,7 +7,7 @@
 #include <utility>
 #include <string>
 
-std::shared_ptr<arrow::Array> receive_and_print_input(rust::cxxbridge1::Box<DoraEvent> event) {
+std::shared_ptr<arrow::Array> receive_and_print_input(rust::cxxbridge1::Box<AdoraEvent> event) {
     std::cout << "Received input event" << std::endl;
 
     struct ArrowArray c_array;
@@ -124,7 +124,7 @@ std::shared_ptr<arrow::Array> receive_and_print_input(rust::cxxbridge1::Box<Dora
 }
 
 // To send output
-bool send_output(DoraNode& dora_node, std::shared_ptr<arrow::Array> output_array, int counter) {
+bool send_output(AdoraNode& adora_node, std::shared_ptr<arrow::Array> output_array, int counter) {
     if (!output_array) {
         std::cerr << "Error: Attempted to send a null Arrow array" << std::endl;
         return false;
@@ -160,7 +160,7 @@ bool send_output(DoraNode& dora_node, std::shared_ptr<arrow::Array> output_array
     metadata->set_list_string("notes", std::move(notes));
 
     auto send_result = send_arrow_output(
-        dora_node.send_output,
+        adora_node.send_output,
         "counter",
         reinterpret_cast<uint8_t*>(&out_c_array),
         reinterpret_cast<uint8_t*>(&out_c_schema),
@@ -178,23 +178,23 @@ bool send_output(DoraNode& dora_node, std::shared_ptr<arrow::Array> output_array
 
 int main() {
     try {
-        auto dora_node = init_dora_node();
-        std::cout << "Dora node initialized successfully" << std::endl;
+        auto adora_node = init_adora_node();
+        std::cout << "Adora node initialized successfully" << std::endl;
         int counter=0;
         while (counter<10) {
             counter++;
-            auto event = dora_node.events->next();
+            auto event = adora_node.events->next();
             auto type = event_type(event);
 
-            if (type == DoraEventType::Stop) {
+            if (type == AdoraEventType::Stop) {
                 std::cout << "Received stop event, exiting" << std::endl;
                 break;
             }
-            else if (type == DoraEventType::AllInputsClosed) {
+            else if (type == AdoraEventType::AllInputsClosed) {
                 std::cout << "All inputs closed, exiting" << std::endl;
                 break;
             }
-            else if (type == DoraEventType::Input) {
+            else if (type == AdoraEventType::Input) {
                 std::shared_ptr<arrow::Array> input_array = receive_and_print_input(std::move(event));
 
                 std::shared_ptr<arrow::Array> output_array;
@@ -213,7 +213,7 @@ int main() {
                 //Printing Before sending
                 auto str_array = std::static_pointer_cast<arrow::Int32Array>(output_array);
 
-            send_output(dora_node, output_array, counter);
+            send_output(adora_node, output_array, counter);
         }
     }
 

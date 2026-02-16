@@ -5,7 +5,7 @@ use std::{
     path::Path,
 };
 
-pub use dora_message::{config, uhlc};
+pub use adora_message::{config, uhlc};
 
 #[cfg(feature = "build")]
 pub mod build;

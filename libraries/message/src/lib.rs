@@ -3,7 +3,7 @@
 
 #![allow(clippy::missing_safety_doc)]
 
-/// The version of the dora-message crate
+/// The version of the adora-message crate
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub use uhlc;
@@ -33,7 +33,7 @@ use uuid::{Timestamp, Uuid};
 
 /// Unique identifier for a dataflow instance.
 ///
-/// Dora assigns each dataflow instance a unique ID on start.
+/// Adora assigns each dataflow instance a unique ID on start.
 pub type DataflowId = uuid::Uuid;
 
 #[derive(
@@ -81,12 +81,12 @@ fn versions_compatible(
     let req = semver::VersionReq::parse(&crate_version.to_string()).map_err(|error| {
         format!("failed to parse crate version `{crate_version}` as `VersionReq`: {error}")
     })?;
-    let specified_dora_req = semver::VersionReq::parse(&specified_version.to_string())
+    let specified_adora_req = semver::VersionReq::parse(&specified_version.to_string())
         .map_err(|error| {
             format!(
-                "failed to parse specified dora version `{specified_version}` as `VersionReq`: {error}",
+                "failed to parse specified adora version `{specified_version}` as `VersionReq`: {error}",
             )
         })?;
-    let matches = req.matches(specified_version) || specified_dora_req.matches(crate_version);
+    let matches = req.matches(specified_version) || specified_adora_req.matches(crate_version);
     Ok(matches)
 }

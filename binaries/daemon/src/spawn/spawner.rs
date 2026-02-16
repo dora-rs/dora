@@ -7,12 +7,12 @@ use crate::{
 };
 use clonable_command::{Command, Stdio};
 use crossbeam::queue::ArrayQueue;
-use dora_core::{
+use adora_core::{
     descriptor::{Descriptor, OperatorDefinition, OperatorSource, PythonSource, ResolvedNode},
     get_python_path,
     uhlc::HLC,
 };
-use dora_message::{
+use adora_message::{
     DataflowId,
     common::LogLevel,
     daemon_to_coordinator::Timestamped,
@@ -106,7 +106,7 @@ impl Spawner {
         std::fs::create_dir_all(&node_working_dir)
             .context("failed to create node working directory")?;
         let (command, error_msg) = match &node.kind {
-            dora_core::descriptor::CoreNodeKind::Custom(n) => {
+            adora_core::descriptor::CoreNodeKind::Custom(n) => {
                 let command =
                     path_spawn_command(&node_working_dir, self.uv, logger, n, true).await?;
 
@@ -115,7 +115,7 @@ impl Spawner {
                     command = command.stdin(Stdio::Null);
 
                     command = command.env(
-                        "DORA_NODE_CONFIG",
+                        "ADORA_NODE_CONFIG",
                         serde_yaml::to_string(&node_config.clone())
                             .wrap_err("failed to serialize node config")?,
                     );
@@ -150,7 +150,7 @@ impl Spawner {
                 );
                 (command, error_msg)
             }
-            dora_core::descriptor::CoreNodeKind::Runtime(n) => {
+            adora_core::descriptor::CoreNodeKind::Runtime(n) => {
                 let python_operators: Vec<&OperatorDefinition> = n
                     .operators
                     .iter()
@@ -193,7 +193,7 @@ impl Spawner {
                             conda_env,
                             "python",
                             "-uc",
-                            format!("import dora; dora.start_runtime() # {}", node.id).as_str(),
+                            format!("import adora; adora.start_runtime() # {}", node.id).as_str(),
                         ]);
                         Some(command)
                     } else {
@@ -202,7 +202,7 @@ impl Spawner {
                             cmd = cmd.arg("run");
                             cmd = cmd.arg("python");
                             tracing::info!(
-                                "spawning: uv run python -uc import dora; dora.start_runtime() # {}",
+                                "spawning: uv run python -uc import adora; adora.start_runtime() # {}",
                                 node.id
                             );
                             cmd
@@ -210,7 +210,7 @@ impl Spawner {
                             let python = get_python_path()
                                 .wrap_err("Could not find python path when spawning custom node")?;
                             tracing::info!(
-                                "spawning: python -uc import dora; dora.start_runtime() # {}",
+                                "spawning: python -uc import adora; adora.start_runtime() # {}",
                                 node.id
                             );
 
@@ -219,7 +219,7 @@ impl Spawner {
                         // Force python to always flush stdout/stderr buffer
                         cmd = cmd.args([
                             "-uc",
-                            format!("import dora; dora.start_runtime() # {}", node.id).as_str(),
+                            format!("import adora; adora.start_runtime() # {}", node.id).as_str(),
                         ]);
                         Some(cmd)
                     }
@@ -233,7 +233,7 @@ impl Spawner {
                         .and_then(|s| s.to_str())
                         .context("failed to get file name from current executable")?;
 
-                    // Check if the current executable is a python binary meaning that dora is installed within the python environment
+                    // Check if the current executable is a python binary meaning that adora is installed within the python environment
                     if file_name.ends_with("python") || file_name.ends_with("python3") {
                         // Use the current executable to spawn runtime
                         let python = get_python_path()
@@ -241,18 +241,18 @@ impl Spawner {
                         let mut cmd = Command::new(python);
 
                         tracing::info!(
-                            "spawning: python -uc import dora; dora.start_runtime() # {}",
+                            "spawning: python -uc import adora; adora.start_runtime() # {}",
                             node.id
                         );
 
                         cmd = cmd.args([
                             "-uc",
-                            format!("import dora; dora.start_runtime() # {}", node.id).as_str(),
+                            format!("import adora; adora.start_runtime() # {}", node.id).as_str(),
                         ]);
                         Some(cmd)
                     } else {
                         let mut cmd =
-                            Command::new(which::which("dora").wrap_err("failed to get dora path")?);
+                            Command::new(which::which("adora").wrap_err("failed to get adora path")?);
                         cmd = cmd.arg("runtime");
                         Some(cmd)
                     }
@@ -272,7 +272,7 @@ impl Spawner {
                     command = command.current_dir(&node_working_dir);
 
                     command = command.env(
-                        "DORA_RUNTIME_CONFIG",
+                        "ADORA_RUNTIME_CONFIG",
                         serde_yaml::to_string(&runtime_config)
                             .wrap_err("failed to serialize runtime config")?,
                     );

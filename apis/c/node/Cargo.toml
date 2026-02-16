@@ -1,5 +1,5 @@
 [package]
-name = "dora-node-api-c"
+name = "adora-node-api-c"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -17,12 +17,12 @@ crate-type = ["staticlib", "lib"]
 
 [features]
 default = ["tracing"]
-tracing = ["dora-node-api/tracing"]
+tracing = ["adora-node-api/tracing"]
 
 [dependencies]
 eyre = "0.6.8"
 tracing = "0.1.33"
 arrow-array = { workspace = true }
 
-[dependencies.dora-node-api]
+[dependencies.adora-node-api]
 workspace = true

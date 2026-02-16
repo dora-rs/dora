@@ -3,9 +3,9 @@ use std::{any::Any, collections::BTreeMap, vec};
 use crate::ffi::MetadataValueType;
 
 use chrono::DateTime;
-use dora_node_api::{
-    self, Event, EventStream, Metadata as DoraMetadata,
-    MetadataParameters as DoraMetadataParameters, Parameter as DoraParameter,
+use adora_node_api::{
+    self, Event, EventStream, Metadata as AdoraMetadata,
+    MetadataParameters as AdoraMetadataParameters, Parameter as AdoraParameter,
     arrow::array::{AsArray, UInt8Array},
     merged::{MergeExternal, MergedEvent},
 };
@@ -17,19 +17,19 @@ use serde_json::Value as JsonValue;
 pub use prelude::*;
 #[cfg(feature = "ros2-bridge")]
 pub mod prelude {
-    pub use dora_ros2_bridge::prelude::*;
+    pub use adora_ros2_bridge::prelude::*;
 }
 use futures_lite::{Stream, StreamExt, stream};
 
 #[cxx::bridge]
 #[allow(clippy::needless_lifetimes)]
 mod ffi {
-    struct DoraNode {
+    struct AdoraNode {
         events: Box<Events>,
         send_output: Box<OutputSender>,
     }
 
-    pub enum DoraEventType {
+    pub enum AdoraEventType {
         Stop,
         Input,
         InputClosed,
@@ -38,12 +38,12 @@ mod ffi {
         AllInputsClosed,
     }
 
-    struct DoraInput {
+    struct AdoraInput {
         id: String,
         data: Vec<u8>,
     }
 
-    struct DoraResult {
+    struct AdoraResult {
         error: String,
     }
 
@@ -69,48 +69,48 @@ mod ffi {
     }
 
     pub struct CombinedEvent {
-        event: Box<MergedDoraEvent>,
+        event: Box<MergedAdoraEvent>,
     }
 
     extern "Rust" {
         type Events;
         type OutputSender;
-        type DoraEvent;
+        type AdoraEvent;
         type MergedEvents;
-        type MergedDoraEvent;
+        type MergedAdoraEvent;
         type Metadata;
 
-        fn init_dora_node() -> Result<DoraNode>;
+        fn init_adora_node() -> Result<AdoraNode>;
 
-        fn dora_events_into_combined(events: Box<Events>) -> CombinedEvents;
+        fn adora_events_into_combined(events: Box<Events>) -> CombinedEvents;
         fn empty_combined_events() -> CombinedEvents;
-        fn next(self: &mut Events) -> Box<DoraEvent>;
-        fn next_event(events: &mut Box<Events>) -> Box<DoraEvent>;
-        fn event_type(event: &Box<DoraEvent>) -> DoraEventType;
-        fn event_as_input(event: Box<DoraEvent>) -> Result<DoraInput>;
+        fn next(self: &mut Events) -> Box<AdoraEvent>;
+        fn next_event(events: &mut Box<Events>) -> Box<AdoraEvent>;
+        fn event_type(event: &Box<AdoraEvent>) -> AdoraEventType;
+        fn event_as_input(event: Box<AdoraEvent>) -> Result<AdoraInput>;
         fn send_output(
             output_sender: &mut Box<OutputSender>,
             id: String,
             data: &[u8],
-        ) -> DoraResult;
+        ) -> AdoraResult;
         fn send_output_with_metadata(
             output_sender: &mut Box<OutputSender>,
             id: String,
             data: &[u8],
             metadata: Box<Metadata>,
-        ) -> DoraResult;
+        ) -> AdoraResult;
 
         fn next(self: &mut CombinedEvents) -> CombinedEvent;
 
-        fn is_dora(self: &CombinedEvent) -> bool;
-        fn downcast_dora(event: CombinedEvent) -> Result<Box<DoraEvent>>;
+        fn is_adora(self: &CombinedEvent) -> bool;
+        fn downcast_adora(event: CombinedEvent) -> Result<Box<AdoraEvent>>;
 
         unsafe fn send_arrow_output(
             output_sender: &mut Box<OutputSender>,
             id: String,
             array_ptr: *mut u8,
             schema_ptr: *mut u8,
-        ) -> DoraResult;
+        ) -> AdoraResult;
 
         #[cxx_name = "send_arrow_output"]
         unsafe fn send_arrow_output_with_metadata(
@@ -119,16 +119,16 @@ mod ffi {
             array_ptr: *mut u8,
             schema_ptr: *mut u8,
             metadata: Box<Metadata>,
-        ) -> DoraResult;
+        ) -> AdoraResult;
 
         unsafe fn event_as_arrow_input(
-            event: Box<DoraEvent>,
+            event: Box<AdoraEvent>,
             out_array: *mut u8,
             out_schema: *mut u8,
-        ) -> DoraResult;
+        ) -> AdoraResult;
 
         unsafe fn event_as_arrow_input_with_info(
-            event: Box<DoraEvent>,
+            event: Box<AdoraEvent>,
             out_array: *mut u8,
             out_schema: *mut u8,
         ) -> ArrowInputInfo;
@@ -161,16 +161,16 @@ mod ffi {
 
 #[cfg(feature = "ros2-bridge")]
 pub mod ros2 {
-    // pub use dora_ros2_bridge::*;
+    // pub use adora_ros2_bridge::*;
     include!(env!("ROS2_BINDINGS_PATH"));
 }
 
-fn init_dora_node() -> eyre::Result<ffi::DoraNode> {
-    let (node, events) = dora_node_api::DoraNode::init_from_env()?;
+fn init_adora_node() -> eyre::Result<ffi::AdoraNode> {
+    let (node, events) = adora_node_api::AdoraNode::init_from_env()?;
     let events = Events(events);
     let send_output = OutputSender(node);
 
-    Ok(ffi::DoraNode {
+    Ok(ffi::AdoraNode {
         events: Box::new(events),
         send_output: Box::new(send_output),
     })
@@ -179,17 +179,17 @@ fn init_dora_node() -> eyre::Result<ffi::DoraNode> {
 pub struct Events(EventStream);
 
 impl Events {
-    fn next(&mut self) -> Box<DoraEvent> {
-        Box::new(DoraEvent(self.0.recv()))
+    fn next(&mut self) -> Box<AdoraEvent> {
+        Box::new(AdoraEvent(self.0.recv()))
     }
 }
 
-fn next_event(events: &mut Box<Events>) -> Box<DoraEvent> {
+fn next_event(events: &mut Box<Events>) -> Box<AdoraEvent> {
     events.next()
 }
 
-fn dora_events_into_combined(events: Box<Events>) -> ffi::CombinedEvents {
-    let events = events.0.map(MergedEvent::Dora);
+fn adora_events_into_combined(events: Box<Events>) -> ffi::CombinedEvents {
+    let events = events.0.map(MergedEvent::Adora);
     ffi::CombinedEvents {
         events: Box::new(MergedEvents {
             events: Some(Box::new(events)),
@@ -207,50 +207,50 @@ fn empty_combined_events() -> ffi::CombinedEvents {
     }
 }
 
-pub struct DoraEvent(Option<Event>);
+pub struct AdoraEvent(Option<Event>);
 
-fn event_type(event: &DoraEvent) -> ffi::DoraEventType {
+fn event_type(event: &AdoraEvent) -> ffi::AdoraEventType {
     match &event.0 {
         Some(event) => match event {
-            Event::Stop(_) => ffi::DoraEventType::Stop,
-            Event::Input { .. } => ffi::DoraEventType::Input,
-            Event::InputClosed { .. } => ffi::DoraEventType::InputClosed,
-            Event::Error(_) => ffi::DoraEventType::Error,
-            _ => ffi::DoraEventType::Unknown,
+            Event::Stop(_) => ffi::AdoraEventType::Stop,
+            Event::Input { .. } => ffi::AdoraEventType::Input,
+            Event::InputClosed { .. } => ffi::AdoraEventType::InputClosed,
+            Event::Error(_) => ffi::AdoraEventType::Error,
+            _ => ffi::AdoraEventType::Unknown,
         },
-        None => ffi::DoraEventType::AllInputsClosed,
+        None => ffi::AdoraEventType::AllInputsClosed,
     }
 }
 
-fn event_as_input(event: Box<DoraEvent>) -> eyre::Result<ffi::DoraInput> {
+fn event_as_input(event: Box<AdoraEvent>) -> eyre::Result<ffi::AdoraInput> {
     let Some(Event::Input { id, metadata, data }) = event.0 else {
         bail!("not an input event");
     };
     let data = match metadata.type_info.data_type {
-        dora_node_api::arrow::datatypes::DataType::UInt8 => {
+        adora_node_api::arrow::datatypes::DataType::UInt8 => {
             let array: &UInt8Array = data.as_primitive();
             array.values().to_vec()
         }
-        dora_node_api::arrow::datatypes::DataType::Null => {
+        adora_node_api::arrow::datatypes::DataType::Null => {
             vec![]
         }
         _ => {
-            todo!("dora C++ Node does not yet support higher level type of arrow. Only UInt8.
+            todo!("adora C++ Node does not yet support higher level type of arrow. Only UInt8.
                 The ultimate solution should be based on arrow FFI interface. Feel free to contribute :)")
         }
     };
 
-    Ok(ffi::DoraInput {
+    Ok(ffi::AdoraInput {
         id: id.into(),
         data,
     })
 }
 
 unsafe fn event_as_arrow_input(
-    event: Box<DoraEvent>,
+    event: Box<AdoraEvent>,
     out_array: *mut u8,
     out_schema: *mut u8,
-) -> ffi::DoraResult {
+) -> ffi::AdoraResult {
     // Cast to Arrow FFI types
     let out_array = out_array as *mut arrow::ffi::FFI_ArrowArray;
     let out_schema = out_schema as *mut arrow::ffi::FFI_ArrowSchema;
@@ -261,13 +261,13 @@ unsafe fn event_as_arrow_input(
         data,
     }) = event.0
     else {
-        return ffi::DoraResult {
+        return ffi::AdoraResult {
             error: "Not an input event".to_string(),
         };
     };
 
     if out_array.is_null() || out_schema.is_null() {
-        return ffi::DoraResult {
+        return ffi::AdoraResult {
             error: "Received null output pointer".to_string(),
         };
     }
@@ -280,11 +280,11 @@ unsafe fn event_as_arrow_input(
                 std::ptr::write(out_array, ffi_array);
                 std::ptr::write(out_schema, ffi_schema);
             }
-            ffi::DoraResult {
+            ffi::AdoraResult {
                 error: String::new(),
             }
         }
-        Err(e) => ffi::DoraResult {
+        Err(e) => ffi::AdoraResult {
             error: format!("Error exporting Arrow array to C++: {e:?}"),
         },
     }
@@ -292,11 +292,11 @@ unsafe fn event_as_arrow_input(
 
 pub struct Metadata {
     timestamp: u64,
-    parameters: BTreeMap<String, DoraParameter>,
+    parameters: BTreeMap<String, AdoraParameter>,
 }
 
 impl Metadata {
-    fn from_dora(metadata: DoraMetadata) -> EyreResult<Self> {
+    fn from_adora(metadata: AdoraMetadata) -> EyreResult<Self> {
         Ok(Self {
             timestamp: metadata.timestamp().get_time().as_u64(),
             parameters: metadata.parameters,
@@ -310,44 +310,44 @@ impl Metadata {
         }
     }
 
-    fn parameter_type_name(parameter: &DoraParameter) -> &'static str {
+    fn parameter_type_name(parameter: &AdoraParameter) -> &'static str {
         match parameter {
-            DoraParameter::Bool(_) => "bool",
-            DoraParameter::Integer(_) => "integer",
-            DoraParameter::String(_) => "string",
-            DoraParameter::Float(_) => "float",
-            DoraParameter::ListInt(_) => "list<int>",
-            DoraParameter::ListFloat(_) => "list<float>",
-            DoraParameter::ListString(_) => "list<string>",
-            DoraParameter::Timestamp(_) => "timestamp",
+            AdoraParameter::Bool(_) => "bool",
+            AdoraParameter::Integer(_) => "integer",
+            AdoraParameter::String(_) => "string",
+            AdoraParameter::Float(_) => "float",
+            AdoraParameter::ListInt(_) => "list<int>",
+            AdoraParameter::ListFloat(_) => "list<float>",
+            AdoraParameter::ListString(_) => "list<string>",
+            AdoraParameter::Timestamp(_) => "timestamp",
         }
     }
 
-    fn expect_parameter<'a>(&'a self, key: &str) -> EyreResult<&'a DoraParameter> {
+    fn expect_parameter<'a>(&'a self, key: &str) -> EyreResult<&'a AdoraParameter> {
         self.parameters
             .get(key)
             .ok_or_else(|| eyre!("metadata missing key '{key}'"))
     }
 
-    fn parameter_to_json(parameter: &DoraParameter, _key: &str) -> EyreResult<JsonValue> {
+    fn parameter_to_json(parameter: &AdoraParameter, _key: &str) -> EyreResult<JsonValue> {
         match parameter {
-            DoraParameter::Bool(value) => Ok(JsonValue::Bool(*value)),
-            DoraParameter::Integer(value) => Ok(JsonValue::from(*value)),
-            DoraParameter::Float(value) => Ok(JsonValue::from(*value)),
-            DoraParameter::String(value) => Ok(JsonValue::String(value.clone())),
-            DoraParameter::ListInt(values) => Ok(JsonValue::Array(
+            AdoraParameter::Bool(value) => Ok(JsonValue::Bool(*value)),
+            AdoraParameter::Integer(value) => Ok(JsonValue::from(*value)),
+            AdoraParameter::Float(value) => Ok(JsonValue::from(*value)),
+            AdoraParameter::String(value) => Ok(JsonValue::String(value.clone())),
+            AdoraParameter::ListInt(values) => Ok(JsonValue::Array(
                 values.iter().map(|value| JsonValue::from(*value)).collect(),
             )),
-            DoraParameter::ListFloat(values) => Ok(JsonValue::Array(
+            AdoraParameter::ListFloat(values) => Ok(JsonValue::Array(
                 values.iter().map(|value| JsonValue::from(*value)).collect(),
             )),
-            DoraParameter::ListString(values) => Ok(JsonValue::Array(
+            AdoraParameter::ListString(values) => Ok(JsonValue::Array(
                 values
                     .iter()
                     .map(|value| JsonValue::String(value.clone()))
                     .collect(),
             )),
-            DoraParameter::Timestamp(dt) => {
+            AdoraParameter::Timestamp(dt) => {
                 serde_json::to_value(dt).map_err(|e| eyre!("failed to serialize timestamp: {e}"))
             }
         }
@@ -360,7 +360,7 @@ impl Metadata {
     pub fn get_bool(&self, key: &str) -> EyreResult<bool> {
         let parameter = self.expect_parameter(key)?;
         match parameter {
-            DoraParameter::Bool(value) => Ok(*value),
+            AdoraParameter::Bool(value) => Ok(*value),
             other => Err(eyre!(
                 "metadata key '{key}' has type '{}', expected 'bool'",
                 Metadata::parameter_type_name(other)
@@ -371,7 +371,7 @@ impl Metadata {
     pub fn get_float(&self, key: &str) -> EyreResult<f64> {
         let parameter = self.expect_parameter(key)?;
         match parameter {
-            DoraParameter::Float(value) => Ok(*value),
+            AdoraParameter::Float(value) => Ok(*value),
             other => Err(eyre!(
                 "metadata key '{key}' has type '{}', expected 'float'",
                 Metadata::parameter_type_name(other)
@@ -382,7 +382,7 @@ impl Metadata {
     pub fn get_int(&self, key: &str) -> EyreResult<i64> {
         let parameter = self.expect_parameter(key)?;
         match parameter {
-            DoraParameter::Integer(value) => Ok(*value),
+            AdoraParameter::Integer(value) => Ok(*value),
             other => Err(eyre!(
                 "metadata key '{key}' has type '{}', expected 'integer'",
                 Metadata::parameter_type_name(other)
@@ -393,7 +393,7 @@ impl Metadata {
     pub fn get_str(&self, key: &str) -> EyreResult<String> {
         let parameter = self.expect_parameter(key)?;
         match parameter {
-            DoraParameter::String(value) => Ok(value.clone()),
+            AdoraParameter::String(value) => Ok(value.clone()),
             other => Err(eyre!(
                 "metadata key '{key}' has type '{}', expected 'string'",
                 Metadata::parameter_type_name(other)
@@ -404,7 +404,7 @@ impl Metadata {
     pub fn get_list_int(&self, key: &str) -> EyreResult<Vec<i64>> {
         let parameter = self.expect_parameter(key)?;
         match parameter {
-            DoraParameter::ListInt(values) => Ok(values.clone()),
+            AdoraParameter::ListInt(values) => Ok(values.clone()),
             other => Err(eyre!(
                 "metadata key '{key}' has type '{}', expected 'list<int>'",
                 Metadata::parameter_type_name(other)
@@ -415,7 +415,7 @@ impl Metadata {
     pub fn get_list_float(&self, key: &str) -> EyreResult<Vec<f64>> {
         let parameter = self.expect_parameter(key)?;
         match parameter {
-            DoraParameter::ListFloat(values) => Ok(values.clone()),
+            AdoraParameter::ListFloat(values) => Ok(values.clone()),
             other => Err(eyre!(
                 "metadata key '{key}' has type '{}', expected 'list<float>'",
                 Metadata::parameter_type_name(other)
@@ -426,7 +426,7 @@ impl Metadata {
     pub fn get_list_string(&self, key: &str) -> EyreResult<Vec<String>> {
         let parameter = self.expect_parameter(key)?;
         match parameter {
-            DoraParameter::ListString(values) => Ok(values.clone()),
+            AdoraParameter::ListString(values) => Ok(values.clone()),
             other => Err(eyre!(
                 "metadata key '{key}' has type '{}', expected 'list<string>'",
                 Metadata::parameter_type_name(other)
@@ -437,7 +437,7 @@ impl Metadata {
     pub fn get_timestamp(&self, key: &str) -> EyreResult<i64> {
         let parameter = self.expect_parameter(key)?;
         match parameter {
-            DoraParameter::Timestamp(dt) => {
+            AdoraParameter::Timestamp(dt) => {
                 // Convert chrono::DateTime<Utc> to nanoseconds since Unix epoch
                 dt.timestamp_nanos_opt()
                     .ok_or_else(|| eyre!("Timestamp out of range for conversion to nanoseconds"))
@@ -460,7 +460,7 @@ impl Metadata {
         #[derive(Serialize)]
         struct MetadataJson<'a> {
             timestamp: u64,
-            parameters: &'a BTreeMap<String, DoraParameter>,
+            parameters: &'a BTreeMap<String, AdoraParameter>,
         }
 
         serde_json::to_string(&MetadataJson {
@@ -475,31 +475,31 @@ impl Metadata {
     }
 
     pub fn set_bool(&mut self, key: &str, value: bool) -> EyreResult<()> {
-        self.insert_parameter(key, DoraParameter::Bool(value))
+        self.insert_parameter(key, AdoraParameter::Bool(value))
     }
 
     pub fn set_int(&mut self, key: &str, value: i64) -> EyreResult<()> {
-        self.insert_parameter(key, DoraParameter::Integer(value))
+        self.insert_parameter(key, AdoraParameter::Integer(value))
     }
 
     pub fn set_float(&mut self, key: &str, value: f64) -> EyreResult<()> {
-        self.insert_parameter(key, DoraParameter::Float(value))
+        self.insert_parameter(key, AdoraParameter::Float(value))
     }
 
     pub fn set_string(&mut self, key: &str, value: String) -> EyreResult<()> {
-        self.insert_parameter(key, DoraParameter::String(value))
+        self.insert_parameter(key, AdoraParameter::String(value))
     }
 
     pub fn set_list_int(&mut self, key: &str, value: Vec<i64>) -> EyreResult<()> {
-        self.insert_parameter(key, DoraParameter::ListInt(value))
+        self.insert_parameter(key, AdoraParameter::ListInt(value))
     }
 
     pub fn set_list_float(&mut self, key: &str, value: Vec<f64>) -> EyreResult<()> {
-        self.insert_parameter(key, DoraParameter::ListFloat(value))
+        self.insert_parameter(key, AdoraParameter::ListFloat(value))
     }
 
     pub fn set_list_string(&mut self, key: &str, value: Vec<String>) -> EyreResult<()> {
-        self.insert_parameter(key, DoraParameter::ListString(value))
+        self.insert_parameter(key, AdoraParameter::ListString(value))
     }
 
     pub fn set_timestamp(&mut self, key: &str, value: i64) -> EyreResult<()> {
@@ -510,36 +510,36 @@ impl Metadata {
         let dt = DateTime::from_timestamp(secs, subsec_nanos)
             .ok_or_else(|| eyre!("Invalid timestamp: out of range (nanos: {value})"))?;
 
-        self.insert_parameter(key, DoraParameter::Timestamp(dt))
+        self.insert_parameter(key, AdoraParameter::Timestamp(dt))
     }
 
     pub fn value_type(&self, key: &str) -> EyreResult<MetadataValueType> {
         let parameter = self.expect_parameter(key)?;
         let value_type = match parameter {
-            DoraParameter::Bool(_) => MetadataValueType::Bool,
-            DoraParameter::Integer(_) => MetadataValueType::Integer,
-            DoraParameter::Float(_) => MetadataValueType::Float,
-            DoraParameter::String(_) => MetadataValueType::String,
-            DoraParameter::ListInt(_) => MetadataValueType::ListInt,
-            DoraParameter::ListFloat(_) => MetadataValueType::ListFloat,
-            DoraParameter::ListString(_) => MetadataValueType::ListString,
-            DoraParameter::Timestamp(_) => MetadataValueType::Timestamp,
+            AdoraParameter::Bool(_) => MetadataValueType::Bool,
+            AdoraParameter::Integer(_) => MetadataValueType::Integer,
+            AdoraParameter::Float(_) => MetadataValueType::Float,
+            AdoraParameter::String(_) => MetadataValueType::String,
+            AdoraParameter::ListInt(_) => MetadataValueType::ListInt,
+            AdoraParameter::ListFloat(_) => MetadataValueType::ListFloat,
+            AdoraParameter::ListString(_) => MetadataValueType::ListString,
+            AdoraParameter::Timestamp(_) => MetadataValueType::Timestamp,
         };
         Ok(value_type)
     }
 
-    fn into_parameters(self) -> DoraMetadataParameters {
+    fn into_parameters(self) -> AdoraMetadataParameters {
         self.parameters
     }
 
-    fn insert_parameter(&mut self, key: &str, parameter: DoraParameter) -> EyreResult<()> {
+    fn insert_parameter(&mut self, key: &str, parameter: AdoraParameter) -> EyreResult<()> {
         self.parameters.insert(key.to_string(), parameter);
         Ok(())
     }
 }
 
 unsafe fn event_as_arrow_input_with_info(
-    event: Box<DoraEvent>,
+    event: Box<AdoraEvent>,
     out_array: *mut u8,
     out_schema: *mut u8,
 ) -> ffi::ArrowInputInfo {
@@ -563,7 +563,7 @@ unsafe fn event_as_arrow_input_with_info(
         };
     }
 
-    let prepared_metadata = match Metadata::from_dora(metadata) {
+    let prepared_metadata = match Metadata::from_adora(metadata) {
         Ok(metadata) => metadata,
         Err(err) => {
             return ffi::ArrowInputInfo {
@@ -596,9 +596,9 @@ unsafe fn event_as_arrow_input_with_info(
     }
 }
 
-pub struct OutputSender(dora_node_api::DoraNode);
+pub struct OutputSender(adora_node_api::AdoraNode);
 
-fn send_output(sender: &mut Box<OutputSender>, id: String, data: &[u8]) -> ffi::DoraResult {
+fn send_output(sender: &mut Box<OutputSender>, id: String, data: &[u8]) -> ffi::AdoraResult {
     send_output_internal(sender, id, data, Default::default())
 }
 
@@ -607,7 +607,7 @@ fn send_output_with_metadata(
     id: String,
     data: &[u8],
     metadata: Box<Metadata>,
-) -> ffi::DoraResult {
+) -> ffi::AdoraResult {
     let metadata = *metadata;
     let parameters = metadata.into_parameters();
     send_output_internal(sender, id, data, parameters)
@@ -617,8 +617,8 @@ fn send_output_internal(
     sender: &mut Box<OutputSender>,
     id: String,
     data: &[u8],
-    metadata: DoraMetadataParameters,
-) -> ffi::DoraResult {
+    metadata: AdoraMetadataParameters,
+) -> ffi::AdoraResult {
     let result = sender
         .0
         .send_output_raw(id.into(), metadata, data.len(), |out| {
@@ -628,7 +628,7 @@ fn send_output_internal(
         Ok(()) => String::new(),
         Err(err) => format!("{err:?}"),
     };
-    ffi::DoraResult { error }
+    ffi::AdoraResult { error }
 }
 
 pub struct MergedEvents {
@@ -644,7 +644,7 @@ unsafe fn send_arrow_output(
     id: String,
     array_ptr: *mut u8,
     schema_ptr: *mut u8,
-) -> ffi::DoraResult {
+) -> ffi::AdoraResult {
     unsafe { send_arrow_output_impl(sender, id, array_ptr, schema_ptr, None) }
 }
 
@@ -654,7 +654,7 @@ unsafe fn send_arrow_output_with_metadata(
     array_ptr: *mut u8,
     schema_ptr: *mut u8,
     metadata: Box<Metadata>,
-) -> ffi::DoraResult {
+) -> ffi::AdoraResult {
     unsafe { send_arrow_output_impl(sender, id, array_ptr, schema_ptr, Some(metadata)) }
 }
 
@@ -664,12 +664,12 @@ unsafe fn send_arrow_output_impl(
     array_ptr: *mut u8,
     schema_ptr: *mut u8,
     metadata: Option<Box<Metadata>>,
-) -> ffi::DoraResult {
+) -> ffi::AdoraResult {
     let array_ptr = array_ptr as *mut arrow::ffi::FFI_ArrowArray;
     let schema_ptr = schema_ptr as *mut arrow::ffi::FFI_ArrowSchema;
 
     if array_ptr.is_null() || schema_ptr.is_null() {
-        return ffi::DoraResult {
+        return ffi::AdoraResult {
             error: "Received null Arrow array or schema pointer".to_string(),
         };
     }
@@ -685,30 +685,30 @@ unsafe fn send_arrow_output_impl(
     match unsafe { arrow::ffi::from_ffi(array, &schema) } {
         Ok(array_data) => {
             let arrow_array = arrow::array::make_array(array_data);
-            let parameters: DoraMetadataParameters = metadata
+            let parameters: AdoraMetadataParameters = metadata
                 .as_ref()
                 .map(|metadata| metadata.parameters.clone())
                 .unwrap_or_default();
             let result = sender.0.send_output(id.into(), parameters, arrow_array);
             match result {
-                Ok(()) => ffi::DoraResult {
+                Ok(()) => ffi::AdoraResult {
                     error: String::new(),
                 },
-                Err(err) => ffi::DoraResult {
+                Err(err) => ffi::AdoraResult {
                     error: format!("{err:?}"),
                 },
             }
         }
-        Err(e) => ffi::DoraResult {
+        Err(e) => ffi::AdoraResult {
             error: format!("Error importing array from C++: {e:?}"),
         },
     }
 }
 
 impl MergedEvents {
-    fn next(&mut self) -> MergedDoraEvent {
+    fn next(&mut self) -> MergedAdoraEvent {
         let event = futures_lite::future::block_on(self.events.as_mut().unwrap().next());
-        MergedDoraEvent(event)
+        MergedAdoraEvent(event)
     }
 
     pub fn merge(&mut self, events: impl Stream<Item = Box<dyn Any>> + Unpin + 'static) -> u32 {
@@ -719,7 +719,7 @@ impl MergedEvents {
         let inner = self.events.take().unwrap();
         let merged: Box<dyn Stream<Item = _> + Unpin + 'static> =
             Box::new(inner.merge_external(events).map(|event| match event {
-                MergedEvent::Dora(event) => MergedEvent::Dora(event),
+                MergedEvent::Adora(event) => MergedEvent::Adora(event),
                 MergedEvent::External(event) => MergedEvent::External(event.flatten()),
             }));
         self.events = Some(merged);
@@ -736,7 +736,7 @@ impl ffi::CombinedEvents {
     }
 }
 
-pub struct MergedDoraEvent(Option<MergedEvent<ExternalEvent>>);
+pub struct MergedAdoraEvent(Option<MergedEvent<ExternalEvent>>);
 
 pub struct ExternalEvent {
     pub event: Box<dyn Any>,
@@ -744,14 +744,14 @@ pub struct ExternalEvent {
 }
 
 impl ffi::CombinedEvent {
-    fn is_dora(&self) -> bool {
-        matches!(&self.event.0, Some(MergedEvent::Dora(_)))
+    fn is_adora(&self) -> bool {
+        matches!(&self.event.0, Some(MergedEvent::Adora(_)))
     }
 }
 
-fn downcast_dora(event: ffi::CombinedEvent) -> eyre::Result<Box<DoraEvent>> {
+fn downcast_adora(event: ffi::CombinedEvent) -> eyre::Result<Box<AdoraEvent>> {
     match event.event.0 {
-        Some(MergedEvent::Dora(event)) => Ok(Box::new(DoraEvent(Some(event)))),
+        Some(MergedEvent::Adora(event)) => Ok(Box::new(AdoraEvent(Some(event)))),
         _ => eyre::bail!("not an external event"),
     }
 }

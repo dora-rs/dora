@@ -1,7 +1,7 @@
 use clap::Parser;
-use dora_cli::Args;
+use adora_cli::Args;
 
 fn main() {
     let args = Args::parse();
-    dora_cli::lib_main(args);
+    adora_cli::lib_main(args);
 }

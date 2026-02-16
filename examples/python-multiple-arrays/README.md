@@ -1,6 +1,6 @@
-# Fast Multi-Array Messaging with Dora
+# Fast Multi-Array Messaging with Adora
 
-Hi there! This example shows you how to send multiple numpy arrays (like several sensor readings or images) in a single Dora message with lightning-fast performance.
+Hi there! This example shows you how to send multiple numpy arrays (like several sensor readings or images) in a single Adora message with lightning-fast performance.
 
 ## Why this matters
 You might have noticed that using `numpy_array.tolist()` to package data is... well, pretty slow. That's because it converts every single pixel or number into a Python object, which is heavy work for the CPU.
@@ -12,15 +12,15 @@ On the receiving end, we simply convert back to numpy and reshape. Easy peasy!
 
 ## Give it a spin
 
-1.  **Get Set Up**: Make sure you have `dora` installed and the binary in your PATH.
+1.  **Get Set Up**: Make sure you have `adora` installed and the binary in your PATH.
 2.  **Install the goods**:
     ```bash
     pip install numpy pyarrow
     ```
 3.  **Run it**:
     ```bash
-    dora up
-    dora start dataflow.yml
+    adora up
+    adora start dataflow.yml
     ```
 
 You should see something awesome like this in your terminal:

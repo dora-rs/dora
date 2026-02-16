@@ -1,5 +1,5 @@
 [package]
-name = "dora-cli"
+name = "adora-cli"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,12 +12,12 @@ repository.workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [[bin]]
-name = "dora"
+name = "adora"
 path = "src/main.rs"
 
 [features]
 default = ["tracing"]
-tracing = ["dep:dora-tracing"]
+tracing = ["dep:adora-tracing"]
 python = ["pyo3"]
 
 [dependencies]
@@ -26,11 +26,11 @@ arrow-schema = { workspace = true }
 clap = { version = "4.0.3", features = ["derive", "string"] }
 clap_complete = "4.5.61"
 eyre = "0.6.8"
-dora-core = { workspace = true, features = ["zenoh"] }
-dora-message = { workspace = true }
-dora-node-api-c = { workspace = true }
-dora-operator-api-c = { workspace = true }
-dora-download = { workspace = true }
+adora-core = { workspace = true, features = ["zenoh"] }
+adora-message = { workspace = true }
+adora-node-api-c = { workspace = true }
+adora-operator-api-c = { workspace = true }
+adora-download = { workspace = true }
 serde = { version = "1.0.136", features = ["derive"] }
 serde_yaml = { workspace = true }
 webbrowser = "0.8.3"
@@ -43,10 +43,10 @@ notify = "5.1.0"
 ctrlc = "3.2.5"
 tracing = "0.1.36"
 tracing-log = "0.2.0"
-dora-tracing = { workspace = true, optional = true }
-dora-daemon = { workspace = true }
-dora-coordinator = { workspace = true }
-dora-runtime = { workspace = true }
+adora-tracing = { workspace = true, optional = true }
+adora-daemon = { workspace = true }
+adora-coordinator = { workspace = true }
+adora-runtime = { workspace = true }
 tokio = { version = "1.20.1", features = ["full"] }
 tokio-stream = { version = "0.1.8", features = ["io-util", "net"] }
 futures = "0.3.21"
@@ -81,10 +81,10 @@ chrono = "0.4.42"
 pyo3-build-config = "0.23"
 
 [lib]
-name = "dora_cli"
+name = "adora_cli"
 path = "src/lib.rs"
 crate-type = ["lib", "cdylib"]
 
 [package.metadata.dist]
-# Enable dora-cli binary to be distributed
+# Enable adora-cli binary to be distributed
 dist = true

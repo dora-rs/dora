@@ -1,8 +1,8 @@
-use dora_node_api::{dora_core::config::DataId, DoraNode, Event, IntoArrow};
+use adora_node_api::{adora_core::config::DataId, AdoraNode, Event, IntoArrow};
 use std::error::Error;
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let (mut node, mut events) = DoraNode::init_from_env()?;
+    let (mut node, mut events) = AdoraNode::init_from_env()?;
 
     while let Some(event) = events.recv() {
         match event {

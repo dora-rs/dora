@@ -71,33 +71,33 @@ jobs:
               fi
           }
 
-          # the dora-message package is versioned separately, so this publish command might fail if the version is already published
-          publish_if_not_exists dora-message
+          # the adora-message package is versioned separately, so this publish command might fail if the version is already published
+          publish_if_not_exists adora-message
 
           # Publish libraries crates
-          publish_if_not_exists dora-tracing
-          publish_if_not_exists dora-metrics
-          publish_if_not_exists dora-download
-          publish_if_not_exists dora-core
+          publish_if_not_exists adora-tracing
+          publish_if_not_exists adora-metrics
+          publish_if_not_exists adora-download
+          publish_if_not_exists adora-core
           publish_if_not_exists communication-layer-request-reply
           publish_if_not_exists shared-memory-server
-          publish_if_not_exists dora-arrow-convert
+          publish_if_not_exists adora-arrow-convert
 
           # Publish rust API
-          publish_if_not_exists dora-operator-api-macros
-          publish_if_not_exists dora-operator-api-types
-          publish_if_not_exists dora-operator-api
-          publish_if_not_exists dora-node-api
-          publish_if_not_exists dora-operator-api-python
-          publish_if_not_exists dora-operator-api-c
-          publish_if_not_exists dora-node-api-c
+          publish_if_not_exists adora-operator-api-macros
+          publish_if_not_exists adora-operator-api-types
+          publish_if_not_exists adora-operator-api
+          publish_if_not_exists adora-node-api
+          publish_if_not_exists adora-operator-api-python
+          publish_if_not_exists adora-operator-api-c
+          publish_if_not_exists adora-node-api-c
 
           # Publish binaries crates
-          publish_if_not_exists dora-coordinator
-          publish_if_not_exists dora-runtime
-          publish_if_not_exists dora-daemon
-          publish_if_not_exists dora-cli
+          publish_if_not_exists adora-coordinator
+          publish_if_not_exists adora-runtime
+          publish_if_not_exists adora-daemon
+          publish_if_not_exists adora-cli
 
           # Publish ROS2 bridge
-          publish_if_not_exists dora-ros2-bridge-msg-gen
-          publish_if_not_exists dora-ros2-bridge
+          publish_if_not_exists adora-ros2-bridge-msg-gen
+          publish_if_not_exists adora-ros2-bridge

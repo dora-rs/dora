@@ -2,8 +2,8 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 
 use chrono::Local;
 use colored::{Color, Colorize};
-use dora_core::build::LogLevelOrStdout;
-use dora_message::common::LogMessage;
+use adora_core::build::LogLevelOrStdout;
+use adora_message::common::LogMessage;
 pub fn print_log_message(
     log_message: LogMessage,
     print_dataflow_id: bool,

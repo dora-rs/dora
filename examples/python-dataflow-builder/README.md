@@ -1,6 +1,6 @@
 # Python Dataflow Builder - Simple Example
 
-This example demonstrates how to use Dora's Python API to build a simple computer vision dataflow that performs real-time object detection using YOLO.
+This example demonstrates how to use Adora's Python API to build a simple computer vision dataflow that performs real-time object detection using YOLO.
 
 ## Overview
 
@@ -23,7 +23,7 @@ The dataflow:
 The script automatically installs the following packages:
 
 - `opencv-video-capture` - For camera input
-- `dora-yolo` - For YOLO object detection
+- `adora-yolo` - For YOLO object detection
 - `opencv-plot` - For visualization
 
 ## Key API Methods
@@ -32,14 +32,14 @@ The script automatically installs the following packages:
 
 Defines an input port for a node. The input can come from:
 
-- **Timer source**: `"dora/timer/millis/20"` creates a timer that ticks every 20ms
+- **Timer source**: `"adora/timer/millis/20"` creates a timer that ticks every 20ms
 - **Another node's output**: Use the output object returned by `add_output()`
 
 Examples from the code:
 
 ```python
 # Timer input - triggers camera capture every 20ms
-camera.add_input("tick", "dora/timer/millis/20")
+camera.add_input("tick", "adora/timer/millis/20")
 
 # Node-to-node connection - object detection receives images from camera
 object_detection.add_input("image", camera_image)
@@ -81,4 +81,4 @@ NO_BUILD=1 python simple_example.py
 
 ## Generated Files
 
-- `dataflow.yml` - The generated dataflow configuration file that can be run with `dora run`
+- `dataflow.yml` - The generated dataflow configuration file that can be run with `adora run`

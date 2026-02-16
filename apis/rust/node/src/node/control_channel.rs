@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
 use crate::{DaemonCommunicationWrapper, daemon_connection::DaemonChannel};
-use dora_core::{
+use adora_core::{
     config::{DataId, NodeId},
     uhlc::HLC,
 };
-use dora_message::{
+use adora_message::{
     DataflowId,
     daemon_to_node::{DaemonCommunication, DaemonReply},
     metadata::Metadata,
@@ -75,11 +75,11 @@ impl ControlChannel {
                 inner: DaemonRequest::OutputsDone,
                 timestamp: self.clock.new_timestamp(),
             })
-            .wrap_err("failed to report outputs done to dora-daemon")?;
+            .wrap_err("failed to report outputs done to adora-daemon")?;
         match reply {
             DaemonReply::Result(result) => result
                 .map_err(|e| eyre!(e))
-                .wrap_err("failed to report outputs done event to dora-daemon")?,
+                .wrap_err("failed to report outputs done event to adora-daemon")?,
             other => bail!("unexpected outputs done reply: {other:?}"),
         }
         Ok(())
@@ -92,11 +92,11 @@ impl ControlChannel {
                 inner: DaemonRequest::CloseOutputs(outputs),
                 timestamp: self.clock.new_timestamp(),
             })
-            .wrap_err("failed to report closed outputs to dora-daemon")?;
+            .wrap_err("failed to report closed outputs to adora-daemon")?;
         match reply {
             DaemonReply::Result(result) => result
                 .map_err(|e| eyre!(e))
-                .wrap_err("failed to receive closed outputs reply from dora-daemon")?,
+                .wrap_err("failed to receive closed outputs reply from adora-daemon")?,
             other => bail!("unexpected closed outputs reply: {other:?}"),
         }
         Ok(())
@@ -119,7 +119,7 @@ impl ControlChannel {
                 inner: request,
                 timestamp: self.clock.new_timestamp(),
             })
-            .wrap_err("failed to send SendMessage request to dora-daemon")?;
+            .wrap_err("failed to send SendMessage request to adora-daemon")?;
         match reply {
             DaemonReply::Empty => Ok(()),
             other => bail!("unexpected SendMessage reply: {other:?}"),

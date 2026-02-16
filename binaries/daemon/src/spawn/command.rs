@@ -1,11 +1,11 @@
 use crate::log::NodeLogger;
 use clonable_command::Command;
-use dora_core::{
+use adora_core::{
     descriptor::{DYNAMIC_SOURCE, SHELL_SOURCE, resolve_path, source_is_url},
     get_python_path,
 };
-use dora_download::download_file;
-use dora_message::common::LogLevel;
+use adora_download::download_file;
+use adora_message::common::LogLevel;
 use eyre::WrapErr;
 use std::path::Path;
 
@@ -13,7 +13,7 @@ pub(super) async fn path_spawn_command(
     working_dir: &Path,
     uv: bool,
     logger: &mut NodeLogger<'_>,
-    node: &dora_core::descriptor::CustomNode,
+    node: &adora_core::descriptor::CustomNode,
     permit_url: bool,
 ) -> eyre::Result<Option<Command>> {
     let cmd = match node.path.as_str() {

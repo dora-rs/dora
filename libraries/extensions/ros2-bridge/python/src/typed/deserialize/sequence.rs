@@ -6,7 +6,7 @@ use arrow::{
     datatypes::{self, ArrowPrimitiveType, Field},
 };
 use core::fmt;
-use dora_ros2_bridge_msg_gen::types::primitives::{self, BasicType, NestableType};
+use adora_ros2_bridge_msg_gen::types::primitives::{self, BasicType, NestableType};
 use serde::Deserialize;
 use std::{borrow::Cow, ops::Deref, sync::Arc};
 

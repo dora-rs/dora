@@ -17,7 +17,7 @@ targets = [
     "x86_64-pc-windows-msvc",
 ]
 # Path that installers should place binaries in
-install-path = "~/.dora/bin"
+install-path = "~/.adora/bin"
 # Whether to install an updater program
 install-updater = false
 # Build only the required packages, and individually
@@ -39,4 +39,4 @@ aarch64-unknown-linux-gnu = "ubuntu-22.04"
 global = "ubuntu-22.04"
 
 [dist.bin-aliases]
-dora-cli = ["dora"]
+adora-cli = ["adora"]

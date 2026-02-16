@@ -2,14 +2,14 @@ nodes:
   - id: cxx-node-rust-api
     path: bin/node_rust_api
     inputs:
-      tick: dora/timer/millis/300
+      tick: adora/timer/millis/300
     outputs:
       - counter
 
   - id: cxx-node-c-api
     path: bin/node_c_api
     inputs:
-      tick: dora/timer/millis/300
+      tick: adora/timer/millis/300
     outputs:
       - counter
 

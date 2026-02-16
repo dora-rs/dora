@@ -1,17 +1,17 @@
 """ 
-# dora-rs.
+# adora-rs.
 
-This is the dora python client for interacting with dora dataflow.
+This is the adora python client for interacting with adora dataflow.
 You can install it via:
 ```bash
-pip install dora-rs
+pip install adora-rs
 ```.
 """
 
 from enum import Enum
 
-from .dora import *
-from .dora import (
+from .adora import *
+from .adora import (
     Node,
     Ros2Context,
     Ros2Durability,
@@ -28,11 +28,11 @@ from .dora import (
 )
 
 
-class DoraStatus(Enum):
-    """Dora status to indicate if operator `on_input` loop should be stopped.
+class AdoraStatus(Enum):
+    """Adora status to indicate if operator `on_input` loop should be stopped.
 
     Args:
-        Enum (u8): Status signaling to dora operator to
+        Enum (u8): Status signaling to adora operator to
         stop or continue the operator.
 
     """

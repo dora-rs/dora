@@ -5,11 +5,11 @@ use std::{
 
 use arrow_schema::DataType;
 use clap::Args;
-use dora_core::{
+use adora_core::{
     config::InputMapping,
     topics::{open_zenoh_session, zenoh_output_publish_topic},
 };
-use dora_message::{
+use adora_message::{
     common::Timestamped, daemon_to_daemon::InterDaemonEvent, metadata::ArrowTypeInfo,
 };
 use eyre::{Context, eyre};
@@ -28,7 +28,7 @@ use crate::{
 /// Examples:
 ///
 /// Get info for a single topic:
-///   dora topic info -d my-dataflow camera_node/image
+///   adora topic info -d my-dataflow camera_node/image
 ///
 /// Note: The dataflow descriptor must include the following snippet so that
 /// runtime messages can be inspected (or messages must cross machine

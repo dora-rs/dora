@@ -1,6 +1,6 @@
 # Python Dataflow Example
 
-This examples shows how to create and connect dora nodes in Python.
+This examples shows how to create and connect adora nodes in Python.
 
 ## Overview
 
@@ -15,12 +15,12 @@ information on how to start such a dataflow.
 
 ## Getting started
 
-After installing Rust, `dora-cli` and `uv` (if you installed the cli without pip), you will need to install the dependencies:
+After installing Rust, `adora-cli` and `uv` (if you installed the cli without pip), you will need to install the dependencies:
 
 ```bash
 cd examples/python-dataflow
 uv pip install -e ../../apis/python/node --reinstall
-dora build ./dataflow.yml --uv (or dora build ./dataflow_dynamic.yml --uv)
+adora build ./dataflow.yml --uv (or adora build ./dataflow_dynamic.yml --uv)
 ```
 
 It will install the required dependencies for the Python nodes.
@@ -28,7 +28,7 @@ It will install the required dependencies for the Python nodes.
 Then you can run the dataflow:
 
 ```bash
-dora run ./dataflow.yml --uv (or dora start ./dataflow_dynamic.yml --uv)
+adora run ./dataflow.yml --uv (or adora start ./dataflow_dynamic.yml --uv)
 ```
 
 **Note**: if you're running the dynamic dataflow, you will need to start manually the opencv-plot node:

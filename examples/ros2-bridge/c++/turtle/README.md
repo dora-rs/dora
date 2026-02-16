@@ -1,6 +1,6 @@
 # `cxx-ros2-dataflow` Example
 
-This c++ example shows how to publish/subscribe to both ROS2 and Dora. The dataflow consists of a single node that sends random movement commands to the [ROS2 `turtlesim_node`](https://docs.ros.org/en/iron/Tutorials/Beginner-CLI-Tools/Introducing-Turtlesim/Introducing-Turtlesim.html).
+This c++ example shows how to publish/subscribe to both ROS2 and Adora. The dataflow consists of a single node that sends random movement commands to the [ROS2 `turtlesim_node`](https://docs.ros.org/en/iron/Tutorials/Beginner-CLI-Tools/Introducing-Turtlesim/Introducing-Turtlesim.html).
 
 ## Setup
 
@@ -21,7 +21,7 @@ This examples requires a sourced ROS2 installation.
 ```bash
 source /opt/ros/<ros-distro>/setup.bash
 export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
-cargo run --package dora-ros2-bridge --example cxx-ros2-dataflow
+cargo run --package adora-ros2-bridge --example cxx-ros2-dataflow
 ```
 
 ## Alternative (manual)
@@ -46,11 +46,11 @@ export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 ros2 run examples_rclcpp_minimal_service service_main
 ```
 
-3. From terminal 3 in the folder of dora repository. Note the source command here is necessary as this allows ROS2 message types to be found and compile dynamically.
+3. From terminal 3 in the folder of adora repository. Note the source command here is necessary as this allows ROS2 message types to be found and compile dynamically.
 ```bash
 export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 source /opt/ros/<ros-distro>/setup.bash
-dora run dataflow.yml
+adora run dataflow.yml
 ```
 
 You can also put export RMW_IMPLEMENTATION=rmw_fastrtps_cpp into .bashrc

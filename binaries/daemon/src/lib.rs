@@ -1,7 +1,7 @@
 use aligned_vec::{AVec, ConstAlign};
 use coordinator::CoordinatorEvent;
 use crossbeam::queue::ArrayQueue;
-use dora_core::{
+use adora_core::{
     build::{self, BuildInfo, GitManager, PrevGitSource},
     config::{DataId, Input, InputMapping, NodeId, NodeRunConfig, OperatorId},
     descriptor::{
@@ -9,12 +9,12 @@ use dora_core::{
         read_as_descriptor,
     },
     topics::{
-        DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, LOCALHOST, open_zenoh_session,
+        ADORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, LOCALHOST, open_zenoh_session,
         zenoh_output_publish_topic,
     },
     uhlc::{self, HLC},
 };
-use dora_message::{
+use adora_message::{
     BuildId, DataflowId, SessionId,
     common::{
         DaemonId, DataMessage, DropToken, GitSource, LogLevel, NodeError, NodeErrorCause,
@@ -31,7 +31,7 @@ use dora_message::{
     metadata::{self, ArrowTypeInfo},
     node_to_daemon::{DynamicNodeEvent, Timestamped},
 };
-use dora_node_api::{Parameter, arrow::datatypes::DataType};
+use adora_node_api::{Parameter, arrow::datatypes::DataType};
 use eyre::{Context, ContextCompat, Result, bail, eyre};
 use futures::{FutureExt, TryFutureExt, future, stream};
 use futures_concurrency::stream::Merge;
@@ -83,7 +83,7 @@ mod socket_stream_utils;
 mod spawn;
 
 #[cfg(feature = "telemetry")]
-use dora_tracing::telemetry::serialize_context;
+use adora_tracing::telemetry::serialize_context;
 #[cfg(feature = "telemetry")]
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
@@ -164,7 +164,7 @@ impl Daemon {
             // additional connection for logging
             let stream = TcpStream::connect(coordinator_addr)
                 .await
-                .wrap_err("failed to connect log to dora-coordinator")?;
+                .wrap_err("failed to connect log to adora-coordinator")?;
             stream
                 .set_nodelay(true)
                 .wrap_err("failed to set TCP_NODELAY")?;
@@ -207,9 +207,9 @@ impl Daemon {
         let descriptor = read_as_descriptor(dataflow_path).await?;
         if let Some(node) = descriptor.nodes.iter().find(|n| n.deploy.is_some()) {
             eyre::bail!(
-                "node {} has a `deploy` section, which is not supported in `dora run`\n\n
-                Instead, you need to spawn a `dora coordinator` and one or more `dora daemon`
-                instances and then use `dora start`.",
+                "node {} has a `deploy` section, which is not supported in `adora run`\n\n
+                Instead, you need to spawn a `adora coordinator` and one or more `adora daemon`
+                instances and then use `adora start`.",
                 node.id
             )
         }
@@ -225,7 +225,7 @@ impl Daemon {
         {
             // Spawn local listener for dynamic nodes
             let _listen_port = local_listener::spawn_listener_loop(
-                (LOCALHOST, DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT).into(),
+                (LOCALHOST, ADORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT).into(),
                 events_tx,
             )
             .await?;
@@ -364,7 +364,7 @@ impl Daemon {
             Some(addr) => {
                 let stream = TcpStream::connect(addr)
                     .await
-                    .wrap_err("failed to connect to dora-coordinator")?;
+                    .wrap_err("failed to connect to adora-coordinator")?;
                 stream
                     .set_nodelay(true)
                     .wrap_err("failed to set TCP_NODELAY")?;
@@ -377,7 +377,7 @@ impl Daemon {
             .await
             .wrap_err("failed to open zenoh session")?;
         // Use a large channel capacity to prevent deadlock
-        let (dora_events_tx, dora_events_rx) = mpsc::channel(1000);
+        let (adora_events_tx, adora_events_rx) = mpsc::channel(1000);
         let daemon = Self {
             logger: Logger {
                 destination: log_destination,
@@ -387,7 +387,7 @@ impl Daemon {
             .for_daemon(daemon_id.clone()),
             running: HashMap::new(),
             working_dir: HashMap::new(),
-            events_tx: dora_events_tx,
+            events_tx: adora_events_tx,
             coordinator_connection,
             last_coordinator_heartbeat: Instant::now(),
             daemon_id,
@@ -403,7 +403,7 @@ impl Daemon {
             metrics_system: sysinfo::System::new(),
         };
 
-        let dora_events = ReceiverStream::new(dora_events_rx);
+        let adora_events = ReceiverStream::new(adora_events_rx);
         let watchdog_clock = daemon.clock.clone();
         let watchdog_interval = tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(
             Duration::from_secs(5),
@@ -424,7 +424,7 @@ impl Daemon {
 
         let events = (
             external_events,
-            dora_events,
+            adora_events,
             watchdog_interval,
             metrics_interval,
         )
@@ -466,7 +466,7 @@ impl Daemon {
                     node_id,
                     event,
                 } => self.handle_node_event(event, dataflow, node_id).await?,
-                Event::Dora(event) => self.handle_dora_event(event).await?,
+                Event::Adora(event) => self.handle_adora_event(event).await?,
                 Event::DynamicNode(event) => self.handle_dynamic_node_event(event).await?,
                 Event::HeartbeatInterval => {
                     if let Some(connection) = &mut self.coordinator_connection {
@@ -479,7 +479,7 @@ impl Daemon {
                         })?;
                         socket_stream_send(connection, &msg)
                             .await
-                            .wrap_err("failed to send watchdog message to dora-coordinator")?;
+                            .wrap_err("failed to send watchdog message to adora-coordinator")?;
 
                         if self.last_coordinator_heartbeat.elapsed() > Duration::from_secs(20) {
                             bail!("lost connection to coordinator")
@@ -561,7 +561,7 @@ impl Daemon {
                             timestamp: self.clock.new_timestamp(),
                         })?;
                         socket_stream_send(connection, &msg).await.wrap_err(
-                            "failed to send BuildDataflowResult message to dora-coordinator",
+                            "failed to send BuildDataflowResult message to adora-coordinator",
                         )?;
                     }
                 }
@@ -581,7 +581,7 @@ impl Daemon {
                             timestamp: self.clock.new_timestamp(),
                         })?;
                         socket_stream_send(connection, &msg).await.wrap_err(
-                            "failed to send SpawnDataflowResult message to dora-coordinator",
+                            "failed to send SpawnDataflowResult message to adora-coordinator",
                         )?;
                     }
                 }
@@ -624,7 +624,7 @@ impl Daemon {
             })?;
             socket_stream_send(&mut connection, &msg)
                 .await
-                .wrap_err("failed to send Exit message to dora-coordinator")?;
+                .wrap_err("failed to send Exit message to adora-coordinator")?;
         }
 
         Ok(self.dataflow_node_results)
@@ -678,7 +678,7 @@ impl Daemon {
                 uv,
             }) => {
                 match dataflow_descriptor.communication.remote {
-                    dora_core::config::RemoteCommunicationConfig::Tcp => {}
+                    adora_core::config::RemoteCommunicationConfig::Tcp => {}
                 }
 
                 let base_working_dir = self.base_working_dir(local_working_dir, session_id)?;
@@ -741,7 +741,7 @@ impl Daemon {
                 write_events_to,
             }) => {
                 match dataflow_descriptor.communication.remote {
-                    dora_core::config::RemoteCommunicationConfig::Tcp => {}
+                    adora_core::config::RemoteCommunicationConfig::Tcp => {}
                 }
 
                 let base_working_dir = self.base_working_dir(local_working_dir, session_id)?;
@@ -965,7 +965,7 @@ impl Daemon {
     }
 
     async fn collect_and_send_metrics(&mut self) -> eyre::Result<()> {
-        use dora_message::daemon_to_coordinator::NodeMetrics;
+        use adora_message::daemon_to_coordinator::NodeMetrics;
         use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate};
 
         if self.coordinator_connection.is_none() {
@@ -1272,8 +1272,8 @@ impl Daemon {
         if let Some(git_node) = node_with_git_source {
             if build_info.is_none() {
                 eyre::bail!(
-                    "node {} has git source, but no `dora build` was run yet\n\n\
-                    nodes with a `git` field must be built using `dora build` before starting the \
+                    "node {} has git source, but no `adora build` was run yet\n\n\
+                    nodes with a `git` field must be built using `adora build` before starting the \
                     dataflow",
                     git_node.id
                 )
@@ -1352,7 +1352,7 @@ impl Daemon {
                 if configured_node_working_dir.is_none() && node.has_git_source() {
                     eyre::bail!(
                         "node {} has git source, but no git clone directory was found for it\n\n\
-                        try running `dora build` again",
+                        try running `adora build` again",
                         node.id
                     )
                 }
@@ -1555,7 +1555,7 @@ impl Daemon {
                 .log(
                     LogLevel::Info,
                     None,
-                    Some("dora daemon".into()),
+                    Some("adora daemon".into()),
                     "finished building nodes, spawning...",
                 )
                 .await;
@@ -1856,7 +1856,7 @@ impl Daemon {
         dataflow_id: Uuid,
         node_id: NodeId,
         output_id: DataId,
-        metadata: dora_message::metadata::Metadata,
+        metadata: adora_message::metadata::Metadata,
         data: Option<DataMessage>,
     ) -> Result<(), eyre::ErrReport> {
         let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
@@ -2199,16 +2199,16 @@ impl Daemon {
             })?;
             socket_stream_send(connection, &msg)
                 .await
-                .wrap_err("failed to report dataflow finish to dora-coordinator")?;
+                .wrap_err("failed to report dataflow finish to adora-coordinator")?;
         }
         self.running.remove(&dataflow_id);
 
         Ok(())
     }
 
-    async fn handle_dora_event(&mut self, event: DoraEvent) -> eyre::Result<()> {
+    async fn handle_adora_event(&mut self, event: AdoraEvent) -> eyre::Result<()> {
         match event {
-            DoraEvent::Timer {
+            AdoraEvent::Timer {
                 dataflow_id,
                 interval,
                 metadata,
@@ -2248,7 +2248,7 @@ impl Daemon {
                     dataflow.subscribe_channels.remove(id);
                 }
             }
-            DoraEvent::Logs {
+            AdoraEvent::Logs {
                 dataflow_id,
                 output_id,
                 message,
@@ -2295,7 +2295,7 @@ impl Daemon {
                     dataflow.subscribe_channels.remove(id);
                 }
             }
-            DoraEvent::SpawnedNodeResult {
+            AdoraEvent::SpawnedNodeResult {
                 dataflow_id,
                 node_id,
                 dynamic_node,
@@ -2506,7 +2506,7 @@ async fn set_up_event_stream(
     let (daemon_id, coordinator_events) =
         coordinator::register(coordinator_addr, machine_id.clone(), clock)
             .await
-            .wrap_err("failed to connect to dora-coordinator")?;
+            .wrap_err("failed to connect to adora-coordinator")?;
     let coordinator_events = coordinator_events.map(
         |Timestamped {
              inner: event,
@@ -2870,7 +2870,7 @@ impl RunningDataflow {
                     );
 
                     let event = Timestamped {
-                        inner: DoraEvent::Timer {
+                        inner: AdoraEvent::Timer {
                             dataflow_id,
                             interval,
                             metadata,
@@ -3055,7 +3055,7 @@ pub enum Event {
     },
     Coordinator(CoordinatorEvent),
     Daemon(InterDaemonEvent),
-    Dora(DoraEvent),
+    Adora(AdoraEvent),
     DynamicNode(DynamicNodeEventWrapper),
     HeartbeatInterval,
     MetricsInterval,
@@ -3084,9 +3084,9 @@ pub enum Event {
     },
 }
 
-impl From<DoraEvent> for Event {
-    fn from(event: DoraEvent) -> Self {
-        Event::Dora(event)
+impl From<AdoraEvent> for Event {
+    fn from(event: AdoraEvent) -> Self {
+        Event::Adora(event)
     }
 }
 
@@ -3096,7 +3096,7 @@ impl Event {
             Event::Node { .. } => "Node",
             Event::Coordinator(_) => "Coordinator",
             Event::Daemon(_) => "Daemon",
-            Event::Dora(_) => "Dora",
+            Event::Adora(_) => "Adora",
             Event::DynamicNode(_) => "DynamicNode",
             Event::HeartbeatInterval => "HeartbeatInterval",
             Event::MetricsInterval => "MetricsInterval",
@@ -3127,7 +3127,7 @@ pub enum DaemonNodeEvent {
         reply_sender: oneshot::Sender<DaemonReply>,
     },
     CloseOutputs {
-        outputs: Vec<dora_core::config::DataId>,
+        outputs: Vec<adora_core::config::DataId>,
         reply_sender: oneshot::Sender<DaemonReply>,
     },
     SendOut {
@@ -3144,7 +3144,7 @@ pub enum DaemonNodeEvent {
 }
 
 #[derive(Debug)]
-pub enum DoraEvent {
+pub enum AdoraEvent {
     Timer {
         dataflow_id: DataflowId,
         interval: Duration,
@@ -3205,7 +3205,7 @@ fn set_up_ctrlc_handler(
             })
             .is_err()
         {
-            tracing::error!("failed to report ctrl-c event to dora-coordinator");
+            tracing::error!("failed to report ctrl-c event to adora-coordinator");
         }
 
         ctrlc_sent += 1;

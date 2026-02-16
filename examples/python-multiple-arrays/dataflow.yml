@@ -4,7 +4,7 @@ nodes:
     outputs:
       - multi_array_msg
     inputs:
-      tick: dora/timer/millis/1000
+      tick: adora/timer/millis/1000
 
   - id: receiver
     path: receiver.py

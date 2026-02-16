@@ -33,36 +33,36 @@ fn build_version_string() -> String {
 
     let mut version_output = format!("{}\n", cli_version);
 
-    // Add dora-message version
-    // TODO: Uncomment later after publishing dora-message crate
-    // version_output.push_str(&format!("dora-message: {}\n", dora_message::VERSION));
+    // Add adora-message version
+    // TODO: Uncomment later after publishing adora-message crate
+    // version_output.push_str(&format!("adora-message: {}\n", adora_message::VERSION));
 
-    // Try to detect Python dora-rs version
-    match get_python_dora_version() {
+    // Try to detect Python adora-rs version
+    match get_python_adora_version() {
         Some(python_version) => {
-            version_output.push_str(&format!("dora-rs (Python): {}\n", python_version));
+            version_output.push_str(&format!("adora-rs (Python): {}\n", python_version));
 
             // Check for version mismatch
             if python_version != cli_version {
                 version_output.push_str(&format!(
-                    "\n⚠️  WARNING: Version mismatch detected!\n   CLI version ({}) differs from Python dora-rs version ({})\n",
+                    "\n⚠️  WARNING: Version mismatch detected!\n   CLI version ({}) differs from Python adora-rs version ({})\n",
                     cli_version,
                     python_version
                 ));
             }
         }
         None => {
-            version_output.push_str("dora-rs (Python): not found\n");
+            version_output.push_str("adora-rs (Python): not found\n");
         }
     }
 
     version_output
 }
 
-fn get_python_dora_version() -> Option<String> {
+fn get_python_adora_version() -> Option<String> {
     // Try with uv first
     if let Ok(output) = std::process::Command::new("uv")
-        .args(["pip", "show", "dora-rs"])
+        .args(["pip", "show", "adora-rs"])
         .output()
     {
         if output.status.success() {
@@ -74,7 +74,7 @@ fn get_python_dora_version() -> Option<String> {
 
     // Try with regular pip
     if let Ok(output) = std::process::Command::new("pip")
-        .args(["show", "dora-rs"])
+        .args(["show", "adora-rs"])
         .output()
     {
         if output.status.success() {
@@ -162,7 +162,7 @@ fn py_main(_py: Python) -> PyResult<()> {
 /// A Python module implemented in Rust.
 #[cfg(feature = "python")]
 #[pymodule]
-fn dora_cli(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
+fn adora_cli(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_main, &m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())

@@ -104,7 +104,7 @@ pub struct IntegrationTestInput {
     ///
     /// List of output identifiers that the node sends.
     /// Must contain all `output_id` values that the node uses when sending output, e.g. through the
-    /// [`send_output`](https://docs.rs/dora-node-api/latest/dora_node_api/struct.DoraNode.html#method.send_output)
+    /// [`send_output`](https://docs.rs/adora-node-api/latest/adora_node_api/struct.AdoraNode.html#method.send_output)
     /// function.
     ///
     /// ## Example
@@ -132,7 +132,7 @@ pub struct IntegrationTestInput {
     ///   - `input_id` is the local identifier that should be used for this input.
     ///
     ///     This will map to the `id` field of
-    ///     [`Event::Input`](https://docs.rs/dora-node-api/latest/dora_node_api/enum.Event.html#variant.Input)
+    ///     [`Event::Input`](https://docs.rs/adora-node-api/latest/adora_node_api/enum.Event.html#variant.Input)
     ///     events sent to the node event loop.
     ///   - `source_node_id` should be the `id` field of the node that sends the output that we want
     ///     to subscribe to
@@ -156,7 +156,7 @@ pub struct IntegrationTestInput {
 
     /// Redirect stdout/stderr to a data output.
     ///
-    /// This field can be used to send all stdout and stderr output of the node as a Dora output.
+    /// This field can be used to send all stdout and stderr output of the node as a Adora output.
     /// Each output line is sent as a separate message.
     ///
     ///
@@ -235,13 +235,13 @@ pub enum InputData {
     JsonObject {
         /// The input data as JSON.
         ///
-        /// This can be a JSON array, object, string, number, boolean, etc. Dora automatically
+        /// This can be a JSON array, object, string, number, boolean, etc. Adora automatically
         /// converts the JSON to an Apache Arrow array, wrapping the data if needed (e.g. wrap
         /// bare integers into an array because Arrow requires all data to be in array form).
         data: serde_json::Value,
         /// Specifies the arrow `DataType` of the `data` field.
         ///
-        /// This field is optional. If not set, Dora will try to infer the data type automatically.
+        /// This field is optional. If not set, Adora will try to infer the data type automatically.
         ///
         /// Use this field if the exact data type is important (e.g. to distinguish between
         /// different integer sizes).

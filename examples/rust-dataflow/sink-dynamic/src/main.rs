@@ -1,9 +1,9 @@
-use dora_node_api::{self, DoraNode, Event, dora_core::config::NodeId};
+use adora_node_api::{self, AdoraNode, Event, adora_core::config::NodeId};
 use eyre::{Context, bail};
 
 fn main() -> eyre::Result<()> {
     let (_node, mut events) =
-        DoraNode::init_from_node_id(NodeId::from("rust-sink-dynamic".to_string()))?;
+        AdoraNode::init_from_node_id(NodeId::from("rust-sink-dynamic".to_string()))?;
 
     while let Some(event) = events.recv() {
         match event {

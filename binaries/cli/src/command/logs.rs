@@ -10,8 +10,8 @@ use crate::{
 };
 use clap::Args;
 use communication_layer_request_reply::{TcpConnection, TcpRequestReplyConnection};
-use dora_core::topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST};
-use dora_message::{
+use adora_core::topics::{ADORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST};
+use adora_message::{
     cli_to_coordinator::ControlRequest, common::LogMessage,
     coordinator_to_cli::ControlRequestReply, id::NodeId,
 };
@@ -33,11 +33,11 @@ pub struct LogsArgs {
     /// Follow log output
     #[clap(long, short)]
     pub follow: bool,
-    /// Address of the dora coordinator
+    /// Address of the adora coordinator
     #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
     pub coordinator_addr: std::net::IpAddr,
     /// Port number of the coordinator control server
-    #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
+    #[clap(long, value_name = "PORT", default_value_t = ADORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
     pub coordinator_port: u16,
 }
 
@@ -47,7 +47,7 @@ impl Executable for LogsArgs {
 
         let mut session =
             connect_to_coordinator((self.coordinator_addr, self.coordinator_port).into())
-                .wrap_err("failed to connect to dora coordinator")?;
+                .wrap_err("failed to connect to adora coordinator")?;
         let uuid =
             resolve_dataflow_identifier_interactive(&mut *session, self.dataflow.as_deref())?;
         logs(
@@ -105,7 +105,7 @@ pub fn logs(
     // subscribe to log messages
     let mut log_session = TcpConnection {
         stream: TcpStream::connect(coordinator_addr)
-            .wrap_err("failed to connect to dora coordinator")?,
+            .wrap_err("failed to connect to adora coordinator")?,
     };
     log_session
         .send(

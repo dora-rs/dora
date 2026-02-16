@@ -1,7 +1,7 @@
 """Module to handle node input events and send speech output."""
 
 import pyarrow as pa
-from dora import Node
+from adora import Node
 
 
 def main():

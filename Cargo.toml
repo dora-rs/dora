@@ -41,37 +41,37 @@ edition = "2024"
 rust-version = "1.85.0"
 # Make sure to also bump `apis/node/python/__init__.py` version.
 version = "0.4.1"
-description = "`dora` goal is to be a low latency, composable, and distributed data flow."
-documentation = "https://dora-rs.ai"
+description = "`adora` goal is to be a low latency, composable, and distributed data flow."
+documentation = "https://adora-rs.ai"
 readme = "./README.md"
 license = "Apache-2.0"
-repository = "https://github.com/dora-rs/dora/"
+repository = "https://github.com/adora-rs/adora/"
 
 [workspace.dependencies]
-dora-node-api = { version = "0.4.1", path = "apis/rust/node", default-features = false }
-dora-node-api-python = { version = "0.4.1", path = "apis/python/node", default-features = false }
-dora-operator-api = { version = "0.4.1", path = "apis/rust/operator", default-features = false }
-dora-operator-api-macros = { version = "0.4.1", path = "apis/rust/operator/macros" }
-dora-operator-api-types = { version = "0.4.1", path = "apis/rust/operator/types" }
-dora-operator-api-python = { version = "0.4.1", path = "apis/python/operator" }
-dora-operator-api-c = { version = "0.4.1", path = "apis/c/operator" }
-dora-node-api-c = { version = "0.4.1", path = "apis/c/node" }
-dora-core = { version = "0.4.1", path = "libraries/core" }
-dora-arrow-convert = { version = "0.4.1", path = "libraries/arrow-convert" }
-dora-tracing = { version = "0.4.1", path = "libraries/extensions/telemetry/tracing" }
-dora-metrics = { version = "0.4.1", path = "libraries/extensions/telemetry/metrics" }
-dora-download = { version = "0.4.1", path = "libraries/extensions/download" }
+adora-node-api = { version = "0.4.1", path = "apis/rust/node", default-features = false }
+adora-node-api-python = { version = "0.4.1", path = "apis/python/node", default-features = false }
+adora-operator-api = { version = "0.4.1", path = "apis/rust/operator", default-features = false }
+adora-operator-api-macros = { version = "0.4.1", path = "apis/rust/operator/macros" }
+adora-operator-api-types = { version = "0.4.1", path = "apis/rust/operator/types" }
+adora-operator-api-python = { version = "0.4.1", path = "apis/python/operator" }
+adora-operator-api-c = { version = "0.4.1", path = "apis/c/operator" }
+adora-node-api-c = { version = "0.4.1", path = "apis/c/node" }
+adora-core = { version = "0.4.1", path = "libraries/core" }
+adora-arrow-convert = { version = "0.4.1", path = "libraries/arrow-convert" }
+adora-tracing = { version = "0.4.1", path = "libraries/extensions/telemetry/tracing" }
+adora-metrics = { version = "0.4.1", path = "libraries/extensions/telemetry/metrics" }
+adora-download = { version = "0.4.1", path = "libraries/extensions/download" }
 shared-memory-server = { version = "0.4.1", path = "libraries/shared-memory-server" }
 communication-layer-request-reply = { version = "0.4.1", path = "libraries/communication-layer/request-reply" }
-dora-cli = { version = "0.4.1", path = "binaries/cli" }
-dora-runtime = { version = "0.4.1", path = "binaries/runtime" }
-dora-daemon = { version = "0.4.1", path = "binaries/daemon" }
-dora-coordinator = { version = "0.4.1", path = "binaries/coordinator" }
-dora-ros2-bridge = { version = "0.4.1", path = "libraries/extensions/ros2-bridge" }
-dora-ros2-bridge-msg-gen = { version = "0.4.1", path = "libraries/extensions/ros2-bridge/msg-gen" }
-dora-ros2-bridge-python = { path = "libraries/extensions/ros2-bridge/python" }
-# versioned independently from the other dora crates
-dora-message = { version = "0.7.0", path = "libraries/message" }
+adora-cli = { version = "0.4.1", path = "binaries/cli" }
+adora-runtime = { version = "0.4.1", path = "binaries/runtime" }
+adora-daemon = { version = "0.4.1", path = "binaries/daemon" }
+adora-coordinator = { version = "0.4.1", path = "binaries/coordinator" }
+adora-ros2-bridge = { version = "0.4.1", path = "libraries/extensions/ros2-bridge" }
+adora-ros2-bridge-msg-gen = { version = "0.4.1", path = "libraries/extensions/ros2-bridge/msg-gen" }
+adora-ros2-bridge-python = { path = "libraries/extensions/ros2-bridge/python" }
+# versioned independently from the other adora crates
+adora-message = { version = "0.7.0", path = "libraries/message" }
 arrow = { version = "54.2.1" }
 arrow-schema = { version = "54.2.1" }
 arrow-data = { version = "54.2.1" }
@@ -90,7 +90,7 @@ zenoh = "1.1.1"
 serde_json = "1.0.145"
 
 [package]
-name = "dora-examples"
+name = "adora-examples"
 rust-version = "1.85.0"
 version = "0.0.0"
 edition.workspace = true
@@ -102,12 +102,12 @@ publish = false
 [dev-dependencies]
 eyre = "0.6.8"
 tokio = "1.24.2"
-dora-cli = { workspace = true }
-dora-coordinator = { workspace = true }
-dora-core = { workspace = true }
-dora-message = { workspace = true }
-dora-tracing = { workspace = true }
-dora-download = { workspace = true }
+adora-cli = { workspace = true }
+adora-coordinator = { workspace = true }
+adora-core = { workspace = true }
+adora-message = { workspace = true }
+adora-tracing = { workspace = true }
+adora-download = { workspace = true }
 dunce = "1.0.2"
 serde_yaml = "0.8.23"
 uuid = { version = "1.7", features = ["v7", "serde"] }

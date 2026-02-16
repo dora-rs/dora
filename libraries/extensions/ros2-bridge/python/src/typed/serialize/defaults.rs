@@ -8,7 +8,7 @@ use arrow::{
     compute::concat,
     datatypes::Field,
 };
-use dora_ros2_bridge_msg_gen::types::{
+use adora_ros2_bridge_msg_gen::types::{
     MemberType, Message,
     primitives::{BasicType, NestableType},
 };
@@ -16,7 +16,7 @@ use eyre::{Context, ContextCompat, Result};
 use std::{collections::HashMap, sync::Arc, vec};
 
 pub fn default_for_member(
-    m: &dora_ros2_bridge_msg_gen::types::Member,
+    m: &adora_ros2_bridge_msg_gen::types::Member,
     package_name: &str,
     messages: &HashMap<String, HashMap<String, Message>>,
 ) -> eyre::Result<ArrayData> {
@@ -212,7 +212,7 @@ fn default_for_referenced_message(
 }
 
 fn list_default_values(
-    m: &dora_ros2_bridge_msg_gen::types::Member,
+    m: &adora_ros2_bridge_msg_gen::types::Member,
     value_type: &NestableType,
     package_name: &str,
     messages: &HashMap<String, HashMap<String, Message>>,

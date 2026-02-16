@@ -1,14 +1,14 @@
-//! Provides the `dora build` command.
+//! Provides the `adora build` command.
 //!
-//! The `dora build` command works like this:
+//! The `adora build` command works like this:
 //!
 //! - Dataflows can specify a `build` command for each node in their YAML definition
-//! - Dora will run the `build` command when `dora build` is invoked
+//! - Adora will run the `build` command when `adora build` is invoked
 //! - If the dataflow is distributed across multiple machines, each `build` command will be run the target machine of the corresponding node.
 //!     - i.e. the machine specified under the `deploy` key
-//!     - this requires a connection to the dora coordinator, so you need to specify the coordinator IP/port for this
-//!     - to run the build commands of all nodes _locally_, you can use `dora build --local`
-//! - If the build command does not specify any `deploy` keys, all build commands will be run locally (i.e. `dora build` behaves like `dora build --local`)
+//!     - this requires a connection to the adora coordinator, so you need to specify the coordinator IP/port for this
+//!     - to run the build commands of all nodes _locally_, you can use `adora build --local`
+//! - If the build command does not specify any `deploy` keys, all build commands will be run locally (i.e. `adora build` behaves like `adora build --local`)
 //!
 //! #### Git Source
 //!
@@ -18,10 +18,10 @@
 //!     - you can also specify a specific `branch` name
 //!     - alternatively, you can specify a `tag` name or a `rev` key with the commit hash
 //!     - you can only specify one of `branch`, `tag`, and `rev`, otherwise an error will occur
-//! - Dora will automatically clone and checkout the requested branch/tag/commit on `dora build`
+//! - Adora will automatically clone and checkout the requested branch/tag/commit on `adora build`
 //!     - the `build` command will be run after cloning
 //!     - for distributed dataflows, the clone/checkout will happen on the target machine
-//! - subsequent `dora build` command will automatically fetch the latest changes for nodes
+//! - subsequent `adora build` command will automatically fetch the latest changes for nodes
 //!     - not when using `tag` or `rev`, because these are not expected to change
 //! - after fetching changes, the `build` command will be executed again
 //!     - _tip:_ use a build tool that supports incremental builds (e.g. `cargo`) to make this rebuild faster
@@ -36,23 +36,23 @@
 //! nodes:
 //!   - id: rust-node
 //!     # URL of your repository
-//!     git: https://github.com/dora-rs/dora.git
+//!     git: https://github.com/adora-rs/adora.git
 //!     # the build command that should be invoked after cloning
 //!     build: cargo build -p rust-dataflow-example-node
 //!     # path to the executable that should be run on start
 //!     path: target/debug/rust-dataflow-example-node
 //!     inputs:
-//!       tick: dora/timer/millis/10
+//!       tick: adora/timer/millis/10
 //!     outputs:
 //!       - random
 //! ```
 
 use communication_layer_request_reply::TcpRequestReplyConnection;
-use dora_core::{
+use adora_core::{
     descriptor::{CoreNodeKind, CustomNode, Descriptor, DescriptorExt},
-    topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST},
+    topics::{ADORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST},
 };
-use dora_message::{BuildId, descriptor::NodeSource};
+use adora_message::{BuildId, descriptor::NodeSource};
 use eyre::Context;
 use std::{collections::BTreeMap, net::IpAddr};
 
@@ -75,7 +75,7 @@ pub struct Build {
     /// Path to the dataflow descriptor file
     #[clap(value_name = "PATH")]
     dataflow: String,
-    /// Address of the dora coordinator
+    /// Address of the adora coordinator
     #[clap(long, value_name = "IP")]
     coordinator_addr: Option<IpAddr>,
     /// Port number of the coordinator control server
@@ -149,13 +149,13 @@ pub fn build(
         match session() {
             Ok(coordinator_session) => {
                 // we found a local coordinator instance at default port -> use it for building
-                log::info!("Found local dora coordinator instance -> building through coordinator");
+                log::info!("Found local adora coordinator instance -> building through coordinator");
                 BuildKind::ThroughCoordinator {
                     coordinator_session,
                 }
             }
             Err(_) => {
-                log::warn!("No dora coordinator instance found -> trying a local build");
+                log::warn!("No adora coordinator instance found -> trying a local build");
                 // no coordinator instance found -> do a local build
                 BuildKind::Local
             }
@@ -249,6 +249,6 @@ fn coordinator_socket(
     coordinator_port: Option<u16>,
 ) -> std::net::SocketAddr {
     let coordinator_addr = coordinator_addr.unwrap_or(LOCALHOST);
-    let coordinator_port = coordinator_port.unwrap_or(DORA_COORDINATOR_PORT_CONTROL_DEFAULT);
+    let coordinator_port = coordinator_port.unwrap_or(ADORA_COORDINATOR_PORT_CONTROL_DEFAULT);
     (coordinator_addr, coordinator_port).into()
 }

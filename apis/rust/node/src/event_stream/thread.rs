@@ -1,8 +1,8 @@
-use dora_core::{
+use adora_core::{
     config::NodeId,
     uhlc::{self, Timestamp},
 };
-use dora_message::{
+use adora_message::{
     daemon_to_node::{DaemonReply, NodeEvent},
     node_to_daemon::{DaemonRequest, DropToken, Timestamped},
 };

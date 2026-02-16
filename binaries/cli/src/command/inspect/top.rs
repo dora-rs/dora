@@ -9,8 +9,8 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use dora_core::topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT;
-use dora_message::{
+use adora_core::topics::ADORA_COORDINATOR_PORT_CONTROL_DEFAULT;
+use adora_message::{
     cli_to_coordinator::ControlRequest,
     coordinator_to_cli::{ControlRequestReply, NodeInfo},
     id::NodeId,
@@ -40,11 +40,11 @@ use super::super::{Executable, default_tracing};
 /// - Nodes can run on different machines with potentially different CPUs, so percentages are not comparable across machines
 #[derive(Debug, Args)]
 pub struct Top {
-    /// Address of the dora coordinator
+    /// Address of the adora coordinator
     #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
     pub coordinator_addr: std::net::IpAddr,
     /// Port number of the coordinator control server
-    #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
+    #[clap(long, value_name = "PORT", default_value_t = ADORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
     pub coordinator_port: u16,
     /// Refresh interval in seconds
     #[clap(long, value_name = "SECONDS", default_value_t = 2)]
@@ -424,7 +424,7 @@ fn ui(f: &mut Frame, app: &mut App, refresh_duration: Duration) {
     ];
 
     let title = format!(
-        " Dora Inspect Top - Refreshing every {}s (q: quit, n/c/m: sort, r: refresh nodes) ",
+        " Adora Inspect Top - Refreshing every {}s (q: quit, n/c/m: sort, r: refresh nodes) ",
         refresh_duration.as_secs()
     );
 

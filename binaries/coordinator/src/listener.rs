@@ -1,6 +1,6 @@
 use crate::{DaemonRequest, DataflowEvent, Event, tcp_utils::tcp_receive};
-use dora_core::uhlc::HLC;
-use dora_message::daemon_to_coordinator::{CoordinatorRequest, DaemonEvent, Timestamped};
+use adora_core::uhlc::HLC;
+use adora_message::daemon_to_coordinator::{CoordinatorRequest, DaemonEvent, Timestamped};
 use eyre::Context;
 use std::{io::ErrorKind, net::SocketAddr, sync::Arc};
 use tokio::{

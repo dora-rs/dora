@@ -4,7 +4,7 @@ pub use logger::{BuildLogger, LogLevelOrStdout};
 use std::{collections::BTreeMap, future::Future, path::PathBuf};
 
 use crate::descriptor::ResolvedNode;
-use dora_message::{
+use adora_message::{
     SessionId,
     common::{GitSource, LogLevel},
     descriptor::{CoreNodeKind, EnvValue},
@@ -71,7 +71,7 @@ impl Builder {
                         tracing::warn!(
                             "using git clone directory as working dir: \
                             this behavior is unstable and might change \
-                            (see https://github.com/dora-rs/dora/pull/901)"
+                            (see https://github.com/adora-rs/adora/pull/901)"
                         );
                         clone_dir
                     }

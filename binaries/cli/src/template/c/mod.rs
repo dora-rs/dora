@@ -1,4 +1,4 @@
-use dora_node_api_c::HEADER_NODE_API;
+use adora_node_api_c::HEADER_NODE_API;
 use eyre::{Context, ContextCompat, bail};
 use std::{
     fs,
@@ -70,9 +70,9 @@ fn create_cmakefile(root: PathBuf, use_path_deps: bool) -> Result<(), eyre::ErrR
             .context("Could not get manifest parent folder")?
             .parent()
             .context("Could not get manifest grandparent folder")?;
-        CMAKEFILE.replace("__DORA_PATH__", workspace_dir.to_str().unwrap())
+        CMAKEFILE.replace("__ADORA_PATH__", workspace_dir.to_str().unwrap())
     } else {
-        CMAKEFILE.replace("__DORA_PATH__", "")
+        CMAKEFILE.replace("__ADORA_PATH__", "")
     };
 
     let cmake_path = root.join("CMakeLists.txt");

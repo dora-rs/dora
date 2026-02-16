@@ -1,7 +1,7 @@
 """TODO: Add docstring."""
 
 import pyarrow as pa
-from dora import Node
+from adora import Node
 from pynput import keyboard
 from pynput.keyboard import Events, Key
 
@@ -15,13 +15,13 @@ NODE_TOPIC = ["record", "send", "ask", "change"]
 
 with keyboard.Events() as events:
     while True:
-        dora_event = node.next(0.01)
+        adora_event = node.next(0.01)
         if (
-            dora_event is not None
-            and dora_event["type"] == "INPUT"
-            and dora_event["id"] == "recording"
+            adora_event is not None
+            and adora_event["type"] == "INPUT"
+            and adora_event["id"] == "recording"
         ):
-            buffer_text += dora_event["value"][0].as_py()
+            buffer_text += adora_event["value"][0].as_py()
             node.send_output("buffer", pa.array([buffer_text]))
             continue
 

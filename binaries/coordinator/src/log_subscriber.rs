@@ -1,4 +1,4 @@
-use dora_message::coordinator_to_cli::LogMessage;
+use adora_message::coordinator_to_cli::LogMessage;
 use eyre::{Context, ContextCompat};
 
 use crate::tcp_utils::tcp_send;
@@ -18,12 +18,12 @@ impl LogSubscriber {
 
     pub async fn send_message(&mut self, message: &LogMessage) -> eyre::Result<()> {
         match message.level {
-            dora_core::build::LogLevelOrStdout::LogLevel(level) => {
+            adora_core::build::LogLevelOrStdout::LogLevel(level) => {
                 if level > self.level {
                     return Ok(());
                 }
             }
-            dora_core::build::LogLevelOrStdout::Stdout => {}
+            adora_core::build::LogLevelOrStdout::Stdout => {}
         }
 
         let message = serde_json::to_vec(&message)?;

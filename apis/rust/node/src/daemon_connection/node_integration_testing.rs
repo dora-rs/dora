@@ -8,11 +8,11 @@ use std::{
 use arrow::array::{Array, RecordBatch, StructArray};
 use arrow_schema::{DataType, Field, Schema};
 use colored::Colorize;
-use dora_core::{
+use adora_core::{
     metadata::ArrowTypeInfoExt,
     uhlc::{self, HLC, NTP64, Timestamp},
 };
-use dora_message::{
+use adora_message::{
     common::{DataMessage, Timestamped},
     daemon_to_node::{DaemonReply, NodeEvent},
     integration_testing_format::{
@@ -128,7 +128,7 @@ impl IntegrationTestingEvents {
 
     fn handle_output(
         &mut self,
-        output_id: &dora_message::id::DataId,
+        output_id: &adora_message::id::DataId,
         metadata: &Metadata,
         data: &Option<DataMessage>,
     ) -> Result<DaemonReply, eyre::Error> {
@@ -217,7 +217,7 @@ enum OutputWriter {
 }
 
 pub fn convert_output_to_json(
-    output_id: &dora_message::id::DataId,
+    output_id: &adora_message::id::DataId,
     metadata: &Metadata,
     data: &Option<DataMessage>,
     start_timestamp: Timestamp,

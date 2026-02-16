@@ -15,14 +15,14 @@ use self::{
 use aligned_vec::{AVec, ConstAlign};
 use arrow::array::Array;
 use colored::Colorize;
-use dora_core::{
+use adora_core::{
     config::{DataId, NodeId, NodeRunConfig},
     descriptor::Descriptor,
     metadata::ArrowTypeInfoExt,
-    topics::{DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, LOCALHOST},
+    topics::{ADORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, LOCALHOST},
     uhlc,
 };
-use dora_message::{
+use adora_message::{
     DataflowId,
     daemon_to_node::{DaemonCommunication, DaemonReply, NodeConfig},
     metadata::{ArrowTypeInfo, Metadata, MetadataParameters},
@@ -43,7 +43,7 @@ use std::{
 use tokio::runtime::Handle;
 
 #[cfg(feature = "tracing")]
-use dora_tracing::{OtelGuard, TracingBuilder};
+use adora_tracing::{OtelGuard, TracingBuilder};
 use tracing::{info, warn};
 
 pub mod arrow_utils;
@@ -68,9 +68,9 @@ pub const ZERO_COPY_THRESHOLD: usize = 4096;
 
 /// Allows sending outputs and retrieving node information.
 ///
-/// The main purpose of this struct is to send outputs via Dora. There are also functions available
+/// The main purpose of this struct is to send outputs via Adora. There are also functions available
 /// for retrieving the node configuration.
-pub struct DoraNode {
+pub struct AdoraNode {
     id: NodeId,
     dataflow_id: DataflowId,
     node_config: NodeRunConfig,
@@ -86,20 +86,20 @@ pub struct DoraNode {
     interactive: bool,
 }
 
-impl DoraNode {
-    /// Initiate a node from environment variables set by the Dora daemon or fall back to
+impl AdoraNode {
+    /// Initiate a node from environment variables set by the Adora daemon or fall back to
     /// interactive mode.
     ///
-    /// This is the recommended initialization function for Dora nodes, which are spawned by
-    /// Dora daemon instances. The daemon will set a `DORA_NODE_CONFIG` environment variable to
+    /// This is the recommended initialization function for Adora nodes, which are spawned by
+    /// Adora daemon instances. The daemon will set a `ADORA_NODE_CONFIG` environment variable to
     /// configure the node.
     ///
-    /// When the node is started manually without the `DORA_NODE_CONFIG` environment variable set,
+    /// When the node is started manually without the `ADORA_NODE_CONFIG` environment variable set,
     /// the initialization will fall back to [`init_interactive`](Self::init_interactive) if `stdin`
     /// is a terminal (detected through
     /// [`isatty`](https://www.man7.org/linux/man-pages/man3/isatty.3.html)).
     ///
-    /// If the `DORA_NODE_CONFIG` environment variable is not set and `DORA_TEST_WITH_INPUTS` is
+    /// If the `ADORA_NODE_CONFIG` environment variable is not set and `ADORA_TEST_WITH_INPUTS` is
     /// set, the node will be initialized in integration test mode. See the
     /// [integration testing](crate::integration_testing) module for details.
     ///
@@ -108,19 +108,19 @@ impl DoraNode {
     /// function was called before. This takes precedence over all environment variables.
     ///
     /// ```no_run
-    /// use dora_node_api::DoraNode;
+    /// use adora_node_api::AdoraNode;
     ///
-    /// let (mut node, mut events) = DoraNode::init_from_env().expect("Could not init node.");
+    /// let (mut node, mut events) = AdoraNode::init_from_env().expect("Could not init node.");
     /// ```
     pub fn init_from_env() -> eyre::Result<(Self, EventStream)> {
         Self::init_from_env_inner(true)
     }
 
-    /// Initialize the node from environment variables set by the Dora daemon; error if not set.
+    /// Initialize the node from environment variables set by the Adora daemon; error if not set.
     ///
     /// This function behaves the same as [`init_from_env`](Self::init_from_env), but it does _not_
     /// fall back to [`init_interactive`](Self::init_interactive). Instead, an error is returned
-    /// when the `DORA_NODE_CONFIG` environment variable is missing.
+    /// when the `ADORA_NODE_CONFIG` environment variable is missing.
     pub fn init_from_env_force() -> eyre::Result<(Self, EventStream)> {
         Self::init_from_env_inner(false)
     }
@@ -135,34 +135,34 @@ impl DoraNode {
             return Self::init_testing(input, output, options);
         }
 
-        // normal execution (started by dora daemon)
-        match std::env::var("DORA_NODE_CONFIG") {
+        // normal execution (started by adora daemon)
+        match std::env::var("ADORA_NODE_CONFIG") {
             Ok(raw) => {
                 let node_config: NodeConfig =
                     serde_yaml::from_str(&raw).context("failed to deserialize node config")?;
                 return Self::init(node_config);
             }
             Err(std::env::VarError::NotUnicode(_)) => {
-                bail!("DORA_NODE_CONFIG env variable is not valid unicode")
+                bail!("ADORA_NODE_CONFIG env variable is not valid unicode")
             }
             Err(std::env::VarError::NotPresent) => {} // continue trying other init methods
         };
 
         // node integration test mode
-        match std::env::var("DORA_TEST_WITH_INPUTS") {
+        match std::env::var("ADORA_TEST_WITH_INPUTS") {
             Ok(raw) => {
                 let input_file = PathBuf::from(raw);
-                let output_file = match std::env::var("DORA_TEST_WRITE_OUTPUTS_TO") {
+                let output_file = match std::env::var("ADORA_TEST_WRITE_OUTPUTS_TO") {
                     Ok(raw) => PathBuf::from(raw),
                     Err(std::env::VarError::NotUnicode(_)) => {
-                        bail!("DORA_TEST_WRITE_OUTPUTS_TO env variable is not valid unicode")
+                        bail!("ADORA_TEST_WRITE_OUTPUTS_TO env variable is not valid unicode")
                     }
                     Err(std::env::VarError::NotPresent) => {
                         input_file.with_file_name("outputs.jsonl")
                     }
                 };
                 let skip_output_time_offsets =
-                    std::env::var_os("DORA_TEST_NO_OUTPUT_TIME_OFFSET").is_some();
+                    std::env::var_os("ADORA_TEST_NO_OUTPUT_TIME_OFFSET").is_some();
 
                 let input = TestingInput::FromJsonFile(input_file);
                 let output = TestingOutput::ToFile(output_file);
@@ -173,7 +173,7 @@ impl DoraNode {
                 return Self::init_testing(input, output, options);
             }
             Err(std::env::VarError::NotUnicode(_)) => {
-                bail!("DORA_TEST_WITH_INPUTS env variable is not valid unicode")
+                bail!("ADORA_TEST_WITH_INPUTS env variable is not valid unicode")
             }
             Err(std::env::VarError::NotPresent) => {} // continue trying other init methods
         }
@@ -182,14 +182,14 @@ impl DoraNode {
         if fallback_to_interactive && std::io::stdin().is_terminal() {
             println!(
                 "{}",
-                "Starting node in interactive mode as DORA_NODE_CONFIG env variable is not set"
+                "Starting node in interactive mode as ADORA_NODE_CONFIG env variable is not set"
                     .green()
             );
             return Self::init_interactive();
         }
 
         // no run mode applicable
-        bail!("DORA_NODE_CONFIG env variable is not set")
+        bail!("ADORA_NODE_CONFIG env variable is not set")
     }
 
     /// Initiate a node from a dataflow id and a node id.
@@ -197,15 +197,15 @@ impl DoraNode {
     /// This initialization function should be used for [_dynamic nodes_](index.html#dynamic-nodes).
     ///
     /// ```no_run
-    /// use dora_node_api::DoraNode;
-    /// use dora_node_api::dora_core::config::NodeId;
+    /// use adora_node_api::AdoraNode;
+    /// use adora_node_api::adora_core::config::NodeId;
     ///
-    /// let (mut node, mut events) = DoraNode::init_from_node_id(NodeId::from("plot".to_string())).expect("Could not init node plot");
+    /// let (mut node, mut events) = AdoraNode::init_from_node_id(NodeId::from("plot".to_string())).expect("Could not init node plot");
     /// ```
     ///
     pub fn init_from_node_id(node_id: NodeId) -> eyre::Result<(Self, EventStream)> {
-        // Make sure that the node is initialized outside of dora start.
-        let daemon_address = (LOCALHOST, DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT).into();
+        // Make sure that the node is initialized outside of adora start.
+        let daemon_address = (LOCALHOST, ADORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT).into();
 
         let mut channel =
             DaemonChannel::new_tcp(daemon_address).context("Could not connect to the daemon")?;
@@ -235,9 +235,9 @@ impl DoraNode {
     /// [`init_from_env`][Self::init_from_env]. If this fails, it falls back to
     /// [`init_from_node_id`][Self::init_from_node_id].
     pub fn init_flexible(node_id: NodeId) -> eyre::Result<(Self, EventStream)> {
-        if std::env::var("DORA_NODE_CONFIG").is_ok() {
+        if std::env::var("ADORA_NODE_CONFIG").is_ok() {
             info!(
-                "Skipping {node_id} specified within the node initialization in favor of `DORA_NODE_CONFIG` specified by `dora start`"
+                "Skipping {node_id} specified within the node initialization in favor of `ADORA_NODE_CONFIG` specified by `adora start`"
             );
             Self::init_from_env()
         } else {
@@ -247,8 +247,8 @@ impl DoraNode {
 
     /// Initialize the node in a standalone mode that prompts for inputs on the terminal.
     ///
-    /// Instead of connecting to a `dora daemon`, this interactive mode prompts for node inputs
-    /// on the terminal. In this mode, the node is completely isolated from the dora daemon and
+    /// Instead of connecting to a `adora daemon`, this interactive mode prompts for node inputs
+    /// on the terminal. In this mode, the node is completely isolated from the adora daemon and
     /// other nodes, so it cannot be part of a dataflow.
     ///
     /// Note that this function will hang indefinitely if no input is supplied to the interactive
@@ -268,7 +268,7 @@ impl DoraNode {
     /// > cargo build -p rust-dataflow-example-node
     /// > target/debug/rust-dataflow-example-node
     /// hello
-    /// Starting node in interactive mode as DORA_NODE_CONFIG env variable is not set
+    /// Starting node in interactive mode as ADORA_NODE_CONFIG env variable is not set
     /// Node asks for next input
     /// ? Input ID
     /// [empty input ID to stop]
@@ -372,7 +372,7 @@ impl DoraNode {
 
     /// Initializes a node in integration test mode.
     ///
-    /// No connection to a dora daemon is made in this mode. Instead, inputs are read from the
+    /// No connection to a adora daemon is made in this mode. Instead, inputs are read from the
     /// specified `TestingInput`, and outputs are written to the specified `TestingOutput`.
     /// Additional options for the testing mode can be specified through `TestingOptions`.
     ///
@@ -404,7 +404,7 @@ impl DoraNode {
         Ok((node, events))
     }
 
-    /// Internal initialization routine that should not be used outside of Dora.
+    /// Internal initialization routine that should not be used outside of Adora.
     #[doc(hidden)]
     #[tracing::instrument]
     pub fn init(node_config: NodeConfig) -> eyre::Result<(Self, EventStream)> {
@@ -532,10 +532,10 @@ impl DoraNode {
     /// We take a closure as an input to enable zero copy on send.
     ///
     /// ```no_run
-    /// use dora_node_api::{DoraNode, MetadataParameters};
-    /// use dora_core::config::DataId;
+    /// use adora_node_api::{AdoraNode, MetadataParameters};
+    /// use adora_core::config::DataId;
     ///
-    /// let (mut node, mut events) = DoraNode::init_from_env().expect("Could not init node.");
+    /// let (mut node, mut events) = AdoraNode::init_from_env().expect("Could not init node.");
     ///
     /// let output = DataId::from("output_id".to_owned());
     ///
@@ -715,7 +715,7 @@ impl DoraNode {
 
     /// Returns the unique identifier for the running dataflow instance.
     ///
-    /// Dora assigns each dataflow instance a random identifier when started.
+    /// Adora assigns each dataflow instance a random identifier when started.
     pub fn dataflow_id(&self) -> &DataflowId {
         &self.dataflow_id
     }
@@ -807,14 +807,14 @@ impl DoraNode {
             Ok(d) => Ok(d),
             Err(err) => eyre::bail!(
                 "failed to parse dataflow descriptor: {err}\n\n
-                This might be caused by mismatched version numbers of dora \
-                daemon and the dora node API"
+                This might be caused by mismatched version numbers of adora \
+                daemon and the adora node API"
             ),
         }
     }
 }
 
-impl Drop for DoraNode {
+impl Drop for AdoraNode {
     fn drop(&mut self) {
         // close all outputs first to notify subscribers as early as possible
         if let Err(err) = self
@@ -975,8 +975,8 @@ pub fn init_tracing(
     let tracing_monitor = async move {
         let mut builder = TracingBuilder::new(node_id_str);
         // Only enable OTLP if environment variable is set
-        if std::env::var("DORA_OTLP_ENDPOINT").is_ok()
-            || std::env::var("DORA_JAEGER_TRACING").is_ok()
+        if std::env::var("ADORA_OTLP_ENDPOINT").is_ok()
+            || std::env::var("ADORA_JAEGER_TRACING").is_ok()
         {
             builder = builder
                 .with_otlp_tracing()
@@ -1001,7 +1001,7 @@ pub fn init_tracing(
     {
         let id = format!("{dataflow_id}/{node_id}");
         let monitor_task = async move {
-            use dora_metrics::run_metrics_monitor;
+            use adora_metrics::run_metrics_monitor;
 
             if let Err(e) = run_metrics_monitor(id.clone())
                 .await

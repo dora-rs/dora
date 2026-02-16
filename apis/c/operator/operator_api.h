@@ -1,5 +1,5 @@
-#ifndef __RUST_DORA_OPERATOR_API_C_WRAPPER__
-#define __RUST_DORA_OPERATOR_API_C_WRAPPER__
+#ifndef __RUST_ADORA_OPERATOR_API_C_WRAPPER__
+#define __RUST_ADORA_OPERATOR_API_C_WRAPPER__
 #ifdef __cplusplus
 extern "C"
 {
@@ -14,23 +14,23 @@ extern "C"
 #define EXPORT __attribute__((visibility("default")))
 #endif
 
-    EXPORT DoraInitResult_t dora_init_operator(void);
+    EXPORT AdoraInitResult_t adora_init_operator(void);
 
-    EXPORT DoraResult_t dora_drop_operator(void *operator_context);
+    EXPORT AdoraResult_t adora_drop_operator(void *operator_context);
 
-    EXPORT OnEventResult_t dora_on_event(
+    EXPORT OnEventResult_t adora_on_event(
         RawEvent_t *event,
         const SendOutput_t *send_output,
         void *operator_context);
 
-    static void __dora_type_assertions()
+    static void __adora_type_assertions()
     {
-        DoraInitOperator_t __dora_init_operator = {.init_operator = dora_init_operator};
-        DoraDropOperator_t __dora_drop_operator = {.drop_operator = dora_drop_operator};
-        DoraOnEvent_t __dora_on_event = {.on_event = dora_on_event};
+        AdoraInitOperator_t __adora_init_operator = {.init_operator = adora_init_operator};
+        AdoraDropOperator_t __adora_drop_operator = {.drop_operator = adora_drop_operator};
+        AdoraOnEvent_t __adora_on_event = {.on_event = adora_on_event};
     }
 #ifdef __cplusplus
 } /* extern \"C\" */
 #endif
 
-#endif /* __RUST_DORA_OPERATOR_API_C_WRAPPER__ */
+#endif /* __RUST_ADORA_OPERATOR_API_C_WRAPPER__ */

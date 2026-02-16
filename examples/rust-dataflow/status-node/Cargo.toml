@@ -10,5 +10,5 @@ publish = false
 
 
 [dependencies]
-dora-node-api = { workspace = true }
+adora-node-api = { workspace = true }
 eyre = "0.6.8"

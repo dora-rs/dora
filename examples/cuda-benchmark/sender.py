@@ -8,8 +8,8 @@ import time
 import numpy as np
 import pyarrow as pa
 import torch
-from dora import Node
-from dora.cuda import torch_to_ipc_buffer
+from adora import Node
+from adora.cuda import torch_to_ipc_buffer
 
 torch.tensor([], device="cuda")
 

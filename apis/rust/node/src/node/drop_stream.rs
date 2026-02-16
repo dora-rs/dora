@@ -1,8 +1,8 @@
 use std::{sync::Arc, time::Duration};
 
 use crate::{DaemonCommunicationWrapper, daemon_connection::DaemonChannel};
-use dora_core::{config::NodeId, uhlc};
-use dora_message::{
+use adora_core::{config::NodeId, uhlc};
+use adora_message::{
     DataflowId,
     daemon_to_node::{DaemonCommunication, DaemonReply, NodeDropEvent},
     node_to_daemon::{DaemonRequest, DropToken, Timestamped},
@@ -70,7 +70,7 @@ impl DropStream {
                 timestamp: clock.new_timestamp(),
             })
             .map_err(|e| eyre!(e))
-            .wrap_err("failed to create subscription with dora-daemon")?;
+            .wrap_err("failed to create subscription with adora-daemon")?;
 
         match reply {
             DaemonReply::Result(Ok(())) => {}

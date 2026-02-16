@@ -5,8 +5,8 @@ use std::{
 
 use arrow::pyarrow::ToPyArrow;
 use chrono::{DateTime, Utc};
-use dora_node_api::{
-    DoraNode, Event, EventStream, Metadata, MetadataParameters, Parameter, StopCause,
+use adora_node_api::{
+    AdoraNode, Event, EventStream, Metadata, MetadataParameters, Parameter, StopCause,
     merged::{MergeExternalSend, MergedEvent},
 };
 use eyre::{Context, Result};
@@ -18,16 +18,16 @@ use pyo3::{
 };
 use std::time::UNIX_EPOCH;
 
-/// Dora Event
+/// Adora Event
 pub struct PyEvent {
     pub event: MergedEvent<PyObject>,
 }
 
-/// Keeps the dora node alive until all event objects have been dropped.
+/// Keeps the adora node alive until all event objects have been dropped.
 #[derive(Clone)]
 #[pyclass]
 pub struct NodeCleanupHandle {
-    pub _handles: Arc<CleanupHandle<DoraNode>>,
+    pub _handles: Arc<CleanupHandle<AdoraNode>>,
 }
 
 /// Owned type with delayed cleanup (using `handle` method).
@@ -69,9 +69,9 @@ where
         self,
         external_events: impl Stream<Item = E> + Unpin + Send + Sync + 'a,
     ) -> Box<dyn Stream<Item = Self::Item> + Unpin + Send + Sync + 'a> {
-        let dora = self.map(MergedEvent::Dora);
+        let adora = self.map(MergedEvent::Adora);
         let external = external_events.map(MergedEvent::External);
-        Box::new((dora, external).merge())
+        Box::new((adora, external).merge())
     }
 }
 
@@ -82,9 +82,9 @@ impl PyEvent {
     pub fn to_py_dict(self, py: Python<'_>) -> PyResult<Py<PyDict>> {
         let mut pydict = HashMap::new();
         match &self.event {
-            MergedEvent::Dora(_) => pydict.insert(
+            MergedEvent::Adora(_) => pydict.insert(
                 "kind",
-                "dora"
+                "adora"
                     .into_pyobject(py)
                     .context("Failed to create pystring")?
                     .unbind()
@@ -100,7 +100,7 @@ impl PyEvent {
             ),
         };
         match &self.event {
-            MergedEvent::Dora(event) => {
+            MergedEvent::Adora(event) => {
                 if let Some(id) = Self::id(event) {
                     pydict.insert(
                         "id",
@@ -172,7 +172,7 @@ impl PyEvent {
     /// Returns the payload of an input event as an arrow array (if any).
     fn value(&self, py: Python<'_>) -> PyResult<Option<PyObject>> {
         match &self.event {
-            MergedEvent::Dora(Event::Input { data, .. }) => {
+            MergedEvent::Adora(Event::Input { data, .. }) => {
                 // TODO: Does this call leak data?&
                 let array_data = data.to_data().to_pyarrow(py)?;
                 Ok(Some(array_data))
@@ -282,7 +282,7 @@ pub fn metadata_to_pydict<'a>(
     // Add timestamp as timezone-aware Python datetime (UTC)
     // Note: uhlc::Timestamp is a Hybrid Logical Clock. We use get_time().to_system_time()
     // which extracts the physical clock component. This pattern is used consistently
-    // throughout the dora codebase (e.g., in binaries/daemon/src/log.rs, binaries/coordinator/src/lib.rs)
+    // throughout the adora codebase (e.g., in binaries/daemon/src/log.rs, binaries/coordinator/src/lib.rs)
     // and assumes the physical time component represents UTC wall-clock time.
     let timestamp = metadata.timestamp();
     let system_time = timestamp.get_time().to_system_time();
@@ -377,7 +377,7 @@ mod tests {
     };
 
     use arrow_schema::{DataType, Field};
-    use dora_node_api::arrow_utils::{
+    use adora_node_api::arrow_utils::{
         buffer_into_arrow_array, copy_array_into_sample, required_data_size,
     };
     use eyre::{Context, Result};

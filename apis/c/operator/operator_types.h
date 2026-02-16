@@ -7,8 +7,8 @@
  *                                         *
  *******************************************/
 
-#ifndef __RUST_DORA_OPERATOR_API_C__
-#define __RUST_DORA_OPERATOR_API_C__
+#ifndef __RUST_ADORA_OPERATOR_API_C__
+#define __RUST_ADORA_OPERATOR_API_C__
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -32,57 +32,57 @@ typedef struct Vec_uint8 {
 } Vec_uint8_t;
 
 /** <No documentation available> */
-typedef struct DoraResult {
+typedef struct AdoraResult {
     /** <No documentation available> */
     Vec_uint8_t * error;
-} DoraResult_t;
+} AdoraResult_t;
 
 /** <No documentation available> */
-typedef struct DoraDropOperator {
+typedef struct AdoraDropOperator {
     /** <No documentation available> */
-    DoraResult_t (*drop_operator)(void *);
-} DoraDropOperator_t;
+    AdoraResult_t (*drop_operator)(void *);
+} AdoraDropOperator_t;
 
 /** <No documentation available> */
-typedef struct DoraInitResult {
+typedef struct AdoraInitResult {
     /** <No documentation available> */
-    DoraResult_t result;
+    AdoraResult_t result;
 
     /** <No documentation available> */
     void * operator_context;
-} DoraInitResult_t;
+} AdoraInitResult_t;
 
 /** <No documentation available> */
-typedef struct DoraInitOperator {
+typedef struct AdoraInitOperator {
     /** <No documentation available> */
-    DoraInitResult_t (*init_operator)(void);
-} DoraInitOperator_t;
+    AdoraInitResult_t (*init_operator)(void);
+} AdoraInitOperator_t;
 
 /** <No documentation available> */
 /** \remark Has the same ABI as `uint8_t` **/
 #ifdef DOXYGEN
 typedef
 #endif
-enum DoraStatus {
+enum AdoraStatus {
     /** <No documentation available> */
-    DORA_STATUS_CONTINUE = 0,
+    ADORA_STATUS_CONTINUE = 0,
     /** <No documentation available> */
-    DORA_STATUS_STOP = 1,
+    ADORA_STATUS_STOP = 1,
     /** <No documentation available> */
-    DORA_STATUS_STOP_ALL = 2,
+    ADORA_STATUS_STOP_ALL = 2,
 }
 #ifndef DOXYGEN
 ; typedef uint8_t
 #endif
-DoraStatus_t;
+AdoraStatus_t;
 
 /** <No documentation available> */
 typedef struct OnEventResult {
     /** <No documentation available> */
-    DoraResult_t result;
+    AdoraResult_t result;
 
     /** <No documentation available> */
-    DoraStatus_t status;
+    AdoraStatus_t status;
 } OnEventResult_t;
 
 /** <No documentation available> */
@@ -112,31 +112,31 @@ typedef struct Output Output_t;
 /** \brief
  *  `Arc<dyn Send + Sync + Fn(A1) -> Ret>`
  */
-typedef struct ArcDynFn1_DoraResult_Output {
+typedef struct ArcDynFn1_AdoraResult_Output {
     /** <No documentation available> */
     void * env_ptr;
 
     /** <No documentation available> */
-    DoraResult_t (*call)(void *, Output_t);
+    AdoraResult_t (*call)(void *, Output_t);
 
     /** <No documentation available> */
     void (*release)(void *);
 
     /** <No documentation available> */
     void (*retain)(void *);
-} ArcDynFn1_DoraResult_Output_t;
+} ArcDynFn1_AdoraResult_Output_t;
 
 /** <No documentation available> */
 typedef struct SendOutput {
     /** <No documentation available> */
-    ArcDynFn1_DoraResult_Output_t send_output;
+    ArcDynFn1_AdoraResult_Output_t send_output;
 } SendOutput_t;
 
 /** <No documentation available> */
-typedef struct DoraOnEvent {
+typedef struct AdoraOnEvent {
     /** <No documentation available> */
     OnEventResult_t (*on_event)(RawEvent_t *, SendOutput_t const *, void *);
-} DoraOnEvent_t;
+} AdoraOnEvent_t;
 
 /** <No documentation available> */
 typedef struct Metadata {
@@ -146,27 +146,27 @@ typedef struct Metadata {
 
 /** <No documentation available> */
 void
-dora_free_data (
+adora_free_data (
     Vec_uint8_t _data);
 
 /** <No documentation available> */
 void
-dora_free_input_id (
+adora_free_input_id (
     char * _input_id);
 
 /** <No documentation available> */
 Vec_uint8_t
-dora_read_data (
+adora_read_data (
     Input_t * input);
 
 /** <No documentation available> */
 char *
-dora_read_input_id (
+adora_read_input_id (
     Input_t const * input);
 
 /** <No documentation available> */
-DoraResult_t
-dora_send_operator_output (
+AdoraResult_t
+adora_send_operator_output (
     SendOutput_t const * send_output,
     char const * id,
     uint8_t const * data_ptr,
@@ -177,4 +177,4 @@ dora_send_operator_output (
 } /* extern \"C\" */
 #endif
 
-#endif /* __RUST_DORA_OPERATOR_API_C__ */
+#endif /* __RUST_ADORA_OPERATOR_API_C__ */

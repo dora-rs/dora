@@ -1,6 +1,6 @@
 # `rust-ros2-dataflow` Example
 
-This example shows how to publish/subscribe to both ROS2 and Dora. The dataflow consists of a single node that sends random movement commands to the [ROS2 `turtlesim_node`](https://docs.ros.org/en/iron/Tutorials/Beginner-CLI-Tools/Introducing-Turtlesim/Introducing-Turtlesim.html).
+This example shows how to publish/subscribe to both ROS2 and Adora. The dataflow consists of a single node that sends random movement commands to the [ROS2 `turtlesim_node`](https://docs.ros.org/en/iron/Tutorials/Beginner-CLI-Tools/Introducing-Turtlesim/Introducing-Turtlesim.html).
 
 ## Setup
 
@@ -20,5 +20,5 @@ This examples requires a sourced ROS2 installation.
 
 ```bash
 source /opt/ros/<ros-distro>/setup.bash
-cargo run --package dora-ros2-bridge --example rust-ros2-dataflow
+cargo run --package adora-ros2-bridge --example rust-ros2-dataflow
 ```

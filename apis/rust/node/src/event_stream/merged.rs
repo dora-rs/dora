@@ -1,20 +1,20 @@
 //! Merge external stream into an [`EventStream`][super::EventStream].
 //!
-//! Sometimes nodes need to listen to external events, in addition to Dora events.
+//! Sometimes nodes need to listen to external events, in addition to Adora events.
 //! This module provides support for that by providing the [`MergeExternal`] trait.
 
 use futures::{Stream, StreamExt};
 use futures_concurrency::stream::Merge;
 
-/// A Dora event or an event from an external source.
+/// A Adora event or an event from an external source.
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
 pub enum MergedEvent<E> {
-    /// A Dora event
-    Dora(super::Event),
+    /// A Adora event
+    Adora(super::Event),
     /// An external event
     ///
-    /// Yielded by the stream that was merged into the Dora [`EventStream`][super::EventStream].
+    /// Yielded by the stream that was merged into the Adora [`EventStream`][super::EventStream].
     External(E),
 }
 
@@ -79,9 +79,9 @@ where
         self,
         external_events: impl Stream<Item = E> + Unpin + 'a,
     ) -> Box<dyn Stream<Item = Self::Item> + Unpin + 'a> {
-        let dora = self.map(MergedEvent::Dora);
+        let adora = self.map(MergedEvent::Adora);
         let external = external_events.map(MergedEvent::External);
-        Box::new((dora, external).merge())
+        Box::new((adora, external).merge())
     }
 }
 
@@ -95,9 +95,9 @@ where
         self,
         external_events: impl Stream<Item = E> + Unpin + Send + Sync + 'a,
     ) -> Box<dyn Stream<Item = Self::Item> + Unpin + Send + Sync + 'a> {
-        let dora = self.map(MergedEvent::Dora);
+        let adora = self.map(MergedEvent::Adora);
         let external = external_events.map(MergedEvent::External);
-        Box::new((dora, external).merge())
+        Box::new((adora, external).merge())
     }
 }
 
@@ -114,7 +114,7 @@ where
         external_events: impl Stream<Item = F> + Unpin + 'a,
     ) -> Box<dyn Stream<Item = Self::Item> + Unpin + 'a> {
         let first = self.map(|e| match e {
-            MergedEvent::Dora(d) => MergedEvent::Dora(d),
+            MergedEvent::Adora(d) => MergedEvent::Adora(d),
             MergedEvent::External(e) => MergedEvent::External(Either::First(e)),
         });
         let second = external_events.map(|e| MergedEvent::External(Either::Second(e)));
@@ -135,7 +135,7 @@ where
         external_events: impl Stream<Item = F> + Unpin + Send + Sync + 'a,
     ) -> Box<dyn Stream<Item = Self::Item> + Unpin + Send + Sync + 'a> {
         let first = self.map(|e| match e {
-            MergedEvent::Dora(d) => MergedEvent::Dora(d),
+            MergedEvent::Adora(d) => MergedEvent::Adora(d),
             MergedEvent::External(e) => MergedEvent::External(Either::First(e)),
         });
         let second = external_events.map(|e| MergedEvent::External(Either::Second(e)));

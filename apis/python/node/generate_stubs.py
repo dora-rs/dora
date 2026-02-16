@@ -75,7 +75,7 @@ def module_stubs(module: Any) -> ast.Module:
     functions = []
     for member_name, member_value in inspect.getmembers(module):
         element_path = [module.__name__, member_name]
-        if member_name.startswith("__") or member_name.startswith("DoraStatus"):
+        if member_name.startswith("__") or member_name.startswith("AdoraStatus"):
             pass
         elif inspect.isclass(member_value):
             classes.append(
@@ -430,7 +430,7 @@ def parse_type_to_ast(
         or_groups: List[List[str]] = [[]]
         print(sequence)
         # TODO: Fix sequence
-        if ("Ros" in sequence and "2" in sequence) or ("dora.Ros" in sequence and "2" in sequence):
+        if ("Ros" in sequence and "2" in sequence) or ("adora.Ros" in sequence and "2" in sequence):
             sequence = ["".join(sequence)]
 
         for e in sequence:

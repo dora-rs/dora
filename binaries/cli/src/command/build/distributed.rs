@@ -1,6 +1,6 @@
 use communication_layer_request_reply::{TcpConnection, TcpRequestReplyConnection};
-use dora_core::descriptor::Descriptor;
-use dora_message::{
+use adora_core::descriptor::Descriptor;
+use adora_message::{
     BuildId,
     cli_to_coordinator::ControlRequest,
     common::{GitSource, LogMessage},
@@ -61,7 +61,7 @@ pub fn wait_until_dataflow_built(
     // subscribe to log messages
     let mut log_session = TcpConnection {
         stream: TcpStream::connect(coordinator_socket)
-            .wrap_err("failed to connect to dora coordinator")?,
+            .wrap_err("failed to connect to adora coordinator")?,
     };
     log_session
         .send(

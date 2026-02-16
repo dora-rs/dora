@@ -3,7 +3,7 @@ nodes:
     build: pip install asyncio
     path: ./send_data.py
     inputs:
-      tick: dora/timer/millis/10
+      tick: adora/timer/millis/10
     outputs:
       - data
 

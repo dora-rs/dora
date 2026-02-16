@@ -1,8 +1,8 @@
-use dora_node_api::{
-    self, DoraNode, Event,
+use adora_node_api::{
+    self, AdoraNode, Event,
     merged::{MergeExternal, MergedEvent},
 };
-use dora_ros2_bridge::{
+use adora_ros2_bridge::{
     messages::example_interfaces::service::{AddTwoInts, AddTwoIntsResponse},
     ros2_client::{self, NodeOptions},
     rustdds::{self, policy},
@@ -26,8 +26,8 @@ fn main() -> eyre::Result<()> {
     .context("failed to spawn ros2 spinner")?;
 
     let server = create_service_server(&mut ros_node)?; // should be after the spiner started
-    let (_node, dora_events) = DoraNode::init_from_env()?;
-    let merged_events = dora_events.merge_external(server.receive_request_stream());
+    let (_node, adora_events) = AdoraNode::init_from_env()?;
+    let merged_events = adora_events.merge_external(server.receive_request_stream());
 
     let mut events = futures::executor::block_on_stream(merged_events);
 
@@ -39,7 +39,7 @@ fn main() -> eyre::Result<()> {
         };
 
         match event {
-            MergedEvent::Dora(Event::Input {
+            MergedEvent::Adora(Event::Input {
                 id,
                 metadata: _,
                 data: _,
@@ -47,7 +47,7 @@ fn main() -> eyre::Result<()> {
                 "tick" => {}
                 other => eprintln!("Ignoring unexpected input `{other}`"),
             },
-            MergedEvent::Dora(Event::Stop(_)) => {
+            MergedEvent::Adora(Event::Stop(_)) => {
                 println!("Received stop");
                 break;
             }
@@ -73,7 +73,7 @@ fn init_ros_node() -> eyre::Result<ros2_client::Node> {
 
     ros_context
         .new_node(
-            ros2_client::NodeName::new("/", "ros2_dora_service_client")
+            ros2_client::NodeName::new("/", "ros2_adora_service_client")
                 .map_err(|e| eyre!("failed to create ROS2 node name: {e}"))?,
             NodeOptions::new().enable_rosout(true),
         )

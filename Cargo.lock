@@ -9,6 +9,470 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
+name = "adora-arrow-convert"
+version = "0.4.1"
+dependencies = [
+ "arrow",
+ "chrono",
+ "eyre",
+ "half",
+ "num",
+]
+
+[[package]]
+name = "adora-cli"
+version = "0.4.1"
+dependencies = [
+ "adora-coordinator",
+ "adora-core",
+ "adora-daemon",
+ "adora-download",
+ "adora-message",
+ "adora-node-api-c",
+ "adora-operator-api-c",
+ "adora-runtime",
+ "adora-tracing",
+ "arrow",
+ "arrow-json",
+ "arrow-schema",
+ "chrono",
+ "clap",
+ "clap_complete",
+ "colored 2.2.0",
+ "communication-layer-request-reply",
+ "crossterm 0.29.0",
+ "ctrlc",
+ "dunce",
+ "duration-str",
+ "env_logger",
+ "eyre",
+ "futures",
+ "git2",
+ "inquire 0.5.3",
+ "itertools 0.14.0",
+ "log",
+ "notify",
+ "pyo3",
+ "pyo3-build-config",
+ "ratatui",
+ "self-replace",
+ "self_update",
+ "serde",
+ "serde_json",
+ "serde_yaml 0.9.34+deprecated",
+ "sysinfo 0.36.1",
+ "tabwriter",
+ "termcolor",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+ "tracing-log",
+ "uuid",
+ "webbrowser",
+ "zenoh",
+]
+
+[[package]]
+name = "adora-coordinator"
+version = "0.4.1"
+dependencies = [
+ "adora-core",
+ "adora-message",
+ "adora-tracing",
+ "ctrlc",
+ "eyre",
+ "futures",
+ "futures-concurrency",
+ "itertools 0.14.0",
+ "log",
+ "petname",
+ "serde_json",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "adora-core"
+version = "0.4.1"
+dependencies = [
+ "adora-message",
+ "dunce",
+ "eyre",
+ "fs_extra",
+ "git2",
+ "itertools 0.14.0",
+ "log",
+ "once_cell",
+ "schemars 1.2.1",
+ "serde",
+ "serde-with-expand-env",
+ "serde_json",
+ "serde_yaml 0.9.34+deprecated",
+ "splitty",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+ "which",
+ "zenoh",
+]
+
+[[package]]
+name = "adora-daemon"
+version = "0.4.1"
+dependencies = [
+ "adora-arrow-convert",
+ "adora-core",
+ "adora-download",
+ "adora-message",
+ "adora-node-api",
+ "adora-tracing",
+ "aligned-vec",
+ "async-trait",
+ "bincode",
+ "chrono",
+ "clonable-command",
+ "crossbeam",
+ "crossbeam-skiplist",
+ "ctrlc",
+ "dunce",
+ "eyre",
+ "flume 0.10.14",
+ "futures",
+ "futures-concurrency",
+ "git2",
+ "itertools 0.14.0",
+ "memchr",
+ "process-wrap",
+ "serde_json",
+ "serde_yaml 0.9.34+deprecated",
+ "shared-memory-server",
+ "shellexpand 3.1.1",
+ "sysinfo 0.36.1",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+ "tracing-opentelemetry",
+ "url",
+ "uuid",
+ "which",
+ "windows 0.61.3",
+ "zenoh",
+]
+
+[[package]]
+name = "adora-download"
+version = "0.4.1"
+dependencies = [
+ "eyre",
+ "reqwest",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "adora-examples"
+version = "0.0.0"
+dependencies = [
+ "adora-cli",
+ "adora-coordinator",
+ "adora-core",
+ "adora-download",
+ "adora-message",
+ "adora-tracing",
+ "assert2",
+ "dunce",
+ "eyre",
+ "futures",
+ "serde_yaml 0.8.26",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "adora-message"
+version = "0.7.0"
+dependencies = [
+ "aligned-vec",
+ "arrow-data",
+ "arrow-schema",
+ "bincode",
+ "chrono",
+ "eyre",
+ "log",
+ "once_cell",
+ "schemars 1.2.1",
+ "semver",
+ "serde",
+ "serde-with-expand-env",
+ "serde_json",
+ "serde_yaml 0.9.34+deprecated",
+ "tokio",
+ "uhlc 0.5.2",
+ "uuid",
+]
+
+[[package]]
+name = "adora-metrics"
+version = "0.4.1"
+dependencies = [
+ "eyre",
+ "opentelemetry 0.31.0",
+ "opentelemetry-otlp",
+ "opentelemetry-system-metrics",
+ "opentelemetry_sdk",
+]
+
+[[package]]
+name = "adora-node-api"
+version = "0.4.1"
+dependencies = [
+ "adora-arrow-convert",
+ "adora-core",
+ "adora-message",
+ "adora-metrics",
+ "adora-tracing",
+ "aligned-vec",
+ "arrow",
+ "arrow-json",
+ "arrow-schema",
+ "bincode",
+ "colored 3.1.1",
+ "eyre",
+ "flume 0.10.14",
+ "futures",
+ "futures-concurrency",
+ "futures-timer",
+ "inquire 0.7.5",
+ "is-terminal",
+ "opentelemetry 0.23.0",
+ "serde_json",
+ "serde_yaml 0.9.34+deprecated",
+ "shared-memory-server",
+ "shared_memory_extended",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "adora-node-api-c"
+version = "0.4.1"
+dependencies = [
+ "adora-node-api",
+ "arrow-array",
+ "eyre",
+ "tracing",
+]
+
+[[package]]
+name = "adora-node-api-cxx"
+version = "0.4.1"
+dependencies = [
+ "adora-node-api",
+ "adora-ros2-bridge",
+ "adora-ros2-bridge-msg-gen",
+ "arrow",
+ "chrono",
+ "cxx",
+ "cxx-build",
+ "eyre",
+ "futures-lite",
+ "prettyplease 0.1.25",
+ "rust-format",
+ "serde",
+ "serde-big-array",
+ "serde_json",
+]
+
+[[package]]
+name = "adora-node-api-python"
+version = "0.4.1"
+dependencies = [
+ "adora-cli",
+ "adora-download",
+ "adora-node-api",
+ "adora-operator-api-python",
+ "adora-ros2-bridge-python",
+ "adora-runtime",
+ "arrow",
+ "eyre",
+ "flume 0.10.14",
+ "futures",
+ "pyo3",
+ "pyo3-build-config",
+ "pyo3_special_method_derive",
+ "pythonize",
+ "serde_yaml 0.9.34+deprecated",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "adora-operator-api"
+version = "0.4.1"
+dependencies = [
+ "adora-arrow-convert",
+ "adora-operator-api-macros",
+ "adora-operator-api-types",
+]
+
+[[package]]
+name = "adora-operator-api-c"
+version = "0.4.1"
+dependencies = [
+ "adora-operator-api-types",
+]
+
+[[package]]
+name = "adora-operator-api-cxx"
+version = "0.4.1"
+dependencies = [
+ "adora-operator-api",
+ "cxx",
+ "cxx-build",
+]
+
+[[package]]
+name = "adora-operator-api-macros"
+version = "0.4.1"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
+]
+
+[[package]]
+name = "adora-operator-api-python"
+version = "0.4.1"
+dependencies = [
+ "adora-node-api",
+ "aligned-vec",
+ "arrow",
+ "arrow-schema",
+ "chrono",
+ "eyre",
+ "flume 0.10.14",
+ "futures",
+ "futures-concurrency",
+ "pyo3",
+ "serde_yaml 0.9.34+deprecated",
+]
+
+[[package]]
+name = "adora-operator-api-types"
+version = "0.4.1"
+dependencies = [
+ "adora-arrow-convert",
+ "arrow",
+ "safer-ffi",
+]
+
+[[package]]
+name = "adora-ros2-bridge"
+version = "0.4.1"
+dependencies = [
+ "adora-cli",
+ "adora-daemon",
+ "adora-ros2-bridge-msg-gen",
+ "array-init",
+ "dunce",
+ "eyre",
+ "flume 0.11.1",
+ "futures",
+ "futures-timer",
+ "process-wrap",
+ "rand 0.8.5",
+ "ros2-client",
+ "rust-format",
+ "rustdds",
+ "serde",
+ "serde-big-array",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "widestring",
+]
+
+[[package]]
+name = "adora-ros2-bridge-msg-gen"
+version = "0.4.1"
+dependencies = [
+ "anyhow",
+ "glob",
+ "heck 0.3.3",
+ "nom 7.1.3",
+ "proc-macro2",
+ "quick-xml 0.38.4",
+ "quote",
+ "regex",
+ "rust-format",
+ "syn 1.0.109",
+ "thiserror 1.0.69",
+ "tracing",
+]
+
+[[package]]
+name = "adora-ros2-bridge-python"
+version = "0.4.1"
+dependencies = [
+ "adora-ros2-bridge",
+ "adora-ros2-bridge-msg-gen",
+ "arrow",
+ "eyre",
+ "futures",
+ "pyo3",
+ "pyo3_special_method_derive",
+ "serde",
+ "serde_assert",
+]
+
+[[package]]
+name = "adora-runtime"
+version = "0.4.1"
+dependencies = [
+ "adora-core",
+ "adora-download",
+ "adora-message",
+ "adora-metrics",
+ "adora-node-api",
+ "adora-operator-api-python",
+ "adora-operator-api-types",
+ "adora-tracing",
+ "aligned-vec",
+ "arrow",
+ "eyre",
+ "flume 0.10.14",
+ "futures",
+ "futures-concurrency",
+ "libloading 0.7.4",
+ "pyo3",
+ "pythonize",
+ "serde_yaml 0.9.34+deprecated",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+ "tracing-opentelemetry",
+]
+
+[[package]]
+name = "adora-tracing"
+version = "0.4.1"
+dependencies = [
+ "eyre",
+ "opentelemetry 0.31.0",
+ "opentelemetry-otlp",
+ "opentelemetry_sdk",
+ "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "aes"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -487,7 +951,7 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 name = "benchmark-example-node"
 version = "0.4.1"
 dependencies = [
- "dora-node-api",
+ "adora-node-api",
  "eyre",
  "futures",
  "rand 0.8.5",
@@ -498,7 +962,7 @@ dependencies = [
 name = "benchmark-example-sink"
 version = "0.4.1"
 dependencies = [
- "dora-node-api",
+ "adora-node-api",
  "eyre",
 ]
 
@@ -1458,470 +1922,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d4b8a88685455ed29a21542a33abd9cb6510b6b129abadabdcef0f4c55bc8f61"
 dependencies = [
  "litrs",
-]
-
-[[package]]
-name = "dora-arrow-convert"
-version = "0.4.1"
-dependencies = [
- "arrow",
- "chrono",
- "eyre",
- "half",
- "num",
-]
-
-[[package]]
-name = "dora-cli"
-version = "0.4.1"
-dependencies = [
- "arrow",
- "arrow-json",
- "arrow-schema",
- "chrono",
- "clap",
- "clap_complete",
- "colored 2.2.0",
- "communication-layer-request-reply",
- "crossterm 0.29.0",
- "ctrlc",
- "dora-coordinator",
- "dora-core",
- "dora-daemon",
- "dora-download",
- "dora-message",
- "dora-node-api-c",
- "dora-operator-api-c",
- "dora-runtime",
- "dora-tracing",
- "dunce",
- "duration-str",
- "env_logger",
- "eyre",
- "futures",
- "git2",
- "inquire 0.5.3",
- "itertools 0.14.0",
- "log",
- "notify",
- "pyo3",
- "pyo3-build-config",
- "ratatui",
- "self-replace",
- "self_update",
- "serde",
- "serde_json",
- "serde_yaml 0.9.34+deprecated",
- "sysinfo 0.36.1",
- "tabwriter",
- "termcolor",
- "tokio",
- "tokio-stream",
- "tracing",
- "tracing-log",
- "uuid",
- "webbrowser",
- "zenoh",
-]
-
-[[package]]
-name = "dora-coordinator"
-version = "0.4.1"
-dependencies = [
- "ctrlc",
- "dora-core",
- "dora-message",
- "dora-tracing",
- "eyre",
- "futures",
- "futures-concurrency",
- "itertools 0.14.0",
- "log",
- "petname",
- "serde_json",
- "tokio",
- "tokio-stream",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "dora-core"
-version = "0.4.1"
-dependencies = [
- "dora-message",
- "dunce",
- "eyre",
- "fs_extra",
- "git2",
- "itertools 0.14.0",
- "log",
- "once_cell",
- "schemars 1.2.1",
- "serde",
- "serde-with-expand-env",
- "serde_json",
- "serde_yaml 0.9.34+deprecated",
- "splitty",
- "tokio",
- "tracing",
- "url",
- "uuid",
- "which",
- "zenoh",
-]
-
-[[package]]
-name = "dora-daemon"
-version = "0.4.1"
-dependencies = [
- "aligned-vec",
- "async-trait",
- "bincode",
- "chrono",
- "clonable-command",
- "crossbeam",
- "crossbeam-skiplist",
- "ctrlc",
- "dora-arrow-convert",
- "dora-core",
- "dora-download",
- "dora-message",
- "dora-node-api",
- "dora-tracing",
- "dunce",
- "eyre",
- "flume 0.10.14",
- "futures",
- "futures-concurrency",
- "git2",
- "itertools 0.14.0",
- "memchr",
- "process-wrap",
- "serde_json",
- "serde_yaml 0.9.34+deprecated",
- "shared-memory-server",
- "shellexpand 3.1.1",
- "sysinfo 0.36.1",
- "tokio",
- "tokio-stream",
- "tracing",
- "tracing-opentelemetry",
- "url",
- "uuid",
- "which",
- "windows 0.61.3",
- "zenoh",
-]
-
-[[package]]
-name = "dora-download"
-version = "0.4.1"
-dependencies = [
- "eyre",
- "reqwest",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "dora-examples"
-version = "0.0.0"
-dependencies = [
- "assert2",
- "dora-cli",
- "dora-coordinator",
- "dora-core",
- "dora-download",
- "dora-message",
- "dora-tracing",
- "dunce",
- "eyre",
- "futures",
- "serde_yaml 0.8.26",
- "tempfile",
- "tokio",
- "tokio-stream",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "dora-message"
-version = "0.7.0"
-dependencies = [
- "aligned-vec",
- "arrow-data",
- "arrow-schema",
- "bincode",
- "chrono",
- "eyre",
- "log",
- "once_cell",
- "schemars 1.2.1",
- "semver",
- "serde",
- "serde-with-expand-env",
- "serde_json",
- "serde_yaml 0.9.34+deprecated",
- "tokio",
- "uhlc 0.5.2",
- "uuid",
-]
-
-[[package]]
-name = "dora-metrics"
-version = "0.4.1"
-dependencies = [
- "eyre",
- "opentelemetry 0.31.0",
- "opentelemetry-otlp",
- "opentelemetry-system-metrics",
- "opentelemetry_sdk",
-]
-
-[[package]]
-name = "dora-node-api"
-version = "0.4.1"
-dependencies = [
- "aligned-vec",
- "arrow",
- "arrow-json",
- "arrow-schema",
- "bincode",
- "colored 3.1.1",
- "dora-arrow-convert",
- "dora-core",
- "dora-message",
- "dora-metrics",
- "dora-tracing",
- "eyre",
- "flume 0.10.14",
- "futures",
- "futures-concurrency",
- "futures-timer",
- "inquire 0.7.5",
- "is-terminal",
- "opentelemetry 0.23.0",
- "serde_json",
- "serde_yaml 0.9.34+deprecated",
- "shared-memory-server",
- "shared_memory_extended",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "dora-node-api-c"
-version = "0.4.1"
-dependencies = [
- "arrow-array",
- "dora-node-api",
- "eyre",
- "tracing",
-]
-
-[[package]]
-name = "dora-node-api-cxx"
-version = "0.4.1"
-dependencies = [
- "arrow",
- "chrono",
- "cxx",
- "cxx-build",
- "dora-node-api",
- "dora-ros2-bridge",
- "dora-ros2-bridge-msg-gen",
- "eyre",
- "futures-lite",
- "prettyplease 0.1.25",
- "rust-format",
- "serde",
- "serde-big-array",
- "serde_json",
-]
-
-[[package]]
-name = "dora-node-api-python"
-version = "0.4.1"
-dependencies = [
- "arrow",
- "dora-cli",
- "dora-download",
- "dora-node-api",
- "dora-operator-api-python",
- "dora-ros2-bridge-python",
- "dora-runtime",
- "eyre",
- "flume 0.10.14",
- "futures",
- "pyo3",
- "pyo3-build-config",
- "pyo3_special_method_derive",
- "pythonize",
- "serde_yaml 0.9.34+deprecated",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "dora-operator-api"
-version = "0.4.1"
-dependencies = [
- "dora-arrow-convert",
- "dora-operator-api-macros",
- "dora-operator-api-types",
-]
-
-[[package]]
-name = "dora-operator-api-c"
-version = "0.4.1"
-dependencies = [
- "dora-operator-api-types",
-]
-
-[[package]]
-name = "dora-operator-api-cxx"
-version = "0.4.1"
-dependencies = [
- "cxx",
- "cxx-build",
- "dora-operator-api",
-]
-
-[[package]]
-name = "dora-operator-api-macros"
-version = "0.4.1"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 1.0.109",
-]
-
-[[package]]
-name = "dora-operator-api-python"
-version = "0.4.1"
-dependencies = [
- "aligned-vec",
- "arrow",
- "arrow-schema",
- "chrono",
- "dora-node-api",
- "eyre",
- "flume 0.10.14",
- "futures",
- "futures-concurrency",
- "pyo3",
- "serde_yaml 0.9.34+deprecated",
-]
-
-[[package]]
-name = "dora-operator-api-types"
-version = "0.4.1"
-dependencies = [
- "arrow",
- "dora-arrow-convert",
- "safer-ffi",
-]
-
-[[package]]
-name = "dora-ros2-bridge"
-version = "0.4.1"
-dependencies = [
- "array-init",
- "dora-cli",
- "dora-daemon",
- "dora-ros2-bridge-msg-gen",
- "dunce",
- "eyre",
- "flume 0.11.1",
- "futures",
- "futures-timer",
- "process-wrap",
- "rand 0.8.5",
- "ros2-client",
- "rust-format",
- "rustdds",
- "serde",
- "serde-big-array",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "widestring",
-]
-
-[[package]]
-name = "dora-ros2-bridge-msg-gen"
-version = "0.4.1"
-dependencies = [
- "anyhow",
- "glob",
- "heck 0.3.3",
- "nom 7.1.3",
- "proc-macro2",
- "quick-xml 0.38.4",
- "quote",
- "regex",
- "rust-format",
- "syn 1.0.109",
- "thiserror 1.0.69",
- "tracing",
-]
-
-[[package]]
-name = "dora-ros2-bridge-python"
-version = "0.4.1"
-dependencies = [
- "arrow",
- "dora-ros2-bridge",
- "dora-ros2-bridge-msg-gen",
- "eyre",
- "futures",
- "pyo3",
- "pyo3_special_method_derive",
- "serde",
- "serde_assert",
-]
-
-[[package]]
-name = "dora-runtime"
-version = "0.4.1"
-dependencies = [
- "aligned-vec",
- "arrow",
- "dora-core",
- "dora-download",
- "dora-message",
- "dora-metrics",
- "dora-node-api",
- "dora-operator-api-python",
- "dora-operator-api-types",
- "dora-tracing",
- "eyre",
- "flume 0.10.14",
- "futures",
- "futures-concurrency",
- "libloading 0.7.4",
- "pyo3",
- "pythonize",
- "serde_yaml 0.9.34+deprecated",
- "tokio",
- "tokio-stream",
- "tracing",
- "tracing-opentelemetry",
-]
-
-[[package]]
-name = "dora-tracing"
-version = "0.4.1"
-dependencies = [
- "eyre",
- "opentelemetry 0.31.0",
- "opentelemetry-otlp",
- "opentelemetry_sdk",
- "tracing",
- "tracing-opentelemetry",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -3633,7 +3633,7 @@ dependencies = [
 name = "multiple-daemons-example-node"
 version = "0.4.1"
 dependencies = [
- "dora-node-api",
+ "adora-node-api",
  "eyre",
  "futures",
  "rand 0.8.5",
@@ -3644,14 +3644,14 @@ dependencies = [
 name = "multiple-daemons-example-operator"
 version = "0.4.1"
 dependencies = [
- "dora-operator-api",
+ "adora-operator-api",
 ]
 
 [[package]]
 name = "multiple-daemons-example-sink"
 version = "0.4.1"
 dependencies = [
- "dora-node-api",
+ "adora-node-api",
  "eyre",
 ]
 
@@ -4879,8 +4879,8 @@ dependencies = [
 name = "receive_data"
 version = "0.4.1"
 dependencies = [
+ "adora-node-api",
  "chrono",
- "dora-node-api",
  "eyre",
 ]
 
@@ -5105,7 +5105,7 @@ dependencies = [
 name = "rust-dataflow-example-node"
 version = "0.4.1"
 dependencies = [
- "dora-node-api",
+ "adora-node-api",
  "eyre",
  "fastrand",
  "futures",
@@ -5118,7 +5118,7 @@ dependencies = [
 name = "rust-dataflow-example-sink"
 version = "0.4.1"
 dependencies = [
- "dora-node-api",
+ "adora-node-api",
  "eyre",
 ]
 
@@ -5126,7 +5126,7 @@ dependencies = [
 name = "rust-dataflow-example-sink-dynamic"
 version = "0.4.1"
 dependencies = [
- "dora-node-api",
+ "adora-node-api",
  "eyre",
 ]
 
@@ -5134,7 +5134,7 @@ dependencies = [
 name = "rust-dataflow-example-status-node"
 version = "0.4.1"
 dependencies = [
- "dora-node-api",
+ "adora-node-api",
  "eyre",
 ]
 
@@ -5153,8 +5153,8 @@ dependencies = [
 name = "rust-ros2-example-node"
 version = "0.4.1"
 dependencies = [
- "dora-node-api",
- "dora-ros2-bridge",
+ "adora-node-api",
+ "adora-ros2-bridge",
  "eyre",
  "futures",
  "futures-timer",

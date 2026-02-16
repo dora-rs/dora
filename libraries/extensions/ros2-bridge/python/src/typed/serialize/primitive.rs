@@ -2,7 +2,7 @@ use arrow::{
     array::{ArrayRef, AsArray},
     datatypes::{self, ArrowPrimitiveType},
 };
-use dora_ros2_bridge_msg_gen::types::primitives::BasicType;
+use adora_ros2_bridge_msg_gen::types::primitives::BasicType;
 
 pub struct SerializeWrapper<'a> {
     pub t: &'a BasicType,

@@ -1,6 +1,6 @@
 """TODO: Add docstring."""
 
-from dora import DoraStatus
+from adora import AdoraStatus
 
 
 class Operator:
@@ -11,35 +11,35 @@ class Operator:
 
     def on_event(
         self,
-        dora_event,
+        adora_event,
         send_output,
-    ) -> DoraStatus:
+    ) -> AdoraStatus:
         """TODO :Description.
 
         Parameters
         ----------
-        dora_event : dict
+        adora_event : dict
             Event containing an `id`, `data`, and `metadata`.
         send_output : Callable[[str, bytes | pa.Array, Optional[dict]], None]
             Function for sending output to the dataflow. The first argument is the `output_id`, the second
-            argument is the data (either as bytes or a pa.Array), and the third argument is the dora metadata
+            argument is the data (either as bytes or a pa.Array), and the third argument is the adora metadata
             dictionary. For example:
-                send_output("bbox", pa.array([100], type=pa.uint8()), dora_event["metadata"]).
+                send_output("bbox", pa.array([100], type=pa.uint8()), adora_event["metadata"]).
 
         Returns
         -------
-            DoraStatus:
+            AdoraStatus:
                 CONTINUE means that the operator will
                     keep listening for further inputs.
                 STOP means that the operator stop listening for inputs.
 
         """
-        if dora_event["type"] == "INPUT":
+        if adora_event["type"] == "INPUT":
             print(
-                f"Received input {dora_event['id']}, with data: {dora_event['value']}",
+                f"Received input {adora_event['id']}, with data: {adora_event['value']}",
             )
 
-        return DoraStatus.CONTINUE
+        return AdoraStatus.CONTINUE
 
     def __del__(self):
         """Perform actions before being deleted."""

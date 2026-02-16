@@ -1,4 +1,4 @@
-This crate corresponds to the Node API for Dora.
+This crate corresponds to the Node API for Adora.
 
 ## Building
 
@@ -14,6 +14,6 @@ uv pip install -e .
 Type hinting requires to run a second step
 
 ```bash
-python generate_stubs.py dora dora/__init__.pyi
+python generate_stubs.py adora adora/__init__.pyi
 maturin develop
 ```

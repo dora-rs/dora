@@ -1,8 +1,8 @@
 use super::system::status::daemon_running;
 use super::{Executable, default_tracing};
 use crate::{LOCALHOST, common::connect_to_coordinator};
-use dora_core::topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT;
-use dora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply};
+use adora_core::topics::ADORA_COORDINATOR_PORT_CONTROL_DEFAULT;
+use adora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply};
 use eyre::{Context, ContextCompat, bail};
 use std::path::PathBuf;
 use std::{fs, net::SocketAddr, path::Path, process::Command, time::Duration};
@@ -26,12 +26,12 @@ impl Executable for Up {
 struct UpConfig {}
 
 pub(crate) fn up(config_path: Option<&Path>) -> eyre::Result<()> {
-    let UpConfig {} = parse_dora_config(config_path)?;
-    let coordinator_addr = (LOCALHOST, DORA_COORDINATOR_PORT_CONTROL_DEFAULT).into();
+    let UpConfig {} = parse_adora_config(config_path)?;
+    let coordinator_addr = (LOCALHOST, ADORA_COORDINATOR_PORT_CONTROL_DEFAULT).into();
     let mut session = match connect_to_coordinator(coordinator_addr) {
         Ok(session) => session,
         Err(_) => {
-            start_coordinator().wrap_err("failed to start dora-coordinator")?;
+            start_coordinator().wrap_err("failed to start adora-coordinator")?;
 
             loop {
                 match connect_to_coordinator(coordinator_addr) {
@@ -46,7 +46,7 @@ pub(crate) fn up(config_path: Option<&Path>) -> eyre::Result<()> {
     };
 
     if !daemon_running(&mut *session)? {
-        start_daemon().wrap_err("failed to start dora-daemon")?;
+        start_daemon().wrap_err("failed to start adora-daemon")?;
 
         // wait a bit until daemon is connected
         let mut i = 0;
@@ -70,10 +70,10 @@ pub(crate) fn destroy(
     config_path: Option<&Path>,
     coordinator_addr: SocketAddr,
 ) -> Result<(), eyre::ErrReport> {
-    let UpConfig {} = parse_dora_config(config_path)?;
+    let UpConfig {} = parse_adora_config(config_path)?;
     match connect_to_coordinator(coordinator_addr) {
         Ok(mut session) => {
-            // send destroy command to dora-coordinator
+            // send destroy command to adora-coordinator
             let reply_raw = session
                 .request(&serde_json::to_vec(&ControlRequest::Destroy).unwrap())
                 .wrap_err("failed to send destroy message")?;
@@ -87,20 +87,20 @@ pub(crate) fn destroy(
                     bail!("Destroy command failed with error: {}", err);
                 }
                 _ => {
-                    bail!("Unexpected reply from dora-coordinator");
+                    bail!("Unexpected reply from adora-coordinator");
                 }
             }
         }
         Err(_) => {
-            bail!("Could not connect to dora-coordinator");
+            bail!("Could not connect to adora-coordinator");
         }
     }
 
     Ok(())
 }
 
-fn parse_dora_config(config_path: Option<&Path>) -> Result<UpConfig, eyre::ErrReport> {
-    let path = config_path.or_else(|| Some(Path::new("dora-config.yml")).filter(|p| p.exists()));
+fn parse_adora_config(config_path: Option<&Path>) -> Result<UpConfig, eyre::ErrReport> {
+    let path = config_path.or_else(|| Some(Path::new("adora-config.yml")).filter(|p| p.exists()));
     let config = match path {
         Some(path) => {
             let raw = fs::read_to_string(path)
@@ -117,18 +117,18 @@ fn start_coordinator() -> eyre::Result<()> {
     let path = if cfg!(feature = "python") {
         std::env::args_os()
             .nth(1)
-            .context("Could not get first argument correspond to dora with python installation")?
+            .context("Could not get first argument correspond to adora with python installation")?
     } else {
         std::env::args_os()
             .next()
-            .context("Could not get dora path")?
+            .context("Could not get adora path")?
     };
     let mut cmd = Command::new(path);
     cmd.arg("coordinator");
     cmd.arg("--quiet");
-    cmd.spawn().wrap_err("failed to run `dora coordinator`")?;
+    cmd.spawn().wrap_err("failed to run `adora coordinator`")?;
 
-    println!("started dora coordinator");
+    println!("started adora coordinator");
 
     Ok(())
 }
@@ -137,18 +137,18 @@ fn start_daemon() -> eyre::Result<()> {
     let path = if cfg!(feature = "python") {
         std::env::args_os()
             .nth(1)
-            .context("Could not get first argument correspond to dora with python installation")?
+            .context("Could not get first argument correspond to adora with python installation")?
     } else {
         std::env::args_os()
             .next()
-            .context("Could not get dora path")?
+            .context("Could not get adora path")?
     };
     let mut cmd = Command::new(path);
     cmd.arg("daemon");
     cmd.arg("--quiet");
-    cmd.spawn().wrap_err("failed to run `dora daemon`")?;
+    cmd.spawn().wrap_err("failed to run `adora daemon`")?;
 
-    println!("started dora daemon");
+    println!("started adora daemon");
 
     Ok(())
 }

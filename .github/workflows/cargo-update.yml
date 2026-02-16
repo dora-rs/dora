@@ -21,8 +21,8 @@ jobs:
 
       - name: Configure git
         run: |
-          git config user.name "Dora Bot"
-          git config user.email "dora-bot@phil-opp.com"
+          git config user.name "Adora Bot"
+          git config user.email "adora-bot@phil-opp.com"
 
       - name: Create a branch for the update
         run: |

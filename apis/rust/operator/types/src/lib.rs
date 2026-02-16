@@ -3,7 +3,7 @@
 #![allow(clippy::missing_safety_doc)]
 
 pub use arrow;
-use dora_arrow_convert::{ArrowData, IntoArrow};
+use adora_arrow_convert::{ArrowData, IntoArrow};
 pub use safer_ffi;
 
 use arrow::{
@@ -21,34 +21,34 @@ use std::{ops::Deref, path::Path};
 #[derive_ReprC]
 #[ffi_export]
 #[repr(C)]
-pub struct DoraInitOperator {
-    pub init_operator: unsafe extern "C" fn() -> DoraInitResult,
+pub struct AdoraInitOperator {
+    pub init_operator: unsafe extern "C" fn() -> AdoraInitResult,
 }
 
 #[derive_ReprC]
 #[ffi_export]
 #[repr(C)]
 #[derive(Debug)]
-pub struct DoraInitResult {
-    pub result: DoraResult,
+pub struct AdoraInitResult {
+    pub result: AdoraResult,
     pub operator_context: *mut std::ffi::c_void,
 }
 #[derive_ReprC]
 #[ffi_export]
 #[repr(C)]
-pub struct DoraDropOperator {
-    pub drop_operator: unsafe extern "C" fn(operator_context: *mut std::ffi::c_void) -> DoraResult,
+pub struct AdoraDropOperator {
+    pub drop_operator: unsafe extern "C" fn(operator_context: *mut std::ffi::c_void) -> AdoraResult,
 }
 
 #[derive_ReprC]
 #[ffi_export]
 #[repr(C)]
 #[derive(Debug)]
-pub struct DoraResult {
+pub struct AdoraResult {
     pub error: Option<safer_ffi::boxed::Box<safer_ffi::String>>,
 }
 
-impl DoraResult {
+impl AdoraResult {
     pub const SUCCESS: Self = Self { error: None };
 
     pub fn from_error(error: String) -> Self {
@@ -75,7 +75,7 @@ impl DoraResult {
 #[derive_ReprC]
 #[ffi_export]
 #[repr(C)]
-pub struct DoraOnEvent {
+pub struct AdoraOnEvent {
     pub on_event: OnEventFn,
 }
 
@@ -123,7 +123,7 @@ pub struct Metadata {
 #[ffi_export]
 #[repr(C)]
 pub struct SendOutput {
-    pub send_output: ArcDynFn1<DoraResult, Output>,
+    pub send_output: ArcDynFn1<AdoraResult, Output>,
 }
 
 #[derive_ReprC]
@@ -141,30 +141,30 @@ pub struct Output {
 #[repr(C)]
 #[derive(Debug)]
 pub struct OnEventResult {
-    pub result: DoraResult,
-    pub status: DoraStatus,
+    pub result: AdoraResult,
+    pub status: AdoraStatus,
 }
 
 #[derive_ReprC]
 #[ffi_export]
 #[derive(Debug)]
 #[repr(u8)]
-pub enum DoraStatus {
+pub enum AdoraStatus {
     Continue = 0,
     Stop = 1,
     StopAll = 2,
 }
 
 #[ffi_export]
-pub fn dora_read_input_id(input: &Input) -> char_p_boxed {
+pub fn adora_read_input_id(input: &Input) -> char_p_boxed {
     char_p::new(&*input.id)
 }
 
 #[ffi_export]
-pub fn dora_free_input_id(_input_id: char_p_boxed) {}
+pub fn adora_free_input_id(_input_id: char_p_boxed) {}
 
 #[ffi_export]
-pub fn dora_read_data(input: &mut Input) -> Option<safer_ffi::Vec<u8>> {
+pub fn adora_read_data(input: &mut Input) -> Option<safer_ffi::Vec<u8>> {
     let data_array = input.data_array.take()?;
     let data = unsafe { arrow::ffi::from_ffi(data_array, &input.schema).ok()? };
     let array = ArrowData(arrow::array::make_array(data));
@@ -173,15 +173,15 @@ pub fn dora_read_data(input: &mut Input) -> Option<safer_ffi::Vec<u8>> {
 }
 
 #[ffi_export]
-pub fn dora_free_data(_data: safer_ffi::Vec<u8>) {}
+pub fn adora_free_data(_data: safer_ffi::Vec<u8>) {}
 
 #[ffi_export]
-pub unsafe fn dora_send_operator_output(
+pub unsafe fn adora_send_operator_output(
     send_output: &SendOutput,
     id: safer_ffi::char_p::char_p_ref<'_>,
     data_ptr: *const u8,
     data_len: usize,
-) -> DoraResult {
+) -> AdoraResult {
     let result = || {
         let data = unsafe { slice::from_raw_parts(data_ptr, data_len) };
         let arrow_data = data.to_owned().into_arrow();
@@ -199,7 +199,7 @@ pub unsafe fn dora_send_operator_output(
     };
     match result() {
         Ok(output) => send_output.send_output.call(output),
-        Err(error) => DoraResult {
+        Err(error) => AdoraResult {
             error: Some(Box::new(safer_ffi::String::from(error)).into()),
         },
     }

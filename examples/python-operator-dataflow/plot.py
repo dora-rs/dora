@@ -3,7 +3,7 @@
 import os
 
 import cv2
-from dora import DoraStatus
+from adora import AdoraStatus
 from utils import LABELS
 
 CI = os.environ.get("CI")
@@ -26,13 +26,13 @@ class Operator:
 
     def on_event(
         self,
-        dora_event,
+        adora_event,
         send_output,
     ):
         """TODO: Add docstring."""
-        if dora_event["type"] == "INPUT":
-            id = dora_event["id"]
-            value = dora_event["value"]
+        if adora_event["type"] == "INPUT":
+            id = adora_event["id"]
+            value = adora_event["value"]
             if id == "image":
 
                 image = (
@@ -100,7 +100,7 @@ class Operator:
                 if CI != "true":
                     cv2.imshow("frame", image)
                     if cv2.waitKey(1) & 0xFF == ord("q"):
-                        return DoraStatus.STOP
+                        return AdoraStatus.STOP
             elif id == "bbox":
                 self.bboxs = value.to_numpy().reshape((-1, 6))
             elif id == "keyboard_buffer":
@@ -115,4 +115,4 @@ class Operator:
                     },
                 ]
 
-        return DoraStatus.CONTINUE
+        return AdoraStatus.CONTINUE

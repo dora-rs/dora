@@ -1,16 +1,16 @@
 use crate::{
-    CoreNodeKindExt, DoraEvent, Event, OutputId, ProcessOperation, RunningNode,
+    CoreNodeKindExt, AdoraEvent, Event, OutputId, ProcessOperation, RunningNode,
     log::{self, NodeLogger},
 };
 use aligned_vec::{AVec, ConstAlign};
 use crossbeam::queue::ArrayQueue;
-use dora_arrow_convert::IntoArrow;
-use dora_core::{
+use adora_arrow_convert::IntoArrow;
+use adora_core::{
     config::DataId,
     descriptor::{ResolvedNode, ResolvedNodeExt},
     uhlc::HLC,
 };
-use dora_message::{
+use adora_message::{
     DataflowId,
     common::{LogLevel, LogMessage, LogMessageHelper},
     daemon_to_coordinator::{DataMessage, NodeExitStatus, Timestamped},
@@ -18,7 +18,7 @@ use dora_message::{
     descriptor::RestartPolicy,
     id::NodeId,
 };
-use dora_node_api::{
+use adora_node_api::{
     Metadata,
     arrow::array::ArrayData,
     arrow_utils::{copy_array_into_sample, required_data_size},
@@ -94,8 +94,8 @@ impl PreparedNode {
 
     fn restart_policy(&self) -> RestartPolicy {
         match &self.node.kind {
-            dora_core::descriptor::CoreNodeKind::Custom(n) => n.restart_policy,
-            dora_core::descriptor::CoreNodeKind::Runtime(_) => RestartPolicy::Never,
+            adora_core::descriptor::CoreNodeKind::Custom(n) => n.restart_policy,
+            adora_core::descriptor::CoreNodeKind::Runtime(_) => RestartPolicy::Never,
         }
     }
 
@@ -148,7 +148,7 @@ impl PreparedNode {
                 tracing::error!("node exited with error: {:?}", exit_status);
             }
 
-            let event = DoraEvent::SpawnedNodeResult {
+            let event = AdoraEvent::SpawnedNodeResult {
                 dataflow_id: self.dataflow_id,
                 node_id: self.node.id.clone(),
                 exit_status,
@@ -458,7 +458,7 @@ impl PreparedNode {
                         node_id.clone(),
                         DataId::from(stdout_output_name.to_string()),
                     );
-                    let event = DoraEvent::Logs {
+                    let event = AdoraEvent::Logs {
                         dataflow_id,
                         output_id,
                         metadata,
@@ -490,7 +490,7 @@ impl PreparedNode {
                     output
                 });
 
-                if std::env::var("DORA_QUIET").is_err() {
+                if std::env::var("ADORA_QUIET").is_err() {
                     match serde_json::de::from_str::<LogMessageHelper>(&formatted) {
                         Ok(log_msg) => {
                             let mut message = LogMessage::from(log_msg);
@@ -505,7 +505,7 @@ impl PreparedNode {
                                     daemon_id: Some(daemon_id.clone()),
                                     dataflow_id: Some(dataflow_id),
                                     build_id: None,
-                                    level: dora_core::build::LogLevelOrStdout::Stdout,
+                                    level: adora_core::build::LogLevelOrStdout::Stdout,
                                     node_id: Some(node_id.clone()),
                                     target: None,
                                     message: formatted,
