@@ -41,6 +41,15 @@ pub enum Event {
         /// assigned to the input in the YAML file.
         id: DataId,
     },
+    /// A previously closed input has recovered and will receive data again.
+    ///
+    /// This happens when an upstream node that timed out (via `input_timeout`)
+    /// starts producing data again. The circuit breaker automatically re-opens
+    /// the input.
+    InputRecovered {
+        /// The ID of the recovered input, as specified in the YAML file.
+        id: DataId,
+    },
     /// Notification that the event stream is about to close.
     ///
     /// The [`StopCause`] field contains the reason for the event stream closure.

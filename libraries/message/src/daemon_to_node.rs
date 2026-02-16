@@ -76,6 +76,10 @@ pub enum NodeEvent {
     InputClosed {
         id: DataId,
     },
+    /// Notifies a node that a previously closed input has recovered and will receive data again.
+    InputRecovered {
+        id: DataId,
+    },
     /// Notifies a node that all its inputs have been closed.
     ///
     /// This event is only sent to nodes that have at least one input.

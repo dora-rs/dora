@@ -1011,21 +1011,21 @@ impl Daemon {
             let mut timed_out = Vec::new();
             for ((node_id, input_id), deadline) in &dataflow.input_deadlines {
                 if deadline.last_received.elapsed() > deadline.timeout {
-                    timed_out.push((node_id.clone(), input_id.clone()));
+                    timed_out.push((node_id.clone(), input_id.clone(), deadline.timeout));
                 }
             }
-            for (node_id, input_id) in &timed_out {
+            for (node_id, input_id, timeout) in &timed_out {
                 tracing::warn!(
-                    "input `{node_id}/{input_id}` timed out after {:?}, closing",
-                    dataflow
-                        .input_deadlines
-                        .get(&(node_id.clone(), input_id.clone()))
-                        .map(|d| d.timeout),
+                    "input `{node_id}/{input_id}` timed out after {timeout:?}, \
+                     closing (circuit breaker armed)",
                 );
-                close_input(dataflow, node_id, input_id, &clock);
+                dataflow
+                    .broken_inputs
+                    .insert((node_id.clone(), input_id.clone()), *timeout);
+                break_input(dataflow, node_id, input_id, &clock);
             }
-            for key in timed_out {
-                dataflow.input_deadlines.remove(&key);
+            for (node_id, input_id, _) in timed_out {
+                dataflow.input_deadlines.remove(&(node_id, input_id));
             }
         }
     }
@@ -2641,6 +2641,35 @@ async fn send_output_to_local_receivers(
                     {
                         deadline.last_received = Instant::now();
                     }
+                    // Circuit breaker recovery: re-open broken input
+                    if let Some(timeout) = dataflow
+                        .broken_inputs
+                        .remove(&(receiver_id.clone(), input_id.clone()))
+                    {
+                        tracing::info!(
+                            "input `{receiver_id}/{input_id}` recovered, \
+                             re-opening (circuit breaker reset)",
+                        );
+                        dataflow
+                            .open_inputs
+                            .entry(receiver_id.clone())
+                            .or_default()
+                            .insert(input_id.clone());
+                        dataflow.input_deadlines.insert(
+                            (receiver_id.clone(), input_id.clone()),
+                            InputDeadline {
+                                timeout,
+                                last_received: Instant::now(),
+                            },
+                        );
+                        let _ = send_with_timestamp(
+                            channel,
+                            NodeEvent::InputRecovered {
+                                id: input_id.clone(),
+                            },
+                            clock,
+                        );
+                    }
                     if let Some(token) = data.as_ref().and_then(|d| d.drop_token()) {
                         dataflow
                             .pending_drop_tokens
@@ -2706,6 +2735,54 @@ fn close_input(
     input_id: &DataId,
     clock: &HLC,
 ) {
+    // Clean up broken state if this input was circuit-broken
+    let was_broken = dataflow
+        .broken_inputs
+        .remove(&(receiver_id.clone(), input_id.clone()))
+        .is_some();
+
+    let was_open = dataflow
+        .open_inputs
+        .get_mut(receiver_id)
+        .map(|inputs| inputs.remove(input_id))
+        .unwrap_or(false);
+
+    if !was_open && !was_broken {
+        return;
+    }
+
+    if let Some(channel) = dataflow.subscribe_channels.get(receiver_id) {
+        if was_open {
+            let _ = send_with_timestamp(
+                channel,
+                NodeEvent::InputClosed {
+                    id: input_id.clone(),
+                },
+                clock,
+            );
+        }
+
+        let has_broken = dataflow
+            .broken_inputs
+            .keys()
+            .any(|(nid, _)| nid == receiver_id);
+        if dataflow.open_inputs(receiver_id).is_empty() && !has_broken {
+            if let Some(node) = dataflow.running_nodes.get_mut(receiver_id) {
+                node.disable_restart();
+            }
+            let _ = send_with_timestamp(channel, NodeEvent::AllInputsClosed, clock);
+        }
+    }
+}
+
+/// Circuit-breaker version of close_input: closes the input but keeps it recoverable.
+/// The input is moved to `broken_inputs` before calling this function.
+fn break_input(
+    dataflow: &mut RunningDataflow,
+    receiver_id: &NodeId,
+    input_id: &DataId,
+    clock: &HLC,
+) {
     if let Some(open_inputs) = dataflow.open_inputs.get_mut(receiver_id) {
         if !open_inputs.remove(input_id) {
             return;
@@ -2720,7 +2797,11 @@ fn close_input(
             clock,
         );
 
-        if dataflow.open_inputs(receiver_id).is_empty() {
+        let has_broken = dataflow
+            .broken_inputs
+            .keys()
+            .any(|(nid, _)| nid == receiver_id);
+        if dataflow.open_inputs(receiver_id).is_empty() && !has_broken {
             if let Some(node) = dataflow.running_nodes.get_mut(receiver_id) {
                 node.disable_restart();
             }
@@ -2848,6 +2929,9 @@ pub struct RunningDataflow {
     timers: BTreeMap<Duration, BTreeSet<InputId>>,
     open_inputs: BTreeMap<NodeId, BTreeSet<DataId>>,
     input_deadlines: HashMap<(NodeId, DataId), InputDeadline>,
+    /// Inputs that timed out but may recover when upstream starts producing again.
+    /// Maps (node_id, input_id) to the original timeout duration for deadline recreation.
+    broken_inputs: HashMap<(NodeId, DataId), Duration>,
     running_nodes: BTreeMap<NodeId, RunningNode>,
 
     /// List of all dynamic node IDs.
@@ -2909,6 +2993,7 @@ impl RunningDataflow {
             timers: BTreeMap::new(),
             open_inputs: BTreeMap::new(),
             input_deadlines: HashMap::new(),
+            broken_inputs: HashMap::new(),
             running_nodes: BTreeMap::new(),
             dynamic_nodes: BTreeSet::new(),
             open_external_mappings: Default::default(),
