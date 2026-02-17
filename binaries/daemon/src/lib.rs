@@ -1029,6 +1029,13 @@ impl Daemon {
         for dataflow in self.running.values_mut() {
             let mut timed_out = Vec::new();
             for ((node_id, input_id), deadline) in &dataflow.input_deadlines {
+                // Skip inputs already tracked as broken (avoids duplicate warnings)
+                if dataflow
+                    .broken_inputs
+                    .contains_key(&(node_id.clone(), input_id.clone()))
+                {
+                    continue;
+                }
                 if deadline.last_received.elapsed() > deadline.timeout {
                     timed_out.push((node_id.clone(), input_id.clone(), deadline.timeout));
                 }
@@ -2693,13 +2700,19 @@ async fn send_output_to_local_receivers(
                                 last_received: Instant::now(),
                             },
                         );
-                        let _ = send_with_timestamp(
+                        if send_with_timestamp(
                             channel,
                             NodeEvent::InputRecovered {
                                 id: input_id.clone(),
                             },
                             clock,
-                        );
+                        )
+                        .is_err()
+                        {
+                            tracing::warn!(
+                                "failed to send InputRecovered for `{receiver_id}/{input_id}`"
+                            );
+                        }
                     }
                     if let Some(token) = data.as_ref().and_then(|d| d.drop_token()) {
                         dataflow
@@ -3443,7 +3456,7 @@ fn set_up_ctrlc_handler(
     });
 
     if let Err(e) = handler_result {
-        tracing::debug!("ctrl-c handler already registered, skipping: {e}");
+        tracing::warn!("ctrl-c handler already registered, skipping: {e}");
     }
 
     Ok(ctrlc_rx)

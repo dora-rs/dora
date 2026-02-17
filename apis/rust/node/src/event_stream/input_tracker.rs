@@ -11,6 +11,10 @@ use super::event::Event;
 /// time out (via `input_timeout`). It caches the last received [`ArrowData`]
 /// per input so your node can fall back to stale data instead of crashing.
 ///
+/// The cache is bounded by the number of distinct input IDs declared in the
+/// dataflow YAML. Since input IDs are fixed at dataflow compile time, the
+/// cache cannot grow unboundedly.
+///
 /// # Example
 ///
 /// ```ignore

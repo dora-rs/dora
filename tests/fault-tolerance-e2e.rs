@@ -48,24 +48,25 @@ async fn restart_recovers_from_failure() {
     )
     .await;
 
-    // The dataflow should complete (stop_after triggers graceful shutdown).
-    // It's OK if it returns Ok or an error — the key point is that the daemon
-    // didn't hang and the restart mechanism kept the node running.
-    match &result {
-        Ok(dr) => {
-            eprintln!("dataflow completed with {} node results", dr.node_results.len());
-            for (id, r) in &dr.node_results {
-                eprintln!("  {id}: {r:?}");
-            }
-        }
-        Err(e) => {
-            eprintln!("dataflow returned error (acceptable for restart test): {e}");
-        }
+    let dr = result.expect("dataflow should complete without error");
+    eprintln!("dataflow completed with {} node results", dr.node_results.len());
+    for (id, r) in &dr.node_results {
+        eprintln!("  {id}: {r:?}");
     }
 
-    // The dataflow ran to completion without hanging — that's the success criterion.
-    // The restart mechanism kept the failing node alive until stop_after fired.
-    assert!(result.is_ok(), "dataflow should complete: {result:?}");
+    // The status-node should have an error result (it panics on "fail" timer),
+    // proving it crashed and the restart mechanism was exercised.
+    let status_result = dr
+        .node_results
+        .get(&"rust-status-node".to_string().into());
+    assert!(
+        status_result.is_some(),
+        "rust-status-node should be in node_results"
+    );
+    assert!(
+        status_result.unwrap().is_err(),
+        "rust-status-node should have error result (it panics): {status_result:?}"
+    );
 }
 
 /// Max restarts limit is enforced.
@@ -92,23 +93,25 @@ async fn max_restarts_limit_reached() {
     .await;
 
     // The dataflow should complete (the node exhausts its restart budget).
-    match &result {
-        Ok(dr) => {
-            eprintln!("dataflow completed with {} node results", dr.node_results.len());
-            for (id, r) in &dr.node_results {
-                eprintln!("  {id}: {r:?}");
-            }
-            // The failing node should have an error result
-            let status_node_result = dr.node_results.get(&"rust-status-node".to_string().into());
-            if let Some(r) = status_node_result {
-                assert!(r.is_err(), "node that always panics should have error result");
-            }
-        }
-        Err(e) => {
-            // An error is also acceptable — it means the daemon detected the permanent failure
-            eprintln!("dataflow error (expected for max-restarts test): {e}");
-        }
+    let dr = result.expect("dataflow should complete without error");
+    eprintln!("dataflow completed with {} node results", dr.node_results.len());
+    for (id, r) in &dr.node_results {
+        eprintln!("  {id}: {r:?}");
     }
+
+    // The failing node must have an error result — it always panics and
+    // exhausts its max_restarts budget.
+    let status_result = dr
+        .node_results
+        .get(&"rust-status-node".to_string().into());
+    assert!(
+        status_result.is_some(),
+        "rust-status-node should be in node_results"
+    );
+    assert!(
+        status_result.unwrap().is_err(),
+        "node that always panics should have error result: {status_result:?}"
+    );
 }
 
 /// Input timeout fires when upstream stops producing.
