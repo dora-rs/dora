@@ -127,6 +127,8 @@ pub fn check_dataflow(
             .context("Could not resolve `min_log_level` configuration")?;
         node.max_log_size()
             .context("Could not resolve `max_log_size` configuration")?;
+        node.max_rotated_files()
+            .context("Could not resolve `max_rotated_files` configuration")?;
     }
 
     if has_python_operator {
@@ -252,7 +254,7 @@ impl ResolvedNodeExt for ResolvedNode {
     }
 
     fn max_rotated_files(&self) -> eyre::Result<Option<u32>> {
-        match &self.kind {
+        let value = match &self.kind {
             CoreNodeKind::Runtime(n) => {
                 let values: Vec<_> = n
                     .operators
@@ -264,10 +266,19 @@ impl ResolvedNodeExt for ResolvedNode {
                         "More than one `max_rotated_files` entries for a runtime node. Please only use one `max_rotated_files` per runtime."
                     ));
                 }
-                Ok(values.first().copied())
+                values.first().copied()
             }
-            CoreNodeKind::Custom(n) => Ok(n.max_rotated_files),
+            CoreNodeKind::Custom(n) => n.max_rotated_files,
+        };
+        if let Some(n) = value {
+            if n == 0 {
+                bail!("`max_rotated_files` must be at least 1");
+            }
+            if n > 100 {
+                bail!("`max_rotated_files` must not exceed 100");
+            }
         }
+        Ok(value)
     }
 }
 

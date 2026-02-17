@@ -415,8 +415,9 @@ impl Node {
         if let Some(target) = target {
             entry["target"] = serde_json::Value::String(target.to_string());
         }
-        if let Ok(json) = serde_json::to_string(&entry) {
-            println!("{json}");
+        match serde_json::to_string(&entry) {
+            Ok(json) => println!("{json}"),
+            Err(e) => eprintln!("adora log serialization error: {e}"),
         }
     }
 
