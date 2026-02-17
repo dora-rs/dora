@@ -14,7 +14,7 @@ Adora provides a structured logging system for real-time robotics and AI dataflo
 | Structured log routing | Per-node YAML | `send_logs_as` |
 | Log file rotation | Per-node YAML | `max_log_size` |
 | Rotation file limit | Per-node YAML | `max_rotated_files` |
-| Node log API | Rust/Python node | `node.log()`, `node.log_info()`, etc. |
+| Node log API | Rust/Python/C/C++ node | `node.log()`, `adora_log()`, etc. |
 | Log utilities library | Rust crate | `adora-log-utils` |
 | Time-range filtering | `adora logs` | `--since`, `--until` |
 | Live log streaming | `adora logs` | `--follow` |
@@ -428,6 +428,7 @@ Nodes can emit structured log messages programmatically using the node API. Thes
 
 ```rust
 use adora_node_api::AdoraNode;
+use std::collections::BTreeMap;
 
 let (node, mut events) = AdoraNode::init_from_env()?;
 
@@ -440,9 +441,15 @@ node.log_warn("temperature elevated");
 node.log_info("reading acquired");
 node.log_debug("raw bytes received");
 node.log_trace("entering loop iteration");
+
+// Structured fields (key-value context preserved through send_logs_as)
+let mut fields = BTreeMap::new();
+fields.insert("sensor_id".to_string(), "temp-01".to_string());
+fields.insert("reading".to_string(), "42.5".to_string());
+node.log_with_fields("info", "reading acquired", None, Some(&fields));
 ```
 
-The `level` parameter accepts `"error"`, `"warn"` (or `"warning"`), `"info"`, `"debug"`, `"trace"`. Unknown levels default to `"info"`.
+The `level` parameter accepts `"error"`, `"warn"` (or `"warning"`), `"info"`, `"debug"`, `"trace"`. Unknown levels default to `"info"`. Fields are capped at 60 KB total to match the downstream 64 KB parse limit.
 
 ### Python
 
@@ -454,12 +461,34 @@ node = Node()
 # General log with level string and optional target
 node.log("info", "sensor initialized", target="sensor.init")
 
+# Structured fields
+node.log("info", "reading acquired", fields={"sensor_id": "temp-01", "reading": "42.5"})
+
 # For most cases, use Python's built-in logging module instead:
 import logging
 logging.info("sensor initialized")
 ```
 
 The Python `node.log()` method has the same level normalization as Rust. However, Python nodes typically use the standard `logging` module, which the daemon parses into structured log entries automatically.
+
+### C
+
+```c
+#include "node_api.h"
+
+void *ctx = init_adora_context_from_env();
+const char *level = "info";
+const char *msg = "sensor initialized";
+adora_log(ctx, level, strlen(level), msg, strlen(msg));
+```
+
+### C++
+
+```cpp
+// Via the cxx bridge
+auto node = init_adora_node();
+log_message(node.send_output, "info", "sensor initialized");
+```
 
 ---
 
@@ -507,7 +536,7 @@ adora-log-utils = { workspace = true }
 
 ## Log Sink Examples
 
-Two example sink nodes demonstrate how to consume logs routed via `send_logs_as` and forward them to external destinations.
+Three example sink nodes demonstrate how to consume logs routed via `send_logs_as` and forward them to external destinations.
 
 ### File Sink (`examples/log-sink-file/`)
 
@@ -568,6 +597,31 @@ nodes:
 ```
 
 The TCP sink reads `SINK_ADDR` from the environment (default `127.0.0.1:9876`), connects to the server on startup, and sends each log entry as a JSON line. It reconnects automatically on write failure.
+
+### Alert Router (`examples/log-sink-alert/`)
+
+Splits incoming log entries by severity. All logs are forwarded to the `all_logs` output; only error and warn logs are forwarded to the `alerts` output. This enables downstream nodes to handle alerts differently (e.g., trigger notifications, write to a dedicated file).
+
+```yaml
+nodes:
+  - id: source
+    path: source.py
+    send_logs_as: log_entries
+    inputs:
+      tick: adora/timer/millis/200
+    outputs:
+      - log_entries
+
+  - id: alert_router
+    path: log-sink-alert
+    inputs:
+      logs: source/log_entries
+    outputs:
+      - all_logs
+      - alerts
+```
+
+The router parses each log entry, checks the level, and uses `node.send_output()` to forward data to the appropriate outputs.
 
 ### Building a Custom Sink
 

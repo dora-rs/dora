@@ -393,32 +393,21 @@ impl Node {
     /// :type message: str
     /// :param target: Optional target/module path
     /// :type target: str, optional
+    /// :param fields: Optional key-value pairs for structured context
+    /// :type fields: dict[str, str], optional
     /// :rtype: None
-    #[pyo3(signature = (level, message, target=None))]
-    pub fn log(&self, level: &str, message: &str, target: Option<&str>) {
-        let node_id = self.node.get().id().to_string();
-        let ts = chrono::Utc::now().to_rfc3339();
-        let level_str = match level.to_lowercase().as_str() {
-            "error" => "error",
-            "warn" | "warning" => "warn",
-            "info" => "info",
-            "debug" => "debug",
-            "trace" => "trace",
-            _ => "info",
-        };
-        let mut entry = serde_json::json!({
-            "ts": ts,
-            "level": level_str,
-            "node": node_id,
-            "msg": message,
-        });
-        if let Some(target) = target {
-            entry["target"] = serde_json::Value::String(target.to_string());
-        }
-        match serde_json::to_string(&entry) {
-            Ok(json) => println!("{json}"),
-            Err(e) => eprintln!("adora log serialization error: {e}"),
-        }
+    #[pyo3(signature = (level, message, target=None, fields=None))]
+    pub fn log(
+        &self,
+        level: &str,
+        message: &str,
+        target: Option<&str>,
+        fields: Option<std::collections::HashMap<String, String>>,
+    ) {
+        let ordered = fields.map(|f| f.into_iter().collect::<std::collections::BTreeMap<_, _>>());
+        self.node
+            .get()
+            .log_with_fields(level, message, target, ordered.as_ref());
     }
 
     /// Returns the full dataflow descriptor that this node is part of.

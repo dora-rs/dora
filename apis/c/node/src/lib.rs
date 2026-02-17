@@ -275,3 +275,52 @@ unsafe fn try_send_output(
             out.copy_from_slice(data);
         })
 }
+
+/// Sends a structured log message from a C node.
+///
+/// The `level_ptr`/`level_len` fields must point to a UTF-8 string containing
+/// one of: "error", "warn", "info", "debug", "trace".
+///
+/// The `msg_ptr`/`msg_len` fields must point to a UTF-8 string with the log
+/// message.
+///
+/// Returns 0 on success, -1 on error.
+///
+/// ## Safety
+///
+/// - The `context` argument must be a valid adora context from
+///   [`init_adora_context_from_env`].
+/// - The pointer/length pairs must describe valid UTF-8 byte slices.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn adora_log(
+    context: *mut c_void,
+    level_ptr: *const u8,
+    level_len: usize,
+    msg_ptr: *const u8,
+    msg_len: usize,
+) -> isize {
+    match unsafe { try_log(context, level_ptr, level_len, msg_ptr, msg_len) } {
+        Ok(()) => 0,
+        Err(err) => {
+            tracing::error!("{err:?}");
+            -1
+        }
+    }
+}
+
+unsafe fn try_log(
+    context: *mut c_void,
+    level_ptr: *const u8,
+    level_len: usize,
+    msg_ptr: *const u8,
+    msg_len: usize,
+) -> eyre::Result<()> {
+    if level_ptr.is_null() || msg_ptr.is_null() {
+        eyre::bail!("null pointer passed to adora_log");
+    }
+    let context: &mut AdoraContext = unsafe { &mut *context.cast() };
+    let level = std::str::from_utf8(unsafe { slice::from_raw_parts(level_ptr, level_len) })?;
+    let message = std::str::from_utf8(unsafe { slice::from_raw_parts(msg_ptr, msg_len) })?;
+    context.node.log(level, message, None);
+    Ok(())
+}

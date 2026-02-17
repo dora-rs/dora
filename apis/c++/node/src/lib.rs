@@ -93,6 +93,11 @@ mod ffi {
             id: String,
             data: &[u8],
         ) -> AdoraResult;
+        fn log_message(
+            output_sender: &Box<OutputSender>,
+            level: String,
+            message: String,
+        ) -> AdoraResult;
         fn send_output_with_metadata(
             output_sender: &mut Box<OutputSender>,
             id: String,
@@ -600,6 +605,13 @@ pub struct OutputSender(adora_node_api::AdoraNode);
 
 fn send_output(sender: &mut Box<OutputSender>, id: String, data: &[u8]) -> ffi::AdoraResult {
     send_output_internal(sender, id, data, Default::default())
+}
+
+fn log_message(sender: &Box<OutputSender>, level: String, message: String) -> ffi::AdoraResult {
+    sender.0.log(&level, &message, None);
+    ffi::AdoraResult {
+        error: String::new(),
+    }
 }
 
 fn send_output_with_metadata(

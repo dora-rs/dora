@@ -1,0 +1,52 @@
+nodes:
+  - id: source
+    path: dynamic
+    source: shell
+    args: >
+      python3 -c "
+      import json, time, sys
+      levels = ['error', 'warn', 'info', 'debug']
+      for i in range(20):
+          level = levels[i % len(levels)]
+          entry = {'timestamp': '2025-01-01T00:00:00Z', 'level': level,
+                   'node_id': 'source', 'message': f'log entry {i}'}
+          print(json.dumps(entry), flush=True)
+          time.sleep(0.2)
+      "
+    send_logs_as: log_entries
+    inputs:
+      tick: adora/timer/millis/200
+    outputs:
+      - log_entries
+
+  - id: alert_router
+    path: log-sink-alert
+    inputs:
+      logs: source/log_entries
+    outputs:
+      - all_logs
+      - alerts
+
+  - id: all_sink
+    path: dynamic
+    source: shell
+    args: >
+      python3 -c "
+      import sys
+      for line in sys.stdin:
+          print(f'[ALL] {line.strip()}')
+      "
+    inputs:
+      data: alert_router/all_logs
+
+  - id: alert_sink
+    path: dynamic
+    source: shell
+    args: >
+      python3 -c "
+      import sys
+      for line in sys.stdin:
+          print(f'[ALERT] {line.strip()}')
+      "
+    inputs:
+      data: alert_router/alerts

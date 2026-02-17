@@ -25,6 +25,7 @@ members = [
     "examples/multiple-daemons/sink",
     "examples/log-sink-tcp",
     "examples/log-sink-file",
+    "examples/log-sink-alert",
     "libraries/arrow-convert",
     "libraries/log-utils",
     "libraries/communication-layer/*",

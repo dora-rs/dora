@@ -752,6 +752,20 @@ impl AdoraNode {
     /// `level` should be one of: `"error"`, `"warn"`, `"info"`, `"debug"`, `"trace"`.
     /// Unknown levels default to `"info"`.
     pub fn log(&self, level: &str, message: &str, target: Option<&str>) {
+        self.log_with_fields(level, message, target, None);
+    }
+
+    /// Send a structured log message with optional key-value fields.
+    ///
+    /// Like [`log`](Self::log), but accepts additional structured fields that
+    /// are included in the JSON payload and preserved through `send_logs_as`.
+    pub fn log_with_fields(
+        &self,
+        level: &str,
+        message: &str,
+        target: Option<&str>,
+        fields: Option<&std::collections::BTreeMap<String, String>>,
+    ) {
         let level_str = match level.to_lowercase().as_str() {
             "error" => "error",
             "warn" | "warning" => "warn",
@@ -760,15 +774,23 @@ impl AdoraNode {
             "trace" => "trace",
             _ => "info",
         };
-        let ts = chrono::Utc::now().to_rfc3339();
+        let timestamp = chrono::Utc::now().to_rfc3339();
         let mut entry = serde_json::json!({
-            "ts": ts,
+            "timestamp": timestamp,
             "level": level_str,
-            "node": self.id.to_string(),
-            "msg": message,
+            "node_id": self.id.to_string(),
+            "message": message,
         });
         if let Some(target) = target {
             entry["target"] = serde_json::Value::String(target.to_string());
+        }
+        if let Some(fields) = fields {
+            let total: usize = fields.iter().map(|(k, v)| k.len() + v.len()).sum();
+            if total <= 60 * 1024 {
+                entry["fields"] = serde_json::json!(fields);
+            } else {
+                eprintln!("adora log: fields too large ({total} bytes), dropping fields");
+            }
         }
         match serde_json::to_string(&entry) {
             Ok(json) => println!("{json}"),
