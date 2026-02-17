@@ -6,14 +6,12 @@ use adora_core::{
 };
 use adora_message::{
     cli_to_coordinator::ControlRequest,
-    common::DaemonId,
-    coordinator_to_cli::{ControlRequestReply, DataflowIdAndName},
+    coordinator_to_cli::{ControlRequestReply, DaemonInfo, DataflowIdAndName},
 };
 use adora_tracing::TracingBuilder;
 use eyre::{Context, bail};
 
 use std::{
-    collections::BTreeSet,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::Path,
     time::Duration,
@@ -75,10 +73,10 @@ async fn main() -> eyre::Result<()> {
         let connected_machines = connected_machines(&coordinator_events_tx).await?;
         if connected_machines
             .iter()
-            .any(|id| id.matches_machine_id("A"))
+            .any(|d| d.daemon_id.matches_machine_id("A"))
             && connected_machines
                 .iter()
-                .any(|id| id.matches_machine_id("B"))
+                .any(|d| d.daemon_id.matches_machine_id("B"))
         {
             break;
         } else if retries > 20 {
@@ -184,7 +182,7 @@ async fn start_dataflow(
 
 async fn connected_machines(
     coordinator_events_tx: &Sender<Event>,
-) -> eyre::Result<BTreeSet<DaemonId>> {
+) -> eyre::Result<Vec<DaemonInfo>> {
     let (reply_sender, reply) = oneshot::channel();
     coordinator_events_tx
         .send(Event::Control(ControlEvent::IncomingRequest {

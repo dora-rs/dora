@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     net::IpAddr,
 };
 
@@ -40,7 +40,7 @@ pub enum ControlRequestReply {
     },
     DestroyOk,
     DaemonConnected(bool),
-    ConnectedDaemons(BTreeSet<DaemonId>),
+    ConnectedDaemons(Vec<DaemonInfo>),
     Logs(Vec<u8>),
     CliAndDefaultDaemonIps {
         default_daemon: Option<IpAddr>,
@@ -71,6 +71,13 @@ pub struct NodeMetricsInfo {
     pub disk_read_mb_s: Option<f64>,
     /// Disk write MB/s (if available)
     pub disk_write_mb_s: Option<f64>,
+}
+
+/// Health information about a connected daemon.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct DaemonInfo {
+    pub daemon_id: DaemonId,
+    pub last_heartbeat_ago_ms: u64,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]

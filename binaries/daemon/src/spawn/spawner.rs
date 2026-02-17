@@ -37,6 +37,7 @@ pub struct Spawner {
     /// clock is required for generating timestamps when dropping messages early because queue is full
     pub clock: Arc<HLC>,
     pub uv: bool,
+    pub ft_stats: Arc<crate::FaultToleranceStats>,
 }
 
 impl Spawner {
@@ -324,6 +325,7 @@ impl Spawner {
             daemon_tx: self.daemon_tx,
             node_stderr_most_recent,
             last_activity,
+            ft_stats: self.ft_stats,
         })
     }
 }

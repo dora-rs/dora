@@ -59,6 +59,7 @@ pub struct PreparedNode {
     pub(super) daemon_tx: mpsc::Sender<Timestamped<Event>>,
     pub(super) node_stderr_most_recent: Arc<ArrayQueue<String>>,
     pub(super) last_activity: Arc<AtomicU64>,
+    pub(super) ft_stats: Arc<crate::FaultToleranceStats>,
 }
 
 impl PreparedNode {
@@ -266,6 +267,9 @@ impl PreparedNode {
 
                 restart_count += 1;
                 self.node_config.restart_count = restart_count;
+                self.ft_stats
+                    .restarts
+                    .fetch_add(1, atomic::Ordering::Relaxed);
 
                 if success {
                     logger

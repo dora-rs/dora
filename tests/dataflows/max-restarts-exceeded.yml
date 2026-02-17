@@ -1,0 +1,12 @@
+nodes:
+  - id: rust-status-node
+    build: cargo build -p rust-dataflow-example-status-node
+    path: ../../target/debug/rust-dataflow-example-status-node
+    restart_policy: on-failure
+    max_restarts: 2
+    restart_delay: 0.1
+    inputs:
+      tick: adora/timer/millis/100
+      fail: adora/timer/millis/50
+    outputs:
+      - status

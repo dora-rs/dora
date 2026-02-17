@@ -179,6 +179,7 @@ dependencies = [
  "adora-cli",
  "adora-coordinator",
  "adora-core",
+ "adora-daemon",
  "adora-download",
  "adora-message",
  "adora-tracing",

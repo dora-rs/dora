@@ -98,7 +98,11 @@ use adora_message::{
     daemon_to_node::{DaemonCommunication, DaemonReply},
     node_to_daemon::DaemonRequest,
 };
-pub use event_stream::{Event, EventScheduler, EventStream, StopCause, TryRecvError, merged};
+pub use event_stream::{
+    Event, EventScheduler, EventStream, StopCause, TryRecvError,
+    input_tracker::{InputState, InputTracker},
+    merged,
+};
 pub use flume;
 pub use flume::Receiver;
 pub use futures;

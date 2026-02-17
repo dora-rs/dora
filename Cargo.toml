@@ -105,6 +105,7 @@ tokio = "1.24.2"
 adora-cli = { workspace = true }
 adora-coordinator = { workspace = true }
 adora-core = { workspace = true }
+adora-daemon = { workspace = true }
 adora-message = { workspace = true }
 adora-tracing = { workspace = true }
 adora-download = { workspace = true }

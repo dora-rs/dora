@@ -57,6 +57,9 @@ pub enum DaemonCoordinatorEvent {
     },
     Destroy,
     Heartbeat,
+    PeerDaemonDisconnected {
+        daemon_id: DaemonId,
+    },
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]

@@ -109,6 +109,7 @@ pub struct Daemon {
     dataflow_node_results: BTreeMap<Uuid, BTreeMap<NodeId, Result<(), NodeError>>>,
 
     clock: Arc<uhlc::HLC>,
+    ft_stats: Arc<FaultToleranceStats>,
 
     zenoh_session: zenoh::Session,
     remote_daemon_events_tx: Option<flume::Sender<eyre::Result<Timestamped<InterDaemonEvent>>>>,
@@ -395,6 +396,7 @@ impl Daemon {
             exit_when_all_finished: false,
             dataflow_node_results: BTreeMap::new(),
             clock,
+            ft_stats: Default::default(),
             zenoh_session,
             remote_daemon_events_tx,
             git_manager: Default::default(),
@@ -503,6 +505,15 @@ impl Daemon {
                 Event::NodeHealthCheckInterval => {
                     self.check_node_health();
                     self.check_input_timeouts();
+                    if self.ft_stats.any_nonzero() {
+                        tracing::info!(
+                            restarts = self.ft_stats.restarts.load(atomic::Ordering::Relaxed),
+                            health_kills = self.ft_stats.health_check_kills.load(atomic::Ordering::Relaxed),
+                            input_timeouts = self.ft_stats.input_timeouts.load(atomic::Ordering::Relaxed),
+                            cb_recoveries = self.ft_stats.circuit_breaker_recoveries.load(atomic::Ordering::Relaxed),
+                            "fault tolerance stats",
+                        );
+                    }
                 }
                 Event::CtrlC => {
                     tracing::info!("received ctrlc signal -> stopping all dataflows");
@@ -975,6 +986,11 @@ impl Daemon {
                 let _ = reply_tx.send(None);
                 RunStatus::Continue
             }
+            DaemonCoordinatorEvent::PeerDaemonDisconnected { daemon_id } => {
+                tracing::warn!(%daemon_id, "peer daemon disconnected");
+                let _ = reply_tx.send(None);
+                RunStatus::Continue
+            }
         };
         Ok(status)
     }
@@ -997,6 +1013,9 @@ impl Daemon {
                         "node `{node_id}` unresponsive for {}ms (timeout: {timeout:?}), killing",
                         elapsed_ms,
                     );
+                    self.ft_stats
+                        .health_check_kills
+                        .fetch_add(1, atomic::Ordering::Relaxed);
                     if let Some(process) = &node.process {
                         process.submit(ProcessOperation::Kill);
                     }
@@ -1019,6 +1038,9 @@ impl Daemon {
                     "input `{node_id}/{input_id}` timed out after {timeout:?}, \
                      closing (circuit breaker armed)",
                 );
+                self.ft_stats
+                    .input_timeouts
+                    .fetch_add(1, atomic::Ordering::Relaxed);
                 dataflow
                     .broken_inputs
                     .insert((node_id.clone(), input_id.clone()), *timeout);
@@ -1143,6 +1165,7 @@ impl Daemon {
                         &metadata,
                         data.map(DataMessage::Vec),
                         &self.clock,
+                        Some(&self.ft_stats),
                     )
                     .await?;
                     Result::<_, eyre::Report>::Ok(())
@@ -1400,6 +1423,7 @@ impl Daemon {
             dataflow_descriptor,
             clock: self.clock.clone(),
             uv,
+            ft_stats: self.ft_stats.clone(),
         };
 
         let mut tasks = Vec::new();
@@ -1944,6 +1968,7 @@ impl Daemon {
             &metadata,
             data,
             &self.clock,
+            Some(&self.ft_stats),
         )
         .await?;
 
@@ -2616,6 +2641,7 @@ async fn send_output_to_local_receivers(
     metadata: &metadata::Metadata,
     data: Option<DataMessage>,
     clock: &HLC,
+    ft_stats: Option<&FaultToleranceStats>,
 ) -> Result<Option<AVec<u8, ConstAlign<128>>>, eyre::ErrReport> {
     let timestamp = metadata.timestamp();
     let empty_set = BTreeSet::new();
@@ -2650,6 +2676,11 @@ async fn send_output_to_local_receivers(
                             "input `{receiver_id}/{input_id}` recovered, \
                              re-opening (circuit breaker reset)",
                         );
+                        if let Some(stats) = ft_stats {
+                            stats
+                                .circuit_breaker_recoveries
+                                .fetch_add(1, atomic::Ordering::Relaxed);
+                        }
                         dataflow
                             .open_inputs
                             .entry(receiver_id.clone())
@@ -2813,6 +2844,24 @@ fn break_input(
 struct InputDeadline {
     timeout: Duration,
     last_received: Instant,
+}
+
+/// Atomic counters for fault tolerance events, visible in periodic health check logs.
+#[derive(Default)]
+struct FaultToleranceStats {
+    restarts: AtomicU64,
+    health_check_kills: AtomicU64,
+    input_timeouts: AtomicU64,
+    circuit_breaker_recoveries: AtomicU64,
+}
+
+impl FaultToleranceStats {
+    fn any_nonzero(&self) -> bool {
+        self.restarts.load(atomic::Ordering::Relaxed) > 0
+            || self.health_check_kills.load(atomic::Ordering::Relaxed) > 0
+            || self.input_timeouts.load(atomic::Ordering::Relaxed) > 0
+            || self.circuit_breaker_recoveries.load(atomic::Ordering::Relaxed) > 0
+    }
 }
 
 #[derive(Debug)]
@@ -3371,7 +3420,7 @@ fn set_up_ctrlc_handler(
     let (ctrlc_tx, ctrlc_rx) = mpsc::channel(1);
 
     let mut ctrlc_sent = 0;
-    ctrlc::set_handler(move || {
+    let handler_result = ctrlc::set_handler(move || {
         let event = match ctrlc_sent {
             0 => Event::CtrlC,
             1 => Event::SecondCtrlC,
@@ -3391,8 +3440,11 @@ fn set_up_ctrlc_handler(
         }
 
         ctrlc_sent += 1;
-    })
-    .wrap_err("failed to set ctrl-c handler")?;
+    });
+
+    if let Err(e) = handler_result {
+        tracing::debug!("ctrl-c handler already registered, skipping: {e}");
+    }
 
     Ok(ctrlc_rx)
 }
@@ -3762,7 +3814,7 @@ mod fault_tolerance_tests {
         );
 
         let result =
-            send_output_to_local_receivers(sender, output, &mut df, &metadata, None, &clock)
+            send_output_to_local_receivers(sender, output, &mut df, &metadata, None, &clock, None)
                 .await;
         assert!(result.is_ok());
 
@@ -3859,6 +3911,7 @@ mod fault_tolerance_tests {
             &metadata,
             None,
             &clock,
+            None,
         )
         .await;
         assert!(result.is_ok());

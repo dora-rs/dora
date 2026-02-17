@@ -169,10 +169,6 @@ impl DaemonConnections {
         self.daemons.is_empty()
     }
 
-    fn keys(&self) -> impl Iterator<Item = &DaemonId> {
-        self.daemons.keys()
-    }
-
     fn iter_mut(&mut self) -> impl Iterator<Item = (&DaemonId, &mut DaemonConnection)> {
         self.daemons.iter_mut()
     }
@@ -742,9 +738,21 @@ async fn start_inner(
                                 .send(Ok(ControlRequestReply::DaemonConnected(running)));
                         }
                         ControlRequest::ConnectedMachines => {
-                            let reply = Ok(ControlRequestReply::ConnectedDaemons(
-                                daemon_connections.keys().cloned().collect(),
-                            ));
+                            let daemon_infos: Vec<_> = daemon_connections
+                                .iter_mut()
+                                .map(|(id, conn)| {
+                                    adora_message::coordinator_to_cli::DaemonInfo {
+                                        daemon_id: id.clone(),
+                                        last_heartbeat_ago_ms: conn
+                                            .last_heartbeat
+                                            .elapsed()
+                                            .as_millis()
+                                            as u64,
+                                    }
+                                })
+                                .collect();
+                            let reply =
+                                Ok(ControlRequestReply::ConnectedDaemons(daemon_infos));
                             let _ = reply_sender.send(reply);
                         }
                         ControlRequest::LogSubscribe { .. } => {
@@ -874,8 +882,23 @@ async fn start_inner(
                 }
                 if !disconnected.is_empty() {
                     tracing::error!("Disconnecting daemons that failed watchdog: {disconnected:?}");
-                    for machine_id in disconnected {
-                        daemon_connections.remove(&machine_id);
+                    for machine_id in &disconnected {
+                        daemon_connections.remove(machine_id);
+                    }
+                    // Notify remaining daemons about disconnected peers
+                    for disconnected_id in &disconnected {
+                        let msg = serde_json::to_vec(&Timestamped {
+                            inner: DaemonCoordinatorEvent::PeerDaemonDisconnected {
+                                daemon_id: disconnected_id.clone(),
+                            },
+                            timestamp: clock.new_timestamp(),
+                        })
+                        .wrap_err("failed to serialize PeerDaemonDisconnected")?;
+                        for (_id, conn) in daemon_connections.iter_mut() {
+                            if let Err(err) = tcp_send(&mut conn.stream, &msg).await {
+                                tracing::warn!("failed to notify daemon of peer disconnect: {err}");
+                            }
+                        }
                     }
                 }
             }
