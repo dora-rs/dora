@@ -872,6 +872,7 @@ nodes:
 
 ```rust
 use adora_node_api::{AdoraNode, Event};
+use adora_message::common::{LogLevel, LogLevelOrStdout};
 
 let (mut node, mut events) = AdoraNode::init_from_env()?;
 while let Some(event) = events.recv() {
@@ -880,7 +881,7 @@ while let Some(event) = events.recv() {
             let log = adora_log_utils::parse_log_from_arrow(&data)?;
 
             let is_error = matches!(log.level,
-                adora_message::common::LogLevelOrStdout::LogLevel(log::Level::Error));
+                LogLevelOrStdout::LogLevel(LogLevel::Error));
 
             if is_error || log.message.contains("timeout") {
                 // Send alert downstream

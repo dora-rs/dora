@@ -1,22 +1,26 @@
 use adora_node_api::{AdoraNode, Event};
-use eyre::{Context, Result};
+use eyre::{Context, Result, bail};
 use std::{
     env,
     fs::OpenOptions,
-    io::Write,
+    io::{BufWriter, Write},
+    path::{Component, PathBuf},
 };
 
 fn main() -> Result<()> {
     let (_node, mut events) = AdoraNode::init_from_env()?;
 
-    let path = env::var("LOG_FILE").unwrap_or_else(|_| "./combined.jsonl".to_string());
-    let mut file = OpenOptions::new()
+    let raw = env::var("LOG_FILE").unwrap_or_else(|_| "./combined.jsonl".to_string());
+    let path = validate_log_path(&raw)?;
+
+    let file = OpenOptions::new()
         .create(true)
         .append(true)
         .open(&path)
-        .wrap_err_with(|| format!("failed to open log file: {path}"))?;
+        .wrap_err_with(|| format!("failed to open log file: {}", path.display()))?;
+    let mut writer = BufWriter::new(file);
 
-    eprintln!("writing combined logs to {path}");
+    eprintln!("writing combined logs to {}", path.display());
     let mut count: u64 = 0;
 
     while let Some(event) = events.recv() {
@@ -31,17 +35,17 @@ fn main() -> Result<()> {
                 };
 
                 let line = format!("{}\n", adora_log_utils::format_json(&log));
-                file.write_all(line.as_bytes())
+                writer.write_all(line.as_bytes())
                     .wrap_err("failed to write to log file")?;
 
                 count += 1;
                 if count % 100 == 0 {
-                    file.flush().wrap_err("failed to flush log file")?;
+                    writer.flush().wrap_err("failed to flush log file")?;
                 }
             }
             Event::Stop(_) => {
-                file.flush().wrap_err("failed to flush log file")?;
-                eprintln!("file sink stopping, wrote {count} entries to {path}");
+                writer.flush().wrap_err("failed to flush log file")?;
+                eprintln!("file sink stopping, wrote {count} entries");
                 break;
             }
             Event::InputClosed { id } => {
@@ -52,4 +56,16 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Validate that LOG_FILE is a relative path with no parent-traversal.
+fn validate_log_path(raw: &str) -> Result<PathBuf> {
+    let path = PathBuf::from(raw);
+    if path.is_absolute() {
+        bail!("LOG_FILE must be a relative path, got: {raw}");
+    }
+    if path.components().any(|c| c == Component::ParentDir) {
+        bail!("LOG_FILE must not contain '..': {raw}");
+    }
+    Ok(path)
 }

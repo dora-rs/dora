@@ -1,19 +1,31 @@
 use adora_message::common::{LogLevel, LogLevelOrStdout, LogMessage};
 use chrono::{DateTime, Utc};
-use eyre::{Context, Result};
+use eyre::{bail, Context, Result};
+
+/// Maximum size of a single log JSON string (64 KB).
+const MAX_LOG_JSON_BYTES: usize = 64 * 1024;
 
 /// Parse a [`LogMessage`] from a JSON string.
 ///
 /// Log entries routed via `send_logs_as` arrive as JSON-encoded strings.
 /// This function deserializes them back into a [`LogMessage`].
+/// Rejects inputs larger than 64 KB to prevent unbounded allocation.
 pub fn parse_log(json: &str) -> Result<LogMessage> {
+    if json.len() > MAX_LOG_JSON_BYTES {
+        bail!(
+            "log JSON exceeds maximum size ({} bytes, limit {})",
+            json.len(),
+            MAX_LOG_JSON_BYTES
+        );
+    }
     serde_json::from_str(json).context("failed to parse log JSON")
 }
 
 /// Parse a [`LogMessage`] from Arrow input data.
 ///
-/// Convenience wrapper for node event handlers. Extracts the first string
-/// element from the Arrow array and parses it as a JSON [`LogMessage`].
+/// Convenience wrapper for node event handlers. The daemon sends one log
+/// entry per Arrow message, so this extracts the first string element and
+/// parses it as JSON. Additional elements (if any) are ignored.
 pub fn parse_log_from_arrow(data: &adora_arrow_convert::ArrowData) -> Result<LogMessage> {
     let json: &str = data.try_into().context("expected string arrow data")?;
     parse_log(json)
@@ -37,8 +49,10 @@ pub fn filter_by_level<'a>(logs: &'a [LogMessage], min_level: &LogLevelOrStdout)
 }
 
 /// Format a log entry as a JSON string (one line, no trailing newline).
+///
+/// Callers writing JSONL should append `"\n"` after each call.
 pub fn format_json(log: &LogMessage) -> String {
-    serde_json::to_string(log).unwrap_or_else(|_| format!("{:?}", log))
+    serde_json::to_string(log).expect("LogMessage serialization is infallible")
 }
 
 /// Format a log entry as a compact single-line string.
@@ -66,7 +80,7 @@ pub fn format_pretty(log: &LogMessage) -> String {
         .map(|n| n.to_string())
         .unwrap_or_default();
     let level = format_level(&log.level);
-    format!("[{ts}][{level:5}][{node}] {}", log.message)
+    format!("[{ts}][{level:6}][{node}] {}", log.message)
 }
 
 fn format_timestamp(ts: &DateTime<Utc>) -> String {
@@ -198,9 +212,17 @@ mod tests {
             "sensor",
         );
         let out = format_pretty(&log);
-        assert!(out.contains("[ERROR]"));
+        assert!(out.contains("[ERROR ]"));
         assert!(out.contains("[sensor]"));
         assert!(out.contains("failure"));
+    }
+
+    #[test]
+    fn format_pretty_stdout_alignment() {
+        let log = make_log(LogLevelOrStdout::Stdout, "raw line", "cam");
+        let out = format_pretty(&log);
+        assert!(out.contains("[STDOUT]"));
+        assert!(out.contains("[cam]"));
     }
 
     #[test]
@@ -213,5 +235,32 @@ mod tests {
         let json = format_json(&log);
         let parsed: LogMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.message, "test");
+    }
+
+    #[test]
+    fn merge_empty_streams() {
+        let merged = merge_by_timestamp(vec![]);
+        assert!(merged.is_empty());
+    }
+
+    #[test]
+    fn merge_single_stream() {
+        let now = Utc::now();
+        let mut a = make_log(LogLevelOrStdout::LogLevel(LogLevel::Info), "a", "n");
+        a.timestamp = now;
+        let mut b = make_log(LogLevelOrStdout::LogLevel(LogLevel::Info), "b", "n");
+        b.timestamp = now + chrono::Duration::seconds(1);
+        let merged = merge_by_timestamp(vec![vec![b, a]]);
+        assert_eq!(merged[0].message, "a");
+        assert_eq!(merged[1].message, "b");
+    }
+
+    #[test]
+    fn parse_rejects_oversized_json() {
+        let huge = "x".repeat(65 * 1024);
+        let err = parse_log(&huge);
+        assert!(err.is_err());
+        let msg = format!("{}", err.unwrap_err());
+        assert!(msg.contains("exceeds maximum size"));
     }
 }
