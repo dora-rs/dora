@@ -1,5 +1,6 @@
 use std::{
-    io::Write,
+    collections::HashMap,
+    io::{Read, Seek, Write},
     net::{SocketAddr, TcpStream},
     path::{Path, PathBuf},
 };
@@ -50,6 +51,9 @@ pub struct LogsArgs {
     #[clap(long, value_name = "DURATION")]
     #[arg(value_parser = parse_duration_str)]
     pub until: Option<std::time::Duration>,
+    /// Filter logs by text pattern (case-insensitive substring match)
+    #[clap(long, value_name = "PATTERN")]
+    pub grep: Option<String>,
     /// Address of the adora coordinator
     #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
     pub coordinator_addr: std::net::IpAddr,
@@ -63,6 +67,9 @@ impl Executable for LogsArgs {
         default_tracing()?;
 
         if self.local || self.all_nodes {
+            if self.follow {
+                return follow_local_logs(&self);
+            }
             return read_local_logs(&self);
         }
 
@@ -84,6 +91,7 @@ impl Executable for LogsArgs {
             self.tail,
             self.follow,
             (self.coordinator_addr, self.coordinator_port).into(),
+            self.grep.as_deref(),
         )
     }
 }
@@ -116,21 +124,10 @@ fn read_local_logs(args: &LogsArgs) -> Result<()> {
         // Sort by timestamp
         all_messages.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
 
-        // Apply time filters
+        // Apply time filters, then grep, then tail
         let filtered = apply_time_filters(all_messages, args.since, args.until, now);
-
-        // Apply tail
-        let display: Vec<_> = match args.tail {
-            Some(n) => filtered
-                .into_iter()
-                .rev()
-                .take(n)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect(),
-            None => filtered,
-        };
+        let grepped = apply_grep(filtered, args.grep.as_deref());
+        let display = apply_tail(grepped, args.tail);
 
         for msg in display {
             print_log_message(msg, &config);
@@ -140,18 +137,8 @@ fn read_local_logs(args: &LogsArgs) -> Result<()> {
         let log_file = find_node_log_file(&dataflow_dir, node)?;
         let messages = read_log_file(&log_file)?;
         let filtered = apply_time_filters(messages, args.since, args.until, now);
-
-        let display: Vec<_> = match args.tail {
-            Some(n) => filtered
-                .into_iter()
-                .rev()
-                .take(n)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect(),
-            None => filtered,
-        };
+        let grepped = apply_grep(filtered, args.grep.as_deref());
+        let display = apply_tail(grepped, args.tail);
 
         for msg in display {
             print_log_message(msg, &config);
@@ -159,6 +146,79 @@ fn read_local_logs(args: &LogsArgs) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn follow_local_logs(args: &LogsArgs) -> Result<()> {
+    let out_dir = Path::new("out");
+    if !out_dir.exists() {
+        bail!("no out/ directory found in current directory");
+    }
+
+    let dataflow_dir = find_dataflow_dir(out_dir, args.dataflow.as_deref())?;
+    let config = LogOutputConfig::default();
+    let now = Utc::now();
+
+    let files = if args.all_nodes || args.node.is_none() {
+        find_log_files(&dataflow_dir)?
+    } else {
+        vec![find_node_log_file(&dataflow_dir, args.node.as_ref().unwrap())?]
+    };
+
+    if files.is_empty() {
+        bail!("no log files found in {}", dataflow_dir.display());
+    }
+
+    // Print existing content with filters
+    let mut all_messages: Vec<LogMessage> = Vec::new();
+    for path in &files {
+        all_messages.extend(read_log_file(path)?);
+    }
+    all_messages.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+    let filtered = apply_time_filters(all_messages, args.since, args.until, now);
+    let grepped = apply_grep(filtered, args.grep.as_deref());
+    let display = apply_tail(grepped, args.tail);
+
+    for msg in display {
+        print_log_message(msg, &config);
+    }
+
+    // Track file byte offsets (start after existing content)
+    let mut file_positions: HashMap<PathBuf, u64> = HashMap::new();
+    for path in &files {
+        let len = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        file_positions.insert(path.clone(), len);
+    }
+
+    // Follow loop: poll for new content
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        let mut new_messages = Vec::new();
+        for path in &files {
+            let pos = file_positions.get(path).copied().unwrap_or(0);
+            let current_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+            if current_size <= pos {
+                continue;
+            }
+            let mut file = std::fs::File::open(path)?;
+            file.seek(std::io::SeekFrom::Start(pos))?;
+            let mut buf = String::new();
+            file.read_to_string(&mut buf)?;
+            for line in buf.lines() {
+                if let Some(msg) = parse_jsonl_line(line) {
+                    new_messages.push(msg);
+                }
+            }
+            file_positions.insert(path.clone(), current_size);
+        }
+
+        new_messages.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+        for msg in new_messages {
+            if matches_grep(&msg, args.grep.as_deref()) {
+                print_log_message(msg, &config);
+            }
+        }
+    }
 }
 
 fn find_dataflow_dir(out_dir: &Path, dataflow_id: Option<&str>) -> Result<PathBuf> {
@@ -293,6 +353,49 @@ fn apply_time_filters(
         .collect()
 }
 
+fn apply_grep(messages: Vec<LogMessage>, pattern: Option<&str>) -> Vec<LogMessage> {
+    let Some(pattern) = pattern else {
+        return messages;
+    };
+    messages
+        .into_iter()
+        .filter(|msg| matches_grep(msg, Some(pattern)))
+        .collect()
+}
+
+fn apply_tail(messages: Vec<LogMessage>, tail: Option<usize>) -> Vec<LogMessage> {
+    match tail {
+        Some(n) => messages
+            .into_iter()
+            .rev()
+            .take(n)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect(),
+        None => messages,
+    }
+}
+
+fn matches_grep(msg: &LogMessage, pattern: Option<&str>) -> bool {
+    let Some(pattern) = pattern else { return true };
+    let pattern_lower = pattern.to_lowercase();
+    if msg.message.to_lowercase().contains(&pattern_lower) {
+        return true;
+    }
+    if let Some(node) = &msg.node_id {
+        if node.to_string().to_lowercase().contains(&pattern_lower) {
+            return true;
+        }
+    }
+    if let Some(target) = &msg.target {
+        if target.to_lowercase().contains(&pattern_lower) {
+            return true;
+        }
+    }
+    false
+}
+
 pub fn logs(
     session: &mut TcpRequestReplyConnection,
     uuid: Uuid,
@@ -300,6 +403,7 @@ pub fn logs(
     tail: Option<usize>,
     follow: bool,
     coordinator_addr: SocketAddr,
+    grep: Option<&str>,
 ) -> Result<()> {
     let logs = {
         let reply_raw = session
@@ -321,9 +425,23 @@ pub fn logs(
         }
     };
 
-    std::io::stdout()
-        .write_all(&logs)
-        .expect("failed to write logs to stdout");
+    if let Some(pattern) = grep {
+        // Parse and filter historical logs
+        let content = String::from_utf8_lossy(&logs);
+        for line in content.lines() {
+            if let Some(msg) = parse_jsonl_line(line) {
+                if matches_grep(&msg, Some(pattern)) {
+                    print_log_message(msg, &LogOutputConfig::default());
+                }
+            } else if line.to_lowercase().contains(&pattern.to_lowercase()) {
+                println!("{line}");
+            }
+        }
+    } else {
+        std::io::stdout()
+            .write_all(&logs)
+            .expect("failed to write logs to stdout");
+    }
 
     if !follow {
         return Ok(());
@@ -353,7 +471,9 @@ pub fn logs(
             serde_json::from_slice(&raw).context("failed to parse log message");
         match parsed {
             Ok(log_message) => {
-                print_log_message(log_message, &LogOutputConfig::default());
+                if matches_grep(&log_message, grep) {
+                    print_log_message(log_message, &LogOutputConfig::default());
+                }
             }
             Err(err) => {
                 tracing::warn!("failed to parse log message: {err:?}")
