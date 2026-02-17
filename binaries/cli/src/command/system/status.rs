@@ -161,7 +161,7 @@ impl Executable for Status {
                         
                         if !node_path.exists() {
                             // Print error but CONTINUE looking for others
-                            eprintln!("❌ [ERROR] Node '{}': File not found.", node.id);
+                            eprintln!(" [ERROR] Node '{}': File not found.", node.id);
                             eprintln!("   Looking for: {}", node_path.display());
                             all_files_found = false; 
                         } else {
@@ -172,7 +172,7 @@ impl Executable for Status {
 
                 if !all_files_found {
                     // NOW we exit, after showing all errors
-                    eprintln!("\n💥 Static check failed: One or more source files are missing.");
+                    eprintln!("\n Static check failed: One or more source files are missing.");
                     std::process::exit(1);
                 }
                 // 4. Run the original internal check (syntax, etc.)
