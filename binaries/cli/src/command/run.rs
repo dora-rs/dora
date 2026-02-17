@@ -41,6 +41,9 @@ pub struct Run {
     #[clap(long, value_name = "DURATION", verbatim_doc_comment)]
     #[arg(value_parser = parse_duration_str)]
     pub stop_after: Option<Duration>,
+    /// Enable hot-reload: watch node binaries and restart on changes.
+    #[clap(long, action)]
+    pub hot_reload: bool,
 }
 
 impl Run {
@@ -49,6 +52,7 @@ impl Run {
             dataflow,
             uv: false,
             stop_after: None,
+            hot_reload: false,
         }
     }
 }
@@ -105,6 +109,7 @@ impl Executable for Run {
             LogDestination::Channel { sender: log_tx },
             write_events_to(),
             self.stop_after,
+            self.hot_reload,
         ))?;
         handle_dataflow_result(result, None)
     }

@@ -44,6 +44,10 @@ pub enum ControlRequest {
         local_working_dir: Option<PathBuf>,
         uv: bool,
         write_events_to: Option<PathBuf>,
+        /// When true, the daemon watches node binaries for changes
+        /// and restarts nodes on hot-reload events.
+        #[serde(default)]
+        hot_reload: bool,
     },
     WaitForSpawn {
         dataflow_id: Uuid,
