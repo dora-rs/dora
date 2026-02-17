@@ -152,7 +152,6 @@ impl Executable for Status {
                 
                 // 3. [NEW] Static Analysis: Check if node files exist!
                 // We iterate over all nodes to verify their 'source' (path) exists.    
-// --- START FULL CHECK ---
                 println!("Checking dataflow descriptor...");
                 let mut all_files_found = true; // Track success
 
@@ -176,7 +175,6 @@ impl Executable for Status {
                     eprintln!("\n💥 Static check failed: One or more source files are missing.");
                     std::process::exit(1);
                 }
-                // --- END FULL CHECK ---          
                 // 4. Run the original internal check (syntax, etc.)
                 descriptor.check(&working_dir)?;
 
