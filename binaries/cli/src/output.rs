@@ -315,6 +315,17 @@ fn calculate_char_diversity(s: &str) -> f32 {
     unique.len() as f32 / s.len() as f32
 }
 
+/// Exposed for testing. Returns true if a log message should be displayed
+/// given the output config.
+#[cfg(test)]
+pub(crate) fn should_display_test(
+    msg_level: &LogLevelOrStdout,
+    msg_node: Option<&str>,
+    config: &LogOutputConfig,
+) -> bool {
+    should_display(msg_level, msg_node, config)
+}
+
 /// Calculate normalized sum of character positions (a=1, z=26)
 fn calculate_char_sum(s: &str) -> f32 {
     if s.is_empty() {
@@ -330,4 +341,179 @@ fn calculate_char_sum(s: &str) -> f32 {
     // Normalize by max possible sum for this length
     let max_sum = s.len() as u32 * 26;
     (sum as f32 / max_sum as f32).min(1.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- parse_log_level_str ---
+
+    #[test]
+    fn parse_level_valid_strings() {
+        assert!(matches!(
+            parse_log_level_str("error"),
+            Ok(LogLevelOrStdout::LogLevel(log::Level::Error))
+        ));
+        assert!(matches!(
+            parse_log_level_str("warn"),
+            Ok(LogLevelOrStdout::LogLevel(log::Level::Warn))
+        ));
+        assert!(matches!(
+            parse_log_level_str("info"),
+            Ok(LogLevelOrStdout::LogLevel(log::Level::Info))
+        ));
+        assert!(matches!(
+            parse_log_level_str("debug"),
+            Ok(LogLevelOrStdout::LogLevel(log::Level::Debug))
+        ));
+        assert!(matches!(
+            parse_log_level_str("trace"),
+            Ok(LogLevelOrStdout::LogLevel(log::Level::Trace))
+        ));
+        assert!(matches!(
+            parse_log_level_str("stdout"),
+            Ok(LogLevelOrStdout::Stdout)
+        ));
+    }
+
+    #[test]
+    fn parse_level_case_insensitive() {
+        assert!(parse_log_level_str("INFO").is_ok());
+        assert!(parse_log_level_str("Info").is_ok());
+        assert!(parse_log_level_str("info").is_ok());
+    }
+
+    #[test]
+    fn parse_level_invalid() {
+        assert!(parse_log_level_str("invalid").is_err());
+        assert!(parse_log_level_str("").is_err());
+    }
+
+    // --- parse_log_filter ---
+
+    #[test]
+    fn parse_filter_single_pair() {
+        let map = parse_log_filter("sensor=debug").unwrap();
+        assert_eq!(map.len(), 1);
+        assert!(matches!(
+            map.get("sensor"),
+            Some(LogLevelOrStdout::LogLevel(log::Level::Debug))
+        ));
+    }
+
+    #[test]
+    fn parse_filter_multiple_pairs() {
+        let map = parse_log_filter("sensor=debug,planner=warn").unwrap();
+        assert_eq!(map.len(), 2);
+        assert!(matches!(
+            map.get("planner"),
+            Some(LogLevelOrStdout::LogLevel(log::Level::Warn))
+        ));
+    }
+
+    #[test]
+    fn parse_filter_empty_string() {
+        let map = parse_log_filter("").unwrap();
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn parse_filter_trailing_comma() {
+        let map = parse_log_filter("sensor=debug,").unwrap();
+        assert_eq!(map.len(), 1);
+    }
+
+    #[test]
+    fn parse_filter_invalid_no_equals() {
+        assert!(parse_log_filter("sensorDEBUG").is_err());
+    }
+
+    #[test]
+    fn parse_filter_whitespace_trimming() {
+        let map = parse_log_filter("sensor = debug , planner = warn").unwrap();
+        assert_eq!(map.len(), 2);
+        assert!(map.contains_key("sensor"));
+        assert!(map.contains_key("planner"));
+    }
+
+    // --- parse_jsonl_line ---
+
+    #[test]
+    fn parse_jsonl_daemon_compact() {
+        let line = r#"{"ts":"2025-01-01T00:00:00Z","level":"info","node":"sensor","msg":"hello"}"#;
+        let msg = parse_jsonl_line(line).unwrap();
+        assert_eq!(msg.message, "hello");
+        assert!(matches!(
+            msg.level,
+            LogLevelOrStdout::LogLevel(log::Level::Info)
+        ));
+        assert_eq!(msg.node_id.unwrap().to_string(), "sensor");
+    }
+
+    #[test]
+    fn parse_jsonl_invalid_json() {
+        assert!(parse_jsonl_line("not json at all").is_none());
+    }
+
+    #[test]
+    fn parse_jsonl_empty_string() {
+        assert!(parse_jsonl_line("").is_none());
+    }
+
+    // --- should_display ---
+
+    #[test]
+    fn should_display_passes_global_min_level() {
+        let config = LogOutputConfig {
+            min_level: LogLevelOrStdout::LogLevel(log::Level::Info),
+            ..Default::default()
+        };
+        // Error is more severe than Info -> passes
+        assert!(should_display_test(
+            &LogLevelOrStdout::LogLevel(log::Level::Error),
+            None,
+            &config,
+        ));
+    }
+
+    #[test]
+    fn should_display_blocked_by_global_min_level() {
+        let config = LogOutputConfig {
+            min_level: LogLevelOrStdout::LogLevel(log::Level::Info),
+            ..Default::default()
+        };
+        // Debug is more verbose than Info -> blocked
+        assert!(!should_display_test(
+            &LogLevelOrStdout::LogLevel(log::Level::Debug),
+            None,
+            &config,
+        ));
+    }
+
+    #[test]
+    fn should_display_per_node_override() {
+        let mut node_filters = HashMap::new();
+        node_filters.insert(
+            "sensor".to_string(),
+            LogLevelOrStdout::LogLevel(log::Level::Debug),
+        );
+        let config = LogOutputConfig {
+            min_level: LogLevelOrStdout::LogLevel(log::Level::Error),
+            node_filters,
+            ..Default::default()
+        };
+        // Global says Error-only, but sensor override allows Debug
+        assert!(should_display_test(
+            &LogLevelOrStdout::LogLevel(log::Level::Debug),
+            Some("sensor"),
+            &config,
+        ));
+        // Other nodes still use global Error filter
+        assert!(!should_display_test(
+            &LogLevelOrStdout::LogLevel(log::Level::Debug),
+            Some("other"),
+            &config,
+        ));
+    }
 }

@@ -484,3 +484,133 @@ impl std::fmt::Display for Indent<'_> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn log_path_format() {
+        let dir = Path::new("/tmp/work");
+        let uuid = Uuid::nil();
+        let node = NodeId::from("sensor".to_string());
+        let p = log_path(dir, &uuid, &node);
+        assert_eq!(
+            p,
+            PathBuf::from("/tmp/work/out/00000000-0000-0000-0000-000000000000/log_sensor.jsonl")
+        );
+    }
+
+    #[test]
+    fn log_path_rotated_format() {
+        let dir = Path::new("/tmp/work");
+        let uuid = Uuid::nil();
+        let node = NodeId::from("sensor".to_string());
+        let p = log_path_rotated(dir, &uuid, &node, 3);
+        assert_eq!(
+            p,
+            PathBuf::from("/tmp/work/out/00000000-0000-0000-0000-000000000000/log_sensor.3.jsonl")
+        );
+    }
+
+    #[test]
+    fn rotate_creates_dot_1_from_current() {
+        let tmp = tempfile::tempdir().unwrap();
+        let uuid = Uuid::nil();
+        let node = NodeId::from("n".to_string());
+
+        // Create the out/<uuid> directory and current log file
+        let dataflow_dir = tmp.path().join("out").join(uuid.to_string());
+        std::fs::create_dir_all(&dataflow_dir).unwrap();
+        let current = log_path(tmp.path(), &uuid, &node);
+        std::fs::write(&current, "line1\n").unwrap();
+
+        rotate_log_files(tmp.path(), &uuid, &node, 5).unwrap();
+
+        // Current should be gone, .1 should exist
+        assert!(!current.exists());
+        let rotated = log_path_rotated(tmp.path(), &uuid, &node, 1);
+        assert!(rotated.exists());
+        assert_eq!(std::fs::read_to_string(&rotated).unwrap(), "line1\n");
+    }
+
+    #[test]
+    fn rotate_shifts_existing_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let uuid = Uuid::nil();
+        let node = NodeId::from("n".to_string());
+
+        let dataflow_dir = tmp.path().join("out").join(uuid.to_string());
+        std::fs::create_dir_all(&dataflow_dir).unwrap();
+
+        // Create current and .1
+        std::fs::write(log_path(tmp.path(), &uuid, &node), "current\n").unwrap();
+        std::fs::write(
+            log_path_rotated(tmp.path(), &uuid, &node, 1),
+            "old1\n",
+        )
+        .unwrap();
+
+        rotate_log_files(tmp.path(), &uuid, &node, 5).unwrap();
+
+        // .1 should be old current, .2 should be old .1
+        assert_eq!(
+            std::fs::read_to_string(log_path_rotated(tmp.path(), &uuid, &node, 1)).unwrap(),
+            "current\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(log_path_rotated(tmp.path(), &uuid, &node, 2)).unwrap(),
+            "old1\n"
+        );
+    }
+
+    #[test]
+    fn rotate_deletes_oldest_beyond_max() {
+        let tmp = tempfile::tempdir().unwrap();
+        let uuid = Uuid::nil();
+        let node = NodeId::from("n".to_string());
+
+        let dataflow_dir = tmp.path().join("out").join(uuid.to_string());
+        std::fs::create_dir_all(&dataflow_dir).unwrap();
+
+        let max = 2;
+        // Create current, .1, .2 (at max)
+        std::fs::write(log_path(tmp.path(), &uuid, &node), "current\n").unwrap();
+        std::fs::write(
+            log_path_rotated(tmp.path(), &uuid, &node, 1),
+            "old1\n",
+        )
+        .unwrap();
+        std::fs::write(
+            log_path_rotated(tmp.path(), &uuid, &node, 2),
+            "old2\n",
+        )
+        .unwrap();
+
+        rotate_log_files(tmp.path(), &uuid, &node, max).unwrap();
+
+        // .2 (the max) should now be what was .1, old .2 is deleted
+        assert!(!log_path(tmp.path(), &uuid, &node).exists());
+        assert_eq!(
+            std::fs::read_to_string(log_path_rotated(tmp.path(), &uuid, &node, 1)).unwrap(),
+            "current\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(log_path_rotated(tmp.path(), &uuid, &node, 2)).unwrap(),
+            "old1\n"
+        );
+    }
+
+    #[test]
+    fn rotate_noop_when_no_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let uuid = Uuid::nil();
+        let node = NodeId::from("n".to_string());
+
+        let dataflow_dir = tmp.path().join("out").join(uuid.to_string());
+        std::fs::create_dir_all(&dataflow_dir).unwrap();
+
+        // Should not error even with no files
+        rotate_log_files(tmp.path(), &uuid, &node, 5).unwrap();
+    }
+}

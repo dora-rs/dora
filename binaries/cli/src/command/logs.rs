@@ -454,6 +454,214 @@ fn matches_grep(msg: &LogMessage, pattern: Option<&str>) -> bool {
     false
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use adora_message::common::LogLevelOrStdout;
+    use std::path::PathBuf;
+
+    fn make_msg(message: &str, node: Option<&str>, target: Option<&str>, ts: DateTime<Utc>) -> LogMessage {
+        LogMessage {
+            build_id: None,
+            dataflow_id: None,
+            node_id: node.map(|n| NodeId::from(n.to_string())),
+            daemon_id: None,
+            level: LogLevelOrStdout::LogLevel(log::Level::Info),
+            target: target.map(|t| t.to_string()),
+            module_path: None,
+            file: None,
+            line: None,
+            message: message.to_string(),
+            timestamp: ts,
+            fields: None,
+        }
+    }
+
+    // --- rotation_index ---
+
+    #[test]
+    fn rotation_index_current_file() {
+        assert_eq!(rotation_index(&PathBuf::from("log_sensor.jsonl")), 0);
+    }
+
+    #[test]
+    fn rotation_index_rotated_1() {
+        assert_eq!(rotation_index(&PathBuf::from("log_sensor.1.jsonl")), 1);
+    }
+
+    #[test]
+    fn rotation_index_rotated_5() {
+        assert_eq!(rotation_index(&PathBuf::from("log_sensor.5.jsonl")), 5);
+    }
+
+    #[test]
+    fn rotation_index_txt_file() {
+        assert_eq!(rotation_index(&PathBuf::from("log_sensor.txt")), 0);
+    }
+
+    // --- apply_time_filters ---
+
+    #[test]
+    fn time_filter_no_filters() {
+        let now = Utc::now();
+        let msgs = vec![make_msg("a", None, None, now)];
+        let result = apply_time_filters(msgs.clone(), None, None, now);
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn time_filter_since_only() {
+        let now = Utc::now();
+        let old = now - chrono::TimeDelta::hours(2);
+        let recent = now - chrono::TimeDelta::minutes(5);
+        let msgs = vec![
+            make_msg("old", None, None, old),
+            make_msg("recent", None, None, recent),
+        ];
+        // since=1h -> only messages from last 1 hour
+        let result = apply_time_filters(msgs, Some(std::time::Duration::from_secs(3600)), None, now);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].message, "recent");
+    }
+
+    #[test]
+    fn time_filter_until_only() {
+        let now = Utc::now();
+        let old = now - chrono::TimeDelta::hours(2);
+        let recent = now - chrono::TimeDelta::minutes(5);
+        let msgs = vec![
+            make_msg("old", None, None, old),
+            make_msg("recent", None, None, recent),
+        ];
+        // until=1h -> only messages older than 1 hour
+        let result = apply_time_filters(msgs, None, Some(std::time::Duration::from_secs(3600)), now);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].message, "old");
+    }
+
+    #[test]
+    fn time_filter_since_and_until() {
+        let now = Utc::now();
+        let very_old = now - chrono::TimeDelta::hours(5);
+        let mid = now - chrono::TimeDelta::hours(2);
+        let recent = now - chrono::TimeDelta::minutes(5);
+        let msgs = vec![
+            make_msg("very_old", None, None, very_old),
+            make_msg("mid", None, None, mid),
+            make_msg("recent", None, None, recent),
+        ];
+        // since=3h, until=1h -> window between 3h and 1h ago
+        let result = apply_time_filters(
+            msgs,
+            Some(std::time::Duration::from_secs(3 * 3600)),
+            Some(std::time::Duration::from_secs(3600)),
+            now,
+        );
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].message, "mid");
+    }
+
+    // --- apply_grep ---
+
+    #[test]
+    fn grep_none_passes_all() {
+        let now = Utc::now();
+        let msgs = vec![make_msg("a", None, None, now), make_msg("b", None, None, now)];
+        assert_eq!(apply_grep(msgs, None).len(), 2);
+    }
+
+    #[test]
+    fn grep_matches_message_case_insensitive() {
+        let now = Utc::now();
+        let msgs = vec![make_msg("Hello World", None, None, now)];
+        assert_eq!(apply_grep(msgs, Some("hello")).len(), 1);
+    }
+
+    #[test]
+    fn grep_matches_node_id() {
+        let now = Utc::now();
+        let msgs = vec![make_msg("msg", Some("sensor"), None, now)];
+        assert_eq!(apply_grep(msgs, Some("sensor")).len(), 1);
+    }
+
+    #[test]
+    fn grep_matches_target() {
+        let now = Utc::now();
+        let msgs = vec![make_msg("msg", None, Some("my_target"), now)];
+        assert_eq!(apply_grep(msgs, Some("my_target")).len(), 1);
+    }
+
+    #[test]
+    fn grep_no_match() {
+        let now = Utc::now();
+        let msgs = vec![make_msg("hello", Some("sensor"), Some("target"), now)];
+        assert_eq!(apply_grep(msgs, Some("zzz_missing")).len(), 0);
+    }
+
+    // --- apply_tail ---
+
+    #[test]
+    fn tail_none_returns_all() {
+        let now = Utc::now();
+        let msgs = vec![make_msg("a", None, None, now), make_msg("b", None, None, now)];
+        assert_eq!(apply_tail(msgs, None).len(), 2);
+    }
+
+    #[test]
+    fn tail_3_on_5_returns_last_3() {
+        let now = Utc::now();
+        let msgs: Vec<_> = (0..5).map(|i| make_msg(&i.to_string(), None, None, now)).collect();
+        let result = apply_tail(msgs, Some(3));
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].message, "2");
+        assert_eq!(result[2].message, "4");
+    }
+
+    #[test]
+    fn tail_larger_than_count_returns_all() {
+        let now = Utc::now();
+        let msgs = vec![make_msg("a", None, None, now)];
+        assert_eq!(apply_tail(msgs, Some(100)).len(), 1);
+    }
+
+    // --- matches_grep ---
+
+    #[test]
+    fn matches_grep_none_returns_true() {
+        let now = Utc::now();
+        let msg = make_msg("anything", None, None, now);
+        assert!(matches_grep(&msg, None));
+    }
+
+    #[test]
+    fn matches_grep_in_message() {
+        let now = Utc::now();
+        let msg = make_msg("sensor reading: 42", None, None, now);
+        assert!(matches_grep(&msg, Some("reading")));
+    }
+
+    #[test]
+    fn matches_grep_in_node_id() {
+        let now = Utc::now();
+        let msg = make_msg("data", Some("camera_front"), None, now);
+        assert!(matches_grep(&msg, Some("camera")));
+    }
+
+    #[test]
+    fn matches_grep_in_target() {
+        let now = Utc::now();
+        let msg = make_msg("data", None, Some("adora::runtime"), now);
+        assert!(matches_grep(&msg, Some("runtime")));
+    }
+
+    #[test]
+    fn matches_grep_no_match() {
+        let now = Utc::now();
+        let msg = make_msg("hello", Some("sensor"), Some("target"), now);
+        assert!(!matches_grep(&msg, Some("zzz_missing")));
+    }
+}
+
 pub fn logs(
     session: &mut TcpRequestReplyConnection,
     uuid: Uuid,

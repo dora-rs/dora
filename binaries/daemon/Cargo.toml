@@ -56,6 +56,9 @@ shellexpand = "3.1.1"
 sysinfo = "0.36.1"
 clonable-command = "0.2.0"
 
+[dev-dependencies]
+tempfile = "3"
+
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61.3", features = [
     "Win32_System_Console",

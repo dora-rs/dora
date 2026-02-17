@@ -380,4 +380,70 @@ mod tests {
         let deserialized: LogMessageHelper = serde_yaml::from_str(&serialized).unwrap();
         assert_eq!(log_message, LogMessage::from(deserialized));
     }
+
+    #[test]
+    fn stdout_passes_stdout_filter() {
+        let stdout = LogLevelOrStdout::Stdout;
+        assert!(stdout.passes(&LogLevelOrStdout::Stdout));
+    }
+
+    #[test]
+    fn stdout_fails_non_stdout_filters() {
+        let stdout = LogLevelOrStdout::Stdout;
+        assert!(!stdout.passes(&LogLevelOrStdout::LogLevel(LogLevel::Info)));
+        assert!(!stdout.passes(&LogLevelOrStdout::LogLevel(LogLevel::Warn)));
+        assert!(!stdout.passes(&LogLevelOrStdout::LogLevel(LogLevel::Error)));
+    }
+
+    #[test]
+    fn any_log_level_passes_stdout_filter() {
+        let stdout_filter = LogLevelOrStdout::Stdout;
+        for level in [
+            LogLevel::Error,
+            LogLevel::Warn,
+            LogLevel::Info,
+            LogLevel::Debug,
+            LogLevel::Trace,
+        ] {
+            assert!(
+                LogLevelOrStdout::LogLevel(level).passes(&stdout_filter),
+                "{level:?} should pass stdout filter"
+            );
+        }
+    }
+
+    #[test]
+    fn error_passes_less_verbose_filters() {
+        let error = LogLevelOrStdout::LogLevel(LogLevel::Error);
+        assert!(error.passes(&LogLevelOrStdout::LogLevel(LogLevel::Error)));
+        assert!(error.passes(&LogLevelOrStdout::LogLevel(LogLevel::Warn)));
+        assert!(error.passes(&LogLevelOrStdout::LogLevel(LogLevel::Info)));
+    }
+
+    #[test]
+    fn debug_fails_info_filter() {
+        let debug = LogLevelOrStdout::LogLevel(LogLevel::Debug);
+        assert!(!debug.passes(&LogLevelOrStdout::LogLevel(LogLevel::Info)));
+    }
+
+    #[test]
+    fn same_level_passes_itself() {
+        for level in [
+            LogLevel::Error,
+            LogLevel::Warn,
+            LogLevel::Info,
+            LogLevel::Debug,
+            LogLevel::Trace,
+        ] {
+            let l = LogLevelOrStdout::LogLevel(level);
+            assert!(l.passes(&l), "{level:?} should pass itself");
+        }
+    }
+
+    #[test]
+    fn trace_passes_trace_fails_debug() {
+        let trace = LogLevelOrStdout::LogLevel(LogLevel::Trace);
+        assert!(trace.passes(&LogLevelOrStdout::LogLevel(LogLevel::Trace)));
+        assert!(!trace.passes(&LogLevelOrStdout::LogLevel(LogLevel::Debug)));
+    }
 }

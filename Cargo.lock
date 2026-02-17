@@ -151,6 +151,7 @@ dependencies = [
  "shared-memory-server",
  "shellexpand 3.1.1",
  "sysinfo 0.36.1",
+ "tempfile",
  "tokio",
  "tokio-stream",
  "tracing",
