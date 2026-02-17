@@ -573,15 +573,21 @@ impl PreparedNode {
             .node
             .min_log_level()
             .context("Could not resolve `min_log_level` configuration")?;
+        let max_log_size = self
+            .node
+            .max_log_size()
+            .context("Could not resolve `max_log_size` configuration")?;
         let daemon_tx_logs_as = if send_logs_to.is_some() {
             Some(self.daemon_tx.clone())
         } else {
             None
         };
+        let working_dir_c = self.node_working_dir.clone();
         let uhlc = self.clock.clone();
         let mut logger_c = logger.try_clone().await?;
         // Log to file stream.
         tokio::spawn(async move {
+            let mut bytes_written: u64 = 0;
             while let Some(log_line) = rx.recv().await {
                 let LogLine { content, stream } = log_line;
                 let stream_str = match stream {
@@ -712,8 +718,11 @@ impl PreparedNode {
                 });
                 let mut json_bytes = serde_json::to_vec(&log_entry).unwrap_or_default();
                 json_bytes.push(b'\n');
+                let write_len = json_bytes.len() as u64;
                 match file.write_all(&json_bytes).await {
-                    Ok(_) => {}
+                    Ok(_) => {
+                        bytes_written += write_len;
+                    }
                     Err(err) => {
                         logger_c
                             .log(
@@ -722,6 +731,52 @@ impl PreparedNode {
                                 format!("Could not write log to file: {err}"),
                             )
                             .await;
+                    }
+                }
+
+                // Rotate if max_log_size exceeded
+                if let Some(max_size) = max_log_size {
+                    if bytes_written >= max_size {
+                        // Flush and drop the current file handle
+                        let _ = file.flush().await;
+                        drop(file);
+                        if let Err(err) = log::rotate_log_files(
+                            &working_dir_c,
+                            &dataflow_id,
+                            &node_id,
+                            log::DEFAULT_MAX_ROTATED_FILES,
+                        ) {
+                            logger_c
+                                .log(
+                                    LogLevel::Error,
+                                    Some("daemon".into()),
+                                    format!("Could not rotate log files: {err}"),
+                                )
+                                .await;
+                        }
+                        // Create a fresh log file
+                        file = match File::create(log::log_path(
+                            &working_dir_c,
+                            &dataflow_id,
+                            &node_id,
+                        ))
+                        .await
+                        {
+                            Ok(f) => f,
+                            Err(err) => {
+                                logger_c
+                                    .log(
+                                        LogLevel::Error,
+                                        Some("daemon".into()),
+                                        format!(
+                                            "Could not create new log file after rotation: {err}"
+                                        ),
+                                    )
+                                    .await;
+                                break;
+                            }
+                        };
+                        bytes_written = 0;
                     }
                 }
 

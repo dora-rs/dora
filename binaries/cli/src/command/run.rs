@@ -48,11 +48,11 @@ pub struct Run {
     ///
     /// Levels: error, warn, info, debug, trace, stdout (default).
     /// "stdout" shows everything including raw stdout from nodes.
-    #[clap(long, default_value = "stdout")]
+    #[clap(long, default_value = "stdout", env = "ADORA_LOG_LEVEL")]
     #[arg(value_parser = parse_log_level_str)]
     pub log_level: LogLevelOrStdout,
     /// Output format for log messages
-    #[clap(long, default_value = "pretty")]
+    #[clap(long, default_value = "pretty", env = "ADORA_LOG_FORMAT")]
     pub log_format: LogFormat,
     /// Per-node log level filter
     ///
@@ -60,7 +60,7 @@ pub struct Run {
     ///
     /// Examples:
     ///   --log-filter "sensor=debug,processor=warn"
-    #[clap(long, value_name = "FILTER", verbatim_doc_comment)]
+    #[clap(long, value_name = "FILTER", env = "ADORA_LOG_FILTER", verbatim_doc_comment)]
     pub log_filter: Option<String>,
 }
 

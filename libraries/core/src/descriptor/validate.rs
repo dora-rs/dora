@@ -125,6 +125,8 @@ pub fn check_dataflow(
             .context("Could not resolve `send_logs_as` configuration")?;
         node.min_log_level()
             .context("Could not resolve `min_log_level` configuration")?;
+        node.max_log_size()
+            .context("Could not resolve `max_log_size` configuration")?;
     }
 
     if has_python_operator {
@@ -138,6 +140,7 @@ pub trait ResolvedNodeExt {
     fn send_stdout_as(&self) -> eyre::Result<Option<String>>;
     fn send_logs_as(&self) -> eyre::Result<Option<String>>;
     fn min_log_level(&self) -> eyre::Result<Option<adora_message::common::LogLevelOrStdout>>;
+    fn max_log_size(&self) -> eyre::Result<Option<u64>>;
 }
 
 impl ResolvedNodeExt for ResolvedNode {
@@ -220,6 +223,56 @@ impl ResolvedNodeExt for ResolvedNode {
             }
         }
     }
+
+    fn max_log_size(&self) -> eyre::Result<Option<u64>> {
+        let size_str = match &self.kind {
+            CoreNodeKind::Runtime(n) => {
+                let sizes: Vec<_> = n
+                    .operators
+                    .iter()
+                    .filter_map(|op| op.config.max_log_size.as_deref())
+                    .collect();
+                if sizes.len() > 1 {
+                    return Err(eyre!(
+                        "More than one `max_log_size` entries for a runtime node. Please only use one `max_log_size` per runtime."
+                    ));
+                }
+                sizes.first().map(|s| s.to_string())
+            }
+            CoreNodeKind::Custom(n) => n.max_log_size.clone(),
+        };
+        match size_str {
+            None => Ok(None),
+            Some(s) => {
+                let bytes = parse_byte_size(&s)?;
+                Ok(Some(bytes))
+            }
+        }
+    }
+}
+
+fn parse_byte_size(s: &str) -> eyre::Result<u64> {
+    let s = s.trim();
+    let (num_str, unit) = match s.find(|c: char| c.is_ascii_alphabetic()) {
+        Some(pos) => (&s[..pos], s[pos..].trim().to_uppercase()),
+        None => {
+            return s
+                .parse::<u64>()
+                .map_err(|_| eyre!("invalid byte size: '{s}'"))
+        }
+    };
+    let num: f64 = num_str
+        .trim()
+        .parse()
+        .map_err(|_| eyre!("invalid byte size number: '{num_str}'"))?;
+    let multiplier: u64 = match unit.as_str() {
+        "B" => 1,
+        "KB" | "K" => 1024,
+        "MB" | "M" => 1024 * 1024,
+        "GB" | "G" => 1024 * 1024 * 1024,
+        _ => bail!("unknown byte size unit: '{unit}', expected B, KB, MB, or GB"),
+    };
+    Ok((num * multiplier as f64) as u64)
 }
 
 fn parse_log_level(s: &str) -> eyre::Result<adora_message::common::LogLevelOrStdout> {

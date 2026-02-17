@@ -404,6 +404,23 @@ pub struct Node {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub min_log_level: Option<String>,
 
+    /// Maximum log file size before rotation (e.g. "50MB", "1GB").
+    ///
+    /// When the JSONL log file exceeds this size, it is rotated. Old files
+    /// are renamed with numeric suffixes (`.1.jsonl`, `.2.jsonl`, etc.) and
+    /// the oldest are deleted once 5 rotated files exist.
+    ///
+    /// ## Example
+    ///
+    /// ```yaml
+    /// nodes:
+    ///   - id: sensor
+    ///     path: ./sensor
+    ///     max_log_size: "100MB"
+    /// ```
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_log_size: Option<String>,
+
     /// Build commands executed during `adora build`. Each line runs separately.
     ///
     /// The `build` key specifies the command that should be invoked for building the node.
@@ -666,6 +683,9 @@ pub struct OperatorConfig {
     /// Minimum log level for this operator
     #[serde(skip_serializing_if = "Option::is_none")]
     pub min_log_level: Option<String>,
+    /// Maximum log file size before rotation (e.g. "50MB", "1GB")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_log_size: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema, Clone)]
@@ -759,6 +779,9 @@ pub struct CustomNode {
     /// Minimum log level for this node
     #[serde(skip_serializing_if = "Option::is_none")]
     pub min_log_level: Option<String>,
+    /// Maximum log file size before rotation (e.g. "50MB", "1GB")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_log_size: Option<String>,
 
     #[serde(default)]
     pub restart_policy: RestartPolicy,

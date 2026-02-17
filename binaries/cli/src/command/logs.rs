@@ -52,7 +52,7 @@ pub struct LogsArgs {
     #[arg(value_parser = parse_duration_str)]
     pub until: Option<std::time::Duration>,
     /// Minimum log level to display (error, warn, info, debug, trace, stdout)
-    #[clap(long, value_name = "LEVEL", default_value = "stdout")]
+    #[clap(long, value_name = "LEVEL", default_value = "stdout", env = "ADORA_LOG_LEVEL")]
     #[arg(value_parser = parse_log_level_str)]
     pub level: adora_core::build::LogLevelOrStdout,
     /// Filter logs by text pattern (case-insensitive substring match)
@@ -97,6 +97,8 @@ impl Executable for LogsArgs {
             (self.coordinator_addr, self.coordinator_port).into(),
             self.grep.as_deref(),
             &self.level,
+            self.since,
+            self.until,
         )
     }
 }
@@ -139,9 +141,13 @@ fn read_local_logs(args: &LogsArgs) -> Result<()> {
         }
     } else {
         let node = args.node.as_ref().unwrap();
-        let log_file = find_node_log_file(&dataflow_dir, node)?;
-        let messages = read_log_file(&log_file)?;
-        let filtered = apply_time_filters(messages, args.since, args.until, now);
+        let log_files = find_node_log_files(&dataflow_dir, node)?;
+        let mut all_messages: Vec<LogMessage> = Vec::new();
+        for path in &log_files {
+            all_messages.extend(read_log_file(path)?);
+        }
+        all_messages.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+        let filtered = apply_time_filters(all_messages, args.since, args.until, now);
         let grepped = apply_grep(filtered, args.grep.as_deref());
         let display = apply_tail(grepped, args.tail);
 
@@ -166,7 +172,7 @@ fn follow_local_logs(args: &LogsArgs) -> Result<()> {
     let files = if args.all_nodes || args.node.is_none() {
         find_log_files(&dataflow_dir)?
     } else {
-        vec![find_node_log_file(&dataflow_dir, args.node.as_ref().unwrap())?]
+        find_node_log_files(&dataflow_dir, args.node.as_ref().unwrap())?
     };
 
     if files.is_empty() {
@@ -273,23 +279,70 @@ fn find_log_files(dataflow_dir: &Path) -> Result<Vec<PathBuf>> {
             files.push(path);
         }
     }
+    // Sort so rotated files (older) come before current files
+    files.sort_by(|a, b| {
+        let a_idx = rotation_index(a);
+        let b_idx = rotation_index(b);
+        // Higher rotation index = older file, should come first
+        b_idx.cmp(&a_idx)
+    });
     Ok(files)
 }
 
-fn find_node_log_file(dataflow_dir: &Path, node: &NodeId) -> Result<PathBuf> {
-    // Try .jsonl first, then .txt
-    let jsonl = dataflow_dir.join(format!("log_{node}.jsonl"));
-    if jsonl.exists() {
-        return Ok(jsonl);
+/// Extract rotation index from a log filename. Current file returns 0, `.1.jsonl` returns 1, etc.
+fn rotation_index(path: &Path) -> u32 {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    // Pattern: log_<node>.<N>.jsonl
+    if let Some(rest) = name.strip_prefix("log_") {
+        if let Some(rest) = rest.strip_suffix(".jsonl") {
+            // Check if the last segment after the last '.' is a number
+            if let Some(dot_pos) = rest.rfind('.') {
+                if let Ok(idx) = rest[dot_pos + 1..].parse::<u32>() {
+                    return idx;
+                }
+            }
+        }
     }
-    let txt = dataflow_dir.join(format!("log_{node}.txt"));
-    if txt.exists() {
-        return Ok(txt);
+    0 // current file
+}
+
+/// Find all log files for a node (including rotated), oldest first.
+fn find_node_log_files(dataflow_dir: &Path, node: &NodeId) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    let node_str = node.to_string();
+
+    for entry in std::fs::read_dir(dataflow_dir)
+        .wrap_err_with(|| format!("failed to read {}", dataflow_dir.display()))?
+    {
+        let entry = entry?;
+        let name = entry
+            .file_name()
+            .to_str()
+            .unwrap_or_default()
+            .to_string();
+        // Match: log_<node>.jsonl, log_<node>.1.jsonl, log_<node>.txt
+        let prefix = format!("log_{node_str}");
+        if name.starts_with(&prefix)
+            && (name.ends_with(".jsonl") || name.ends_with(".txt"))
+        {
+            files.push(entry.path());
+        }
     }
-    bail!(
-        "no log file found for node '{node}' in {}",
-        dataflow_dir.display()
-    );
+
+    if files.is_empty() {
+        bail!(
+            "no log file found for node '{node}' in {}",
+            dataflow_dir.display()
+        );
+    }
+
+    // Sort: rotated (older) first, then current
+    files.sort_by(|a, b| {
+        let a_idx = rotation_index(a);
+        let b_idx = rotation_index(b);
+        b_idx.cmp(&a_idx)
+    });
+    Ok(files)
 }
 
 fn read_log_file(path: &Path) -> Result<Vec<LogMessage>> {
@@ -410,6 +463,8 @@ pub fn logs(
     coordinator_addr: SocketAddr,
     grep: Option<&str>,
     level: &adora_core::build::LogLevelOrStdout,
+    since: Option<std::time::Duration>,
+    until: Option<std::time::Duration>,
 ) -> Result<()> {
     let logs = {
         let reply_raw = session
@@ -418,7 +473,12 @@ pub fn logs(
                     uuid: Some(uuid),
                     name: None,
                     node: node.to_string(),
-                    tail,
+                    tail: if since.is_some() || until.is_some() || grep.is_some() {
+                        // Fetch all logs when filtering client-side, apply tail after
+                        None
+                    } else {
+                        tail
+                    },
                 })
                 .wrap_err("")?,
             )
@@ -431,22 +491,19 @@ pub fn logs(
         }
     };
 
-    if let Some(pattern) = grep {
-        // Parse and filter historical logs
-        let content = String::from_utf8_lossy(&logs);
-        for line in content.lines() {
-            if let Some(msg) = parse_jsonl_line(line) {
-                if matches_grep(&msg, Some(pattern)) {
-                    print_log_message(msg, &LogOutputConfig::default());
-                }
-            } else if line.to_lowercase().contains(&pattern.to_lowercase()) {
-                println!("{line}");
-            }
-        }
-    } else {
-        std::io::stdout()
-            .write_all(&logs)
-            .expect("failed to write logs to stdout");
+    // Unified filter pipeline: parse -> time_filter -> grep -> tail -> print
+    let now = Utc::now();
+    let content = String::from_utf8_lossy(&logs);
+    let messages: Vec<LogMessage> = content
+        .lines()
+        .filter_map(|line| parse_jsonl_line(line))
+        .collect();
+    let filtered = apply_time_filters(messages, since, until, now);
+    let grepped = apply_grep(filtered, grep);
+    let display = apply_tail(grepped, tail);
+    let config = LogOutputConfig::default();
+    for msg in display {
+        print_log_message(msg, &config);
     }
 
     if !follow {
@@ -456,6 +513,9 @@ pub fn logs(
         adora_core::build::LogLevelOrStdout::Stdout => log::LevelFilter::Trace,
         adora_core::build::LogLevelOrStdout::LogLevel(l) => l.to_level_filter(),
     };
+
+    let since_threshold =
+        since.and_then(|d| chrono::TimeDelta::from_std(d).ok().map(|td| now - td));
 
     // subscribe to log messages
     let mut log_session = TcpConnection {
@@ -476,8 +536,13 @@ pub fn logs(
             serde_json::from_slice(&raw).context("failed to parse log message");
         match parsed {
             Ok(log_message) => {
+                if let Some(threshold) = since_threshold {
+                    if log_message.timestamp < threshold {
+                        continue;
+                    }
+                }
                 if matches_grep(&log_message, grep) {
-                    print_log_message(log_message, &LogOutputConfig::default());
+                    print_log_message(log_message, &config);
                 }
             }
             Err(err) => {

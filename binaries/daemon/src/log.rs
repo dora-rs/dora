@@ -26,6 +26,52 @@ pub fn log_path(working_dir: &Path, dataflow_id: &Uuid, node_id: &NodeId) -> Pat
     dataflow_dir.join(format!("log_{node_id}.jsonl"))
 }
 
+/// Path for a rotated log file: `log_<node>.1.jsonl`, `log_<node>.2.jsonl`, etc.
+pub fn log_path_rotated(
+    working_dir: &Path,
+    dataflow_id: &Uuid,
+    node_id: &NodeId,
+    index: u32,
+) -> PathBuf {
+    let dataflow_dir = working_dir.join("out").join(dataflow_id.to_string());
+    dataflow_dir.join(format!("log_{node_id}.{index}.jsonl"))
+}
+
+/// Default max rotated files (excluding the current file).
+pub const DEFAULT_MAX_ROTATED_FILES: u32 = 5;
+
+/// Rotate log files: current -> .1, .1 -> .2, ... delete oldest beyond max_files.
+pub fn rotate_log_files(
+    working_dir: &Path,
+    dataflow_id: &Uuid,
+    node_id: &NodeId,
+    max_files: u32,
+) -> std::io::Result<()> {
+    // Delete the oldest if it exists
+    let oldest = log_path_rotated(working_dir, dataflow_id, node_id, max_files);
+    if oldest.exists() {
+        std::fs::remove_file(&oldest)?;
+    }
+
+    // Shift .N -> .N+1 (from max_files-1 down to 1)
+    for i in (1..max_files).rev() {
+        let from = log_path_rotated(working_dir, dataflow_id, node_id, i);
+        let to = log_path_rotated(working_dir, dataflow_id, node_id, i + 1);
+        if from.exists() {
+            std::fs::rename(&from, &to)?;
+        }
+    }
+
+    // Rename current -> .1
+    let current = log_path(working_dir, dataflow_id, node_id);
+    let first = log_path_rotated(working_dir, dataflow_id, node_id, 1);
+    if current.exists() {
+        std::fs::rename(&current, &first)?;
+    }
+
+    Ok(())
+}
+
 pub struct NodeLogger<'a> {
     node_id: NodeId,
     logger: DataflowLogger<'a>,
