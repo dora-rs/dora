@@ -21,8 +21,10 @@ telemetry = ["adora-runtime/telemetry"]
 [dependencies]
 adora-node-api = { workspace = true }
 adora-operator-api-python = { workspace = true }
+chrono = { version = "0.4", features = ["serde"] }
 pyo3.workspace = true
 eyre = "0.6"
+serde_json = "1"
 serde_yaml = { workspace = true }
 flume = "0.10.14"
 adora-runtime = { workspace = true, features = ["tracing", "metrics", "python"] }

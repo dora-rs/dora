@@ -8,7 +8,10 @@ use std::{
 use super::{Executable, default_tracing};
 use crate::{
     common::{connect_to_coordinator, resolve_dataflow_identifier_interactive},
-    output::{LogOutputConfig, parse_jsonl_line, parse_log_level_str, print_log_message},
+    output::{
+        LogFormat, LogOutputConfig, parse_jsonl_line, parse_log_filter, parse_log_level_str,
+        print_log_message,
+    },
 };
 use adora_core::topics::{ADORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST};
 use adora_message::{
@@ -55,6 +58,12 @@ pub struct LogsArgs {
     #[clap(long, value_name = "LEVEL", default_value = "stdout", env = "ADORA_LOG_LEVEL")]
     #[arg(value_parser = parse_log_level_str)]
     pub level: adora_core::build::LogLevelOrStdout,
+    /// Output format for log messages
+    #[clap(long, default_value = "pretty", env = "ADORA_LOG_FORMAT")]
+    pub log_format: LogFormat,
+    /// Per-node log level filter (e.g. "sensor=debug,processor=warn")
+    #[clap(long, value_name = "FILTER", env = "ADORA_LOG_FILTER")]
+    pub log_filter: Option<String>,
     /// Filter logs by text pattern (case-insensitive substring match)
     #[clap(long, value_name = "PATTERN")]
     pub grep: Option<String>,
@@ -66,23 +75,47 @@ pub struct LogsArgs {
     pub coordinator_port: u16,
 }
 
+fn build_log_config(args: &LogsArgs) -> Result<LogOutputConfig> {
+    let node_filters = match &args.log_filter {
+        Some(filter) => parse_log_filter(filter).map_err(|e| eyre::eyre!(e))?,
+        None => Default::default(),
+    };
+    Ok(LogOutputConfig {
+        min_level: args.level.clone(),
+        format: args.log_format,
+        node_filters,
+        print_dataflow_id: false,
+        print_daemon_name: false,
+    })
+}
+
 impl Executable for LogsArgs {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
 
-        if self.local || self.all_nodes {
+        // --local always uses local file path
+        if self.local {
             if self.follow {
                 return follow_local_logs(&self);
             }
             return read_local_logs(&self);
         }
 
-        // Need a node for coordinator path
+        // --all-nodes without --local: local for static, coordinator for follow
+        if self.all_nodes {
+            if self.follow {
+                return follow_all_nodes_coordinator(&self);
+            }
+            return read_local_logs(&self);
+        }
+
+        // Single node via coordinator
         let node = match self.node {
-            Some(n) => n,
-            None => bail!("node name is required (or use --local --all-nodes)"),
+            Some(ref n) => n.clone(),
+            None => bail!("node name is required (or use --all-nodes)"),
         };
 
+        let config = build_log_config(&self)?;
         let mut session =
             connect_to_coordinator((self.coordinator_addr, self.coordinator_port).into())
                 .wrap_err("failed to connect to adora coordinator")?;
@@ -99,6 +132,7 @@ impl Executable for LogsArgs {
             &self.level,
             self.since,
             self.until,
+            &config,
         )
     }
 }
@@ -112,7 +146,7 @@ fn read_local_logs(args: &LogsArgs) -> Result<()> {
     // Find the dataflow directory (most recent if not specified)
     let dataflow_dir = find_dataflow_dir(out_dir, args.dataflow.as_deref())?;
 
-    let config = LogOutputConfig::default();
+    let config = build_log_config(args)?;
     let now = Utc::now();
 
     if args.all_nodes || args.node.is_none() {
@@ -166,7 +200,7 @@ fn follow_local_logs(args: &LogsArgs) -> Result<()> {
     }
 
     let dataflow_dir = find_dataflow_dir(out_dir, args.dataflow.as_deref())?;
-    let config = LogOutputConfig::default();
+    let config = build_log_config(args)?;
     let now = Utc::now();
 
     let files = if args.all_nodes || args.node.is_none() {
@@ -662,6 +696,61 @@ mod tests {
     }
 }
 
+/// Follow all nodes' logs via coordinator's LogSubscribe (dataflow-level).
+fn follow_all_nodes_coordinator(args: &LogsArgs) -> Result<()> {
+    let config = build_log_config(args)?;
+    let mut session =
+        connect_to_coordinator((args.coordinator_addr, args.coordinator_port).into())
+            .wrap_err("failed to connect to adora coordinator")?;
+    let uuid =
+        resolve_dataflow_identifier_interactive(&mut *session, args.dataflow.as_deref())?;
+
+    let log_level = match &args.level {
+        adora_core::build::LogLevelOrStdout::Stdout => log::LevelFilter::Trace,
+        adora_core::build::LogLevelOrStdout::LogLevel(l) => l.to_level_filter(),
+    };
+
+    let now = Utc::now();
+    let since_threshold =
+        args.since.and_then(|d| chrono::TimeDelta::from_std(d).ok().map(|td| now - td));
+
+    let mut log_session = TcpConnection {
+        stream: TcpStream::connect((args.coordinator_addr, args.coordinator_port))
+            .wrap_err("failed to connect to adora coordinator")?,
+    };
+    log_session
+        .send(
+            &serde_json::to_vec(&ControlRequest::LogSubscribe {
+                dataflow_id: uuid,
+                level: log_level,
+            })
+            .wrap_err("failed to serialize message")?,
+        )
+        .wrap_err("failed to send log subscribe request to coordinator")?;
+
+    while let Ok(raw) = log_session.receive() {
+        let parsed: eyre::Result<LogMessage> =
+            serde_json::from_slice(&raw).context("failed to parse log message");
+        match parsed {
+            Ok(log_message) => {
+                if let Some(threshold) = since_threshold {
+                    if log_message.timestamp < threshold {
+                        continue;
+                    }
+                }
+                if matches_grep(&log_message, args.grep.as_deref()) {
+                    print_log_message(log_message, &config);
+                }
+            }
+            Err(err) => {
+                tracing::warn!("failed to parse log message: {err:?}")
+            }
+        }
+    }
+
+    Ok(())
+}
+
 pub fn logs(
     session: &mut TcpRequestReplyConnection,
     uuid: Uuid,
@@ -673,6 +762,7 @@ pub fn logs(
     level: &adora_core::build::LogLevelOrStdout,
     since: Option<std::time::Duration>,
     until: Option<std::time::Duration>,
+    config: &LogOutputConfig,
 ) -> Result<()> {
     let logs = {
         let reply_raw = session
@@ -709,9 +799,8 @@ pub fn logs(
     let filtered = apply_time_filters(messages, since, until, now);
     let grepped = apply_grep(filtered, grep);
     let display = apply_tail(grepped, tail);
-    let config = LogOutputConfig::default();
     for msg in display {
-        print_log_message(msg, &config);
+        print_log_message(msg, config);
     }
 
     if !follow {
@@ -750,7 +839,7 @@ pub fn logs(
                     }
                 }
                 if matches_grep(&log_message, grep) {
-                    print_log_message(log_message, &config);
+                    print_log_message(log_message, config);
                 }
             }
             Err(err) => {

@@ -577,6 +577,11 @@ impl PreparedNode {
             .node
             .max_log_size()
             .context("Could not resolve `max_log_size` configuration")?;
+        let max_rotated_files = self
+            .node
+            .max_rotated_files()
+            .context("Could not resolve `max_rotated_files` configuration")?
+            .unwrap_or(log::DEFAULT_MAX_ROTATED_FILES);
         let daemon_tx_logs_as = if send_logs_to.is_some() {
             Some(self.daemon_tx.clone())
         } else {
@@ -744,7 +749,7 @@ impl PreparedNode {
                             &working_dir_c,
                             &dataflow_id,
                             &node_id,
-                            log::DEFAULT_MAX_ROTATED_FILES,
+                            max_rotated_files,
                         ) {
                             logger_c
                                 .log(

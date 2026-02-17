@@ -141,6 +141,7 @@ pub trait ResolvedNodeExt {
     fn send_logs_as(&self) -> eyre::Result<Option<String>>;
     fn min_log_level(&self) -> eyre::Result<Option<adora_message::common::LogLevelOrStdout>>;
     fn max_log_size(&self) -> eyre::Result<Option<u64>>;
+    fn max_rotated_files(&self) -> eyre::Result<Option<u32>>;
 }
 
 impl ResolvedNodeExt for ResolvedNode {
@@ -247,6 +248,25 @@ impl ResolvedNodeExt for ResolvedNode {
                 let bytes = parse_byte_size(&s)?;
                 Ok(Some(bytes))
             }
+        }
+    }
+
+    fn max_rotated_files(&self) -> eyre::Result<Option<u32>> {
+        match &self.kind {
+            CoreNodeKind::Runtime(n) => {
+                let values: Vec<_> = n
+                    .operators
+                    .iter()
+                    .filter_map(|op| op.config.max_rotated_files)
+                    .collect();
+                if values.len() > 1 {
+                    return Err(eyre!(
+                        "More than one `max_rotated_files` entries for a runtime node. Please only use one `max_rotated_files` per runtime."
+                    ));
+                }
+                Ok(values.first().copied())
+            }
+            CoreNodeKind::Custom(n) => Ok(n.max_rotated_files),
         }
     }
 }

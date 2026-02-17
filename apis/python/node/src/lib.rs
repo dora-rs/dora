@@ -382,6 +382,44 @@ impl Node {
         Ok(())
     }
 
+    /// Send a structured log message.
+    ///
+    /// Outputs a JSONL line to stdout that the daemon parses automatically.
+    /// Works with ``min_log_level`` filtering and ``send_logs_as`` routing.
+    ///
+    /// :param level: Log level string (error, warn, info, debug, trace)
+    /// :type level: str
+    /// :param message: The log message
+    /// :type message: str
+    /// :param target: Optional target/module path
+    /// :type target: str, optional
+    /// :rtype: None
+    #[pyo3(signature = (level, message, target=None))]
+    pub fn log(&self, level: &str, message: &str, target: Option<&str>) {
+        let node_id = self.node.get().id().to_string();
+        let ts = chrono::Utc::now().to_rfc3339();
+        let level_str = match level.to_lowercase().as_str() {
+            "error" => "error",
+            "warn" | "warning" => "warn",
+            "info" => "info",
+            "debug" => "debug",
+            "trace" => "trace",
+            _ => "info",
+        };
+        let mut entry = serde_json::json!({
+            "ts": ts,
+            "level": level_str,
+            "node": node_id,
+            "msg": message,
+        });
+        if let Some(target) = target {
+            entry["target"] = serde_json::Value::String(target.to_string());
+        }
+        if let Ok(json) = serde_json::to_string(&entry) {
+            println!("{json}");
+        }
+    }
+
     /// Returns the full dataflow descriptor that this node is part of.
     ///
     /// This method returns the parsed dataflow YAML file.

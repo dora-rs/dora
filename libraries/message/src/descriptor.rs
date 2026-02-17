@@ -420,6 +420,9 @@ pub struct Node {
     /// ```
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_log_size: Option<String>,
+    /// Maximum number of rotated log files to keep (default: 5)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_rotated_files: Option<u32>,
 
     /// Build commands executed during `adora build`. Each line runs separately.
     ///
@@ -686,6 +689,9 @@ pub struct OperatorConfig {
     /// Maximum log file size before rotation (e.g. "50MB", "1GB")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_log_size: Option<String>,
+    /// Maximum number of rotated log files to keep (default: 5)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_rotated_files: Option<u32>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema, Clone)]
@@ -782,6 +788,9 @@ pub struct CustomNode {
     /// Maximum log file size before rotation (e.g. "50MB", "1GB")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_log_size: Option<String>,
+    /// Maximum number of rotated log files to keep (default: 5)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_rotated_files: Option<u32>,
 
     #[serde(default)]
     pub restart_policy: RestartPolicy,

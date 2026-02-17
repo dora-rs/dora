@@ -744,6 +744,53 @@ impl AdoraNode {
         self.restart_count
     }
 
+    /// Send a structured log message.
+    ///
+    /// Outputs a JSONL line to stdout that the daemon parses automatically.
+    /// Works with `min_log_level` filtering and `send_logs_as` routing.
+    ///
+    /// `level` should be one of: `"error"`, `"warn"`, `"info"`, `"debug"`, `"trace"`.
+    pub fn log(&self, level: &str, target: Option<&str>, message: &str) {
+        let ts = chrono::Utc::now().to_rfc3339();
+        let mut entry = serde_json::json!({
+            "ts": ts,
+            "level": level,
+            "node": self.id.to_string(),
+            "msg": message,
+        });
+        if let Some(target) = target {
+            entry["target"] = serde_json::Value::String(target.to_string());
+        }
+        if let Ok(json) = serde_json::to_string(&entry) {
+            println!("{json}");
+        }
+    }
+
+    /// Log an error message.
+    pub fn log_error(&self, message: &str) {
+        self.log("error", None, message);
+    }
+
+    /// Log a warning message.
+    pub fn log_warn(&self, message: &str) {
+        self.log("warn", None, message);
+    }
+
+    /// Log an info message.
+    pub fn log_info(&self, message: &str) {
+        self.log("info", None, message);
+    }
+
+    /// Log a debug message.
+    pub fn log_debug(&self, message: &str) {
+        self.log("debug", None, message);
+    }
+
+    /// Log a trace message.
+    pub fn log_trace(&self, message: &str) {
+        self.log("trace", None, message);
+    }
+
     /// Allocates a [`DataSample`] of the specified size.
     ///
     /// The data sample will use shared memory when suitable to enable efficient data transfer
