@@ -23,7 +23,10 @@ def main():
 
             if input_id == "logs":
                 # Log entries arrive as Arrow-encoded JSON strings
-                raw = event["value"][0].as_py()
+                arr = event["value"]
+                if len(arr) == 0:
+                    continue
+                raw = arr[0].as_py()
                 try:
                     entry = json.loads(raw) if isinstance(raw, str) else raw
                 except (json.JSONDecodeError, TypeError):

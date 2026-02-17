@@ -24,7 +24,10 @@ def main():
 
     for event in node:
         if event["type"] == "INPUT":
-            value = event["value"][0].as_py()
+            arr = event["value"]
+            if len(arr) == 0:
+                continue
+            value = arr[0].as_py()
             readings.append(value)
 
             # Keep a sliding window of 20
