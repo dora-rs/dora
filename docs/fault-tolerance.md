@@ -7,11 +7,12 @@ Adora provides built-in fault tolerance for robotic and AI dataflows. Nodes can 
 | Feature | Scope | Config |
 |---------|-------|--------|
 | Restart policies | Per-node | `restart_policy`, `max_restarts`, `restart_delay`, ... |
-| Health monitoring | Per-node | `health_check_timeout` |
+| Health monitoring | Per-node | `health_check_timeout`, `health_check_interval` (dataflow-level) |
 | Input timeouts | Per-input | `input_timeout` |
 | Circuit breaker | Automatic | Triggered by `input_timeout`, auto-recovers |
+| NodeRestarted event | Downstream nodes | Automatic when upstream restarts |
 | InputTracker API | Rust nodes | `adora_node_api::InputTracker` |
-| Observability | Daemon-wide | Atomic counters logged every 5s |
+| Observability | Daemon-wide | Atomic counters logged periodically |
 | Distributed health | Multi-daemon | Coordinator heartbeat monitoring |
 
 ---
@@ -87,6 +88,28 @@ Example: `max_restarts: 5`, `restart_window: 300.0` means "at most 5 restarts pe
 
 When the daemon stops a dataflow (via `stop_all`), it calls `disable_restart()` on every node **before** sending Stop events. This prevents the restart mechanism from fighting the shutdown process. The `disable_restart` flag is an `Arc<AtomicBool>` shared between the daemon event loop and the node's spawn lifecycle task.
 
+### NodeRestarted Event
+
+When a node restarts, the daemon sends a `NodeRestarted` event to all downstream nodes that consume its outputs. This allows downstream nodes to:
+
+- Reset internal state or caches
+- Log the upstream recovery
+- Re-initialize connections or sessions
+
+The event carries the `NodeId` of the restarting node. Downstream nodes receive it automatically via the event stream:
+
+```rust
+match event {
+    Event::NodeRestarted { id } => {
+        println!("upstream node {id} restarted, resetting state");
+        // Clear any cached state from the old node instance
+    }
+    _ => {}
+}
+```
+
+The daemon finds downstream nodes via `dataflow.mappings`, which maps each node's outputs to all subscribing (receiver_node, input_id) pairs. Each unique receiver gets one `NodeRestarted` event per restart.
+
 ---
 
 ## Health Monitoring
@@ -94,16 +117,21 @@ When the daemon stops a dataflow (via `stop_all`), it calls `disable_restart()` 
 Passive monitoring detects hung nodes that stop communicating with the daemon.
 
 ```yaml
+health_check_interval: 2.0  # seconds (default: 5.0, dataflow-level)
 nodes:
   - id: my-node
     path: ./target/debug/my-node
-    health_check_timeout: 30.0  # seconds
+    health_check_timeout: 30.0  # seconds (per-node)
     restart_policy: on-failure
 ```
 
+### Configurable Health Check Interval
+
+The `health_check_interval` is a **dataflow-level** setting that controls how often the daemon checks node health. Default is 5.0 seconds. Lower values detect hung nodes faster but add more overhead. Set this at the top level of your dataflow YAML, not per-node.
+
 ### How It Works Internally
 
-The daemon runs a health check sweep every **5 seconds** (via a tokio interval stream emitting `Event::NodeHealthCheckInterval`).
+The daemon runs a health check sweep at the configured `health_check_interval` (via a tokio interval stream emitting `Event::NodeHealthCheckInterval`).
 
 Each `RunningNode` has a `last_activity: Arc<AtomicU64>` field storing the timestamp (milliseconds since epoch) of the last communication. This is updated atomically by the node's communication handler (`node_communication/mod.rs`) every time the node sends any request to the daemon (event subscriptions, output sends, etc.).
 
@@ -336,6 +364,9 @@ Currently this is informational. Future work may include automatic migration of 
 ## Complete YAML Reference
 
 ```yaml
+# Dataflow-level settings
+health_check_interval: 2.0    # health check sweep interval (default: 5.0s)
+
 nodes:
   - id: sensor-node
     path: ./target/debug/sensor

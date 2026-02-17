@@ -396,6 +396,18 @@ impl EventStream {
                         });
                         Some(event_json)
                     }
+                    NodeEvent::NodeRestarted { id } => {
+                        let time_offset = self
+                            .clock
+                            .new_timestamp()
+                            .get_diff_duration(&self.start_timestamp);
+                        let event_json = serde_json::json!({
+                            "type": "NodeRestarted",
+                            "id": id.to_string(),
+                            "time_offset_secs": time_offset.as_secs_f64(),
+                        });
+                        Some(event_json)
+                    }
                     NodeEvent::AllInputsClosed => {
                         let time_offset = self
                             .clock
@@ -500,6 +512,7 @@ impl EventStream {
                 NodeEvent::Reload { operator_id } => Event::Reload { operator_id },
                 NodeEvent::InputClosed { id } => Event::InputClosed { id },
                 NodeEvent::InputRecovered { id } => Event::InputRecovered { id },
+                NodeEvent::NodeRestarted { id } => Event::NodeRestarted { id },
                 NodeEvent::Input { id, metadata, data } => {
                     let data = data_to_arrow_array(data, &metadata, ack_channel);
                     match data {

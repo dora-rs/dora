@@ -88,6 +88,13 @@ pub struct Descriptor {
     #[schemars(skip)]
     #[serde(default, rename = "_unstable_debug")]
     pub debug: Debug,
+
+    /// How often the daemon checks node health (in seconds).
+    ///
+    /// Defaults to 5.0 seconds if not specified. Lower values detect hung nodes
+    /// faster but add more overhead.
+    #[serde(default)]
+    pub health_check_interval: Option<f64>,
 }
 
 /// Specifies when a node should be restarted.

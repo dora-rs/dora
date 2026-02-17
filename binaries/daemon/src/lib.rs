@@ -183,6 +183,7 @@ impl Daemon {
             Some(remote_daemon_events_tx),
             Default::default(),
             log_destination,
+            None, // coordinator-managed daemon uses default health check interval
         )
         .await
         .map(|_| ())
@@ -216,6 +217,9 @@ impl Daemon {
         }
 
         descriptor.check(&working_dir)?;
+        let health_check_interval = descriptor
+            .health_check_interval
+            .map(Duration::from_secs_f64);
         let nodes = descriptor.resolve_aliases_and_set_defaults()?;
 
         let (events_tx, events_rx) = flume::bounded(10);
@@ -316,6 +320,7 @@ impl Daemon {
                 Default::default()
             },
             log_destination,
+            health_check_interval,
         );
 
         let spawn_result = reply_rx
@@ -360,6 +365,7 @@ impl Daemon {
         remote_daemon_events_tx: Option<flume::Sender<eyre::Result<Timestamped<InterDaemonEvent>>>>,
         builds: BTreeMap<BuildId, BuildInfo>,
         log_destination: LogDestination,
+        health_check_interval_duration: Option<Duration>,
     ) -> eyre::Result<DaemonRunResult> {
         let coordinator_connection = match coordinator_addr {
             Some(addr) => {
@@ -427,7 +433,7 @@ impl Daemon {
         let health_check_clock = daemon.clock.clone();
         let health_check_interval =
             tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(
-                Duration::from_secs(5),
+                health_check_interval_duration.unwrap_or(Duration::from_secs(5)),
             ))
             .map(|_| Timestamped {
                 inner: Event::NodeHealthCheckInterval,
@@ -2498,6 +2504,36 @@ impl Daemon {
                             format!("node will be restarted (attempt {})", restart_count + 1),
                         )
                         .await;
+
+                    // Notify downstream nodes about the restart
+                    if let Some(dataflow) = self.running.get(&dataflow_id) {
+                        let downstream: BTreeSet<NodeId> = dataflow
+                            .mappings
+                            .iter()
+                            .filter(|(k, _)| k.0 == node_id)
+                            .flat_map(|(_, v)| v)
+                            .map(|(receiver_id, _)| receiver_id.clone())
+                            .collect();
+                        for receiver_id in &downstream {
+                            if let Some(channel) =
+                                dataflow.subscribe_channels.get(receiver_id)
+                            {
+                                if send_with_timestamp(
+                                    channel,
+                                    NodeEvent::NodeRestarted {
+                                        id: node_id.clone(),
+                                    },
+                                    &self.clock,
+                                )
+                                .is_err()
+                                {
+                                    tracing::warn!(
+                                        "failed to send NodeRestarted to `{receiver_id}`"
+                                    );
+                                }
+                            }
+                        }
+                    }
                 } else {
                     self.dataflow_node_results
                         .entry(dataflow_id)
@@ -3524,6 +3560,7 @@ mod fault_tolerance_tests {
             communication: CommunicationConfig::default(),
             deploy: None,
             debug: DescriptorDebug::default(),
+            health_check_interval: None,
         };
         RunningDataflow::new(Uuid::nil(), DaemonId::new(None), descriptor)
     }

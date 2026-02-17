@@ -80,6 +80,13 @@ pub enum NodeEvent {
     InputRecovered {
         id: DataId,
     },
+    /// Notifies a node that an upstream node has restarted.
+    ///
+    /// Sent to downstream nodes when a node with a restart policy successfully
+    /// restarts after a failure.
+    NodeRestarted {
+        id: NodeId,
+    },
     /// Notifies a node that all its inputs have been closed.
     ///
     /// This event is only sent to nodes that have at least one input.

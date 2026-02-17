@@ -1,5 +1,5 @@
 use adora_arrow_convert::ArrowData;
-use adora_core::config::{DataId, OperatorId};
+use adora_core::config::{DataId, NodeId, OperatorId};
 use adora_message::metadata::Metadata;
 
 /// Represents an incoming Adora event.
@@ -49,6 +49,15 @@ pub enum Event {
     InputRecovered {
         /// The ID of the recovered input, as specified in the YAML file.
         id: DataId,
+    },
+    /// An upstream node has restarted.
+    ///
+    /// Sent to downstream nodes when a node with a restart policy successfully
+    /// restarts after a failure. Nodes can use this to reset state, clear caches,
+    /// or log the recovery.
+    NodeRestarted {
+        /// The ID of the upstream node that restarted.
+        id: NodeId,
     },
     /// Notification that the event stream is about to close.
     ///
