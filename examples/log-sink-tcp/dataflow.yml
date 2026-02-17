@@ -1,0 +1,16 @@
+nodes:
+  - id: source
+    path: source.py
+    send_logs_as: log_entries
+    inputs:
+      tick: adora/timer/millis/500
+    outputs:
+      - data
+      - log_entries
+
+  - id: tcp_sink
+    path: log-sink-tcp
+    inputs:
+      logs: source/log_entries
+    env:
+      SINK_ADDR: "127.0.0.1:9876"

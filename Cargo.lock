@@ -197,6 +197,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "adora-log-utils"
+version = "0.4.1"
+dependencies = [
+ "adora-arrow-convert",
+ "adora-message",
+ "arrow",
+ "chrono",
+ "eyre",
+ "serde_json",
+]
+
+[[package]]
 name = "adora-message"
 version = "0.7.0"
 dependencies = [
@@ -3461,6 +3473,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 dependencies = [
  "serde_core",
+]
+
+[[package]]
+name = "log-sink-file"
+version = "0.4.1"
+dependencies = [
+ "adora-log-utils",
+ "adora-node-api",
+ "eyre",
+]
+
+[[package]]
+name = "log-sink-tcp"
+version = "0.4.1"
+dependencies = [
+ "adora-log-utils",
+ "adora-node-api",
+ "eyre",
 ]
 
 [[package]]

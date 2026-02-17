@@ -23,7 +23,10 @@ members = [
     "examples/multiple-daemons/node",
     "examples/multiple-daemons/operator",
     "examples/multiple-daemons/sink",
+    "examples/log-sink-tcp",
+    "examples/log-sink-file",
     "libraries/arrow-convert",
+    "libraries/log-utils",
     "libraries/communication-layer/*",
     "libraries/core",
     "libraries/message",
@@ -61,6 +64,7 @@ adora-arrow-convert = { version = "0.4.1", path = "libraries/arrow-convert" }
 adora-tracing = { version = "0.4.1", path = "libraries/extensions/telemetry/tracing" }
 adora-metrics = { version = "0.4.1", path = "libraries/extensions/telemetry/metrics" }
 adora-download = { version = "0.4.1", path = "libraries/extensions/download" }
+adora-log-utils = { version = "0.4.1", path = "libraries/log-utils" }
 shared-memory-server = { version = "0.4.1", path = "libraries/shared-memory-server" }
 communication-layer-request-reply = { version = "0.4.1", path = "libraries/communication-layer/request-reply" }
 adora-cli = { version = "0.4.1", path = "binaries/cli" }

@@ -13,6 +13,9 @@ Adora provides a structured logging system for real-time robotics and AI dataflo
 | Stdout-as-data routing | Per-node YAML | `send_stdout_as` |
 | Structured log routing | Per-node YAML | `send_logs_as` |
 | Log file rotation | Per-node YAML | `max_log_size` |
+| Rotation file limit | Per-node YAML | `max_rotated_files` |
+| Node log API | Rust/Python node | `node.log()`, `node.log_info()`, etc. |
+| Log utilities library | Rust crate | `adora-log-utils` |
 | Time-range filtering | `adora logs` | `--since`, `--until` |
 | Live log streaming | `adora logs` | `--follow` |
 | Text search | `adora logs` | `--grep` |
@@ -354,7 +357,7 @@ When the active log file exceeds the configured size, the daemon:
 2. Renames existing rotated files: `.4.jsonl` -> `.5.jsonl`, `.3.jsonl` -> `.4.jsonl`, etc.
 3. Renames the current file: `log_sensor.jsonl` -> `log_sensor.1.jsonl`
 4. Creates a fresh `log_sensor.jsonl`
-5. Deletes any file beyond the 5-file rotation limit
+5. Deletes any file beyond the rotation limit (default 5, configurable via `max_rotated_files`)
 
 **Naming convention:**
 
@@ -367,11 +370,25 @@ log_sensor.4.jsonl
 log_sensor.5.jsonl     # oldest (deleted on next rotation)
 ```
 
-Maximum disk usage per node: `max_log_size * 6` (1 active + 5 rotated).
+Maximum disk usage per node: `max_log_size * (1 + max_rotated_files)` (1 active + N rotated).
 
 Without `max_log_size`, log files grow unbounded. For long-running dataflows, always set this.
 
 The `adora logs --local` command automatically reads all rotated files for a node and merges them in chronological order (oldest rotated file first, current file last).
+
+### `max_rotated_files`
+
+Control how many rotated log files to keep (default: 5, range: 1-100).
+
+```yaml
+nodes:
+  - id: sensor
+    path: ./target/debug/sensor
+    max_log_size: "50MB"
+    max_rotated_files: 10    # keep 10 rotated files instead of 5
+```
+
+With `max_rotated_files: 10` and `max_log_size: "50MB"`, maximum disk usage is `50MB * 11` = 550MB per node. Lower values save disk space; higher values preserve more history.
 
 ### Runtime Node Restrictions
 
@@ -400,6 +417,183 @@ nodes:
 ```
 
 When a single operator in a runtime sets these fields, the output name is prefixed with the operator ID (e.g., `op1/logs`).
+
+---
+
+## Node Log API
+
+Nodes can emit structured log messages programmatically using the node API. These are equivalent to writing JSON-formatted log lines to stdout -- the daemon parses them identically.
+
+### Rust
+
+```rust
+use adora_node_api::AdoraNode;
+
+let (node, mut events) = AdoraNode::init_from_env()?;
+
+// General log with level string and optional target
+node.log("info", "sensor initialized", Some("sensor::init"));
+
+// Convenience methods (no target parameter)
+node.log_error("connection failed");
+node.log_warn("temperature elevated");
+node.log_info("reading acquired");
+node.log_debug("raw bytes received");
+node.log_trace("entering loop iteration");
+```
+
+The `level` parameter accepts `"error"`, `"warn"` (or `"warning"`), `"info"`, `"debug"`, `"trace"`. Unknown levels default to `"info"`.
+
+### Python
+
+```python
+from adora import Node
+
+node = Node()
+
+# General log with level string and optional target
+node.log("info", "sensor initialized", target="sensor.init")
+
+# For most cases, use Python's built-in logging module instead:
+import logging
+logging.info("sensor initialized")
+```
+
+The Python `node.log()` method has the same level normalization as Rust. However, Python nodes typically use the standard `logging` module, which the daemon parses into structured log entries automatically.
+
+---
+
+## Log Utilities Library (`adora-log-utils`)
+
+The `adora-log-utils` crate provides parsing, merging, filtering, and formatting utilities for working with `LogMessage` entries in custom sink nodes. Use it when building nodes that consume log data via `send_logs_as`.
+
+### API
+
+```rust
+use adora_log_utils;
+
+// Parse a LogMessage from JSON (as received from send_logs_as)
+let log = adora_log_utils::parse_log(json_str)?;
+
+// Parse directly from Arrow input data (convenience for event handlers)
+let log = adora_log_utils::parse_log_from_arrow(&data)?;
+
+// Merge multiple log streams into a single timeline
+let merged = adora_log_utils::merge_by_timestamp(vec![stream_a, stream_b]);
+
+// Filter by minimum level
+let errors = adora_log_utils::filter_by_level(&logs, &min_level);
+
+// Format as JSON (one line, no trailing newline)
+let json = adora_log_utils::format_json(&log);
+
+// Format as compact single-line: "<timestamp> <node> <LEVEL>: <message>"
+let compact = adora_log_utils::format_compact(&log);
+
+// Format as pretty: "[<timestamp>][<LEVEL>][<node>] <message>"
+let pretty = adora_log_utils::format_pretty(&log);
+```
+
+### Dependency
+
+Add to your sink node's `Cargo.toml`:
+
+```toml
+[dependencies]
+adora-log-utils = { workspace = true }
+```
+
+---
+
+## Log Sink Examples
+
+Two example sink nodes demonstrate how to consume logs routed via `send_logs_as` and forward them to external destinations.
+
+### File Sink (`examples/log-sink-file/`)
+
+Merges log streams from multiple nodes into a single JSONL file. Useful for unified log collection.
+
+```yaml
+nodes:
+  - id: sensor
+    path: sensor.py
+    send_logs_as: log_entries
+    inputs:
+      tick: adora/timer/millis/200
+    outputs:
+      - reading
+      - log_entries
+
+  - id: processor
+    path: processor.py
+    send_logs_as: log_entries
+    inputs:
+      reading: sensor/reading
+    outputs:
+      - result
+      - log_entries
+
+  - id: file_sink
+    path: log-sink-file
+    inputs:
+      sensor_logs: sensor/log_entries
+      processor_logs: processor/log_entries
+    env:
+      LOG_FILE: "./combined.jsonl"
+```
+
+The file sink reads `LOG_FILE` from the environment (default `./combined.jsonl`), parses each incoming Arrow message with `adora_log_utils::parse_log_from_arrow()`, formats it as JSON, and appends it to the file.
+
+### TCP Sink (`examples/log-sink-tcp/`)
+
+Forwards log entries over a TCP socket to a remote log collector. Useful for embedded systems that lack local filesystems and need to stream logs off-device.
+
+```yaml
+nodes:
+  - id: source
+    path: source.py
+    send_logs_as: log_entries
+    inputs:
+      tick: adora/timer/millis/500
+    outputs:
+      - data
+      - log_entries
+
+  - id: tcp_sink
+    path: log-sink-tcp
+    inputs:
+      logs: source/log_entries
+    env:
+      SINK_ADDR: "127.0.0.1:9876"
+```
+
+The TCP sink reads `SINK_ADDR` from the environment (default `127.0.0.1:9876`), connects to the server on startup, and sends each log entry as a JSON line. It reconnects automatically on write failure.
+
+### Building a Custom Sink
+
+To build your own sink node, follow this pattern:
+
+```rust
+use adora_node_api::{AdoraNode, Event};
+
+fn main() -> eyre::Result<()> {
+    let (_node, mut events) = AdoraNode::init_from_env()?;
+
+    while let Some(event) = events.recv() {
+        match event {
+            Event::Input { data, .. } => {
+                let log = adora_log_utils::parse_log_from_arrow(&data)?;
+                // Process the log entry: write to file, send over network, etc.
+                let json = adora_log_utils::format_json(&log);
+                println!("{json}");
+            }
+            Event::Stop(_) => break,
+            _ => {}
+        }
+    }
+    Ok(())
+}
+```
 
 ---
 
@@ -500,6 +694,7 @@ nodes:
 
     # Log file rotation
     max_log_size: "50MB"         # rotate when file exceeds 50MB
+    max_rotated_files: 5         # keep 5 rotated files (default, range 1-100)
 
     inputs:
       tick: adora/timer/millis/100
@@ -673,7 +868,7 @@ nodes:
       - alerts
 ```
 
-**Node-side handling in the log monitor:**
+**Node-side handling in the log monitor (using `adora-log-utils`):**
 
 ```rust
 use adora_node_api::{AdoraNode, Event};
@@ -681,15 +876,13 @@ use adora_node_api::{AdoraNode, Event};
 let (mut node, mut events) = AdoraNode::init_from_env()?;
 while let Some(event) = events.recv() {
     match event {
-        Event::Input { id, data, .. } => {
-            // data is a JSON string of a LogMessage
-            let json = data.to_string();
-            let log_msg: serde_json::Value = serde_json::from_str(&json)?;
+        Event::Input { data, .. } => {
+            let log = adora_log_utils::parse_log_from_arrow(&data)?;
 
-            let level = log_msg["level"].as_str().unwrap_or("");
-            let msg = log_msg["message"].as_str().unwrap_or("");
+            let is_error = matches!(log.level,
+                adora_message::common::LogLevelOrStdout::LogLevel(log::Level::Error));
 
-            if level == "ERROR" || msg.contains("timeout") {
+            if is_error || log.message.contains("timeout") {
                 // Send alert downstream
                 node.send_output("alerts", /* ... */)?;
             }
@@ -699,6 +892,8 @@ while let Some(event) = events.recv() {
     }
 }
 ```
+
+See also the [Log Sink Examples](#log-sink-examples) section for complete runnable examples.
 
 ### 3. Post-Mortem Debugging of a Crash
 
@@ -832,13 +1027,13 @@ cat test-logs.json | jq -r 'select(.level == "ERROR") | "\(.node_id): \(.message
 
 **Set `min_log_level` in production.** Source-level filtering at the daemon prevents debug noise from reaching log files and the network. This is the most effective way to reduce log volume since it filters before any I/O.
 
-**Always set `max_log_size` for long-running dataflows.** Without rotation, a single noisy node can fill the disk. Start with `"50MB"` (300MB total per node with rotation) and adjust based on your storage budget.
+**Always set `max_log_size` for long-running dataflows.** Without rotation, a single noisy node can fill the disk. Start with `"50MB"` (300MB total per node with rotation) and adjust based on your storage budget. Use `max_rotated_files` to tune how much history to keep (default 5, range 1-100).
 
 **Use environment variables for team defaults.** Set `ADORA_LOG_LEVEL` and `ADORA_LOG_FORMAT` in your shell profile or CI configuration. Individual developers can override with CLI flags.
 
 **Use `--log-filter` during development.** Instead of changing YAML config, use per-node display overrides to focus on the node you're debugging: `--log-filter "my-node=debug"`.
 
-**Use `send_logs_as` for operational monitoring.** Build monitoring nodes that watch for error patterns, compute error rates, or forward alerts. This keeps monitoring logic within the dataflow graph.
+**Use `send_logs_as` for operational monitoring.** Build monitoring nodes that watch for error patterns, compute error rates, or forward alerts. This keeps monitoring logic within the dataflow graph. Use `adora-log-utils` to parse and format log entries in custom sink nodes (see `examples/log-sink-file/` and `examples/log-sink-tcp/`).
 
 **Prefer `send_logs_as` over `send_stdout_as` for structured data.** `send_stdout_as` captures every stdout line (including raw prints), while `send_logs_as` only captures parsed structured log entries with full metadata.
 
