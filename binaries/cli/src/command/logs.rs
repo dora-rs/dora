@@ -1,20 +1,23 @@
 use std::{
     io::Write,
     net::{SocketAddr, TcpStream},
+    path::{Path, PathBuf},
 };
 
 use super::{Executable, default_tracing};
 use crate::{
     common::{connect_to_coordinator, resolve_dataflow_identifier_interactive},
-    output::print_log_message,
+    output::{LogOutputConfig, parse_jsonl_line, print_log_message},
 };
-use clap::Args;
-use communication_layer_request_reply::{TcpConnection, TcpRequestReplyConnection};
 use adora_core::topics::{ADORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST};
 use adora_message::{
     cli_to_coordinator::ControlRequest, common::LogMessage,
     coordinator_to_cli::ControlRequestReply, id::NodeId,
 };
+use chrono::{DateTime, Utc};
+use clap::Args;
+use communication_layer_request_reply::{TcpConnection, TcpRequestReplyConnection};
+use duration_str::parse as parse_duration_str;
 use eyre::{Context, Result, bail};
 use uuid::Uuid;
 
@@ -24,15 +27,29 @@ pub struct LogsArgs {
     /// Identifier of the dataflow
     #[clap(value_name = "UUID_OR_NAME")]
     pub dataflow: Option<String>,
-    /// Show logs for the given node
+    /// Show logs for the given node (omit with --all-nodes)
     #[clap(value_name = "NAME")]
-    pub node: NodeId,
+    pub node: Option<NodeId>,
+    /// Show logs from all nodes merged by timestamp
+    #[clap(long)]
+    pub all_nodes: bool,
     /// Number of lines to show from the end of the logs
     #[clap(long, short = 'n')]
     pub tail: Option<usize>,
     /// Follow log output
     #[clap(long, short)]
     pub follow: bool,
+    /// Read log files from local out/ directory instead of coordinator
+    #[clap(long)]
+    pub local: bool,
+    /// Only show logs newer than this duration ago (e.g. "5m", "1h")
+    #[clap(long, value_name = "DURATION")]
+    #[arg(value_parser = parse_duration_str)]
+    pub since: Option<std::time::Duration>,
+    /// Only show logs older than this duration ago (e.g. "5m", "1h")
+    #[clap(long, value_name = "DURATION")]
+    #[arg(value_parser = parse_duration_str)]
+    pub until: Option<std::time::Duration>,
     /// Address of the adora coordinator
     #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
     pub coordinator_addr: std::net::IpAddr,
@@ -45,6 +62,16 @@ impl Executable for LogsArgs {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
 
+        if self.local || self.all_nodes {
+            return read_local_logs(&self);
+        }
+
+        // Need a node for coordinator path
+        let node = match self.node {
+            Some(n) => n,
+            None => bail!("node name is required (or use --local --all-nodes)"),
+        };
+
         let mut session =
             connect_to_coordinator((self.coordinator_addr, self.coordinator_port).into())
                 .wrap_err("failed to connect to adora coordinator")?;
@@ -53,12 +80,217 @@ impl Executable for LogsArgs {
         logs(
             &mut *session,
             uuid,
-            self.node,
+            node,
             self.tail,
             self.follow,
             (self.coordinator_addr, self.coordinator_port).into(),
         )
     }
+}
+
+fn read_local_logs(args: &LogsArgs) -> Result<()> {
+    let out_dir = Path::new("out");
+    if !out_dir.exists() {
+        bail!("no out/ directory found in current directory");
+    }
+
+    // Find the dataflow directory (most recent if not specified)
+    let dataflow_dir = find_dataflow_dir(out_dir, args.dataflow.as_deref())?;
+
+    let config = LogOutputConfig::default();
+    let now = Utc::now();
+
+    if args.all_nodes || args.node.is_none() {
+        // Read all log files and merge-sort
+        let log_files = find_log_files(&dataflow_dir)?;
+        if log_files.is_empty() {
+            bail!("no log files found in {}", dataflow_dir.display());
+        }
+
+        let mut all_messages: Vec<LogMessage> = Vec::new();
+        for path in &log_files {
+            let messages = read_log_file(path)?;
+            all_messages.extend(messages);
+        }
+
+        // Sort by timestamp
+        all_messages.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+
+        // Apply time filters
+        let filtered = apply_time_filters(all_messages, args.since, args.until, now);
+
+        // Apply tail
+        let display: Vec<_> = match args.tail {
+            Some(n) => filtered
+                .into_iter()
+                .rev()
+                .take(n)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect(),
+            None => filtered,
+        };
+
+        for msg in display {
+            print_log_message(msg, &config);
+        }
+    } else {
+        let node = args.node.as_ref().unwrap();
+        let log_file = find_node_log_file(&dataflow_dir, node)?;
+        let messages = read_log_file(&log_file)?;
+        let filtered = apply_time_filters(messages, args.since, args.until, now);
+
+        let display: Vec<_> = match args.tail {
+            Some(n) => filtered
+                .into_iter()
+                .rev()
+                .take(n)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect(),
+            None => filtered,
+        };
+
+        for msg in display {
+            print_log_message(msg, &config);
+        }
+    }
+
+    Ok(())
+}
+
+fn find_dataflow_dir(out_dir: &Path, dataflow_id: Option<&str>) -> Result<PathBuf> {
+    if let Some(id) = dataflow_id {
+        let dir = out_dir.join(id);
+        if dir.exists() {
+            return Ok(dir);
+        }
+        bail!("dataflow directory not found: {}", dir.display());
+    }
+
+    // Find the most recent dataflow directory by modification time
+    let mut entries: Vec<_> = std::fs::read_dir(out_dir)
+        .wrap_err("failed to read out/ directory")?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .collect();
+
+    if entries.is_empty() {
+        bail!("no dataflow directories found in out/");
+    }
+
+    entries.sort_by(|a, b| {
+        let a_time = a
+            .metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::UNIX_EPOCH);
+        let b_time = b
+            .metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::UNIX_EPOCH);
+        b_time.cmp(&a_time)
+    });
+
+    Ok(entries[0].path())
+}
+
+fn find_log_files(dataflow_dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(dataflow_dir)
+        .wrap_err_with(|| format!("failed to read {}", dataflow_dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if name.starts_with("log_") && (name.ends_with(".jsonl") || name.ends_with(".txt")) {
+            files.push(path);
+        }
+    }
+    Ok(files)
+}
+
+fn find_node_log_file(dataflow_dir: &Path, node: &NodeId) -> Result<PathBuf> {
+    // Try .jsonl first, then .txt
+    let jsonl = dataflow_dir.join(format!("log_{node}.jsonl"));
+    if jsonl.exists() {
+        return Ok(jsonl);
+    }
+    let txt = dataflow_dir.join(format!("log_{node}.txt"));
+    if txt.exists() {
+        return Ok(txt);
+    }
+    bail!(
+        "no log file found for node '{node}' in {}",
+        dataflow_dir.display()
+    );
+}
+
+fn read_log_file(path: &Path) -> Result<Vec<LogMessage>> {
+    let content = std::fs::read_to_string(path)
+        .wrap_err_with(|| format!("failed to read {}", path.display()))?;
+
+    let is_jsonl = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e == "jsonl")
+        .unwrap_or(false);
+
+    if is_jsonl {
+        Ok(content
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .filter_map(|line| parse_jsonl_line(line))
+            .collect())
+    } else {
+        // Legacy .txt files: try to parse each line as JSON (LogMessage)
+        // If that fails, treat as raw text
+        let messages: Vec<LogMessage> = content
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .filter_map(|line| parse_jsonl_line(line))
+            .collect();
+
+        if messages.is_empty() {
+            // Raw text file, just print it directly
+            std::io::stdout()
+                .write_all(content.as_bytes())
+                .wrap_err("failed to write to stdout")?;
+            Ok(Vec::new())
+        } else {
+            Ok(messages)
+        }
+    }
+}
+
+fn apply_time_filters(
+    messages: Vec<LogMessage>,
+    since: Option<std::time::Duration>,
+    until: Option<std::time::Duration>,
+    now: DateTime<Utc>,
+) -> Vec<LogMessage> {
+    let since_threshold =
+        since.and_then(|d| chrono::TimeDelta::from_std(d).ok().map(|td| now - td));
+    let until_threshold =
+        until.and_then(|d| chrono::TimeDelta::from_std(d).ok().map(|td| now - td));
+
+    messages
+        .into_iter()
+        .filter(|msg| {
+            if let Some(threshold) = since_threshold {
+                if msg.timestamp < threshold {
+                    return false;
+                }
+            }
+            if let Some(threshold) = until_threshold {
+                if msg.timestamp > threshold {
+                    return false;
+                }
+            }
+            true
+        })
+        .collect()
 }
 
 pub fn logs(
@@ -121,7 +353,7 @@ pub fn logs(
             serde_json::from_slice(&raw).context("failed to parse log message");
         match parsed {
             Ok(log_message) => {
-                print_log_message(log_message, false, false);
+                print_log_message(log_message, &LogOutputConfig::default());
             }
             Err(err) => {
                 tracing::warn!("failed to parse log message: {err:?}")

@@ -1,9 +1,7 @@
 use crate::{
-    CoreNodeKindExt, AdoraEvent, Event, OutputId, ProcessOperation, RunningNode,
+    AdoraEvent, CoreNodeKindExt, Event, OutputId, ProcessOperation, RunningNode,
     log::{self, NodeLogger},
 };
-use aligned_vec::{AVec, ConstAlign};
-use crossbeam::queue::ArrayQueue;
 use adora_arrow_convert::IntoArrow;
 use adora_core::{
     config::DataId,
@@ -23,6 +21,8 @@ use adora_node_api::{
     arrow::array::ArrayData,
     arrow_utils::{copy_array_into_sample, required_data_size},
 };
+use aligned_vec::{AVec, ConstAlign};
+use crossbeam::queue::ArrayQueue;
 use eyre::{ContextCompat, WrapErr};
 use process_wrap::tokio::TokioCommandWrap;
 use std::{
@@ -38,6 +38,17 @@ use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt},
     sync::{mpsc, oneshot},
 };
+
+#[derive(Clone, Copy)]
+enum LogStream {
+    Stdout,
+    Stderr,
+}
+
+struct LogLine {
+    content: String,
+    stream: LogStream,
+}
 
 #[derive(Clone, Default)]
 struct RestartConfig {
@@ -204,10 +215,7 @@ impl PreparedNode {
                         .log(
                             LogLevel::Error,
                             Some("daemon".into()),
-                            format!(
-                                "max restarts ({}) exceeded, giving up",
-                                config.max_restarts,
-                            ),
+                            format!("max restarts ({}) exceeded, giving up", config.max_restarts,),
                         )
                         .await;
                     false
@@ -238,8 +246,9 @@ impl PreparedNode {
                 if let Some(base_delay) = config.restart_delay {
                     let exp = (window_count - 1).min(16); // cap exponent to avoid overflow
                     let backoff = base_delay.mul_f64(2f64.powi(exp as i32));
-                    let backoff =
-                        config.max_restart_delay.map_or(backoff, |max| backoff.min(max));
+                    let backoff = config
+                        .max_restart_delay
+                        .map_or(backoff, |max| backoff.min(max));
                     logger
                         .log(
                             LogLevel::Info,
@@ -394,7 +403,7 @@ impl PreparedNode {
         if !dataflow_dir.exists() {
             std::fs::create_dir_all(&dataflow_dir).context("could not create dataflow_dir")?;
         }
-        let (tx, mut rx) = mpsc::channel(10);
+        let (tx, mut rx) = mpsc::channel::<LogLine>(10);
         let mut file = File::create(log::log_path(
             &self.node_working_dir,
             &self.dataflow_id,
@@ -448,10 +457,15 @@ impl PreparedNode {
                 };
 
                 // send the buffered lines
-                let lines = std::mem::take(&mut buffer);
-                let sent = stdout_tx.send(lines.clone()).await;
+                let content = std::mem::take(&mut buffer);
+                let sent = stdout_tx
+                    .send(LogLine {
+                        content: content.clone(),
+                        stream: LogStream::Stdout,
+                    })
+                    .await;
                 if sent.is_err() {
-                    println!("Could not log: {lines}");
+                    println!("Could not log: {content}");
                 }
             }
         });
@@ -499,10 +513,15 @@ impl PreparedNode {
                 self.node_stderr_most_recent.force_push(new);
 
                 // send the buffered lines
-                let lines = std::mem::take(&mut buffer);
-                let sent = stderr_tx.send(lines.clone()).await;
+                let content = std::mem::take(&mut buffer);
+                let sent = stderr_tx
+                    .send(LogLine {
+                        content: content.clone(),
+                        stream: LogStream::Stderr,
+                    })
+                    .await;
                 if sent.is_err() {
-                    println!("Could not log: {lines}");
+                    println!("Could not log: {content}");
                 }
             }
         });
@@ -550,11 +569,17 @@ impl PreparedNode {
         let mut logger_c = logger.try_clone().await?;
         // Log to file stream.
         tokio::spawn(async move {
-            while let Some(message) = rx.recv().await {
+            while let Some(log_line) = rx.recv().await {
+                let LogLine { content, stream } = log_line;
+                let stream_str = match stream {
+                    LogStream::Stdout => "stdout",
+                    LogStream::Stderr => "stderr",
+                };
+
                 // If log is an output, we're sending the logs to the dataflow
                 if let Some(stdout_output_name) = &send_stdout_to {
                     // Convert logs to DataMessage
-                    let array = message.as_str().into_arrow();
+                    let array = content.as_str().into_arrow();
 
                     let array: ArrayData = array.into();
                     let total_len = required_data_size(&array);
@@ -582,58 +607,79 @@ impl PreparedNode {
                     let _ = daemon_tx_log.send(event).await;
                 }
 
-                match file.write_all(message.as_bytes()).await {
+                let formatted = content.lines().fold(String::default(), |mut output, line| {
+                    output.push_str(line);
+                    output
+                });
+
+                // Build a LogMessage for both file writing and channel forwarding
+                let log_message = match serde_json::de::from_str::<LogMessageHelper>(&formatted) {
+                    Ok(log_msg) => {
+                        let mut message = LogMessage::from(log_msg);
+                        message.dataflow_id = Some(dataflow_id);
+                        message.node_id = Some(node_id.clone());
+                        message.daemon_id = Some(daemon_id.clone());
+                        message
+                    }
+                    Err(_) => LogMessage {
+                        daemon_id: Some(daemon_id.clone()),
+                        dataflow_id: Some(dataflow_id),
+                        build_id: None,
+                        level: adora_core::build::LogLevelOrStdout::Stdout,
+                        node_id: Some(node_id.clone()),
+                        target: None,
+                        message: formatted,
+                        file: None,
+                        line: None,
+                        module_path: None,
+                        timestamp: uhlc.new_timestamp().get_time().to_system_time().into(),
+                        fields: None,
+                    },
+                };
+
+                // Write JSONL to log file
+                let ts = log_message
+                    .timestamp
+                    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+                let log_entry = serde_json::json!({
+                    "ts": ts,
+                    "level": match &log_message.level {
+                        adora_core::build::LogLevelOrStdout::LogLevel(l) => match l {
+                            LogLevel::Error => "error",
+                            LogLevel::Warn => "warn",
+                            LogLevel::Info => "info",
+                            LogLevel::Debug => "debug",
+                            LogLevel::Trace => "trace",
+                        },
+                        adora_core::build::LogLevelOrStdout::Stdout => "stdout",
+                    },
+                    "node": node_id.to_string(),
+                    "stream": stream_str,
+                    "msg": &log_message.message,
+                    "target": &log_message.target,
+                    "fields": &log_message.fields,
+                });
+                let mut json_bytes = serde_json::to_vec(&log_entry).unwrap_or_default();
+                json_bytes.push(b'\n');
+                match file.write_all(&json_bytes).await {
                     Ok(_) => {}
                     Err(err) => {
                         logger_c
                             .log(
                                 LogLevel::Error,
                                 Some("daemon".into()),
-                                format!("Could not log {message} to file due to {err}"),
+                                format!("Could not write log to file: {err}"),
                             )
                             .await;
                     }
                 }
 
-                let formatted = message.lines().fold(String::default(), |mut output, line| {
-                    output.push_str(line);
-                    output
-                });
-
+                // Forward to channel/coordinator for live display
                 if std::env::var("ADORA_QUIET").is_err() {
-                    match serde_json::de::from_str::<LogMessageHelper>(&formatted) {
-                        Ok(log_msg) => {
-                            let mut message = LogMessage::from(log_msg);
-                            message.dataflow_id = Some(dataflow_id);
-                            message.node_id = Some(node_id.clone());
-                            message.daemon_id = Some(daemon_id.clone());
-                            cloned_logger.log(message).await;
-                        }
-                        Err(_err) => {
-                            cloned_logger
-                                .log(LogMessage {
-                                    daemon_id: Some(daemon_id.clone()),
-                                    dataflow_id: Some(dataflow_id),
-                                    build_id: None,
-                                    level: adora_core::build::LogLevelOrStdout::Stdout,
-                                    node_id: Some(node_id.clone()),
-                                    target: None,
-                                    message: formatted,
-                                    file: None,
-                                    line: None,
-                                    module_path: None,
-                                    timestamp: uhlc
-                                        .new_timestamp()
-                                        .get_time()
-                                        .to_system_time()
-                                        .into(),
-                                    fields: None,
-                                })
-                                .await;
-                        }
-                    }
+                    cloned_logger.log(log_message).await;
                 }
-                // Make sure that all data has been synced to disk.
+
+                // Sync to disk
                 let _ = file.sync_all().await.map_err(|err| {
                     logger_c.log(
                         LogLevel::Error,

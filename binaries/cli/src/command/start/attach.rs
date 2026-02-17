@@ -1,8 +1,8 @@
-use communication_layer_request_reply::{TcpConnection, TcpRequestReplyConnection};
 use adora_core::descriptor::{CoreNodeKind, Descriptor, DescriptorExt, resolve_path};
 use adora_message::cli_to_coordinator::ControlRequest;
 use adora_message::common::LogMessage;
 use adora_message::coordinator_to_cli::ControlRequestReply;
+use communication_layer_request_reply::{TcpConnection, TcpRequestReplyConnection};
 use eyre::Context;
 use notify::event::ModifyKind;
 use notify::{Config, Event as NotifyEvent, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -15,7 +15,7 @@ use tracing::{error, info};
 use uuid::Uuid;
 
 use crate::common::handle_dataflow_result;
-use crate::output::print_log_message;
+use crate::output::{LogOutputConfig, print_log_message};
 
 pub fn attach_dataflow(
     dataflow: Descriptor,
@@ -165,7 +165,11 @@ pub fn attach_dataflow(
             },
             Ok(AttachEvent::Control(control_request)) => control_request,
             Ok(AttachEvent::Log(Ok(log_message))) => {
-                print_log_message(log_message, false, print_daemon_name);
+                let config = LogOutputConfig {
+                    print_daemon_name,
+                    ..LogOutputConfig::default()
+                };
+                print_log_message(log_message, &config);
                 continue;
             }
             Ok(AttachEvent::Log(Err(err))) => {

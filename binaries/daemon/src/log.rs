@@ -23,7 +23,7 @@ use crate::socket_stream_utils::socket_stream_send;
 
 pub fn log_path(working_dir: &Path, dataflow_id: &Uuid, node_id: &NodeId) -> PathBuf {
     let dataflow_dir = working_dir.join("out").join(dataflow_id.to_string());
-    dataflow_dir.join(format!("log_{node_id}.txt"))
+    dataflow_dir.join(format!("log_{node_id}.jsonl"))
 }
 
 pub struct NodeLogger<'a> {

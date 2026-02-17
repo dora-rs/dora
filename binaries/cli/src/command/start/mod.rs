@@ -6,10 +6,9 @@ use super::{Executable, default_tracing};
 use crate::{
     command::start::attach::attach_dataflow,
     common::{connect_to_coordinator, local_working_dir, resolve_dataflow, write_events_to},
-    output::print_log_message,
+    output::{LogOutputConfig, print_log_message},
     session::DataflowSession,
 };
-use communication_layer_request_reply::{TcpConnection, TcpRequestReplyConnection};
 use adora_core::{
     descriptor::{Descriptor, DescriptorExt},
     topics::{ADORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST},
@@ -17,6 +16,7 @@ use adora_core::{
 use adora_message::{
     cli_to_coordinator::ControlRequest, common::LogMessage, coordinator_to_cli::ControlRequestReply,
 };
+use communication_layer_request_reply::{TcpConnection, TcpRequestReplyConnection};
 use eyre::{Context, bail};
 use std::{
     net::{IpAddr, SocketAddr, TcpStream},
@@ -179,7 +179,11 @@ fn wait_until_dataflow_started(
                 serde_json::from_slice(&raw).context("failed to parse log message");
             match parsed {
                 Ok(log_message) => {
-                    print_log_message(log_message, false, print_daemon_id);
+                    let config = LogOutputConfig {
+                        print_daemon_name: print_daemon_id,
+                        ..LogOutputConfig::default()
+                    };
+                    print_log_message(log_message, &config);
                 }
                 Err(err) => {
                     tracing::warn!("failed to parse log message: {err:?}")

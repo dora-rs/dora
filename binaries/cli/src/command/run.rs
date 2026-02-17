@@ -8,9 +8,12 @@
 use super::Executable;
 use crate::{
     common::{handle_dataflow_result, resolve_dataflow, write_events_to},
-    output::print_log_message,
+    output::{
+        LogFormat, LogOutputConfig, parse_log_filter, parse_log_level_str, print_log_message,
+    },
     session::DataflowSession,
 };
+use adora_core::build::LogLevelOrStdout;
 use adora_daemon::{Daemon, LogDestination, flume};
 use duration_str::parse as parse_duration_str;
 use eyre::Context;
@@ -41,6 +44,24 @@ pub struct Run {
     #[clap(long, value_name = "DURATION", verbatim_doc_comment)]
     #[arg(value_parser = parse_duration_str)]
     pub stop_after: Option<Duration>,
+    /// Minimum log level to display
+    ///
+    /// Levels: error, warn, info, debug, trace, stdout (default).
+    /// "stdout" shows everything including raw stdout from nodes.
+    #[clap(long, default_value = "stdout")]
+    #[arg(value_parser = parse_log_level_str)]
+    pub log_level: LogLevelOrStdout,
+    /// Output format for log messages
+    #[clap(long, default_value = "pretty")]
+    pub log_format: LogFormat,
+    /// Per-node log level filter
+    ///
+    /// Format: "node1=level,node2=level". Overrides --log-level for matched nodes.
+    ///
+    /// Examples:
+    ///   --log-filter "sensor=debug,processor=warn"
+    #[clap(long, value_name = "FILTER", verbatim_doc_comment)]
+    pub log_filter: Option<String>,
 }
 
 impl Run {
@@ -49,6 +70,9 @@ impl Run {
             dataflow,
             uv: false,
             stop_after: None,
+            log_level: LogLevelOrStdout::Stdout,
+            log_format: LogFormat::Pretty,
+            log_filter: None,
         }
     }
 }
@@ -89,10 +113,23 @@ impl Executable for Run {
         let dataflow_session = DataflowSession::read_session(&dataflow_path)
             .context("failed to read DataflowSession")?;
 
+        let node_filters = match &self.log_filter {
+            Some(filter) => parse_log_filter(filter).map_err(|e| eyre::eyre!(e))?,
+            None => Default::default(),
+        };
+
+        let config = LogOutputConfig {
+            min_level: self.log_level,
+            format: self.log_format,
+            node_filters,
+            print_dataflow_id: false,
+            print_daemon_name: false,
+        };
+
         let (log_tx, log_rx) = flume::bounded(100);
         std::thread::spawn(move || {
             for message in log_rx {
-                print_log_message(message, false, false);
+                print_log_message(message, &config);
             }
         });
 

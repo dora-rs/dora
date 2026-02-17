@@ -1,14 +1,74 @@
+use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 
-use chrono::Local;
-use colored::{Color, Colorize};
 use adora_core::build::LogLevelOrStdout;
 use adora_message::common::LogMessage;
-pub fn print_log_message(
-    log_message: LogMessage,
-    print_dataflow_id: bool,
-    print_daemon_name: bool,
-) {
+use chrono::Local;
+use colored::{Color, Colorize};
+
+#[derive(Debug, Clone, Copy, Default, clap::ValueEnum)]
+pub enum LogFormat {
+    #[default]
+    Pretty,
+    Json,
+    Compact,
+}
+
+#[derive(Debug, Clone)]
+pub struct LogOutputConfig {
+    pub min_level: LogLevelOrStdout,
+    pub format: LogFormat,
+    pub node_filters: HashMap<String, LogLevelOrStdout>,
+    pub print_dataflow_id: bool,
+    pub print_daemon_name: bool,
+}
+
+impl Default for LogOutputConfig {
+    fn default() -> Self {
+        Self {
+            min_level: LogLevelOrStdout::Stdout,
+            format: LogFormat::Pretty,
+            node_filters: HashMap::new(),
+            print_dataflow_id: false,
+            print_daemon_name: false,
+        }
+    }
+}
+
+fn level_passes(msg_level: &LogLevelOrStdout, max_level: &LogLevelOrStdout) -> bool {
+    match (msg_level, max_level) {
+        (LogLevelOrStdout::Stdout, LogLevelOrStdout::Stdout) => true,
+        (LogLevelOrStdout::Stdout, _) => false,
+        (LogLevelOrStdout::LogLevel(_), LogLevelOrStdout::Stdout) => true,
+        (LogLevelOrStdout::LogLevel(msg), LogLevelOrStdout::LogLevel(max)) => msg <= max,
+    }
+}
+
+fn should_display(
+    msg_level: &LogLevelOrStdout,
+    msg_node: Option<&str>,
+    config: &LogOutputConfig,
+) -> bool {
+    let effective_level = msg_node
+        .and_then(|n| config.node_filters.get(n))
+        .unwrap_or(&config.min_level);
+    level_passes(msg_level, effective_level)
+}
+
+pub fn print_log_message(log_message: LogMessage, config: &LogOutputConfig) {
+    let node_id_str = log_message.node_id.as_ref().map(|n| n.to_string());
+    if !should_display(&log_message.level, node_id_str.as_deref(), config) {
+        return;
+    }
+
+    match config.format {
+        LogFormat::Pretty => print_pretty(log_message, config),
+        LogFormat::Json => print_json(&log_message),
+        LogFormat::Compact => print_compact(&log_message),
+    }
+}
+
+fn print_pretty(log_message: LogMessage, config: &LogOutputConfig) {
     let LogMessage {
         build_id: _,
         dataflow_id,
@@ -23,7 +83,10 @@ pub fn print_log_message(
         timestamp,
         fields: _,
     } = log_message;
-    let level = match level {
+
+    let is_system = node_id.is_none();
+
+    let level_str = match &level {
         LogLevelOrStdout::LogLevel(level) => match level {
             log::Level::Error => "ERROR ".red(),
             log::Level::Warn => "WARN  ".yellow(),
@@ -35,37 +98,168 @@ pub fn print_log_message(
     };
 
     let dataflow = match dataflow_id {
-        Some(dataflow_id) if print_dataflow_id => format!("dataflow `{dataflow_id}` ").cyan(),
+        Some(dataflow_id) if config.print_dataflow_id => {
+            format!("dataflow `{dataflow_id}` ").cyan()
+        }
         _ => String::new().cyan(),
     };
     let daemon = match daemon_id {
-        Some(id) if print_daemon_name => match id.machine_id() {
+        Some(id) if config.print_daemon_name => match id.machine_id() {
             Some(machine_id) => format!("on daemon `{machine_id}`"),
             None => "on default daemon ".to_string(),
         },
-        None if print_daemon_name => "on default daemon".to_string(),
+        None if config.print_daemon_name => "on default daemon".to_string(),
         _ => String::new(),
     }
     .bright_black();
     let time = format!("{}", timestamp.with_timezone(&Local).format("%H:%M:%S"));
     let colon = ":".bright_black().bold();
     let node = match node_id {
-        Some(node_id) => {
-            let node_id = node_id
+        Some(ref node_id) => {
+            let colored_id = node_id
                 .to_string()
                 .bold()
                 .color(word_to_color(&node_id.to_string()));
             let padding = if daemon.is_empty() { "" } else { " " };
-            format!("{node_id}{padding}{daemon}{colon} ")
+            format!("{colored_id}{padding}{daemon}{colon} ")
         }
-        None if daemon.is_empty() => "".into(),
-        None => format!("{daemon}{colon} "),
+        None => {
+            let prefix = "[adora]".dimmed();
+            if daemon.is_empty() {
+                format!("{prefix}{colon} ")
+            } else {
+                format!("{prefix} {daemon}{colon} ")
+            }
+        }
     };
     let target = match target {
         Some(target) => format!("{target} ").dimmed(),
         None => "".normal(),
     };
-    println!("{time} {level} {dataflow} {node}{target} {message}");
+
+    if is_system && is_lifecycle_message(&message) {
+        println!();
+    }
+    println!("{time} {level_str} {dataflow} {node}{target} {message}");
+    if is_system && is_lifecycle_message(&message) {
+        println!();
+    }
+}
+
+fn is_lifecycle_message(message: &str) -> bool {
+    message.contains("spawning")
+        || message.contains("node finished")
+        || message.contains("stopping")
+}
+
+fn print_json(log_message: &LogMessage) {
+    if let Ok(json) = serde_json::to_string(log_message) {
+        println!("{json}");
+    }
+}
+
+fn print_compact(log_message: &LogMessage) {
+    let time = log_message
+        .timestamp
+        .with_timezone(&Local)
+        .format("%H:%M:%S");
+    let level = match &log_message.level {
+        LogLevelOrStdout::LogLevel(l) => match l {
+            log::Level::Error => "ERROR",
+            log::Level::Warn => "WARN",
+            log::Level::Info => "INFO",
+            log::Level::Debug => "DEBUG",
+            log::Level::Trace => "TRACE",
+        },
+        LogLevelOrStdout::Stdout => "STDOUT",
+    };
+    let node = log_message
+        .node_id
+        .as_ref()
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| "adora".to_string());
+    println!("{time} {level} {node}: {}", log_message.message);
+}
+
+/// Parse a JSONL log line into a LogMessage.
+/// Handles both the daemon's compact format (ts/level/node/msg) and full LogMessage.
+pub fn parse_jsonl_line(line: &str) -> Option<LogMessage> {
+    // Try full LogMessage format first
+    if let Ok(msg) = serde_json::from_str::<LogMessage>(line) {
+        return Some(msg);
+    }
+    // Try daemon compact JSONL format
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    let ts = v.get("ts")?.as_str()?;
+    let timestamp = chrono::DateTime::parse_from_rfc3339(ts).ok()?.to_utc();
+    let level_str = v.get("level")?.as_str().unwrap_or("stdout");
+    let level = match level_str {
+        "error" => LogLevelOrStdout::LogLevel(log::Level::Error),
+        "warn" => LogLevelOrStdout::LogLevel(log::Level::Warn),
+        "info" => LogLevelOrStdout::LogLevel(log::Level::Info),
+        "debug" => LogLevelOrStdout::LogLevel(log::Level::Debug),
+        "trace" => LogLevelOrStdout::LogLevel(log::Level::Trace),
+        _ => LogLevelOrStdout::Stdout,
+    };
+    let node_id = v
+        .get("node")
+        .and_then(|n| n.as_str())
+        .map(|s| adora_message::id::NodeId::from(s.to_string()));
+    let message = v
+        .get("msg")
+        .and_then(|m| m.as_str())
+        .unwrap_or("")
+        .to_string();
+    let target = v
+        .get("target")
+        .and_then(|t| t.as_str())
+        .map(|s| s.to_string());
+
+    Some(LogMessage {
+        build_id: None,
+        dataflow_id: None,
+        node_id,
+        daemon_id: None,
+        level,
+        target,
+        module_path: None,
+        file: None,
+        line: None,
+        message,
+        timestamp,
+        fields: None,
+    })
+}
+
+/// Parse a log filter string like "sensor=debug,processor=warn".
+pub fn parse_log_filter(s: &str) -> Result<HashMap<String, LogLevelOrStdout>, String> {
+    let mut map = HashMap::new();
+    for pair in s.split(',') {
+        let pair = pair.trim();
+        if pair.is_empty() {
+            continue;
+        }
+        let (node, level) = pair
+            .split_once('=')
+            .ok_or_else(|| format!("invalid filter: '{pair}', expected 'node=level'"))?;
+        let level = parse_log_level_str(level.trim())?;
+        map.insert(node.trim().to_string(), level);
+    }
+    Ok(map)
+}
+
+pub fn parse_log_level_str(s: &str) -> Result<LogLevelOrStdout, String> {
+    match s.to_lowercase().as_str() {
+        "error" => Ok(LogLevelOrStdout::LogLevel(log::Level::Error)),
+        "warn" => Ok(LogLevelOrStdout::LogLevel(log::Level::Warn)),
+        "info" => Ok(LogLevelOrStdout::LogLevel(log::Level::Info)),
+        "debug" => Ok(LogLevelOrStdout::LogLevel(log::Level::Debug)),
+        "trace" => Ok(LogLevelOrStdout::LogLevel(log::Level::Trace)),
+        "stdout" => Ok(LogLevelOrStdout::Stdout),
+        _ => Err(format!(
+            "invalid log level: '{s}', expected one of: error, warn, info, debug, trace, stdout"
+        )),
+    }
 }
 
 /// Generate a color for a word based on its semantic features

@@ -1,4 +1,3 @@
-use communication_layer_request_reply::{TcpConnection, TcpRequestReplyConnection};
 use adora_core::descriptor::Descriptor;
 use adora_message::{
     BuildId,
@@ -7,13 +6,17 @@ use adora_message::{
     coordinator_to_cli::ControlRequestReply,
     id::NodeId,
 };
+use communication_layer_request_reply::{TcpConnection, TcpRequestReplyConnection};
 use eyre::{Context, bail};
 use std::{
     collections::BTreeMap,
     net::{SocketAddr, TcpStream},
 };
 
-use crate::{output::print_log_message, session::DataflowSession};
+use crate::{
+    output::{LogOutputConfig, print_log_message},
+    session::DataflowSession,
+};
 
 pub fn build_distributed_dataflow(
     session: &mut TcpRequestReplyConnection,
@@ -78,7 +81,11 @@ pub fn wait_until_dataflow_built(
                 serde_json::from_slice(&raw).context("failed to parse log message");
             match parsed {
                 Ok(log_message) => {
-                    print_log_message(log_message, false, true);
+                    let config = LogOutputConfig {
+                        print_daemon_name: true,
+                        ..LogOutputConfig::default()
+                    };
+                    print_log_message(log_message, &config);
                 }
                 Err(err) => {
                     tracing::warn!("failed to parse log message: {err:?}")
