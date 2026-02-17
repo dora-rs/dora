@@ -8,7 +8,7 @@ use std::{
 use super::{Executable, default_tracing};
 use crate::{
     common::{connect_to_coordinator, resolve_dataflow_identifier_interactive},
-    output::{LogOutputConfig, parse_jsonl_line, print_log_message},
+    output::{LogOutputConfig, parse_jsonl_line, parse_log_level_str, print_log_message},
 };
 use adora_core::topics::{ADORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST};
 use adora_message::{
@@ -51,6 +51,10 @@ pub struct LogsArgs {
     #[clap(long, value_name = "DURATION")]
     #[arg(value_parser = parse_duration_str)]
     pub until: Option<std::time::Duration>,
+    /// Minimum log level to display (error, warn, info, debug, trace, stdout)
+    #[clap(long, value_name = "LEVEL", default_value = "stdout")]
+    #[arg(value_parser = parse_log_level_str)]
+    pub level: adora_core::build::LogLevelOrStdout,
     /// Filter logs by text pattern (case-insensitive substring match)
     #[clap(long, value_name = "PATTERN")]
     pub grep: Option<String>,
@@ -92,6 +96,7 @@ impl Executable for LogsArgs {
             self.follow,
             (self.coordinator_addr, self.coordinator_port).into(),
             self.grep.as_deref(),
+            &self.level,
         )
     }
 }
@@ -404,6 +409,7 @@ pub fn logs(
     follow: bool,
     coordinator_addr: SocketAddr,
     grep: Option<&str>,
+    level: &adora_core::build::LogLevelOrStdout,
 ) -> Result<()> {
     let logs = {
         let reply_raw = session
@@ -446,11 +452,10 @@ pub fn logs(
     if !follow {
         return Ok(());
     }
-    let log_level = env_logger::Builder::new()
-        .filter_level(log::LevelFilter::Info)
-        .parse_default_env()
-        .build()
-        .filter();
+    let log_level = match level {
+        adora_core::build::LogLevelOrStdout::Stdout => log::LevelFilter::Trace,
+        adora_core::build::LogLevelOrStdout::LogLevel(l) => l.to_level_filter(),
+    };
 
     // subscribe to log messages
     let mut log_session = TcpConnection {

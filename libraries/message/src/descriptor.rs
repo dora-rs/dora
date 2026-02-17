@@ -369,6 +369,41 @@ pub struct Node {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub send_stdout_as: Option<String>,
 
+    /// Redirect structured log entries to a data output as JSON strings.
+    ///
+    /// Unlike `send_stdout_as` which sends raw stdout lines, this sends only
+    /// parsed structured log entries (with level, timestamp, message, fields).
+    ///
+    /// ## Example
+    ///
+    /// ```yaml
+    /// nodes:
+    ///   - id: sensor
+    ///     path: ./sensor
+    ///     send_logs_as: logs
+    ///     outputs:
+    ///       - data
+    ///       - logs
+    /// ```
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub send_logs_as: Option<String>,
+
+    /// Minimum log level for this node (error, warn, info, debug, trace, stdout).
+    ///
+    /// Logs below this level are suppressed from file output, coordinator
+    /// forwarding, and `send_logs_as` routing.
+    ///
+    /// ## Example
+    ///
+    /// ```yaml
+    /// nodes:
+    ///   - id: noisy_sensor
+    ///     path: ./sensor
+    ///     min_log_level: info
+    /// ```
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_log_level: Option<String>,
+
     /// Build commands executed during `adora build`. Each line runs separately.
     ///
     /// The `build` key specifies the command that should be invoked for building the node.
@@ -625,6 +660,12 @@ pub struct OperatorConfig {
     /// Redirect stdout to data output
     #[serde(skip_serializing_if = "Option::is_none")]
     pub send_stdout_as: Option<String>,
+    /// Redirect structured log entries to a data output as JSON strings
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub send_logs_as: Option<String>,
+    /// Minimum log level for this operator
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_log_level: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema, Clone)]
@@ -712,6 +753,12 @@ pub struct CustomNode {
     /// Send stdout and stderr to another node
     #[serde(skip_serializing_if = "Option::is_none")]
     pub send_stdout_as: Option<String>,
+    /// Redirect structured log entries to a data output as JSON strings
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub send_logs_as: Option<String>,
+    /// Minimum log level for this node
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_log_level: Option<String>,
 
     #[serde(default)]
     pub restart_policy: RestartPolicy,

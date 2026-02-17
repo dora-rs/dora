@@ -103,6 +103,21 @@ pub enum LogLevelOrStdout {
     LogLevel(LogLevel),
 }
 
+impl LogLevelOrStdout {
+    /// Returns true if a message at this level passes the given minimum level filter.
+    ///
+    /// Ordering: Stdout < Error < Warn < Info < Debug < Trace.
+    /// A message passes if its level is "at or above" (i.e. <=) the minimum.
+    pub fn passes(&self, min: &LogLevelOrStdout) -> bool {
+        match (self, min) {
+            (LogLevelOrStdout::Stdout, LogLevelOrStdout::Stdout) => true,
+            (LogLevelOrStdout::Stdout, _) => false,
+            (LogLevelOrStdout::LogLevel(_), LogLevelOrStdout::Stdout) => true,
+            (LogLevelOrStdout::LogLevel(msg), LogLevelOrStdout::LogLevel(max)) => msg <= max,
+        }
+    }
+}
+
 impl From<LogLevel> for LogLevelOrStdout {
     fn from(level: LogLevel) -> Self {
         Self::LogLevel(level)

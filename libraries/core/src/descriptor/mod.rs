@@ -87,6 +87,8 @@ impl DescriptorExt for Descriptor {
                     args: node.args,
                     build: node.build,
                     send_stdout_as: node.send_stdout_as,
+                    send_logs_as: node.send_logs_as,
+                    min_log_level: node.min_log_level,
                     run_config: NodeRunConfig {
                         inputs: node.inputs,
                         outputs: node.outputs,

@@ -117,10 +117,14 @@ pub fn check_dataflow(
         };
     }
 
-    // Check that nodes can resolve `send_stdout_as`
+    // Check that nodes can resolve `send_stdout_as`, `send_logs_as`, `min_log_level`
     for node in nodes.values() {
         node.send_stdout_as()
             .context("Could not resolve `send_stdout_as` configuration")?;
+        node.send_logs_as()
+            .context("Could not resolve `send_logs_as` configuration")?;
+        node.min_log_level()
+            .context("Could not resolve `min_log_level` configuration")?;
     }
 
     if has_python_operator {
@@ -132,6 +136,8 @@ pub fn check_dataflow(
 
 pub trait ResolvedNodeExt {
     fn send_stdout_as(&self) -> eyre::Result<Option<String>>;
+    fn send_logs_as(&self) -> eyre::Result<Option<String>>;
+    fn min_log_level(&self) -> eyre::Result<Option<adora_message::common::LogLevelOrStdout>>;
 }
 
 impl ResolvedNodeExt for ResolvedNode {
@@ -162,6 +168,81 @@ impl ResolvedNodeExt for ResolvedNode {
             }
             CoreNodeKind::Custom(n) => Ok(n.send_stdout_as.clone()),
         }
+    }
+
+    fn send_logs_as(&self) -> eyre::Result<Option<String>> {
+        match &self.kind {
+            CoreNodeKind::Runtime(n) => {
+                let count = n
+                    .operators
+                    .iter()
+                    .filter(|op| op.config.send_logs_as.is_some())
+                    .count();
+                if count > 1 {
+                    return Err(eyre!(
+                        "More than one `send_logs_as` entries for a runtime node. Please only use one `send_logs_as` per runtime."
+                    ));
+                }
+                Ok(n.operators.iter().find_map(|op| {
+                    op.config
+                        .send_logs_as
+                        .clone()
+                        .map(|logs| format!("{}/{}", op.id, logs))
+                }))
+            }
+            CoreNodeKind::Custom(n) => Ok(n.send_logs_as.clone()),
+        }
+    }
+
+    fn min_log_level(&self) -> eyre::Result<Option<adora_message::common::LogLevelOrStdout>> {
+        let level_str = match &self.kind {
+            CoreNodeKind::Runtime(n) => {
+                // Use the first operator's min_log_level (only one allowed)
+                let levels: Vec<_> = n
+                    .operators
+                    .iter()
+                    .filter_map(|op| op.config.min_log_level.as_deref())
+                    .collect();
+                if levels.len() > 1 {
+                    return Err(eyre!(
+                        "More than one `min_log_level` entries for a runtime node. Please only use one `min_log_level` per runtime."
+                    ));
+                }
+                levels.first().map(|s| s.to_string())
+            }
+            CoreNodeKind::Custom(n) => n.min_log_level.clone(),
+        };
+        match level_str {
+            None => Ok(None),
+            Some(s) => {
+                let level = parse_log_level(&s)?;
+                Ok(Some(level))
+            }
+        }
+    }
+}
+
+fn parse_log_level(s: &str) -> eyre::Result<adora_message::common::LogLevelOrStdout> {
+    match s.to_lowercase().as_str() {
+        "error" => Ok(adora_message::common::LogLevelOrStdout::LogLevel(
+            log::Level::Error,
+        )),
+        "warn" => Ok(adora_message::common::LogLevelOrStdout::LogLevel(
+            log::Level::Warn,
+        )),
+        "info" => Ok(adora_message::common::LogLevelOrStdout::LogLevel(
+            log::Level::Info,
+        )),
+        "debug" => Ok(adora_message::common::LogLevelOrStdout::LogLevel(
+            log::Level::Debug,
+        )),
+        "trace" => Ok(adora_message::common::LogLevelOrStdout::LogLevel(
+            log::Level::Trace,
+        )),
+        "stdout" => Ok(adora_message::common::LogLevelOrStdout::Stdout),
+        _ => bail!(
+            "invalid min_log_level: '{s}', expected one of: error, warn, info, debug, trace, stdout"
+        ),
     }
 }
 

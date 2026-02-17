@@ -565,6 +565,19 @@ impl PreparedNode {
             .node
             .send_stdout_as()
             .context("Could not resolve `send_stdout_as` configuration")?;
+        let send_logs_to = self
+            .node
+            .send_logs_as()
+            .context("Could not resolve `send_logs_as` configuration")?;
+        let min_log_level = self
+            .node
+            .min_log_level()
+            .context("Could not resolve `min_log_level` configuration")?;
+        let daemon_tx_logs_as = if send_logs_to.is_some() {
+            Some(self.daemon_tx.clone())
+        } else {
+            None
+        };
         let uhlc = self.clock.clone();
         let mut logger_c = logger.try_clone().await?;
         // Log to file stream.
@@ -636,6 +649,44 @@ impl PreparedNode {
                         fields: None,
                     },
                 };
+
+                // Apply min_log_level filter
+                if let Some(min_level) = &min_log_level {
+                    if !log_message.level.passes(min_level) {
+                        continue;
+                    }
+                }
+
+                // Route structured logs via send_logs_as
+                if let (Some(logs_output_name), Some(daemon_tx)) =
+                    (&send_logs_to, &daemon_tx_logs_as)
+                {
+                    if let Ok(json) = serde_json::to_string(&log_message) {
+                        let array = json.as_str().into_arrow();
+                        let array: ArrayData = array.into();
+                        let total_len = required_data_size(&array);
+                        let mut sample: AVec<u8, ConstAlign<128>> =
+                            AVec::__from_elem(128, 0, total_len);
+                        let type_info = copy_array_into_sample(&mut sample, &array);
+                        let metadata = Metadata::new(uhlc.new_timestamp(), type_info);
+                        let output_id = OutputId(
+                            node_id.clone(),
+                            DataId::from(logs_output_name.to_string()),
+                        );
+                        let event = AdoraEvent::Logs {
+                            dataflow_id,
+                            output_id,
+                            metadata,
+                            message: DataMessage::Vec(sample),
+                        }
+                        .into();
+                        let event = Timestamped {
+                            inner: event,
+                            timestamp: uhlc.new_timestamp(),
+                        };
+                        let _ = daemon_tx.send(event).await;
+                    }
+                }
 
                 // Write JSONL to log file
                 let ts = log_message

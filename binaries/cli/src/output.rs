@@ -35,15 +35,6 @@ impl Default for LogOutputConfig {
     }
 }
 
-fn level_passes(msg_level: &LogLevelOrStdout, max_level: &LogLevelOrStdout) -> bool {
-    match (msg_level, max_level) {
-        (LogLevelOrStdout::Stdout, LogLevelOrStdout::Stdout) => true,
-        (LogLevelOrStdout::Stdout, _) => false,
-        (LogLevelOrStdout::LogLevel(_), LogLevelOrStdout::Stdout) => true,
-        (LogLevelOrStdout::LogLevel(msg), LogLevelOrStdout::LogLevel(max)) => msg <= max,
-    }
-}
-
 fn should_display(
     msg_level: &LogLevelOrStdout,
     msg_node: Option<&str>,
@@ -52,7 +43,7 @@ fn should_display(
     let effective_level = msg_node
         .and_then(|n| config.node_filters.get(n))
         .unwrap_or(&config.min_level);
-    level_passes(msg_level, effective_level)
+    msg_level.passes(effective_level)
 }
 
 pub fn print_log_message(log_message: LogMessage, config: &LogOutputConfig) {
