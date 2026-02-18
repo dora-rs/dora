@@ -30,7 +30,7 @@
     <img src="https://img.shields.io/pypi/v/adora-rs.svg" alt="PyPi Latest Release"/>
   </a>
     <a href="https://github.com/adora-rs/adora/blob/main/LICENSE">
-    <img src="https://img.shields.io/github/license/adora-rs/adora" alt="PyPi Latest Release"/>
+    <img src="https://img.shields.io/github/license/adora-rs/adora" alt="License"/>
   </a>      
 </div>
 <div align="center">
@@ -64,7 +64,7 @@
 
 ## Latest News 🎉
 
-<details open>
+<details>
 <summary><b>2025</b></summary>
 
 - \[08/25\] Introduced `adora.builder`, a new Pythonic API for imperatively defining `adora` dataflows.
@@ -88,7 +88,7 @@
 | **OS**                            | Linux: Arm 32 ⭐✅ Arm 64 ⭐✅ x64_86 ⭐✅ <br>MacOS: Arm 64 ⭐✅ <br>Windows: x64_86 🆗 <br>WSL: x64_86 🆗 <br> Android: 🛠️ (Blocked by: https://github.com/elast0ny/shared_memory/issues/32) <br> IOS: 🛠️ |
 | **Message Format**                | Arrow ✅ <br> Standard Specification 🛠️                                                                                                                                                                     |
 | **Local Communication**           | Shared Memory ✅ <br> [Cuda IPC](https://arrow.apache.org/docs/python/api/cuda.html) 📐                                                                                                                     |
-| **Remote Communication**          | [Zenoh](https://zenoh.io/) 📐                                                                                                                                                                               |
+| **Remote Communication**          | [Zenoh](https://zenoh.io/) ✅                                                                                                                                                                               |
 | **RGB-D Streaming**               | AV1 Encoding (adora-rav1e), AV1 Decoding (adora-dav1d)📐                                                                                                                                                      |
 | **Metrics, Tracing, and Logging** | Opentelemetry 📐                                                                                                                                                                                            |
 | **Configuration**                 | YAML ✅                                                                                                                                                                                                     |
@@ -111,9 +111,7 @@ The node hub is available in the [**`dora-rs/dora-hub`**](https://github.com/dor
 | Type      | Title                                                                                                          | Description                             | Last Commit                                                                                                          |
 | --------- | -------------------------------------------------------------------------------------------------------------- | --------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
 | Vision    | [YOLO](https://github.com/adora-rs/adora/blob/main/examples/python-dataflow)                                     | Use YOLO to detect object within image. | ![License](https://img.shields.io/github/last-commit/adora-rs/adora?path=examples%2Fpython-dataflow&label=%20)         |
-| ROS2      | [C++ ROS2 Example](https://github.com/adora-rs/adora/blob/main/examples/c++-ros2-dataflow)                       | Example using C++ ROS2                  | ![License](https://img.shields.io/github/last-commit/adora-rs/adora?path=examples%2Fc%2b%2b-ros2-dataflow&label=%20)   |
-| ROS2      | [Rust ROS2 Example](https://github.com/adora-rs/adora/blob/main/examples/rust-ros2-dataflow)                     | Example using Rust ROS2                 | ![License](https://img.shields.io/github/last-commit/adora-rs/adora?path=examples%2Frust-ros2-dataflow&label=%20)      |
-| ROS2      | [Python ROS2 Example](https://github.com/adora-rs/adora/blob/main/examples/python-ros2-dataflow)                 | Example using Python ROS2               | ![License](https://img.shields.io/github/last-commit/adora-rs/adora?path=examples%2Fpython-ros2-dataflow&label=%20)    |
+| ROS2      | [ROS2 Bridge Example](https://github.com/adora-rs/adora/blob/main/examples/ros2-bridge)                          | Example using ROS2 bridge               | ![License](https://img.shields.io/github/last-commit/adora-rs/adora?path=examples%2Fros2-bridge&label=%20)             |
 | Benchmark | [GPU Benchmark](https://github.com/adora-rs/adora/blob/main/examples/cuda-benchmark)                             | GPU Benchmark of adora-rs                | ![License](https://img.shields.io/github/last-commit/adora-rs/adora?path=examples%2Fcuda-benchmark&label=%20)          |
 | Benchmark | [CPU Benchmark](https://github.com/adora-rs/adora-benchmark/blob/main)                                           | CPU Benchmark of adora-rs                | ![License](https://img.shields.io/github/last-commit/adora-rs/adora-benchmark?path=adora-rs&label=%20)                  |
 | Tutorial  | [Rust Example](https://github.com/adora-rs/adora/blob/main/examples/rust-dataflow)                               | Example using Rust                      | ![License](https://img.shields.io/github/last-commit/adora-rs/adora?path=examples%2Frust-dataflow&label=%20)           |
@@ -123,8 +121,6 @@ The node hub is available in the [**`dora-rs/dora-hub`**](https://github.com/dor
 | Tutorial  | [CUDA Example](https://github.com/adora-rs/adora/blob/main/examples/cuda-benchmark)                              | Example using CUDA Zero Copy            | ![License](https://img.shields.io/github/last-commit/adora-rs/adora?path=examples%2Fcuda-benchmark&label=%20)          |
 | Tutorial  | [C++ Example](https://github.com/adora-rs/adora/blob/main/examples/c++-dataflow)                                 | Example with C++ node                   | ![License](https://img.shields.io/github/last-commit/adora-rs/adora?path=examples%2Fc%2b%2b-dataflow&label=%20)        |
 | Tutorial  | [Python Dataflow Builder Examples](https://github.com/adora-rs/adora/blob/main/examples/python-dataflow-builder) | Examples using the new Pythonic API.    | ![License](https://img.shields.io/github/last-commit/adora-rs/adora?path=examples%2Fpython-dataflow-builder&label=%20) |
-
-=
 
 ## Getting Started
 
@@ -245,9 +241,9 @@ A lot of guides are available on [this section](https://adora-rs.ai/docs/guides/
 
 The dataflow paradigm has the advantage of creating an abstraction layer that makes robotic applications modular and easily configurable.
 
-### TCP Communication and Shared Memory
+### Shared Memory and Zenoh Communication
 
-Communication between nodes is handled with shared memory on a same machine and TCP on distributed machines. Our shared memory implementation tracks messages across processes and discards them when obsolete. Shared memory slots are cached to avoid new memory allocation.
+Communication between nodes is handled with shared memory on a same machine and [Zenoh](https://zenoh.io/) on distributed machines. Our shared memory implementation tracks messages across processes and discards them when obsolete. Shared memory slots are cached to avoid new memory allocation.
 
 ### Arrow Message Format
 
@@ -290,8 +286,6 @@ message = pa.array([{
 turtle_twist_writer.publish(message)
 ```
 
-> You might want to use ChatGPT to write the Arrow Formatting: https://chat.openai.com/share/4eec1c6d-dbd2-46dc-b6cd-310d2895ba15
-
 ## Contributing
 
 We are passionate about supporting contributors of all levels of experience and would love to see
@@ -320,7 +314,3 @@ This project is licensed under Apache-2.0. Check out [NOTICE.md](NOTICE.md) for 
 - [Zenoh Documentation](https://zenoh.io/docs/getting-started/first-app/)
 - [ADORA Zenoh Discussion (GitHub Issue #512)](https://github.com/adora-rs/adora/issues/512)
 - [Adora Autoware Localization Demo](https://github.com/adora-rs/adora-autoware-localization-demo)
-
-```
-
-```
