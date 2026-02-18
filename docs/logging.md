@@ -35,11 +35,10 @@ Each line has this structure:
 
 ```json
 {
-  "ts": "2024-01-15T10:30:00.123Z",
+  "timestamp": "2024-01-15T10:30:00.123Z",
   "level": "info",
-  "node": "sensor",
-  "stream": "stdout",
-  "msg": "Starting sensor...",
+  "node_id": "sensor",
+  "message": "Starting sensor...",
   "target": "sensor::module",
   "fields": { "key": "value" }
 }
@@ -47,11 +46,10 @@ Each line has this structure:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `ts` | string | RFC3339 timestamp with millisecond precision |
+| `timestamp` | string | RFC3339 timestamp with millisecond precision |
 | `level` | string | `"error"`, `"warn"`, `"info"`, `"debug"`, `"trace"`, or `"stdout"` |
-| `node` | string | Node ID |
-| `stream` | string | `"stdout"` or `"stderr"` |
-| `msg` | string | The log message text |
+| `node_id` | string | Node ID |
+| `message` | string | The log message text |
 | `target` | string? | Rust module target (e.g. `"sensor::module"`), null if absent |
 | `fields` | object? | Structured key-value fields from the logging framework |
 
@@ -605,8 +603,8 @@ Splits incoming log entries by severity. All logs are forwarded to the `all_logs
 ```yaml
 nodes:
   - id: source
-    path: source.py
-    send_logs_as: log_entries
+    path: my_node.py
+    send_stdout_as: log_entries
     inputs:
       tick: adora/timer/millis/200
     outputs:
@@ -621,7 +619,7 @@ nodes:
       - alerts
 ```
 
-The router parses each log entry, checks the level, and uses `node.send_output()` to forward data to the appropriate outputs.
+The source node uses `send_stdout_as` to route its stdout lines as Arrow string data. The router parses each log entry with `adora_log_utils::parse_log_from_arrow()`, checks the level, and uses `node.send_output()` to forward data to the appropriate outputs. Nodes using the node API can alternatively use `send_logs_as` to route structured logs from `node.log()`.
 
 ### Building a Custom Sink
 

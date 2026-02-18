@@ -786,10 +786,11 @@ impl AdoraNode {
         }
         if let Some(fields) = fields {
             let total: usize = fields.iter().map(|(k, v)| k.len() + v.len()).sum();
-            if total <= 60 * 1024 {
+            if total <= 48 * 1024 {
                 entry["fields"] = serde_json::json!(fields);
             } else {
                 eprintln!("adora log: fields too large ({total} bytes), dropping fields");
+                entry["fields_dropped"] = serde_json::Value::Bool(true);
             }
         }
         match serde_json::to_string(&entry) {

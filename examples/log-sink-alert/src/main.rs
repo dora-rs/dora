@@ -20,17 +20,17 @@ fn main() -> Result<()> {
                 let json = adora_log_utils::format_json(&log);
                 let arrow = json.as_str().into_arrow();
 
-                // Forward all logs to the "all_logs" output.
-                node.send_output("all_logs".into(), Default::default(), arrow.clone())?;
-
-                // Forward error/warn logs to the "alerts" output.
+                // Forward error/warn logs to the "alerts" output first to avoid clone.
                 let is_alert = matches!(
                     &log.level,
                     LogLevelOrStdout::LogLevel(LogLevel::Error | LogLevel::Warn)
                 );
                 if is_alert {
-                    node.send_output("alerts".into(), Default::default(), arrow)?;
+                    node.send_output("alerts".into(), Default::default(), arrow.clone())?;
                 }
+
+                // Forward all logs to the "all_logs" output.
+                node.send_output("all_logs".into(), Default::default(), arrow)?;
             }
             Event::Stop(_) => break,
             Event::InputClosed { id } => {

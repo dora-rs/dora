@@ -46,7 +46,7 @@ fn host_log<'py>(record: Bound<'py, PyAny>) -> PyResult<()> {
         let _enter = span.enter();
         tracing::event!(tracing::Level::ERROR, file=pathname, line=lineno, %target, %message);
     } else if level.ge(&30u8) {
-        let span = span!(Level::ERROR, "adora.python.log.warn", file=pathname, line=lineno, %target, %message);
+        let span = span!(Level::WARN, "adora.python.log.warn", file=pathname, line=lineno, %target, %message);
         let _enter = span.enter();
         tracing::event!(tracing::Level::WARN, file=pathname, line=lineno, %target, %message);
     } else if level.ge(&20u8){

@@ -13,7 +13,7 @@ nodes:
           print(json.dumps(entry), flush=True)
           time.sleep(0.2)
       "
-    send_logs_as: log_entries
+    send_stdout_as: log_entries
     inputs:
       tick: adora/timer/millis/200
     outputs:
@@ -26,27 +26,3 @@ nodes:
     outputs:
       - all_logs
       - alerts
-
-  - id: all_sink
-    path: dynamic
-    source: shell
-    args: >
-      python3 -c "
-      import sys
-      for line in sys.stdin:
-          print(f'[ALL] {line.strip()}')
-      "
-    inputs:
-      data: alert_router/all_logs
-
-  - id: alert_sink
-    path: dynamic
-    source: shell
-    args: >
-      python3 -c "
-      import sys
-      for line in sys.stdin:
-          print(f'[ALERT] {line.strip()}')
-      "
-    inputs:
-      data: alert_router/alerts

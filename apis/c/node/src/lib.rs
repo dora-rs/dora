@@ -3,7 +3,7 @@
 use arrow_array::UInt8Array;
 use adora_node_api::{AdoraNode, Event, EventStream, arrow::array::AsArray};
 use eyre::Context;
-use std::{ffi::c_void, ptr, slice};
+use std::{ffi::{c_int, c_void}, ptr, slice};
 
 pub const HEADER_NODE_API: &str = include_str!("../node_api.h");
 
@@ -248,7 +248,7 @@ pub unsafe extern "C" fn adora_send_output(
     id_len: usize,
     data_ptr: *const u8,
     data_len: usize,
-) -> isize {
+) -> c_int {
     match unsafe { try_send_output(context, id_ptr, id_len, data_ptr, data_len) } {
         Ok(()) => 0,
         Err(err) => {
@@ -298,7 +298,7 @@ pub unsafe extern "C" fn adora_log(
     level_len: usize,
     msg_ptr: *const u8,
     msg_len: usize,
-) -> isize {
+) -> c_int {
     match unsafe { try_log(context, level_ptr, level_len, msg_ptr, msg_len) } {
         Ok(()) => 0,
         Err(err) => {
@@ -315,7 +315,7 @@ unsafe fn try_log(
     msg_ptr: *const u8,
     msg_len: usize,
 ) -> eyre::Result<()> {
-    if level_ptr.is_null() || msg_ptr.is_null() {
+    if context.is_null() || level_ptr.is_null() || msg_ptr.is_null() {
         eyre::bail!("null pointer passed to adora_log");
     }
     let context: &mut AdoraContext = unsafe { &mut *context.cast() };
