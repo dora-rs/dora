@@ -1277,6 +1277,9 @@ dependencies = [
 [[package]]
 name = "communication-layer-request-reply"
 version = "0.4.1"
+dependencies = [
+ "adora-message",
+]
 
 [[package]]
 name = "compact_str"

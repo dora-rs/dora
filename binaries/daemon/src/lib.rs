@@ -2035,7 +2035,8 @@ impl Daemon {
             inner: event,
             timestamp: self.clock.new_timestamp(),
         }
-        .serialize();
+        .serialize()
+        .wrap_err("failed to serialize inter-daemon event")?;
         publisher
             .put(serialized_event)
             .await

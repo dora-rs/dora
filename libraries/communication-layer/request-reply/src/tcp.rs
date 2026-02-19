@@ -141,6 +141,15 @@ impl TcpConnection {
             self.stream.read_exact(&mut raw)?;
             u64::from_le_bytes(raw) as usize
         };
+        if reply_len > adora_message::MAX_MESSAGE_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "message size {reply_len} exceeds maximum {}",
+                    adora_message::MAX_MESSAGE_BYTES
+                ),
+            ));
+        }
         let mut reply = vec![0; reply_len];
         self.stream.read_exact(&mut reply)?;
         Ok(reply)

@@ -5,23 +5,34 @@ use std::path::{Path, PathBuf};
 use tokio::io::AsyncWriteExt;
 
 fn get_filename(response: &reqwest::Response) -> Option<String> {
-    if let Some(content_disposition) = response.headers().get("content-disposition") {
+    let raw_name = if let Some(content_disposition) = response.headers().get("content-disposition") {
         if let Ok(filename) = content_disposition.to_str() {
-            if let Some(name) = filename.split("filename=").nth(1) {
-                return Some(name.trim_matches('"').to_string());
-            }
+            filename
+                .split("filename=")
+                .nth(1)
+                .map(|n| n.trim_matches('"').to_string())
+        } else {
+            None
         }
-    }
+    } else {
+        None
+    };
 
     // If Content-Disposition header is not available, extract from URL
-    let path = Path::new(response.url().as_str());
-    if let Some(name) = path.file_name() {
-        if let Some(filename) = name.to_str() {
-            return Some(filename.to_string());
-        }
-    }
+    let raw_name = raw_name.or_else(|| {
+        Path::new(response.url().as_str())
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|s| s.to_string())
+    });
 
-    None
+    // Sanitize: strip path components to prevent traversal
+    raw_name.and_then(|name| {
+        Path::new(&name)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|s| s.to_string())
+    })
 }
 
 pub async fn download_file<T>(url: T, target_dir: &Path) -> Result<PathBuf, eyre::ErrReport>

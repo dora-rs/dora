@@ -251,8 +251,8 @@ impl<T> Timestamped<T>
 where
     T: serde::Serialize,
 {
-    pub fn serialize(&self) -> Vec<u8> {
-        bincode::serialize(self).unwrap()
+    pub fn serialize(&self) -> eyre::Result<Vec<u8>> {
+        bincode::serialize(self).wrap_err("failed to serialize timestamped message")
     }
 }
 

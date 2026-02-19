@@ -9,6 +9,9 @@ description.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[dependencies]
+adora-message = { path = "../../message" }
+
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]

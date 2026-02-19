@@ -1,5 +1,5 @@
 use super::Executable;
-use crate::LISTEN_WILDCARD;
+use crate::LISTEN_DEFAULT;
 use adora_coordinator::Event;
 use adora_core::topics::{ADORA_COORDINATOR_PORT_CONTROL_DEFAULT, ADORA_COORDINATOR_PORT_DEFAULT};
 
@@ -15,13 +15,13 @@ use tracing::level_filters::LevelFilter;
 /// Run coordinator
 pub struct Coordinator {
     /// Network interface to bind to for daemon communication
-    #[clap(long, default_value_t = LISTEN_WILDCARD)]
+    #[clap(long, default_value_t = LISTEN_DEFAULT)]
     interface: IpAddr,
     /// Port number to bind to for daemon communication
     #[clap(long, default_value_t = ADORA_COORDINATOR_PORT_DEFAULT)]
     port: u16,
     /// Network interface to bind to for control communication
-    #[clap(long, default_value_t = LISTEN_WILDCARD)]
+    #[clap(long, default_value_t = LISTEN_DEFAULT)]
     control_interface: IpAddr,
     /// Port number to bind to for control communication
     #[clap(long, default_value_t = ADORA_COORDINATOR_PORT_CONTROL_DEFAULT)]

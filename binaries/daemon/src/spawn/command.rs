@@ -19,6 +19,12 @@ pub(super) async fn path_spawn_command(
     let cmd = match node.path.as_str() {
         DYNAMIC_SOURCE => return Ok(None),
         SHELL_SOURCE => {
+            if std::env::var("ADORA_ALLOW_SHELL_NODES").as_deref() != Ok("true") {
+                eyre::bail!(
+                    "Shell nodes are disabled by default (security risk). \
+                     Set ADORA_ALLOW_SHELL_NODES=true to enable."
+                );
+            }
             if cfg!(target_os = "windows") {
                 let cmd = Command::new("cmd");
                 cmd.args(["/C", &node.args.clone().unwrap_or_default()])

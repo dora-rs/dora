@@ -8,6 +8,9 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub use uhlc;
 
+/// Maximum allowed message size over TCP (256 MiB).
+pub const MAX_MESSAGE_BYTES: usize = 256 * 1024 * 1024;
+
 pub mod common;
 pub mod config;
 pub mod descriptor;
