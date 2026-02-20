@@ -60,7 +60,13 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           docker system prune --all -f
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "Docker daemon is not available on this runner. Skipping docker system prune."
+          }
           docker builder prune -af
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "Docker daemon is not available on this runner. Skipping docker builder prune."
+          }
           Remove-Item "C:\Android" -Force -Recurse -ErrorAction SilentlyContinue
           Remove-Item "C:\hostedtoolcache\windows\Ruby" -Force -Recurse -ErrorAction SilentlyContinue
           Remove-Item "C:\hostedtoolcache\windows\go" -Force -Recurse -ErrorAction SilentlyContinue
@@ -129,7 +135,13 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           docker system prune --all -f
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "Docker daemon is not available on this runner. Skipping docker system prune."
+          }
           docker builder prune -af
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "Docker daemon is not available on this runner. Skipping docker builder prune."
+          }
           Remove-Item "C:\Android" -Force -Recurse -ErrorAction SilentlyContinue
           Remove-Item "C:\hostedtoolcache\windows\Ruby" -Force -Recurse -ErrorAction SilentlyContinue
           Remove-Item "C:\hostedtoolcache\windows\go" -Force -Recurse -ErrorAction SilentlyContinue

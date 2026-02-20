@@ -11,6 +11,8 @@ time.sleep(5)
 
 for event in node:
     event_type = event["type"]
+    if event_type == "STOP":
+        break
 
     if event_type == "INPUT":
         event_id = event["id"]
