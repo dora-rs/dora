@@ -1,4 +1,4 @@
-use eyre::{Context, eyre};
+use eyre::{Context, bail, eyre};
 use raw_sync_2::events::{Event, EventImpl, EventInit, EventState};
 use serde::{Deserialize, Serialize};
 use shared_memory_extended::Shmem;
@@ -28,7 +28,7 @@ impl ShmemChannel {
             unsafe { Event::new(memory.as_ptr().wrapping_add(server_event_len), true) }
                 .map_err(|err| eyre!("failed to open raw client event: {err}"))?;
         let (disconnect_offset, len_offset, data_offset) =
-            offsets(memory.as_ptr(), server_event_len, client_event_len);
+            offsets(memory.as_ptr(), server_event_len, client_event_len)?;
 
         server_event
             .set(EventState::Clear)
@@ -69,7 +69,7 @@ impl ShmemChannel {
             unsafe { Event::from_existing(memory.as_ptr().wrapping_add(server_event_len)) }
                 .map_err(|err| eyre!("failed to open raw client event: {err}"))?;
         let (disconnect_offset, len_offset, data_offset) =
-            offsets(memory.as_ptr(), server_event_len, client_event_len);
+            offsets(memory.as_ptr(), server_event_len, client_event_len)?;
 
         Ok(Self {
             memory,
@@ -92,7 +92,13 @@ impl ShmemChannel {
     }
 
     fn send_raw(&mut self, msg: &[u8]) -> Result<(), eyre::ErrReport> {
-        assert!(msg.len() <= self.memory.len() - self.data_offset);
+        if msg.len() > self.memory.len() - self.data_offset {
+            bail!(
+                "message too large for shared memory: {} > {}",
+                msg.len(),
+                self.memory.len() - self.data_offset
+            );
+        }
         // write data first
         unsafe {
             self.data_mut()
@@ -149,8 +155,16 @@ impl ShmemChannel {
 
         // then read len for synchronization
         let msg_len = self.data_len().load(std::sync::atomic::Ordering::Acquire) as usize;
-        assert_ne!(msg_len, 0);
-        assert!(msg_len < self.memory.len() - self.data_offset);
+        if msg_len == 0 {
+            bail!("received message with zero length");
+        }
+        if msg_len >= self.memory.len() - self.data_offset {
+            bail!(
+                "received message exceeds shared memory bounds: {} >= {}",
+                msg_len,
+                self.memory.len() - self.data_offset
+            );
+        }
 
         // finally read the data
         let value_raw = unsafe { slice::from_raw_parts(self.data(), msg_len) };
@@ -193,27 +207,36 @@ fn offsets(
     base_ptr: *mut u8,
     server_event_len: usize,
     client_event_len: usize,
-) -> (usize, usize, usize) {
+) -> eyre::Result<(usize, usize, usize)> {
     let (disconnect, len, data) = offset_ptrs(
         base_ptr
             .wrapping_add(server_event_len)
             .wrapping_add(client_event_len),
-    );
+    )?;
     let base = base_ptr as usize;
-    (
+    Ok((
         disconnect as usize - base,
         len as usize - base,
         data as usize - base,
-    )
+    ))
 }
 
-fn offset_ptrs(next_free: *mut u8) -> (*mut AtomicBool, *mut AtomicU64, *mut u8) {
-    let disconnect_ptr = next_free.wrapping_add(next_free.align_offset(align_of::<AtomicBool>()));
+fn offset_ptrs(next_free: *mut u8) -> eyre::Result<(*mut AtomicBool, *mut AtomicU64, *mut u8)> {
+    let align = next_free.align_offset(align_of::<AtomicBool>());
+    if align == usize::MAX {
+        bail!("unable to align disconnect pointer in shared memory");
+    }
+    let disconnect_ptr = next_free.wrapping_add(align);
+
     let len_ptr_unaligned = disconnect_ptr.wrapping_add(mem::size_of::<AtomicBool>());
-    let len_ptr =
-        len_ptr_unaligned.wrapping_add(len_ptr_unaligned.align_offset(align_of::<AtomicU64>()));
+    let align = len_ptr_unaligned.align_offset(align_of::<AtomicU64>());
+    if align == usize::MAX {
+        bail!("unable to align length pointer in shared memory");
+    }
+    let len_ptr = len_ptr_unaligned.wrapping_add(align);
+
     let data_ptr = len_ptr.wrapping_add(mem::size_of::<AtomicU64>());
-    (disconnect_ptr.cast(), len_ptr.cast(), data_ptr)
+    Ok((disconnect_ptr.cast(), len_ptr.cast(), data_ptr))
 }
 
 unsafe impl Send for ShmemChannel {}

@@ -64,6 +64,12 @@ impl MappedInputData {
                 .open()
                 .wrap_err("failed to map shared memory input")?,
         );
+        if len > memory.len() {
+            eyre::bail!(
+                "mapped input data length ({len}) exceeds shared memory region size ({})",
+                memory.len()
+            );
+        }
         Ok(MappedInputData { memory, len })
     }
 }

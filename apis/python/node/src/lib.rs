@@ -23,9 +23,18 @@ static RUNTIME: LazyLock<Runtime> = LazyLock::new(|| {
         .worker_threads(4)
         .enable_all()
         .build()
-        .context("Failed to create Tokio runtime")
-        .unwrap()
+        .expect("Failed to create Tokio runtime")
 });
+
+fn runtime() -> PyResult<&'static Runtime> {
+    // Access the LazyLock; if the builder panicked, this will propagate.
+    // In normal operation the expect above fires only if thread/memory
+    // limits are exhausted, which is unrecoverable anyway.  Wrapping
+    // the *access* lets Python callers see a catchable exception when
+    // a previous panic poisoned the LazyLock.
+    std::panic::catch_unwind(|| &*RUNTIME)
+        .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("Failed to create Tokio runtime"))
+}
 
 /// Consume a Python `logging.LogRecord` and emit a Rust `tracing::Event` instead.
 #[pyfunction]
@@ -36,7 +45,7 @@ fn host_log<'py>(record: Bound<'py, PyAny>) -> PyResult<()> {
     let lineno = record.getattr("lineno")?.to_string();
     let target = record.getattr("name")?.to_string();
 
-    RUNTIME.spawn(async move {
+    runtime()?.spawn(async move {
     if level.ge(&40u8) {
         let span = span!(Level::ERROR, "adora.python.log.error", file=pathname, line=lineno, %target, %message);
         let _enter = span.enter();
@@ -139,7 +148,7 @@ impl Node {
         };
         let id = node.id().clone();
         let dataflow_id = node.dataflow_id().clone();
-        RUNTIME.spawn(async move {
+        runtime()?.spawn(async move {
             let _guard = init_tracing(&id, &dataflow_id).unwrap();
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;

@@ -169,17 +169,7 @@ async fn run(
                     }
                     OperatorEvent::Finished { reason } => {
                         if let StopReason::ExplicitStopAll = reason {
-                            // let hlc = adora_core::message::uhlc::HLC::default();
-                            // let metadata = adora_core::message::Metadata::new(hlc.new_timestamp());
-                            // let data = metadata
-                            // .serialize()
-                            // .wrap_err("failed to serialize stop message")?;
-                            todo!("instruct adora-daemon/adora-coordinator to stop other nodes");
-                            // manual_stop_publisher
-                            //     .publish(&data)
-                            //     .map_err(|err| eyre::eyre!(err))
-                            //     .wrap_err("failed to send stop message")?;
-                            // break;
+                            bail!("operator {operator_id} requested StopAll, which is not yet implemented");
                         }
 
                         let Some(config) = operators.get(&operator_id) else {

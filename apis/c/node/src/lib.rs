@@ -265,6 +265,9 @@ unsafe fn try_send_output(
     data_ptr: *const u8,
     data_len: usize,
 ) -> eyre::Result<()> {
+    if context.is_null() || id_ptr.is_null() || data_ptr.is_null() {
+        eyre::bail!("null pointer passed to adora_send_output");
+    }
     let context: &mut AdoraContext = unsafe { &mut *context.cast() };
     let id = std::str::from_utf8(unsafe { slice::from_raw_parts(id_ptr, id_len) })?;
     let output_id = id.to_owned().into();

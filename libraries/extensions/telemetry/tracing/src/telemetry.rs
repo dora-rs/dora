@@ -1,3 +1,4 @@
+use eyre::Context as _;
 use opentelemetry::propagation::Extractor;
 use opentelemetry::{Context, global};
 use opentelemetry_otlp::WithExportConfig;
@@ -39,22 +40,21 @@ impl Extractor for MetadataMap<'_> {
 /// docker run -d -p 4317:4317 -p 4318:4318 -p 16686:16686 jaegertracing/all-in-one:latest
 /// ```
 ///
-pub fn init_tracing(_name: &str, endpoint: &str) -> sdktrace::SdkTracerProvider {
+pub fn init_tracing(_name: &str, endpoint: &str) -> eyre::Result<sdktrace::SdkTracerProvider> {
     let exporter = opentelemetry_otlp::SpanExporter::builder()
         .with_tonic()
         .with_endpoint(endpoint)
         .build()
-        .unwrap();
+        .wrap_err("failed to build OTLP span exporter")?;
 
-    SdkTracerProvider::builder()
-        // Customize sampling strategy
+    Ok(SdkTracerProvider::builder()
         .with_batch_exporter(exporter)
-        .build()
+        .build())
 }
 
 /// Legacy function name for backward compatibility
 #[deprecated(since = "0.3.14", note = "Use `init_tracing` instead")]
-pub fn init_jaeger_tracing(name: &str, endpoint: &str) -> sdktrace::SdkTracerProvider {
+pub fn init_jaeger_tracing(name: &str, endpoint: &str) -> eyre::Result<sdktrace::SdkTracerProvider> {
     init_tracing(name, endpoint)
 }
 

@@ -1,5 +1,5 @@
 use std::{
-    ffi::{CStr, CString},
+    ffi::CString,
     ops::{Deref, DerefMut},
     os::raw::c_char,
 };
@@ -91,7 +91,10 @@ impl FFIString {
         if self.is_empty() {
             Ok("")
         } else {
-            unsafe { CStr::from_ptr(self.data).to_str() }
+            // Use `size` to bound the read instead of `CStr::from_ptr` which
+            // scans for null and can read past the buffer.
+            let bytes = unsafe { std::slice::from_raw_parts(self.data as *const u8, self.size) };
+            std::str::from_utf8(bytes)
         }
     }
 }
