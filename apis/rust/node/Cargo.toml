@@ -43,3 +43,4 @@ arrow-schema = { workspace = true }
 chrono = { version = "0.4", features = ["serde"] }
 colored = "3.0.0"
 is-terminal = "0.4.16"
+thiserror = { workspace = true }

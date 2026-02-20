@@ -4,6 +4,7 @@ members = [
     "apis/c/operator",
     "apis/c++/node",
     "apis/c++/operator",
+    "apis/python/cli",
     "apis/python/node",
     "apis/python/operator",
     "apis/rust/*",
@@ -93,6 +94,7 @@ git2 = { version = "0.20.4", features = ["vendored-openssl"] }
 serde_yaml = "0.9.33"
 zenoh = "1.1.1"
 serde_json = "1.0.145"
+thiserror = "2.0"
 
 [package]
 name = "adora-examples"

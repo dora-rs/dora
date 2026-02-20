@@ -1,5 +1,5 @@
 use crate::{
-    DaemonCommunicationWrapper, EventStream,
+    DaemonCommunicationWrapper, EventStream, NodeError, NodeResult,
     daemon_connection::{DaemonChannel, IntegrationTestingEvents},
     integration_testing::{
         TestingCommunication, TestingInput, TestingOptions, TestingOutput,
@@ -113,7 +113,7 @@ impl AdoraNode {
     ///
     /// let (mut node, mut events) = AdoraNode::init_from_env().expect("Could not init node.");
     /// ```
-    pub fn init_from_env() -> eyre::Result<(Self, EventStream)> {
+    pub fn init_from_env() -> NodeResult<(Self, EventStream)> {
         Self::init_from_env_inner(true)
     }
 
@@ -122,11 +122,11 @@ impl AdoraNode {
     /// This function behaves the same as [`init_from_env`](Self::init_from_env), but it does _not_
     /// fall back to [`init_interactive`](Self::init_interactive). Instead, an error is returned
     /// when the `ADORA_NODE_CONFIG` environment variable is missing.
-    pub fn init_from_env_force() -> eyre::Result<(Self, EventStream)> {
+    pub fn init_from_env_force() -> NodeResult<(Self, EventStream)> {
         Self::init_from_env_inner(false)
     }
 
-    fn init_from_env_inner(fallback_to_interactive: bool) -> eyre::Result<(Self, EventStream)> {
+    fn init_from_env_inner(fallback_to_interactive: bool) -> NodeResult<(Self, EventStream)> {
         if let Some(testing_comm) = take_testing_communication() {
             let TestingCommunication {
                 input,
@@ -144,7 +144,9 @@ impl AdoraNode {
                 return Self::init(node_config);
             }
             Err(std::env::VarError::NotUnicode(_)) => {
-                bail!("ADORA_NODE_CONFIG env variable is not valid unicode")
+                return Err(NodeError::Init(
+                    "ADORA_NODE_CONFIG env variable is not valid unicode".into(),
+                ))
             }
             Err(std::env::VarError::NotPresent) => {} // continue trying other init methods
         };
@@ -156,7 +158,9 @@ impl AdoraNode {
                 let output_file = match std::env::var("ADORA_TEST_WRITE_OUTPUTS_TO") {
                     Ok(raw) => PathBuf::from(raw),
                     Err(std::env::VarError::NotUnicode(_)) => {
-                        bail!("ADORA_TEST_WRITE_OUTPUTS_TO env variable is not valid unicode")
+                        return Err(NodeError::Init(
+                            "ADORA_TEST_WRITE_OUTPUTS_TO env variable is not valid unicode".into(),
+                        ))
                     }
                     Err(std::env::VarError::NotPresent) => {
                         input_file.with_file_name("outputs.jsonl")
@@ -174,7 +178,9 @@ impl AdoraNode {
                 return Self::init_testing(input, output, options);
             }
             Err(std::env::VarError::NotUnicode(_)) => {
-                bail!("ADORA_TEST_WITH_INPUTS env variable is not valid unicode")
+                return Err(NodeError::Init(
+                    "ADORA_TEST_WITH_INPUTS env variable is not valid unicode".into(),
+                ))
             }
             Err(std::env::VarError::NotPresent) => {} // continue trying other init methods
         }
@@ -190,7 +196,9 @@ impl AdoraNode {
         }
 
         // no run mode applicable
-        bail!("ADORA_NODE_CONFIG env variable is not set")
+        Err(NodeError::Init(
+            "ADORA_NODE_CONFIG env variable is not set".into(),
+        ))
     }
 
     /// Initiate a node from a dataflow id and a node id.
@@ -204,7 +212,7 @@ impl AdoraNode {
     /// let (mut node, mut events) = AdoraNode::init_from_node_id(NodeId::from("plot".to_string())).expect("Could not init node plot");
     /// ```
     ///
-    pub fn init_from_node_id(node_id: NodeId) -> eyre::Result<(Self, EventStream)> {
+    pub fn init_from_node_id(node_id: NodeId) -> NodeResult<(Self, EventStream)> {
         // Make sure that the node is initialized outside of adora start.
         let daemon_address = (LOCALHOST, ADORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT).into();
 
@@ -224,9 +232,14 @@ impl AdoraNode {
                 result: Ok(node_config),
             } => Self::init(node_config),
             DaemonReply::NodeConfig { result: Err(error) } => {
-                bail!("failed to get node config from daemon: {error}")
+                let capped: String = error.chars().take(512).collect();
+                return Err(NodeError::Init(format!(
+                    "failed to get node config from daemon: {capped}"
+                )))
             }
-            _ => bail!("unexpected reply from daemon"),
+            _ => {
+                return Err(NodeError::Init("unexpected reply from daemon".into()))
+            }
         }
     }
 
@@ -235,7 +248,7 @@ impl AdoraNode {
     /// This function first tries initializing the traditional way through
     /// [`init_from_env`][Self::init_from_env]. If this fails, it falls back to
     /// [`init_from_node_id`][Self::init_from_node_id].
-    pub fn init_flexible(node_id: NodeId) -> eyre::Result<(Self, EventStream)> {
+    pub fn init_flexible(node_id: NodeId) -> NodeResult<(Self, EventStream)> {
         if std::env::var("ADORA_NODE_CONFIG").is_ok() {
             info!(
                 "Skipping {node_id} specified within the node initialization in favor of `ADORA_NODE_CONFIG` specified by `adora start`"
@@ -345,7 +358,7 @@ impl AdoraNode {
     ///      ]
     /// ]
     /// ```
-    pub fn init_interactive() -> eyre::Result<(Self, EventStream)> {
+    pub fn init_interactive() -> NodeResult<(Self, EventStream)> {
         #[cfg(feature = "tracing")]
         {
             TracingBuilder::new("node")
@@ -356,7 +369,7 @@ impl AdoraNode {
 
         let node_config = NodeConfig {
             dataflow_id: DataflowId::new_v4(),
-            node_id: "".parse()?,
+            node_id: "".parse().map_err(|e| NodeError::Init(format!("{e}")))?,
             run_config: NodeRunConfig {
                 inputs: Default::default(),
                 outputs: Default::default(),
@@ -383,10 +396,10 @@ impl AdoraNode {
         input: TestingInput,
         output: TestingOutput,
         options: TestingOptions,
-    ) -> eyre::Result<(Self, EventStream)> {
+    ) -> NodeResult<(Self, EventStream)> {
         let node_config = NodeConfig {
             dataflow_id: DataflowId::new_v4(),
-            node_id: "".parse()?,
+            node_id: "".parse().map_err(|e| NodeError::Init(format!("{e}")))?,
             run_config: NodeRunConfig {
                 inputs: Default::default(),
                 outputs: Default::default(),
@@ -410,7 +423,7 @@ impl AdoraNode {
     /// Internal initialization routine that should not be used outside of Adora.
     #[doc(hidden)]
     #[tracing::instrument]
-    pub fn init(node_config: NodeConfig) -> eyre::Result<(Self, EventStream)> {
+    pub fn init(node_config: NodeConfig) -> NodeResult<(Self, EventStream)> {
         Self::init_with_options(node_config, None)
     }
 
@@ -418,7 +431,7 @@ impl AdoraNode {
     fn init_with_options(
         node_config: NodeConfig,
         testing_communication: Option<TestingCommunication>,
-    ) -> eyre::Result<(Self, EventStream)> {
+    ) -> NodeResult<(Self, EventStream)> {
         let NodeConfig {
             dataflow_id,
             node_id,
@@ -459,7 +472,11 @@ impl AdoraNode {
                     });
                     new_communication
                 }
-                None => eyre::bail!("no daemon communication method specified"),
+                None => {
+                    return Err(NodeError::Init(
+                        "no daemon communication method specified".into(),
+                    ))
+                }
             },
         };
 
@@ -564,7 +581,7 @@ impl AdoraNode {
         parameters: MetadataParameters,
         data_len: usize,
         data: F,
-    ) -> eyre::Result<()>
+    ) -> NodeResult<()>
     where
         F: FnOnce(&mut [u8]),
     {
@@ -592,7 +609,7 @@ impl AdoraNode {
         output_id: DataId,
         parameters: MetadataParameters,
         data: impl Array,
-    ) -> eyre::Result<()> {
+    ) -> NodeResult<()> {
         if !self.validate_output(&output_id) {
             return Ok(());
         };
@@ -622,7 +639,7 @@ impl AdoraNode {
         parameters: MetadataParameters,
         data_len: usize,
         data: &[u8],
-    ) -> eyre::Result<()> {
+    ) -> NodeResult<()> {
         if !self.validate_output(&output_id) {
             return Ok(());
         };
@@ -644,7 +661,7 @@ impl AdoraNode {
         parameters: MetadataParameters,
         data_len: usize,
         data: F,
-    ) -> eyre::Result<()>
+    ) -> NodeResult<()>
     where
         F: FnOnce(&mut [u8]),
     {
@@ -670,7 +687,7 @@ impl AdoraNode {
         type_info: ArrowTypeInfo,
         parameters: MetadataParameters,
         sample: Option<DataSample>,
-    ) -> eyre::Result<()> {
+    ) -> NodeResult<()> {
         if !self.interactive {
             self.handle_finished_drop_tokens()?;
         }
@@ -699,10 +716,10 @@ impl AdoraNode {
     /// The node is not allowed to send more outputs with the closed IDs.
     ///
     /// Closing outputs early can be helpful to receivers.
-    pub fn close_outputs(&mut self, outputs_ids: Vec<DataId>) -> eyre::Result<()> {
+    pub fn close_outputs(&mut self, outputs_ids: Vec<DataId>) -> NodeResult<()> {
         for output_id in &outputs_ids {
             if !self.node_config.outputs.remove(output_id) {
-                eyre::bail!("unknown output {output_id}");
+                return Err(NodeError::Output(format!("unknown output {output_id}")));
             }
         }
 
@@ -828,7 +845,7 @@ impl AdoraNode {
     ///
     /// The data sample will use shared memory when suitable to enable efficient data transfer
     /// when sending an output message.
-    pub fn allocate_data_sample(&mut self, data_len: usize) -> eyre::Result<DataSample> {
+    pub fn allocate_data_sample(&mut self, data_len: usize) -> NodeResult<DataSample> {
         let data = if data_len >= ZERO_COPY_THRESHOLD && !self.interactive {
             // create shared memory region
             let shared_memory = self.allocate_shared_memory(data_len)?;
@@ -901,14 +918,16 @@ impl AdoraNode {
     /// Returns the full dataflow descriptor that this node is part of.
     ///
     /// This method returns the parsed dataflow YAML file.
-    pub fn dataflow_descriptor(&self) -> eyre::Result<&Descriptor> {
+    pub fn dataflow_descriptor(&self) -> NodeResult<&Descriptor> {
         match &self.dataflow_descriptor {
             Ok(d) => Ok(d),
-            Err(err) => eyre::bail!(
-                "failed to parse dataflow descriptor: {err}\n\n
-                This might be caused by mismatched version numbers of adora \
-                daemon and the adora node API"
-            ),
+            Err(err) => {
+                return Err(NodeError::Data(format!(
+                    "failed to parse dataflow descriptor: {err}\n\n\
+                    This might be caused by mismatched version numbers of adora \
+                    daemon and the adora node API"
+                )))
+            }
         }
     }
 }
@@ -1067,7 +1086,7 @@ unsafe impl Sync for ShmemHandle {}
 pub fn init_tracing(
     node_id: &NodeId,
     dataflow_id: &DataflowId,
-) -> eyre::Result<Arc<Mutex<Option<OtelGuard>>>> {
+) -> NodeResult<Arc<Mutex<Option<OtelGuard>>>> {
     let node_id_str = node_id.to_string();
     let guard: Arc<Mutex<Option<OtelGuard>>> = Arc::new(Mutex::new(None));
     let clone = guard.clone();

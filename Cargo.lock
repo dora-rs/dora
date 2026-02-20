@@ -73,6 +73,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "adora-cli-api-python"
+version = "0.4.1"
+dependencies = [
+ "adora-cli",
+ "adora-download",
+ "adora-node-api",
+ "adora-runtime",
+ "eyre",
+ "pyo3",
+ "pyo3-build-config",
+ "tokio",
+]
+
+[[package]]
 name = "adora-coordinator"
 version = "0.4.1"
 dependencies = [
@@ -270,6 +284,7 @@ dependencies = [
  "serde_yaml 0.9.34+deprecated",
  "shared-memory-server",
  "shared_memory_extended",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
 ]
@@ -308,12 +323,9 @@ dependencies = [
 name = "adora-node-api-python"
 version = "0.4.1"
 dependencies = [
- "adora-cli",
- "adora-download",
  "adora-node-api",
  "adora-operator-api-python",
  "adora-ros2-bridge-python",
- "adora-runtime",
  "arrow",
  "chrono",
  "eyre",

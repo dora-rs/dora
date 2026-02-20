@@ -12,11 +12,10 @@ repository.workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
-default = ["tracing", "metrics", "telemetry", "async"]
+default = ["tracing", "metrics", "async"]
 tracing = ["adora-node-api/tracing"]
 metrics = ["adora-node-api/metrics"]
 async = ["pyo3/experimental-async"]
-telemetry = ["adora-runtime/telemetry"]
 
 [dependencies]
 adora-node-api = { workspace = true }
@@ -27,9 +26,6 @@ eyre = "0.6"
 serde_json = "1"
 serde_yaml = { workspace = true }
 flume = "0.10.14"
-adora-runtime = { workspace = true, features = ["tracing", "metrics", "python"] }
-adora-cli = { workspace = true }
-adora-download = { workspace = true }
 arrow = { workspace = true, features = ["pyarrow"] }
 pythonize = { workspace = true }
 futures = "0.3.28"

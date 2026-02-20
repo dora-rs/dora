@@ -114,9 +114,12 @@ pub use serde_json;
 use tokio::sync::oneshot;
 
 mod daemon_connection;
+mod error;
 mod event_stream;
 pub mod integration_testing;
 mod node;
+
+pub use error::{NodeError, NodeResult};
 
 #[derive(Debug)]
 enum DaemonCommunicationWrapper {
