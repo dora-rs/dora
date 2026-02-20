@@ -8,11 +8,10 @@ from dora import Node
 
 node = Node()
 
-i = 0
 for event in node:
-    if i == 100:
+    if event["type"] == "STOP":
         break
-    else:
-        i += 1
+    if event["type"] != "INPUT":
+        continue
     now = time.perf_counter_ns()
     node.send_output("data", pa.array([np.uint64(now)]))
