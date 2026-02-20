@@ -15,7 +15,7 @@ def main() -> None:
         if message is None:
             break
 
-        if message["type"] == "STOP":
+        if message["type"] in {"STOP", "INPUT_CLOSED", "ALL_INPUTS_CLOSED"}:
             break
         if message["type"] != "INPUT":
             continue

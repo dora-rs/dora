@@ -17,7 +17,10 @@ def main() -> None:
         i += 1
         # print(f"Sent {i} times", flush=True)
         time.sleep(0.001)
-        if dora_node.next(timeout=0.001) is None:
+        message = dora_node.next(timeout=0.001)
+        if message is None:
+            break
+        if message["type"] in {"STOP", "INPUT_CLOSED", "ALL_INPUTS_CLOSED"}:
             break
 
 

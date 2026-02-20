@@ -7,7 +7,7 @@ async def main():
     node = Node()
     while True:
         event = await node.recv_async()
-        if event["type"] == "STOP":
+        if event["type"] in {"STOP", "INPUT_CLOSED", "ALL_INPUTS_CLOSED"}:
             break
         if event["type"] != "INPUT":
             continue

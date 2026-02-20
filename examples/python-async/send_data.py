@@ -9,7 +9,7 @@ from dora import Node
 node = Node()
 
 for event in node:
-    if event["type"] == "STOP":
+    if event["type"] in {"STOP", "INPUT_CLOSED", "ALL_INPUTS_CLOSED"}:
         break
     if event["type"] != "INPUT":
         continue
