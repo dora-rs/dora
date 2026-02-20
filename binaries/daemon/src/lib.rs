@@ -2318,16 +2318,14 @@ impl Daemon {
                     NodeExitStatus::Success => Ok(()),
                     exit_status => {
                         let dataflow = self.running.get(&dataflow_id);
-                        let is_expected_shutdown_exit = dataflow
-                            .as_ref()
-                            .map(|d| d.stop_sent)
-                            .unwrap_or(false)
-                            && matches!(
-                                &exit_status,
-                                NodeExitStatus::Signal(15)
-                                    | NodeExitStatus::Signal(9)
-                                    | NodeExitStatus::ExitCode(143)
-                            );
+                        let is_expected_shutdown_exit =
+                            dataflow.as_ref().map(|d| d.stop_sent).unwrap_or(false)
+                                && matches!(
+                                    &exit_status,
+                                    NodeExitStatus::Signal(15)
+                                        | NodeExitStatus::Signal(9)
+                                        | NodeExitStatus::ExitCode(143)
+                                );
 
                         if is_expected_shutdown_exit {
                             logger
