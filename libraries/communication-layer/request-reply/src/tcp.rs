@@ -129,6 +129,16 @@ impl RequestReplyConnection for TcpConnection {
 
 impl TcpConnection {
     pub fn send(&mut self, request: &[u8]) -> std::io::Result<()> {
+        if request.len() > adora_message::MAX_MESSAGE_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "outgoing message size {} exceeds maximum {}",
+                    request.len(),
+                    adora_message::MAX_MESSAGE_BYTES
+                ),
+            ));
+        }
         let len_raw = (request.len() as u64).to_le_bytes();
         self.stream.write_all(&len_raw)?;
         self.stream.write_all(request)?;
@@ -136,10 +146,17 @@ impl TcpConnection {
     }
 
     pub fn receive(&mut self) -> std::io::Result<Vec<u8>> {
+        self.stream
+            .set_read_timeout(Some(adora_message::TCP_READ_TIMEOUT))?;
         let reply_len = {
             let mut raw = [0; 8];
             self.stream.read_exact(&mut raw)?;
-            u64::from_le_bytes(raw) as usize
+            usize::try_from(u64::from_le_bytes(raw)).map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "message length overflows usize",
+                )
+            })?
         };
         if reply_len > adora_message::MAX_MESSAGE_BYTES {
             return Err(std::io::Error::new(

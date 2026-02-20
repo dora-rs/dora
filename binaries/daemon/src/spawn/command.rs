@@ -25,6 +25,14 @@ pub(super) async fn path_spawn_command(
                      Set ADORA_ALLOW_SHELL_NODES=true to enable."
                 );
             }
+            logger
+                .log(
+                    LogLevel::Warn,
+                    Some("spawner".into()),
+                    "ADORA_ALLOW_SHELL_NODES is set: shell node will execute arbitrary commands"
+                        .to_string(),
+                )
+                .await;
             if cfg!(target_os = "windows") {
                 let cmd = Command::new("cmd");
                 cmd.args(["/C", &node.args.clone().unwrap_or_default()])

@@ -10,6 +10,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+# Required for MAX_MESSAGE_BYTES and TCP_READ_TIMEOUT security guards in tcp.rs
 adora-message = { path = "../../message" }
 
 [package.metadata.docs.rs]

@@ -14,7 +14,9 @@ mod template;
 pub use command::build;
 pub use command::{Executable, Run as RunCommand, run, run_func};
 
+/// Default address for *connecting* to a coordinator (client side).
 const LOCALHOST: IpAddr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
+/// Default address for the coordinator to *listen* on (server side).
 const LISTEN_DEFAULT: IpAddr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
 
 #[derive(Debug, clap::Parser)]

@@ -26,12 +26,17 @@ fn get_filename(response: &reqwest::Response) -> Option<String> {
             .map(|s| s.to_string())
     });
 
-    // Sanitize: strip path components to prevent traversal
+    // Sanitize: strip path components to prevent traversal,
+    // reject null bytes and overly long names
     raw_name.and_then(|name| {
-        Path::new(&name)
+        let sanitized = Path::new(&name)
             .file_name()
             .and_then(|n| n.to_str())
-            .map(|s| s.to_string())
+            .map(|s| s.to_string())?;
+        if sanitized.contains('\0') || sanitized.len() > 255 {
+            return None;
+        }
+        Some(sanitized)
     })
 }
 
