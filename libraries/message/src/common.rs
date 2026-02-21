@@ -57,9 +57,9 @@ impl From<LogMessageHelper> for LogMessage {
             node_id: helper.node_id.or(fields
                 .and_then(|f| f.get("node_id").cloned())
                 .map(|id| NodeId(id))),
-            daemon_id: helper
-                .daemon_id
-                .or(fields.and_then(|f| f.get("daemon_id").cloned()).and_then(|id| {
+            daemon_id: helper.daemon_id.or(fields
+                .and_then(|f| f.get("daemon_id").cloned())
+                .and_then(|id| {
                     let parts: Vec<&str> = id.splitn(2, '-').collect();
                     if parts.len() == 2 {
                         Uuid::parse_str(parts[1]).ok().map(|uuid| DaemonId {

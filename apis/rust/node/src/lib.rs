@@ -86,7 +86,6 @@
 
 #![warn(missing_docs)]
 
-pub use arrow;
 pub use adora_arrow_convert::*;
 pub use adora_core::{self, uhlc};
 pub use adora_message::{
@@ -98,6 +97,7 @@ use adora_message::{
     daemon_to_node::{DaemonCommunication, DaemonReply},
     node_to_daemon::DaemonRequest,
 };
+pub use arrow;
 pub use event_stream::{
     Event, EventScheduler, EventStream, StopCause, TryRecvError,
     input_tracker::{InputState, InputTracker},
@@ -108,7 +108,7 @@ pub use flume::Receiver;
 pub use futures;
 #[cfg(feature = "tracing")]
 pub use node::init_tracing;
-pub use node::{DataSample, AdoraNode, ZERO_COPY_THRESHOLD, arrow_utils};
+pub use node::{AdoraNode, DataSample, ZERO_COPY_THRESHOLD, arrow_utils};
 
 pub use serde_json;
 use tokio::sync::oneshot;

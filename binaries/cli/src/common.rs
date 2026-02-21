@@ -1,5 +1,4 @@
 use crate::{LOCALHOST, formatting::FormatDataflowError};
-use communication_layer_request_reply::{RequestReplyLayer, TcpLayer, TcpRequestReplyConnection};
 use adora_core::{
     descriptor::{Descriptor, source_is_url},
     topics::ADORA_COORDINATOR_PORT_CONTROL_DEFAULT,
@@ -9,6 +8,7 @@ use adora_message::{
     cli_to_coordinator::ControlRequest,
     coordinator_to_cli::{ControlRequestReply, DataflowList, DataflowResult},
 };
+use communication_layer_request_reply::{RequestReplyLayer, TcpLayer, TcpRequestReplyConnection};
 use eyre::{Context, ContextCompat, bail};
 use std::{
     env::current_dir,

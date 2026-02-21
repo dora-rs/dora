@@ -1,11 +1,11 @@
 use std::{collections::BTreeMap, path::PathBuf};
 
-use colored::Colorize;
 use adora_core::{
     build::{BuildInfo, BuildLogger, Builder, GitManager, LogLevelOrStdout, PrevGitSource},
     descriptor::{Descriptor, DescriptorExt},
 };
 use adora_message::{common::GitSource, id::NodeId};
+use colored::Colorize;
 use eyre::Context;
 
 use crate::session::DataflowSession;

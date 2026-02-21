@@ -249,7 +249,8 @@ pub fn init_tracing_subscriber(
     let mut builder = TracingBuilder::new(name);
     let guard: Option<OtelGuard>;
 
-    if std::env::var("ADORA_OTLP_ENDPOINT").is_ok() || std::env::var("ADORA_JAEGER_TRACING").is_ok() {
+    if std::env::var("ADORA_OTLP_ENDPOINT").is_ok() || std::env::var("ADORA_JAEGER_TRACING").is_ok()
+    {
         builder = builder
             .with_otlp_tracing()
             .wrap_err("failed to set up OTLP tracing")?;

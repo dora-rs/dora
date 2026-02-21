@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 use tokio::io::AsyncWriteExt;
 
 fn get_filename(response: &reqwest::Response) -> Option<String> {
-    let raw_name = if let Some(content_disposition) = response.headers().get("content-disposition") {
+    let raw_name = if let Some(content_disposition) = response.headers().get("content-disposition")
+    {
         if let Ok(filename) = content_disposition.to_str() {
             filename
                 .split("filename=")

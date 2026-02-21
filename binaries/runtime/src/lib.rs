@@ -156,75 +156,75 @@ async fn run(
             RuntimeEvent::Operator {
                 id: operator_id,
                 event,
-            } => {
-                match event {
-                    OperatorEvent::Error(err) => {
-                        bail!(err.wrap_err(format!(
-                            "operator {}/{operator_id} raised an error",
-                            node.id()
-                        )))
+            } => match event {
+                OperatorEvent::Error(err) => {
+                    bail!(err.wrap_err(format!(
+                        "operator {}/{operator_id} raised an error",
+                        node.id()
+                    )))
+                }
+                OperatorEvent::Panic(payload) => {
+                    bail!("operator {operator_id} panicked: {payload:?}");
+                }
+                OperatorEvent::Finished { reason } => {
+                    if let StopReason::ExplicitStopAll = reason {
+                        bail!(
+                            "operator {operator_id} requested StopAll, which is not yet implemented"
+                        );
                     }
-                    OperatorEvent::Panic(payload) => {
-                        bail!("operator {operator_id} panicked: {payload:?}");
-                    }
-                    OperatorEvent::Finished { reason } => {
-                        if let StopReason::ExplicitStopAll = reason {
-                            bail!("operator {operator_id} requested StopAll, which is not yet implemented");
-                        }
 
-                        let Some(config) = operators.get(&operator_id) else {
-                            tracing::warn!(
-                                "received Finished event for unknown operator `{operator_id}`"
-                            );
-                            continue;
-                        };
-                        let outputs = config
-                            .outputs
-                            .iter()
-                            .map(|output_id| operator_output_id(&operator_id, output_id))
-                            .collect();
-                        let result;
-                        (node, result) = tokio::task::spawn_blocking(move || {
-                            let result = node.close_outputs(outputs);
-                            (node, result)
-                        })
-                        .await
-                        .wrap_err("failed to wait for close_outputs task")?;
-                        result.wrap_err("failed to close outputs of finished operator")?;
+                    let Some(config) = operators.get(&operator_id) else {
+                        tracing::warn!(
+                            "received Finished event for unknown operator `{operator_id}`"
+                        );
+                        continue;
+                    };
+                    let outputs = config
+                        .outputs
+                        .iter()
+                        .map(|output_id| operator_output_id(&operator_id, output_id))
+                        .collect();
+                    let result;
+                    (node, result) = tokio::task::spawn_blocking(move || {
+                        let result = node.close_outputs(outputs);
+                        (node, result)
+                    })
+                    .await
+                    .wrap_err("failed to wait for close_outputs task")?;
+                    result.wrap_err("failed to close outputs of finished operator")?;
 
-                        operator_channels.remove(&operator_id);
+                    operator_channels.remove(&operator_id);
 
-                        if operator_channels.is_empty() {
-                            break;
-                        }
-                    }
-                    OperatorEvent::AllocateOutputSample { len, sample: tx } => {
-                        let sample = node.allocate_data_sample(len).map_err(eyre::Report::from);
-                        if tx.send(sample).is_err() {
-                            tracing::warn!(
-                                "output sample requested, but operator {operator_id} exited already"
-                            );
-                        }
-                    }
-                    OperatorEvent::Output {
-                        output_id,
-                        type_info,
-                        parameters,
-                        data,
-                    } => {
-                        let output_id = operator_output_id(&operator_id, &output_id);
-                        let result;
-                        (node, result) = tokio::task::spawn_blocking(move || {
-                            let result =
-                                node.send_output_sample(output_id, type_info, parameters, data);
-                            (node, result)
-                        })
-                        .await
-                        .wrap_err("failed to wait for send_output task")?;
-                        result.wrap_err("failed to send node output")?;
+                    if operator_channels.is_empty() {
+                        break;
                     }
                 }
-            }
+                OperatorEvent::AllocateOutputSample { len, sample: tx } => {
+                    let sample = node.allocate_data_sample(len).map_err(eyre::Report::from);
+                    if tx.send(sample).is_err() {
+                        tracing::warn!(
+                            "output sample requested, but operator {operator_id} exited already"
+                        );
+                    }
+                }
+                OperatorEvent::Output {
+                    output_id,
+                    type_info,
+                    parameters,
+                    data,
+                } => {
+                    let output_id = operator_output_id(&operator_id, &output_id);
+                    let result;
+                    (node, result) = tokio::task::spawn_blocking(move || {
+                        let result =
+                            node.send_output_sample(output_id, type_info, parameters, data);
+                        (node, result)
+                    })
+                    .await
+                    .wrap_err("failed to wait for send_output task")?;
+                    result.wrap_err("failed to send node output")?;
+                }
+            },
             RuntimeEvent::Event(Event::Stop(cause)) => {
                 // forward stop event to all operators and close the event channels
                 for (_, channel) in operator_channels.drain() {

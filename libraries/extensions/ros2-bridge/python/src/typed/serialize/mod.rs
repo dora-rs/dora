@@ -1,12 +1,12 @@
 use std::{borrow::Cow, collections::HashMap, fmt::Display};
 
-use arrow::{
-    array::{Array, ArrayRef, AsArray},
-    error,
-};
 use adora_ros2_bridge_msg_gen::types::{
     MemberType,
     primitives::{GenericString, NestableType},
+};
+use arrow::{
+    array::{Array, ArrayRef, AsArray},
+    error,
 };
 use eyre::Context;
 use serde::ser::SerializeTupleStruct;

@@ -47,12 +47,12 @@
 //!       - random
 //! ```
 
-use communication_layer_request_reply::TcpRequestReplyConnection;
 use adora_core::{
     descriptor::{CoreNodeKind, CustomNode, Descriptor, DescriptorExt},
     topics::{ADORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST},
 };
 use adora_message::{BuildId, descriptor::NodeSource};
+use communication_layer_request_reply::TcpRequestReplyConnection;
 use eyre::Context;
 use std::{collections::BTreeMap, net::IpAddr};
 
@@ -149,7 +149,9 @@ pub fn build(
         match session() {
             Ok(coordinator_session) => {
                 // we found a local coordinator instance at default port -> use it for building
-                log::info!("Found local adora coordinator instance -> building through coordinator");
+                log::info!(
+                    "Found local adora coordinator instance -> building through coordinator"
+                );
                 BuildKind::ThroughCoordinator {
                     coordinator_session,
                 }

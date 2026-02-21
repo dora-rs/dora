@@ -6,11 +6,11 @@ use std::{
 };
 
 use ::adora_ros2_bridge::{ros2_client, rustdds};
+use adora_ros2_bridge_msg_gen::types::Message;
 use arrow::{
     array::{ArrayData, make_array},
     pyarrow::{FromPyArrow, ToPyArrow},
 };
-use adora_ros2_bridge_msg_gen::types::Message;
 use eyre::{Context, ContextCompat, Result, eyre};
 use futures::{Stream, StreamExt};
 use pyo3::{

@@ -1,8 +1,8 @@
 use std::{ptr::NonNull, sync::Arc};
 
-use aligned_vec::{AVec, ConstAlign};
 use adora_arrow_convert::IntoArrow;
 use adora_message::metadata::ArrowTypeInfo;
+use aligned_vec::{AVec, ConstAlign};
 use eyre::Context;
 use shared_memory_server::{Shmem, ShmemConf};
 

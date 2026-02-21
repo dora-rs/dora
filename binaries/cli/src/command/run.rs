@@ -60,7 +60,12 @@ pub struct Run {
     ///
     /// Examples:
     ///   --log-filter "sensor=debug,processor=warn"
-    #[clap(long, value_name = "FILTER", env = "ADORA_LOG_FILTER", verbatim_doc_comment)]
+    #[clap(
+        long,
+        value_name = "FILTER",
+        env = "ADORA_LOG_FILTER",
+        verbatim_doc_comment
+    )]
     pub log_filter: Option<String>,
 }
 

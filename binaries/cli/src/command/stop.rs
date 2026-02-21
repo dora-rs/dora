@@ -1,9 +1,9 @@
 use super::{Executable, default_tracing};
 use crate::common::{connect_to_coordinator, handle_dataflow_result, query_running_dataflows};
-use communication_layer_request_reply::TcpRequestReplyConnection;
 use adora_core::topics::{ADORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST};
 use adora_message::cli_to_coordinator::ControlRequest;
 use adora_message::coordinator_to_cli::ControlRequestReply;
+use communication_layer_request_reply::TcpRequestReplyConnection;
 use duration_str::parse;
 use eyre::{Context, bail};
 use std::net::IpAddr;

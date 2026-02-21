@@ -1,7 +1,6 @@
 pub use control::ControlEvent;
 pub use events::{DaemonRequest, DataflowEvent, Event};
 // Re-export for internal modules (listener.rs, run/mod.rs) that import from crate root
-pub(crate) use state::{DaemonConnection, DaemonConnections};
 use crate::{
     events::set_up_ctrlc_handler,
     handlers::{
@@ -28,6 +27,7 @@ use futures::{Future, Stream, StreamExt, stream::FuturesUnordered};
 use futures_concurrency::stream::Merge;
 use log_subscriber::LogSubscriber;
 use petname::petname;
+pub(crate) use state::{DaemonConnection, DaemonConnections};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     net::SocketAddr,
@@ -651,19 +651,13 @@ async fn start_inner(
                         ControlRequest::ConnectedMachines => {
                             let daemon_infos: Vec<_> = daemon_connections
                                 .iter_mut()
-                                .map(|(id, conn)| {
-                                    adora_message::coordinator_to_cli::DaemonInfo {
-                                        daemon_id: id.clone(),
-                                        last_heartbeat_ago_ms: conn
-                                            .last_heartbeat
-                                            .elapsed()
-                                            .as_millis()
-                                            as u64,
-                                    }
+                                .map(|(id, conn)| adora_message::coordinator_to_cli::DaemonInfo {
+                                    daemon_id: id.clone(),
+                                    last_heartbeat_ago_ms: conn.last_heartbeat.elapsed().as_millis()
+                                        as u64,
                                 })
                                 .collect();
-                            let reply =
-                                Ok(ControlRequestReply::ConnectedDaemons(daemon_infos));
+                            let reply = Ok(ControlRequestReply::ConnectedDaemons(daemon_infos));
                             let _ = reply_sender.send(reply);
                         }
                         ControlRequest::LogSubscribe { .. } => {

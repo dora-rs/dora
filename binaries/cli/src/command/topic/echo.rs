@@ -1,8 +1,5 @@
 use std::{ptr::NonNull, sync::Arc, time::SystemTime};
 
-use arrow::{buffer::OffsetBuffer, datatypes::Field};
-use clap::Args;
-use colored::Colorize;
 use adora_core::topics::{open_zenoh_session, zenoh_output_publish_topic};
 use adora_message::{
     common::Timestamped,
@@ -10,6 +7,9 @@ use adora_message::{
     id::{DataId, NodeId},
     metadata::{ArrowTypeInfo, BufferOffset, Parameter},
 };
+use arrow::{buffer::OffsetBuffer, datatypes::Field};
+use clap::Args;
+use colored::Colorize;
 use eyre::{Context, eyre};
 use tokio::{runtime::Builder, task::JoinSet};
 use uuid::Uuid;

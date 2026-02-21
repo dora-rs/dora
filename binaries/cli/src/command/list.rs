@@ -6,13 +6,13 @@ use crate::{
     common::{connect_to_coordinator, query_running_dataflows},
     formatting::OutputFormat,
 };
-use clap::Args;
-use communication_layer_request_reply::TcpRequestReplyConnection;
 use adora_core::topics::ADORA_COORDINATOR_PORT_CONTROL_DEFAULT;
 use adora_message::{
     cli_to_coordinator::ControlRequest,
     coordinator_to_cli::{ControlRequestReply, DataflowStatus},
 };
+use clap::Args;
+use communication_layer_request_reply::TcpRequestReplyConnection;
 use eyre::{Context, bail, eyre};
 use serde::Serialize;
 use tabwriter::TabWriter;

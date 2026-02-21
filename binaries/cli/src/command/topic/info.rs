@@ -3,8 +3,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use arrow_schema::DataType;
-use clap::Args;
 use adora_core::{
     config::InputMapping,
     topics::{open_zenoh_session, zenoh_output_publish_topic},
@@ -12,6 +10,8 @@ use adora_core::{
 use adora_message::{
     common::Timestamped, daemon_to_daemon::InterDaemonEvent, metadata::ArrowTypeInfo,
 };
+use arrow_schema::DataType;
+use clap::Args;
 use eyre::{Context, eyre};
 use tokio::runtime::Builder;
 

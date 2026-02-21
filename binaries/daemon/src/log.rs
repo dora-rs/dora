@@ -545,11 +545,7 @@ mod tests {
 
         // Create current and .1
         std::fs::write(log_path(tmp.path(), &uuid, &node), "current\n").unwrap();
-        std::fs::write(
-            log_path_rotated(tmp.path(), &uuid, &node, 1),
-            "old1\n",
-        )
-        .unwrap();
+        std::fs::write(log_path_rotated(tmp.path(), &uuid, &node, 1), "old1\n").unwrap();
 
         rotate_log_files(tmp.path(), &uuid, &node, 5).unwrap();
 
@@ -576,16 +572,8 @@ mod tests {
         let max = 2;
         // Create current, .1, .2 (at max)
         std::fs::write(log_path(tmp.path(), &uuid, &node), "current\n").unwrap();
-        std::fs::write(
-            log_path_rotated(tmp.path(), &uuid, &node, 1),
-            "old1\n",
-        )
-        .unwrap();
-        std::fs::write(
-            log_path_rotated(tmp.path(), &uuid, &node, 2),
-            "old2\n",
-        )
-        .unwrap();
+        std::fs::write(log_path_rotated(tmp.path(), &uuid, &node, 1), "old1\n").unwrap();
+        std::fs::write(log_path_rotated(tmp.path(), &uuid, &node, 2), "old2\n").unwrap();
 
         rotate_log_files(tmp.path(), &uuid, &node, max).unwrap();
 

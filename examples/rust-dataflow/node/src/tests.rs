@@ -5,8 +5,8 @@ use std::{
 
 use adora_node_api::{
     AdoraNode, Event, IntoArrow,
-    arrow::array::{Array, NullArray},
     adora_core::config::DataId,
+    arrow::array::{Array, NullArray},
     flume,
     integration_testing::{
         self, IntegrationTestInput, TestingOptions,

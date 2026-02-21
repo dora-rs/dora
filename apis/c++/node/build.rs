@@ -30,7 +30,11 @@ fn main() {
     }
     std::fs::create_dir(&target_dir).unwrap();
 
-    std::fs::copy(src_dir.join("lib.rs.h"), target_dir.join("adora-node-api.h")).unwrap();
+    std::fs::copy(
+        src_dir.join("lib.rs.h"),
+        target_dir.join("adora-node-api.h"),
+    )
+    .unwrap();
     std::fs::copy(
         src_dir.join("lib.rs.cc"),
         target_dir.join("adora-node-api.cc"),

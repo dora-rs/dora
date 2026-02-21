@@ -1,10 +1,10 @@
+use adora_ros2_bridge_msg_gen::types::primitives::BasicType;
 use arrow::array::{
     ArrayData, BooleanBuilder, Float32Builder, Float64Builder, Int8Builder, Int16Builder,
     Int32Builder, Int64Builder, NullArray, UInt8Builder, UInt16Builder, UInt32Builder,
     UInt64Builder,
 };
 use core::fmt;
-use adora_ros2_bridge_msg_gen::types::primitives::BasicType;
 
 pub struct PrimitiveDeserializer<'a>(pub &'a BasicType);
 

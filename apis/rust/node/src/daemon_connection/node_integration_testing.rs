@@ -5,9 +5,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use arrow::array::{Array, RecordBatch, StructArray};
-use arrow_schema::{DataType, Field, Schema};
-use colored::Colorize;
 use adora_core::{
     metadata::ArrowTypeInfoExt,
     uhlc::{self, HLC, NTP64, Timestamp},
@@ -21,6 +18,9 @@ use adora_message::{
     metadata::{ArrowTypeInfo, Metadata},
     node_to_daemon::DaemonRequest,
 };
+use arrow::array::{Array, RecordBatch, StructArray};
+use arrow_schema::{DataType, Field, Schema};
+use colored::Colorize;
 use eyre::{Context, ContextCompat};
 
 use crate::{

@@ -1,5 +1,4 @@
 use super::{OperatorEvent, StopReason};
-use aligned_vec::{AVec, ConstAlign};
 use adora_core::{
     adjust_shared_library_path,
     config::{DataId, NodeId, OperatorId},
@@ -14,6 +13,7 @@ use adora_operator_api_types::{
     AdoraDropOperator, AdoraInitOperator, AdoraInitResult, AdoraOnEvent, AdoraResult, AdoraStatus,
     Metadata, OnEventResult, Output, SendOutput, safer_ffi::closure::ArcDynFn1,
 };
+use aligned_vec::{AVec, ConstAlign};
 use eyre::{Context, Result, bail, eyre};
 use libloading::Symbol;
 use std::{

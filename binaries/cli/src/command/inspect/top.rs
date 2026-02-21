@@ -3,17 +3,17 @@ use std::{
     time::{Duration, Instant},
 };
 
-use clap::Args;
-use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
-    execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
-};
 use adora_core::topics::ADORA_COORDINATOR_PORT_CONTROL_DEFAULT;
 use adora_message::{
     cli_to_coordinator::ControlRequest,
     coordinator_to_cli::{ControlRequestReply, NodeInfo},
     id::NodeId,
+};
+use clap::Args;
+use crossterm::{
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
+    execute,
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use eyre::{Context, eyre};
 use ratatui::{

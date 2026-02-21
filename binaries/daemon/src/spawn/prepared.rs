@@ -680,10 +680,8 @@ impl PreparedNode {
                             AVec::__from_elem(128, 0, total_len);
                         let type_info = copy_array_into_sample(&mut sample, &array);
                         let metadata = Metadata::new(uhlc.new_timestamp(), type_info);
-                        let output_id = OutputId(
-                            node_id.clone(),
-                            DataId::from(logs_output_name.to_string()),
-                        );
+                        let output_id =
+                            OutputId(node_id.clone(), DataId::from(logs_output_name.to_string()));
                         let event = AdoraEvent::Logs {
                             dataflow_id,
                             output_id,

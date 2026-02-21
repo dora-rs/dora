@@ -1,3 +1,7 @@
+use adora_ros2_bridge_msg_gen::types::{
+    MemberType, Message,
+    primitives::{BasicType, NestableType},
+};
 use arrow::{
     array::{
         Array, ArrayData, BooleanArray, Float32Array, Float64Array, Int8Array, Int16Array,
@@ -7,10 +11,6 @@ use arrow::{
     buffer::{OffsetBuffer, ScalarBuffer},
     compute::concat,
     datatypes::Field,
-};
-use adora_ros2_bridge_msg_gen::types::{
-    MemberType, Message,
-    primitives::{BasicType, NestableType},
 };
 use eyre::{Context, ContextCompat, Result};
 use std::{collections::HashMap, sync::Arc, vec};

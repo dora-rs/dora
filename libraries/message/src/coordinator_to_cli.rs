@@ -1,7 +1,4 @@
-use std::{
-    collections::BTreeMap,
-    net::IpAddr,
-};
+use std::{collections::BTreeMap, net::IpAddr};
 
 use uuid::Uuid;
 

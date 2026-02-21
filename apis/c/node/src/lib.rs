@@ -1,9 +1,12 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
-use arrow_array::UInt8Array;
 use adora_node_api::{AdoraNode, Event, EventStream, arrow::array::AsArray};
+use arrow_array::UInt8Array;
 use eyre::Context;
-use std::{ffi::{c_int, c_void}, ptr, slice};
+use std::{
+    ffi::{c_int, c_void},
+    ptr, slice,
+};
 
 pub const HEADER_NODE_API: &str = include_str!("../node_api.h");
 

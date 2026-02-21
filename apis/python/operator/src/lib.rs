@@ -3,12 +3,12 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use arrow::pyarrow::ToPyArrow;
-use chrono::{DateTime, Utc};
 use adora_node_api::{
     AdoraNode, Event, EventStream, Metadata, MetadataParameters, Parameter, StopCause,
     merged::{MergeExternalSend, MergedEvent},
 };
+use arrow::pyarrow::ToPyArrow;
+use chrono::{DateTime, Utc};
 use eyre::{Context, Result};
 use futures::{Stream, StreamExt};
 use futures_concurrency::stream::Merge as _;
@@ -376,10 +376,10 @@ mod tests {
         buffer::Buffer,
     };
 
-    use arrow_schema::{DataType, Field};
     use adora_node_api::arrow_utils::{
         buffer_into_arrow_array, copy_array_into_sample, required_data_size,
     };
+    use arrow_schema::{DataType, Field};
     use eyre::{Context, Result};
 
     fn assert_roundtrip(arrow_array: &ArrayData) -> Result<()> {

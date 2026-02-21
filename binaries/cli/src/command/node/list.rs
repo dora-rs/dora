@@ -10,11 +10,11 @@ use crate::{
     common::CoordinatorOptions,
     formatting::OutputFormat,
 };
-use communication_layer_request_reply::TcpRequestReplyConnection;
 use adora_message::{
     cli_to_coordinator::ControlRequest,
     coordinator_to_cli::{ControlRequestReply, NodeInfo},
 };
+use communication_layer_request_reply::TcpRequestReplyConnection;
 use eyre::{Context, bail};
 
 /// List all currently running nodes and their status.

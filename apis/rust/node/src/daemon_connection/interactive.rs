@@ -1,6 +1,5 @@
 use std::{io::stdout, time::Duration};
 
-use colored::Colorize;
 use adora_core::{metadata::ArrowTypeInfoExt, uhlc::HLC};
 use adora_message::{
     common::{DataMessage, Timestamped},
@@ -8,6 +7,7 @@ use adora_message::{
     metadata::{ArrowTypeInfo, Metadata},
     node_to_daemon::DaemonRequest,
 };
+use colored::Colorize;
 
 use crate::{
     arrow_utils::{copy_array_into_sample, required_data_size},

@@ -1,5 +1,5 @@
-use clap::ValueEnum;
 use adora_message::{common::NodeErrorCause, coordinator_to_cli::DataflowResult};
+use clap::ValueEnum;
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum OutputFormat {

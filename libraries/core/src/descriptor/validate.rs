@@ -289,7 +289,7 @@ fn parse_byte_size(s: &str) -> eyre::Result<u64> {
         None => {
             return s
                 .parse::<u64>()
-                .map_err(|_| eyre!("invalid byte size: '{s}'"))
+                .map_err(|_| eyre!("invalid byte size: '{s}'"));
         }
     };
     let num: f64 = num_str

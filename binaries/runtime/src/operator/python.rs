@@ -291,8 +291,6 @@ mod callback_impl {
     use crate::operator::OperatorEvent;
 
     use super::SendOutputCallback;
-    use aligned_vec::{AVec, ConstAlign};
-    use arrow::{array::ArrayData, pyarrow::FromPyArrow};
     use adora_core::metadata::ArrowTypeInfoExt;
     use adora_message::metadata::ArrowTypeInfo;
     use adora_node_api::{
@@ -301,6 +299,8 @@ mod callback_impl {
     };
     use adora_operator_api_python::pydict_to_metadata;
     use adora_tracing::telemetry::deserialize_context;
+    use aligned_vec::{AVec, ConstAlign};
+    use arrow::{array::ArrayData, pyarrow::FromPyArrow};
     use eyre::{Context, Result, eyre};
     use pyo3::{
         Bound, PyObject, Python, pymethods,

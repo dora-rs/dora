@@ -5,8 +5,6 @@ use crate::{
     node_inputs,
     spawn::{command::path_spawn_command, prepared::PreparedNode},
 };
-use clonable_command::{Command, Stdio};
-use crossbeam::queue::ArrayQueue;
 use adora_core::{
     descriptor::{Descriptor, OperatorDefinition, OperatorSource, PythonSource, ResolvedNode},
     get_python_path,
@@ -18,14 +16,13 @@ use adora_message::{
     daemon_to_coordinator::Timestamped,
     daemon_to_node::{NodeConfig, RuntimeConfig},
 };
+use clonable_command::{Command, Stdio};
+use crossbeam::queue::ArrayQueue;
 use eyre::{ContextCompat, WrapErr, bail};
 use std::{
     future::Future,
     path::PathBuf,
-    sync::{
-        Arc,
-        atomic::AtomicU64,
-    },
+    sync::{Arc, atomic::AtomicU64},
 };
 use tokio::sync::mpsc;
 
@@ -63,9 +60,7 @@ impl Spawner {
             .into_iter()
             .map(|(k, v)| (k, v.queue_size.unwrap_or(10)))
             .collect();
-        let last_activity = Arc::new(AtomicU64::new(
-            crate::node_communication::current_millis(),
-        ));
+        let last_activity = Arc::new(AtomicU64::new(crate::node_communication::current_millis()));
         let daemon_communication = spawn_listener_loop(
             &dataflow_id,
             &node_id,
@@ -266,8 +261,9 @@ impl Spawner {
                         ]);
                         Some(cmd)
                     } else {
-                        let mut cmd =
-                            Command::new(which::which("adora").wrap_err("failed to get adora path")?);
+                        let mut cmd = Command::new(
+                            which::which("adora").wrap_err("failed to get adora path")?,
+                        );
                         cmd = cmd.arg("runtime");
                         Some(cmd)
                     }

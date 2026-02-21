@@ -1,6 +1,6 @@
-use crossterm::event::{Event, KeyCode, KeyModifiers};
 use adora_core::topics::{open_zenoh_session, zenoh_output_publish_topic};
 use adora_message::{common::Timestamped, daemon_to_daemon::InterDaemonEvent};
+use crossterm::event::{Event, KeyCode, KeyModifiers};
 use eyre::{Context, eyre};
 use itertools::Itertools;
 use ratatui::{DefaultTerminal, prelude::*, widgets::*};

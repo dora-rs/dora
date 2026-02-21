@@ -1,3 +1,4 @@
+use crate::control::ControlEvent;
 use adora_core::config::NodeId;
 use adora_message::{
     BuildId,
@@ -5,7 +6,6 @@ use adora_message::{
     coordinator_to_cli::LogMessage,
     daemon_to_coordinator::{DataflowDaemonResult, NodeMetrics},
 };
-use crate::control::ControlEvent;
 use eyre::WrapErr;
 use futures::Stream;
 use std::collections::BTreeMap;

@@ -2,8 +2,8 @@
 #![allow(improper_ctypes_definitions)]
 #![allow(clippy::missing_safety_doc)]
 
-pub use arrow;
 use adora_arrow_convert::{ArrowData, IntoArrow};
+pub use arrow;
 pub use safer_ffi;
 
 use arrow::{

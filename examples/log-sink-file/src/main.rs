@@ -25,7 +25,11 @@ fn main() -> Result<()> {
 
     while let Some(event) = events.recv() {
         match event {
-            Event::Input { id: _, metadata: _, data } => {
+            Event::Input {
+                id: _,
+                metadata: _,
+                data,
+            } => {
                 let log = match adora_log_utils::parse_log_from_arrow(&data) {
                     Ok(log) => log,
                     Err(e) => {
@@ -35,7 +39,8 @@ fn main() -> Result<()> {
                 };
 
                 let line = format!("{}\n", adora_log_utils::format_json(&log));
-                writer.write_all(line.as_bytes())
+                writer
+                    .write_all(line.as_bytes())
                     .wrap_err("failed to write to log file")?;
 
                 count += 1;

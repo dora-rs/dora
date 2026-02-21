@@ -1,10 +1,7 @@
 use std::{
     collections::BTreeMap,
     io::ErrorKind,
-    sync::{
-        Arc,
-        atomic::AtomicU64,
-    },
+    sync::{Arc, atomic::AtomicU64},
 };
 
 use adora_core::{config::DataId, uhlc::HLC};

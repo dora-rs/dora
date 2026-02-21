@@ -1,7 +1,7 @@
 use crate::{
     events::Event,
     log_subscriber::LogSubscriber,
-    run::{spawn_dataflow, SpawnedDataflow},
+    run::{SpawnedDataflow, spawn_dataflow},
     state::{
         ArchivedDataflow, CachedResult, DaemonConnection, DaemonConnections, RunningBuild,
         RunningDataflow,

@@ -189,7 +189,11 @@ fn parse_dependencies(path: PathBuf) -> Result<BTreeSet<String>> {
     let mut buf = Vec::new();
     loop {
         match reader.read_event_into(&mut buf) {
-            Err(e) => anyhow::bail!("XML parse error at position {}: {:?}", reader.buffer_position(), e),
+            Err(e) => anyhow::bail!(
+                "XML parse error at position {}: {:?}",
+                reader.buffer_position(),
+                e
+            ),
             Ok(Event::Eof) => break, // Reached the end of file
 
             // Check for the start of any dependency tag

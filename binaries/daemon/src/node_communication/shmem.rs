@@ -1,9 +1,6 @@
 use std::{
     collections::BTreeMap,
-    sync::{
-        Arc,
-        atomic::AtomicU64,
-    },
+    sync::{Arc, atomic::AtomicU64},
 };
 
 use super::{Connection, Listener};

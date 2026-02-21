@@ -1,6 +1,6 @@
 use adora_message::common::{LogLevel, LogLevelOrStdout, LogMessage};
 use chrono::{DateTime, Utc};
-use eyre::{bail, Context, Result};
+use eyre::{Context, Result, bail};
 
 /// Maximum size of a single log JSON string (64 KB).
 const MAX_LOG_JSON_BYTES: usize = 64 * 1024;
@@ -42,10 +42,11 @@ pub fn merge_by_timestamp(streams: Vec<Vec<LogMessage>>) -> Vec<LogMessage> {
 ///
 /// Uses the same filtering logic as the daemon: a message passes if its
 /// level is at least as severe as `min_level`.
-pub fn filter_by_level<'a>(logs: &'a [LogMessage], min_level: &LogLevelOrStdout) -> Vec<&'a LogMessage> {
-    logs.iter()
-        .filter(|m| m.level.passes(min_level))
-        .collect()
+pub fn filter_by_level<'a>(
+    logs: &'a [LogMessage],
+    min_level: &LogLevelOrStdout,
+) -> Vec<&'a LogMessage> {
+    logs.iter().filter(|m| m.level.passes(min_level)).collect()
 }
 
 /// Format a log entry as a JSON string (one line, no trailing newline).
@@ -146,18 +147,10 @@ mod tests {
         let early = now - chrono::Duration::seconds(10);
         let late = now + chrono::Duration::seconds(10);
 
-        let mut log1 = make_log(
-            LogLevelOrStdout::LogLevel(LogLevel::Info),
-            "late",
-            "a",
-        );
+        let mut log1 = make_log(LogLevelOrStdout::LogLevel(LogLevel::Info), "late", "a");
         log1.timestamp = late;
 
-        let mut log2 = make_log(
-            LogLevelOrStdout::LogLevel(LogLevel::Info),
-            "early",
-            "b",
-        );
+        let mut log2 = make_log(LogLevelOrStdout::LogLevel(LogLevel::Info), "early", "b");
         log2.timestamp = early;
 
         let merged = merge_by_timestamp(vec![vec![log1], vec![log2]]);
@@ -167,21 +160,9 @@ mod tests {
 
     #[test]
     fn filter_by_level_filters_correctly() {
-        let error = make_log(
-            LogLevelOrStdout::LogLevel(LogLevel::Error),
-            "err",
-            "a",
-        );
-        let info = make_log(
-            LogLevelOrStdout::LogLevel(LogLevel::Info),
-            "info",
-            "b",
-        );
-        let debug = make_log(
-            LogLevelOrStdout::LogLevel(LogLevel::Debug),
-            "dbg",
-            "c",
-        );
+        let error = make_log(LogLevelOrStdout::LogLevel(LogLevel::Error), "err", "a");
+        let info = make_log(LogLevelOrStdout::LogLevel(LogLevel::Info), "info", "b");
+        let debug = make_log(LogLevelOrStdout::LogLevel(LogLevel::Debug), "dbg", "c");
 
         let logs = vec![error, info, debug];
         let min = LogLevelOrStdout::LogLevel(LogLevel::Info);
@@ -227,11 +208,7 @@ mod tests {
 
     #[test]
     fn format_json_roundtrip() {
-        let log = make_log(
-            LogLevelOrStdout::LogLevel(LogLevel::Info),
-            "test",
-            "node1",
-        );
+        let log = make_log(LogLevelOrStdout::LogLevel(LogLevel::Info), "test", "node1");
         let json = format_json(&log);
         let parsed: LogMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.message, "test");

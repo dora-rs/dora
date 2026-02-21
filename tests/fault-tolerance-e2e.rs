@@ -33,8 +33,8 @@ fn ensure_nodes_built() {
 async fn restart_recovers_from_failure() {
     ensure_nodes_built();
 
-    let dataflow_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/dataflows/restart-recovers.yml");
+    let dataflow_path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/dataflows/restart-recovers.yml");
 
     let result = Daemon::run_dataflow(
         &dataflow_path,
@@ -49,16 +49,17 @@ async fn restart_recovers_from_failure() {
     .await;
 
     let dr = result.expect("dataflow should complete without error");
-    eprintln!("dataflow completed with {} node results", dr.node_results.len());
+    eprintln!(
+        "dataflow completed with {} node results",
+        dr.node_results.len()
+    );
     for (id, r) in &dr.node_results {
         eprintln!("  {id}: {r:?}");
     }
 
     // The status-node should have an error result (it panics on "fail" timer),
     // proving it crashed and the restart mechanism was exercised.
-    let status_result = dr
-        .node_results
-        .get(&"rust-status-node".to_string().into());
+    let status_result = dr.node_results.get(&"rust-status-node".to_string().into());
     assert!(
         status_result.is_some(),
         "rust-status-node should be in node_results"
@@ -77,8 +78,8 @@ async fn restart_recovers_from_failure() {
 async fn max_restarts_limit_reached() {
     ensure_nodes_built();
 
-    let dataflow_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/dataflows/max-restarts-exceeded.yml");
+    let dataflow_path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/dataflows/max-restarts-exceeded.yml");
 
     let result = Daemon::run_dataflow(
         &dataflow_path,
@@ -94,16 +95,17 @@ async fn max_restarts_limit_reached() {
 
     // The dataflow should complete (the node exhausts its restart budget).
     let dr = result.expect("dataflow should complete without error");
-    eprintln!("dataflow completed with {} node results", dr.node_results.len());
+    eprintln!(
+        "dataflow completed with {} node results",
+        dr.node_results.len()
+    );
     for (id, r) in &dr.node_results {
         eprintln!("  {id}: {r:?}");
     }
 
     // The failing node must have an error result — it always panics and
     // exhausts its max_restarts budget.
-    let status_result = dr
-        .node_results
-        .get(&"rust-status-node".to_string().into());
+    let status_result = dr.node_results.get(&"rust-status-node".to_string().into());
     assert!(
         status_result.is_some(),
         "rust-status-node should be in node_results"
@@ -123,8 +125,8 @@ async fn max_restarts_limit_reached() {
 async fn input_timeout_closes_stale_input() {
     ensure_nodes_built();
 
-    let dataflow_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/dataflows/input-timeout.yml");
+    let dataflow_path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/dataflows/input-timeout.yml");
 
     let result = Daemon::run_dataflow(
         &dataflow_path,
@@ -140,7 +142,10 @@ async fn input_timeout_closes_stale_input() {
 
     match &result {
         Ok(dr) => {
-            eprintln!("dataflow completed with {} node results", dr.node_results.len());
+            eprintln!(
+                "dataflow completed with {} node results",
+                dr.node_results.len()
+            );
             for (id, r) in &dr.node_results {
                 eprintln!("  {id}: {r:?}");
             }

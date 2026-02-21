@@ -1,5 +1,5 @@
-use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 use adora_arrow_convert::{ArrowData, IntoArrow};
+use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 use half::f16;
 use std::sync::Arc;
 

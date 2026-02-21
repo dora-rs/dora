@@ -2,13 +2,13 @@ use std::{any::Any, collections::BTreeMap, vec};
 
 use crate::ffi::MetadataValueType;
 
-use chrono::DateTime;
 use adora_node_api::{
     self, Event, EventStream, Metadata as AdoraMetadata,
     MetadataParameters as AdoraMetadataParameters, Parameter as AdoraParameter,
     arrow::array::{AsArray, UInt8Array},
     merged::{MergeExternal, MergedEvent},
 };
+use chrono::DateTime;
 use eyre::{Result as EyreResult, bail, eyre};
 use serde::Serialize;
 use serde_json::Value as JsonValue;

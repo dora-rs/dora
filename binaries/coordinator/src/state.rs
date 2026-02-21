@@ -1,3 +1,4 @@
+use crate::log_subscriber::LogSubscriber;
 use adora_core::config::NodeId;
 use adora_message::{
     common::DaemonId,
@@ -5,7 +6,6 @@ use adora_message::{
     daemon_to_coordinator::NodeMetrics,
     descriptor::{Descriptor, ResolvedNode},
 };
-use crate::log_subscriber::LogSubscriber;
 use eyre::eyre;
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;

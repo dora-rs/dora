@@ -1,12 +1,12 @@
 use crate::command::{Executable, default_tracing};
 use crate::{LOCALHOST, common::connect_to_coordinator};
-use communication_layer_request_reply::TcpRequestReplyConnection;
 use adora_core::descriptor::DescriptorExt;
 use adora_core::{descriptor::Descriptor, topics::ADORA_COORDINATOR_PORT_CONTROL_DEFAULT};
 use adora_message::{
     cli_to_coordinator::ControlRequest,
     coordinator_to_cli::{ControlRequestReply, DataflowStatus},
 };
+use communication_layer_request_reply::TcpRequestReplyConnection;
 use eyre::{Context, bail};
 use std::{
     io::{IsTerminal, Write},

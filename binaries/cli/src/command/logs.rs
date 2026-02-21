@@ -57,7 +57,12 @@ pub struct LogsArgs {
     #[arg(value_parser = parse_duration_str)]
     pub until: Option<std::time::Duration>,
     /// Minimum log level to display (error, warn, info, debug, trace, stdout)
-    #[clap(long, value_name = "LEVEL", default_value = "stdout", env = "ADORA_LOG_LEVEL")]
+    #[clap(
+        long,
+        value_name = "LEVEL",
+        default_value = "stdout",
+        env = "ADORA_LOG_LEVEL"
+    )]
     #[arg(value_parser = parse_log_level_str)]
     pub level: adora_core::build::LogLevelOrStdout,
     /// Output format for log messages
@@ -352,16 +357,10 @@ fn find_node_log_files(dataflow_dir: &Path, node: &NodeId) -> Result<Vec<PathBuf
         .wrap_err_with(|| format!("failed to read {}", dataflow_dir.display()))?
     {
         let entry = entry?;
-        let name = entry
-            .file_name()
-            .to_str()
-            .unwrap_or_default()
-            .to_string();
+        let name = entry.file_name().to_str().unwrap_or_default().to_string();
         // Match: log_<node>.jsonl, log_<node>.1.jsonl, log_<node>.txt
         let prefix = format!("log_{node_str}");
-        if name.starts_with(&prefix)
-            && (name.ends_with(".jsonl") || name.ends_with(".txt"))
-        {
+        if name.starts_with(&prefix) && (name.ends_with(".jsonl") || name.ends_with(".txt")) {
             files.push(entry.path());
         }
     }
@@ -497,7 +496,12 @@ mod tests {
     use adora_message::common::LogLevelOrStdout;
     use std::path::PathBuf;
 
-    fn make_msg(message: &str, node: Option<&str>, target: Option<&str>, ts: DateTime<Utc>) -> LogMessage {
+    fn make_msg(
+        message: &str,
+        node: Option<&str>,
+        target: Option<&str>,
+        ts: DateTime<Utc>,
+    ) -> LogMessage {
         LogMessage {
             build_id: None,
             dataflow_id: None,
@@ -556,7 +560,8 @@ mod tests {
             make_msg("recent", None, None, recent),
         ];
         // since=1h -> only messages from last 1 hour
-        let result = apply_time_filters(msgs, Some(std::time::Duration::from_secs(3600)), None, now);
+        let result =
+            apply_time_filters(msgs, Some(std::time::Duration::from_secs(3600)), None, now);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].message, "recent");
     }
@@ -571,7 +576,8 @@ mod tests {
             make_msg("recent", None, None, recent),
         ];
         // until=1h -> only messages older than 1 hour
-        let result = apply_time_filters(msgs, None, Some(std::time::Duration::from_secs(3600)), now);
+        let result =
+            apply_time_filters(msgs, None, Some(std::time::Duration::from_secs(3600)), now);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].message, "old");
     }
@@ -603,7 +609,10 @@ mod tests {
     #[test]
     fn grep_none_passes_all() {
         let now = Utc::now();
-        let msgs = vec![make_msg("a", None, None, now), make_msg("b", None, None, now)];
+        let msgs = vec![
+            make_msg("a", None, None, now),
+            make_msg("b", None, None, now),
+        ];
         assert_eq!(apply_grep(msgs, None).len(), 2);
     }
 
@@ -640,14 +649,19 @@ mod tests {
     #[test]
     fn tail_none_returns_all() {
         let now = Utc::now();
-        let msgs = vec![make_msg("a", None, None, now), make_msg("b", None, None, now)];
+        let msgs = vec![
+            make_msg("a", None, None, now),
+            make_msg("b", None, None, now),
+        ];
         assert_eq!(apply_tail(msgs, None).len(), 2);
     }
 
     #[test]
     fn tail_3_on_5_returns_last_3() {
         let now = Utc::now();
-        let msgs: Vec<_> = (0..5).map(|i| make_msg(&i.to_string(), None, None, now)).collect();
+        let msgs: Vec<_> = (0..5)
+            .map(|i| make_msg(&i.to_string(), None, None, now))
+            .collect();
         let result = apply_tail(msgs, Some(3));
         assert_eq!(result.len(), 3);
         assert_eq!(result[0].message, "2");
@@ -702,11 +716,9 @@ mod tests {
 /// Follow all nodes' logs via coordinator's LogSubscribe (dataflow-level).
 fn follow_all_nodes_coordinator(args: &LogsArgs) -> Result<()> {
     let config = build_log_config(args)?;
-    let mut session =
-        connect_to_coordinator((args.coordinator_addr, args.coordinator_port).into())
-            .wrap_err("failed to connect to adora coordinator")?;
-    let uuid =
-        resolve_dataflow_identifier_interactive(&mut *session, args.dataflow.as_deref())?;
+    let mut session = connect_to_coordinator((args.coordinator_addr, args.coordinator_port).into())
+        .wrap_err("failed to connect to adora coordinator")?;
+    let uuid = resolve_dataflow_identifier_interactive(&mut *session, args.dataflow.as_deref())?;
 
     stream_logs_from_coordinator(
         uuid,
@@ -742,11 +754,8 @@ fn stream_logs_from_coordinator(
     let until_threshold =
         until.and_then(|d| chrono::TimeDelta::from_std(d).ok().map(|td| now - td));
 
-    let stream = TcpStream::connect_timeout(
-        &coordinator_addr,
-        Duration::from_secs(10),
-    )
-    .wrap_err("failed to connect to adora coordinator")?;
+    let stream = TcpStream::connect_timeout(&coordinator_addr, Duration::from_secs(10))
+        .wrap_err("failed to connect to adora coordinator")?;
     stream
         .set_read_timeout(Some(Duration::from_secs(30)))
         .wrap_err("failed to set read timeout")?;
@@ -787,8 +796,9 @@ fn stream_logs_from_coordinator(
                     }
                 }
             }
-            Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut
-                || e.kind() == std::io::ErrorKind::WouldBlock =>
+            Err(ref e)
+                if e.kind() == std::io::ErrorKind::TimedOut
+                    || e.kind() == std::io::ErrorKind::WouldBlock =>
             {
                 // Read timeout: retry to allow Ctrl+C to interrupt
                 continue;

@@ -4,12 +4,12 @@ use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use tokio::sync::Mutex;
 
-use arrow::pyarrow::{FromPyArrow, ToPyArrow};
 use adora_node_api::adora_core::config::NodeId;
 use adora_node_api::merged::{MergeExternalSend, MergedEvent};
-use adora_node_api::{DataflowId, AdoraNode, EventStream, TryRecvError, init_tracing};
+use adora_node_api::{AdoraNode, DataflowId, EventStream, TryRecvError, init_tracing};
 use adora_operator_api_python::{DelayedCleanup, NodeCleanupHandle, PyEvent, pydict_to_metadata};
 use adora_ros2_bridge_python::Ros2Subscription;
+use arrow::pyarrow::{FromPyArrow, ToPyArrow};
 use eyre::{Context, ContextCompat};
 
 use futures::{Stream, StreamExt};

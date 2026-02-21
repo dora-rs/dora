@@ -12,9 +12,6 @@ use self::{
     control_channel::ControlChannel,
     drop_stream::DropStream,
 };
-use aligned_vec::{AVec, ConstAlign};
-use arrow::array::Array;
-use colored::Colorize;
 use adora_core::{
     config::{DataId, NodeId, NodeRunConfig},
     descriptor::Descriptor,
@@ -28,6 +25,9 @@ use adora_message::{
     metadata::{ArrowTypeInfo, Metadata, MetadataParameters},
     node_to_daemon::{DaemonRequest, DataMessage, DropToken, Timestamped},
 };
+use aligned_vec::{AVec, ConstAlign};
+use arrow::array::Array;
+use colored::Colorize;
 use eyre::{WrapErr, bail};
 use is_terminal::IsTerminal;
 use shared_memory_extended::{Shmem, ShmemConf};
@@ -146,7 +146,7 @@ impl AdoraNode {
             Err(std::env::VarError::NotUnicode(_)) => {
                 return Err(NodeError::Init(
                     "ADORA_NODE_CONFIG env variable is not valid unicode".into(),
-                ))
+                ));
             }
             Err(std::env::VarError::NotPresent) => {} // continue trying other init methods
         };
@@ -160,7 +160,7 @@ impl AdoraNode {
                     Err(std::env::VarError::NotUnicode(_)) => {
                         return Err(NodeError::Init(
                             "ADORA_TEST_WRITE_OUTPUTS_TO env variable is not valid unicode".into(),
-                        ))
+                        ));
                     }
                     Err(std::env::VarError::NotPresent) => {
                         input_file.with_file_name("outputs.jsonl")
@@ -180,7 +180,7 @@ impl AdoraNode {
             Err(std::env::VarError::NotUnicode(_)) => {
                 return Err(NodeError::Init(
                     "ADORA_TEST_WITH_INPUTS env variable is not valid unicode".into(),
-                ))
+                ));
             }
             Err(std::env::VarError::NotPresent) => {} // continue trying other init methods
         }
@@ -235,11 +235,9 @@ impl AdoraNode {
                 let capped: String = error.chars().take(512).collect();
                 return Err(NodeError::Init(format!(
                     "failed to get node config from daemon: {capped}"
-                )))
+                )));
             }
-            _ => {
-                return Err(NodeError::Init("unexpected reply from daemon".into()))
-            }
+            _ => return Err(NodeError::Init("unexpected reply from daemon".into())),
         }
     }
 
@@ -475,7 +473,7 @@ impl AdoraNode {
                 None => {
                     return Err(NodeError::Init(
                         "no daemon communication method specified".into(),
-                    ))
+                    ));
                 }
             },
         };
@@ -926,7 +924,7 @@ impl AdoraNode {
                     "failed to parse dataflow descriptor: {err}\n\n\
                     This might be caused by mismatched version numbers of adora \
                     daemon and the adora node API"
-                )))
+                )));
             }
         }
     }

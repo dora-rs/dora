@@ -1,6 +1,3 @@
-use aligned_vec::{AVec, ConstAlign};
-use coordinator::CoordinatorEvent;
-use crossbeam::queue::ArrayQueue;
 use adora_core::{
     build::{self, BuildInfo, GitManager, PrevGitSource},
     config::{DataId, Input, InputMapping, NodeId, NodeRunConfig, OperatorId},
@@ -32,6 +29,9 @@ use adora_message::{
     node_to_daemon::{DynamicNodeEvent, Timestamped},
 };
 use adora_node_api::{Parameter, arrow::datatypes::DataType};
+use aligned_vec::{AVec, ConstAlign};
+use coordinator::CoordinatorEvent;
+use crossbeam::queue::ArrayQueue;
 use eyre::{Context, ContextCompat, Result, bail, eyre};
 use futures::{FutureExt, TryFutureExt, future, stream};
 use futures_concurrency::stream::Merge;
@@ -431,14 +431,13 @@ impl Daemon {
         });
 
         let health_check_clock = daemon.clock.clone();
-        let health_check_interval =
-            tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(
-                health_check_interval_duration.unwrap_or(Duration::from_secs(5)),
-            ))
-            .map(|_| Timestamped {
-                inner: Event::NodeHealthCheckInterval,
-                timestamp: health_check_clock.new_timestamp(),
-            });
+        let health_check_interval = tokio_stream::wrappers::IntervalStream::new(
+            tokio::time::interval(health_check_interval_duration.unwrap_or(Duration::from_secs(5))),
+        )
+        .map(|_| Timestamped {
+            inner: Event::NodeHealthCheckInterval,
+            timestamp: health_check_clock.new_timestamp(),
+        });
 
         let events = (
             external_events,
@@ -514,9 +513,16 @@ impl Daemon {
                     if self.ft_stats.any_nonzero() {
                         tracing::info!(
                             restarts = self.ft_stats.restarts.load(atomic::Ordering::Relaxed),
-                            health_kills = self.ft_stats.health_check_kills.load(atomic::Ordering::Relaxed),
-                            input_timeouts = self.ft_stats.input_timeouts.load(atomic::Ordering::Relaxed),
-                            cb_recoveries = self.ft_stats.circuit_breaker_recoveries.load(atomic::Ordering::Relaxed),
+                            health_kills = self
+                                .ft_stats
+                                .health_check_kills
+                                .load(atomic::Ordering::Relaxed),
+                            input_timeouts =
+                                self.ft_stats.input_timeouts.load(atomic::Ordering::Relaxed),
+                            cb_recoveries = self
+                                .ft_stats
+                                .circuit_breaker_recoveries
+                                .load(atomic::Ordering::Relaxed),
                             "fault tolerance stats",
                         );
                     }
@@ -2516,9 +2522,7 @@ impl Daemon {
                             .map(|(receiver_id, _)| receiver_id.clone())
                             .collect();
                         for receiver_id in &downstream {
-                            if let Some(channel) =
-                                dataflow.subscribe_channels.get(receiver_id)
-                            {
+                            if let Some(channel) = dataflow.subscribe_channels.get(receiver_id) {
                                 if send_with_timestamp(
                                     channel,
                                     NodeEvent::NodeRestarted {
@@ -2910,7 +2914,10 @@ impl FaultToleranceStats {
         self.restarts.load(atomic::Ordering::Relaxed) > 0
             || self.health_check_kills.load(atomic::Ordering::Relaxed) > 0
             || self.input_timeouts.load(atomic::Ordering::Relaxed) > 0
-            || self.circuit_breaker_recoveries.load(atomic::Ordering::Relaxed) > 0
+            || self
+                .circuit_breaker_recoveries
+                .load(atomic::Ordering::Relaxed)
+                > 0
     }
 }
 
@@ -3594,9 +3601,7 @@ mod fault_tolerance_tests {
         HLC::default()
     }
 
-    fn drain_events(
-        rx: &mut mpsc::UnboundedReceiver<Timestamped<NodeEvent>>,
-    ) -> Vec<NodeEvent> {
+    fn drain_events(rx: &mut mpsc::UnboundedReceiver<Timestamped<NodeEvent>>) -> Vec<NodeEvent> {
         let mut events = Vec::new();
         while let Ok(timestamped) = rx.try_recv() {
             events.push(timestamped.inner);
@@ -3698,10 +3703,8 @@ mod fault_tolerance_tests {
             .entry(node_a.clone())
             .or_default()
             .insert(input_x.clone());
-        df.broken_inputs.insert(
-            (node_a.clone(), input_y.clone()),
-            Duration::from_secs(10),
-        );
+        df.broken_inputs
+            .insert((node_a.clone(), input_y.clone()), Duration::from_secs(10));
 
         let running = test_running_node();
         let disable_restart = running.disable_restart.clone();
@@ -3730,10 +3733,8 @@ mod fault_tolerance_tests {
         let input_x: DataId = "input_x".to_string().into();
 
         // input_x is broken (not in open_inputs)
-        df.broken_inputs.insert(
-            (node_a.clone(), input_x.clone()),
-            Duration::from_secs(10),
-        );
+        df.broken_inputs
+            .insert((node_a.clone(), input_x.clone()), Duration::from_secs(10));
 
         let running = test_running_node();
         let disable_restart = running.disable_restart.clone();
@@ -3746,7 +3747,10 @@ mod fault_tolerance_tests {
         close_input(&mut df, &node_a, &input_x, &clock);
 
         // broken_inputs cleaned up
-        assert!(!df.broken_inputs.contains_key(&(node_a.clone(), input_x.clone())));
+        assert!(
+            !df.broken_inputs
+                .contains_key(&(node_a.clone(), input_x.clone()))
+        );
 
         let events = drain_events(&mut rx);
         // No InputClosed (was already sent when it broke), just AllInputsClosed
@@ -3770,10 +3774,8 @@ mod fault_tolerance_tests {
             .insert(input_x.clone());
 
         // Pre-populate broken_inputs (as check_input_timeouts does before calling break_input)
-        df.broken_inputs.insert(
-            (node_a.clone(), input_x.clone()),
-            Duration::from_secs(5),
-        );
+        df.broken_inputs
+            .insert((node_a.clone(), input_x.clone()), Duration::from_secs(5));
 
         let (tx, mut rx) = mpsc::unbounded_channel();
         df.subscribe_channels.insert(node_a.clone(), tx);
@@ -3804,10 +3806,8 @@ mod fault_tolerance_tests {
             .insert(input_x.clone());
 
         // Caller inserts into broken_inputs before calling break_input
-        df.broken_inputs.insert(
-            (node_a.clone(), input_x.clone()),
-            Duration::from_secs(5),
-        );
+        df.broken_inputs
+            .insert((node_a.clone(), input_x.clone()), Duration::from_secs(5));
 
         let running = test_running_node();
         let disable_restart = running.disable_restart.clone();
@@ -3870,13 +3870,19 @@ mod fault_tolerance_tests {
         assert!(result.is_ok());
 
         // Assert: broken input recovered
-        assert!(!df.broken_inputs.contains_key(&(receiver.clone(), input.clone())));
+        assert!(
+            !df.broken_inputs
+                .contains_key(&(receiver.clone(), input.clone()))
+        );
 
         // Assert: re-added to open_inputs
         assert!(df.open_inputs(&receiver).contains(&input));
 
         // Assert: deadline recreated
-        assert!(df.input_deadlines.contains_key(&(receiver.clone(), input.clone())));
+        assert!(
+            df.input_deadlines
+                .contains_key(&(receiver.clone(), input.clone()))
+        );
         let deadline = &df.input_deadlines[&(receiver.clone(), input.clone())];
         assert_eq!(deadline.timeout, timeout);
 
@@ -3934,7 +3940,10 @@ mod fault_tolerance_tests {
 
         // Verify broken state
         assert!(!df.open_inputs(&receiver).contains(&input));
-        assert!(df.broken_inputs.contains_key(&(receiver.clone(), input.clone())));
+        assert!(
+            df.broken_inputs
+                .contains_key(&(receiver.clone(), input.clone()))
+        );
         assert!(!disable_restart.load(atomic::Ordering::Acquire)); // deferred
 
         let events = drain_events(&mut rx);
@@ -3955,22 +3964,21 @@ mod fault_tolerance_tests {
             },
         );
 
-        let result = send_output_to_local_receivers(
-            sender,
-            output,
-            &mut df,
-            &metadata,
-            None,
-            &clock,
-            None,
-        )
-        .await;
+        let result =
+            send_output_to_local_receivers(sender, output, &mut df, &metadata, None, &clock, None)
+                .await;
         assert!(result.is_ok());
 
         // Verify recovered state
         assert!(df.open_inputs(&receiver).contains(&input));
-        assert!(!df.broken_inputs.contains_key(&(receiver.clone(), input.clone())));
-        assert!(df.input_deadlines.contains_key(&(receiver.clone(), input.clone())));
+        assert!(
+            !df.broken_inputs
+                .contains_key(&(receiver.clone(), input.clone()))
+        );
+        assert!(
+            df.input_deadlines
+                .contains_key(&(receiver.clone(), input.clone()))
+        );
         assert!(!disable_restart.load(atomic::Ordering::Acquire));
 
         let events = drain_events(&mut rx);
