@@ -37,6 +37,8 @@ pub struct ListArgs {
     /// Sort by field (memory, cpu)
     #[clap(long, value_name = "FIELD")]
     pub sort_by: Option<String>,
+    #[clap(long)]
+    pub clean: bool,
 }
 
 impl Executable for ListArgs {
@@ -47,7 +49,15 @@ impl Executable for ListArgs {
             .await
             .wrap_err("failed to connect to dora coordinator")?;
 
-        list(&client, self.format, self.status, self.name, self.sort_by).await
+        list(
+            &client,
+            self.format,
+            self.status,
+            self.name,
+            self.sort_by,
+            self.clean,
+        )
+        .await
     }
 }
 
@@ -74,8 +84,17 @@ async fn list(
     status_filter: Option<String>,
     name_filter: Option<String>,
     sort_by: Option<String>,
+    clean: bool,
 ) -> Result<(), eyre::ErrReport> {
-    let list = query_running_dataflows(client).await?;
+    let list = if !clean {
+        query_running_dataflows(client).await
+    } else {
+        rpc(
+            "clean finished dataflows",
+            client.clean(tarpc::context::current()),
+        )
+        .await
+    }?;
 
     // Get node information via tarpc
     let node_infos = rpc(
