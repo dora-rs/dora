@@ -16,6 +16,8 @@ pub struct SequenceSerializeWrapper<'a> {
     pub item_type: &'a NestableType,
     pub column: &'a ArrayRef,
     pub type_info: &'a TypeInfo<'a>,
+    /// Maximum number of elements (for BoundedSequence). None = unbounded.
+    pub max_size: Option<usize>,
 }
 
 impl serde::Serialize for SequenceSerializeWrapper<'_> {
@@ -61,6 +63,16 @@ impl serde::Serialize for SequenceSerializeWrapper<'_> {
                 self.column
             )));
         };
+        // Enforce BoundedSequence max_size
+        if let Some(max) = self.max_size {
+            if entry.len() > max {
+                return Err(error(format!(
+                    "sequence length {} exceeds BoundedSequence max_size {}",
+                    entry.len(),
+                    max
+                )));
+            }
+        }
         match &self.item_type {
             NestableType::BasicType(t) => match t {
                 BasicType::I8 => BasicSequence {

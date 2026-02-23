@@ -303,10 +303,7 @@ fn parse_byte_size(s: &str) -> eyre::Result<u64> {
                 .map_err(|_| eyre!("invalid byte size: '{s}'"));
         }
     };
-    let num: f64 = num_str
-        .trim()
-        .parse()
-        .map_err(|_| eyre!("invalid byte size number: '{num_str}'"))?;
+    let num_str = num_str.trim();
     let multiplier: u64 = match unit.as_str() {
         "B" => 1,
         "KB" | "K" => 1024,
@@ -314,6 +311,13 @@ fn parse_byte_size(s: &str) -> eyre::Result<u64> {
         "GB" | "G" => 1024 * 1024 * 1024,
         _ => bail!("unknown byte size unit: '{unit}', expected B, KB, MB, or GB"),
     };
+    // Use integer parse when possible to avoid float rounding
+    if let Ok(num) = num_str.parse::<u64>() {
+        return Ok(num * multiplier);
+    }
+    let num: f64 = num_str
+        .parse()
+        .map_err(|_| eyre!("invalid byte size number: '{num_str}'"))?;
     Ok((num * multiplier as f64) as u64)
 }
 
@@ -450,6 +454,7 @@ fn validate_ros2_config(
     }
 
     if let Some(topic) = &config.topic {
+        validate_ros2_name(node_id, "topic", topic)?;
         let message_type = config.message_type.as_ref().ok_or_else(|| {
             eyre!("node `{node_id}`: ros2 config with `topic` requires `message_type`")
         })?;
@@ -471,9 +476,16 @@ fn validate_ros2_config(
         if topics.is_empty() {
             bail!("node `{node_id}`: ros2 `topics` list must not be empty");
         }
+        if topics.len() > 64 {
+            bail!(
+                "node `{node_id}`: ros2 `topics` list has {} entries, maximum is 64",
+                topics.len()
+            );
+        }
         let mut has_subscribe = false;
         let mut has_publish = false;
         for t in topics {
+            validate_ros2_name(node_id, "topic", &t.topic)?;
             validate_ros2_type_format(node_id, &t.topic, &t.message_type)?;
             match &t.direction {
                 Ros2Direction::Subscribe => has_subscribe = true,
@@ -493,6 +505,7 @@ fn validate_ros2_config(
             );
         }
     } else if let Some(service) = &config.service {
+        validate_ros2_name(node_id, "service", service)?;
         let service_type = config.service_type.as_ref().ok_or_else(|| {
             eyre!("node `{node_id}`: ros2 config with `service` requires `service_type`")
         })?;
@@ -527,6 +540,7 @@ fn validate_ros2_config(
             }
         }
     } else if let Some(action) = &config.action {
+        validate_ros2_name(node_id, "action", action)?;
         let action_type = config.action_type.as_ref().ok_or_else(|| {
             eyre!("node `{node_id}`: ros2 config with `action` requires `action_type`")
         })?;
@@ -555,6 +569,77 @@ fn validate_ros2_config(
         }
     }
 
+    // Validate QoS config
+    validate_ros2_qos(node_id, &config.qos)?;
+    if let Some(topics) = &config.topics {
+        for t in topics {
+            if let Some(qos) = &t.qos {
+                validate_ros2_qos(node_id, qos)?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_ros2_qos(
+    node_id: &NodeId,
+    qos: &adora_message::descriptor::Ros2QosConfig,
+) -> eyre::Result<()> {
+    if let Some(d) = &qos.durability {
+        match d.as_str() {
+            "volatile" | "transient_local" => {}
+            _ => bail!(
+                "node `{node_id}`: invalid QoS durability `{d}`, \
+                 expected \"volatile\" or \"transient_local\""
+            ),
+        }
+    }
+    if let Some(l) = &qos.liveliness {
+        match l.as_str() {
+            "automatic" | "manual_by_participant" | "manual_by_topic" => {}
+            _ => bail!(
+                "node `{node_id}`: invalid QoS liveliness `{l}`, \
+                 expected \"automatic\", \"manual_by_participant\", or \"manual_by_topic\""
+            ),
+        }
+    }
+    if let Some(depth) = qos.keep_last {
+        if depth < 1 || depth > 10_000 {
+            bail!(
+                "node `{node_id}`: QoS keep_last depth {depth} out of range, \
+                 must be between 1 and 10000"
+            );
+        }
+    }
+    if let Some(t) = qos.max_blocking_time {
+        if !t.is_finite() || t < 0.0 {
+            bail!("node `{node_id}`: QoS max_blocking_time must be a finite non-negative number");
+        }
+    }
+    if let Some(t) = qos.lease_duration {
+        if !t.is_finite() || t < 0.0 {
+            bail!("node `{node_id}`: QoS lease_duration must be a finite non-negative number");
+        }
+    }
+    Ok(())
+}
+
+/// Validate a ROS2 name (topic, service, or action) contains only valid characters.
+/// ROS2 names allow: ASCII alphanumeric, underscore, and forward slash.
+fn validate_ros2_name(node_id: &NodeId, field: &str, name: &str) -> eyre::Result<()> {
+    if name.is_empty() {
+        bail!("node `{node_id}`: `{field}` must not be empty");
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '/')
+    {
+        bail!(
+            "node `{node_id}`: invalid `{field}` name `{name}`, \
+             only ASCII alphanumeric, underscore, and '/' characters allowed"
+        );
+    }
     Ok(())
 }
 
@@ -859,5 +944,68 @@ mod tests {
         let err = validate_ros2_config(&NodeId::from("n".to_owned()), &config, &inputs, &outputs)
             .unwrap_err();
         assert!(err.to_string().contains("alphanumeric"));
+    }
+
+    #[test]
+    fn validate_qos_bad_durability() {
+        let config = Ros2BridgeConfig {
+            service: Some("/svc".into()),
+            service_type: Some("a/B".into()),
+            role: Some(Ros2Role::Client),
+            qos: adora_message::descriptor::Ros2QosConfig {
+                durability: Some("persistent".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut inputs = BTreeMap::new();
+        inputs.insert(DataId::from("request".to_owned()), dummy_input());
+        let mut outputs = BTreeSet::new();
+        outputs.insert(DataId::from("response".to_owned()));
+        let err = validate_ros2_config(&NodeId::from("n".to_owned()), &config, &inputs, &outputs)
+            .unwrap_err();
+        assert!(err.to_string().contains("durability"));
+    }
+
+    #[test]
+    fn validate_qos_keep_last_out_of_range() {
+        let config = Ros2BridgeConfig {
+            service: Some("/svc".into()),
+            service_type: Some("a/B".into()),
+            role: Some(Ros2Role::Client),
+            qos: adora_message::descriptor::Ros2QosConfig {
+                keep_last: Some(100_000),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut inputs = BTreeMap::new();
+        inputs.insert(DataId::from("request".to_owned()), dummy_input());
+        let mut outputs = BTreeSet::new();
+        outputs.insert(DataId::from("response".to_owned()));
+        let err = validate_ros2_config(&NodeId::from("n".to_owned()), &config, &inputs, &outputs)
+            .unwrap_err();
+        assert!(err.to_string().contains("keep_last"));
+    }
+
+    #[test]
+    fn validate_qos_negative_lease_duration() {
+        let config = Ros2BridgeConfig {
+            service: Some("/svc".into()),
+            service_type: Some("a/B".into()),
+            role: Some(Ros2Role::Client),
+            qos: adora_message::descriptor::Ros2QosConfig {
+                lease_duration: Some(-1.0),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut inputs = BTreeMap::new();
+        inputs.insert(DataId::from("request".to_owned()), dummy_input());
+        let mut outputs = BTreeSet::new();
+        outputs.insert(DataId::from("response".to_owned()));
+        let err = validate_ros2_config(&NodeId::from("n".to_owned()), &config, &inputs, &outputs)
+            .unwrap_err();
+        assert!(err.to_string().contains("lease_duration"));
     }
 }

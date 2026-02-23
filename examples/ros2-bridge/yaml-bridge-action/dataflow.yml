@@ -10,6 +10,10 @@
 #   - A ROS2 Fibonacci action server running, e.g.:
 #       ros2 run examples_rclcpp_action_server fibonacci_action_server
 #
+# Startup ordering: Start the ROS2 action server BEFORE running this
+# dataflow. The bridge does not have a wait_for_action_server mechanism,
+# so the first goal will time out if the server is not yet available.
+#
 # Usage:
 #   adora run dataflow.yml
 

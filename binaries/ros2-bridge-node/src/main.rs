@@ -19,7 +19,7 @@ use adora_node_api::{
 use adora_ros2_bridge::{ros2_client, rustdds};
 use adora_ros2_bridge_arrow::{
     BridgeActionType, BridgeMessage, BridgeServiceType, TypeInfo, TypeInfoGuard, TypedValue,
-    deserialize::StructDeserializer, set_deserialize_type_info,
+    deserialize::StructDeserializer,
 };
 use adora_ros2_bridge_msg_gen::types::Message;
 use arrow::array::{ArrayData, StructArray};
@@ -28,6 +28,9 @@ use futures::{StreamExt, task::SpawnExt};
 
 /// Maximum number of concurrent in-flight action goals.
 const MAX_CONCURRENT_GOALS: usize = 8;
+
+/// Maximum pending service requests before dropping new ones.
+const MAX_PENDING_REQUESTS: usize = 64;
 
 fn main() -> eyre::Result<()> {
     tracing_subscriber::fmt::init();
@@ -205,8 +208,14 @@ fn run_service_mode(
     }
 }
 
-/// Response timeout for service calls (30 seconds).
+/// Timeout for service responses (30 seconds).
 const SERVICE_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Timeout for action goal sends (30 seconds).
+const ACTION_GOAL_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Timeout for action result retrieval (5 minutes, actions can be long-running).
+const ACTION_RESULT_TIMEOUT: Duration = Duration::from_secs(300);
 
 fn run_service_client(
     client: ros2_client::Client<BridgeServiceType>,
@@ -287,6 +296,9 @@ fn run_service_server(
     let merged = adora_events.merge_external(Box::pin(request_stream));
 
     // Queue of pending request IDs, matched FIFO to handler responses.
+    // IMPORTANT: The handler node MUST respond in the same order as requests
+    // arrive. Out-of-order responses will be silently paired with the wrong
+    // ROS2 request ID.
     let mut pending_requests: VecDeque<ros2_client::service::RmwRequestId> = VecDeque::new();
 
     for event in futures::executor::block_on_stream(merged) {
@@ -310,6 +322,12 @@ fn run_service_server(
             MergedEvent::Adora(Event::Stop(_)) => break,
             MergedEvent::Adora(_) => {}
             MergedEvent::External((req_id, data)) => {
+                if pending_requests.len() >= MAX_PENDING_REQUESTS {
+                    tracing::warn!(
+                        "pending requests queue full ({MAX_PENDING_REQUESTS}), dropping request"
+                    );
+                    continue;
+                }
                 pending_requests.push_back(req_id);
                 node.send_output(
                     "request".into(),
@@ -381,6 +399,12 @@ fn run_action_mode(
                 )
                 .map_err(|e| eyre!("failed to create action client: {e:?}"))?;
 
+            // NOTE: ros2_client does not provide a wait_for_action_server API.
+            // The first goal send will time out (ACTION_GOAL_TIMEOUT) if the
+            // action server is not yet available. Start the action server
+            // before this dataflow for reliable operation.
+            tracing::info!("action client created, waiting for goals from Adora inputs");
+
             run_action_client(client, goal_type_info, result_type_info, feedback_type_info)
         }
         Ros2Role::Server => {
@@ -399,8 +423,12 @@ fn run_action_client(
     let client = Arc::new(client);
     let in_flight = Arc::new(AtomicUsize::new(0));
 
-    // Channel for feedback and result from background threads
-    let (tx, rx) = flume::bounded::<ActionEvent>(10);
+    // Channel for feedback and result from background threads.
+    // Bounded at 16 per concurrent goal to provide backpressure — if the main
+    // loop can't keep up, feedback threads will block rather than consume
+    // unbounded memory. `tx` is cloned per-goal; when the loop breaks on Stop,
+    // background threads detect the closed channel and exit.
+    let (tx, rx) = flume::bounded::<ActionEvent>(MAX_CONCURRENT_GOALS * 2);
 
     let rx_stream = rx.into_stream();
     let merged = adora_events.merge_external(Box::pin(rx_stream));
@@ -427,7 +455,7 @@ fn run_action_client(
                 let (goal_id, send_goal_response) = futures::executor::block_on(async {
                     let send = client.async_send_goal(BridgeMessage(Some(array_data)));
                     futures::pin_mut!(send);
-                    let timeout = futures_timer::Delay::new(SERVICE_RESPONSE_TIMEOUT);
+                    let timeout = futures_timer::Delay::new(ACTION_GOAL_TIMEOUT);
                     match futures::future::select(send, timeout).await {
                         futures::future::Either::Left((result, _)) => {
                             result.map_err(|e| eyre!("failed to send action goal: {e:?}"))
@@ -450,7 +478,7 @@ fn run_action_client(
                 let fb_type_info = feedback_type_info.clone();
                 let client_ref = client.clone();
                 std::thread::spawn(move || {
-                    set_deserialize_type_info(Some(fb_type_info));
+                    let _guard = TypeInfoGuard::deserialize(fb_type_info);
                     let stream = client_ref.feedback_stream(goal_id);
                     futures::pin_mut!(stream);
                     futures::executor::block_on(async {
@@ -471,7 +499,6 @@ fn run_action_client(
                             }
                         }
                     });
-                    set_deserialize_type_info(None);
                 });
 
                 // Spawn result reader thread
@@ -480,21 +507,29 @@ fn run_action_client(
                 let client_ref = client.clone();
                 let in_flight_ref = in_flight.clone();
                 std::thread::spawn(move || {
-                    set_deserialize_type_info(Some(res_type_info));
-                    match futures::executor::block_on(client_ref.async_request_result(goal_id)) {
-                        Ok((_status, msg)) => {
-                            if let Some(data) = msg.0 {
-                                let _ = result_tx.send(ActionEvent::Result(data));
-                            } else {
-                                tracing::warn!("action result contained no data");
+                    let _guard = TypeInfoGuard::deserialize(res_type_info);
+                    let result = futures::executor::block_on(async {
+                        let recv = client_ref.async_request_result(goal_id);
+                        futures::pin_mut!(recv);
+                        let timeout = futures_timer::Delay::new(ACTION_RESULT_TIMEOUT);
+                        match futures::future::select(recv, timeout).await {
+                            futures::future::Either::Left((result, _)) => Some(result),
+                            futures::future::Either::Right(_) => {
+                                tracing::warn!("action result timed out");
+                                None
                             }
                         }
-                        Err(e) => {
-                            tracing::warn!("action result error: {e:?}");
+                    });
+                    if let Some(Ok((_status, msg))) = result {
+                        if let Some(data) = msg.0 {
+                            let _ = result_tx.send(ActionEvent::Result(data));
+                        } else {
+                            tracing::warn!("action result contained no data");
                         }
+                    } else if let Some(Err(e)) = result {
+                        tracing::warn!("action result error: {e:?}");
                     }
                     in_flight_ref.fetch_sub(1, Ordering::Relaxed);
-                    set_deserialize_type_info(None);
                 });
             }
             MergedEvent::Adora(Event::Stop(_)) => break,
@@ -665,7 +700,9 @@ fn run_multi_subscriber(
     }
 
     for handle in handles {
-        let _ = handle.join();
+        if let Err(e) = handle.join() {
+            tracing::warn!("subscriber thread panicked: {e:?}");
+        }
     }
     Ok(())
 }
@@ -735,6 +772,10 @@ fn create_ros_node(
     Ok((ros_node, pool))
 }
 
+/// Wait for a ROS2 service to become available.
+///
+/// NOTE: This blocks the main thread and does not respond to Adora Stop events.
+/// If the service never appears, the loop will exhaust its 10 retries and bail.
 fn wait_for_service(
     client: &ros2_client::Client<BridgeServiceType>,
     ros_node: &ros2_client::Node,
@@ -790,8 +831,8 @@ fn load_messages() -> eyre::Result<Arc<HashMap<String, HashMap<String, Message>>
     }
 
     if messages.is_empty() {
-        tracing::warn!(
-            "no ROS2 message definitions found. \
+        tracing::error!(
+            "no ROS2 message definitions found - bridge will fail to serialize/deserialize. \
              Ensure AMENT_PREFIX_PATH is set and points to a sourced ROS2 workspace."
         );
     }
@@ -832,7 +873,7 @@ fn resolve_topics(config: &Ros2BridgeConfig) -> eyre::Result<Vec<Ros2TopicConfig
             }])
         }
         (None, Some(topics)) => Ok(topics.clone()),
-        _ => eyre::bail!("exactly one of `topic` or `topics` must be set"),
+        _ => eyre::bail!("topic mode requires exactly one of `topic` or `topics` to be set"),
     }
 }
 

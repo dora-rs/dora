@@ -41,40 +41,66 @@ thread_local! {
 }
 
 /// Set the TypeInfo used by the next `BridgeMessage::serialize` call.
+///
+/// Uses `try_borrow_mut` to avoid panicking if called during unwind while
+/// the RefCell is already borrowed (e.g. from a TypeInfoGuard drop during panic).
 pub fn set_serialize_type_info(info: Option<TypeInfo<'static>>) {
-    SERIALIZE_TYPE_INFO.with(|cell| *cell.borrow_mut() = info);
+    SERIALIZE_TYPE_INFO.with(|cell| {
+        if let Ok(mut slot) = cell.try_borrow_mut() {
+            *slot = info;
+        }
+    });
 }
 
 /// Set the TypeInfo used by the next `BridgeMessage::deserialize` call.
+///
+/// Uses `try_borrow_mut` to avoid panicking if called during unwind while
+/// the RefCell is already borrowed.
 pub fn set_deserialize_type_info(info: Option<TypeInfo<'static>>) {
-    DESERIALIZE_TYPE_INFO.with(|cell| *cell.borrow_mut() = info);
+    DESERIALIZE_TYPE_INFO.with(|cell| {
+        if let Ok(mut slot) = cell.try_borrow_mut() {
+            *slot = info;
+        }
+    });
 }
 
-/// RAII guard that clears both thread-local TypeInfo slots on drop.
+/// RAII guard that clears its thread-local TypeInfo slot on drop.
 ///
-/// Ensures cleanup even on error returns or panics.
+/// Each guard tracks which slot (serialize or deserialize) it owns and
+/// only clears that slot. This is safe even if multiple guards coexist.
 pub struct TypeInfoGuard {
-    _private: (),
+    kind: GuardKind,
+}
+
+enum GuardKind {
+    Serialize,
+    Deserialize,
 }
 
 impl TypeInfoGuard {
-    /// Set serialize TypeInfo and return a guard that clears both slots on drop.
+    /// Set serialize TypeInfo and return a guard that clears the serialize slot on drop.
     pub fn serialize(info: TypeInfo<'static>) -> Self {
         set_serialize_type_info(Some(info));
-        Self { _private: () }
+        Self {
+            kind: GuardKind::Serialize,
+        }
     }
 
-    /// Set deserialize TypeInfo and return a guard that clears both slots on drop.
+    /// Set deserialize TypeInfo and return a guard that clears the deserialize slot on drop.
     pub fn deserialize(info: TypeInfo<'static>) -> Self {
         set_deserialize_type_info(Some(info));
-        Self { _private: () }
+        Self {
+            kind: GuardKind::Deserialize,
+        }
     }
 }
 
 impl Drop for TypeInfoGuard {
     fn drop(&mut self) {
-        set_serialize_type_info(None);
-        set_deserialize_type_info(None);
+        match self.kind {
+            GuardKind::Serialize => set_serialize_type_info(None),
+            GuardKind::Deserialize => set_deserialize_type_info(None),
+        }
     }
 }
 

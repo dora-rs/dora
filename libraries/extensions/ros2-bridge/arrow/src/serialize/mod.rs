@@ -155,6 +155,15 @@ impl TypedValue<'_> {
                             check_single_element(string_array.len(), "LargeStringArray")?;
                             string_array.value(0)
                         };
+                        if let GenericString::BoundedString(max) = t {
+                            if string.len() > *max {
+                                return Err(error(format!(
+                                    "string length {} exceeds BoundedString max {}",
+                                    string.len(),
+                                    max
+                                )));
+                            }
+                        }
                         s.serialize_field(string)?;
                     }
                     GenericString::WString | GenericString::BoundedWString(_) => {
@@ -168,6 +177,15 @@ impl TypedValue<'_> {
                             check_single_element(string_array.len(), "LargeStringArray (WString)")?;
                             string_array.value(0)
                         };
+                        if let GenericString::BoundedWString(max) = t {
+                            let utf16_len = string.encode_utf16().count();
+                            if utf16_len > *max {
+                                return Err(error(format!(
+                                    "wstring length {} exceeds BoundedWString max {}",
+                                    utf16_len, max
+                                )));
+                            }
+                        }
                         let utf16: Vec<u16> = string.encode_utf16().collect();
                         s.serialize_field(&utf16)?;
                     }
@@ -185,6 +203,7 @@ impl TypedValue<'_> {
                     item_type: &v.value_type,
                     column: column.as_ref(),
                     type_info: self.type_info,
+                    max_size: None,
                 })?;
             }
             adora_ros2_bridge_msg_gen::types::MemberType::BoundedSequence(v) => {
@@ -192,6 +211,7 @@ impl TypedValue<'_> {
                     item_type: &v.value_type,
                     column: column.as_ref(),
                     type_info: self.type_info,
+                    max_size: Some(v.max_size),
                 })?;
             }
         }
