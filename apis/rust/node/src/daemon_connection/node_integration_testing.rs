@@ -122,6 +122,10 @@ impl IntegrationTestingEvents {
             DaemonRequest::NodeConfig { .. } => {
                 eyre::bail!("unexpected NodeConfig in interactive mode")
             }
+            DaemonRequest::Fail(failure) => {
+                tracing::error!("node reports failure: {}", failure.to_string().red());
+                DaemonReply::Result(Ok(()))
+            }
         };
         Ok(reply)
     }
