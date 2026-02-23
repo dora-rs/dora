@@ -7870,6 +7870,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "yaml-bridge-action-goal"
+version = "0.4.1"
+dependencies = [
+ "adora-node-api",
+ "arrow",
+ "eyre",
+]
+
+[[package]]
 name = "yaml-bridge-service-handler"
 version = "0.4.1"
 dependencies = [
