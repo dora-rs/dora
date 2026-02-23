@@ -256,7 +256,6 @@ fn run_app<B: Backend>(
 ) -> eyre::Result<()> {
     let mut app = App::new();
     let mut last_update = Instant::now();
-    let mut node_infos: Vec<NodeInfo> = Vec::new();
 
     // Reuse coordinator connection
     let mut session = connect_to_coordinator((coordinator_addr, coordinator_port).into())
@@ -271,7 +270,7 @@ fn run_app<B: Backend>(
     let reply: ControlRequestReply =
         serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
 
-    node_infos = match reply {
+    let mut node_infos = match reply {
         ControlRequestReply::NodeInfoList(infos) => infos,
         ControlRequestReply::Error(err) => {
             return Err(eyre!("coordinator error: {err}"));
@@ -280,6 +279,7 @@ fn run_app<B: Backend>(
             return Err(eyre!("unexpected reply from coordinator"));
         }
     };
+    app.update_stats(node_infos.clone());
 
     loop {
         terminal.draw(|f| ui(f, &mut app, refresh_duration))?;

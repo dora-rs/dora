@@ -13,6 +13,7 @@ use std::{
     path::PathBuf,
 };
 
+/// Source identifier for shell-based nodes.
 pub const SHELL_SOURCE: &str = "shell";
 /// Set the [`Node::path`] field to this value to treat the node as a
 /// [_dynamic node_](https://docs.rs/adora-node-api/latest/adora_node_api/).
@@ -115,6 +116,7 @@ pub enum RestartPolicy {
     Always,
 }
 
+/// Deployment configuration for distributing nodes across machines.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Deploy {
@@ -124,6 +126,7 @@ pub struct Deploy {
     pub working_dir: Option<PathBuf>,
 }
 
+/// Debug options for dataflow development and troubleshooting.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct Debug {
     /// Whether to publish all messages to Zenoh for debugging
@@ -613,6 +616,7 @@ pub struct Node {
     pub deploy: Option<Deploy>,
 }
 
+#[allow(missing_docs)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResolvedNode {
     pub id: NodeId,
@@ -627,6 +631,7 @@ pub struct ResolvedNode {
     pub kind: CoreNodeKind,
 }
 
+#[allow(missing_docs)]
 impl ResolvedNode {
     pub fn has_git_source(&self) -> bool {
         self.kind
@@ -636,6 +641,7 @@ impl ResolvedNode {
     }
 }
 
+#[allow(missing_docs)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 #[allow(clippy::large_enum_variant)]
@@ -646,6 +652,7 @@ pub enum CoreNodeKind {
     Custom(CustomNode),
 }
 
+#[allow(missing_docs)]
 impl CoreNodeKind {
     pub fn as_custom(&self) -> Option<&CustomNode> {
         match self {
@@ -655,6 +662,7 @@ impl CoreNodeKind {
     }
 }
 
+#[allow(missing_docs)]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(transparent)]
 pub struct RuntimeNode {
@@ -662,6 +670,7 @@ pub struct RuntimeNode {
     pub operators: Vec<OperatorDefinition>,
 }
 
+#[allow(missing_docs)]
 #[derive(Debug, Serialize, Deserialize, JsonSchema, Clone)]
 pub struct OperatorDefinition {
     /// Unique operator identifier within the runtime
@@ -670,6 +679,7 @@ pub struct OperatorDefinition {
     pub config: OperatorConfig,
 }
 
+#[allow(missing_docs)]
 #[derive(Debug, Serialize, Deserialize, JsonSchema, Clone)]
 pub struct SingleOperatorDefinition {
     /// Operator identifier (optional for single operators)
@@ -678,6 +688,7 @@ pub struct SingleOperatorDefinition {
     pub config: OperatorConfig,
 }
 
+#[allow(missing_docs)]
 #[derive(Debug, Serialize, Deserialize, JsonSchema, Clone)]
 pub struct OperatorConfig {
     /// Human-readable operator name
@@ -716,6 +727,7 @@ pub struct OperatorConfig {
     pub max_rotated_files: Option<u32>,
 }
 
+#[allow(missing_docs)]
 #[derive(Debug, Serialize, Deserialize, JsonSchema, Clone)]
 #[serde(rename_all = "kebab-case")]
 pub enum OperatorSource {
@@ -724,6 +736,7 @@ pub enum OperatorSource {
     #[schemars(skip)]
     Wasm(String),
 }
+#[allow(missing_docs)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(from = "PythonSourceDef", into = "PythonSourceDef")]
 pub struct PythonSource {
@@ -731,6 +744,7 @@ pub struct PythonSource {
     pub conda_env: Option<String>,
 }
 
+#[allow(missing_docs)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum PythonSourceDef {
@@ -765,6 +779,7 @@ impl From<PythonSourceDef> for PythonSource {
     }
 }
 
+#[allow(missing_docs)]
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct PythonOperatorConfig {
@@ -775,6 +790,7 @@ pub struct PythonOperatorConfig {
     pub outputs: BTreeSet<DataId>,
 }
 
+#[allow(missing_docs)]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CustomNode {
     /// Path of the source code
@@ -845,6 +861,7 @@ pub struct CustomNode {
     pub run_config: NodeRunConfig,
 }
 
+#[allow(missing_docs)]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub enum NodeSource {
     Local,
@@ -854,18 +871,21 @@ pub enum NodeSource {
     },
 }
 
+#[allow(missing_docs)]
 impl NodeSource {
     pub fn is_git(&self) -> bool {
         matches!(self, Self::GitBranch { .. })
     }
 }
 
+#[allow(missing_docs)]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub enum ResolvedNodeSource {
     Local,
     GitCommit { repo: String, commit_hash: String },
 }
 
+#[allow(missing_docs)]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub enum GitRepoRev {
     Branch(String),
@@ -873,6 +893,7 @@ pub enum GitRepoRev {
     Rev(String),
 }
 
+#[allow(missing_docs)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum EnvValue {

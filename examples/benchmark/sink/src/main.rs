@@ -1,5 +1,4 @@
 use adora_node_api::{self, AdoraNode, Event};
-use eyre::Context;
 use std::time::{Duration, Instant};
 fn main() -> eyre::Result<()> {
     let (_node, mut events) = AdoraNode::init_from_env()?;

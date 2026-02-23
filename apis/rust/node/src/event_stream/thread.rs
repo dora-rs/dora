@@ -38,7 +38,7 @@ pub enum EventItem {
 }
 
 pub struct EventStreamThreadHandle {
-    node_id: NodeId,
+    _node_id: NodeId,
     handle: flume::Receiver<std::thread::Result<()>>,
 }
 
@@ -49,7 +49,7 @@ impl EventStreamThreadHandle {
             let _ = tx.send(join_handle.join());
         });
         Self {
-            node_id,
+            _node_id: node_id,
             handle: rx,
         }
     }

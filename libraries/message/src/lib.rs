@@ -16,6 +16,7 @@ pub const TCP_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 
 pub mod common;
 pub mod config;
+/// Dataflow descriptor types for YAML-based dataflow specifications.
 pub mod descriptor;
 pub mod id;
 pub mod metadata;

@@ -12,7 +12,7 @@ pub mod session;
 mod template;
 
 pub use command::build;
-pub use command::{Executable, Run as RunCommand, run, run_func};
+pub use command::{Executable, Run as RunCommand, run};
 
 /// Default address for *connecting* to a coordinator (client side).
 const LOCALHOST: IpAddr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));

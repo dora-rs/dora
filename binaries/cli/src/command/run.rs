@@ -82,11 +82,6 @@ impl Run {
     }
 }
 
-#[deprecated(note = "use `run` instead")]
-pub fn run_func(dataflow: String, uv: bool) -> eyre::Result<()> {
-    run(dataflow, uv)
-}
-
 pub fn run(dataflow: String, uv: bool) -> eyre::Result<()> {
     let mut run = Run::new(dataflow);
     run.uv = uv;

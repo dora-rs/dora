@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use adora_download::download_file;
 use adora_node_api::adora_core::descriptor::source_is_url;
-use eyre::{Context, WrapErr};
+use eyre::Context;
 use pyo3::prelude::*;
 
 /// Start a runtime for Operators
