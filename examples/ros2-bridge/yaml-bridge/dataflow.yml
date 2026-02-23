@@ -82,10 +82,12 @@ nodes:
   # =============================================
 
   # Action Client: Adora sends goal, receives feedback + result from ROS2
-  - id: nav_client
+  # Uses the standard Fibonacci action from example_interfaces.
+  # See yaml-bridge-action/ for a runnable example with a concrete goal node.
+  - id: fib_client
     ros2:
-      action: /navigate_to_pose
-      action_type: nav2_msgs/NavigateToPose
+      action: /fibonacci
+      action_type: example_interfaces/Fibonacci
       role: client
     inputs:
       goal: goal_sender/goal
