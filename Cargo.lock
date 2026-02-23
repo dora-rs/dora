@@ -428,6 +428,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "adora-ros2-bridge-arrow"
+version = "0.4.1"
+dependencies = [
+ "adora-ros2-bridge-msg-gen",
+ "arrow",
+ "eyre",
+ "serde",
+]
+
+[[package]]
 name = "adora-ros2-bridge-msg-gen"
 version = "0.4.1"
 dependencies = [
@@ -446,10 +456,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "adora-ros2-bridge-node"
+version = "0.4.1"
+dependencies = [
+ "adora-message",
+ "adora-node-api",
+ "adora-ros2-bridge",
+ "adora-ros2-bridge-arrow",
+ "adora-ros2-bridge-msg-gen",
+ "arrow",
+ "eyre",
+ "flume 0.11.1",
+ "futures",
+ "serde",
+ "serde_json",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "adora-ros2-bridge-python"
 version = "0.4.1"
 dependencies = [
  "adora-ros2-bridge",
+ "adora-ros2-bridge-arrow",
  "adora-ros2-bridge-msg-gen",
  "arrow",
  "eyre",

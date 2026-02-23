@@ -290,6 +290,28 @@ pub struct Node {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operator: Option<SingleOperatorDefinition>,
 
+    /// ROS2 bridge configuration (unstable).
+    ///
+    /// Declares this node as a ROS2 bridge that automatically subscribes to or
+    /// publishes on ROS2 topics. No custom code is needed -- the framework spawns
+    /// a bridge binary that converts between ROS2 DDS messages and Adora's Arrow
+    /// format.
+    ///
+    /// ## Example
+    ///
+    /// ```yaml
+    /// nodes:
+    ///   - id: camera_bridge
+    ///     ros2:
+    ///       topic: /camera/image_raw
+    ///       message_type: sensor_msgs/Image
+    ///       direction: subscribe
+    ///     outputs:
+    ///       - image
+    /// ```
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ros2: Option<Ros2BridgeConfig>,
+
     /// Legacy node configuration (deprecated).
     ///
     /// Please use the top-level [`path`](Self::path), [`args`](Self::args), etc. fields instead.
@@ -873,4 +895,120 @@ impl fmt::Display for EnvValue {
             EnvValue::String(str) => fmt.write_str(str),
         }
     }
+}
+
+/// ROS2 bridge configuration for declarative ROS2 topic bridging.
+///
+/// This allows nodes to subscribe to or publish on ROS2 topics without
+/// writing any custom code. The framework spawns a bridge binary that
+/// handles the ROS2 DDS communication and Arrow data conversion.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Ros2BridgeConfig {
+    /// ROS2 topic name (e.g. "/camera/image_raw").
+    /// Mutually exclusive with `topics`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topic: Option<String>,
+
+    /// ROS2 message type (e.g. "sensor_msgs/Image").
+    /// Required when `topic` is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_type: Option<String>,
+
+    /// Direction: subscribe (ROS2 -> Adora) or publish (Adora -> ROS2).
+    /// Defaults to subscribe.
+    #[serde(default)]
+    pub direction: Ros2Direction,
+
+    /// Multiple topics on a single ROS2 node context.
+    /// Mutually exclusive with `topic`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topics: Option<Vec<Ros2TopicConfig>>,
+
+    /// QoS policies applied to all topics (can be overridden per-topic).
+    #[serde(default)]
+    pub qos: Ros2QosConfig,
+
+    /// ROS2 namespace (default: "/").
+    #[serde(default = "default_ros2_namespace")]
+    pub namespace: String,
+
+    /// ROS2 node name. Defaults to the adora node id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_name: Option<String>,
+}
+
+fn default_ros2_namespace() -> String {
+    "/".to_string()
+}
+
+/// Configuration for a single ROS2 topic in multi-topic mode.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Ros2TopicConfig {
+    /// ROS2 topic name.
+    pub topic: String,
+
+    /// ROS2 message type (e.g. "geometry_msgs/Twist").
+    pub message_type: String,
+
+    /// Direction: subscribe or publish.
+    #[serde(default)]
+    pub direction: Ros2Direction,
+
+    /// Maps to an adora output id (for subscribe direction).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+
+    /// Maps to an adora input id (for publish direction).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<String>,
+
+    /// Per-topic QoS override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qos: Option<Ros2QosConfig>,
+}
+
+/// Direction of ROS2 bridge communication.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Ros2Direction {
+    /// Subscribe: receive from ROS2, forward to adora outputs.
+    #[default]
+    Subscribe,
+    /// Publish: receive from adora inputs, publish to ROS2.
+    Publish,
+}
+
+/// ROS2 Quality of Service configuration.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Ros2QosConfig {
+    /// Use reliable transport (default: false = best effort).
+    #[serde(default)]
+    pub reliable: bool,
+
+    /// Durability: "volatile" (default), "transient_local".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub durability: Option<String>,
+
+    /// Liveliness: "automatic" (default), "manual_by_participant", "manual_by_topic".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub liveliness: Option<String>,
+
+    /// Lease duration in seconds (default: infinity).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_duration: Option<f64>,
+
+    /// Max blocking time in seconds for reliable transport.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_blocking_time: Option<f64>,
+
+    /// History depth for KeepLast policy (default: 1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep_last: Option<i32>,
+
+    /// Use KeepAll history policy instead of KeepLast.
+    #[serde(default)]
+    pub keep_all: bool,
 }

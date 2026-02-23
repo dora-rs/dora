@@ -79,7 +79,7 @@ fn get_ros_msgs_each_package<P: AsRef<Path>>(root_dirs: &[P]) -> Result<Vec<Pack
                     "action" => {
                         p.actions.push(parse_action_file(&package, path.clone())?);
                     }
-                    _ => todo!(),
+                    _ => unreachable!("ros_formats only contains msg, srv, action"),
                 }
             }
         }

@@ -1,0 +1,47 @@
+nodes:
+  # Subscribe to turtlesim pose via declarative ROS2 bridge
+  - id: pose_bridge
+    ros2:
+      topic: /turtle1/pose
+      message_type: turtlesim/Pose
+      direction: subscribe
+    outputs:
+      - pose
+
+  # Publish velocity commands to turtlesim via declarative ROS2 bridge
+  - id: cmd_bridge
+    ros2:
+      topic: /turtle1/cmd_vel
+      message_type: geometry_msgs/Twist
+      direction: publish
+    inputs:
+      cmd_vel: planner/cmd_vel
+
+  # Multi-topic bridge: subscribe and publish on the same ROS2 node
+  - id: turtle_bridge
+    ros2:
+      topics:
+        - topic: /turtle1/pose
+          message_type: turtlesim/Pose
+          direction: subscribe
+          output: pose
+        - topic: /turtle1/cmd_vel
+          message_type: geometry_msgs/Twist
+          direction: publish
+          input: velocity
+      qos:
+        reliable: true
+        keep_last: 10
+    inputs:
+      velocity: planner/cmd_vel
+    outputs:
+      - pose
+
+  # Example planner node (user-provided)
+  - id: planner
+    path: path/to/planner-node
+    inputs:
+      pose: turtle_bridge/pose
+      tick: adora/timer/millis/100
+    outputs:
+      - cmd_vel

@@ -52,8 +52,12 @@ impl serde::Serialize for SerializeWrapper<'_> {
                         "value is not compatible with expected `BooleanArray` type",
                     )
                 })?;
-                // should match the length of the outer struct
-                assert_eq!(array.len(), 1);
+                if array.len() != 1 {
+                    return Err(serde::ser::Error::custom(format!(
+                        "expected single-element BooleanArray, got length {}",
+                        array.len()
+                    )));
+                }
                 let field_value = array.value(0);
                 serializer.serialize_bool(field_value)
             }
@@ -72,8 +76,13 @@ where
             std::any::type_name::<T::Native>()
         ))
     })?;
-    // should match the length of the outer struct
-    assert_eq!(array.len(), 1);
+    if array.len() != 1 {
+        return Err(serde::ser::Error::custom(format!(
+            "expected single-element {} array, got length {}",
+            std::any::type_name::<T::Native>(),
+            array.len()
+        )));
+    }
     let number = array.value(0);
     Ok(number)
 }

@@ -1,6 +1,6 @@
 use adora_message::{
     config::{Input, InputMapping, NodeRunConfig},
-    descriptor::{GitRepoRev, NodeSource},
+    descriptor::{EnvValue, GitRepoRev, NodeSource},
     id::{DataId, NodeId, OperatorId},
 };
 use eyre::{Context, OptionExt, Result, bail};
@@ -15,8 +15,8 @@ use tokio::process::Command;
 // reexport for compatibility
 pub use adora_message::descriptor::{
     CoreNodeKind, CustomNode, DYNAMIC_SOURCE, Descriptor, Node, OperatorConfig, OperatorDefinition,
-    OperatorSource, PythonSource, ResolvedNode, RuntimeNode, SHELL_SOURCE,
-    SingleOperatorDefinition,
+    OperatorSource, PythonSource, ResolvedNode, Ros2BridgeConfig, Ros2Direction, Ros2QosConfig,
+    Ros2TopicConfig, RuntimeNode, SHELL_SOURCE, SingleOperatorDefinition,
 };
 pub use validate::ResolvedNodeExt;
 pub use visualize::collect_adora_timers;
@@ -51,6 +51,17 @@ impl DescriptorExt for Descriptor {
 
         let mut resolved = BTreeMap::new();
         for mut node in self.nodes.clone() {
+            // adjust ROS2 bridge input mappings early (before node_kind borrows node)
+            if node.ros2.is_some() {
+                for input in node.inputs.values_mut() {
+                    if let InputMapping::User(m) = &mut input.mapping {
+                        if let Some(op_name) = single_operator_nodes.get(&m.source).copied() {
+                            m.output = DataId::from(format!("{op_name}/{}", m.output));
+                        }
+                    }
+                }
+            }
+
             // adjust input mappings
             let mut node_kind = node_kind_mut(&mut node)?;
             let input_mappings: Vec<_> = match &mut node_kind {
@@ -62,6 +73,7 @@ impl DescriptorExt for Descriptor {
                     .collect(),
                 NodeKindMut::Custom(node) => node.run_config.inputs.values_mut().collect(),
                 NodeKindMut::Operator(operator) => operator.config.inputs.values_mut().collect(),
+                NodeKindMut::Ros2Bridge(_) => vec![],
             };
             for mapping in input_mappings
                 .into_iter()
@@ -111,6 +123,39 @@ impl DescriptorExt for Descriptor {
                         config: op.config.clone(),
                     }],
                 }),
+                NodeKindMut::Ros2Bridge(config) => {
+                    let bridge_config_json = serde_json::to_string(&config)
+                        .context("failed to serialize ROS2 bridge config")?;
+
+                    let mut envs = BTreeMap::new();
+                    envs.insert(
+                        "ADORA_ROS2_BRIDGE_CONFIG".to_string(),
+                        EnvValue::String(bridge_config_json),
+                    );
+
+                    CoreNodeKind::Custom(CustomNode {
+                        path: "adora-ros2-bridge-node".to_string(),
+                        source: NodeSource::Local,
+                        args: node.args,
+                        build: None,
+                        send_stdout_as: node.send_stdout_as,
+                        send_logs_as: node.send_logs_as,
+                        min_log_level: node.min_log_level,
+                        max_log_size: node.max_log_size,
+                        max_rotated_files: node.max_rotated_files,
+                        run_config: NodeRunConfig {
+                            inputs: node.inputs,
+                            outputs: node.outputs,
+                        },
+                        envs: Some(envs),
+                        restart_policy: node.restart_policy,
+                        max_restarts: node.max_restarts,
+                        restart_delay: node.restart_delay,
+                        max_restart_delay: node.max_restart_delay,
+                        restart_window: node.restart_window,
+                        health_check_timeout: node.health_check_timeout,
+                    })
+                }
             };
 
             resolved.insert(
@@ -211,6 +256,11 @@ fn node_kind_mut(node: &mut Node) -> eyre::Result<NodeKindMut> {
             .as_mut()
             .map(NodeKindMut::Operator)
             .ok_or_eyre("no operator"),
+        NodeKind::Ros2Bridge(_) => node
+            .ros2
+            .as_ref()
+            .map(NodeKindMut::Ros2Bridge)
+            .ok_or_eyre("no ros2"),
     }
 }
 
@@ -254,20 +304,27 @@ pub trait NodeExt {
 
 impl NodeExt for Node {
     fn kind(&self) -> eyre::Result<NodeKind> {
-        match (&self.path, &self.operators, &self.custom, &self.operator) {
-            (None, None, None, None) => {
+        match (
+            &self.path,
+            &self.operators,
+            &self.custom,
+            &self.operator,
+            &self.ros2,
+        ) {
+            (None, None, None, None, None) => {
                 eyre::bail!(
-                    "node `{}` requires a `path`, `custom`, or `operators` field",
+                    "node `{}` requires a `path`, `custom`, `operators`, or `ros2` field",
                     self.id
                 )
             }
-            (None, None, None, Some(operator)) => Ok(NodeKind::Operator(operator)),
-            (None, None, Some(custom), None) => Ok(NodeKind::Custom(custom)),
-            (None, Some(runtime), None, None) => Ok(NodeKind::Runtime(runtime)),
-            (Some(path), None, None, None) => Ok(NodeKind::Standard(path)),
+            (None, None, None, Some(operator), None) => Ok(NodeKind::Operator(operator)),
+            (None, None, Some(custom), None, None) => Ok(NodeKind::Custom(custom)),
+            (None, Some(runtime), None, None, None) => Ok(NodeKind::Runtime(runtime)),
+            (Some(path), None, None, None, None) => Ok(NodeKind::Standard(path)),
+            (None, None, None, None, Some(ros2)) => Ok(NodeKind::Ros2Bridge(ros2)),
             _ => {
                 eyre::bail!(
-                    "node `{}` has multiple exclusive fields set, only one of `path`, `custom`, `operators` and `operator` is allowed",
+                    "node `{}` has multiple exclusive fields set, only one of `path`, `custom`, `operators`, `operator`, and `ros2` is allowed",
                     self.id
                 )
             }
@@ -282,6 +339,8 @@ pub enum NodeKind<'a> {
     Runtime(&'a RuntimeNode),
     Custom(&'a CustomNode),
     Operator(&'a SingleOperatorDefinition),
+    /// ROS2 bridge node
+    Ros2Bridge(&'a Ros2BridgeConfig),
 }
 
 #[derive(Debug)]
@@ -295,4 +354,6 @@ enum NodeKindMut<'a> {
     Runtime(&'a mut RuntimeNode),
     Custom(&'a mut CustomNode),
     Operator(&'a mut SingleOperatorDefinition),
+    /// ROS2 bridge node
+    Ros2Bridge(&'a Ros2BridgeConfig),
 }

@@ -1,7 +1,7 @@
 use adora_ros2_bridge_msg_gen::types::sequences;
 use arrow::array::ArrayData;
 
-use crate::typed::TypeInfo;
+use crate::TypeInfo;
 
 use super::sequence::SequenceVisitor;
 

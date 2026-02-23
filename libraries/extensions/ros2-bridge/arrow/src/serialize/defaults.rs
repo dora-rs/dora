@@ -182,7 +182,9 @@ fn preset_default_for_basic_type(t: &NestableType, preset: &str) -> Result<Array
             .into(),
         },
         NestableType::GenericString(_) => StringArray::from(vec![preset]).into(),
-        _ => todo!("preset_default_for_basic_type (other)"),
+        _ => eyre::bail!(
+            "preset default values for named/namespaced types are not supported in ROS2"
+        ),
     })
 }
 

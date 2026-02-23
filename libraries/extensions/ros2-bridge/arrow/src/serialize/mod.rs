@@ -14,7 +14,7 @@ use serde::ser::SerializeTupleStruct;
 use super::{DUMMY_STRUCT_NAME, TypeInfo};
 
 mod array;
-mod defaults;
+pub mod defaults;
 mod primitive;
 mod sequence;
 
@@ -56,10 +56,6 @@ impl serde::Serialize for TypedValue<'_> {
                     "given struct has unknown field {column_name}"
                 )))?;
             }
-        }
-        if input.is_empty() {
-            // TODO: publish default value
-            return Err(error("given struct is empty"))?;
         }
         if input.len() > 1 {
             return Err(error(format!(
@@ -150,23 +146,30 @@ impl TypedValue<'_> {
                 NestableType::GenericString(t) => match t {
                     GenericString::String | GenericString::BoundedString(_) => {
                         let string = if let Some(string_array) = column.as_string_opt::<i32>() {
-                            // should match the length of the outer struct array
-                            assert_eq!(string_array.len(), 1);
+                            check_single_element(string_array.len(), "StringArray")?;
                             string_array.value(0)
                         } else {
-                            // try again with large offset type
                             let string_array = column
                                 .as_string_opt::<i64>()
                                 .ok_or_else(|| error("expected string array"))?;
-                            // should match the length of the outer struct array
-                            assert_eq!(string_array.len(), 1);
+                            check_single_element(string_array.len(), "LargeStringArray")?;
                             string_array.value(0)
                         };
                         s.serialize_field(string)?;
                     }
-                    GenericString::WString => todo!("serializing WString types"),
-                    GenericString::BoundedWString(_) => {
-                        todo!("serializing BoundedWString types")
+                    GenericString::WString | GenericString::BoundedWString(_) => {
+                        let string = if let Some(string_array) = column.as_string_opt::<i32>() {
+                            check_single_element(string_array.len(), "StringArray (WString)")?;
+                            string_array.value(0)
+                        } else {
+                            let string_array = column
+                                .as_string_opt::<i64>()
+                                .ok_or_else(|| error("expected string array for WString"))?;
+                            check_single_element(string_array.len(), "LargeStringArray (WString)")?;
+                            string_array.value(0)
+                        };
+                        let utf16: Vec<u16> = string.encode_utf16().collect();
+                        s.serialize_field(&utf16)?;
                     }
                 },
             },
@@ -202,4 +205,13 @@ where
     E: serde::ser::Error,
 {
     serde::ser::Error::custom(e)
+}
+
+fn check_single_element<E: serde::ser::Error>(len: usize, type_name: &str) -> Result<(), E> {
+    if len != 1 {
+        return Err(serde::ser::Error::custom(format!(
+            "expected single-element {type_name}, got length {len}"
+        )));
+    }
+    Ok(())
 }

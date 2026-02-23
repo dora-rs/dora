@@ -119,8 +119,9 @@ impl<'de> serde::de::Visitor<'de> for StructVisitor<'_> {
                             adora_ros2_bridge_msg_gen::types::primitives::GenericString::String | adora_ros2_bridge_msg_gen::types::primitives::GenericString::BoundedString(_)=> {
                                 data.next_element_seed(string::StringDeserializer)?
                             },
-                            adora_ros2_bridge_msg_gen::types::primitives::GenericString::WString => todo!("deserialize WString"),
-                            adora_ros2_bridge_msg_gen::types::primitives::GenericString::BoundedWString(_) => todo!("deserialize BoundedWString"),
+                            adora_ros2_bridge_msg_gen::types::primitives::GenericString::WString | adora_ros2_bridge_msg_gen::types::primitives::GenericString::BoundedWString(_) => {
+                                data.next_element_seed(string::WStringDeserializer)?
+                            },
                         }
                     }
                 },

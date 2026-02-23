@@ -10,9 +10,14 @@ use core::fmt;
 use serde::Deserialize;
 use std::{borrow::Cow, ops::Deref, sync::Arc};
 
-use crate::typed::TypeInfo;
+use crate::TypeInfo;
 
 use super::{StructDeserializer, error};
+
+/// Maximum number of elements allowed in a deserialized sequence.
+/// This prevents unbounded allocations from malformed CDR packets.
+/// 16 million elements is ~128 MB for f64 or ~16 MB for u8.
+const MAX_SEQUENCE_ELEMENTS: usize = 16_000_000;
 
 pub struct SequenceDeserializer<'a> {
     pub item_type: &'a NestableType,
@@ -65,10 +70,16 @@ impl<'de> serde::de::Visitor<'de> for SequenceVisitor<'_> {
                 BasicType::F64 => deserialize_primitive_seq::<_, datatypes::Float64Type>(seq),
                 BasicType::Bool => {
                     let mut array = BooleanBuilder::new();
+                    let mut count = 0usize;
                     while let Some(value) = seq.next_element()? {
+                        count += 1;
+                        if count > MAX_SEQUENCE_ELEMENTS {
+                            return Err(error(format!(
+                                "bool sequence exceeds maximum of {MAX_SEQUENCE_ELEMENTS} elements"
+                            )));
+                        }
                         array.append_value(value);
                     }
-                    // wrap array into list of length 1
                     let mut list = ListBuilder::new(array);
                     list.append(true);
                     Ok(list.finish().into())
@@ -102,17 +113,38 @@ impl<'de> serde::de::Visitor<'de> for SequenceVisitor<'_> {
             NestableType::GenericString(t) => match t {
                 primitives::GenericString::String | primitives::GenericString::BoundedString(_) => {
                     let mut array = StringBuilder::new();
+                    let mut count = 0usize;
                     while let Some(value) = seq.next_element::<String>()? {
+                        count += 1;
+                        if count > MAX_SEQUENCE_ELEMENTS {
+                            return Err(error(format!(
+                                "string sequence exceeds maximum of {MAX_SEQUENCE_ELEMENTS} elements"
+                            )));
+                        }
                         array.append_value(value);
                     }
-                    // wrap array into list of length 1
                     let mut list = ListBuilder::new(array);
                     list.append(true);
                     Ok(list.finish().into())
                 }
-                primitives::GenericString::WString => todo!("deserialize sequence of WString"),
-                primitives::GenericString::BoundedWString(_) => {
-                    todo!("deserialize sequence of BoundedWString")
+                primitives::GenericString::WString
+                | primitives::GenericString::BoundedWString(_) => {
+                    let mut array = StringBuilder::new();
+                    let mut count = 0usize;
+                    while let Some(u16_vec) = seq.next_element::<Vec<u16>>()? {
+                        count += 1;
+                        if count > MAX_SEQUENCE_ELEMENTS {
+                            return Err(error(format!(
+                                "wstring sequence exceeds maximum of {MAX_SEQUENCE_ELEMENTS} elements"
+                            )));
+                        }
+                        let utf8 =
+                            String::from_utf16(&u16_vec).map_err(serde::de::Error::custom)?;
+                        array.append_value(utf8);
+                    }
+                    let mut list = ListBuilder::new(array);
+                    list.append(true);
+                    Ok(list.finish().into())
                 }
             },
         }
@@ -128,6 +160,11 @@ where
 {
     let mut values = Vec::new();
     while let Some(value) = seq.next_element_seed(deserializer.clone())? {
+        if values.len() >= MAX_SEQUENCE_ELEMENTS {
+            return Err(error(format!(
+                "struct sequence exceeds maximum of {MAX_SEQUENCE_ELEMENTS} elements"
+            )));
+        }
         values.push(arrow::array::make_array(value));
     }
     let refs: Vec<_> = values.iter().map(|a| a.deref()).collect();
@@ -153,7 +190,14 @@ where
     T::Native: Deserialize<'de>,
 {
     let mut array = PrimitiveBuilder::<T>::new();
+    let mut count = 0usize;
     while let Some(value) = seq.next_element::<T::Native>()? {
+        count += 1;
+        if count > MAX_SEQUENCE_ELEMENTS {
+            return Err(error(format!(
+                "sequence exceeds maximum of {MAX_SEQUENCE_ELEMENTS} elements"
+            )));
+        }
         array.append_value(value);
     }
     // wrap array into list of length 1

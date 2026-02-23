@@ -10,7 +10,11 @@ use adora_message::{
     id::{DataId, NodeId, OperatorId},
 };
 use eyre::{Context, bail, eyre};
-use std::{collections::BTreeMap, path::Path, process::Command};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+    process::Command,
+};
 use tracing::info;
 
 use super::{Descriptor, DescriptorExt, resolve_path};
@@ -22,6 +26,13 @@ pub fn check_dataflow(
     remote_daemon_id: Option<&[&str]>,
     coordinator_is_remote: bool,
 ) -> eyre::Result<()> {
+    // validate ROS2 bridge configs before resolution
+    for node in &dataflow.nodes {
+        if let Some(ros2) = &node.ros2 {
+            validate_ros2_config(&node.id, ros2, &node.inputs, &node.outputs)?;
+        }
+    }
+
     let nodes = dataflow.resolve_aliases_and_set_defaults()?;
     let mut has_python_operator = false;
 
@@ -404,5 +415,88 @@ assert adora.__version__=='{VERSION}',  'Python adora-rs should be {VERSION}, bu
         bail!("Something went wrong with Python adora-rs. {reinstall_command}")
     }
 
+    Ok(())
+}
+
+fn validate_ros2_config(
+    node_id: &NodeId,
+    config: &adora_message::descriptor::Ros2BridgeConfig,
+    node_inputs: &BTreeMap<DataId, Input>,
+    node_outputs: &BTreeSet<DataId>,
+) -> eyre::Result<()> {
+    use adora_message::descriptor::Ros2Direction;
+
+    // topic and topics are mutually exclusive, at least one required
+    match (&config.topic, &config.topics) {
+        (None, None) => bail!("node `{node_id}`: ros2 config requires either `topic` or `topics`"),
+        (Some(_), Some(_)) => bail!(
+            "node `{node_id}`: ros2 config has both `topic` and `topics`, only one is allowed"
+        ),
+        (Some(topic), None) => {
+            let message_type = config.message_type.as_ref().ok_or_else(|| {
+                eyre!("node `{node_id}`: ros2 config with `topic` requires `message_type`")
+            })?;
+            validate_ros2_message_type(node_id, topic, message_type)?;
+
+            // Check direction-vs-IO consistency for single-topic mode
+            match &config.direction {
+                Ros2Direction::Subscribe => {
+                    if node_outputs.is_empty() {
+                        bail!(
+                            "node `{node_id}`: ros2 subscribe bridge requires at least one output"
+                        );
+                    }
+                }
+                Ros2Direction::Publish => {
+                    if node_inputs.is_empty() {
+                        bail!("node `{node_id}`: ros2 publish bridge requires at least one input");
+                    }
+                }
+            }
+        }
+        (None, Some(topics)) => {
+            if topics.is_empty() {
+                bail!("node `{node_id}`: ros2 `topics` list must not be empty");
+            }
+            let mut has_subscribe = false;
+            let mut has_publish = false;
+            for t in topics {
+                validate_ros2_message_type(node_id, &t.topic, &t.message_type)?;
+                match &t.direction {
+                    Ros2Direction::Subscribe => has_subscribe = true,
+                    Ros2Direction::Publish => has_publish = true,
+                }
+            }
+            if has_subscribe && node_outputs.is_empty() {
+                bail!(
+                    "node `{node_id}`: ros2 multi-topic bridge with subscribe topics \
+                     requires at least one output"
+                );
+            }
+            if has_publish && node_inputs.is_empty() {
+                bail!(
+                    "node `{node_id}`: ros2 multi-topic bridge with publish topics \
+                     requires at least one input"
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_ros2_message_type(
+    node_id: &NodeId,
+    topic: &str,
+    message_type: &str,
+) -> eyre::Result<()> {
+    // message_type must be "package/MessageName" format
+    let parts: Vec<&str> = message_type.split('/').collect();
+    if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
+        bail!(
+            "node `{node_id}`: invalid message_type `{message_type}` for topic `{topic}`, \
+             expected format `package/MessageName` (e.g. `sensor_msgs/Image`)"
+        );
+    }
     Ok(())
 }

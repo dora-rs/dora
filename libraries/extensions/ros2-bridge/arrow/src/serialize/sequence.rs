@@ -7,7 +7,7 @@ use arrow::{
 };
 use serde::ser::{SerializeSeq, SerializeTuple};
 
-use crate::typed::TypeInfo;
+use crate::TypeInfo;
 
 use super::{TypedValue, error};
 
@@ -24,20 +24,36 @@ impl serde::Serialize for SequenceSerializeWrapper<'_> {
         S: serde::Serializer,
     {
         let entry = if let Some(list) = self.column.as_list_opt::<i32>() {
-            // should match the length of the outer struct
-            assert_eq!(list.len(), 1);
+            if list.len() != 1 {
+                return Err(error(format!(
+                    "expected single-element list, got length {}",
+                    list.len()
+                )));
+            }
             list.value(0)
         } else if let Some(list) = self.column.as_list_opt::<i64>() {
-            // should match the length of the outer struct
-            assert_eq!(list.len(), 1);
+            if list.len() != 1 {
+                return Err(error(format!(
+                    "expected single-element large list, got length {}",
+                    list.len()
+                )));
+            }
             list.value(0)
         } else if let Some(list) = self.column.as_binary_opt::<i32>() {
-            // should match the length of the outer struct
-            assert_eq!(list.len(), 1);
+            if list.len() != 1 {
+                return Err(error(format!(
+                    "expected single-element binary, got length {}",
+                    list.len()
+                )));
+            }
             Arc::new(list.slice(0, 1)) as ArrayRef
         } else if let Some(list) = self.column.as_binary_opt::<i64>() {
-            // should match the length of the outer struct
-            assert_eq!(list.len(), 1);
+            if list.len() != 1 {
+                return Err(error(format!(
+                    "expected single-element large binary, got length {}",
+                    list.len()
+                )));
+            }
             Arc::new(list.slice(0, 1)) as ArrayRef
         } else {
             return Err(error(format!(
@@ -106,7 +122,7 @@ impl serde::Serialize for SequenceSerializeWrapper<'_> {
                     let row = array.slice(i, 1);
                     seq.serialize_element(&TypedValue {
                         value: &(Arc::new(row) as ArrayRef),
-                        type_info: &crate::typed::TypeInfo {
+                        type_info: &TypeInfo {
                             package_name: Cow::Borrowed(&self.type_info.package_name),
                             message_name: Cow::Borrowed(&name.0),
                             messages: self.type_info.messages.clone(),
@@ -130,7 +146,7 @@ impl serde::Serialize for SequenceSerializeWrapper<'_> {
                     let row = array.slice(i, 1);
                     seq.serialize_element(&TypedValue {
                         value: &(Arc::new(row) as ArrayRef),
-                        type_info: &crate::typed::TypeInfo {
+                        type_info: &TypeInfo {
                             package_name: Cow::Borrowed(&reference.package),
                             message_name: Cow::Borrowed(&reference.name),
                             messages: self.type_info.messages.clone(),
@@ -151,10 +167,17 @@ impl serde::Serialize for SequenceSerializeWrapper<'_> {
                         }
                     }
                 }
-                GenericString::WString => {
-                    todo!("serializing WString sequences")
+                GenericString::WString | GenericString::BoundedWString(_) => {
+                    match entry.as_string_opt::<i32>() {
+                        Some(array) => serialize_arrow_wstring(serializer, array),
+                        None => {
+                            let array = entry
+                                .as_string_opt::<i64>()
+                                .ok_or_else(|| error("expected string array for WString"))?;
+                            serialize_arrow_wstring(serializer, array)
+                        }
+                    }
                 }
-                GenericString::BoundedWString(_) => todo!("serializing BoundedWString sequences"),
             },
         }
     }
@@ -171,6 +194,22 @@ where
     let mut seq = serializer.serialize_seq(Some(array.len()))?;
     for s in array.iter() {
         seq.serialize_element(s.unwrap_or_default())?;
+    }
+    seq.end()
+}
+
+fn serialize_arrow_wstring<S, O>(
+    serializer: S,
+    array: &arrow::array::GenericByteArray<datatypes::GenericStringType<O>>,
+) -> Result<<S as serde::Serializer>::Ok, <S as serde::Serializer>::Error>
+where
+    S: serde::Serializer,
+    O: OffsetSizeTrait,
+{
+    let mut seq = serializer.serialize_seq(Some(array.len()))?;
+    for s in array.iter() {
+        let utf16: Vec<u16> = s.unwrap_or_default().encode_utf16().collect();
+        seq.serialize_element(&utf16)?;
     }
     seq.end()
 }
