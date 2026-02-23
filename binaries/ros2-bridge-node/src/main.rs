@@ -1,16 +1,33 @@
-use std::{borrow::Cow, collections::HashMap, path::Path, sync::Arc};
+use std::{
+    borrow::Cow,
+    collections::{HashMap, VecDeque},
+    path::Path,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 
-use adora_message::descriptor::{Ros2BridgeConfig, Ros2Direction, Ros2QosConfig, Ros2TopicConfig};
+use adora_message::descriptor::{
+    Ros2BridgeConfig, Ros2Direction, Ros2QosConfig, Ros2Role, Ros2TopicConfig,
+};
 use adora_node_api::{
     AdoraNode, Event,
     merged::{MergeExternal, MergedEvent},
 };
 use adora_ros2_bridge::{ros2_client, rustdds};
-use adora_ros2_bridge_arrow::{TypeInfo, TypedValue, deserialize::StructDeserializer};
+use adora_ros2_bridge_arrow::{
+    BridgeActionType, BridgeMessage, BridgeServiceType, TypeInfo, TypeInfoGuard, TypedValue,
+    deserialize::StructDeserializer, set_deserialize_type_info,
+};
 use adora_ros2_bridge_msg_gen::types::Message;
 use arrow::array::{ArrayData, StructArray};
 use eyre::{Context, ContextCompat, eyre};
 use futures::{StreamExt, task::SpawnExt};
+
+/// Maximum number of concurrent in-flight action goals.
+const MAX_CONCURRENT_GOALS: usize = 8;
 
 fn main() -> eyre::Result<()> {
     tracing_subscriber::fmt::init();
@@ -22,37 +39,30 @@ fn main() -> eyre::Result<()> {
 
     let messages = load_messages()?;
 
-    // Resolve single-topic vs multi-topic mode
+    // Dispatch based on bridge mode
+    if config.service.is_some() {
+        return run_service_mode(config, messages);
+    }
+    if config.action.is_some() {
+        return run_action_mode(config, messages);
+    }
+
+    // Topic mode (existing behavior)
+    run_topic_mode(config, messages)
+}
+
+// ---------------------------------------------------------------------------
+// Topic mode (existing)
+// ---------------------------------------------------------------------------
+
+fn run_topic_mode(
+    config: Ros2BridgeConfig,
+    messages: Arc<HashMap<String, HashMap<String, Message>>>,
+) -> eyre::Result<()> {
     let topics = resolve_topics(&config)?;
 
-    // Create ROS2 context and node
-    let ros_context =
-        ros2_client::Context::new().map_err(|e| eyre!("failed to create ROS2 context: {e:?}"))?;
-    let node_name = config
-        .node_name
-        .unwrap_or_else(|| "adora_ros2_bridge".to_string());
-    let namespace = config.namespace;
-    let mut ros_node = ros_context
-        .new_node(
-            ros2_client::NodeName::new(&namespace, &node_name)
-                .map_err(|e| eyre!("failed to create ROS2 node name: {e}"))?,
-            ros2_client::NodeOptions::new().enable_rosout(true),
-        )
-        .map_err(|e| eyre!("failed to create ROS2 node: {e:?}"))?;
+    let (mut ros_node, _pool) = create_ros_node(&config)?;
 
-    // Start spinner for DDS discovery
-    let pool = futures::executor::ThreadPool::new()?;
-    let spinner = ros_node
-        .spinner()
-        .map_err(|e| eyre!("failed to create spinner: {e:?}"))?;
-    pool.spawn(async {
-        if let Err(err) = spinner.spin().await {
-            eprintln!("ros2 spinner failed: {err:?}");
-        }
-    })
-    .context("failed to spawn ros2 spinner")?;
-
-    // Create subscriptions and publishers based on topic configs
     let mut subscribers: Vec<(String, SubscriptionStream)> = Vec::new();
     let mut publishers: Vec<(
         String,
@@ -61,7 +71,7 @@ fn main() -> eyre::Result<()> {
     )> = Vec::new();
 
     for topic_config in &topics {
-        let (package, msg_name) = parse_message_type(&topic_config.message_type)?;
+        let (package, msg_name) = parse_type_str(&topic_config.message_type)?;
         let qos = topic_config
             .qos
             .as_ref()
@@ -112,24 +122,396 @@ fn main() -> eyre::Result<()> {
         }
     }
 
-    // Initialize Adora node
     let (node, adora_events) = AdoraNode::init_from_env()?;
 
-    // Run event loop
     if subscribers.is_empty() {
-        // Publish-only mode: just process Adora events
         run_publish_only(node, adora_events, publishers, &messages)?;
     } else if subscribers.len() == 1 {
-        // Single subscriber: merge its stream with Adora events
         let (output_id, sub) = subscribers.into_iter().next().unwrap();
         run_single_subscriber(node, adora_events, output_id, sub, publishers, &messages)?;
     } else {
-        // Multiple subscribers: use channel-based merging
         run_multi_subscriber(node, adora_events, subscribers, publishers, &messages)?;
     }
 
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Service mode
+// ---------------------------------------------------------------------------
+
+fn run_service_mode(
+    config: Ros2BridgeConfig,
+    messages: Arc<HashMap<String, HashMap<String, Message>>>,
+) -> eyre::Result<()> {
+    let service_name = config.service.as_ref().unwrap();
+    let service_type = config
+        .service_type
+        .as_ref()
+        .context("service_type required")?;
+    let role = config.role.as_ref().context("role required for service")?;
+    let (package, type_name) = parse_type_str(service_type)?;
+
+    let req_msg_name = format!("{type_name}_Request");
+    let resp_msg_name = format!("{type_name}_Response");
+
+    let request_type_info = TypeInfo {
+        package_name: Cow::Owned(package.clone()),
+        message_name: Cow::Owned(req_msg_name.clone()),
+        messages: messages.clone(),
+    };
+    let response_type_info = TypeInfo {
+        package_name: Cow::Owned(package.clone()),
+        message_name: Cow::Owned(resp_msg_name.clone()),
+        messages: messages.clone(),
+    };
+
+    let (mut ros_node, _pool) = create_ros_node(&config)?;
+
+    let service_qos = config.qos.to_rustdds_qos();
+
+    match role {
+        Ros2Role::Client => {
+            let client = ros_node
+                .create_client::<BridgeServiceType>(
+                    ros2_client::ServiceMapping::Enhanced,
+                    &ros2_client::Name::new("/", service_name.trim_start_matches('/'))
+                        .map_err(|e| eyre!("failed to create service name: {e}"))?,
+                    &ros2_client::ServiceTypeName::new(&package, &type_name),
+                    service_qos.clone(),
+                    service_qos,
+                )
+                .map_err(|e| eyre!("failed to create service client: {e:?}"))?;
+
+            // Wait for service availability
+            wait_for_service(&client, &ros_node)?;
+
+            run_service_client(client, request_type_info, response_type_info)
+        }
+        Ros2Role::Server => {
+            let server = ros_node
+                .create_server::<BridgeServiceType>(
+                    ros2_client::ServiceMapping::Enhanced,
+                    &ros2_client::Name::new("/", service_name.trim_start_matches('/'))
+                        .map_err(|e| eyre!("failed to create service name: {e}"))?,
+                    &ros2_client::ServiceTypeName::new(&package, &type_name),
+                    service_qos.clone(),
+                    service_qos,
+                )
+                .map_err(|e| eyre!("failed to create service server: {e:?}"))?;
+
+            run_service_server(server, request_type_info, response_type_info)
+        }
+    }
+}
+
+/// Response timeout for service calls (30 seconds).
+const SERVICE_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
+
+fn run_service_client(
+    client: ros2_client::Client<BridgeServiceType>,
+    request_type_info: TypeInfo<'static>,
+    response_type_info: TypeInfo<'static>,
+) -> eyre::Result<()> {
+    let (mut node, adora_events) = AdoraNode::init_from_env()?;
+
+    for event in futures::executor::block_on_stream(adora_events) {
+        match event {
+            Event::Input {
+                id: _,
+                metadata: _,
+                data,
+            } => {
+                let array_data = data.to_data();
+
+                // Serialize request (guard clears thread-local on drop)
+                let _guard = TypeInfoGuard::serialize(request_type_info.clone());
+                let req_id = client
+                    .send_request(BridgeMessage(Some(array_data)))
+                    .map_err(|e| eyre!("failed to send service request: {e:?}"))?;
+
+                // Receive response with timeout
+                let _guard = TypeInfoGuard::deserialize(response_type_info.clone());
+                let response = futures::executor::block_on(async {
+                    let recv = client.async_receive_response(req_id);
+                    futures::pin_mut!(recv);
+                    let timeout = futures_timer::Delay::new(SERVICE_RESPONSE_TIMEOUT);
+                    match futures::future::select(recv, timeout).await {
+                        futures::future::Either::Left((result, _)) => {
+                            result.map_err(|e| eyre!("failed to receive service response: {e:?}"))
+                        }
+                        futures::future::Either::Right(_) => {
+                            eyre::bail!("service response timed out")
+                        }
+                    }
+                })?;
+
+                if let Some(resp_data) = response.0 {
+                    node.send_output(
+                        "response".into(),
+                        Default::default(),
+                        StructArray::from(resp_data),
+                    )?;
+                } else {
+                    tracing::warn!("service response contained no data");
+                }
+            }
+            Event::Stop(_) => break,
+            _ => {}
+        }
+    }
+
+    Ok(())
+}
+
+fn run_service_server(
+    server: ros2_client::Server<BridgeServiceType>,
+    request_type_info: TypeInfo<'static>,
+    response_type_info: TypeInfo<'static>,
+) -> eyre::Result<()> {
+    let (mut node, adora_events) = AdoraNode::init_from_env()?;
+
+    // receive_request_stream() borrows &server immutably;
+    // async_send_response() also takes &self. Both are shared borrows, so
+    // they can coexist in the same scope.
+    let _deser_guard = TypeInfoGuard::deserialize(request_type_info);
+    let request_stream = server.receive_request_stream().filter_map(|result| async {
+        match result {
+            Ok((req_id, msg)) => msg.0.map(|data| (req_id, data)),
+            Err(e) => {
+                tracing::warn!("ROS2 service request error: {e:?}");
+                None
+            }
+        }
+    });
+    let merged = adora_events.merge_external(Box::pin(request_stream));
+
+    // Queue of pending request IDs, matched FIFO to handler responses.
+    let mut pending_requests: VecDeque<ros2_client::service::RmwRequestId> = VecDeque::new();
+
+    for event in futures::executor::block_on_stream(merged) {
+        match event {
+            MergedEvent::Adora(Event::Input {
+                id: _,
+                metadata: _,
+                data,
+            }) => {
+                if let Some(req_id) = pending_requests.pop_front() {
+                    let array_data = data.to_data();
+                    let _ser_guard = TypeInfoGuard::serialize(response_type_info.clone());
+                    futures::executor::block_on(
+                        server.async_send_response(req_id, BridgeMessage(Some(array_data))),
+                    )
+                    .map_err(|e| eyre!("failed to send service response: {e:?}"))?;
+                } else {
+                    tracing::warn!("received response input but no pending request");
+                }
+            }
+            MergedEvent::Adora(Event::Stop(_)) => break,
+            MergedEvent::Adora(_) => {}
+            MergedEvent::External((req_id, data)) => {
+                pending_requests.push_back(req_id);
+                node.send_output(
+                    "request".into(),
+                    Default::default(),
+                    StructArray::from(data),
+                )?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Action mode
+// ---------------------------------------------------------------------------
+
+fn run_action_mode(
+    config: Ros2BridgeConfig,
+    messages: Arc<HashMap<String, HashMap<String, Message>>>,
+) -> eyre::Result<()> {
+    let action_name = config.action.as_ref().unwrap();
+    let action_type = config
+        .action_type
+        .as_ref()
+        .context("action_type required")?;
+    let role = config.role.as_ref().context("role required for action")?;
+    let (package, type_name) = parse_type_str(action_type)?;
+
+    match role {
+        Ros2Role::Client => {
+            let goal_msg_name = format!("{type_name}_Goal");
+            let result_msg_name = format!("{type_name}_Result");
+            let feedback_msg_name = format!("{type_name}_Feedback");
+
+            let goal_type_info = TypeInfo {
+                package_name: Cow::Owned(package.clone()),
+                message_name: Cow::Owned(goal_msg_name.clone()),
+                messages: messages.clone(),
+            };
+            let result_type_info = TypeInfo {
+                package_name: Cow::Owned(package.clone()),
+                message_name: Cow::Owned(result_msg_name.clone()),
+                messages: messages.clone(),
+            };
+            let feedback_type_info = TypeInfo {
+                package_name: Cow::Owned(package.clone()),
+                message_name: Cow::Owned(feedback_msg_name.clone()),
+                messages: messages.clone(),
+            };
+
+            let (mut ros_node, _pool) = create_ros_node(&config)?;
+            let qos = config.qos.to_rustdds_qos();
+            let action_qos = ros2_client::action::ActionClientQosPolicies {
+                goal_service: qos.clone(),
+                result_service: qos.clone(),
+                cancel_service: qos.clone(),
+                feedback_subscription: qos.clone(),
+                status_subscription: qos,
+            };
+
+            let client = ros_node
+                .create_action_client::<BridgeActionType>(
+                    ros2_client::ServiceMapping::Enhanced,
+                    &ros2_client::Name::new("/", action_name.trim_start_matches('/'))
+                        .map_err(|e| eyre!("failed to create action name: {e}"))?,
+                    &ros2_client::ActionTypeName::new(&package, &type_name),
+                    action_qos,
+                )
+                .map_err(|e| eyre!("failed to create action client: {e:?}"))?;
+
+            run_action_client(client, goal_type_info, result_type_info, feedback_type_info)
+        }
+        Ros2Role::Server => {
+            eyre::bail!("action server role is not yet supported");
+        }
+    }
+}
+
+fn run_action_client(
+    client: ros2_client::action::ActionClient<BridgeActionType>,
+    goal_type_info: TypeInfo<'static>,
+    result_type_info: TypeInfo<'static>,
+    feedback_type_info: TypeInfo<'static>,
+) -> eyre::Result<()> {
+    let (mut node, adora_events) = AdoraNode::init_from_env()?;
+    let client = Arc::new(client);
+    let in_flight = Arc::new(AtomicUsize::new(0));
+
+    // Channel for feedback and result from background threads
+    let (tx, rx) = flume::bounded::<ActionEvent>(10);
+
+    let rx_stream = rx.into_stream();
+    let merged = adora_events.merge_external(Box::pin(rx_stream));
+
+    for event in futures::executor::block_on_stream(merged) {
+        match event {
+            MergedEvent::Adora(Event::Input {
+                id: _,
+                metadata: _,
+                data,
+            }) => {
+                // Cap concurrent in-flight goals
+                if in_flight.load(Ordering::Relaxed) >= MAX_CONCURRENT_GOALS {
+                    tracing::warn!(
+                        "max concurrent goals ({MAX_CONCURRENT_GOALS}) reached, dropping goal"
+                    );
+                    continue;
+                }
+
+                let array_data = data.to_data();
+
+                // Send goal (guard clears thread-local on drop)
+                let _guard = TypeInfoGuard::serialize(goal_type_info.clone());
+                let (goal_id, send_goal_response) = futures::executor::block_on(
+                    client.async_send_goal(BridgeMessage(Some(array_data))),
+                )
+                .map_err(|e| eyre!("failed to send action goal: {e:?}"))?;
+
+                if !send_goal_response.accepted {
+                    tracing::warn!("action goal was rejected by server");
+                    continue;
+                }
+
+                in_flight.fetch_add(1, Ordering::Relaxed);
+
+                // Spawn feedback reader thread
+                let feedback_tx = tx.clone();
+                let fb_type_info = feedback_type_info.clone();
+                let client_ref = client.clone();
+                std::thread::spawn(move || {
+                    set_deserialize_type_info(Some(fb_type_info));
+                    let stream = client_ref.feedback_stream(goal_id);
+                    futures::pin_mut!(stream);
+                    futures::executor::block_on(async {
+                        while let Some(item) = stream.next().await {
+                            match item {
+                                Ok(msg) => {
+                                    if let Some(data) = msg.0 {
+                                        if feedback_tx.send(ActionEvent::Feedback(data)).is_err() {
+                                            break;
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::warn!("action feedback error: {e:?}");
+                                }
+                            }
+                        }
+                    });
+                    set_deserialize_type_info(None);
+                });
+
+                // Spawn result reader thread
+                let result_tx = tx.clone();
+                let res_type_info = result_type_info.clone();
+                let client_ref = client.clone();
+                let in_flight_ref = in_flight.clone();
+                std::thread::spawn(move || {
+                    set_deserialize_type_info(Some(res_type_info));
+                    match futures::executor::block_on(client_ref.async_request_result(goal_id)) {
+                        Ok((_status, msg)) => {
+                            if let Some(data) = msg.0 {
+                                let _ = result_tx.send(ActionEvent::Result(data));
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("action result error: {e:?}");
+                        }
+                    }
+                    in_flight_ref.fetch_sub(1, Ordering::Relaxed);
+                    set_deserialize_type_info(None);
+                });
+            }
+            MergedEvent::Adora(Event::Stop(_)) => break,
+            MergedEvent::Adora(_) => {}
+            MergedEvent::External(action_event) => match action_event {
+                ActionEvent::Feedback(data) => {
+                    node.send_output(
+                        "feedback".into(),
+                        Default::default(),
+                        StructArray::from(data),
+                    )?;
+                }
+                ActionEvent::Result(data) => {
+                    node.send_output("result".into(), Default::default(), StructArray::from(data))?;
+                }
+            },
+        }
+    }
+
+    Ok(())
+}
+
+enum ActionEvent {
+    Feedback(ArrayData),
+    Result(ArrayData),
+}
+
+// ---------------------------------------------------------------------------
+// Topic event loops (existing)
+// ---------------------------------------------------------------------------
 
 fn run_publish_only(
     _node: AdoraNode,
@@ -217,9 +599,6 @@ fn run_multi_subscriber(
     )>,
     messages: &Arc<HashMap<String, HashMap<String, Message>>>,
 ) -> eyre::Result<()> {
-    // Use a channel to merge multiple subscription streams.
-    // Each subscription runs on its own OS thread because async_stream_seed
-    // borrows &self, so the subscription must outlive the stream.
     let (tx, rx) = flume::bounded::<(String, ArrayData)>(10);
 
     let mut handles = Vec::new();
@@ -246,7 +625,7 @@ fn run_multi_subscriber(
             }
         }));
     }
-    drop(tx); // drop the original sender so rx completes when all subs are done
+    drop(tx);
 
     let rx_stream = rx.into_stream();
     let merged = adora_events.merge_external(Box::pin(rx_stream));
@@ -302,9 +681,69 @@ fn handle_publish_input(
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
 struct SubscriptionStream {
     deserializer: StructDeserializer<'static>,
     subscription: ros2_client::Subscription<ArrayData>,
+}
+
+fn create_ros_node(
+    config: &Ros2BridgeConfig,
+) -> eyre::Result<(ros2_client::Node, futures::executor::ThreadPool)> {
+    let ros_context =
+        ros2_client::Context::new().map_err(|e| eyre!("failed to create ROS2 context: {e:?}"))?;
+    let node_name = config
+        .node_name
+        .clone()
+        .unwrap_or_else(|| "adora_ros2_bridge".to_string());
+    let namespace = &config.namespace;
+    let mut ros_node = ros_context
+        .new_node(
+            ros2_client::NodeName::new(namespace, &node_name)
+                .map_err(|e| eyre!("failed to create ROS2 node name: {e}"))?,
+            ros2_client::NodeOptions::new().enable_rosout(true),
+        )
+        .map_err(|e| eyre!("failed to create ROS2 node: {e:?}"))?;
+
+    let pool = futures::executor::ThreadPool::new()?;
+    let spinner = ros_node
+        .spinner()
+        .map_err(|e| eyre!("failed to create spinner: {e:?}"))?;
+    pool.spawn(async {
+        if let Err(err) = spinner.spin().await {
+            eprintln!("ros2 spinner failed: {err:?}");
+        }
+    })
+    .context("failed to spawn ros2 spinner")?;
+
+    Ok((ros_node, pool))
+}
+
+fn wait_for_service(
+    client: &ros2_client::Client<BridgeServiceType>,
+    ros_node: &ros2_client::Node,
+) -> eyre::Result<()> {
+    let service_ready = async {
+        for _ in 0..10 {
+            let ready = client.wait_for_service(ros_node);
+            futures::pin_mut!(ready);
+            let timeout = futures_timer::Delay::new(Duration::from_secs(2));
+            match futures::future::select(ready, timeout).await {
+                futures::future::Either::Left(((), _)) => {
+                    tracing::info!("service is ready");
+                    return Ok(());
+                }
+                futures::future::Either::Right(_) => {
+                    tracing::info!("timeout waiting for service, retrying");
+                }
+            }
+        }
+        eyre::bail!("service not available after 10 retries");
+    };
+    futures::executor::block_on(service_ready)
 }
 
 fn load_messages() -> eyre::Result<Arc<HashMap<String, HashMap<String, Message>>>> {
@@ -322,10 +761,19 @@ fn load_messages() -> eyre::Result<Arc<HashMap<String, HashMap<String, Message>>
     let mut messages: HashMap<String, HashMap<String, Message>> = HashMap::new();
     for package in packages {
         let mut package_messages = HashMap::new();
-        for message in package.messages {
-            package_messages.insert(message.name.clone(), message);
+        for message in &package.messages {
+            package_messages.insert(message.name.clone(), message.clone());
         }
-        messages.insert(package.name, package_messages);
+        for service in &package.services {
+            package_messages.insert(service.request.name.clone(), service.request.clone());
+            package_messages.insert(service.response.name.clone(), service.response.clone());
+        }
+        for action in &package.actions {
+            package_messages.insert(action.goal.name.clone(), action.goal.clone());
+            package_messages.insert(action.result.name.clone(), action.result.clone());
+            package_messages.insert(action.feedback.name.clone(), action.feedback.clone());
+        }
+        messages.insert(package.name.clone(), package_messages);
     }
 
     if messages.is_empty() {
@@ -338,10 +786,10 @@ fn load_messages() -> eyre::Result<Arc<HashMap<String, HashMap<String, Message>>
     Ok(Arc::new(messages))
 }
 
-fn parse_message_type(message_type: &str) -> eyre::Result<(String, String)> {
-    let parts: Vec<&str> = message_type.split('/').collect();
+fn parse_type_str(type_str: &str) -> eyre::Result<(String, String)> {
+    let parts: Vec<&str> = type_str.split('/').collect();
     if parts.len() != 2 {
-        eyre::bail!("invalid message_type format: {message_type}, expected package/MessageName");
+        eyre::bail!("invalid type format: {type_str}, expected package/TypeName");
     }
     Ok((parts[0].to_string(), parts[1].to_string()))
 }
@@ -375,14 +823,12 @@ impl ToRustddsQos for Ros2QosConfig {
     fn to_rustdds_qos(&self) -> rustdds::QosPolicies {
         let mut builder = rustdds::QosPolicyBuilder::new();
 
-        // Durability
         let durability = match self.durability.as_deref() {
             Some("transient_local") => rustdds::policy::Durability::TransientLocal,
             _ => rustdds::policy::Durability::Volatile,
         };
         builder = builder.durability(durability);
 
-        // Reliability
         if self.reliable {
             let max_blocking = self
                 .max_blocking_time
@@ -395,7 +841,6 @@ impl ToRustddsQos for Ros2QosConfig {
             builder = builder.reliability(rustdds::policy::Reliability::BestEffort);
         }
 
-        // History
         if self.keep_all {
             builder = builder.history(rustdds::policy::History::KeepAll);
         } else {
@@ -405,7 +850,6 @@ impl ToRustddsQos for Ros2QosConfig {
             });
         }
 
-        // Liveliness
         let liveliness = match self.liveliness.as_deref() {
             Some("manual_by_participant") => rustdds::policy::Liveliness::ManualByParticipant {
                 lease_duration: lease_duration_from_secs(self.lease_duration),

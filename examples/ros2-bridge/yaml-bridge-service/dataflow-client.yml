@@ -1,0 +1,34 @@
+# Service Client Dataflow
+#
+# Demonstrates using the YAML ROS2 bridge as a service CLIENT.
+# The requester node sends AddTwoInts requests (pure Arrow data, no ROS2 deps),
+# the bridge forwards them to a ROS2 service, and returns the response.
+#
+# Prerequisites:
+#   - ROS2 environment sourced (AMENT_PREFIX_PATH set)
+#   - A ROS2 AddTwoInts service running, e.g.:
+#       ros2 run examples_rclcpp_minimal_service service_main
+#     OR run the companion dataflow-server.yml
+#
+# Usage:
+#   adora run dataflow-client.yml
+
+nodes:
+  - id: requester
+    build: cargo build -p yaml-bridge-service-requester
+    path: ../../../target/debug/yaml-bridge-service-requester
+    inputs:
+      tick: adora/timer/millis/1000
+      response: add_client/response
+    outputs:
+      - request
+
+  - id: add_client
+    ros2:
+      service: /add_two_ints
+      service_type: example_interfaces/AddTwoInts
+      role: client
+    inputs:
+      request: requester/request
+    outputs:
+      - response

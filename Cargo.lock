@@ -434,6 +434,7 @@ dependencies = [
  "adora-ros2-bridge-msg-gen",
  "arrow",
  "eyre",
+ "ros2-client",
  "serde",
 ]
 
@@ -468,6 +469,7 @@ dependencies = [
  "eyre",
  "flume 0.11.1",
  "futures",
+ "futures-timer",
  "serde",
  "serde_json",
  "tracing",
@@ -7865,6 +7867,24 @@ checksum = "32e45ad4206f6d2479085147f02bc2ef834ac85886624a23575ae137c8aa8156"
 dependencies = [
  "libc",
  "rustix 1.1.3",
+]
+
+[[package]]
+name = "yaml-bridge-service-handler"
+version = "0.4.1"
+dependencies = [
+ "adora-node-api",
+ "arrow",
+ "eyre",
+]
+
+[[package]]
+name = "yaml-bridge-service-requester"
+version = "0.4.1"
+dependencies = [
+ "adora-node-api",
+ "arrow",
+ "eyre",
 ]
 
 [[package]]

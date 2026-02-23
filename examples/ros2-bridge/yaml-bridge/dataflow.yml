@@ -1,4 +1,8 @@
 nodes:
+  # =============================================
+  # Topic bridges (subscribe / publish)
+  # =============================================
+
   # Subscribe to turtlesim pose via declarative ROS2 bridge
   - id: pose_bridge
     ros2:
@@ -45,3 +49,45 @@ nodes:
       tick: adora/timer/millis/100
     outputs:
       - cmd_vel
+
+  # =============================================
+  # Service bridges (request / response)
+  # =============================================
+
+  # Service Client: Adora sends request, receives response from ROS2
+  - id: add_client
+    ros2:
+      service: /add_two_ints
+      service_type: example_interfaces/AddTwoInts
+      role: client
+    inputs:
+      request: requester/data
+    outputs:
+      - response
+
+  # Service Server: ROS2 sends request, Adora responds
+  - id: add_server
+    ros2:
+      service: /add_two_ints
+      service_type: example_interfaces/AddTwoInts
+      role: server
+    inputs:
+      response: handler/result
+    outputs:
+      - request
+
+  # =============================================
+  # Action bridges (goal / feedback / result)
+  # =============================================
+
+  # Action Client: Adora sends goal, receives feedback + result from ROS2
+  - id: nav_client
+    ros2:
+      action: /navigate_to_pose
+      action_type: nav2_msgs/NavigateToPose
+      role: client
+    inputs:
+      goal: goal_sender/goal
+    outputs:
+      - feedback
+      - result

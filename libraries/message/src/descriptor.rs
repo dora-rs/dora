@@ -897,16 +897,18 @@ impl fmt::Display for EnvValue {
     }
 }
 
-/// ROS2 bridge configuration for declarative ROS2 topic bridging.
+/// ROS2 bridge configuration for declarative ROS2 bridging.
 ///
-/// This allows nodes to subscribe to or publish on ROS2 topics without
-/// writing any custom code. The framework spawns a bridge binary that
+/// This allows nodes to interact with ROS2 topics, services, and actions
+/// without writing any custom code. The framework spawns a bridge binary that
 /// handles the ROS2 DDS communication and Arrow data conversion.
+///
+/// Exactly one of `topic`, `topics`, `service`, or `action` must be set.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Ros2BridgeConfig {
     /// ROS2 topic name (e.g. "/camera/image_raw").
-    /// Mutually exclusive with `topics`.
+    /// Mutually exclusive with `topics`, `service`, `action`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub topic: Option<String>,
 
@@ -916,14 +918,38 @@ pub struct Ros2BridgeConfig {
     pub message_type: Option<String>,
 
     /// Direction: subscribe (ROS2 -> Adora) or publish (Adora -> ROS2).
-    /// Defaults to subscribe.
+    /// Defaults to subscribe. Only used with `topic`/`topics`.
     #[serde(default)]
     pub direction: Ros2Direction,
 
     /// Multiple topics on a single ROS2 node context.
-    /// Mutually exclusive with `topic`.
+    /// Mutually exclusive with `topic`, `service`, `action`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub topics: Option<Vec<Ros2TopicConfig>>,
+
+    /// ROS2 service name (e.g. "/add_two_ints").
+    /// Mutually exclusive with `topic`, `topics`, `action`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service: Option<String>,
+
+    /// ROS2 service type (e.g. "example_interfaces/AddTwoInts").
+    /// Required when `service` is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_type: Option<String>,
+
+    /// ROS2 action name (e.g. "/navigate").
+    /// Mutually exclusive with `topic`, `topics`, `service`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
+
+    /// ROS2 action type (e.g. "nav2_msgs/NavigateToPose").
+    /// Required when `action` is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action_type: Option<String>,
+
+    /// Role: client or server. Required for `service` and `action`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<Ros2Role>,
 
     /// QoS policies applied to all topics (can be overridden per-topic).
     #[serde(default)]
@@ -936,6 +962,35 @@ pub struct Ros2BridgeConfig {
     /// ROS2 node name. Defaults to the adora node id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_name: Option<String>,
+}
+
+impl Default for Ros2BridgeConfig {
+    fn default() -> Self {
+        Self {
+            topic: None,
+            message_type: None,
+            direction: Ros2Direction::default(),
+            topics: None,
+            service: None,
+            service_type: None,
+            action: None,
+            action_type: None,
+            role: None,
+            qos: Ros2QosConfig::default(),
+            namespace: default_ros2_namespace(),
+            node_name: None,
+        }
+    }
+}
+
+/// Role of a ROS2 service or action bridge node.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Ros2Role {
+    /// Client: sends requests/goals, receives responses/results.
+    Client,
+    /// Server: receives requests, sends responses.
+    Server,
 }
 
 fn default_ros2_namespace() -> String {

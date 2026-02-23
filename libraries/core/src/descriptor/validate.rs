@@ -424,60 +424,133 @@ fn validate_ros2_config(
     node_inputs: &BTreeMap<DataId, Input>,
     node_outputs: &BTreeSet<DataId>,
 ) -> eyre::Result<()> {
-    use adora_message::descriptor::Ros2Direction;
+    use adora_message::descriptor::{Ros2Direction, Ros2Role};
 
-    // topic and topics are mutually exclusive, at least one required
-    match (&config.topic, &config.topics) {
-        (None, None) => bail!("node `{node_id}`: ros2 config requires either `topic` or `topics`"),
-        (Some(_), Some(_)) => bail!(
-            "node `{node_id}`: ros2 config has both `topic` and `topics`, only one is allowed"
-        ),
-        (Some(topic), None) => {
-            let message_type = config.message_type.as_ref().ok_or_else(|| {
-                eyre!("node `{node_id}`: ros2 config with `topic` requires `message_type`")
-            })?;
-            validate_ros2_message_type(node_id, topic, message_type)?;
+    // Exactly one of topic, topics, service, action must be set
+    let mode_count = [
+        config.topic.is_some(),
+        config.topics.is_some(),
+        config.service.is_some(),
+        config.action.is_some(),
+    ]
+    .iter()
+    .filter(|&&v| v)
+    .count();
+    if mode_count == 0 {
+        bail!(
+            "node `{node_id}`: ros2 config requires one of \
+             `topic`, `topics`, `service`, or `action`"
+        );
+    }
+    if mode_count > 1 {
+        bail!(
+            "node `{node_id}`: ros2 config has multiple of \
+             `topic`, `topics`, `service`, `action` - only one is allowed"
+        );
+    }
 
-            // Check direction-vs-IO consistency for single-topic mode
-            match &config.direction {
-                Ros2Direction::Subscribe => {
-                    if node_outputs.is_empty() {
-                        bail!(
-                            "node `{node_id}`: ros2 subscribe bridge requires at least one output"
-                        );
-                    }
+    if let Some(topic) = &config.topic {
+        let message_type = config.message_type.as_ref().ok_or_else(|| {
+            eyre!("node `{node_id}`: ros2 config with `topic` requires `message_type`")
+        })?;
+        validate_ros2_type_format(node_id, topic, message_type)?;
+
+        match &config.direction {
+            Ros2Direction::Subscribe => {
+                if node_outputs.is_empty() {
+                    bail!("node `{node_id}`: ros2 subscribe bridge requires at least one output");
                 }
-                Ros2Direction::Publish => {
-                    if node_inputs.is_empty() {
-                        bail!("node `{node_id}`: ros2 publish bridge requires at least one input");
-                    }
+            }
+            Ros2Direction::Publish => {
+                if node_inputs.is_empty() {
+                    bail!("node `{node_id}`: ros2 publish bridge requires at least one input");
                 }
             }
         }
-        (None, Some(topics)) => {
-            if topics.is_empty() {
-                bail!("node `{node_id}`: ros2 `topics` list must not be empty");
+    } else if let Some(topics) = &config.topics {
+        if topics.is_empty() {
+            bail!("node `{node_id}`: ros2 `topics` list must not be empty");
+        }
+        let mut has_subscribe = false;
+        let mut has_publish = false;
+        for t in topics {
+            validate_ros2_type_format(node_id, &t.topic, &t.message_type)?;
+            match &t.direction {
+                Ros2Direction::Subscribe => has_subscribe = true,
+                Ros2Direction::Publish => has_publish = true,
             }
-            let mut has_subscribe = false;
-            let mut has_publish = false;
-            for t in topics {
-                validate_ros2_message_type(node_id, &t.topic, &t.message_type)?;
-                match &t.direction {
-                    Ros2Direction::Subscribe => has_subscribe = true,
-                    Ros2Direction::Publish => has_publish = true,
+        }
+        if has_subscribe && node_outputs.is_empty() {
+            bail!(
+                "node `{node_id}`: ros2 multi-topic bridge with subscribe topics \
+                 requires at least one output"
+            );
+        }
+        if has_publish && node_inputs.is_empty() {
+            bail!(
+                "node `{node_id}`: ros2 multi-topic bridge with publish topics \
+                 requires at least one input"
+            );
+        }
+    } else if let Some(service) = &config.service {
+        let service_type = config.service_type.as_ref().ok_or_else(|| {
+            eyre!("node `{node_id}`: ros2 config with `service` requires `service_type`")
+        })?;
+        validate_ros2_type_format(node_id, service, service_type)?;
+        let role = config.role.as_ref().ok_or_else(|| {
+            eyre!("node `{node_id}`: ros2 service bridge requires `role` (client or server)")
+        })?;
+        match role {
+            Ros2Role::Client => {
+                if node_inputs.is_empty() {
+                    bail!(
+                        "node `{node_id}`: ros2 service client requires at least one input (request)"
+                    );
+                }
+                if node_outputs.is_empty() {
+                    bail!(
+                        "node `{node_id}`: ros2 service client requires at least one output (response)"
+                    );
                 }
             }
-            if has_subscribe && node_outputs.is_empty() {
-                bail!(
-                    "node `{node_id}`: ros2 multi-topic bridge with subscribe topics \
-                     requires at least one output"
-                );
+            Ros2Role::Server => {
+                if node_inputs.is_empty() {
+                    bail!(
+                        "node `{node_id}`: ros2 service server requires at least one input (response)"
+                    );
+                }
+                if node_outputs.is_empty() {
+                    bail!(
+                        "node `{node_id}`: ros2 service server requires at least one output (request)"
+                    );
+                }
             }
-            if has_publish && node_inputs.is_empty() {
-                bail!(
-                    "node `{node_id}`: ros2 multi-topic bridge with publish topics \
-                     requires at least one input"
-                );
+        }
+    } else if let Some(action) = &config.action {
+        let action_type = config.action_type.as_ref().ok_or_else(|| {
+            eyre!("node `{node_id}`: ros2 config with `action` requires `action_type`")
+        })?;
+        validate_ros2_type_format(node_id, action, action_type)?;
+        let role = config
+            .role
+            .as_ref()
+            .ok_or_else(|| eyre!("node `{node_id}`: ros2 action bridge requires `role`"))?;
+        match role {
+            Ros2Role::Client => {
+                if node_inputs.is_empty() {
+                    bail!(
+                        "node `{node_id}`: ros2 action client requires at least one input (goal)"
+                    );
+                }
+                if node_outputs.is_empty() {
+                    bail!(
+                        "node `{node_id}`: ros2 action client requires at least one output \
+                         (feedback/result)"
+                    );
+                }
+            }
+            Ros2Role::Server => {
+                bail!("node `{node_id}`: ros2 action server role is not yet supported");
             }
         }
     }
@@ -485,18 +558,281 @@ fn validate_ros2_config(
     Ok(())
 }
 
-fn validate_ros2_message_type(
-    node_id: &NodeId,
-    topic: &str,
-    message_type: &str,
-) -> eyre::Result<()> {
-    // message_type must be "package/MessageName" format
-    let parts: Vec<&str> = message_type.split('/').collect();
+fn validate_ros2_type_format(node_id: &NodeId, name: &str, type_str: &str) -> eyre::Result<()> {
+    // type must be "package/TypeName" format
+    let parts: Vec<&str> = type_str.split('/').collect();
     if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
         bail!(
-            "node `{node_id}`: invalid message_type `{message_type}` for topic `{topic}`, \
-             expected format `package/MessageName` (e.g. `sensor_msgs/Image`)"
+            "node `{node_id}`: invalid type `{type_str}` for `{name}`, \
+             expected format `package/TypeName` (e.g. `sensor_msgs/Image`)"
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use adora_message::config::{Input, InputMapping};
+    use adora_message::descriptor::{Ros2BridgeConfig, Ros2Role};
+    use std::time::Duration;
+
+    fn dummy_input() -> Input {
+        Input {
+            mapping: InputMapping::Timer {
+                interval: Duration::from_secs(1),
+            },
+            queue_size: None,
+            input_timeout: None,
+        }
+    }
+
+    fn service_config(role: Ros2Role) -> Ros2BridgeConfig {
+        Ros2BridgeConfig {
+            service: Some("/add_two_ints".into()),
+            service_type: Some("example_interfaces/AddTwoInts".into()),
+            role: Some(role),
+            ..Default::default()
+        }
+    }
+
+    fn action_config(role: Ros2Role) -> Ros2BridgeConfig {
+        Ros2BridgeConfig {
+            action: Some("/navigate".into()),
+            action_type: Some("nav2_msgs/NavigateToPose".into()),
+            role: Some(role),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn validate_no_mode_set() {
+        let config = Ros2BridgeConfig::default();
+        let err = validate_ros2_config(
+            &NodeId::from("n".to_owned()),
+            &config,
+            &BTreeMap::new(),
+            &BTreeSet::new(),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("requires one of"));
+    }
+
+    #[test]
+    fn validate_multiple_modes() {
+        let config = Ros2BridgeConfig {
+            topic: Some("/t".into()),
+            service: Some("/s".into()),
+            message_type: Some("a/B".into()),
+            service_type: Some("a/B".into()),
+            role: Some(Ros2Role::Client),
+            ..Default::default()
+        };
+        let err = validate_ros2_config(
+            &NodeId::from("n".to_owned()),
+            &config,
+            &BTreeMap::new(),
+            &BTreeSet::new(),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("multiple of"));
+    }
+
+    #[test]
+    fn validate_service_client_ok() {
+        let config = service_config(Ros2Role::Client);
+        let mut inputs = BTreeMap::new();
+        inputs.insert(DataId::from("request".to_owned()), dummy_input());
+        let mut outputs = BTreeSet::new();
+        outputs.insert(DataId::from("response".to_owned()));
+        validate_ros2_config(&NodeId::from("n".to_owned()), &config, &inputs, &outputs).unwrap();
+    }
+
+    #[test]
+    fn validate_service_client_missing_service_type() {
+        let config = Ros2BridgeConfig {
+            service: Some("/svc".into()),
+            role: Some(Ros2Role::Client),
+            ..Default::default()
+        };
+        let mut inputs = BTreeMap::new();
+        inputs.insert(DataId::from("request".to_owned()), dummy_input());
+        let mut outputs = BTreeSet::new();
+        outputs.insert(DataId::from("response".to_owned()));
+        let err = validate_ros2_config(&NodeId::from("n".to_owned()), &config, &inputs, &outputs)
+            .unwrap_err();
+        assert!(err.to_string().contains("service_type"));
+    }
+
+    #[test]
+    fn validate_service_client_missing_role() {
+        let config = Ros2BridgeConfig {
+            service: Some("/svc".into()),
+            service_type: Some("a/B".into()),
+            ..Default::default()
+        };
+        let mut inputs = BTreeMap::new();
+        inputs.insert(DataId::from("request".to_owned()), dummy_input());
+        let mut outputs = BTreeSet::new();
+        outputs.insert(DataId::from("response".to_owned()));
+        let err = validate_ros2_config(&NodeId::from("n".to_owned()), &config, &inputs, &outputs)
+            .unwrap_err();
+        assert!(err.to_string().contains("role"));
+    }
+
+    #[test]
+    fn validate_service_client_no_inputs() {
+        let config = service_config(Ros2Role::Client);
+        let mut outputs = BTreeSet::new();
+        outputs.insert(DataId::from("response".to_owned()));
+        let err = validate_ros2_config(
+            &NodeId::from("n".to_owned()),
+            &config,
+            &BTreeMap::new(),
+            &outputs,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("input"));
+    }
+
+    #[test]
+    fn validate_service_client_no_outputs() {
+        let config = service_config(Ros2Role::Client);
+        let mut inputs = BTreeMap::new();
+        inputs.insert(DataId::from("request".to_owned()), dummy_input());
+        let err = validate_ros2_config(
+            &NodeId::from("n".to_owned()),
+            &config,
+            &inputs,
+            &BTreeSet::new(),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("output"));
+    }
+
+    #[test]
+    fn validate_service_server_ok() {
+        let config = service_config(Ros2Role::Server);
+        let mut inputs = BTreeMap::new();
+        inputs.insert(DataId::from("response".to_owned()), dummy_input());
+        let mut outputs = BTreeSet::new();
+        outputs.insert(DataId::from("request".to_owned()));
+        validate_ros2_config(&NodeId::from("n".to_owned()), &config, &inputs, &outputs).unwrap();
+    }
+
+    #[test]
+    fn validate_service_server_no_inputs() {
+        let config = service_config(Ros2Role::Server);
+        let mut outputs = BTreeSet::new();
+        outputs.insert(DataId::from("request".to_owned()));
+        let err = validate_ros2_config(
+            &NodeId::from("n".to_owned()),
+            &config,
+            &BTreeMap::new(),
+            &outputs,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("input"));
+    }
+
+    #[test]
+    fn validate_service_server_no_outputs() {
+        let config = service_config(Ros2Role::Server);
+        let mut inputs = BTreeMap::new();
+        inputs.insert(DataId::from("response".to_owned()), dummy_input());
+        let err = validate_ros2_config(
+            &NodeId::from("n".to_owned()),
+            &config,
+            &inputs,
+            &BTreeSet::new(),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("output"));
+    }
+
+    #[test]
+    fn validate_action_client_ok() {
+        let config = action_config(Ros2Role::Client);
+        let mut inputs = BTreeMap::new();
+        inputs.insert(DataId::from("goal".to_owned()), dummy_input());
+        let mut outputs = BTreeSet::new();
+        outputs.insert(DataId::from("feedback".to_owned()));
+        outputs.insert(DataId::from("result".to_owned()));
+        validate_ros2_config(&NodeId::from("n".to_owned()), &config, &inputs, &outputs).unwrap();
+    }
+
+    #[test]
+    fn validate_action_client_missing_action_type() {
+        let config = Ros2BridgeConfig {
+            action: Some("/nav".into()),
+            role: Some(Ros2Role::Client),
+            ..Default::default()
+        };
+        let mut inputs = BTreeMap::new();
+        inputs.insert(DataId::from("goal".to_owned()), dummy_input());
+        let mut outputs = BTreeSet::new();
+        outputs.insert(DataId::from("feedback".to_owned()));
+        let err = validate_ros2_config(&NodeId::from("n".to_owned()), &config, &inputs, &outputs)
+            .unwrap_err();
+        assert!(err.to_string().contains("action_type"));
+    }
+
+    #[test]
+    fn validate_action_client_no_inputs() {
+        let config = action_config(Ros2Role::Client);
+        let mut outputs = BTreeSet::new();
+        outputs.insert(DataId::from("feedback".to_owned()));
+        let err = validate_ros2_config(
+            &NodeId::from("n".to_owned()),
+            &config,
+            &BTreeMap::new(),
+            &outputs,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("input"));
+    }
+
+    #[test]
+    fn validate_action_client_no_outputs() {
+        let config = action_config(Ros2Role::Client);
+        let mut inputs = BTreeMap::new();
+        inputs.insert(DataId::from("goal".to_owned()), dummy_input());
+        let err = validate_ros2_config(
+            &NodeId::from("n".to_owned()),
+            &config,
+            &inputs,
+            &BTreeSet::new(),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("output"));
+    }
+
+    #[test]
+    fn validate_action_server_unsupported() {
+        let config = action_config(Ros2Role::Server);
+        let mut inputs = BTreeMap::new();
+        inputs.insert(DataId::from("goal".to_owned()), dummy_input());
+        let mut outputs = BTreeSet::new();
+        outputs.insert(DataId::from("result".to_owned()));
+        let err = validate_ros2_config(&NodeId::from("n".to_owned()), &config, &inputs, &outputs)
+            .unwrap_err();
+        assert!(err.to_string().contains("not yet supported"));
+    }
+
+    #[test]
+    fn validate_bad_type_format() {
+        let config = Ros2BridgeConfig {
+            service: Some("/svc".into()),
+            service_type: Some("invalid_no_slash".into()),
+            role: Some(Ros2Role::Client),
+            ..Default::default()
+        };
+        let mut inputs = BTreeMap::new();
+        inputs.insert(DataId::from("request".to_owned()), dummy_input());
+        let mut outputs = BTreeSet::new();
+        outputs.insert(DataId::from("response".to_owned()));
+        let err = validate_ros2_config(&NodeId::from("n".to_owned()), &config, &inputs, &outputs)
+            .unwrap_err();
+        assert!(err.to_string().contains("package/TypeName"));
+    }
 }
