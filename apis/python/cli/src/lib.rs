@@ -1,8 +1,3 @@
-use std::env::current_dir;
-use std::path::PathBuf;
-
-use adora_download::download_file;
-use adora_node_api::adora_core::descriptor::source_is_url;
 use eyre::Context;
 use pyo3::prelude::*;
 
@@ -12,22 +7,6 @@ use pyo3::prelude::*;
 #[pyfunction]
 pub fn start_runtime() -> eyre::Result<()> {
     adora_runtime::main().wrap_err("Adora Runtime raised an error.")
-}
-
-fn resolve_dataflow(dataflow: String) -> eyre::Result<PathBuf> {
-    let dataflow = if source_is_url(&dataflow) {
-        // try to download the shared library
-        let target_path = current_dir().context("Could not access the current dir")?;
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .context("tokio runtime failed")?;
-        rt.block_on(async { download_file(&dataflow, &target_path).await })
-            .wrap_err("failed to download dataflow yaml file")?
-    } else {
-        PathBuf::from(dataflow)
-    };
-    Ok(dataflow)
 }
 
 /// Build a Dataflow, exactly the same way as `adora build` command line tool.
@@ -82,8 +61,8 @@ pub fn run(dataflow_path: String, uv: Option<bool>, stop_after: Option<f64>) -> 
     run.execute()
 }
 
-#[pymodule]
-fn adora_cli(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
+#[pymodule(name = "adora_cli")]
+fn adora_cli_python(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(start_runtime, &m)?)?;
     m.add_function(wrap_pyfunction!(run, &m)?)?;
     m.add_function(wrap_pyfunction!(build, &m)?)?;
