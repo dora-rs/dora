@@ -984,7 +984,7 @@ impl Default for Ros2BridgeConfig {
 }
 
 /// Role of a ROS2 service or action bridge node.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Ros2Role {
     /// Client: sends requests/goals, receives responses/results.

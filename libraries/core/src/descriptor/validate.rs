@@ -559,13 +559,21 @@ fn validate_ros2_config(
 }
 
 fn validate_ros2_type_format(node_id: &NodeId, name: &str, type_str: &str) -> eyre::Result<()> {
-    // type must be "package/TypeName" format
+    // type must be "package/TypeName" format with alphanumeric+underscore parts
     let parts: Vec<&str> = type_str.split('/').collect();
     if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
         bail!(
             "node `{node_id}`: invalid type `{type_str}` for `{name}`, \
              expected format `package/TypeName` (e.g. `sensor_msgs/Image`)"
         );
+    }
+    for (label, part) in [("package", parts[0]), ("type name", parts[1])] {
+        if !part.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            bail!(
+                "node `{node_id}`: invalid {label} `{part}` in type `{type_str}` for `{name}`, \
+                 only ASCII alphanumeric and underscore characters allowed"
+            );
+        }
     }
     Ok(())
 }
@@ -834,5 +842,22 @@ mod tests {
         let err = validate_ros2_config(&NodeId::from("n".to_owned()), &config, &inputs, &outputs)
             .unwrap_err();
         assert!(err.to_string().contains("package/TypeName"));
+    }
+
+    #[test]
+    fn validate_type_rejects_special_chars() {
+        let config = Ros2BridgeConfig {
+            service: Some("/svc".into()),
+            service_type: Some("pkg-bad/Evil".into()),
+            role: Some(Ros2Role::Client),
+            ..Default::default()
+        };
+        let mut inputs = BTreeMap::new();
+        inputs.insert(DataId::from("request".to_owned()), dummy_input());
+        let mut outputs = BTreeSet::new();
+        outputs.insert(DataId::from("response".to_owned()));
+        let err = validate_ros2_config(&NodeId::from("n".to_owned()), &config, &inputs, &outputs)
+            .unwrap_err();
+        assert!(err.to_string().contains("alphanumeric"));
     }
 }

@@ -23,6 +23,10 @@ fn main() -> eyre::Result<()> {
                         .as_any()
                         .downcast_ref::<StructArray>()
                         .expect("expected struct array for request");
+                    if struct_array.len() == 0 {
+                        eprintln!("Warning: received empty request array");
+                        continue;
+                    }
                     let a = struct_array
                         .column_by_name("a")
                         .expect("missing 'a' field")

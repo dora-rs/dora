@@ -54,7 +54,7 @@ nodes:
   # Service bridges (request / response)
   # =============================================
 
-  # Service Client: Adora sends request, receives response from ROS2
+  # Service Client: Adora sends request to an external ROS2 service, receives response
   - id: add_client
     ros2:
       service: /add_two_ints
@@ -65,10 +65,11 @@ nodes:
     outputs:
       - response
 
-  # Service Server: ROS2 sends request, Adora responds
+  # Service Server: Adora exposes a ROS2 service for external ROS2 clients to call
+  # NOTE: Uses a different service name than add_client above -- they are independent.
   - id: add_server
     ros2:
-      service: /add_two_ints
+      service: /adora_add_two_ints
       service_type: example_interfaces/AddTwoInts
       role: server
     inputs:

@@ -422,12 +422,21 @@ fn run_action_client(
 
                 let array_data = data.to_data();
 
-                // Send goal (guard clears thread-local on drop)
+                // Send goal with timeout (guard clears thread-local on drop)
                 let _guard = TypeInfoGuard::serialize(goal_type_info.clone());
-                let (goal_id, send_goal_response) = futures::executor::block_on(
-                    client.async_send_goal(BridgeMessage(Some(array_data))),
-                )
-                .map_err(|e| eyre!("failed to send action goal: {e:?}"))?;
+                let (goal_id, send_goal_response) = futures::executor::block_on(async {
+                    let send = client.async_send_goal(BridgeMessage(Some(array_data)));
+                    futures::pin_mut!(send);
+                    let timeout = futures_timer::Delay::new(SERVICE_RESPONSE_TIMEOUT);
+                    match futures::future::select(send, timeout).await {
+                        futures::future::Either::Left((result, _)) => {
+                            result.map_err(|e| eyre!("failed to send action goal: {e:?}"))
+                        }
+                        futures::future::Either::Right(_) => {
+                            eyre::bail!("action goal send timed out")
+                        }
+                    }
+                })?;
 
                 if !send_goal_response.accepted {
                     tracing::warn!("action goal was rejected by server");
@@ -452,6 +461,8 @@ fn run_action_client(
                                         if feedback_tx.send(ActionEvent::Feedback(data)).is_err() {
                                             break;
                                         }
+                                    } else {
+                                        tracing::warn!("action feedback contained no data");
                                     }
                                 }
                                 Err(e) => {
@@ -474,6 +485,8 @@ fn run_action_client(
                         Ok((_status, msg)) => {
                             if let Some(data) = msg.0 {
                                 let _ = result_tx.send(ActionEvent::Result(data));
+                            } else {
+                                tracing::warn!("action result contained no data");
                             }
                         }
                         Err(e) => {
@@ -714,7 +727,7 @@ fn create_ros_node(
         .map_err(|e| eyre!("failed to create spinner: {e:?}"))?;
     pool.spawn(async {
         if let Err(err) = spinner.spin().await {
-            eprintln!("ros2 spinner failed: {err:?}");
+            tracing::error!("ros2 spinner failed: {err:?}");
         }
     })
     .context("failed to spawn ros2 spinner")?;
@@ -788,8 +801,16 @@ fn load_messages() -> eyre::Result<Arc<HashMap<String, HashMap<String, Message>>
 
 fn parse_type_str(type_str: &str) -> eyre::Result<(String, String)> {
     let parts: Vec<&str> = type_str.split('/').collect();
-    if parts.len() != 2 {
+    if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
         eyre::bail!("invalid type format: {type_str}, expected package/TypeName");
+    }
+    for (label, part) in [("package", parts[0]), ("type name", parts[1])] {
+        if !part.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            eyre::bail!(
+                "invalid {label} `{part}` in type `{type_str}`: \
+                 only ASCII alphanumeric and underscore allowed"
+            );
+        }
     }
     Ok((parts[0].to_string(), parts[1].to_string()))
 }

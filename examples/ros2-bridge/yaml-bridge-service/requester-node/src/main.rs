@@ -35,6 +35,10 @@ fn main() -> eyre::Result<()> {
                         .as_any()
                         .downcast_ref::<StructArray>()
                         .expect("expected struct array for response");
+                    if struct_array.len() == 0 {
+                        eprintln!("Warning: received empty response array");
+                        continue;
+                    }
                     let sum = struct_array
                         .column_by_name("sum")
                         .expect("missing 'sum' field")
