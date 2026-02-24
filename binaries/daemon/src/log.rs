@@ -16,10 +16,9 @@ use adora_message::{
 };
 use eyre::Context;
 use flume::Sender;
-use tokio::net::TcpStream;
 use uuid::Uuid;
 
-use crate::socket_stream_utils::socket_stream_send;
+use crate::coordinator::CoordinatorSender;
 
 pub fn log_path(working_dir: &Path, dataflow_id: &Uuid, node_id: &NodeId) -> PathBuf {
     let dataflow_dir = working_dir.join("out").join(dataflow_id.to_string());
@@ -309,9 +308,7 @@ impl Logger {
 
     pub async fn log(&mut self, message: LogMessage) {
         match &mut self.destination {
-            LogDestination::Coordinator {
-                coordinator_connection,
-            } => {
+            LogDestination::Coordinator { sender } => {
                 let message = Timestamped {
                     inner: CoordinatorRequest::Event {
                         daemon_id: self.daemon_id.clone(),
@@ -319,7 +316,7 @@ impl Logger {
                     },
                     timestamp: self.clock.new_timestamp(),
                 };
-                Self::log_to_coordinator(message, coordinator_connection).await
+                Self::log_to_coordinator(message, sender).await
             }
             LogDestination::Channel { sender } => {
                 let _ = sender.send_async(message).await;
@@ -402,19 +399,9 @@ impl Logger {
 
     pub async fn try_clone(&self) -> eyre::Result<Self> {
         let destination = match &self.destination {
-            LogDestination::Coordinator {
-                coordinator_connection,
-            } => {
-                let addr = coordinator_connection
-                    .peer_addr()
-                    .context("failed to get coordinator peer addr")?;
-                let new_connection = TcpStream::connect(addr)
-                    .await
-                    .context("failed to connect to coordinator during logger clone")?;
-                LogDestination::Coordinator {
-                    coordinator_connection: new_connection,
-                }
-            }
+            LogDestination::Coordinator { sender } => LogDestination::Coordinator {
+                sender: sender.clone(),
+            },
             LogDestination::Channel { sender } => LogDestination::Channel {
                 sender: sender.clone(),
             },
@@ -430,10 +417,11 @@ impl Logger {
 
     async fn log_to_coordinator(
         message: Timestamped<CoordinatorRequest>,
-        connection: &mut TcpStream,
+        sender: &CoordinatorSender,
     ) {
         let msg = serde_json::to_vec(&message).expect("failed to serialize log message");
-        match socket_stream_send(connection, &msg)
+        match sender
+            .send_event(&msg)
             .await
             .wrap_err("failed to send log message to adora-coordinator")
         {
@@ -444,7 +432,7 @@ impl Logger {
 }
 
 pub enum LogDestination {
-    Coordinator { coordinator_connection: TcpStream },
+    Coordinator { sender: CoordinatorSender },
     Channel { sender: Sender<LogMessage> },
     Tracing,
 }

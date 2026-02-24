@@ -1,14 +1,13 @@
-use crate::{LOCALHOST, formatting::FormatDataflowError};
+use crate::{LOCALHOST, formatting::FormatDataflowError, ws_client::WsSession};
 use adora_core::{
     descriptor::{Descriptor, source_is_url},
-    topics::ADORA_COORDINATOR_PORT_CONTROL_DEFAULT,
+    topics::ADORA_COORDINATOR_PORT_WS_DEFAULT,
 };
 use adora_download::download_file;
 use adora_message::{
     cli_to_coordinator::ControlRequest,
     coordinator_to_cli::{ControlRequestReply, DataflowList, DataflowResult},
 };
-use communication_layer_request_reply::{RequestReplyLayer, TcpLayer, TcpRequestReplyConnection};
 use eyre::{Context, ContextCompat, bail};
 use std::{
     env::current_dir,
@@ -36,9 +35,7 @@ pub(crate) fn handle_dataflow_result(
     }
 }
 
-pub(crate) fn query_running_dataflows(
-    session: &mut TcpRequestReplyConnection,
-) -> eyre::Result<DataflowList> {
+pub(crate) fn query_running_dataflows(session: &WsSession) -> eyre::Result<DataflowList> {
     let reply_raw = session
         .request(&serde_json::to_vec(&ControlRequest::List).unwrap())
         .wrap_err("failed to send list message")?;
@@ -54,7 +51,7 @@ pub(crate) fn query_running_dataflows(
 }
 
 pub(crate) fn resolve_dataflow_identifier_interactive(
-    session: &mut TcpRequestReplyConnection,
+    session: &WsSession,
     name_or_uuid: Option<&str>,
 ) -> eyre::Result<Uuid> {
     if let Some(uuid) = name_or_uuid.and_then(|s| Uuid::parse_str(s).ok()) {
@@ -85,23 +82,20 @@ pub(crate) struct CoordinatorOptions {
     /// Address of the adora coordinator
     #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
     pub coordinator_addr: IpAddr,
-    /// Port number of the coordinator control server
-    #[clap(long, value_name = "PORT", default_value_t = ADORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
+    /// Port number of the coordinator WebSocket server
+    #[clap(long, value_name = "PORT", default_value_t = ADORA_COORDINATOR_PORT_WS_DEFAULT)]
     pub coordinator_port: u16,
 }
 
 impl CoordinatorOptions {
-    pub fn connect(&self) -> eyre::Result<Box<TcpRequestReplyConnection>> {
-        let session = connect_to_coordinator((self.coordinator_addr, self.coordinator_port).into())
-            .wrap_err("failed to connect to adora coordinator")?;
-        Ok(session)
+    pub fn connect(&self) -> eyre::Result<WsSession> {
+        connect_to_coordinator((self.coordinator_addr, self.coordinator_port).into())
+            .wrap_err("failed to connect to adora coordinator")
     }
 }
 
-pub(crate) fn connect_to_coordinator(
-    coordinator_addr: SocketAddr,
-) -> std::io::Result<Box<TcpRequestReplyConnection>> {
-    TcpLayer::new().connect(coordinator_addr)
+pub(crate) fn connect_to_coordinator(coordinator_addr: SocketAddr) -> eyre::Result<WsSession> {
+    WsSession::connect(coordinator_addr)
 }
 
 pub(crate) fn resolve_dataflow(dataflow: String) -> eyre::Result<PathBuf> {
@@ -123,7 +117,7 @@ pub(crate) fn resolve_dataflow(dataflow: String) -> eyre::Result<PathBuf> {
 pub(crate) fn local_working_dir(
     dataflow_path: &Path,
     dataflow_descriptor: &Descriptor,
-    coordinator_session: &mut TcpRequestReplyConnection,
+    coordinator_session: &WsSession,
 ) -> eyre::Result<Option<PathBuf>> {
     Ok(
         if dataflow_descriptor
@@ -145,9 +139,7 @@ pub(crate) fn local_working_dir(
     )
 }
 
-pub(crate) fn cli_and_daemon_on_same_machine(
-    session: &mut TcpRequestReplyConnection,
-) -> eyre::Result<bool> {
+pub(crate) fn cli_and_daemon_on_same_machine(session: &WsSession) -> eyre::Result<bool> {
     let reply_raw = session
         .request(&serde_json::to_vec(&ControlRequest::CliAndDefaultDaemonOnSameMachine).unwrap())
         .wrap_err("failed to send start dataflow message")?;

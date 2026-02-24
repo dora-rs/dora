@@ -1,18 +1,16 @@
 use adora_message::coordinator_to_cli::LogMessage;
 use eyre::{Context, ContextCompat};
 
-use crate::tcp_utils::tcp_send;
-
 pub struct LogSubscriber {
     pub level: log::LevelFilter,
-    connection: Option<tokio::net::TcpStream>,
+    sender: Option<tokio::sync::mpsc::Sender<String>>,
 }
 
 impl LogSubscriber {
-    pub fn new(level: log::LevelFilter, connection: tokio::net::TcpStream) -> Self {
+    pub fn new(level: log::LevelFilter, sender: tokio::sync::mpsc::Sender<String>) -> Self {
         Self {
             level,
-            connection: Some(connection),
+            sender: Some(sender),
         }
     }
 
@@ -26,19 +24,27 @@ impl LogSubscriber {
             adora_core::build::LogLevelOrStdout::Stdout => {}
         }
 
-        let message = serde_json::to_vec(&message)?;
-        let connection = self.connection.as_mut().context("connection is closed")?;
-        tcp_send(connection, &message)
+        let sender = self.sender.as_ref().context("subscriber is closed")?;
+        let json = serde_json::to_string(&adora_message::ws_protocol::WsEvent {
+            event: "log".to_string(),
+            payload: serde_json::to_value(message)?,
+        })
+        .context("failed to serialize log WsEvent")?;
+        sender
+            .send(json)
             .await
-            .context("failed to send message")?;
+            .map_err(|_e| eyre::eyre!("WS log subscriber channel closed"))?;
         Ok(())
     }
 
     pub fn is_closed(&self) -> bool {
-        self.connection.is_none()
+        match &self.sender {
+            None => true,
+            Some(sender) => sender.is_closed(),
+        }
     }
 
     pub fn close(&mut self) {
-        self.connection = None;
+        self.sender = None;
     }
 }

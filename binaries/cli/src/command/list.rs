@@ -5,14 +5,14 @@ use crate::{
     LOCALHOST,
     common::{connect_to_coordinator, query_running_dataflows},
     formatting::OutputFormat,
+    ws_client::WsSession,
 };
-use adora_core::topics::ADORA_COORDINATOR_PORT_CONTROL_DEFAULT;
+use adora_core::topics::ADORA_COORDINATOR_PORT_WS_DEFAULT;
 use adora_message::{
     cli_to_coordinator::ControlRequest,
     coordinator_to_cli::{ControlRequestReply, DataflowStatus},
 };
 use clap::Args;
-use communication_layer_request_reply::TcpRequestReplyConnection;
 use eyre::{Context, bail, eyre};
 use serde::Serialize;
 use tabwriter::TabWriter;
@@ -25,7 +25,7 @@ pub struct ListArgs {
     #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
     pub coordinator_addr: std::net::IpAddr,
     /// Port number of the coordinator control server
-    #[clap(long, value_name = "PORT", default_value_t = ADORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
+    #[clap(long, value_name = "PORT", default_value_t = ADORA_COORDINATOR_PORT_WS_DEFAULT)]
     pub coordinator_port: u16,
     /// Output format
     #[clap(long, value_name = "FORMAT", default_value_t = OutputFormat::Table)]
@@ -45,12 +45,12 @@ impl Executable for ListArgs {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
 
-        let mut session =
+        let session =
             connect_to_coordinator((self.coordinator_addr, self.coordinator_port).into())
                 .map_err(|_| eyre!("Failed to connect to coordinator"))?;
 
         list(
-            &mut *session,
+            &session,
             self.format,
             self.status,
             self.name,
@@ -77,7 +77,7 @@ struct DataflowMetrics {
 }
 
 fn list(
-    session: &mut TcpRequestReplyConnection,
+    session: &WsSession,
     format: OutputFormat,
     status_filter: Option<String>,
     name_filter: Option<String>,

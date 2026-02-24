@@ -114,8 +114,8 @@ fn info(
     selector: TopicSelector,
     duration_secs: u64,
 ) -> eyre::Result<()> {
-    let mut session = coordinator.connect()?;
-    let (dataflow_id, topics) = selector.resolve(session.as_mut())?;
+    let session = coordinator.connect()?;
+    let (dataflow_id, topics) = selector.resolve(&session)?;
 
     if topics.is_empty() {
         eyre::bail!("No topics specified");
@@ -128,7 +128,7 @@ fn info(
     let topic = topics.into_iter().next().unwrap();
 
     // Get dataflow descriptor to find subscribers
-    let (_, descriptor) = selector.dataflow.resolve(session.as_mut())?;
+    let (_, descriptor) = selector.dataflow.resolve(&session)?;
 
     // Find subscribers
     let mut subscribers = Vec::new();

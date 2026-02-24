@@ -49,12 +49,13 @@
 
 use adora_core::{
     descriptor::{CoreNodeKind, CustomNode, Descriptor, DescriptorExt},
-    topics::{ADORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST},
+    topics::{ADORA_COORDINATOR_PORT_WS_DEFAULT, LOCALHOST},
 };
 use adora_message::{BuildId, descriptor::NodeSource};
-use communication_layer_request_reply::TcpRequestReplyConnection;
 use eyre::Context;
 use std::{collections::BTreeMap, net::IpAddr};
+
+use crate::ws_client::WsSession;
 
 use super::{Executable, default_tracing};
 use crate::{
@@ -190,15 +191,15 @@ pub fn build(
                 .context("failed to write out dataflow session file")?;
         }
         BuildKind::ThroughCoordinator {
-            mut coordinator_session,
+            coordinator_session,
         } => {
             let local_working_dir = local_working_dir(
                 &dataflow_path,
                 &dataflow_descriptor,
-                &mut *coordinator_session,
+                &coordinator_session,
             )?;
             let build_id = build_distributed_dataflow(
-                &mut *coordinator_session,
+                &coordinator_session,
                 dataflow_descriptor,
                 &git_sources,
                 &dataflow_session,
@@ -215,8 +216,7 @@ pub fn build(
 
             wait_until_dataflow_built(
                 build_id,
-                &mut *coordinator_session,
-                coordinator_socket(coordinator_addr, coordinator_port),
+                &coordinator_session,
                 log::LevelFilter::Info,
             )?;
 
@@ -234,23 +234,15 @@ pub fn build(
 enum BuildKind {
     Local,
     ThroughCoordinator {
-        coordinator_session: Box<TcpRequestReplyConnection>,
+        coordinator_session: WsSession,
     },
 }
 
 fn connect_to_coordinator_with_defaults(
     coordinator_addr: Option<std::net::IpAddr>,
     coordinator_port: Option<u16>,
-) -> std::io::Result<Box<TcpRequestReplyConnection>> {
-    let coordinator_socket = coordinator_socket(coordinator_addr, coordinator_port);
-    connect_to_coordinator(coordinator_socket)
-}
-
-fn coordinator_socket(
-    coordinator_addr: Option<std::net::IpAddr>,
-    coordinator_port: Option<u16>,
-) -> std::net::SocketAddr {
+) -> eyre::Result<WsSession> {
     let coordinator_addr = coordinator_addr.unwrap_or(LOCALHOST);
-    let coordinator_port = coordinator_port.unwrap_or(ADORA_COORDINATOR_PORT_CONTROL_DEFAULT);
-    (coordinator_addr, coordinator_port).into()
+    let coordinator_port = coordinator_port.unwrap_or(ADORA_COORDINATOR_PORT_WS_DEFAULT);
+    connect_to_coordinator((coordinator_addr, coordinator_port).into())
 }

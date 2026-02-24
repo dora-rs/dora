@@ -1,12 +1,10 @@
 use crate::{
-    events::Event,
     log_subscriber::LogSubscriber,
     run::{SpawnedDataflow, spawn_dataflow},
     state::{
         ArchivedDataflow, CachedResult, DaemonConnection, DaemonConnections, RunningBuild,
         RunningDataflow,
     },
-    tcp_utils::{tcp_receive, tcp_send},
 };
 use adora_core::{
     config::{NodeId, OperatorId},
@@ -29,7 +27,6 @@ use std::{
     path::PathBuf,
     time::Duration,
 };
-use tokio::{net::TcpStream, sync::mpsc};
 use uuid::Uuid;
 
 // Resolve the dataflow name.
@@ -57,7 +54,6 @@ pub(crate) fn resolve_name(
         } else if let [uuid] = archived_uuids.as_slice() {
             Ok(*uuid)
         } else {
-            // TODO: Index the archived dataflows in order to return logs based on the index.
             bail!(
                 "multiple archived dataflows found with name `{name}`, Please provide the UUID instead."
             );
@@ -108,7 +104,6 @@ pub(crate) async fn handle_destroy(
     running_dataflows: &mut HashMap<Uuid, RunningDataflow>,
     daemon_connections: &mut DaemonConnections,
     abortable_events: &futures::stream::AbortHandle,
-    daemon_events_tx: &mut Option<mpsc::Sender<Event>>,
     clock: &HLC,
 ) -> Result<(), eyre::ErrReport> {
     abortable_events.abort();
@@ -124,13 +119,11 @@ pub(crate) async fn handle_destroy(
         .await?;
     }
 
-    let result = destroy_daemons(daemon_connections, clock.new_timestamp()).await;
-    *daemon_events_tx = None;
-    result
+    destroy_daemons(daemon_connections, clock.new_timestamp()).await
 }
 
 pub(crate) async fn send_heartbeat_message(
-    connection: &mut TcpStream,
+    connection: &mut DaemonConnection,
     timestamp: uhlc::Timestamp,
 ) -> eyre::Result<()> {
     let message = serde_json::to_vec(&Timestamped {
@@ -139,7 +132,8 @@ pub(crate) async fn send_heartbeat_message(
     })
     .context("Could not serialize heartbeat message")?;
 
-    tcp_send(connection, &message)
+    connection
+        .send(&message)
         .await
         .wrap_err("failed to send heartbeat message to daemon")
 }
@@ -168,15 +162,12 @@ pub(crate) async fn stop_dataflow<'a>(
     for daemon_id in &dataflow.daemons {
         let daemon_connection = daemon_connections
             .get_mut(daemon_id)
-            .wrap_err("no daemon connection")?; // TODO: take from dataflow spec
-        tcp_send(&mut daemon_connection.stream, &message)
-            .await
-            .wrap_err("failed to send stop message to daemon")?;
+            .wrap_err("no daemon connection")?;
 
-        // wait for reply
-        let reply_raw = tcp_receive(&mut daemon_connection.stream)
+        let reply_raw = daemon_connection
+            .send_and_receive(&message)
             .await
-            .wrap_err("failed to receive stop reply from daemon")?;
+            .wrap_err("failed to send/receive stop message")?;
         match serde_json::from_slice(&reply_raw)
             .wrap_err("failed to deserialize stop reply from daemon")?
         {
@@ -215,15 +206,12 @@ pub(crate) async fn reload_dataflow(
     for machine_id in &dataflow.daemons {
         let daemon_connection = daemon_connections
             .get_mut(machine_id)
-            .wrap_err("no daemon connection")?; // TODO: take from dataflow spec
-        tcp_send(&mut daemon_connection.stream, &message)
-            .await
-            .wrap_err("failed to send reload message to daemon")?;
+            .wrap_err("no daemon connection")?;
 
-        // wait for reply
-        let reply_raw = tcp_receive(&mut daemon_connection.stream)
+        let reply_raw = daemon_connection
+            .send_and_receive(&message)
             .await
-            .wrap_err("failed to receive reload reply from daemon")?;
+            .wrap_err("failed to send/receive reload message")?;
         match serde_json::from_slice(&reply_raw)
             .wrap_err("failed to deserialize reload reply from daemon")?
         {
@@ -297,14 +285,11 @@ pub(crate) async fn retrieve_logs(
     let daemon_connection = daemon_connections
         .get_mut(&daemon_id)
         .wrap_err_with(|| format!("no daemon connection to `{daemon_id}`"))?;
-    tcp_send(&mut daemon_connection.stream, &message)
-        .await
-        .wrap_err("failed to send logs message to daemon")?;
 
-    // wait for reply
-    let reply_raw = tcp_receive(&mut daemon_connection.stream)
+    let reply_raw = daemon_connection
+        .send_and_receive(&message)
         .await
-        .wrap_err("failed to retrieve logs reply from daemon")?;
+        .wrap_err("failed to send/receive logs message")?;
     let reply_logs = match serde_json::from_slice(&reply_raw)
         .wrap_err("failed to deserialize logs reply from daemon")?
     {
@@ -414,13 +399,11 @@ async fn build_dataflow_on_machine(
     let daemon_connection = daemon_connections
         .get_mut(&daemon_id)
         .wrap_err_with(|| format!("no daemon connection for daemon `{daemon_id}`"))?;
-    tcp_send(&mut daemon_connection.stream, message)
-        .await
-        .wrap_err("failed to send build message to daemon")?;
 
-    let reply_raw = tcp_receive(&mut daemon_connection.stream)
+    let reply_raw = daemon_connection
+        .send_and_receive(message)
         .await
-        .wrap_err("failed to receive build reply from daemon")?;
+        .wrap_err("failed to send/receive build message")?;
     match serde_json::from_slice(&reply_raw)
         .wrap_err("failed to deserialize build reply from daemon")?
     {
@@ -485,7 +468,6 @@ pub(crate) async fn start_dataflow(
 async fn destroy_daemon(
     daemon_id: DaemonId,
     mut daemon_connection: DaemonConnection,
-
     timestamp: uhlc::Timestamp,
 ) -> eyre::Result<()> {
     let message = serde_json::to_vec(&Timestamped {
@@ -493,16 +475,12 @@ async fn destroy_daemon(
         timestamp,
     })?;
 
-    tcp_send(&mut daemon_connection.stream, &message)
+    let reply_raw = daemon_connection
+        .send_and_receive(&message)
         .await
         .wrap_err(format!(
-            "failed to send destroy message to daemon `{daemon_id}`"
+            "failed to send/receive destroy message to daemon `{daemon_id}`"
         ))?;
-
-    // wait for reply
-    let reply_raw = tcp_receive(&mut daemon_connection.stream)
-        .await
-        .wrap_err("failed to receive destroy reply from daemon")?;
     match serde_json::from_slice(&reply_raw)
         .wrap_err("failed to deserialize destroy reply from daemon")?
     {

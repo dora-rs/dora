@@ -11,9 +11,9 @@ use adora_message::{
     daemon_to_node::DaemonReply,
 };
 use eyre::{Context, bail};
-use tokio::{net::TcpStream, sync::oneshot};
+use tokio::sync::oneshot;
 
-use crate::{CascadingErrorCauses, log::DataflowLogger, socket_stream_utils::socket_stream_send};
+use crate::{CascadingErrorCauses, coordinator::CoordinatorSender, log::DataflowLogger};
 
 pub struct PendingNodes {
     dataflow_id: DataflowId,
@@ -67,7 +67,7 @@ impl PendingNodes {
         &mut self,
         node_id: NodeId,
         reply_sender: oneshot::Sender<DaemonReply>,
-        coordinator_connection: &mut Option<TcpStream>,
+        coordinator_sender: &mut Option<CoordinatorSender>,
         clock: &HLC,
         cascading_errors: &mut CascadingErrorCauses,
         logger: &mut DataflowLogger<'_>,
@@ -76,14 +76,14 @@ impl PendingNodes {
             .insert(node_id.clone(), reply_sender);
         self.local_nodes.remove(&node_id);
 
-        self.update_dataflow_status(coordinator_connection, clock, cascading_errors, logger)
+        self.update_dataflow_status(coordinator_sender, clock, cascading_errors, logger)
             .await
     }
 
     pub async fn handle_node_stop(
         &mut self,
         node_id: &NodeId,
-        coordinator_connection: &mut Option<TcpStream>,
+        coordinator_sender: &mut Option<CoordinatorSender>,
         clock: &HLC,
         cascading_errors: &mut CascadingErrorCauses,
         logger: &mut DataflowLogger<'_>,
@@ -98,7 +98,7 @@ impl PendingNodes {
                 )
                 .await;
             self.exited_before_subscribe.push(node_id.clone());
-            self.update_dataflow_status(coordinator_connection, clock, cascading_errors, logger)
+            self.update_dataflow_status(coordinator_sender, clock, cascading_errors, logger)
                 .await?;
         }
         Ok(())
@@ -106,7 +106,7 @@ impl PendingNodes {
 
     pub async fn handle_dataflow_stop(
         &mut self,
-        coordinator_connection: &mut Option<TcpStream>,
+        coordinator_sender: &mut Option<CoordinatorSender>,
         clock: &HLC,
         cascading_errors: &mut CascadingErrorCauses,
         dynamic_nodes: &BTreeSet<NodeId>,
@@ -116,7 +116,7 @@ impl PendingNodes {
         for node_id in dynamic_nodes {
             if self.local_nodes.remove(node_id) {
                 self.update_dataflow_status(
-                    coordinator_connection,
+                    coordinator_sender,
                     clock,
                     cascading_errors,
                     logger,
@@ -145,7 +145,7 @@ impl PendingNodes {
 
     async fn update_dataflow_status(
         &mut self,
-        coordinator_connection: &mut Option<TcpStream>,
+        coordinator_sender: &mut Option<CoordinatorSender>,
         clock: &HLC,
         cascading_errors: &mut CascadingErrorCauses,
         logger: &mut DataflowLogger<'_>,
@@ -153,7 +153,7 @@ impl PendingNodes {
         if self.local_nodes.is_empty() {
             if self.external_nodes {
                 if !self.reported_init_to_coordinator {
-                    self.report_nodes_ready(coordinator_connection, clock.new_timestamp(), logger)
+                    self.report_nodes_ready(coordinator_sender, clock.new_timestamp(), logger)
                         .await?;
                     self.reported_init_to_coordinator = true;
                 }
@@ -202,12 +202,12 @@ impl PendingNodes {
 
     async fn report_nodes_ready(
         &self,
-        coordinator_connection: &mut Option<TcpStream>,
+        coordinator_sender: &mut Option<CoordinatorSender>,
         timestamp: Timestamp,
         logger: &mut DataflowLogger<'_>,
     ) -> eyre::Result<()> {
-        let Some(connection) = coordinator_connection else {
-            bail!("no coordinator connection to send AllNodesReady");
+        let Some(sender) = coordinator_sender else {
+            bail!("no coordinator sender to send AllNodesReady");
         };
 
         logger
@@ -232,7 +232,8 @@ impl PendingNodes {
             },
             timestamp,
         })?;
-        socket_stream_send(connection, &msg)
+        sender
+            .send_event(&msg)
             .await
             .wrap_err("failed to send AllNodesReady message to adora-coordinator")?;
         Ok(())

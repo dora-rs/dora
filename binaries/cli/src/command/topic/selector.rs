@@ -5,6 +5,7 @@ use std::{
 };
 
 use crate::common::resolve_dataflow_identifier_interactive;
+use crate::ws_client::WsSession;
 use adora_core::{config::InputMapping, descriptor::Descriptor};
 use adora_message::{
     DataflowId,
@@ -12,7 +13,6 @@ use adora_message::{
     coordinator_to_cli::ControlRequestReply,
     id::{DataId, NodeId},
 };
-use communication_layer_request_reply::TcpRequestReplyConnection;
 use eyre::{Context, ContextCompat, bail};
 use uuid::Uuid;
 
@@ -26,10 +26,10 @@ pub struct DataflowSelector {
 impl DataflowSelector {
     pub fn resolve(
         &self,
-        session: &mut TcpRequestReplyConnection,
+        session: &WsSession,
     ) -> eyre::Result<(Uuid, Descriptor)> {
         let dataflow_id =
-            resolve_dataflow_identifier_interactive(&mut *session, self.dataflow.as_deref())?;
+            resolve_dataflow_identifier_interactive(session, self.dataflow.as_deref())?;
         let reply_raw = session
             .request(
                 &serde_json::to_vec(&ControlRequest::Info {
@@ -72,7 +72,7 @@ impl fmt::Display for TopicIdentifier {
 impl TopicSelector {
     pub fn resolve(
         &self,
-        session: &mut TcpRequestReplyConnection,
+        session: &WsSession,
     ) -> eyre::Result<(DataflowId, BTreeSet<TopicIdentifier>)> {
         let (dataflow_id, dataflow_descriptor) = self.dataflow.resolve(session)?;
         if !dataflow_descriptor.debug.publish_all_messages_to_zenoh {

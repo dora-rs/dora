@@ -2,7 +2,7 @@ use adora_cli::session::DataflowSession;
 use adora_coordinator::{ControlEvent, Event};
 use adora_core::{
     descriptor::{DescriptorExt, read_as_descriptor},
-    topics::{ADORA_COORDINATOR_PORT_CONTROL_DEFAULT, ADORA_COORDINATOR_PORT_DEFAULT},
+    topics::ADORA_COORDINATOR_PORT_WS_DEFAULT,
 };
 use adora_message::{
     cli_to_coordinator::ControlRequest,
@@ -42,15 +42,10 @@ async fn main() -> eyre::Result<()> {
     let (coordinator_events_tx, coordinator_events_rx) = mpsc::channel(1);
     let coordinator_bind = SocketAddr::new(
         IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
-        ADORA_COORDINATOR_PORT_DEFAULT,
-    );
-    let coordinator_control_bind = SocketAddr::new(
-        IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
-        ADORA_COORDINATOR_PORT_CONTROL_DEFAULT,
+        ADORA_COORDINATOR_PORT_WS_DEFAULT,
     );
     let (coordinator_port, coordinator) = adora_coordinator::start(
         coordinator_bind,
-        coordinator_control_bind,
         ReceiverStream::new(coordinator_events_rx),
     )
     .await?;

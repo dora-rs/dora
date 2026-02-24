@@ -8,18 +8,18 @@ use crate::{
     common::{connect_to_coordinator, local_working_dir, resolve_dataflow, write_events_to},
     output::{LogOutputConfig, print_log_message},
     session::DataflowSession,
+    ws_client::WsSession,
 };
 use adora_core::{
     descriptor::{Descriptor, DescriptorExt},
-    topics::{ADORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST},
+    topics::{ADORA_COORDINATOR_PORT_WS_DEFAULT, LOCALHOST},
 };
 use adora_message::{
     cli_to_coordinator::ControlRequest, common::LogMessage, coordinator_to_cli::ControlRequestReply,
 };
-use communication_layer_request_reply::{TcpConnection, TcpRequestReplyConnection};
 use eyre::{Context, bail};
 use std::{
-    net::{IpAddr, SocketAddr, TcpStream},
+    net::{IpAddr, SocketAddr},
     path::PathBuf,
 };
 use uuid::Uuid;
@@ -39,7 +39,7 @@ pub struct Start {
     #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
     coordinator_addr: IpAddr,
     /// Port number of the coordinator control server
-    #[clap(long, value_name = "PORT", default_value_t = ADORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
+    #[clap(long, value_name = "PORT", default_value_t = ADORA_COORDINATOR_PORT_WS_DEFAULT)]
     coordinator_port: u16,
     /// Attach to the dataflow and wait for its completion
     #[clap(long, action)]
@@ -60,7 +60,7 @@ impl Executable for Start {
         default_tracing()?;
         let coordinator_socket = (self.coordinator_addr, self.coordinator_port).into();
 
-        let (dataflow, dataflow_descriptor, mut session, dataflow_id) =
+        let (dataflow, dataflow_descriptor, session, dataflow_id) =
             start_dataflow(self.dataflow, self.name, coordinator_socket, self.uv)?;
 
         let attach = match (self.attach, self.detach) {
@@ -84,9 +84,8 @@ impl Executable for Start {
                 dataflow_descriptor,
                 dataflow,
                 dataflow_id,
-                &mut *session,
+                &session,
                 self.hot_reload,
-                coordinator_socket,
                 log_level,
             )
         } else {
@@ -94,8 +93,7 @@ impl Executable for Start {
             // wait until dataflow is started
             wait_until_dataflow_started(
                 dataflow_id,
-                &mut session,
-                coordinator_socket,
+                &session,
                 log::LevelFilter::Info,
                 print_daemon_name,
             )
@@ -108,21 +106,20 @@ fn start_dataflow(
     name: Option<String>,
     coordinator_socket: SocketAddr,
     uv: bool,
-) -> Result<(PathBuf, Descriptor, Box<TcpRequestReplyConnection>, Uuid), eyre::Error> {
+) -> Result<(PathBuf, Descriptor, WsSession, Uuid), eyre::Error> {
     let dataflow = resolve_dataflow(dataflow).context("could not resolve dataflow")?;
     let dataflow_descriptor =
         Descriptor::blocking_read(&dataflow).wrap_err("Failed to read yaml dataflow")?;
     let dataflow_session =
         DataflowSession::read_session(&dataflow).context("failed to read DataflowSession")?;
 
-    let mut session = connect_to_coordinator(coordinator_socket)
+    let session = connect_to_coordinator(coordinator_socket)
         .wrap_err("failed to connect to adora coordinator")?;
 
-    let local_working_dir = local_working_dir(&dataflow, &dataflow_descriptor, &mut *session)?;
+    let local_working_dir = local_working_dir(&dataflow, &dataflow_descriptor, &session)?;
 
     let dataflow_id = {
         let dataflow = dataflow_descriptor.clone();
-        let session: &mut TcpRequestReplyConnection = &mut *session;
         let reply_raw = session
             .request(
                 &serde_json::to_vec(&ControlRequest::Start {
@@ -154,27 +151,20 @@ fn start_dataflow(
 
 fn wait_until_dataflow_started(
     dataflow_id: Uuid,
-    session: &mut Box<TcpRequestReplyConnection>,
-    coordinator_addr: SocketAddr,
+    session: &WsSession,
     log_level: log::LevelFilter,
     print_daemon_id: bool,
 ) -> eyre::Result<()> {
     // subscribe to log messages
-    let mut log_session = TcpConnection {
-        stream: TcpStream::connect(coordinator_addr)
-            .wrap_err("failed to connect to adora coordinator")?,
-    };
-    log_session
-        .send(
-            &serde_json::to_vec(&ControlRequest::LogSubscribe {
-                dataflow_id,
-                level: log_level,
-            })
-            .wrap_err("failed to serialize message")?,
-        )
-        .wrap_err("failed to send log subscribe request to coordinator")?;
+    let log_rx = session.subscribe_logs(
+        &serde_json::to_vec(&ControlRequest::LogSubscribe {
+            dataflow_id,
+            level: log_level,
+        })
+        .wrap_err("failed to serialize message")?,
+    )?;
     std::thread::spawn(move || {
-        while let Ok(raw) = log_session.receive() {
+        while let Ok(Ok(raw)) = log_rx.recv() {
             let parsed: eyre::Result<LogMessage> =
                 serde_json::from_slice(&raw).context("failed to parse log message");
             match parsed {

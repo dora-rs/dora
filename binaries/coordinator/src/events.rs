@@ -1,4 +1,5 @@
 use crate::control::ControlEvent;
+use crate::state::DaemonConnection;
 use adora_core::config::NodeId;
 use adora_message::{
     BuildId,
@@ -9,15 +10,12 @@ use adora_message::{
 use eyre::WrapErr;
 use futures::Stream;
 use std::collections::BTreeMap;
-use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
 
 #[derive(Debug)]
 pub enum Event {
-    NewDaemonConnection(TcpStream),
-    DaemonConnectError(eyre::Report),
     DaemonHeartbeat {
         daemon_id: DaemonId,
     },
@@ -31,7 +29,7 @@ pub enum Event {
     CtrlC,
     Log(LogMessage),
     DaemonExit {
-        daemon_id: adora_message::common::DaemonId,
+        daemon_id: DaemonId,
     },
     DataflowBuildResult {
         build_id: BuildId,
@@ -39,12 +37,12 @@ pub enum Event {
         result: eyre::Result<()>,
     },
     DataflowSpawnResult {
-        dataflow_id: uuid::Uuid,
+        dataflow_id: Uuid,
         daemon_id: DaemonId,
         result: eyre::Result<()>,
     },
     NodeMetrics {
-        dataflow_id: uuid::Uuid,
+        dataflow_id: Uuid,
         metrics: BTreeMap<NodeId, NodeMetrics>,
     },
 }
@@ -61,8 +59,6 @@ impl Event {
 
     pub(crate) fn kind(&self) -> &'static str {
         match self {
-            Event::NewDaemonConnection(_) => "NewDaemonConnection",
-            Event::DaemonConnectError(_) => "DaemonConnectError",
             Event::DaemonHeartbeat { .. } => "DaemonHeartbeat",
             Event::Dataflow { .. } => "Dataflow",
             Event::Control(_) => "Control",
@@ -90,13 +86,30 @@ pub enum DataflowEvent {
     },
 }
 
-#[derive(Debug)]
+#[allow(private_interfaces)]
 pub enum DaemonRequest {
     Register {
         version_check_result: Result<(), String>,
         machine_id: Option<String>,
-        connection: TcpStream,
+        connection: DaemonConnection,
     },
+}
+
+// Manual Debug since DaemonConnection doesn't derive Debug
+impl std::fmt::Debug for DaemonRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DaemonRequest::Register {
+                version_check_result,
+                machine_id,
+                ..
+            } => f
+                .debug_struct("Register")
+                .field("version_check_result", version_check_result)
+                .field("machine_id", machine_id)
+                .finish_non_exhaustive(),
+        }
+    }
 }
 
 pub(crate) fn set_up_ctrlc_handler() -> Result<impl Stream<Item = Event>, eyre::ErrReport> {

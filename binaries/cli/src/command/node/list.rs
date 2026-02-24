@@ -9,12 +9,12 @@ use crate::{
     command::{Executable, default_tracing},
     common::CoordinatorOptions,
     formatting::OutputFormat,
+    ws_client::WsSession,
 };
 use adora_message::{
     cli_to_coordinator::ControlRequest,
     coordinator_to_cli::{ControlRequestReply, NodeInfo},
 };
-use communication_layer_request_reply::TcpRequestReplyConnection;
 use eyre::{Context, bail};
 
 /// List all currently running nodes and their status.
@@ -48,8 +48,8 @@ impl Executable for List {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
 
-        let mut session = self.coordinator.connect()?;
-        list(session.as_mut(), self.dataflow, self.format)
+        let session = self.coordinator.connect()?;
+        list(&session, self.dataflow, self.format)
     }
 }
 
@@ -65,7 +65,7 @@ struct OutputEntry {
 }
 
 fn list(
-    session: &mut TcpRequestReplyConnection,
+    session: &WsSession,
     dataflow_filter: Option<String>,
     format: OutputFormat,
 ) -> eyre::Result<()> {

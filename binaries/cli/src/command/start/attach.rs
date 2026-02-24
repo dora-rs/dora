@@ -2,28 +2,24 @@ use adora_core::descriptor::{CoreNodeKind, Descriptor, DescriptorExt, resolve_pa
 use adora_message::cli_to_coordinator::ControlRequest;
 use adora_message::common::LogMessage;
 use adora_message::coordinator_to_cli::ControlRequestReply;
-use communication_layer_request_reply::{TcpConnection, TcpRequestReplyConnection};
 use eyre::Context;
 use notify::event::ModifyKind;
 use notify::{Config, Event as NotifyEvent, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
-use std::{
-    collections::HashMap,
-    net::{SocketAddr, TcpStream},
-};
+use std::collections::HashMap;
 use std::{path::PathBuf, sync::mpsc, time::Duration};
 use tracing::{error, info};
 use uuid::Uuid;
 
 use crate::common::handle_dataflow_result;
 use crate::output::{LogOutputConfig, print_log_message};
+use crate::ws_client::WsSession;
 
 pub fn attach_dataflow(
     dataflow: Descriptor,
     dataflow_path: PathBuf,
     dataflow_id: Uuid,
-    session: &mut TcpRequestReplyConnection,
+    session: &WsSession,
     hot_reload: bool,
-    coordinator_socket: SocketAddr,
     log_level: log::LevelFilter,
 ) -> Result<(), eyre::ErrReport> {
     let (tx, rx) = mpsc::channel();
@@ -135,23 +131,21 @@ pub fn attach_dataflow(
     .wrap_err("failed to set ctrl-c handler")?;
 
     // subscribe to log messages
-    let mut log_session = TcpConnection {
-        stream: TcpStream::connect(coordinator_socket)
-            .wrap_err("failed to connect to adora coordinator")?,
-    };
-    log_session
-        .send(
-            &serde_json::to_vec(&ControlRequest::LogSubscribe {
-                dataflow_id,
-                level: log_level,
-            })
-            .wrap_err("failed to serialize message")?,
-        )
-        .wrap_err("failed to send log subscribe request to coordinator")?;
+    let log_rx = session.subscribe_logs(
+        &serde_json::to_vec(&ControlRequest::LogSubscribe {
+            dataflow_id,
+            level: log_level,
+        })
+        .wrap_err("failed to serialize message")?,
+    )?;
     std::thread::spawn(move || {
-        while let Ok(raw) = log_session.receive() {
-            let parsed: eyre::Result<LogMessage> =
-                serde_json::from_slice(&raw).context("failed to parse log message");
+        while let Ok(raw) = log_rx.recv() {
+            let parsed: eyre::Result<LogMessage> = match raw {
+                Ok(bytes) => {
+                    serde_json::from_slice(&bytes).context("failed to parse log message")
+                }
+                Err(err) => Err(err),
+            };
             if tx.send(AttachEvent::Log(parsed)).is_err() {
                 break;
             }

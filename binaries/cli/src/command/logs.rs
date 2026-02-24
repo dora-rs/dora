@@ -1,7 +1,6 @@
 use std::{
     collections::HashMap,
     io::{Read, Seek, Write},
-    net::{SocketAddr, TcpStream},
     path::{Path, PathBuf},
 };
 
@@ -12,15 +11,15 @@ use crate::{
         LogFormat, LogOutputConfig, parse_jsonl_line, parse_log_filter, parse_log_level_str,
         print_log_message,
     },
+    ws_client::WsSession,
 };
-use adora_core::topics::{ADORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST};
+use adora_core::topics::{ADORA_COORDINATOR_PORT_WS_DEFAULT, LOCALHOST};
 use adora_message::{
     cli_to_coordinator::ControlRequest, common::LogMessage,
     coordinator_to_cli::ControlRequestReply, id::NodeId,
 };
 use chrono::{DateTime, Utc};
 use clap::Args;
-use communication_layer_request_reply::{TcpConnection, TcpRequestReplyConnection};
 use duration_str::parse as parse_duration_str;
 use eyre::{Context, Result, bail};
 use uuid::Uuid;
@@ -78,7 +77,7 @@ pub struct LogsArgs {
     #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
     pub coordinator_addr: std::net::IpAddr,
     /// Port number of the coordinator control server
-    #[clap(long, value_name = "PORT", default_value_t = ADORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
+    #[clap(long, value_name = "PORT", default_value_t = ADORA_COORDINATOR_PORT_WS_DEFAULT)]
     pub coordinator_port: u16,
 }
 
@@ -124,18 +123,17 @@ impl Executable for LogsArgs {
         };
 
         let config = build_log_config(&self)?;
-        let mut session =
+        let session =
             connect_to_coordinator((self.coordinator_addr, self.coordinator_port).into())
                 .wrap_err("failed to connect to adora coordinator")?;
         let uuid =
-            resolve_dataflow_identifier_interactive(&mut *session, self.dataflow.as_deref())?;
+            resolve_dataflow_identifier_interactive(&session, self.dataflow.as_deref())?;
         logs(
-            &mut *session,
+            &session,
             uuid,
             node,
             self.tail,
             self.follow,
-            (self.coordinator_addr, self.coordinator_port).into(),
             self.grep.as_deref(),
             &self.level,
             self.since,
@@ -716,13 +714,13 @@ mod tests {
 /// Follow all nodes' logs via coordinator's LogSubscribe (dataflow-level).
 fn follow_all_nodes_coordinator(args: &LogsArgs) -> Result<()> {
     let config = build_log_config(args)?;
-    let mut session = connect_to_coordinator((args.coordinator_addr, args.coordinator_port).into())
+    let session = connect_to_coordinator((args.coordinator_addr, args.coordinator_port).into())
         .wrap_err("failed to connect to adora coordinator")?;
-    let uuid = resolve_dataflow_identifier_interactive(&mut *session, args.dataflow.as_deref())?;
+    let uuid = resolve_dataflow_identifier_interactive(&session, args.dataflow.as_deref())?;
 
     stream_logs_from_coordinator(
+        &session,
         uuid,
-        (args.coordinator_addr, args.coordinator_port).into(),
         &args.level,
         args.since,
         args.until,
@@ -733,16 +731,14 @@ fn follow_all_nodes_coordinator(args: &LogsArgs) -> Result<()> {
 
 /// Shared helper: subscribe to coordinator log stream with time/grep filtering.
 fn stream_logs_from_coordinator(
+    session: &WsSession,
     uuid: Uuid,
-    coordinator_addr: SocketAddr,
     level: &adora_core::build::LogLevelOrStdout,
     since: Option<std::time::Duration>,
     until: Option<std::time::Duration>,
     grep: Option<&str>,
     config: &LogOutputConfig,
 ) -> Result<()> {
-    use std::time::Duration;
-
     let log_level = match level {
         adora_core::build::LogLevelOrStdout::Stdout => log::LevelFilter::Trace,
         adora_core::build::LogLevelOrStdout::LogLevel(l) => l.to_level_filter(),
@@ -754,56 +750,43 @@ fn stream_logs_from_coordinator(
     let until_threshold =
         until.and_then(|d| chrono::TimeDelta::from_std(d).ok().map(|td| now - td));
 
-    let stream = TcpStream::connect_timeout(&coordinator_addr, Duration::from_secs(10))
-        .wrap_err("failed to connect to adora coordinator")?;
-    stream
-        .set_read_timeout(Some(Duration::from_secs(30)))
-        .wrap_err("failed to set read timeout")?;
-    let mut log_session = TcpConnection { stream };
-    log_session
-        .send(
-            &serde_json::to_vec(&ControlRequest::LogSubscribe {
-                dataflow_id: uuid,
-                level: log_level,
-            })
-            .wrap_err("failed to serialize message")?,
-        )
-        .wrap_err("failed to send log subscribe request to coordinator")?;
+    let log_rx = session.subscribe_logs(
+        &serde_json::to_vec(&ControlRequest::LogSubscribe {
+            dataflow_id: uuid,
+            level: log_level,
+        })
+        .wrap_err("failed to serialize message")?,
+    )?;
 
-    loop {
-        match log_session.receive() {
-            Ok(raw) => {
-                let parsed: eyre::Result<LogMessage> =
-                    serde_json::from_slice(&raw).context("failed to parse log message");
-                match parsed {
-                    Ok(log_message) => {
-                        if let Some(threshold) = since_threshold {
-                            if log_message.timestamp < threshold {
-                                continue;
-                            }
-                        }
-                        if let Some(threshold) = until_threshold {
-                            if log_message.timestamp > threshold {
-                                continue;
-                            }
-                        }
-                        if matches_grep(&log_message, grep) {
-                            print_log_message(log_message, config);
-                        }
-                    }
-                    Err(err) => {
-                        tracing::warn!("failed to parse log message: {err:?}")
-                    }
-                }
-            }
-            Err(ref e)
-                if e.kind() == std::io::ErrorKind::TimedOut
-                    || e.kind() == std::io::ErrorKind::WouldBlock =>
-            {
-                // Read timeout: retry to allow Ctrl+C to interrupt
+    while let Ok(raw) = log_rx.recv() {
+        let raw = match raw {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                tracing::warn!("log stream error: {err:?}");
                 continue;
             }
-            Err(_) => break,
+        };
+        let parsed: eyre::Result<LogMessage> =
+            serde_json::from_slice(&raw).context("failed to parse log message");
+        match parsed {
+            Ok(log_message) => {
+                if let Some(threshold) = since_threshold {
+                    if log_message.timestamp < threshold {
+                        continue;
+                    }
+                }
+                if let Some(threshold) = until_threshold {
+                    if log_message.timestamp > threshold {
+                        continue;
+                    }
+                }
+                if matches_grep(&log_message, grep) {
+                    print_log_message(log_message, config);
+                }
+            }
+            Err(err) => {
+                tracing::warn!("failed to parse log message: {err:?}")
+            }
         }
     }
 
@@ -811,12 +794,11 @@ fn stream_logs_from_coordinator(
 }
 
 pub fn logs(
-    session: &mut TcpRequestReplyConnection,
+    session: &WsSession,
     uuid: Uuid,
     node: NodeId,
     tail: Option<usize>,
     follow: bool,
-    coordinator_addr: SocketAddr,
     grep: Option<&str>,
     level: &adora_core::build::LogLevelOrStdout,
     since: Option<std::time::Duration>,
@@ -866,5 +848,5 @@ pub fn logs(
         return Ok(());
     }
 
-    stream_logs_from_coordinator(uuid, coordinator_addr, level, since, until, grep, config)
+    stream_logs_from_coordinator(session, uuid, level, since, until, grep, config)
 }

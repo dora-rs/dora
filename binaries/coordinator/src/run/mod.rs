@@ -1,7 +1,4 @@
-use crate::{
-    DaemonConnections,
-    tcp_utils::{tcp_receive, tcp_send},
-};
+use crate::DaemonConnections;
 
 use adora_core::{descriptor::DescriptorExt, uhlc::HLC};
 use adora_message::{
@@ -105,13 +102,11 @@ async fn spawn_dataflow_on_machine(
     let daemon_connection = daemon_connections
         .get_mut(&daemon_id)
         .wrap_err_with(|| format!("no daemon connection for daemon `{daemon_id}`"))?;
-    tcp_send(&mut daemon_connection.stream, message)
-        .await
-        .wrap_err("failed to send spawn message to daemon")?;
 
-    let reply_raw = tcp_receive(&mut daemon_connection.stream)
+    let reply_raw = daemon_connection
+        .send_and_receive(message)
         .await
-        .wrap_err("failed to receive spawn reply from daemon")?;
+        .wrap_err("failed to send/receive spawn message")?;
     match serde_json::from_slice(&reply_raw)
         .wrap_err("failed to deserialize spawn reply from daemon")?
     {

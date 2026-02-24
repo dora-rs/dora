@@ -1,0 +1,14 @@
+[package]
+name = "adora-coordinator-store"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+documentation.workspace = true
+description.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+adora-message = { workspace = true }
+eyre = "0.6.8"
+uuid = { version = "1.7", features = ["serde"] }

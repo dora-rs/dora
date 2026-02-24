@@ -40,7 +40,6 @@ use log::{DaemonLogger, DataflowLogger, Logger};
 use pending::PendingNodes;
 use process_wrap::tokio::TokioChildWrapper;
 use shared_memory_server::ShmemConf;
-use socket_stream_utils::socket_stream_send;
 use spawn::Spawner;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
@@ -59,7 +58,6 @@ use std::{
 use tokio::{
     fs::File,
     io::{AsyncReadExt, AsyncSeekExt},
-    net::TcpStream,
     sync::{
         broadcast,
         mpsc::{self, UnboundedSender},
@@ -97,7 +95,7 @@ pub struct Daemon {
 
     events_tx: mpsc::Sender<Timestamped<Event>>,
 
-    coordinator_connection: Option<TcpStream>,
+    coordinator_sender: Option<coordinator::CoordinatorSender>,
     last_coordinator_heartbeat: Instant,
     daemon_id: DaemonId,
 
@@ -133,7 +131,7 @@ struct NodeBuildTask<F> {
 
 impl Daemon {
     pub async fn run(
-        coordinator_addr: SocketAddr,
+        coordinator_ws_addr: SocketAddr,
         machine_id: Option<String>,
         local_listen_port: u16,
     ) -> eyre::Result<()> {
@@ -141,9 +139,9 @@ impl Daemon {
 
         let mut ctrlc_events = set_up_ctrlc_handler(clock.clone())?;
         let (remote_daemon_events_tx, remote_daemon_events_rx) = flume::bounded(10);
-        let (daemon_id, incoming_events) = {
+        let (daemon_id, coordinator_sender, incoming_events) = {
             let incoming_events = set_up_event_stream(
-                coordinator_addr,
+                coordinator_ws_addr,
                 &machine_id,
                 &clock,
                 remote_daemon_events_rx,
@@ -161,22 +159,13 @@ impl Daemon {
             }
         };
 
-        let log_destination = {
-            // additional connection for logging
-            let stream = TcpStream::connect(coordinator_addr)
-                .await
-                .wrap_err("failed to connect log to adora-coordinator")?;
-            stream
-                .set_nodelay(true)
-                .wrap_err("failed to set TCP_NODELAY")?;
-            LogDestination::Coordinator {
-                coordinator_connection: stream,
-            }
+        let log_destination = LogDestination::Coordinator {
+            sender: coordinator_sender.clone(),
         };
 
         Self::run_general(
             (ReceiverStream::new(ctrlc_events), incoming_events).merge(),
-            Some(coordinator_addr),
+            Some(coordinator_sender),
             daemon_id,
             None,
             clock.clone(),
@@ -358,7 +347,7 @@ impl Daemon {
     #[allow(clippy::too_many_arguments)]
     async fn run_general(
         external_events: impl Stream<Item = Timestamped<Event>> + Unpin,
-        coordinator_addr: Option<SocketAddr>,
+        coordinator_sender: Option<coordinator::CoordinatorSender>,
         daemon_id: DaemonId,
         exit_when_done: Option<BTreeSet<(Uuid, NodeId)>>,
         clock: Arc<HLC>,
@@ -367,20 +356,7 @@ impl Daemon {
         log_destination: LogDestination,
         health_check_interval_duration: Option<Duration>,
     ) -> eyre::Result<DaemonRunResult> {
-        let coordinator_connection = match coordinator_addr {
-            Some(addr) => {
-                let stream = TcpStream::connect(addr)
-                    .await
-                    .wrap_err("failed to connect to adora-coordinator")?;
-                stream
-                    .set_nodelay(true)
-                    .wrap_err("failed to set TCP_NODELAY")?;
-                Some(stream)
-            }
-            None => None,
-        };
-
-        let zenoh_session = open_zenoh_session(coordinator_addr.map(|addr| addr.ip()))
+        let zenoh_session = open_zenoh_session(None)
             .await
             .wrap_err("failed to open zenoh session")?;
         // Use a large channel capacity to prevent deadlock
@@ -395,7 +371,7 @@ impl Daemon {
             running: HashMap::new(),
             working_dir: HashMap::new(),
             events_tx: adora_events_tx,
-            coordinator_connection,
+            coordinator_sender,
             last_coordinator_heartbeat: Instant::now(),
             daemon_id,
             exit_when_done,
@@ -487,7 +463,7 @@ impl Daemon {
                 Event::Adora(event) => self.handle_adora_event(event).await?,
                 Event::DynamicNode(event) => self.handle_dynamic_node_event(event).await?,
                 Event::HeartbeatInterval => {
-                    if let Some(connection) = &mut self.coordinator_connection {
+                    if let Some(sender) = &self.coordinator_sender {
                         let msg = serde_json::to_vec(&Timestamped {
                             inner: CoordinatorRequest::Event {
                                 daemon_id: self.daemon_id.clone(),
@@ -495,7 +471,8 @@ impl Daemon {
                             },
                             timestamp: self.clock.new_timestamp(),
                         })?;
-                        socket_stream_send(connection, &msg)
+                        sender
+                            .send_event(&msg)
                             .await
                             .wrap_err("failed to send watchdog message to adora-coordinator")?;
 
@@ -587,7 +564,7 @@ impl Daemon {
                             self.builds.remove(&old_build_id);
                         }
                     }
-                    if let Some(connection) = &mut self.coordinator_connection {
+                    if let Some(sender) = &self.coordinator_sender {
                         let msg = serde_json::to_vec(&Timestamped {
                             inner: CoordinatorRequest::Event {
                                 daemon_id: self.daemon_id.clone(),
@@ -598,7 +575,7 @@ impl Daemon {
                             },
                             timestamp: self.clock.new_timestamp(),
                         })?;
-                        socket_stream_send(connection, &msg).await.wrap_err(
+                        sender.send_event(&msg).await.wrap_err(
                             "failed to send BuildDataflowResult message to adora-coordinator",
                         )?;
                     }
@@ -607,7 +584,7 @@ impl Daemon {
                     dataflow_id,
                     result,
                 } => {
-                    if let Some(connection) = &mut self.coordinator_connection {
+                    if let Some(sender) = &self.coordinator_sender {
                         let msg = serde_json::to_vec(&Timestamped {
                             inner: CoordinatorRequest::Event {
                                 daemon_id: self.daemon_id.clone(),
@@ -618,7 +595,7 @@ impl Daemon {
                             },
                             timestamp: self.clock.new_timestamp(),
                         })?;
-                        socket_stream_send(connection, &msg).await.wrap_err(
+                        sender.send_event(&msg).await.wrap_err(
                             "failed to send SpawnDataflowResult message to adora-coordinator",
                         )?;
                     }
@@ -652,7 +629,7 @@ impl Daemon {
             }
         }
 
-        if let Some(mut connection) = self.coordinator_connection.take() {
+        if let Some(sender) = self.coordinator_sender.take() {
             let msg = serde_json::to_vec(&Timestamped {
                 inner: CoordinatorRequest::Event {
                     daemon_id: self.daemon_id.clone(),
@@ -660,7 +637,8 @@ impl Daemon {
                 },
                 timestamp: self.clock.new_timestamp(),
             })?;
-            socket_stream_send(&mut connection, &msg)
+            sender
+                .send_event(&msg)
                 .await
                 .wrap_err("failed to send Exit message to adora-coordinator")?;
         }
@@ -676,7 +654,7 @@ impl Daemon {
             let mut logger = self.logger.for_dataflow(dataflow.id);
             let finish_when = dataflow
                 .stop_all(
-                    &mut self.coordinator_connection,
+                    &mut self.coordinator_sender,
                     &self.clock,
                     None,
                     false,
@@ -946,7 +924,7 @@ impl Daemon {
                     let (reply, future) = match dataflow {
                         Ok(dataflow) => {
                             let future = dataflow.stop_all(
-                                &mut self.coordinator_connection,
+                                &mut self.coordinator_sender,
                                 &self.clock,
                                 grace_duration,
                                 force,
@@ -1075,7 +1053,7 @@ impl Daemon {
         use adora_message::daemon_to_coordinator::NodeMetrics;
         use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate};
 
-        if self.coordinator_connection.is_none() {
+        if self.coordinator_sender.is_none() {
             return Ok(());
         }
 
@@ -1143,7 +1121,7 @@ impl Daemon {
 
             // Send metrics to coordinator if we have any
             if !metrics.is_empty() {
-                if let Some(connection) = &mut self.coordinator_connection {
+                if let Some(sender) = &self.coordinator_sender {
                     let msg = serde_json::to_vec(&Timestamped {
                         inner: CoordinatorRequest::Event {
                             daemon_id: self.daemon_id.clone(),
@@ -1154,7 +1132,8 @@ impl Daemon {
                         },
                         timestamp: self.clock.new_timestamp(),
                     })?;
-                    socket_stream_send(connection, &msg)
+                    sender
+                        .send_event(&msg)
                         .await
                         .wrap_err("failed to send metrics to coordinator")?;
                 }
@@ -1821,7 +1800,7 @@ impl Daemon {
                             .handle_node_subscription(
                                 node_id.clone(),
                                 reply_sender,
-                                &mut self.coordinator_connection,
+                                &mut self.coordinator_sender,
                                 &self.clock,
                                 &mut dataflow.cascading_error_causes,
                                 &mut logger,
@@ -2237,7 +2216,7 @@ impl Daemon {
             .pending_nodes
             .handle_node_stop(
                 node_id,
-                &mut self.coordinator_connection,
+                &mut self.coordinator_sender,
                 &self.clock,
                 &mut dataflow.cascading_error_causes,
                 &mut logger,
@@ -2306,7 +2285,7 @@ impl Daemon {
             )
             .await;
 
-        if let Some(connection) = &mut self.coordinator_connection {
+        if let Some(sender) = &self.coordinator_sender {
             let msg = serde_json::to_vec(&Timestamped {
                 inner: CoordinatorRequest::Event {
                     daemon_id: self.daemon_id.clone(),
@@ -2317,7 +2296,8 @@ impl Daemon {
                 },
                 timestamp: self.clock.new_timestamp(),
             })?;
-            socket_stream_send(connection, &msg)
+            sender
+                .send_event(&msg)
                 .await
                 .wrap_err("failed to report dataflow finish to adora-coordinator")?;
         }
@@ -2634,13 +2614,17 @@ async fn read_last_n_lines(file: &mut File, mut tail: usize) -> io::Result<Vec<u
 }
 
 async fn set_up_event_stream(
-    coordinator_addr: SocketAddr,
+    coordinator_ws_addr: SocketAddr,
     machine_id: &Option<String>,
     clock: &Arc<HLC>,
     remote_daemon_events_rx: flume::Receiver<eyre::Result<Timestamped<InterDaemonEvent>>>,
     // used for dynamic nodes
     local_listen_port: u16,
-) -> eyre::Result<(DaemonId, impl Stream<Item = Timestamped<Event>> + Unpin)> {
+) -> eyre::Result<(
+    DaemonId,
+    coordinator::CoordinatorSender,
+    impl Stream<Item = Timestamped<Event>> + Unpin,
+)> {
     let clock_cloned = clock.clone();
     let remote_daemon_events = remote_daemon_events_rx.into_stream().map(move |e| match e {
         Ok(e) => Timestamped {
@@ -2652,8 +2636,8 @@ async fn set_up_event_stream(
             timestamp: clock_cloned.new_timestamp(),
         },
     });
-    let (daemon_id, coordinator_events) =
-        coordinator::register(coordinator_addr, machine_id.clone(), clock)
+    let (daemon_id, coordinator_sender, coordinator_events) =
+        coordinator::register(coordinator_ws_addr, machine_id.clone(), clock)
             .await
             .wrap_err("failed to connect to adora-coordinator")?;
     let coordinator_events = coordinator_events.map(
@@ -2679,7 +2663,7 @@ async fn set_up_event_stream(
         dynamic_node_events,
     )
         .merge();
-    Ok((daemon_id, incoming))
+    Ok((daemon_id, coordinator_sender, incoming))
 }
 
 async fn send_output_to_local_receivers(
@@ -3177,7 +3161,7 @@ impl RunningDataflow {
 
     async fn stop_all(
         &mut self,
-        coordinator_connection: &mut Option<TcpStream>,
+        coordinator_sender: &mut Option<coordinator::CoordinatorSender>,
         clock: &HLC,
         grace_duration: Option<Duration>,
         force: bool,
@@ -3185,7 +3169,7 @@ impl RunningDataflow {
     ) -> eyre::Result<FinishDataflowWhen> {
         self.pending_nodes
             .handle_dataflow_stop(
-                coordinator_connection,
+                coordinator_sender,
                 clock,
                 &mut self.cascading_error_causes,
                 &self.dynamic_nodes,

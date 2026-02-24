@@ -6,20 +6,17 @@ use adora_message::{
     coordinator_to_cli::ControlRequestReply,
     id::NodeId,
 };
-use communication_layer_request_reply::{TcpConnection, TcpRequestReplyConnection};
 use eyre::{Context, bail};
-use std::{
-    collections::BTreeMap,
-    net::{SocketAddr, TcpStream},
-};
+use std::collections::BTreeMap;
 
 use crate::{
     output::{LogOutputConfig, print_log_message},
     session::DataflowSession,
+    ws_client::WsSession,
 };
 
 pub fn build_distributed_dataflow(
-    session: &mut TcpRequestReplyConnection,
+    session: &WsSession,
     dataflow: Descriptor,
     git_sources: &BTreeMap<NodeId, GitSource>,
     dataflow_session: &DataflowSession,
@@ -57,26 +54,19 @@ pub fn build_distributed_dataflow(
 
 pub fn wait_until_dataflow_built(
     build_id: BuildId,
-    session: &mut TcpRequestReplyConnection,
-    coordinator_socket: SocketAddr,
+    session: &WsSession,
     log_level: log::LevelFilter,
 ) -> eyre::Result<BuildId> {
     // subscribe to log messages
-    let mut log_session = TcpConnection {
-        stream: TcpStream::connect(coordinator_socket)
-            .wrap_err("failed to connect to adora coordinator")?,
-    };
-    log_session
-        .send(
-            &serde_json::to_vec(&ControlRequest::BuildLogSubscribe {
-                build_id,
-                level: log_level,
-            })
-            .wrap_err("failed to serialize message")?,
-        )
-        .wrap_err("failed to send build log subscribe request to coordinator")?;
+    let log_rx = session.subscribe_logs(
+        &serde_json::to_vec(&ControlRequest::BuildLogSubscribe {
+            build_id,
+            level: log_level,
+        })
+        .wrap_err("failed to serialize message")?,
+    )?;
     std::thread::spawn(move || {
-        while let Ok(raw) = log_session.receive() {
+        while let Ok(Ok(raw)) = log_rx.recv() {
             let parsed: eyre::Result<LogMessage> =
                 serde_json::from_slice(&raw).context("failed to parse log message");
             match parsed {

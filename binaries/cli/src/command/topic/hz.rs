@@ -65,8 +65,8 @@ pub struct Hz {
 
 impl Executable for Hz {
     fn execute(self) -> eyre::Result<()> {
-        let mut session = self.coordinator.connect()?;
-        let (dataflow_id, topics) = self.selector.resolve(session.as_mut())?;
+        let session = self.coordinator.connect()?;
+        let (dataflow_id, topics) = self.selector.resolve(&session)?;
 
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()

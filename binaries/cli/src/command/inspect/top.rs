@@ -3,7 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use adora_core::topics::ADORA_COORDINATOR_PORT_CONTROL_DEFAULT;
+use adora_core::topics::ADORA_COORDINATOR_PORT_WS_DEFAULT;
 use adora_message::{
     cli_to_coordinator::ControlRequest,
     coordinator_to_cli::{ControlRequestReply, NodeInfo},
@@ -44,7 +44,7 @@ pub struct Top {
     #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
     pub coordinator_addr: std::net::IpAddr,
     /// Port number of the coordinator control server
-    #[clap(long, value_name = "PORT", default_value_t = ADORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
+    #[clap(long, value_name = "PORT", default_value_t = ADORA_COORDINATOR_PORT_WS_DEFAULT)]
     pub coordinator_port: u16,
     /// Refresh interval in seconds
     #[clap(long, value_name = "SECONDS", default_value_t = 2)]
@@ -258,7 +258,7 @@ fn run_app<B: Backend>(
     let mut last_update = Instant::now();
 
     // Reuse coordinator connection
-    let mut session = connect_to_coordinator((coordinator_addr, coordinator_port).into())
+    let session = connect_to_coordinator((coordinator_addr, coordinator_port).into())
         .wrap_err("Failed to connect to coordinator")?;
 
     // Query node info once initially

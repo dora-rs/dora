@@ -1,9 +1,9 @@
 use super::{Executable, default_tracing};
 use crate::common::{connect_to_coordinator, handle_dataflow_result, query_running_dataflows};
-use adora_core::topics::{ADORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST};
+use crate::ws_client::WsSession;
+use adora_core::topics::{ADORA_COORDINATOR_PORT_WS_DEFAULT, LOCALHOST};
 use adora_message::cli_to_coordinator::ControlRequest;
 use adora_message::coordinator_to_cli::ControlRequestReply;
-use communication_layer_request_reply::TcpRequestReplyConnection;
 use duration_str::parse;
 use eyre::{Context, bail};
 use std::net::IpAddr;
@@ -41,23 +41,23 @@ pub struct Stop {
     #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
     coordinator_addr: IpAddr,
     /// Port number of the coordinator control server
-    #[clap(long, value_name = "PORT", default_value_t = ADORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
+    #[clap(long, value_name = "PORT", default_value_t = ADORA_COORDINATOR_PORT_WS_DEFAULT)]
     coordinator_port: u16,
 }
 
 impl Executable for Stop {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
-        let mut session =
+        let session =
             connect_to_coordinator((self.coordinator_addr, self.coordinator_port).into())
                 .wrap_err("could not connect to adora coordinator")?;
         match (self.uuid, self.name) {
-            (Some(uuid), _) => stop_dataflow(uuid, self.grace_duration, self.force, &mut *session),
+            (Some(uuid), _) => stop_dataflow(uuid, self.grace_duration, self.force, &session),
             (None, Some(name)) => {
-                stop_dataflow_by_name(name, self.grace_duration, self.force, &mut *session)
+                stop_dataflow_by_name(name, self.grace_duration, self.force, &session)
             }
             (None, None) => {
-                stop_dataflow_interactive(self.grace_duration, self.force, &mut *session)
+                stop_dataflow_interactive(self.grace_duration, self.force, &session)
             }
         }
     }
@@ -66,7 +66,7 @@ impl Executable for Stop {
 fn stop_dataflow_interactive(
     grace_duration: Option<Duration>,
     force: bool,
-    session: &mut TcpRequestReplyConnection,
+    session: &WsSession,
 ) -> eyre::Result<()> {
     let list = query_running_dataflows(session).wrap_err("failed to query running dataflows")?;
     let active = list.get_active();
@@ -84,7 +84,7 @@ fn stop_dataflow(
     uuid: Uuid,
     grace_duration: Option<Duration>,
     force: bool,
-    session: &mut TcpRequestReplyConnection,
+    session: &WsSession,
 ) -> Result<(), eyre::ErrReport> {
     let reply_raw = session
         .request(
@@ -111,7 +111,7 @@ fn stop_dataflow_by_name(
     name: String,
     grace_duration: Option<Duration>,
     force: bool,
-    session: &mut TcpRequestReplyConnection,
+    session: &WsSession,
 ) -> Result<(), eyre::ErrReport> {
     let reply_raw = session
         .request(

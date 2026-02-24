@@ -1,7 +1,7 @@
 use super::Executable;
 use crate::LISTEN_DEFAULT;
 use adora_coordinator::Event;
-use adora_core::topics::{ADORA_COORDINATOR_PORT_CONTROL_DEFAULT, ADORA_COORDINATOR_PORT_DEFAULT};
+use adora_core::topics::ADORA_COORDINATOR_PORT_WS_DEFAULT;
 
 #[cfg(feature = "tracing")]
 use adora_tracing::TracingBuilder;
@@ -14,18 +14,12 @@ use tracing::level_filters::LevelFilter;
 #[derive(Debug, clap::Args)]
 /// Run coordinator
 pub struct Coordinator {
-    /// Network interface to bind to for daemon communication
+    /// Network interface to bind to
     #[clap(long, default_value_t = LISTEN_DEFAULT)]
     interface: IpAddr,
-    /// Port number to bind to for daemon communication
-    #[clap(long, default_value_t = ADORA_COORDINATOR_PORT_DEFAULT)]
+    /// Port number to bind to
+    #[clap(long, default_value_t = ADORA_COORDINATOR_PORT_WS_DEFAULT)]
     port: u16,
-    /// Network interface to bind to for control communication
-    #[clap(long, default_value_t = LISTEN_DEFAULT)]
-    control_interface: IpAddr,
-    /// Port number to bind to for control communication
-    #[clap(long, default_value_t = ADORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
-    control_port: u16,
     /// Suppresses all log output to stdout.
     #[clap(long)]
     quiet: bool,
@@ -52,12 +46,13 @@ impl Executable for Coordinator {
             .context("tokio runtime failed")?;
         rt.block_on(async {
             let bind = SocketAddr::new(self.interface, self.port);
-            let bind_control = SocketAddr::new(self.control_interface, self.control_port);
-            let (port, task) =
-                adora_coordinator::start(bind, bind_control, futures::stream::empty::<Event>())
-                    .await?;
+            let (port, task) = adora_coordinator::start(
+                bind,
+                futures::stream::empty::<Event>(),
+            )
+            .await?;
             if !self.quiet {
-                println!("Listening for incoming daemon connection on {port}");
+                println!("Listening on port {port}");
             }
             task.await
         })

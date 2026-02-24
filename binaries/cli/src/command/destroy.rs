@@ -1,5 +1,5 @@
 use super::{Executable, default_tracing, up};
-use adora_core::topics::{ADORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST};
+use adora_core::topics::{ADORA_COORDINATOR_PORT_WS_DEFAULT, LOCALHOST};
 use std::net::IpAddr;
 use std::path::PathBuf;
 
@@ -12,8 +12,8 @@ pub struct Destroy {
     /// Address of the adora coordinator
     #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
     coordinator_addr: IpAddr,
-    /// Port number of the coordinator control server
-    #[clap(long, value_name = "PORT", default_value_t = ADORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
+    /// Port number of the coordinator
+    #[clap(long, value_name = "PORT", default_value_t = ADORA_COORDINATOR_PORT_WS_DEFAULT)]
     coordinator_port: u16,
 }
 

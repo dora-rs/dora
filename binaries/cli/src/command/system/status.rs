@@ -1,12 +1,12 @@
 use crate::command::{Executable, default_tracing};
+use crate::ws_client::WsSession;
 use crate::{LOCALHOST, common::connect_to_coordinator};
 use adora_core::descriptor::DescriptorExt;
-use adora_core::{descriptor::Descriptor, topics::ADORA_COORDINATOR_PORT_CONTROL_DEFAULT};
+use adora_core::{descriptor::Descriptor, topics::ADORA_COORDINATOR_PORT_WS_DEFAULT};
 use adora_message::{
     cli_to_coordinator::ControlRequest,
     coordinator_to_cli::{ControlRequestReply, DataflowStatus},
 };
-use communication_layer_request_reply::TcpRequestReplyConnection;
 use eyre::{Context, bail};
 use std::{
     io::{IsTerminal, Write},
@@ -26,7 +26,7 @@ pub fn check_environment(coordinator_addr: SocketAddr) -> eyre::Result<()> {
     let mut stdout = termcolor::StandardStream::stdout(color_choice);
 
     // Coordinator status
-    let mut session = match connect_to_coordinator(coordinator_addr) {
+    let session = match connect_to_coordinator(coordinator_addr) {
         Ok(session) => {
             let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Green)));
             write!(stdout, "✓ ")?;
@@ -51,7 +51,7 @@ pub fn check_environment(coordinator_addr: SocketAddr) -> eyre::Result<()> {
     };
 
     // Daemon status
-    let daemon_running = session.as_deref_mut().map(daemon_running).transpose()?;
+    let daemon_running = session.as_ref().map(daemon_running).transpose()?;
 
     if daemon_running == Some(true) {
         let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Green)));
@@ -73,8 +73,8 @@ pub fn check_environment(coordinator_addr: SocketAddr) -> eyre::Result<()> {
     }
 
     // Dataflow count
-    if let Some(ref mut sess) = session {
-        if let Ok(count) = query_running_dataflow_count(&mut **sess) {
+    if let Some(ref sess) = session {
+        if let Ok(count) = query_running_dataflow_count(sess) {
             writeln!(stdout, "Active dataflows: {}", count)?;
         }
     }
@@ -86,7 +86,7 @@ pub fn check_environment(coordinator_addr: SocketAddr) -> eyre::Result<()> {
     Ok(())
 }
 
-pub fn daemon_running(session: &mut TcpRequestReplyConnection) -> Result<bool, eyre::ErrReport> {
+pub fn daemon_running(session: &WsSession) -> Result<bool, eyre::ErrReport> {
     let reply_raw = session
         .request(&serde_json::to_vec(&ControlRequest::DaemonConnected).unwrap())
         .wrap_err("failed to send DaemonConnected message")?;
@@ -101,7 +101,7 @@ pub fn daemon_running(session: &mut TcpRequestReplyConnection) -> Result<bool, e
 }
 
 fn query_running_dataflow_count(
-    session: &mut TcpRequestReplyConnection,
+    session: &WsSession,
 ) -> Result<usize, eyre::ErrReport> {
     let reply_raw = session
         .request(&serde_json::to_vec(&ControlRequest::List).unwrap())
@@ -129,7 +129,7 @@ pub struct Status {
     #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
     coordinator_addr: IpAddr,
     /// Port number of the coordinator control server
-    #[clap(long, value_name = "PORT", default_value_t = ADORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
+    #[clap(long, value_name = "PORT", default_value_t = ADORA_COORDINATOR_PORT_WS_DEFAULT)]
     coordinator_port: u16,
 }
 

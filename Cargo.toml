@@ -33,7 +33,7 @@ members = [
     "examples/log-sink-alert",
     "libraries/arrow-convert",
     "libraries/log-utils",
-    "libraries/communication-layer/*",
+    "libraries/coordinator-store",
     "libraries/core",
     "libraries/message",
     "libraries/shared-memory-server",
@@ -73,7 +73,7 @@ adora-metrics = { version = "0.4.1", path = "libraries/extensions/telemetry/metr
 adora-download = { version = "0.4.1", path = "libraries/extensions/download" }
 adora-log-utils = { version = "0.4.1", path = "libraries/log-utils" }
 shared-memory-server = { version = "0.4.1", path = "libraries/shared-memory-server" }
-communication-layer-request-reply = { version = "0.4.1", path = "libraries/communication-layer/request-reply" }
+adora-coordinator-store = { version = "0.4.1", path = "libraries/coordinator-store" }
 adora-cli = { version = "0.4.1", path = "binaries/cli" }
 adora-runtime = { version = "0.4.1", path = "binaries/runtime" }
 adora-daemon = { version = "0.4.1", path = "binaries/daemon" }

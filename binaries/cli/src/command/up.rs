@@ -1,7 +1,7 @@
 use super::system::status::daemon_running;
 use super::{Executable, default_tracing};
 use crate::{LOCALHOST, common::connect_to_coordinator};
-use adora_core::topics::ADORA_COORDINATOR_PORT_CONTROL_DEFAULT;
+use adora_core::topics::ADORA_COORDINATOR_PORT_WS_DEFAULT;
 use adora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply};
 use eyre::{Context, ContextCompat, bail};
 use std::path::PathBuf;
@@ -27,8 +27,8 @@ struct UpConfig {}
 
 pub(crate) fn up(config_path: Option<&Path>) -> eyre::Result<()> {
     let UpConfig {} = parse_adora_config(config_path)?;
-    let coordinator_addr = (LOCALHOST, ADORA_COORDINATOR_PORT_CONTROL_DEFAULT).into();
-    let mut session = match connect_to_coordinator(coordinator_addr) {
+    let coordinator_addr = (LOCALHOST, ADORA_COORDINATOR_PORT_WS_DEFAULT).into();
+    let session = match connect_to_coordinator(coordinator_addr) {
         Ok(session) => session,
         Err(_) => {
             start_coordinator().wrap_err("failed to start adora-coordinator")?;
@@ -45,14 +45,14 @@ pub(crate) fn up(config_path: Option<&Path>) -> eyre::Result<()> {
         }
     };
 
-    if !daemon_running(&mut *session)? {
+    if !daemon_running(&session)? {
         start_daemon().wrap_err("failed to start adora-daemon")?;
 
         // wait a bit until daemon is connected
         let mut i = 0;
         const WAIT_S: f32 = 0.1;
         loop {
-            if daemon_running(&mut *session)? {
+            if daemon_running(&session)? {
                 break;
             }
             i += 1;
@@ -72,7 +72,7 @@ pub(crate) fn destroy(
 ) -> Result<(), eyre::ErrReport> {
     let UpConfig {} = parse_adora_config(config_path)?;
     match connect_to_coordinator(coordinator_addr) {
-        Ok(mut session) => {
+        Ok(session) => {
             // send destroy command to adora-coordinator
             let reply_raw = session
                 .request(&serde_json::to_vec(&ControlRequest::Destroy).unwrap())

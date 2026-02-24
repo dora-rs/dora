@@ -5,12 +5,13 @@ use adora_message::{
     coordinator_to_cli::{ControlRequestReply, LogMessage},
     daemon_to_coordinator::NodeMetrics,
     descriptor::{Descriptor, ResolvedNode},
+    ws_protocol::WsRequest,
 };
-use eyre::eyre;
-use std::collections::{BTreeMap, BTreeSet};
+use eyre::{Context, eyre};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::Arc;
 use std::time::Instant;
-use tokio::net::TcpStream;
-use tokio::sync::oneshot;
+use tokio::sync::{Mutex, mpsc, oneshot};
 use uuid::Uuid;
 
 #[derive(Default)]
@@ -62,8 +63,68 @@ impl DaemonConnections {
 }
 
 pub(crate) struct DaemonConnection {
-    pub(crate) stream: TcpStream,
+    pub(crate) sender: mpsc::Sender<String>,
+    /// Shared with the ws_daemon handler task to resolve correlation-based replies.
+    pub(crate) pending_replies: Arc<Mutex<HashMap<Uuid, oneshot::Sender<String>>>>,
     pub(crate) last_heartbeat: Instant,
+}
+
+impl DaemonConnection {
+    pub(crate) fn new(
+        sender: mpsc::Sender<String>,
+        pending_replies: Arc<Mutex<HashMap<Uuid, oneshot::Sender<String>>>>,
+    ) -> Self {
+        Self {
+            sender,
+            pending_replies,
+            last_heartbeat: Instant::now(),
+        }
+    }
+
+    /// Send a message to the daemon and wait for a reply.
+    pub(crate) async fn send_and_receive(&mut self, message: &[u8]) -> eyre::Result<Vec<u8>> {
+        let id = Uuid::new_v4();
+        let params: serde_json::Value =
+            serde_json::from_slice(message).context("failed to parse outgoing message")?;
+        let request = WsRequest {
+            id,
+            method: "daemon_command".to_string(),
+            params,
+        };
+
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.pending_replies.lock().await.insert(id, reply_tx);
+
+        self.sender
+            .send(serde_json::to_string(&request)?)
+            .await
+            .map_err(|_| eyre!("WS daemon send channel closed"))?;
+
+        let response_json = tokio::time::timeout(
+            adora_message::TCP_READ_TIMEOUT,
+            reply_rx,
+        )
+        .await
+        .map_err(|_| eyre!("timeout waiting for daemon WS reply"))?
+        .map_err(|_| eyre!("daemon WS reply channel dropped"))?;
+
+        Ok(response_json.into_bytes())
+    }
+
+    /// Send a message to the daemon without waiting for a reply (fire-and-forget).
+    pub(crate) async fn send(&mut self, message: &[u8]) -> eyre::Result<()> {
+        let params: serde_json::Value =
+            serde_json::from_slice(message).context("failed to parse outgoing message")?;
+        let request = WsRequest {
+            id: Uuid::new_v4(),
+            method: "daemon_event".to_string(),
+            params,
+        };
+        self.sender
+            .send(serde_json::to_string(&request)?)
+            .await
+            .map_err(|_| eyre!("WS daemon send channel closed"))
+    }
 }
 
 pub(crate) struct RunningBuild {

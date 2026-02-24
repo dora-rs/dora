@@ -1,7 +1,7 @@
 use super::Executable;
 use crate::{common::handle_dataflow_result, session::DataflowSession};
 use adora_core::topics::{
-    ADORA_COORDINATOR_PORT_DEFAULT, ADORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, LOCALHOST,
+    ADORA_COORDINATOR_PORT_WS_DEFAULT, ADORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, LOCALHOST,
 };
 
 use adora_daemon::LogDestination;
@@ -25,8 +25,8 @@ pub struct Daemon {
     /// Address and port number of the adora coordinator
     #[clap(long, short, default_value_t = LOCALHOST)]
     coordinator_addr: IpAddr,
-    /// Port number of the coordinator control server
-    #[clap(long, default_value_t = ADORA_COORDINATOR_PORT_DEFAULT)]
+    /// Port number of the coordinator WebSocket server
+    #[clap(long, default_value_t = ADORA_COORDINATOR_PORT_WS_DEFAULT)]
     coordinator_port: u16,
     #[clap(long, hide = true)]
     run_dataflow: Option<PathBuf>,

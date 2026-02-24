@@ -1,6 +1,5 @@
 pub use control::ControlEvent;
 pub use events::{DaemonRequest, DataflowEvent, Event};
-// Re-export for internal modules (listener.rs, run/mod.rs) that import from crate root
 use crate::{
     events::set_up_ctrlc_handler,
     handlers::{
@@ -8,7 +7,6 @@ use crate::{
         retrieve_logs, send_heartbeat_message, send_log_message, start_dataflow, stop_dataflow,
     },
     state::{ArchivedDataflow, CachedResult, RunningBuild, RunningDataflow},
-    tcp_utils::tcp_send,
 };
 use adora_core::uhlc::HLC;
 use adora_message::{
@@ -27,59 +25,60 @@ use futures::{Future, Stream, StreamExt, stream::FuturesUnordered};
 use futures_concurrency::stream::Merge;
 use log_subscriber::LogSubscriber;
 use petname::petname;
-pub(crate) use state::{DaemonConnection, DaemonConnections};
+pub(crate) use state::DaemonConnections;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     net::SocketAddr,
     sync::Arc,
     time::{Duration, Instant},
 };
-use tokio::task::JoinHandle;
-use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
+use tokio_stream::wrappers::ReceiverStream;
 
 mod control;
 mod events;
 mod handlers;
-mod listener;
 mod log_subscriber;
 mod run;
 mod state;
-mod tcp_utils;
+mod ws_control;
+mod ws_daemon;
+mod ws_server;
 
 pub async fn start(
     bind: SocketAddr,
-    bind_control: SocketAddr,
     external_events: impl Stream<Item = Event> + Unpin,
 ) -> Result<(u16, impl Future<Output = eyre::Result<()>>), eyre::ErrReport> {
-    let listener = listener::create_listener(bind).await?;
-    let port = listener
-        .local_addr()
-        .wrap_err("failed to get local addr of listener")?
-        .port();
-    let new_daemon_connections = TcpListenerStream::new(listener).map(|c| {
-        c.map(Event::NewDaemonConnection)
-            .wrap_err("failed to open connection")
-            .unwrap_or_else(Event::DaemonConnectError)
-    });
+    let clock = Arc::new(HLC::default());
 
     let mut tasks = FuturesUnordered::new();
-    let control_events = control::control_events(bind_control, &tasks)
-        .await
-        .wrap_err("failed to create control events")?;
 
     // Setup ctrl-c handler
     let ctrlc_events = set_up_ctrlc_handler()?;
 
+    // Setup WS event channel (used by axum WS handlers)
+    let (ws_event_tx, ws_event_rx) = tokio::sync::mpsc::channel::<Event>(64);
+    let ws_events = ReceiverStream::new(ws_event_rx);
+
+    // Start WS server
+    let (port, ws_future) = ws_server::serve(bind, ws_event_tx.clone(), clock.clone())
+        .await
+        .wrap_err("failed to start WS server")?;
+    tracing::info!("WS server listening on port {port}");
+    tasks.push(tokio::spawn(async move {
+        if let Err(e) = ws_future.await {
+            tracing::error!("WS server error: {e:?}");
+        }
+    }));
+
     let events = (
         external_events,
-        new_daemon_connections,
-        control_events,
         ctrlc_events,
+        ws_events,
     )
         .merge();
 
     let future = async move {
-        start_inner(events, &tasks).await?;
+        start_inner(events, clock).await?;
 
         tracing::debug!("coordinator main loop finished, waiting on spawned tasks");
         while let Some(join_result) = tasks.next().await {
@@ -95,14 +94,8 @@ pub async fn start(
 
 async fn start_inner(
     events: impl Stream<Item = Event> + Unpin,
-    tasks: &FuturesUnordered<JoinHandle<()>>,
+    clock: Arc<HLC>,
 ) -> eyre::Result<()> {
-    let clock = Arc::new(HLC::default());
-
-    let (daemon_events_tx, daemon_events) = tokio::sync::mpsc::channel(2);
-    let mut daemon_events_tx = Some(daemon_events_tx);
-    let daemon_events = ReceiverStream::new(daemon_events);
-
     let daemon_heartbeat_interval =
         tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(Duration::from_secs(3)))
             .map(|_| Event::DaemonHeartbeatInterval);
@@ -111,7 +104,7 @@ async fn start_inner(
     let (abortable_events, abort_handle) =
         futures::stream::abortable((events, daemon_heartbeat_interval).merge());
 
-    let mut events = (abortable_events, daemon_events).merge();
+    let mut events = abortable_events;
 
     let mut running_builds: HashMap<BuildId, RunningBuild> = HashMap::new();
     let mut finished_builds: HashMap<BuildId, CachedResult> = HashMap::new();
@@ -131,25 +124,6 @@ async fn start_inner(
             tracing::trace!("Handling event {event:?}");
         }
         match event {
-            Event::NewDaemonConnection(connection) => {
-                connection.set_nodelay(true)?;
-                let events_tx = daemon_events_tx.clone();
-                if let Some(events_tx) = events_tx {
-                    let task = tokio::spawn(listener::handle_connection(
-                        connection,
-                        events_tx,
-                        clock.clone(),
-                    ));
-                    tasks.push(task);
-                } else {
-                    tracing::warn!(
-                        "ignoring new daemon connection because events_tx was closed already"
-                    );
-                }
-            }
-            Event::DaemonConnectError(err) => {
-                tracing::warn!("{:?}", err.wrap_err("failed to connect to adora-daemon"));
-            }
             Event::Daemon(event) => match event {
                 DaemonRequest::Register {
                     machine_id,
@@ -181,18 +155,13 @@ async fn start_inner(
                         timestamp: clock.new_timestamp(),
                     };
 
-                    let send_result = tcp_send(&mut connection, &serde_json::to_vec(&reply)?)
+                    let send_result = connection
+                        .send(&serde_json::to_vec(&reply)?)
                         .await
-                        .context("tcp send failed");
+                        .context("failed to send register reply");
                     match version_check_result.map_err(|e| eyre!(e)).and(send_result) {
                         Ok(()) => {
-                            daemon_connections.add(
-                                daemon_id.clone(),
-                                DaemonConnection {
-                                    stream: connection,
-                                    last_heartbeat: Instant::now(),
-                                },
-                            );
+                            daemon_connections.add(daemon_id.clone(), connection);
                         }
                         Err(err) => {
                             tracing::warn!(
@@ -236,7 +205,8 @@ async fn start_inner(
                                         );
                                         continue;
                                     };
-                                    tcp_send(&mut connection.stream, &message)
+                                    connection
+                                        .send(&message)
                                         .await
                                         .wrap_err_with(|| {
                                             format!(
@@ -607,7 +577,6 @@ async fn start_inner(
                                 &mut running_dataflows,
                                 &mut daemon_connections,
                                 &abort_handle,
-                                &mut daemon_events_tx,
                                 &clock,
                             )
                             .await
@@ -671,18 +640,19 @@ async fn start_inner(
                             )));
                         }
                         ControlRequest::CliAndDefaultDaemonOnSameMachine => {
-                            let mut default_daemon_ip = None;
-                            if let Some(default_id) = daemon_connections.unnamed().next() {
-                                if let Some(connection) = daemon_connections.get(default_id) {
-                                    if let Ok(addr) = connection.stream.peer_addr() {
-                                        default_daemon_ip = Some(addr.ip());
-                                    }
-                                }
-                            }
+                            // With WS we can't inspect peer addresses.
+                            // If an unnamed (local) daemon is connected, assume same
+                            // machine by returning localhost for both.
+                            let has_unnamed = daemon_connections.unnamed().next().is_some();
+                            let ip = if has_unnamed {
+                                Some(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST))
+                            } else {
+                                None
+                            };
                             let _ = reply_sender.send(Ok(
                                 ControlRequestReply::CliAndDefaultDaemonIps {
-                                    default_daemon: default_daemon_ip,
-                                    cli: None, // filled later
+                                    default_daemon: ip,
+                                    cli: ip,
                                 },
                             ));
                         }
@@ -729,12 +699,12 @@ async fn start_inner(
                 ControlEvent::LogSubscribe {
                     dataflow_id,
                     level,
-                    connection,
+                    sender,
                 } => {
                     if let Some(dataflow) = running_dataflows.get_mut(&dataflow_id) {
                         dataflow
                             .log_subscribers
-                            .push(LogSubscriber::new(level, connection));
+                            .push(LogSubscriber::new(level, sender));
                         let buffered = std::mem::take(&mut dataflow.buffered_log_messages);
                         for message in buffered {
                             send_log_message(&mut dataflow.log_subscribers, &message).await;
@@ -744,12 +714,12 @@ async fn start_inner(
                 ControlEvent::BuildLogSubscribe {
                     build_id,
                     level,
-                    connection,
+                    sender,
                 } => {
                     if let Some(build) = running_builds.get_mut(&build_id) {
                         build
                             .log_subscribers
-                            .push(LogSubscriber::new(level, connection));
+                            .push(LogSubscriber::new(level, sender));
                         let buffered = std::mem::take(&mut build.buffered_log_messages);
                         for message in buffered {
                             send_log_message(&mut build.log_subscribers, &message).await;
@@ -772,7 +742,7 @@ async fn start_inner(
                     }
                     let result: eyre::Result<()> = tokio::time::timeout(
                         Duration::from_millis(500),
-                        send_heartbeat_message(&mut connection.stream, clock.new_timestamp()),
+                        send_heartbeat_message(connection, clock.new_timestamp()),
                     )
                     .await
                     .wrap_err("timeout")
@@ -800,7 +770,7 @@ async fn start_inner(
                         })
                         .wrap_err("failed to serialize PeerDaemonDisconnected")?;
                         for (_id, conn) in daemon_connections.iter_mut() {
-                            if let Err(err) = tcp_send(&mut conn.stream, &msg).await {
+                            if let Err(err) = conn.send(&msg).await {
                                 tracing::warn!("failed to notify daemon of peer disconnect: {err}");
                             }
                         }
@@ -813,7 +783,6 @@ async fn start_inner(
                     &mut running_dataflows,
                     &mut daemon_connections,
                     &abort_handle,
-                    &mut daemon_events_tx,
                     &clock,
                 )
                 .await?;
