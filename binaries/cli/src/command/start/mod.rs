@@ -7,7 +7,7 @@ use crate::tcp::AsyncTcpConnection;
 use crate::{
     command::start::attach::attach_dataflow,
     common::{
-        connect_to_coordinator_rpc, local_working_dir, long_context, resolve_dataflow, rpc,
+        connect_and_check_version, local_working_dir, long_context, resolve_dataflow, rpc,
         write_events_to,
     },
     output::print_log_message,
@@ -124,7 +124,7 @@ async fn start_dataflow(
     let dataflow_session =
         DataflowSession::read_session(&dataflow).context("failed to read DataflowSession")?;
 
-    let client = connect_to_coordinator_rpc(coordinator_socket.ip(), coordinator_socket.port())
+    let client = connect_and_check_version(coordinator_socket.ip(), coordinator_socket.port())
         .await
         .wrap_err("failed to connect to dora coordinator")?;
 

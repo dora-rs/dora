@@ -112,3 +112,12 @@ pub struct StopDataflowReply {
     pub uuid: Uuid,
     pub result: DataflowResult,
 }
+
+/// Reply for the `get_version` RPC method.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct VersionInfo {
+    /// The coordinator's dora crate version (e.g. "0.4.1")
+    pub coordinator_version: String,
+    /// The dora-message crate version used by the coordinator (e.g. "0.7.0")
+    pub message_format_version: String,
+}

@@ -1,5 +1,5 @@
 use dora_arrow_convert::ArrowData;
-use dora_core::config::{DataId, OperatorId};
+use dora_core::config::{DataId, NodeId, OperatorId};
 use dora_message::metadata::Metadata;
 
 /// Represents an incoming Dora event.
@@ -40,6 +40,22 @@ pub enum Event {
         /// Note that this is not the output ID of the sender, but the ID
         /// assigned to the input in the YAML file.
         id: DataId,
+    },
+    /// A node failed and exited with a non-zero exit code.
+    ///
+    /// The daemon automatically creates this event when a node exits with a non-zero exit code.
+    /// This allows downstream nodes to handle the error gracefully (e.g., use cached data,
+    /// switch to backup source, log and continue).
+    NodeFailed {
+        /// The IDs of the inputs that are affected by the node failure, as specified in the YAML file.
+        ///
+        /// A node failure can affect multiple inputs if the failed node produced multiple outputs
+        /// that are consumed by this node.
+        affected_input_ids: Vec<DataId>,
+        /// The error message describing the failure.
+        error: String,
+        /// The ID of the node that failed.
+        source_node_id: NodeId,
     },
     /// Notification that the event stream is about to close.
     ///

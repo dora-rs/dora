@@ -2,7 +2,7 @@ use super::system::status::daemon_running;
 use super::{Executable, default_tracing};
 use crate::{
     LOCALHOST,
-    common::{connect_to_coordinator_rpc, long_context, rpc},
+    common::{connect_and_check_version, connect_to_coordinator_rpc, long_context, rpc},
 };
 use dora_core::topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT;
 
@@ -75,7 +75,7 @@ pub(crate) async fn destroy(
     coordinator_addr: SocketAddr,
 ) -> Result<(), eyre::ErrReport> {
     let UpConfig {} = parse_dora_config(config_path)?;
-    match connect_to_coordinator_rpc(coordinator_addr.ip(), coordinator_addr.port()).await {
+    match connect_and_check_version(coordinator_addr.ip(), coordinator_addr.port()).await {
         Ok(client) => {
             rpc("destroy coordinator", client.destroy(long_context())).await?;
             println!("Coordinator and daemons destroyed successfully");

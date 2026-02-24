@@ -3,7 +3,7 @@ use std::io::Write;
 use super::{Executable, default_tracing};
 use crate::{
     LOCALHOST,
-    common::{connect_to_coordinator_rpc, query_running_dataflows, rpc},
+    common::{connect_and_check_version, query_running_dataflows, rpc},
     formatting::OutputFormat,
 };
 use clap::Args;
@@ -43,7 +43,7 @@ impl Executable for ListArgs {
     async fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
 
-        let client = connect_to_coordinator_rpc(self.coordinator_addr, self.coordinator_port)
+        let client = connect_and_check_version(self.coordinator_addr, self.coordinator_port)
             .await
             .wrap_err("failed to connect to dora coordinator")?;
 

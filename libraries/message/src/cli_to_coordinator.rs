@@ -8,7 +8,7 @@ use crate::{
     BuildId, SessionId,
     common::{DaemonId, GitSource},
     coordinator_to_cli::{
-        CheckDataflowReply, DataflowInfo, DataflowList, NodeInfo, StopDataflowReply,
+        CheckDataflowReply, DataflowInfo, DataflowList, NodeInfo, StopDataflowReply, VersionInfo,
     },
     descriptor::Descriptor,
     id::{NodeId, OperatorId},
@@ -98,4 +98,5 @@ pub trait CliControl {
     async fn connected_machines() -> Result<BTreeSet<DaemonId>>;
     async fn cli_and_default_daemon_on_same_machine() -> Result<bool>;
     async fn get_node_info() -> Result<Vec<NodeInfo>>;
+    async fn get_version() -> VersionInfo;
 }

@@ -1,6 +1,8 @@
 [package]
 name = "dora-message"
 # versioned separately from the other dora crates
+# Stays at 0.7.0 for now to keep the rust-dataflow-git example working.
+# TODO: bump to 0.8.0 on the next dora release once downstream examples are updated.
 version = "0.7.0"
 edition.workspace = true
 rust-version.workspace = true

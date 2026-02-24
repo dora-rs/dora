@@ -262,6 +262,10 @@ async fn log_to_terminal(
                 eprintln!("Output {node_id}/{output_id} closed");
                 break;
             }
+            InterDaemonEvent::NodeFailed { .. } => {
+                // NodeFailed events are not relevant for topic echo
+                continue;
+            }
         }
     }
 

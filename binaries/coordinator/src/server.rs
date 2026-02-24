@@ -7,7 +7,7 @@ use dora_message::{
     common::DaemonId,
     coordinator_to_cli::{
         CheckDataflowReply, DataflowIdAndName, DataflowInfo, DataflowList, DataflowListEntry,
-        DataflowResult, DataflowStatus, NodeInfo, NodeMetricsInfo, StopDataflowReply,
+        DataflowResult, DataflowStatus, NodeInfo, NodeMetricsInfo, StopDataflowReply, VersionInfo,
     },
     tarpc::context::Context,
 };
@@ -363,6 +363,13 @@ impl CliControl for ControlServer {
             .map(|addr| addr.ip() == cli_ip)
             .unwrap_or(false);
         Ok(same)
+    }
+
+    async fn get_version(self, _context: Context) -> VersionInfo {
+        VersionInfo {
+            coordinator_version: env!("CARGO_PKG_VERSION").to_string(),
+            message_format_version: dora_message::VERSION.to_string(),
+        }
     }
 
     async fn get_node_info(self, _context: Context) -> Result<Vec<NodeInfo>, String> {

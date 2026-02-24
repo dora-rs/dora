@@ -17,6 +17,7 @@ mod stop;
 mod system;
 mod topic;
 mod up;
+mod version;
 
 pub use build::{build, build_async};
 pub use run::{Run, run, run_func};
@@ -40,6 +41,7 @@ use stop::Stop;
 use system::System;
 use topic::Topic;
 use up::Up;
+use version::Version;
 
 /// dora-rs cli client
 #[derive(Debug, clap::Subcommand)]
@@ -75,6 +77,8 @@ pub enum Command {
     Topic(Topic),
     #[clap(subcommand)]
     Node(Node),
+
+    Version(Version),
 
     Completion(Completion),
     Self_ {
@@ -122,6 +126,7 @@ impl Executable for Command {
             Command::Runtime(args) => args.execute().await,
             Command::Topic(args) => args.execute().await,
             Command::Node(args) => args.execute().await,
+            Command::Version(args) => args.execute().await,
             Command::Completion(args) => args.execute().await,
         }
     }

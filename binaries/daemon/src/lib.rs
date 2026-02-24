@@ -598,7 +598,9 @@ impl Daemon {
                             break;
                         }
                     }
+                    // Exit when all dataflows are finished after Ctrl-C
                     if self.exit_when_all_finished && self.running.is_empty() {
+                        tracing::info!("exiting daemon because all dataflows are finished");
                         break;
                     }
                 }
@@ -1129,6 +1131,44 @@ impl Daemon {
                     logger
                         .log(LogLevel::Warn, Some("daemon".into()), format!("{err:?}"))
                         .await;
+                }
+                Ok(())
+            }
+            InterDaemonEvent::NodeFailed {
+                dataflow_id,
+                source_node_id,
+                error,
+            } => {
+                tracing::debug!(
+                    "received NodeFailed event from {source_node_id} for dataflow {dataflow_id}"
+                );
+
+                let inner = async {
+                    let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
+                        format!("failed to handle NodeFailed: no running dataflow with ID `{dataflow_id}`")
+                    })?;
+
+                    // Deduplicate: the sending daemon publishes one NodeFailed per output topic,
+                    // so we may receive the same event multiple times. Only notify local receivers
+                    // once per source node.
+                    if !dataflow.handled_node_failed.insert(source_node_id.clone()) {
+                        return Result::<(), eyre::Report>::Ok(());
+                    }
+
+                    let (_outputs, _remote_receivers) = Self::find_and_notify_local_receivers(
+                        dataflow,
+                        &source_node_id,
+                        &error,
+                        &self.clock,
+                    );
+
+                    Result::<(), eyre::Report>::Ok(())
+                };
+                if let Err(err) = inner
+                    .await
+                    .wrap_err("failed to handle NodeFailed event sent by remote daemon")
+                {
+                    tracing::warn!("Failed to handle NodeFailed event: {err:?}");
                 }
                 Ok(())
             }
@@ -1890,6 +1930,123 @@ impl Daemon {
         Ok(())
     }
 
+    /// Find all receivers affected by a node failure and send NodeFailed events to local ones.
+    ///
+    /// Returns the list of outputs and a set of remote receiver node IDs (nodes not on this daemon).
+    fn find_and_notify_local_receivers(
+        dataflow: &mut RunningDataflow,
+        source_node_id: &NodeId,
+        error_message: &str,
+        clock: &HLC,
+    ) -> (Vec<DataId>, BTreeSet<NodeId>) {
+        // Get all outputs of the failed node
+        let outputs: Vec<DataId> = dataflow
+            .mappings
+            .keys()
+            .filter(|m| &m.0 == source_node_id)
+            .map(|m| m.1.clone())
+            .collect();
+
+        // Group affected inputs by receiver node
+        let mut affected_by_receiver: BTreeMap<NodeId, Vec<DataId>> = BTreeMap::new();
+
+        for output_id in &outputs {
+            let output_key = OutputId(source_node_id.clone(), output_id.clone());
+            if let Some(receivers) = dataflow.mappings.get(&output_key) {
+                for (receiver_node_id, input_id) in receivers {
+                    affected_by_receiver
+                        .entry(receiver_node_id.clone())
+                        .or_default()
+                        .push(input_id.clone());
+                }
+            }
+        }
+
+        // Identify remote receivers (nodes not on this daemon)
+        let remote_receivers: BTreeSet<NodeId> = affected_by_receiver
+            .keys()
+            .filter(|receiver_node_id| !dataflow.subscribe_channels.contains_key(receiver_node_id))
+            .cloned()
+            .collect();
+
+        // Send NodeFailed event to each local receiver
+        for (receiver_node_id, affected_input_ids) in affected_by_receiver {
+            if let Some(channel) = dataflow.subscribe_channels.get(&receiver_node_id) {
+                // Local receiver - send directly
+                let event = NodeEvent::NodeFailed {
+                    affected_input_ids,
+                    error: error_message.to_string(),
+                    source_node_id: source_node_id.clone(),
+                };
+                let _ = send_with_timestamp(channel, event, clock);
+            }
+        }
+
+        (outputs, remote_receivers)
+    }
+
+    /// Send error events to downstream nodes when a node fails.
+    ///
+    /// This is called automatically when a node exits with a non-zero exit code.
+    /// It sends `NodeFailed` events to all downstream nodes that consume outputs from the failed node.
+    /// For nodes on the same daemon, events are sent directly. For nodes on other daemons,
+    /// events are routed through zenoh by sending to all outputs (to ensure all subscribing daemons receive it).
+    async fn send_node_failed_events(
+        &mut self,
+        dataflow_id: Uuid,
+        source_node_id: NodeId,
+        error_message: String,
+    ) -> Result<(), eyre::ErrReport> {
+        let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
+            format!("propagate error failed: no running dataflow with ID `{dataflow_id}`")
+        })?;
+
+        tracing::warn!(
+            "Node {}/{} failed: {}. Propagating error to downstream nodes.",
+            dataflow_id,
+            source_node_id,
+            error_message
+        );
+
+        let (outputs, remote_receivers) = Self::find_and_notify_local_receivers(
+            dataflow,
+            &source_node_id,
+            &error_message,
+            &self.clock,
+        );
+
+        // If there are remote receivers, send InterDaemonEvent to all outputs
+        // This ensures all daemons that subscribe to any of the node's outputs will receive the error
+        if !remote_receivers.is_empty() {
+            // If node has no outputs, there are no remote receivers to notify
+            if outputs.is_empty() {
+                return Ok(());
+            }
+
+            // Send to all outputs to ensure all subscribing daemons receive the error
+            // (daemons subscribe to specific output topics, so we need to send to each one)
+            for output_id in &outputs {
+                let output_key = OutputId(source_node_id.clone(), output_id.clone());
+                let event = InterDaemonEvent::NodeFailed {
+                    dataflow_id,
+                    source_node_id: source_node_id.clone(),
+                    error: error_message.clone(),
+                };
+                if let Err(err) = self
+                    .send_to_remote_receivers(dataflow_id, &output_key, event)
+                    .await
+                {
+                    tracing::warn!(
+                        "Failed to send error event to remote receivers via output {}: {err:?}",
+                        output_id
+                    );
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     async fn send_to_remote_receivers(
         &mut self,
         dataflow_id: Uuid,
@@ -2078,7 +2235,10 @@ impl Daemon {
         let result = self
             .handle_node_stop_inner(dataflow_id, node_id, dynamic_node)
             .await;
-        let _ = self
+
+        // Always send NodeStopped event, even if handle_node_stop_inner failed
+        // This is critical for daemon shutdown - the event must be sent
+        if let Err(err) = self
             .events_tx
             .send(Timestamped {
                 inner: Event::NodeStopped {
@@ -2087,7 +2247,15 @@ impl Daemon {
                 },
                 timestamp: self.clock.new_timestamp(),
             })
-            .await;
+            .await
+        {
+            tracing::error!(
+                "Failed to send NodeStopped event for {}/{}: {err:?}. Daemon may not exit properly.",
+                dataflow_id,
+                node_id
+            );
+        }
+
         result
     }
 
@@ -2392,6 +2560,7 @@ impl Daemon {
                     }
                 };
 
+
                 logger
                     .log(
                         if node_result.is_ok() {
@@ -2407,8 +2576,35 @@ impl Daemon {
                     )
                     .await;
 
+                drop(logger);
+
+                // Propagate error to downstream nodes only for genuine user-code failures,
+                // even if the node will be restarted (downstream should know about failures).
+                // Cascading errors (caused by a previously failed node), grace-duration
+                // kills (dora's own timeout), and spawn failures are excluded:
+                // - Cascading: downstream nodes already received a NodeFailed for the root cause.
+                // - GraceDuration: this is dora operational behaviour, not a user-code error.
+                // - FailedToSpawn: the node never ran, so its outputs were never open.
+                if let Err(node_error) = &node_result {
+                    if matches!(node_error.cause, NodeErrorCause::Other { .. }) {
+                        let error_message = format!("{node_error}");
+                        if let Err(err) = self
+                            .send_node_failed_events(dataflow_id, node_id.clone(), error_message)
+                            .await
+                        {
+                            tracing::warn!(
+                                "Failed to propagate error for node {}/{}: {err:?}",
+                                dataflow_id,
+                                node_id
+                            );
+                        }
+                    }
+                }
+
                 if restart {
-                    logger
+                    self.logger
+                        .for_dataflow(dataflow_id)
+                        .for_node(node_id.clone())
                         .log(
                             LogLevel::Info,
                             Some("daemon".into()),
@@ -2806,6 +3002,13 @@ pub struct RunningDataflow {
     cascading_error_causes: CascadingErrorCauses,
     grace_duration_kills: Arc<crossbeam_skiplist::SkipSet<NodeId>>,
 
+    /// Tracks nodes whose NodeFailed event has already been delivered to local receivers.
+    ///
+    /// Because zenoh is topic-based, a remote daemon may publish one NodeFailed per output
+    /// of the failed node. Without deduplication the receiving daemon would call
+    /// find_and_notify_local_receivers once per message, delivering duplicate events.
+    handled_node_failed: BTreeSet<NodeId>,
+
     node_stderr_most_recent: BTreeMap<NodeId, Arc<ArrayQueue<String>>>,
 
     publishers: BTreeMap<OutputId, zenoh::pubsub::Publisher<'static>>,
@@ -2850,6 +3053,7 @@ impl RunningDataflow {
             empty_set: BTreeSet::new(),
             cascading_error_causes: Default::default(),
             grace_duration_kills: Default::default(),
+            handled_node_failed: BTreeSet::new(),
             node_stderr_most_recent: BTreeMap::new(),
             publishers: Default::default(),
             finished_tx,

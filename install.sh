@@ -52,15 +52,22 @@ need() {
 }
 
 
-
 download() {
   url="$1"
   output="$2"
 
-  if command -v curl > /dev/null; then
-    curl --proto =https --tlsv1.2 -sSfL "$url" "-o$output"
+  if command -v curl > /dev/null 2>&1; then
+    if [ "$output" = "-" ]; then
+      curl --proto '=https' --tlsv1.2 -sSfL "$url"
+    else
+      curl --proto '=https' --tlsv1.2 -sSfL "$url" -o "$output"
+    fi
   else
-    wget --https-only --secure-protocol=TLSv1_2 --quiet "$url" "-O$output"
+    if [ "$output" = "-" ]; then
+      wget --https-only --secure-protocol=TLSv1_2 --quiet "$url" -O -
+    else
+      wget --https-only --secure-protocol=TLSv1_2 --quiet "$url" -O "$output"
+    fi
   fi
 }
 

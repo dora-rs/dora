@@ -1,6 +1,6 @@
 use super::{Executable, default_tracing};
 use crate::common::{
-    connect_to_coordinator_rpc, handle_dataflow_result, long_context, query_running_dataflows, rpc,
+    connect_and_check_version, handle_dataflow_result, long_context, query_running_dataflows, rpc,
 };
 use dora_core::topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST};
 use dora_message::{cli_to_coordinator::CliControlClient, coordinator_to_cli::StopDataflowReply};
@@ -48,7 +48,7 @@ pub struct Stop {
 impl Executable for Stop {
     async fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
-        let client = connect_to_coordinator_rpc(self.coordinator_addr, self.coordinator_port)
+        let client = connect_and_check_version(self.coordinator_addr, self.coordinator_port)
             .await
             .wrap_err("could not connect to dora coordinator")?;
         match (self.uuid, self.name) {

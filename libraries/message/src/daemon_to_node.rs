@@ -77,6 +77,11 @@ pub enum NodeEvent {
     ///
     /// This event is only sent to nodes that have at least one input.
     AllInputsClosed,
+    NodeFailed {
+        affected_input_ids: Vec<DataId>,
+        error: String,
+        source_node_id: NodeId,
+    },
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

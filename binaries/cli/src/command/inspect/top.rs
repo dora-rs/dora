@@ -15,7 +15,7 @@ use dora_core::topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT;
 use dora_message::{coordinator_to_cli::NodeInfo, id::NodeId, tarpc};
 use eyre::Context;
 
-use crate::common::{connect_to_coordinator_rpc, rpc};
+use crate::common::{connect_and_check_version, rpc};
 use ratatui::{
     Frame, Terminal,
     backend::{Backend, CrosstermBackend},
@@ -260,7 +260,7 @@ async fn run_app<B: Backend>(
     let mut node_infos: Vec<NodeInfo> = Vec::new();
 
     // Reuse coordinator connection
-    let client = connect_to_coordinator_rpc(coordinator_addr, coordinator_port)
+    let client = connect_and_check_version(coordinator_addr, coordinator_port)
         .await
         .wrap_err("Failed to connect to coordinator")?;
 

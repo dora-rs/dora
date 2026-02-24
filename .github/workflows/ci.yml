@@ -396,6 +396,17 @@ jobs:
           dora stop --name ci-rust-dynamic  --grace-duration 5s
           dora destroy
 
+      - name: "Error Event Example"
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          dora build examples/error-propagation/dataflow.yml
+          # The producer exits with code 1 on purpose; dora run reflects that exit code.
+          # Capture output and verify the consumer received the NodeFailed event.
+          output=$(dora run examples/error-propagation/dataflow.yml 2>&1 || true)
+          echo "$output"
+          echo "$output" | grep -q "Received error from node" || { echo "ERROR: consumer did not receive NodeFailed event"; exit 1; }
+
       - uses: actions/setup-python@v5
         with:
           # TODO: Support Python 3.13 when https://github.com/pytorch/pytorch/issues/130249 is fixed

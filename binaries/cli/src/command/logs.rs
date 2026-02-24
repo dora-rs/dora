@@ -3,7 +3,7 @@ use std::{io::Write, net::SocketAddr};
 use super::{Executable, default_tracing};
 use crate::{
     common::{
-        connect_to_coordinator_rpc, long_context, resolve_dataflow_identifier_interactive, rpc,
+        connect_and_check_version, long_context, resolve_dataflow_identifier_interactive, rpc,
     },
     output::print_log_message,
     tcp::AsyncTcpConnection,
@@ -44,7 +44,7 @@ impl Executable for LogsArgs {
     async fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
 
-        let client = connect_to_coordinator_rpc(self.coordinator_addr, self.coordinator_port)
+        let client = connect_and_check_version(self.coordinator_addr, self.coordinator_port)
             .await
             .wrap_err("failed to connect to dora coordinator")?;
         let uuid =

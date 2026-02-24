@@ -1365,9 +1365,9 @@ async fn destroy_daemon(
     })?;
 
     let mut stream = stream.lock().await;
-    tcp_send(&mut stream, &message).await.wrap_err(format!(
-        "failed to send destroy message to daemon `{daemon_id}`"
-    ))?;
+    tcp_send(&mut stream, &message)
+        .await
+        .wrap_err_with(|| format!("failed to send destroy message to daemon `{daemon_id}`"))?;
 
     // wait for reply
     let reply_raw = tcp_receive(&mut stream)
