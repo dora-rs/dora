@@ -411,6 +411,7 @@ async fn start_inner(
                                     dora_message::check_version_compatibility(
                                         &info.message_format_version,
                                     )
+                                    .wrap_err("daemon is not compatible with this coordinator")
                                 }
                                 Err(err) => Err(eyre!("get_version RPC failed: {err}")),
                             };

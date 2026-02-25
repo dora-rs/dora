@@ -80,8 +80,8 @@ pub fn check_version_compatibility(remote_version: &str) -> eyre::Result<()> {
         Ok(())
     } else {
         Err(eyre::eyre!(
-            "version mismatch: daemon message format v{specified_version} is not compatible \
-            with coordinator message format v{crate_version}"
+            "version mismatch: remote message format v{specified_version} is not compatible \
+            with local message format v{crate_version}"
         ))
     }
 }
