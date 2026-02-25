@@ -16,7 +16,7 @@ use dora_message::{
         CoordinatorControlResponse,
     },
     common::DaemonId,
-    coordinator_to_cli::{DataflowResult, LogLevel, LogMessage, StopDataflowReply},
+    coordinator_to_cli::{DataflowResult, LogMessage, StopDataflowReply},
     coordinator_to_daemon::{
         BuildDataflowNodes, DaemonControlClient, DaemonControlRequest, DaemonControlResponse,
         RegisterResult, Timestamped,
@@ -466,7 +466,6 @@ async fn start_inner(
 
                     let server = listener::CoordinatorNotifyServer {
                         daemon_id: daemon_id.clone(),
-                        events_tx: coordinator_state.daemon_events_tx.clone(),
                         coordinator_state: coordinator_state.clone(),
                     };
 
@@ -480,141 +479,6 @@ async fn start_inner(
                     );
                 }
             },
-            Event::Dataflow { uuid, event } => match event {
-                DataflowEvent::ReadyOnDaemon {
-                    daemon_id,
-                    exited_before_subscribe,
-                } => {
-                    // Collect what we need from the DashMap entry, then drop
-                    // the lock before doing any async I/O.
-                    let send_info = match coordinator_state.running_dataflows.entry(uuid) {
-                        dashmap::Entry::Occupied(mut entry) => {
-                            let dataflow = entry.get_mut();
-                            dataflow.pending_daemons.remove(&daemon_id);
-                            dataflow
-                                .exited_before_subscribe
-                                .extend(exited_before_subscribe);
-                            if dataflow.pending_daemons.is_empty() {
-                                let exited = dataflow.exited_before_subscribe.clone();
-                                let daemons: Vec<DaemonId> =
-                                    dataflow.daemons.iter().cloned().collect();
-                                Some((exited, daemons))
-                            } else {
-                                None
-                            }
-                        }
-                        dashmap::Entry::Vacant(_) => {
-                            tracing::warn!("dataflow not running on ReadyOnMachine");
-                            None
-                        }
-                    };
-                    // DashMap lock is now dropped — safe to do async I/O.
-                    if let Some((exited_before_subscribe, daemons)) = send_info {
-                        tracing::debug!("sending all nodes ready message to daemons");
-                        for daemon_id in &daemons {
-                            let client = match coordinator_state.daemon_connections.get(daemon_id) {
-                                Some(connection) => connection.client.clone(),
-                                None => {
-                                    tracing::warn!(
-                                        "no daemon connection found for machine `{daemon_id}`"
-                                    );
-                                    continue;
-                                }
-                            };
-                            // DashMap lock is dropped — safe to do async I/O.
-                            client
-                                .all_nodes_ready(
-                                    tarpc::context::current(),
-                                    uuid,
-                                    exited_before_subscribe.clone(),
-                                )
-                                .await
-                                .wrap_err_with(|| {
-                                    format!(
-                                        "failed to send AllNodesReady({uuid}) message \
-                                        to machine {daemon_id}"
-                                    )
-                                })?;
-                        }
-                    }
-                }
-                DataflowEvent::DataflowFinishedOnDaemon { daemon_id, result } => {
-                    tracing::debug!(
-                        "coordinator received DataflowFinishedOnDaemon ({daemon_id:?}, result: {result:?})"
-                    );
-                    match coordinator_state.running_dataflows.entry(uuid) {
-                        dashmap::Entry::Occupied(mut entry) => {
-                            let dataflow = entry.get_mut();
-                            dataflow.daemons.remove(&daemon_id);
-                            tracing::info!(
-                                "removed machine id: {daemon_id} from dataflow: {:#?}",
-                                dataflow.uuid
-                            );
-                            coordinator_state
-                                .dataflow_results
-                                .entry(uuid)
-                                .or_default()
-                                .insert(daemon_id, result);
-
-                            if dataflow.daemons.is_empty() {
-                                // Archive finished dataflow
-                                coordinator_state
-                                    .archived_dataflows
-                                    .entry(uuid)
-                                    .or_insert_with(|| ArchivedDataflow::from(entry.get()));
-                                let mut finished_dataflow = entry.remove();
-                                let dataflow_id = finished_dataflow.uuid;
-                                send_log_message(
-                                    &mut finished_dataflow.log_subscribers,
-                                    &LogMessage {
-                                        build_id: None,
-                                        dataflow_id: Some(dataflow_id),
-                                        node_id: None,
-                                        daemon_id: None,
-                                        level: LogLevel::Info.into(),
-                                        target: Some("coordinator".into()),
-                                        module_path: None,
-                                        file: None,
-                                        line: None,
-                                        message: "dataflow finished".into(),
-                                        timestamp: clock
-                                            .new_timestamp()
-                                            .get_time()
-                                            .to_system_time()
-                                            .into(),
-                                        fields: None,
-                                    },
-                                )
-                                .await;
-
-                                let reply = StopDataflowReply {
-                                    uuid,
-                                    result: coordinator_state
-                                        .dataflow_results
-                                        .get(&uuid)
-                                        .map(|r| dataflow_result(r.value(), uuid, &clock))
-                                        .unwrap_or_else(|| {
-                                            DataflowResult::ok_empty(uuid, clock.new_timestamp())
-                                        }),
-                                };
-                                for sender in finished_dataflow.stop_reply_senders {
-                                    let _ = sender.send(Ok(reply.clone()));
-                                }
-                                if !matches!(
-                                    finished_dataflow.spawn_result,
-                                    CachedResult::Cached { .. }
-                                ) {
-                                    log::error!("pending spawn result on dataflow finish");
-                                }
-                            }
-                        }
-                        dashmap::Entry::Vacant(_) => {
-                            tracing::warn!("dataflow not running on DataflowFinishedOnDaemon");
-                        }
-                    }
-                }
-            },
-
             Event::Control(event) => match event {
                 ControlEvent::Error(err) => tracing::error!("{err:?}"),
                 ControlEvent::LogSubscribe {
@@ -728,70 +592,6 @@ async fn start_inner(
                     }
                 }
             }
-            Event::DataflowBuildResult {
-                build_id,
-                daemon_id,
-                result,
-            } => match coordinator_state.running_builds.entry(build_id) {
-                dashmap::Entry::Occupied(mut entry) => {
-                    let build = entry.get_mut();
-                    build.pending_build_results.remove(&daemon_id);
-                    match result {
-                        Ok(()) => {}
-                        Err(err) => {
-                            build.errors.push(format!("{err:?}"));
-                        }
-                    };
-                    if build.pending_build_results.is_empty() {
-                        tracing::info!("dataflow build finished: `{build_id}`");
-                        let (build_id, mut build) = entry.remove_entry();
-                        let result = if build.errors.is_empty() {
-                            Ok(())
-                        } else {
-                            Err(format!("build failed: {}", build.errors.join("\n\n")))
-                        };
-
-                        build
-                            .build_result
-                            .set_result(Ok(BuildFinishedResult { build_id, result }));
-
-                        coordinator_state
-                            .finished_builds
-                            .insert(build_id, build.build_result);
-                    }
-                }
-                dashmap::Entry::Vacant(_) => {
-                    tracing::warn!(
-                        "received DataflowSpawnResult, but no matching dataflow in `running_dataflows` map"
-                    );
-                }
-            },
-            Event::DataflowSpawnResult {
-                dataflow_id,
-                daemon_id,
-                result,
-            } => match coordinator_state.running_dataflows.get_mut(&dataflow_id) {
-                Some(mut dataflow) => {
-                    dataflow.pending_spawn_results.remove(&daemon_id);
-                    match result {
-                        Ok(()) => {
-                            if dataflow.pending_spawn_results.is_empty() {
-                                tracing::info!("successfully spawned dataflow `{dataflow_id}`",);
-                                dataflow.spawn_result.set_result(Ok(dataflow_id));
-                            }
-                        }
-                        Err(err) => {
-                            tracing::warn!("error while spawning dataflow `{dataflow_id}`");
-                            dataflow.spawn_result.set_result(Err(err));
-                        }
-                    };
-                }
-                None => {
-                    tracing::warn!(
-                        "received DataflowSpawnResult, but no matching dataflow in `running_dataflows` map"
-                    );
-                }
-            },
         }
 
         // warn if event handling took too long -> the main loop should never be blocked for too long
@@ -824,7 +624,7 @@ pub(crate) async fn send_log_message(
     log_subscribers.retain(|s| !s.is_closed());
 }
 
-fn dataflow_result(
+pub(crate) fn dataflow_result(
     results: &BTreeMap<DaemonId, DataflowDaemonResult>,
     dataflow_uuid: Uuid,
     clock: &uhlc::HLC,
@@ -883,40 +683,41 @@ pub struct BuildFinishedResult {
     pub result: Result<(), String>,
 }
 
-struct RunningBuild {
-    errors: Vec<String>,
-    build_result: CachedResult<BuildFinishedResult>,
+pub(crate) struct RunningBuild {
+    pub(crate) errors: Vec<String>,
+    pub(crate) build_result: CachedResult<BuildFinishedResult>,
 
     /// Buffer for log messages that were sent before there were any subscribers.
-    buffered_log_messages: Vec<LogMessage>,
-    log_subscribers: Vec<LogSubscriber>,
+    pub(crate) buffered_log_messages: Vec<LogMessage>,
+    pub(crate) log_subscribers: Vec<LogSubscriber>,
 
-    pending_build_results: BTreeSet<DaemonId>,
+    pub(crate) pending_build_results: BTreeSet<DaemonId>,
 }
 
-struct RunningDataflow {
+pub(crate) struct RunningDataflow {
     name: Option<String>,
-    uuid: Uuid,
+    pub(crate) uuid: Uuid,
     descriptor: Descriptor,
     /// The IDs of the daemons that the dataflow is running on.
-    daemons: BTreeSet<DaemonId>,
+    pub(crate) daemons: BTreeSet<DaemonId>,
     /// IDs of daemons that are waiting until all nodes are started.
-    pending_daemons: BTreeSet<DaemonId>,
-    exited_before_subscribe: Vec<NodeId>,
+    pub(crate) pending_daemons: BTreeSet<DaemonId>,
+    pub(crate) exited_before_subscribe: Vec<NodeId>,
     nodes: BTreeMap<NodeId, ResolvedNode>,
     /// Maps each node to the daemon it's running on
     node_to_daemon: BTreeMap<NodeId, DaemonId>,
     /// Latest metrics for each node (from daemons)
     node_metrics: BTreeMap<NodeId, dora_message::daemon_to_coordinator::NodeMetrics>,
 
-    spawn_result: CachedResult<Uuid>,
-    stop_reply_senders: Vec<tokio::sync::oneshot::Sender<eyre::Result<StopDataflowReply>>>,
+    pub(crate) spawn_result: CachedResult<Uuid>,
+    pub(crate) stop_reply_senders:
+        Vec<tokio::sync::oneshot::Sender<eyre::Result<StopDataflowReply>>>,
 
     /// Buffer for log messages that were sent before there were any subscribers.
-    buffered_log_messages: Vec<LogMessage>,
-    log_subscribers: Vec<LogSubscriber>,
+    pub(crate) buffered_log_messages: Vec<LogMessage>,
+    pub(crate) log_subscribers: Vec<LogSubscriber>,
 
-    pending_spawn_results: BTreeSet<DaemonId>,
+    pub(crate) pending_spawn_results: BTreeSet<DaemonId>,
 }
 
 pub enum CachedResult<T> {
@@ -967,7 +768,7 @@ impl<T: Clone> CachedResult<T> {
     }
 }
 
-struct ArchivedDataflow {
+pub(crate) struct ArchivedDataflow {
     name: Option<String>,
     nodes: BTreeMap<NodeId, ResolvedNode>,
 }
@@ -1362,25 +1163,11 @@ async fn destroy_daemons(daemon_connections: &DaemonConnections) -> eyre::Result
 pub enum Event {
     NewDaemonConnection(TcpStream),
     DaemonConnectError(eyre::Report),
-    Dataflow {
-        uuid: Uuid,
-        event: DataflowEvent,
-    },
     Control(ControlEvent),
     Daemon(DaemonRequest),
     DaemonHeartbeatInterval,
     CtrlC,
     Log(LogMessage),
-    DataflowBuildResult {
-        build_id: BuildId,
-        daemon_id: DaemonId,
-        result: eyre::Result<()>,
-    },
-    DataflowSpawnResult {
-        dataflow_id: uuid::Uuid,
-        daemon_id: DaemonId,
-        result: eyre::Result<()>,
-    },
     Close,
 }
 
@@ -1398,29 +1185,14 @@ impl Event {
         match self {
             Event::NewDaemonConnection(_) => "NewDaemonConnection",
             Event::DaemonConnectError(_) => "DaemonConnectError",
-            Event::Dataflow { .. } => "Dataflow",
             Event::Control(_) => "Control",
             Event::Daemon(_) => "Daemon",
             Event::DaemonHeartbeatInterval => "DaemonHeartbeatInterval",
             Event::CtrlC => "CtrlC",
             Event::Log(_) => "Log",
-            Event::DataflowBuildResult { .. } => "DataflowBuildResult",
-            Event::DataflowSpawnResult { .. } => "DataflowSpawnResult",
             Event::Close => "Close",
         }
     }
-}
-
-#[derive(Debug)]
-pub enum DataflowEvent {
-    DataflowFinishedOnDaemon {
-        daemon_id: DaemonId,
-        result: DataflowDaemonResult,
-    },
-    ReadyOnDaemon {
-        daemon_id: DaemonId,
-        exited_before_subscribe: Vec<NodeId>,
-    },
 }
 
 #[derive(Debug)]
