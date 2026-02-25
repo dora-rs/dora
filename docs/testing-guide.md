@@ -1,0 +1,338 @@
+# Adora Testing Guide
+
+This guide covers how to run, write, and troubleshoot tests across the Adora workspace.
+
+## Quick Start (5-minute validation)
+
+Run these three commands to validate that the workspace is healthy:
+
+```bash
+# 1. Format check (~5s)
+cargo fmt --all -- --check
+
+# 2. Lint (~60s first run, cached after)
+cargo clippy --all \
+  --exclude adora-node-api-python \
+  --exclude adora-operator-api-python \
+  --exclude adora-ros2-bridge-python \
+  -- -D warnings
+
+# 3. Unit + integration tests (~90s first run)
+cargo test --all \
+  --exclude adora-node-api-python \
+  --exclude adora-operator-api-python \
+  --exclude adora-ros2-bridge-python
+```
+
+All three must pass before opening a PR. Python packages are excluded because they require maturin.
+
+## Test Tiers
+
+| Tier | What it covers | Command | Speed |
+|------|---------------|---------|-------|
+| **Format** | Code style | `cargo fmt --all -- --check` | ~5s |
+| **Lint** | Warnings, correctness | `cargo clippy --all ...` | ~60s |
+| **Unit** | Individual functions | `cargo test --all ...` | ~90s |
+| **Integration** | Node I/O via env vars | `cargo test --test example-tests` | ~30s |
+| **Smoke** | Full CLI lifecycle | `cargo test --test example-smoke -- --test-threads=1` | ~2min |
+| **E2E** | Multi-dataflow scenarios | `cargo test --test ws-cli-e2e -- --ignored --test-threads=1` | ~2min |
+| **Fault tolerance** | Restart policies, timeouts | `cargo test --test fault-tolerance-e2e` | ~45s |
+| **Typos** | Spelling | Install [typos-cli](https://github.com/crate-ci/typos), then `typos` | ~2s |
+
+## Tier Details
+
+### Unit Tests
+
+Unit tests live alongside the code they test using `#[cfg(test)]` modules. Key crates with tests:
+
+| Crate | Test count | What's tested |
+|-------|-----------|---------------|
+| adora-arrow-convert | ~26 | Round-trip Arrow type conversions |
+| adora-cli | ~25 | Log grep/filtering, JSON parsing, WebSocket client |
+| adora-core | ~8 | Dataflow descriptor validation |
+| adora-log-utils | ~11 | Log parsing utilities |
+| ros2-bridge | ~30 | ROS2 message/service/action parsing |
+
+Run a single crate's tests:
+
+```bash
+cargo test -p adora-cli
+cargo test -p adora-core
+cargo test -p adora-arrow-convert
+```
+
+### Integration Tests (Node I/O)
+
+File: `tests/example-tests.rs`
+
+These tests run compiled node executables with pre-recorded inputs and compare outputs against expected baselines. No coordinator or daemon is needed.
+
+```bash
+cargo test --test example-tests
+```
+
+How it works:
+1. Builds and runs a node crate (e.g., `rust-dataflow-example-node`)
+2. Sets `ADORA_TEST_WITH_INPUTS` to a JSON file with timed events
+3. Sets `ADORA_TEST_NO_OUTPUT_TIME_OFFSET=1` for deterministic output
+4. Compares JSONL output against `tests/sample-inputs/expected-outputs-*.jsonl`
+
+Sample input/output files live in `tests/sample-inputs/`.
+
+### Smoke Tests
+
+File: `tests/example-smoke.rs`
+
+These start a full coordinator+daemon cluster via `adora up`, run example dataflows, and verify they complete within a timeout.
+
+```bash
+# Must run single-threaded (shared coordinator port)
+cargo test --test example-smoke -- --test-threads=1
+```
+
+Tests included:
+- `smoke_rust_dataflow` -- basic 3-node dataflow (30s timeout)
+- `smoke_rust_dataflow_dynamic` -- dynamic dataflow (30s timeout)
+- `smoke_rust_dataflow_socket` -- socket-based communication (30s timeout)
+
+### E2E Tests (WebSocket CLI)
+
+File: `tests/ws-cli-e2e.rs`
+
+Two groups:
+
+**Non-ignored (fast):** Start an in-process coordinator and test `WsSession` directly:
+```bash
+cargo test --test ws-cli-e2e
+```
+- `cli_list_empty` -- empty dataflow listing
+- `cli_status_no_daemon` -- daemon connectivity check
+- `cli_stop_nonexistent` -- error for missing dataflows
+- `cli_multiple_requests_same_session` -- session reuse
+
+**Ignored (full stack):** Use `adora up` with real nodes:
+```bash
+cargo test --test ws-cli-e2e -- --ignored --test-threads=1
+```
+- `e2e_start_list_stop` -- start, list, stop lifecycle
+- `e2e_sequential_dataflows` -- two dataflows in sequence
+
+### Fault Tolerance Tests
+
+File: `tests/fault-tolerance-e2e.rs`
+
+These test restart policies and input timeouts using `Daemon::run_dataflow` directly (no CLI needed).
+
+```bash
+cargo test --test fault-tolerance-e2e
+```
+
+Tests:
+- `restart_recovers_from_failure` -- node with `restart_policy: on-failure` survives panics (15s)
+- `max_restarts_limit_reached` -- node exhausts `max_restarts: 2` budget (15s)
+- `input_timeout_closes_stale_input` -- `input_timeout: 2.0s` fires when upstream stops (10s)
+
+Dataflow YAMLs for these tests live in `tests/dataflows/`.
+
+### Coordinator Integration Tests
+
+Files: `binaries/coordinator/tests/ws_control_tests.rs`, `binaries/coordinator/tests/ws_daemon_tests.rs`
+
+These start an in-process coordinator and test the WebSocket control/daemon planes.
+
+```bash
+cargo test -p adora-coordinator
+```
+
+Topics covered: health check, list/stop/destroy requests, invalid JSON/params, concurrent requests, ping/pong, daemon registration, disconnect cleanup.
+
+## CI Pipeline
+
+CI runs on push/PR to `main`. See `.github/workflows/ci.yml`.
+
+```
+fmt  ──────────────┐
+clippy ────────────┤ (all run in parallel)
+test ──────────────┤
+typos ─────────────┘
+                   │
+              e2e (depends on test)
+```
+
+| Job | Runner | What runs |
+|-----|--------|-----------|
+| **fmt** | ubuntu-latest | `cargo fmt --all -- --check` |
+| **clippy** | ubuntu-latest | `cargo clippy --all ... -- -D warnings` |
+| **test** | ubuntu-latest | `cargo test --all ...` (excl. Python) |
+| **e2e** | ubuntu-latest | smoke tests + ignored WS E2E tests |
+| **typos** | ubuntu-latest | `crate-ci/typos@master` |
+
+The `e2e` job only runs after `test` passes. All other jobs run in parallel.
+
+## Writing New Tests
+
+### Unit tests
+
+Add a `#[cfg(test)]` module in the same file as the code under test:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_valid_input() {
+        let result = parse("valid");
+        assert_eq!(result, expected);
+    }
+}
+```
+
+### Integration tests for nodes
+
+Use the integration testing framework in `adora-node-api`. Three approaches:
+
+**1. `setup_integration_testing` (recommended)**
+
+Call before the node's `main` function to inject inputs and capture outputs:
+
+```rust
+#[test]
+fn test_main_function() -> eyre::Result<()> {
+    let events = vec![
+        TimedIncomingEvent {
+            time_offset_secs: 0.01,
+            event: IncomingEvent::Input {
+                id: "tick".into(),
+                metadata: None,
+                data: None,
+            },
+        },
+        TimedIncomingEvent {
+            time_offset_secs: 0.055,
+            event: IncomingEvent::Stop,
+        },
+    ];
+    let inputs = TestingInput::Input(
+        IntegrationTestInput::new("node_id".parse().unwrap(), events),
+    );
+    let (tx, rx) = flume::unbounded();
+    let outputs = TestingOutput::ToChannel(tx);
+    let options = TestingOptions { skip_output_time_offsets: true };
+
+    integration_testing::setup_integration_testing(inputs, outputs, options);
+    crate::main()?;
+
+    let outputs = rx.try_iter().collect::<Vec<_>>();
+    assert_eq!(outputs, expected_outputs);
+    Ok(())
+}
+```
+
+**2. Environment variable mode**
+
+Test the compiled executable directly, closest to production behavior:
+
+```bash
+ADORA_TEST_WITH_INPUTS=path/to/inputs.json \
+ADORA_TEST_NO_OUTPUT_TIME_OFFSET=1 \
+ADORA_TEST_WRITE_OUTPUTS_TO=/tmp/out.jsonl \
+cargo run -p my-node
+```
+
+**3. `AdoraNode::init_testing`**
+
+For testing node logic without going through `main`:
+
+```rust
+let (node, events) = AdoraNode::init_testing(inputs, outputs, Default::default())?;
+```
+
+### Generating test input files
+
+Record real dataflow events by setting `ADORA_WRITE_EVENTS_TO`:
+
+```bash
+ADORA_WRITE_EVENTS_TO=/tmp/recorded-events adora run examples/rust-dataflow/dataflow.yml
+```
+
+This writes `inputs-{node_id}.json` files that can be used directly with `ADORA_TEST_WITH_INPUTS`.
+
+### Workspace-level integration tests
+
+Add new test files in the `tests/` directory. For tests that need the full CLI stack, follow the pattern in `tests/example-smoke.rs`:
+1. Build nodes with `Once` guards (avoid rebuilding per test)
+2. Clean up stale processes with `adora destroy`
+3. Start cluster with `adora up`
+4. Run dataflow with `adora start --detach`
+5. Poll `adora list --json` for completion
+6. Clean up with `adora stop --all` and `adora destroy`
+
+### Conventions
+
+- Use `assert2::assert!` for better error messages (available as dev-dependency)
+- Use `tempfile::NamedTempFile` for temporary output files
+- E2E tests that need exclusive port access should be `#[ignore]` and run with `--test-threads=1`
+- Async tests use `#[tokio::test(flavor = "multi_thread")]`
+- Fault tolerance test dataflows go in `tests/dataflows/`
+- Sample input/output baselines go in `tests/sample-inputs/`
+
+## Troubleshooting
+
+### `cargo test` fails to compile Python packages
+
+Always exclude Python packages:
+```bash
+cargo test --all \
+  --exclude adora-node-api-python \
+  --exclude adora-operator-api-python \
+  --exclude adora-ros2-bridge-python
+```
+
+### Smoke/E2E tests fail with "address already in use"
+
+A stale coordinator or daemon is still running. Clean up:
+```bash
+adora destroy
+# or kill processes manually:
+pkill -f adora-coordinator
+pkill -f adora-daemon
+```
+
+### Smoke tests hang or timeout
+
+- Increase the timeout in the test if your machine is slow (look for `Duration::from_secs(30)`)
+- Check that example nodes build successfully: `cargo build -p rust-dataflow-example-node -p rust-dataflow-example-status-node -p rust-dataflow-example-sink`
+
+### E2E tests fail when run in parallel
+
+Smoke and ignored E2E tests must run single-threaded:
+```bash
+cargo test --test example-smoke -- --test-threads=1
+cargo test --test ws-cli-e2e -- --ignored --test-threads=1
+```
+
+### Integration test output doesn't match expected
+
+1. Check that `ADORA_TEST_NO_OUTPUT_TIME_OFFSET=1` is set (time offsets vary per machine)
+2. Regenerate baselines if the node's behavior intentionally changed:
+   ```bash
+   ADORA_TEST_WITH_INPUTS=tests/sample-inputs/inputs-rust-node.json \
+   ADORA_TEST_NO_OUTPUT_TIME_OFFSET=1 \
+   ADORA_TEST_WRITE_OUTPUTS_TO=tests/sample-inputs/expected-outputs-rust-node.jsonl \
+   cargo run -p rust-dataflow-example-node
+   ```
+
+### Typos check fails
+
+The typos config is in `_typos.toml`. To add a false-positive exclusion:
+```toml
+[default.extend-identifiers]
+MyCustomIdent = "MyCustomIdent"
+```
+
+### Tests pass locally but fail in CI
+
+- CI runs on Ubuntu; check for platform-specific assumptions (paths, process signals)
+- CI uses `rust-cache` so dependency versions may differ from your local lockfile
+- Ensure `cargo fmt --all -- --check` passes (CI enforces this)
