@@ -64,7 +64,7 @@ All messages are JSON text frames. Three message shapes exist:
 | Field | Type | Description |
 |-------|------|-------------|
 | `id` | UUID | Unique request identifier for reply correlation |
-| `method` | string | `"control"` for CLI requests, `"daemon_request"` for daemon |
+| `method` | string | `"control"` for CLI requests, `"daemon_event"` / `"daemon_command"` for daemon |
 | `params` | object | Serialized `ControlRequest` or `Timestamped<CoordinatorRequest>` |
 
 ### WsResponse (server -> client)
@@ -102,15 +102,16 @@ Error:
 
 Used for log streaming after a `LogSubscribe`/`BuildLogSubscribe` is acknowledged.
 
-### Dispatch (WsMessage)
+### Dispatch
 
-Incoming frames are parsed into the `WsMessage` untagged enum, which tries variants in order:
+Each handler parses incoming frames with its own strategy to preserve u128 fidelity (see [u128 serialization](#u128-serialization-workaround)):
 
-1. **Request** -- matched first because it has a required `method` field
-2. **Response** -- has `id` + optional `result`/`error`, no `method`
-3. **Event** -- has `event` field, no `id` or `method`
+- **CLI (`ws_client.rs`)**: Uses a flat `IncomingFrame` struct with `serde_json::value::RawValue` for the `result`/`payload` fields, avoiding `serde_json::Value` entirely. Discriminates by presence of `event` (log push) or `id` (response).
+- **Coordinator control handler (`ws_control.rs`)**: Parses as `WsRequest` (always a request from CLI).
+- **Coordinator daemon handler (`ws_daemon.rs`)**: Checks for `"method"` key to distinguish requests vs responses. Uses `DaemonWsRequestRaw` helper for requests.
+- **Daemon (`coordinator.rs`)**: Uses `CoordinatorCommandRaw` / `RegisterReplyRaw` helper structs to parse directly from raw JSON text.
 
-A frame matching none of these shapes produces a deserialization error.
+A `WsMessage` untagged enum is defined in `ws_protocol.rs` for generic dispatch but is not used by the production handlers:
 
 ```rust
 #[serde(untagged)]
@@ -245,9 +246,19 @@ Message routing on the daemon handler:
 
 ### u128 serialization workaround
 
-`uhlc::ID` contains a `NonZeroU128` which exceeds `serde_json::Value::Number` range. The daemon handler deserializes directly from raw JSON text (`serde_json::from_str`) instead of going through `serde_json::Value`, preserving u128 fidelity. The `DaemonWsRequestRaw` helper struct exists for this purpose.
+`uhlc::ID` contains a `NonZeroU128` which exceeds `serde_json::Value::Number` range (i64/u64/f64 only). Using `serde_json::to_value()` errors with "number out of range", and `serde_json::from_slice::<Value>()` silently loses precision by storing as f64.
 
-Integration tests similarly construct the WsRequest JSON string manually (bypassing `serde_json::to_value`) to match the real wire format.
+All production code bypasses `serde_json::Value` for data containing `uhlc::Timestamp`:
+
+| Component | Serialization | Deserialization |
+|-----------|--------------|-----------------|
+| Daemon (`coordinator.rs`) | `to_string` + `format!` | Helper structs (`RegisterReplyRaw`, `CoordinatorCommandRaw`) + `from_str` |
+| Coordinator control (`ws_control.rs`) | `to_string` + `format!` for replies | N/A (CLI requests don't contain u128) |
+| Coordinator daemon (`ws_daemon.rs`) | N/A | `DaemonWsRequestRaw` + `from_str` |
+| Coordinator state (`state.rs`) | `str::from_utf8` + `format!` (raw bytes embedding) | N/A |
+| CLI (`ws_client.rs`) | N/A (requests don't contain u128) | `IncomingFrame` with `serde_json::value::RawValue` |
+
+Integration tests similarly construct WsRequest JSON strings manually via `format!()` + `serde_json::to_string()` (not `to_value()`) to match the real wire format.
 
 ---
 
@@ -351,7 +362,7 @@ CLI                          WsSession                    Coordinator
 Daemon                                    Coordinator
   │                                           │
   │── WsRequest ─────────────────────────────>│
-  │   method: "daemon_request"                │
+  │   method: "daemon_event"                  │
   │   params: {inner: Register{...},          │
   │            timestamp: ...}                │
   │                                           │  validate version
