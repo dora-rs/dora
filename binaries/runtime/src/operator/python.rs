@@ -295,9 +295,7 @@ mod callback_impl {
     use arrow::{array::ArrayData, pyarrow::FromPyArrow};
     use dora_core::metadata::ArrowTypeInfoExt;
     use dora_message::metadata::ArrowTypeInfo;
-    use dora_node_api::{
-        arrow_utils::{copy_array_into_sample, required_data_size},
-    };
+    use dora_node_api::arrow_utils::{copy_array_into_sample, required_data_size};
     use dora_operator_api_python::pydict_to_metadata;
     use dora_tracing::telemetry::deserialize_context;
     use eyre::{Context, Result, eyre};

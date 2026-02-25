@@ -1,17 +1,11 @@
-use dora_core::{
-    config::NodeId,
-    uhlc,
-};
+use dora_core::{config::NodeId, uhlc};
 use dora_message::{
     daemon_to_node::{DaemonReply, NodeEvent},
     node_to_daemon::{DaemonRequest, Timestamped},
 };
 use eyre::eyre;
 use flume::RecvTimeoutError;
-use std::{
-    sync::Arc,
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 
 use crate::daemon_connection::DaemonChannel;
 

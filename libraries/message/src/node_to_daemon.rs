@@ -1,6 +1,4 @@
-pub use crate::common::{
-    DataMessage, LogLevel, LogMessage, SharedMemoryId, Timestamped,
-};
+pub use crate::common::{DataMessage, LogLevel, LogMessage, SharedMemoryId, Timestamped};
 use crate::{
     DataflowId, current_crate_version,
     id::{DataId, NodeId},
@@ -31,8 +29,7 @@ impl DaemonRequest {
     pub fn expects_tcp_bincode_reply(&self) -> bool {
         #[allow(clippy::match_like_matches_macro)]
         match self {
-            DaemonRequest::SendMessage { .. }
-            | DaemonRequest::NodeConfig { .. } => false,
+            DaemonRequest::SendMessage { .. } | DaemonRequest::NodeConfig { .. } => false,
             DaemonRequest::Register(NodeRegisterRequest { .. })
             | DaemonRequest::Subscribe
             | DaemonRequest::CloseOutputs(_)
