@@ -231,13 +231,13 @@ When `--since`, `--until`, or `--grep` are used in coordinator mode, the CLI fet
 
 **Local mode** (`--local`) reads JSONL files directly from the `out/` directory in the current working directory. No coordinator or daemon needs to be running. If `--all-nodes` is used or no node name is given, all log files are merged and sorted by timestamp.
 
-**Coordinator mode** (default) connects to a running coordinator via TCP. The coordinator reads log files from the daemon's working directory and streams them back. This works for both local and distributed deployments.
+**Coordinator mode** (default) connects to a running coordinator via WebSocket. The coordinator reads log files from the daemon's working directory and streams them back. This works for both local and distributed deployments.
 
 ### Follow Mode
 
 **Local follow** (`--local --follow`): Polls log files every 200ms for new content. New lines are parsed, filtered by `--grep`, and printed. Time/tail filters only apply to the initial historical output.
 
-**Coordinator follow** (`--follow`): Opens a dedicated TCP subscription to the coordinator. The coordinator forwards log messages from the daemon in real-time. Level filtering is applied server-side for efficiency. `--grep` and `--since` are applied client-side on the stream.
+**Coordinator follow** (`--follow`): Opens a WebSocket subscription to the coordinator. The coordinator forwards log messages from the daemon in real-time. Level filtering is applied server-side for efficiency. `--grep` and `--since` are applied client-side on the stream.
 
 ---
 
@@ -709,11 +709,11 @@ The daemon also sets `dataflow_id`, `node_id`, and `daemon_id` on all messages t
 
 ## Coordinator Log Streaming Protocol
 
-When a daemon runs under a coordinator (distributed mode), log forwarding works via TCP:
+When a daemon runs under a coordinator (distributed mode), log forwarding works via WebSocket:
 
-1. **Daemon -> Coordinator**: Each `LogMessage` is wrapped in `DaemonEvent::Log(message)` and sent over the daemon's coordinator connection
+1. **Daemon -> Coordinator**: Each `LogMessage` is wrapped in `DaemonEvent::Log(message)` and sent over the daemon's WebSocket connection
 2. **Coordinator storage**: The coordinator stores/forwards logs
-3. **CLI subscription**: The CLI sends `ControlRequest::LogSubscribe { dataflow_id, level }` on a dedicated TCP connection
+3. **CLI subscription**: The CLI sends `ControlRequest::LogSubscribe { dataflow_id, level }` over its WebSocket connection
 4. **Server-side filtering**: The coordinator only forwards messages where `msg_level <= subscription_level`. This reduces network traffic for filtered subscriptions
 5. **CLI receive**: Messages arrive as serialized `LogMessage` structs
 
@@ -833,7 +833,7 @@ adora logs <dataflow-id> --all-nodes --tail 20              # last 20 lines
 adora logs <dataflow-id> processor --grep "error" --since 5m  # targeted search
 ```
 
-In distributed mode, logs flow Node -> Daemon -> Coordinator -> CLI over TCP. The coordinator buffers log messages until a subscriber connects, so you won't miss logs even if you attach late. YAML-level settings (`min_log_level`, `send_logs_as`, `max_log_size`) work identically since they are applied at the daemon.
+In distributed mode, logs flow Node -> Daemon -> Coordinator -> CLI over WebSocket. The coordinator buffers log messages until a subscriber connects, so you won't miss logs even if you attach late. YAML-level settings (`min_log_level`, `send_logs_as`, `max_log_size`) work identically since they are applied at the daemon.
 
 | | `adora run` | `adora start` |
 |---|---|---|
@@ -1047,7 +1047,7 @@ adora logs <dataflow-id> sensor --follow --coordinator-addr 192.168.1.10
 **How it works internally:**
 1. CLI connects to the coordinator (default `localhost:5555`, or `--coordinator-addr`)
 2. For historical logs: request-reply with filters applied client-side (`--since`, `--grep`, `--tail`)
-3. For `--follow`: opens a dedicated TCP subscription to the coordinator
+3. For `--follow`: opens a WebSocket subscription to the coordinator
 4. Coordinator filters by `--level` server-side before forwarding (reduces network traffic)
 5. CLI applies `--grep` and `--since` client-side on the live stream
 6. Coordinator buffers log messages until a subscriber connects, so late-joining subscribers see recent history
