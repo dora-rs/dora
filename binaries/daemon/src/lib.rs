@@ -517,6 +517,53 @@ impl Daemon {
                         .await;
                     let _ = reply_tx.send(result);
                 }
+                Event::StopDataflowRequest {
+                    dataflow_id,
+                    grace_duration,
+                    force,
+                    reply_tx,
+                } => {
+                    let result = async {
+                        // First, handle pending nodes (may do RPC to coordinator)
+                        // while holding the DashMap guard briefly for extraction.
+                        {
+                            let mut dataflow =
+                                self.state.running.get_mut(&dataflow_id).ok_or_else(|| {
+                                    format!("no running dataflow with ID `{dataflow_id}`")
+                                })?;
+                            let df = &mut *dataflow;
+                            df.pending_nodes
+                                .handle_dataflow_stop(
+                                    &self.state.coordinator_client().cloned(),
+                                    &self.state.clock,
+                                    &mut df.cascading_error_causes,
+                                    &df.dynamic_nodes,
+                                )
+                                .await
+                                .map_err(|err| format!("{err:?}"))?;
+                        }
+                        // DashMap guard is dropped — safe to re-acquire.
+                        let finish_when = {
+                            let mut dataflow =
+                                self.state.running.get_mut(&dataflow_id).ok_or_else(|| {
+                                    format!("no running dataflow with ID `{dataflow_id}`")
+                                })?;
+                            dataflow
+                                .stop_all_after_pending(&self.state, grace_duration, force)
+                                .map_err(|err| format!("{err:?}"))?
+                        };
+                        // DashMap guard is dropped — safe to call finish_dataflow.
+                        if matches!(finish_when, FinishDataflowWhen::Now) {
+                            self.state
+                                .finish_dataflow(dataflow_id)
+                                .await
+                                .map_err(|err| format!("{err:?}"))?;
+                        }
+                        Ok(())
+                    }
+                    .await;
+                    let _ = reply_tx.send(result);
+                }
                 Event::MetricsInterval => {
                     self.collect_and_send_metrics().await?;
                 }
@@ -654,20 +701,26 @@ impl Daemon {
     }
 
     async fn trigger_manual_stop(&mut self) -> eyre::Result<()> {
-        // Collect dataflow IDs that need immediate finishing
+        // Collect dataflow IDs first, then process one at a time to avoid
+        // holding DashMap guards across `.await` points.
+        let dataflow_ids: Vec<DataflowId> = self
+            .state
+            .running
+            .iter()
+            .map(|entry| *entry.key())
+            .collect();
+
         let mut dataflows_to_finish = Vec::new();
-
-        for mut entry in self.state.running.iter_mut() {
-            let dataflow = entry.value_mut();
-            let finish_when = dataflow.stop_all(&self.state, None, false).await?;
-
-            // If stop_all returns Now, we need to finish this dataflow
-            if matches!(finish_when, FinishDataflowWhen::Now) {
-                dataflows_to_finish.push(dataflow.id);
+        for dataflow_id in dataflow_ids {
+            if let Some(mut dataflow) = self.state.running.get_mut(&dataflow_id) {
+                let finish_when = dataflow.stop_all(&self.state, None, false).await?;
+                if matches!(finish_when, FinishDataflowWhen::Now) {
+                    dataflows_to_finish.push(dataflow_id);
+                }
             }
         }
 
-        // Finish dataflows after the loop to avoid borrow checker issues
+        // DashMap guards are dropped — safe to call finish_dataflow.
         for dataflow_id in dataflows_to_finish {
             self.state.finish_dataflow(dataflow_id).await?;
         }
@@ -3110,6 +3163,69 @@ impl RunningDataflow {
         Ok(self.should_finish_immediately())
     }
 
+    /// Synchronous part of `stop_all` — sends stop signals to nodes and
+    /// schedules grace-period kills. Does NOT do any RPC or async I/O, so
+    /// it is safe to call while holding a DashMap guard.
+    fn stop_all_after_pending(
+        &mut self,
+        state: &state::DaemonState,
+        grace_duration: Option<Duration>,
+        force: bool,
+    ) -> eyre::Result<FinishDataflowWhen> {
+        for node in self.running_nodes.values_mut() {
+            node.disable_restart();
+        }
+
+        for (_node_id, channel) in self.subscribe_channels.drain() {
+            let _ = send_with_timestamp(&channel, NodeEvent::Stop, &state.clock);
+        }
+
+        let running_processes: Vec<_> = self
+            .running_nodes
+            .iter_mut()
+            .map(|(id, n)| (id.clone(), n.process.take()))
+            .collect();
+        if force {
+            for (_, proc) in &running_processes {
+                if let Some(proc) = proc {
+                    proc.submit(crate::ProcessOperation::Kill);
+                }
+            }
+        } else {
+            let grace_duration_kills = self.grace_duration_kills.clone();
+            tokio::spawn(async move {
+                let duration = grace_duration.unwrap_or(Duration::from_millis(10000));
+                tokio::time::sleep(duration).await;
+
+                for (node, proc) in &running_processes {
+                    if let Some(proc) = proc {
+                        if proc.submit(crate::ProcessOperation::SoftKill) {
+                            grace_duration_kills.insert(node.clone());
+                        }
+                    }
+                }
+
+                let kill_duration = duration / 2;
+                tokio::time::sleep(kill_duration).await;
+
+                for (node, proc) in &running_processes {
+                    if let Some(proc) = proc {
+                        if proc.submit(crate::ProcessOperation::Kill) {
+                            grace_duration_kills.insert(node.clone());
+                            warn!(
+                                "{node} was killed due to not stopping within the {:#?} grace period",
+                                duration + kill_duration
+                            );
+                        }
+                    }
+                }
+            });
+        }
+        self.stop_sent = true;
+
+        Ok(self.should_finish_immediately())
+    }
+
     /// Check if dataflow should finish immediately after stop_all().
     /// Returns `Now` if all running nodes are dynamic (they won't send SpawnedNodeResult).
     /// Returns `WaitForNodes` if there are non-dynamic nodes to wait for.
@@ -3222,6 +3338,13 @@ pub enum Event {
         write_events_to: Option<PathBuf>,
         reply_tx: oneshot::Sender<Result<(), String>>,
     },
+    /// Coordinator requested stopping a dataflow (routed from RPC server).
+    StopDataflowRequest {
+        dataflow_id: DataflowId,
+        grace_duration: Option<Duration>,
+        force: bool,
+        reply_tx: oneshot::Sender<Result<(), String>>,
+    },
     SpawnNodeResult {
         dataflow_id: DataflowId,
         node_id: NodeId,
@@ -3264,6 +3387,7 @@ impl Event {
             Event::DaemonError(_) => "DaemonError",
             Event::Destroy => "Destroy",
             Event::SpawnRequest { .. } => "SpawnRequest",
+            Event::StopDataflowRequest { .. } => "StopDataflowRequest",
             Event::SpawnNodeResult { .. } => "SpawnNodeResult",
             Event::BuildDataflowResult { .. } => "BuildDataflowResult",
             Event::SpawnDataflowResult { .. } => "SpawnDataflowResult",

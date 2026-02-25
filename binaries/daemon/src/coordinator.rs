@@ -1,5 +1,5 @@
 use crate::{
-    Event, FinishDataflowWhen, log, read_last_n_lines, send_with_timestamp,
+    Event, log, read_last_n_lines, send_with_timestamp,
     socket_stream_utils::{socket_stream_receive, socket_stream_send},
     state::DaemonState,
 };
@@ -326,30 +326,30 @@ impl DaemonControl for DaemonRpcServer {
         grace_duration: Option<Duration>,
         force: bool,
     ) -> Result<(), String> {
-        let finish_when = {
-            let dataflow = self.state.running.get_mut(&dataflow_id);
-            match dataflow {
-                Some(mut dataflow) => {
-                    let result = dataflow
-                        .stop_all(&self.state, grace_duration, force)
-                        .await
-                        .map_err(|err| format!("{err:?}"))?;
-                    Some(result)
-                }
-                None => {
-                    return Err(format!("no running dataflow with ID `{dataflow_id}`"));
-                }
-            }
+        // Route through the event loop to avoid holding DashMap guards
+        // across `.await` points. `stop_all` can trigger RPC calls
+        // back to the coordinator (via `report_nodes_ready`), which may
+        // call back into this daemon concurrently — deadlocking the
+        // DashMap if we held a RefMut here.
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        let event = Timestamped {
+            inner: Event::StopDataflowRequest {
+                dataflow_id,
+                grace_duration,
+                force,
+                reply_tx: result_tx,
+            },
+            timestamp: self.state.clock.new_timestamp(),
         };
+        self.state
+            .events_tx
+            .send(event)
+            .await
+            .map_err(|_| "daemon event loop closed".to_string())?;
 
-        if matches!(finish_when, Some(FinishDataflowWhen::Now)) {
-            self.state
-                .finish_dataflow(dataflow_id)
-                .await
-                .map_err(|err| format!("{err:?}"))?;
-        }
-
-        Ok(())
+        result_rx
+            .await
+            .map_err(|_| "daemon dropped stop reply channel".to_string())?
     }
 
     async fn reload_dataflow(
