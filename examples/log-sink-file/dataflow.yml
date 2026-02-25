@@ -18,7 +18,8 @@ nodes:
       - log_entries
 
   - id: file_sink
-    path: log-sink-file
+    build: cargo build -p log-sink-file
+    path: ../../target/debug/log-sink-file
     inputs:
       sensor_logs: sensor/log_entries
       processor_logs: processor/log_entries

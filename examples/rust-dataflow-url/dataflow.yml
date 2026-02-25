@@ -1,23 +1,23 @@
 nodes:
   - id: rust-node
-    path: https://github.com/adora-rs/adora/releases/download/v0.0.0-test.4/rust-dataflow-example-node
+    build: cargo build -p rust-dataflow-example-node
+    path: ../../target/debug/rust-dataflow-example-node
     inputs:
-      tick: adora/timer/millis/300
+      tick: adora/timer/millis/10
     outputs:
       - random
 
-  - id: runtime-node
-    operators:
-      - id: rust-operator
-        shared-library: https://github.com/adora-rs/adora/releases/download/v0.0.0-test.4/librust_dataflow_example_operator.so
-        inputs:
-          tick: adora/timer/millis/100
-          random: rust-node/random
-        outputs:
-          - status
+  - id: rust-status-node
+    build: cargo build -p rust-dataflow-example-status-node
+    path: ../../target/debug/rust-dataflow-example-status-node
+    inputs:
+      tick: adora/timer/millis/100
+      random: rust-node/random
+    outputs:
+      - status
 
   - id: rust-sink
     build: cargo build -p rust-dataflow-example-sink
-    path: ../../target/debug/rust-dataflow-url-example-sink
+    path: ../../target/debug/rust-dataflow-example-sink
     inputs:
-      message: runtime-node/rust-operator/status
+      message: rust-status-node/status

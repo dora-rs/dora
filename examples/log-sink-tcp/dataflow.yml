@@ -9,7 +9,8 @@ nodes:
       - log_entries
 
   - id: tcp_sink
-    path: log-sink-tcp
+    build: cargo build -p log-sink-tcp
+    path: ../../target/debug/log-sink-tcp
     inputs:
       logs: source/log_entries
     env:
