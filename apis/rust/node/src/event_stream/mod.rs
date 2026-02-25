@@ -24,7 +24,7 @@ use self::thread::{EventItem, EventStreamThreadHandle};
 use crate::{
     DaemonCommunicationWrapper,
     daemon_connection::{DaemonChannel, node_integration_testing::convert_output_to_json},
-    event_stream::data_conversion::{MappedInputData, RawData, SharedMemoryData},
+    event_stream::data_conversion::RawData,
 };
 use dora_core::{
     config::{Input, NodeId},
@@ -116,15 +116,10 @@ impl EventStream {
         let close_channel = match daemon_communication {
             DaemonCommunicationWrapper::Standard(daemon_communication) => {
                 match daemon_communication {
-                    DaemonCommunication::Shmem {
-                        daemon_events_close_region_id,
-                        ..
-                    } => unsafe { DaemonChannel::new_shmem(daemon_events_close_region_id) }
-                        .wrap_err_with(|| {
-                            format!(
-                                "failed to create shmem event close channel for node `{node_id}`"
-                            )
-                        })?,
+                    DaemonCommunication::Shmem { .. } => {
+                        // Use TCP fallback for close channel since we removed the dedicated SHM region
+                        DaemonChannel::Interactive(Default::default())
+                    }
                     DaemonCommunication::Tcp { socket_addr } => {
                         DaemonChannel::new_tcp(*socket_addr).wrap_err_with(|| {
                             format!("failed to connect event close channel for node `{node_id}`")
@@ -549,23 +544,11 @@ pub enum TryRecvError {
 pub fn data_to_arrow_array(
     data: Option<DataMessage>,
     metadata: &dora_message::metadata::Metadata,
-    drop_channel: flume::Sender<()>,
+    _drop_channel: flume::Sender<()>,
 ) -> eyre::Result<Arc<dyn arrow::array::Array>> {
     let data = match data {
         None => Ok(None),
         Some(DataMessage::Vec(v)) => Ok(Some(RawData::Vec(v))),
-        Some(DataMessage::SharedMemory {
-            shared_memory_id,
-            len,
-            drop_token: _, // handled in `event_stream_loop`
-        }) => unsafe {
-            MappedInputData::map(&shared_memory_id, len).map(|data| {
-                Some(RawData::SharedMemory(SharedMemoryData {
-                    data,
-                    _drop: drop_channel,
-                }))
-            })
-        },
     };
 
     data.and_then(|data| {
