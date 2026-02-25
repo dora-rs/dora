@@ -97,3 +97,37 @@ pub struct SpawnDataflowNodes {
     pub uv: bool,
     pub write_events_to: Option<PathBuf>,
 }
+
+type DaemonResult<T> = std::result::Result<T, String>;
+
+#[tarpc::service]
+pub trait DaemonControl {
+    /// Trigger a dataflow build on this daemon.
+    async fn build(request: BuildDataflowNodes) -> DaemonResult<()>;
+    /// Trigger spawning dataflow nodes on this daemon.
+    async fn spawn(request: SpawnDataflowNodes) -> DaemonResult<()>;
+    /// Notify the daemon that all nodes across all daemons are ready.
+    async fn all_nodes_ready(dataflow_id: DataflowId, exited_before_subscribe: Vec<NodeId>);
+    /// Stop a running dataflow on this daemon.
+    async fn stop_dataflow(
+        dataflow_id: DataflowId,
+        grace_duration: Option<Duration>,
+        force: bool,
+    ) -> DaemonResult<()>;
+    /// Reload a specific node/operator in a running dataflow.
+    async fn reload_dataflow(
+        dataflow_id: DataflowId,
+        node_id: NodeId,
+        operator_id: Option<OperatorId>,
+    ) -> DaemonResult<()>;
+    /// Retrieve log file contents for a specific node.
+    async fn logs(
+        dataflow_id: DataflowId,
+        node_id: NodeId,
+        tail: Option<usize>,
+    ) -> DaemonResult<Vec<u8>>;
+    /// Destroy the daemon (shut it down).
+    async fn destroy() -> DaemonResult<()>;
+    /// Heartbeat check.
+    async fn heartbeat();
+}

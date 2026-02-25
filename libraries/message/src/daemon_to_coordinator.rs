@@ -106,10 +106,6 @@ pub enum DaemonCoordinatorReply {
     TriggerSpawnResult(Result<(), String>),
     ReloadResult(Result<(), String>),
     StopResult(Result<(), String>),
-    DestroyResult {
-        result: Result<(), String>,
-        #[serde(skip)]
-        notify: Option<tokio::sync::oneshot::Sender<()>>,
-    },
+    DestroyResult { result: Result<(), String> },
     Logs(Result<Vec<u8>, String>),
 }

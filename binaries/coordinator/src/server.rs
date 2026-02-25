@@ -46,7 +46,6 @@ async fn stop_dataflow_impl(
         &state.running_dataflows,
         dataflow_uuid,
         &state.daemon_connections,
-        state.clock.new_timestamp(),
         grace_duration,
         force,
     )
@@ -75,13 +74,7 @@ impl CliControl for ControlServer {
         // assign a random build id
         let build_id = BuildId::generate();
 
-        let result = build_dataflow(
-            request,
-            build_id,
-            &self.state.clock,
-            &self.state.daemon_connections,
-        )
-        .await;
+        let result = build_dataflow(request, build_id, &self.state.daemon_connections).await;
         match result {
             Ok(build) => {
                 self.state.running_builds.insert(build_id, build);
@@ -141,7 +134,6 @@ impl CliControl for ControlServer {
             local_working_dir,
             name,
             &self.state.daemon_connections,
-            &self.state.clock,
             &self.state.running_dataflows,
             uv,
             write_events_to,
@@ -180,7 +172,6 @@ impl CliControl for ControlServer {
             node_id,
             operator_id,
             &self.state.daemon_connections,
-            self.state.clock.new_timestamp(),
         )
         .await
         .map_err(err_to_string)?;
@@ -265,7 +256,6 @@ impl CliControl for ControlServer {
             dataflow_uuid,
             node.into(),
             &self.state.daemon_connections,
-            self.state.clock.new_timestamp(),
             tail,
         )
         .await
@@ -353,13 +343,11 @@ impl CliControl for ControlServer {
         let Some(default_id) = self.state.daemon_connections.unnamed().next() else {
             return Ok(false);
         };
-        let Some(stream) = self.state.daemon_connections.get_stream(&default_id) else {
+        let Some(connection) = self.state.daemon_connections.get(&default_id) else {
             return Ok(false);
         };
-        let stream = stream.lock().await;
-        let same = stream
-            .peer_addr()
-            .ok()
+        let same = connection
+            .peer_addr
             .map(|addr| addr.ip() == cli_ip)
             .unwrap_or(false);
         Ok(same)
