@@ -9,6 +9,22 @@ use futures::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
+/// Serialize a `WsResponse` and send it over the WS connection.
+/// Returns `Err` if the WS send fails (connection closed).
+async fn send_ws_response(
+    ws_tx: &mut futures::stream::SplitSink<WebSocket, Message>,
+    resp: &WsResponse,
+) -> Result<(), ()> {
+    let json = match serde_json::to_string(resp) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("failed to serialize WsResponse: {e}");
+            return Err(());
+        }
+    };
+    ws_tx.send(Message::Text(json.into())).await.map_err(|_| ())
+}
+
 /// Handle a single CLI WebSocket connection on `/api/control`.
 ///
 /// For normal requests: deserialize ControlRequest from WsRequest.params,
@@ -47,7 +63,7 @@ pub(crate) async fn handle_control_ws(
                     Ok(r) => r,
                     Err(e) => {
                         let resp = WsResponse::err(Uuid::nil(), format!("invalid request: {e}"));
-                        let _ = ws_tx.send(Message::Text(serde_json::to_string(&resp).unwrap().into())).await;
+                        let _ = send_ws_response(&mut ws_tx, &resp).await;
                         continue;
                     }
                 };
@@ -56,7 +72,7 @@ pub(crate) async fn handle_control_ws(
                     Ok(r) => r,
                     Err(e) => {
                         let resp = WsResponse::err(req.id, format!("invalid params: {e}"));
-                        let _ = ws_tx.send(Message::Text(serde_json::to_string(&resp).unwrap().into())).await;
+                        let _ = send_ws_response(&mut ws_tx, &resp).await;
                         continue;
                     }
                 };
@@ -64,26 +80,39 @@ pub(crate) async fn handle_control_ws(
                 // Handle LogSubscribe / BuildLogSubscribe specially
                 match &control_request {
                     ControlRequest::LogSubscribe { dataflow_id, level } => {
+                        let (found_tx, found_rx) = oneshot::channel();
                         let _ = event_tx.send(Event::Control(ControlEvent::LogSubscribe {
                             dataflow_id: *dataflow_id,
                             level: *level,
                             sender: log_tx.clone(),
+                            found_tx,
                         })).await;
 
-                        // Ack the subscribe request
-                        let resp = WsResponse::ok(req.id, serde_json::json!({"subscribed": true}));
-                        let _ = ws_tx.send(Message::Text(serde_json::to_string(&resp).unwrap().into())).await;
+                        let found = found_rx.await.unwrap_or(false);
+                        let resp = if found {
+                            WsResponse::ok(req.id, serde_json::json!({"subscribed": true}))
+                        } else {
+                            WsResponse::err(req.id, format!("no running dataflow with id {dataflow_id}"))
+                        };
+                        let _ = send_ws_response(&mut ws_tx, &resp).await;
                         continue;
                     }
                     ControlRequest::BuildLogSubscribe { build_id, level } => {
+                        let (found_tx, found_rx) = oneshot::channel();
                         let _ = event_tx.send(Event::Control(ControlEvent::BuildLogSubscribe {
                             build_id: *build_id,
                             level: *level,
                             sender: log_tx.clone(),
+                            found_tx,
                         })).await;
 
-                        let resp = WsResponse::ok(req.id, serde_json::json!({"subscribed": true}));
-                        let _ = ws_tx.send(Message::Text(serde_json::to_string(&resp).unwrap().into())).await;
+                        let found = found_rx.await.unwrap_or(false);
+                        let resp = if found {
+                            WsResponse::ok(req.id, serde_json::json!({"subscribed": true}))
+                        } else {
+                            WsResponse::err(req.id, format!("no running build with id {build_id}"))
+                        };
+                        let _ = send_ws_response(&mut ws_tx, &resp).await;
                         continue;
                     }
                     _ => {}
@@ -98,7 +127,7 @@ pub(crate) async fn handle_control_ws(
 
                 if event_tx.send(Event::Control(event)).await.is_err() {
                     let resp = WsResponse::err(req.id, "coordinator stopped".to_string());
-                    let _ = ws_tx.send(Message::Text(serde_json::to_string(&resp).unwrap().into())).await;
+                    let _ = send_ws_response(&mut ws_tx, &resp).await;
                     break;
                 }
 
@@ -108,17 +137,15 @@ pub(crate) async fn handle_control_ws(
                     Err(_) => ControlRequestReply::Error("coordinator dropped reply".to_string()),
                 };
 
+                let stop = matches!(reply, ControlRequestReply::CoordinatorStopped);
+
                 let resp = match serde_json::to_value(&reply)
                     .context("failed to serialize reply")
                 {
                     Ok(val) => WsResponse::ok(req.id, val),
-                    Err(e) => WsResponse::err(req.id, format!("{e:?}")),
+                    Err(e) => WsResponse::err(req.id, format!("{e}")),
                 };
-                if ws_tx.send(Message::Text(serde_json::to_string(&resp).unwrap().into())).await.is_err() {
-                    break;
-                }
-
-                if matches!(reply, ControlRequestReply::CoordinatorStopped) {
+                if send_ws_response(&mut ws_tx, &resp).await.is_err() || stop {
                     break;
                 }
             }

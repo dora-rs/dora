@@ -126,17 +126,31 @@ async fn handle_daemon_request(
     match message.inner {
         CoordinatorRequest::Register(register_request) => {
             let connection = DaemonConnection::new(cmd_tx.clone(), pending_replies.clone());
+            let (daemon_id_tx, daemon_id_rx) = oneshot::channel();
             let event = DaemonRequest::Register {
                 connection,
                 version_check_result: register_request.check_version(),
                 machine_id: register_request.machine_id,
+                daemon_id_tx,
             };
-            event_tx.send(Event::Daemon(event)).await.is_ok()
+            if event_tx.send(Event::Daemon(event)).await.is_err() {
+                return false;
+            }
+            // Capture the assigned daemon_id for cleanup on disconnect
+            if let Ok(daemon_id) = daemon_id_rx.await {
+                *tracked_daemon_id = Some(daemon_id);
+            }
+            true
         }
         CoordinatorRequest::Event { daemon_id, event } => {
-            // Track daemon_id for cleanup on disconnect
-            if tracked_daemon_id.is_none() {
-                *tracked_daemon_id = Some(daemon_id.clone());
+            // Verify daemon_id matches the registered one (prevent impersonation)
+            if let Some(tracked) = tracked_daemon_id {
+                if *tracked != daemon_id {
+                    tracing::warn!(
+                        "daemon sent event with mismatched id: expected `{tracked}`, got `{daemon_id}`"
+                    );
+                    return true;
+                }
             }
             if let Some(coordinator_event) = translate_daemon_event(daemon_id, event) {
                 event_tx.send(coordinator_event).await.is_ok()
@@ -208,8 +222,8 @@ async fn handle_daemon_response(
         let result_json = if let Some(val) = response.result {
             serde_json::to_string(&val).unwrap_or_default()
         } else if let Some(err) = response.error {
-            // Error response - format as JSON that will fail DaemonCoordinatorReply deser
-            format!("{{\"ws_error\":\"{}\"}}", err.replace('"', "\\\""))
+            tracing::warn!("daemon returned error for request {}: {err}", response.id);
+            serde_json::json!({"ws_error": err}).to_string()
         } else {
             "null".to_string()
         };

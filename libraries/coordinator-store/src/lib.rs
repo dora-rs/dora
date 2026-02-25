@@ -16,6 +16,10 @@ pub struct DaemonInfo {
 ///
 /// The initial implementation is in-memory (same data as today).
 /// Later, this can be swapped for etcd/sqlite to enable stateless coordinators.
+///
+/// NOTE: Not yet wired into the coordinator. The coordinator currently uses
+/// `DaemonConnections` in `state.rs` directly. This trait will be integrated
+/// when the coordinator is made stateless (HA with multiple instances).
 pub trait CoordinatorStore: Send + Sync {
     // -- Daemon registry --
 

@@ -55,10 +55,14 @@ pub struct WsEvent {
 
 /// Discriminated union for parsing any incoming WS text frame.
 ///
-/// We distinguish by the presence of fields:
-/// - Has `method` -> Request
-/// - Has `result` or `error` (with `id`) -> Response
-/// - Has `event` -> Event
+/// Uses `#[serde(untagged)]` which tries variants in order.
+/// Discriminating fields (order matters):
+/// 1. `Request` — matched first because it has a required `method` field
+/// 2. `Response` — has `id` + optional `result`/`error` (no `method`)
+/// 3. `Event` — has `event` field, no `id` or `method`
+///
+/// A message with both `method` and `result` would match `Request`.
+/// This is correct because responses never have a `method` field.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum WsMessage {

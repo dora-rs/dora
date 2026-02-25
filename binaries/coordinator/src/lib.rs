@@ -60,9 +60,10 @@ pub async fn start(
     let ws_events = ReceiverStream::new(ws_event_rx);
 
     // Start WS server
-    let (port, ws_future) = ws_server::serve(bind, ws_event_tx.clone(), clock.clone())
-        .await
-        .wrap_err("failed to start WS server")?;
+    let (port, ws_shutdown, ws_future) =
+        ws_server::serve(bind, ws_event_tx.clone(), clock.clone())
+            .await
+            .wrap_err("failed to start WS server")?;
     tracing::info!("WS server listening on port {port}");
     tasks.push(tokio::spawn(async move {
         if let Err(e) = ws_future.await {
@@ -80,7 +81,10 @@ pub async fn start(
     let future = async move {
         start_inner(events, clock).await?;
 
-        tracing::debug!("coordinator main loop finished, waiting on spawned tasks");
+        tracing::debug!("coordinator main loop finished, shutting down WS server");
+        ws_shutdown.shutdown();
+
+        tracing::debug!("waiting on spawned tasks");
         while let Some(join_result) = tasks.next().await {
             if let Err(err) = join_result {
                 tracing::error!("task panicked: {err}");
@@ -129,6 +133,7 @@ async fn start_inner(
                     machine_id,
                     mut connection,
                     version_check_result,
+                    daemon_id_tx,
                 } => {
                     let existing = match &machine_id {
                         Some(id) => daemon_connections.get_matching_daemon_id(id),
@@ -159,8 +164,9 @@ async fn start_inner(
                         .send(&serde_json::to_vec(&reply)?)
                         .await
                         .context("failed to send register reply");
-                    match version_check_result.map_err(|e| eyre!(e)).and(send_result) {
+                    match version_check_result.map_err(|e| eyre!(e)).and(existing_result.map_err(|e| eyre!(e))).and(send_result) {
                         Ok(()) => {
+                            let _ = daemon_id_tx.send(daemon_id.clone());
                             daemon_connections.add(daemon_id.clone(), connection);
                         }
                         Err(err) => {
@@ -700,6 +706,7 @@ async fn start_inner(
                     dataflow_id,
                     level,
                     sender,
+                    found_tx,
                 } => {
                     if let Some(dataflow) = running_dataflows.get_mut(&dataflow_id) {
                         dataflow
@@ -709,12 +716,16 @@ async fn start_inner(
                         for message in buffered {
                             send_log_message(&mut dataflow.log_subscribers, &message).await;
                         }
+                        let _ = found_tx.send(true);
+                    } else {
+                        let _ = found_tx.send(false);
                     }
                 }
                 ControlEvent::BuildLogSubscribe {
                     build_id,
                     level,
                     sender,
+                    found_tx,
                 } => {
                     if let Some(build) = running_builds.get_mut(&build_id) {
                         build
@@ -724,6 +735,9 @@ async fn start_inner(
                         for message in buffered {
                             send_log_message(&mut build.log_subscribers, &message).await;
                         }
+                        let _ = found_tx.send(true);
+                    } else {
+                        let _ = found_tx.send(false);
                     }
                 }
             },
@@ -795,11 +809,16 @@ async fn start_inner(
                 }
             }
             Event::Log(message) => {
+                const MAX_BUFFERED_LOG_MESSAGES: usize = 10_000;
                 if let Some(dataflow_id) = &message.dataflow_id {
                     if let Some(dataflow) = running_dataflows.get_mut(dataflow_id) {
                         if dataflow.log_subscribers.is_empty() {
-                            // buffer log message until there are subscribers
-                            dataflow.buffered_log_messages.push(message);
+                            if dataflow.buffered_log_messages.len() < MAX_BUFFERED_LOG_MESSAGES {
+                                dataflow.buffered_log_messages.push(message);
+                            } else if dataflow.buffered_log_messages.len() == MAX_BUFFERED_LOG_MESSAGES {
+                                tracing::warn!("log buffer full for dataflow {dataflow_id}, dropping new messages");
+                                dataflow.buffered_log_messages.push(message);
+                            }
                         } else {
                             send_log_message(&mut dataflow.log_subscribers, &message).await;
                         }
@@ -807,8 +826,12 @@ async fn start_inner(
                 } else if let Some(build_id) = &message.build_id {
                     if let Some(build) = running_builds.get_mut(build_id) {
                         if build.log_subscribers.is_empty() {
-                            // buffer log message until there are subscribers
-                            build.buffered_log_messages.push(message);
+                            if build.buffered_log_messages.len() < MAX_BUFFERED_LOG_MESSAGES {
+                                build.buffered_log_messages.push(message);
+                            } else if build.buffered_log_messages.len() == MAX_BUFFERED_LOG_MESSAGES {
+                                tracing::warn!("log buffer full for build {build_id}, dropping new messages");
+                                build.buffered_log_messages.push(message);
+                            }
                         } else {
                             send_log_message(&mut build.log_subscribers, &message).await;
                         }

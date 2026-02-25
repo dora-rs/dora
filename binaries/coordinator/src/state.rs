@@ -100,13 +100,18 @@ impl DaemonConnection {
             .await
             .map_err(|_| eyre!("WS daemon send channel closed"))?;
 
-        let response_json = tokio::time::timeout(
+        let response_json = match tokio::time::timeout(
             adora_message::TCP_READ_TIMEOUT,
             reply_rx,
         )
         .await
-        .map_err(|_| eyre!("timeout waiting for daemon WS reply"))?
-        .map_err(|_| eyre!("daemon WS reply channel dropped"))?;
+        {
+            Ok(result) => result.map_err(|_| eyre!("daemon WS reply channel dropped"))?,
+            Err(_) => {
+                self.pending_replies.lock().await.remove(&id);
+                return Err(eyre!("timeout waiting for daemon WS reply"));
+            }
+        };
 
         Ok(response_json.into_bytes())
     }

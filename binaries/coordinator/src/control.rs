@@ -14,11 +14,15 @@ pub enum ControlEvent {
         dataflow_id: Uuid,
         level: log::LevelFilter,
         sender: mpsc::Sender<String>,
+        /// Sends `true` if the dataflow exists, `false` otherwise.
+        found_tx: oneshot::Sender<bool>,
     },
     BuildLogSubscribe {
         build_id: BuildId,
         level: log::LevelFilter,
         sender: mpsc::Sender<String>,
+        /// Sends `true` if the build exists, `false` otherwise.
+        found_tx: oneshot::Sender<bool>,
     },
     Error(eyre::Report),
 }

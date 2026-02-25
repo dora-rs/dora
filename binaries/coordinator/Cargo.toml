@@ -31,5 +31,6 @@ log = { version = "0.4.21", features = ["serde"] }
 adora-message = { workspace = true }
 adora-coordinator-store = { workspace = true }
 axum = { version = "0.8", features = ["ws"] }
+tower = "0.5"
 tower-http = { version = "0.6", features = ["cors"] }
 itertools = "0.14.0"

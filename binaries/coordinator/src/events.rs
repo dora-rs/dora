@@ -10,7 +10,7 @@ use adora_message::{
 use eyre::WrapErr;
 use futures::Stream;
 use std::collections::BTreeMap;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
 
@@ -92,6 +92,8 @@ pub enum DaemonRequest {
         version_check_result: Result<(), String>,
         machine_id: Option<String>,
         connection: DaemonConnection,
+        /// Sends back the assigned DaemonId on successful registration.
+        daemon_id_tx: oneshot::Sender<DaemonId>,
     },
 }
 

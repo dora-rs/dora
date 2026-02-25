@@ -41,8 +41,7 @@ enum SessionCommand {
 impl WsSession {
     /// Connect to the coordinator via WebSocket.
     pub fn connect(addr: SocketAddr) -> eyre::Result<Self> {
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(1)
+        let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .context("failed to create tokio runtime for WS session")?;

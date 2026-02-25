@@ -8,7 +8,7 @@ use adora_message::{
 };
 use eyre::eyre;
 use futures::{SinkExt, StreamExt};
-use std::{net::SocketAddr, time::Duration};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::{Stream, wrappers::ReceiverStream};
 use tokio_tungstenite::tungstenite::Message;
@@ -16,6 +16,7 @@ use uuid::Uuid;
 
 const DAEMON_COORDINATOR_RETRY_INITIAL: Duration = Duration::from_secs(1);
 const DAEMON_COORDINATOR_RETRY_MAX: Duration = Duration::from_secs(30);
+const REGISTER_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug)]
 pub struct CoordinatorEvent {
@@ -49,7 +50,7 @@ impl CoordinatorSender {
 pub async fn register(
     addr: SocketAddr,
     machine_id: Option<String>,
-    clock: &HLC,
+    clock: Arc<HLC>,
 ) -> eyre::Result<(
     DaemonId,
     CoordinatorSender,
@@ -62,10 +63,17 @@ pub async fn register(
             match tokio_tungstenite::connect_async(&ws_url).await {
                 Ok((stream, _)) => break stream,
                 Err(err) => {
-                    tracing::warn!(
-                        "Could not connect to WS at {ws_url}: {err}. Retrying in {backoff:#?}.."
+                    // Add jitter: +/- 25% of backoff to prevent thundering herd
+                    let jitter_range = backoff / 4;
+                    let jitter = Duration::from_millis(
+                        (rand_jitter_millis() % (jitter_range.as_millis() as u64 * 2 + 1))
+                            .saturating_sub(jitter_range.as_millis() as u64),
                     );
-                    tokio::time::sleep(backoff).await;
+                    let sleep_duration = backoff.saturating_add(jitter);
+                    tracing::warn!(
+                        "Could not connect to WS at {ws_url}: {err}. Retrying in {sleep_duration:#?}.."
+                    );
+                    tokio::time::sleep(sleep_duration).await;
                     backoff = (backoff * 2).min(DAEMON_COORDINATOR_RETRY_MAX);
                 }
             }
@@ -93,36 +101,40 @@ pub async fn register(
         .await
         .map_err(|e| eyre!("failed to send register request: {e}"))?;
 
-    // Wait for register reply.
+    // Wait for register reply with timeout.
     // The coordinator's register handler sends back Timestamped<RegisterResult>
     // wrapped in a WsRequest with method "daemon_event".
-    let daemon_id = loop {
-        let msg = ws_rx
-            .next()
-            .await
-            .ok_or_else(|| eyre!("WS connection closed before register reply"))?
-            .map_err(|e| eyre!("WS error during register: {e}"))?;
+    let daemon_id = tokio::time::timeout(REGISTER_TIMEOUT, async {
+        loop {
+            let msg = ws_rx
+                .next()
+                .await
+                .ok_or_else(|| eyre!("WS connection closed before register reply"))?
+                .map_err(|e| eyre!("WS error during register: {e}"))?;
 
-        let Message::Text(text) = msg else {
-            continue;
-        };
+            let Message::Text(text) = msg else {
+                continue;
+            };
 
-        let req: WsRequest = match serde_json::from_str(&text) {
-            Ok(r) => r,
-            Err(_) => continue,
-        };
+            let req: WsRequest = match serde_json::from_str(&text) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
 
-        let result: Timestamped<RegisterResult> = match serde_json::from_value(req.params) {
-            Ok(r) => r,
-            Err(_) => continue,
-        };
+            let result: Timestamped<RegisterResult> = match serde_json::from_value(req.params) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
 
-        if let Err(err) = clock.update_with_timestamp(&result.timestamp) {
-            tracing::warn!("failed to update timestamp after register: {err}");
+            if let Err(err) = clock.update_with_timestamp(&result.timestamp) {
+                tracing::warn!("failed to update timestamp after register: {err}");
+            }
+
+            break result.inner.to_result();
         }
-
-        break result.inner.to_result()?;
-    };
+    })
+    .await
+    .map_err(|_| eyre!("timeout waiting for register reply from coordinator"))??;
 
     tracing::info!("Connected to adora-coordinator at ws://{addr}/api/daemon");
 
@@ -131,7 +143,9 @@ pub async fn register(
     // Spawned task: bidirectional WS message routing.
     // - Reads coordinator commands from WS, sends to event channel, awaits reply, sends reply back.
     // - Reads outgoing events from send_rx, forwards to WS.
+    let task_clock = clock.clone();
     tokio::spawn(async move {
+        let clock = task_clock;
         loop {
             tokio::select! {
                 msg = ws_rx.next() => {
@@ -170,8 +184,8 @@ pub async fn register(
                             }
                         };
 
-                    if let Err(err) = clock_update_noop(&event.timestamp) {
-                        tracing::warn!("timestamp note: {err}");
+                    if let Err(err) = clock.update_with_timestamp(&event.timestamp) {
+                        tracing::warn!("failed to update daemon clock: {err}");
                     }
 
                     let (reply_tx, reply_rx) = oneshot::channel();
@@ -229,9 +243,10 @@ pub async fn register(
     Ok((daemon_id, CoordinatorSender { sender: send_tx }, ReceiverStream::new(rx)))
 }
 
-/// Placeholder: the spawned task doesn't have access to the HLC, so we skip clock updates.
-/// The main daemon loop updates the clock when processing events.
-fn clock_update_noop(_timestamp: &adora_core::uhlc::Timestamp) -> Result<(), &'static str> {
-    // Clock update happens in the daemon's main event processing loop
-    Ok(())
+/// Simple jitter: uses system time nanos as a cheap pseudo-random source.
+fn rand_jitter_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos() as u64
 }

@@ -2637,7 +2637,7 @@ async fn set_up_event_stream(
         },
     });
     let (daemon_id, coordinator_sender, coordinator_events) =
-        coordinator::register(coordinator_ws_addr, machine_id.clone(), clock)
+        coordinator::register(coordinator_ws_addr, machine_id.clone(), clock.clone())
             .await
             .wrap_err("failed to connect to adora-coordinator")?;
     let coordinator_events = coordinator_events.map(
