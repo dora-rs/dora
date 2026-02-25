@@ -175,47 +175,16 @@ impl Daemon {
             }
         };
 
-        let daemon = Self {
-            logger: Logger {
-                destination: log_destination,
-                daemon_id: daemon_id.clone(),
-                clock: clock.clone(),
-            }
-            .for_daemon(daemon_id.clone()),
-            state: daemon_state,
-            exit_when_done: None,
-            exit_when_all_finished: false,
-            metrics_system: sysinfo::System::new(),
-        };
-
-        let dora_events = ReceiverStream::new(dora_events_rx);
-        let watchdog_clock = daemon.state.clock.clone();
-        let watchdog_interval = tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(
-            Duration::from_secs(5),
-        ))
-        .map(move |_| Timestamped {
-            inner: Event::HeartbeatInterval,
-            timestamp: watchdog_clock.new_timestamp(),
-        });
-
-        let metrics_clock = daemon.state.clock.clone();
-        let metrics_interval = tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(
-            Duration::from_secs(2),
-        ))
-        .map(move |_| Timestamped {
-            inner: Event::MetricsInterval,
-            timestamp: metrics_clock.new_timestamp(),
-        });
-
-        let events = (
-            ReceiverStream::new(ctrlc_events),
-            incoming_events,
-            dora_events,
-            watchdog_interval,
-            metrics_interval,
+        Self::run_general(
+            (ReceiverStream::new(ctrlc_events), incoming_events).merge(),
+            daemon_id,
+            None,
+            daemon_state,
+            dora_events_rx,
+            log_destination,
         )
-            .merge();
-        daemon.run_inner(events).await.map(|_| ())
+        .await
+        .map(|_| ())
     }
 
     pub async fn run_dataflow(
@@ -350,12 +319,25 @@ impl Daemon {
             Default::default()
         };
 
+        let zenoh_session = open_zenoh_session(None)
+            .await
+            .wrap_err("failed to open zenoh session")?;
+        let daemon_id = DaemonId::new(None);
+        let (dora_events_tx, dora_events_rx) = mpsc::channel(1000);
+        let daemon_state = Arc::new(state::DaemonState::new_standalone(
+            clock.clone(),
+            daemon_id.clone(),
+            dora_events_tx,
+            zenoh_session,
+            builds_map,
+        ));
+
         let run_result = Self::run_general(
             Box::pin(events),
-            DaemonId::new(None),
+            daemon_id,
             Some(exit_when_done),
-            clock.clone(),
-            builds_map,
+            daemon_state,
+            dora_events_rx,
             log_destination,
         );
 
@@ -384,29 +366,18 @@ impl Daemon {
         })
     }
 
-    /// Standalone run (no coordinator). Used by `run_dataflow`.
+    /// Shared daemon run logic used by both `run` (with coordinator) and
+    /// `run_dataflow` (standalone).
     #[allow(clippy::too_many_arguments)]
     async fn run_general(
         external_events: impl Stream<Item = Timestamped<Event>> + Unpin,
         daemon_id: DaemonId,
         exit_when_done: Option<BTreeSet<(Uuid, NodeId)>>,
-        clock: Arc<HLC>,
-        builds: BTreeMap<BuildId, BuildInfo>,
+        daemon_state: Arc<state::DaemonState>,
+        dora_events_rx: mpsc::Receiver<Timestamped<Event>>,
         log_destination: LogDestination,
     ) -> eyre::Result<DaemonRunResult> {
-        let zenoh_session = open_zenoh_session(None)
-            .await
-            .wrap_err("failed to open zenoh session")?;
-        // Use a large channel capacity to prevent deadlock
-        let (dora_events_tx, dora_events_rx) = mpsc::channel(1000);
-        let daemon_state = Arc::new(state::DaemonState::new_standalone(
-            clock.clone(),
-            daemon_id.clone(),
-            dora_events_tx,
-            zenoh_session,
-            builds,
-        ));
-
+        let clock = daemon_state.clock.clone();
         let daemon = Self {
             logger: Logger {
                 destination: log_destination,
