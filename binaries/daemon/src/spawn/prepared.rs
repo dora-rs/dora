@@ -49,6 +49,10 @@ pub struct PreparedNode {
     pub(super) clock: Arc<HLC>,
     pub(super) daemon_tx: mpsc::Sender<Timestamped<Event>>,
     pub(super) node_stderr_most_recent: Arc<ArrayQueue<String>>,
+    /// Abort handle for the node's listener task. Cloned into `RunningNode` so
+    /// the dataflow can cancel the listener when it finishes.
+    /// `AbortHandle` is `Clone`, so `#[derive(Clone)]` continues to work.
+    pub(super) listener_abort_handle: Option<tokio::task::AbortHandle>,
 }
 
 impl PreparedNode {
@@ -85,6 +89,7 @@ impl PreparedNode {
                     Some(pid.clone())
                 }
             },
+            listener_abort_handle: self.listener_abort_handle.clone(),
         };
 
         tokio::spawn(self.restart_loop(logger, finished_rx, disable_restart, pid));

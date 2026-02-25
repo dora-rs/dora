@@ -42,7 +42,7 @@ pub async fn spawn_listener_loop(
     config: LocalCommunicationConfig,
     queue_sizes: BTreeMap<DataId, usize>,
     clock: Arc<uhlc::HLC>,
-) -> eyre::Result<DaemonCommunication> {
+) -> eyre::Result<(DaemonCommunication, Option<tokio::task::AbortHandle>)> {
     match config {
         LocalCommunicationConfig::Tcp => {
             let socket = match TcpListener::bind((LOCALHOST, 0)).await {
@@ -59,12 +59,13 @@ pub async fn spawn_listener_loop(
 
             let event_loop_node_id = format!("{dataflow_id}/{node_id}");
             let daemon_tx = daemon_tx.clone();
-            tokio::spawn(async move {
+            let handle = tokio::spawn(async move {
                 tcp::listener_loop(socket, daemon_tx, queue_sizes, clock).await;
                 tracing::debug!("event listener loop finished for `{event_loop_node_id}`");
             });
+            let abort_handle = handle.abort_handle();
 
-            Ok(DaemonCommunication::Tcp { socket_addr })
+            Ok((DaemonCommunication::Tcp { socket_addr }, Some(abort_handle)))
         }
         LocalCommunicationConfig::Shmem => {
             let daemon_control_region = ShmemConf::new()
@@ -137,12 +138,15 @@ pub async fn spawn_listener_loop(
                 });
             }
 
-            Ok(DaemonCommunication::Shmem {
-                daemon_control_region_id,
-                daemon_events_region_id,
-                daemon_drop_region_id,
-                daemon_events_close_region_id,
-            })
+            Ok((
+                DaemonCommunication::Shmem {
+                    daemon_control_region_id,
+                    daemon_events_region_id,
+                    daemon_drop_region_id,
+                    daemon_events_close_region_id,
+                },
+                None,
+            ))
         }
         #[cfg(unix)]
         LocalCommunicationConfig::UnixDomain => {
@@ -163,12 +167,16 @@ pub async fn spawn_listener_loop(
 
             let event_loop_node_id = format!("{dataflow_id}/{node_id}");
             let daemon_tx = daemon_tx.clone();
-            tokio::spawn(async move {
+            let handle = tokio::spawn(async move {
                 unix_domain::listener_loop(socket, daemon_tx, queue_sizes, clock).await;
                 tracing::debug!("event listener loop finished for `{event_loop_node_id}`");
             });
+            let abort_handle = handle.abort_handle();
 
-            Ok(DaemonCommunication::UnixDomain { socket_file })
+            Ok((
+                DaemonCommunication::UnixDomain { socket_file },
+                Some(abort_handle),
+            ))
         }
         #[cfg(not(unix))]
         LocalCommunicationConfig::UnixDomain => {

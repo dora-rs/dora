@@ -580,6 +580,11 @@ impl Daemon {
                 } => match result {
                     Ok(running_node) => {
                         if let Some(mut dataflow) = self.state.running.get_mut(&dataflow_id) {
+                            if let Some(ref abort_handle) = running_node.listener_abort_handle {
+                                dataflow
+                                    ._listener_tasks
+                                    .push(ListenerTask(abort_handle.clone()));
+                            }
                             dataflow.running_nodes.insert(node_id, running_node);
                         } else {
                             tracing::error!(
@@ -2809,6 +2814,9 @@ pub struct RunningNode {
     /// This flag is set when all inputs of the node were closed and when a manual stop command
     /// was sent.
     disable_restart: Arc<AtomicBool>,
+    /// Abort handle for this node's listener task, carried here until the dataflow
+    /// collects it into `RunningDataflow::_listener_tasks`.
+    listener_abort_handle: Option<tokio::task::AbortHandle>,
 }
 
 impl RunningNode {
@@ -2892,6 +2900,15 @@ impl Drop for ProcessHandle {
     }
 }
 
+/// Aborts the associated tokio task when dropped.
+struct ListenerTask(tokio::task::AbortHandle);
+
+impl Drop for ListenerTask {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 pub struct RunningDataflow {
     id: Uuid,
 
@@ -2921,6 +2938,9 @@ pub struct RunningDataflow {
 
     /// Keep handles to all timer tasks of this dataflow to cancel them on drop.
     _timer_handles: BTreeMap<Duration, futures::future::RemoteHandle<()>>,
+    /// Keep abort handles for all node listener tasks so they are cancelled when
+    /// the dataflow finishes and this struct is dropped.
+    _listener_tasks: Vec<ListenerTask>,
     stop_sent: bool,
 
     /// Used in `open_inputs`.
@@ -2979,6 +2999,7 @@ impl RunningDataflow {
             open_external_mappings: Default::default(),
             pending_drop_tokens: HashMap::new(),
             _timer_handles: BTreeMap::new(),
+            _listener_tasks: Vec::new(),
             stop_sent: false,
             empty_set: BTreeSet::new(),
             cascading_error_causes: Default::default(),
