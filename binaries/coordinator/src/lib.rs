@@ -452,16 +452,17 @@ async fn start_inner(
                     if let Some((exited_before_subscribe, daemons)) = send_info {
                         tracing::debug!("sending all nodes ready message to daemons");
                         for daemon_id in &daemons {
-                            let Some(connection) =
-                                coordinator_state.daemon_connections.get(daemon_id)
-                            else {
-                                tracing::warn!(
-                                    "no daemon connection found for machine `{daemon_id}`"
-                                );
-                                continue;
+                            let client = match coordinator_state.daemon_connections.get(daemon_id) {
+                                Some(connection) => connection.client.clone(),
+                                None => {
+                                    tracing::warn!(
+                                        "no daemon connection found for machine `{daemon_id}`"
+                                    );
+                                    continue;
+                                }
                             };
-                            connection
-                                .client
+                            // DashMap lock is dropped — safe to do async I/O.
+                            client
                                 .all_nodes_ready(
                                     tarpc::context::current(),
                                     uuid,
@@ -610,14 +611,17 @@ async fn start_inner(
                         disconnected.insert(machine_id);
                         continue;
                     }
-                    let Some(connection) = coordinator_state.daemon_connections.get(&machine_id)
-                    else {
-                        disconnected.insert(machine_id);
-                        continue;
+                    let client = match coordinator_state.daemon_connections.get(&machine_id) {
+                        Some(connection) => connection.client.clone(),
+                        None => {
+                            disconnected.insert(machine_id);
+                            continue;
+                        }
                     };
+                    // DashMap lock is dropped — safe to do async I/O.
                     let result: eyre::Result<()> = tokio::time::timeout(
                         Duration::from_millis(500),
-                        connection.client.heartbeat(tarpc::context::current()),
+                        client.heartbeat(tarpc::context::current()),
                     )
                     .await
                     .wrap_err("timeout")
@@ -966,11 +970,13 @@ async fn stop_dataflow<'a>(
     // DashMap lock is now dropped — safe to do async I/O.
 
     for daemon_id in &daemon_ids {
-        let daemon_connection = daemon_connections
+        let client = daemon_connections
             .get(daemon_id)
-            .wrap_err("no daemon connection")?;
-        daemon_connection
+            .wrap_err("no daemon connection")?
             .client
+            .clone();
+        // DashMap lock is dropped — safe to do async I/O.
+        client
             .stop_dataflow(
                 tarpc::context::current(),
                 dataflow_uuid,
@@ -998,16 +1004,22 @@ async fn reload_dataflow(
     operator_id: Option<OperatorId>,
     daemon_connections: &DaemonConnections,
 ) -> eyre::Result<()> {
-    let Some(dataflow) = running_dataflows.get(&dataflow_id) else {
-        bail!("No running dataflow found with UUID `{dataflow_id}`")
+    // Collect daemon IDs while briefly holding the lock.
+    let daemon_ids: Vec<DaemonId> = {
+        let Some(dataflow) = running_dataflows.get(&dataflow_id) else {
+            bail!("No running dataflow found with UUID `{dataflow_id}`")
+        };
+        dataflow.daemons.iter().cloned().collect()
     };
+    // DashMap lock is now dropped — safe to do async I/O.
 
-    for machine_id in &dataflow.daemons {
-        let daemon_connection = daemon_connections
+    for machine_id in &daemon_ids {
+        let client = daemon_connections
             .get(machine_id)
-            .wrap_err("no daemon connection")?;
-        daemon_connection
+            .wrap_err("no daemon connection")?
             .client
+            .clone();
+        client
             .reload_dataflow(
                 tarpc::context::current(),
                 dataflow_id,
@@ -1070,11 +1082,13 @@ async fn retrieve_logs(
         [] => eyre::bail!("no matching daemon connections for machine ID `{machine_id:?}`"),
         _ => eyre::bail!("multiple matching daemon connections for machine ID `{machine_id:?}`"),
     };
-    let daemon_connection = daemon_connections
+    let client = daemon_connections
         .get(&daemon_id)
-        .wrap_err_with(|| format!("no daemon connection to `{daemon_id}`"))?;
-    let reply_logs = daemon_connection
+        .wrap_err_with(|| format!("no daemon connection to `{daemon_id}`"))?
         .client
+        .clone();
+    // DashMap lock is dropped — safe to do async I/O.
+    let reply_logs = client
         .logs(
             tarpc::context::current(),
             dataflow_id,
@@ -1184,11 +1198,13 @@ async fn build_dataflow_on_machine(
             .clone(),
     };
 
-    let daemon_connection = daemon_connections
+    let client = daemon_connections
         .get(&daemon_id)
-        .wrap_err_with(|| format!("no daemon connection for daemon `{daemon_id}`"))?;
-    daemon_connection
+        .wrap_err_with(|| format!("no daemon connection for daemon `{daemon_id}`"))?
         .client
+        .clone();
+    // DashMap lock is dropped — safe to do async I/O.
+    client
         .build(tarpc::context::current(), build_command)
         .await
         .context("RPC transport error")?
@@ -1271,9 +1287,8 @@ async fn start_dataflow(
     Ok(uuid)
 }
 
-async fn destroy_daemon(daemon_id: DaemonId, daemon_connection: &DaemonConnection) -> Result<()> {
-    daemon_connection
-        .client
+async fn destroy_daemon(daemon_id: DaemonId, client: DaemonControlClient) -> Result<()> {
+    client
         .destroy(tarpc::context::current())
         .await
         .wrap_err(format!(
@@ -1287,13 +1302,18 @@ async fn destroy_daemon(daemon_id: DaemonId, daemon_connection: &DaemonConnectio
 }
 
 async fn destroy_daemons(daemon_connections: &DaemonConnections) -> eyre::Result<()> {
-    let mut results = Vec::new();
-    for connection_ref in daemon_connections.iter() {
-        let daemon_id = connection_ref.key().clone();
+    // Collect daemon IDs and cloned clients, then drop the DashMap lock.
+    let daemons: Vec<(DaemonId, DaemonControlClient)> = daemon_connections
+        .iter()
+        .map(|r| (r.key().clone(), r.value().client.clone()))
+        .collect();
+    // DashMap lock is now dropped — safe to do concurrent async I/O.
+
+    let results = futures::future::join_all(daemons.into_iter().map(|(daemon_id, client)| {
         tracing::info!("Destroying daemon connection for `{daemon_id}`");
-        let result = destroy_daemon(daemon_id, connection_ref.value()).await;
-        results.push(result);
-    }
+        destroy_daemon(daemon_id, client)
+    }))
+    .await;
     daemon_connections.clear();
 
     for result in results {

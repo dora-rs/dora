@@ -88,11 +88,13 @@ pub(super) async fn execute_dataflow_plan(
     daemon_connections: &DaemonConnections,
 ) -> eyre::Result<()> {
     for (daemon_id, spawn_command) in daemon_spawn_commands {
-        let daemon_connection = daemon_connections
+        let client = daemon_connections
             .get(&daemon_id)
-            .wrap_err_with(|| format!("no daemon connection for daemon `{daemon_id}`"))?;
-        daemon_connection
+            .wrap_err_with(|| format!("no daemon connection for daemon `{daemon_id}`"))?
             .client
+            .clone();
+        // DashMap lock is dropped — safe to do async I/O.
+        client
             .spawn(tarpc::context::current(), spawn_command)
             .await
             .wrap_err("RPC transport error")?
