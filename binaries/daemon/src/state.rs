@@ -25,7 +25,8 @@ use crate::{Event, InterDaemonEvent, RunningDataflow};
 /// event loop's mpsc channel.
 pub(crate) struct DaemonState {
     pub(crate) clock: Arc<HLC>,
-    pub(crate) daemon_id: DaemonId,
+    /// Set once during registration via [`set_daemon_id`].
+    daemon_id: std::sync::OnceLock<DaemonId>,
     pub(crate) events_tx: mpsc::Sender<Timestamped<Event>>,
 
     pub(crate) running: DashMap<DataflowId, RunningDataflow>,
@@ -35,7 +36,8 @@ pub(crate) struct DaemonState {
     pub(crate) builds: DashMap<BuildId, BuildInfo>,
 
     /// tarpc client for daemon→coordinator RPC (replaces raw TCP `coordinator_connection`).
-    pub(crate) coordinator_client: Option<DaemonToCoordinatorControlClient>,
+    /// Set once during registration via [`set_coordinator_client`].
+    coordinator_client: std::sync::OnceLock<DaemonToCoordinatorControlClient>,
     /// Last time we received a heartbeat from the coordinator.
     pub(crate) last_coordinator_heartbeat: Mutex<Instant>,
     /// Git clone management for builds.
@@ -48,6 +50,84 @@ pub(crate) struct DaemonState {
 }
 
 impl DaemonState {
+    pub(crate) fn new(
+        clock: Arc<HLC>,
+        events_tx: mpsc::Sender<Timestamped<Event>>,
+        zenoh_session: Option<zenoh::Session>,
+        remote_daemon_events_tx: Option<flume::Sender<eyre::Result<Timestamped<InterDaemonEvent>>>>,
+    ) -> Self {
+        Self {
+            clock,
+            daemon_id: std::sync::OnceLock::new(),
+            events_tx,
+            running: Default::default(),
+            working_dir: Default::default(),
+            dataflow_node_results: Default::default(),
+            sessions: Default::default(),
+            builds: Default::default(),
+            coordinator_client: std::sync::OnceLock::new(),
+            last_coordinator_heartbeat: Mutex::new(Instant::now()),
+            git_manager: Mutex::new(Default::default()),
+            zenoh_session,
+            remote_daemon_events_tx,
+        }
+    }
+
+    /// Create state for standalone mode (no coordinator).
+    pub(crate) fn new_standalone(
+        clock: Arc<HLC>,
+        daemon_id: DaemonId,
+        events_tx: mpsc::Sender<Timestamped<Event>>,
+        zenoh_session: zenoh::Session,
+        builds: BTreeMap<BuildId, BuildInfo>,
+    ) -> Self {
+        let state = Self {
+            clock,
+            daemon_id: std::sync::OnceLock::new(),
+            events_tx,
+            running: Default::default(),
+            working_dir: Default::default(),
+            dataflow_node_results: Default::default(),
+            sessions: Default::default(),
+            builds: {
+                let map = DashMap::new();
+                for (k, v) in builds {
+                    map.insert(k, v);
+                }
+                map
+            },
+            coordinator_client: std::sync::OnceLock::new(),
+            last_coordinator_heartbeat: Mutex::new(Instant::now()),
+            git_manager: Mutex::new(Default::default()),
+            zenoh_session: Some(zenoh_session),
+            remote_daemon_events_tx: None,
+        };
+        let _ = state.daemon_id.set(daemon_id);
+        state
+    }
+
+    /// Set the daemon ID after registration. Can only be called once.
+    pub(crate) fn set_daemon_id(&self, id: DaemonId) {
+        let _ = self.daemon_id.set(id);
+    }
+
+    /// Get the daemon ID. Panics if called before registration.
+    pub(crate) fn daemon_id(&self) -> &DaemonId {
+        self.daemon_id
+            .get()
+            .expect("daemon_id accessed before registration")
+    }
+
+    /// Set the coordinator client after registration. Can only be called once.
+    pub(crate) fn set_coordinator_client(&self, client: DaemonToCoordinatorControlClient) {
+        let _ = self.coordinator_client.set(client);
+    }
+
+    /// Get the coordinator client, if set.
+    pub(crate) fn coordinator_client(&self) -> Option<&DaemonToCoordinatorControlClient> {
+        self.coordinator_client.get()
+    }
+
     /// Finish a dataflow: report to coordinator and clean up state.
     ///
     /// Used by the RPC server's `stop_dataflow` handler (which doesn't have
@@ -73,7 +153,7 @@ impl DaemonState {
                 });
         }
 
-        if let Some(ref client) = self.coordinator_client {
+        if let Some(client) = self.coordinator_client.get() {
             let ctx = tarpc::context::current();
             let _ = client.all_nodes_finished(ctx, dataflow_id, result).await;
         }

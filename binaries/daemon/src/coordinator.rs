@@ -213,7 +213,7 @@ impl DaemonControl for DaemonRpcServer {
                 state.sessions.insert(session_id, build_id);
 
                 // Report to coordinator
-                if let Some(ref client) = state.coordinator_client {
+                if let Some(client) = state.coordinator_client() {
                     let ctx = tarpc::context::current();
                     let _ = client.build_result(ctx, build_id, build_result).await;
                 }

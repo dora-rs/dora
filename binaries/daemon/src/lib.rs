@@ -130,22 +130,13 @@ impl Daemon {
             .wrap_err("failed to open zenoh session")?;
 
         // Build shared state early so the RPC server can use it.
-        // `daemon_id` and `coordinator_client` are placeholders — filled after registration.
-        let daemon_state = Arc::new(state::DaemonState {
-            clock: clock.clone(),
-            daemon_id: DaemonId::new(None), // overwritten after register
-            events_tx: dora_events_tx,
-            running: Default::default(),
-            working_dir: Default::default(),
-            dataflow_node_results: Default::default(),
-            sessions: Default::default(),
-            builds: Default::default(),
-            coordinator_client: None, // filled after register
-            last_coordinator_heartbeat: tokio::sync::Mutex::new(Instant::now()),
-            git_manager: tokio::sync::Mutex::new(Default::default()),
-            zenoh_session: Some(zenoh_session),
-            remote_daemon_events_tx: Some(remote_daemon_events_tx),
-        });
+        // `daemon_id` and `coordinator_client` are set via OnceLock after registration.
+        let daemon_state = Arc::new(state::DaemonState::new(
+            clock.clone(),
+            dora_events_tx,
+            Some(zenoh_session),
+            Some(remote_daemon_events_tx),
+        ));
 
         let ((daemon_id, coordinator_client), incoming_events) = {
             let incoming_events = set_up_event_stream(
@@ -168,16 +159,8 @@ impl Daemon {
             }
         };
 
-        // SAFETY: No other references exist yet (RPC server only has a clone).
-        // We use unsafe to set the daemon_id and coordinator_client that couldn't be
-        // known before registration.
-        // A cleaner approach would use OnceLock/OnceCell, but for now this matches
-        // the coordinator's pattern.
-        unsafe {
-            let state_ptr = Arc::as_ptr(&daemon_state) as *mut state::DaemonState;
-            (*state_ptr).daemon_id = daemon_id.clone();
-            (*state_ptr).coordinator_client = Some(coordinator_client);
-        }
+        daemon_state.set_daemon_id(daemon_id.clone());
+        daemon_state.set_coordinator_client(coordinator_client);
 
         let log_destination = {
             // additional connection for logging
@@ -416,27 +399,13 @@ impl Daemon {
             .wrap_err("failed to open zenoh session")?;
         // Use a large channel capacity to prevent deadlock
         let (dora_events_tx, dora_events_rx) = mpsc::channel(1000);
-        let daemon_state = Arc::new(state::DaemonState {
-            clock: clock.clone(),
-            daemon_id: daemon_id.clone(),
-            events_tx: dora_events_tx,
-            running: Default::default(),
-            working_dir: Default::default(),
-            dataflow_node_results: Default::default(),
-            sessions: Default::default(),
-            builds: {
-                let map = dashmap::DashMap::new();
-                for (k, v) in builds {
-                    map.insert(k, v);
-                }
-                map
-            },
-            coordinator_client: None,
-            last_coordinator_heartbeat: tokio::sync::Mutex::new(Instant::now()),
-            git_manager: tokio::sync::Mutex::new(Default::default()),
-            zenoh_session: Some(zenoh_session),
-            remote_daemon_events_tx: None,
-        });
+        let daemon_state = Arc::new(state::DaemonState::new_standalone(
+            clock.clone(),
+            daemon_id.clone(),
+            dora_events_tx,
+            zenoh_session,
+            builds,
+        ));
 
         let daemon = Self {
             logger: Logger {
@@ -480,7 +449,7 @@ impl Daemon {
         daemon.run_inner(events).await
     }
 
-    #[tracing::instrument(skip(incoming_events, self), fields(?self.state.daemon_id))]
+    #[tracing::instrument(skip(incoming_events, self), fields(daemon_id = ?self.state.daemon_id()))]
     async fn run_inner(
         mut self,
         incoming_events: impl Stream<Item = Timestamped<Event>> + Unpin,
@@ -509,7 +478,7 @@ impl Daemon {
                 Event::Dora(event) => self.handle_dora_event(event).await?,
                 Event::DynamicNode(event) => self.handle_dynamic_node_event(event).await?,
                 Event::HeartbeatInterval => {
-                    if let Some(ref client) = self.state.coordinator_client {
+                    if let Some(client) = self.state.coordinator_client() {
                         let ctx = tarpc::context::current();
                         let _ = client.heartbeat(ctx).await;
 
@@ -618,7 +587,7 @@ impl Daemon {
                             self.state.builds.remove(&old_build_id);
                         }
                     }
-                    if let Some(ref client) = self.state.coordinator_client {
+                    if let Some(client) = self.state.coordinator_client() {
                         let ctx = tarpc::context::current();
                         let _ = client
                             .build_result(ctx, build_id, result.map_err(|err| format!("{err:?}")))
@@ -629,7 +598,7 @@ impl Daemon {
                     dataflow_id,
                     result,
                 } => {
-                    if let Some(ref client) = self.state.coordinator_client {
+                    if let Some(client) = self.state.coordinator_client() {
                         let ctx = tarpc::context::current();
                         let _ = client
                             .spawn_result(
@@ -671,7 +640,7 @@ impl Daemon {
             }
         }
 
-        if let Some(ref client) = self.state.coordinator_client {
+        if let Some(client) = self.state.coordinator_client() {
             let ctx = tarpc::context::current();
             let _ = client.daemon_exit(ctx).await;
         }
@@ -769,7 +738,7 @@ impl Daemon {
                     .map(|_| ())
                     .map_err(|err| format!("{err:?}"));
 
-                if let Some(ref client) = state.coordinator_client {
+                if let Some(client) = state.coordinator_client() {
                     let ctx = tarpc::context::current();
                     let _ = client.spawn_result(ctx, dataflow_id, spawn_result).await;
                 }
@@ -783,7 +752,7 @@ impl Daemon {
         use dora_message::daemon_to_coordinator::NodeMetrics;
         use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate};
 
-        if self.state.coordinator_client.is_none() {
+        if self.state.coordinator_client().is_none() {
             return Ok(());
         }
 
@@ -852,7 +821,7 @@ impl Daemon {
 
             // Send metrics to coordinator if we have any
             if !metrics.is_empty() {
-                if let Some(ref client) = self.state.coordinator_client {
+                if let Some(client) = self.state.coordinator_client() {
                     let ctx = tarpc::context::current();
                     let _ = client.node_metrics(ctx, *dataflow_id, metrics).await;
                 }
@@ -1096,7 +1065,7 @@ impl Daemon {
             .context("failed to clone logger")?;
         let dataflow = RunningDataflow::new(
             dataflow_id,
-            self.state.daemon_id.clone(),
+            self.state.daemon_id().clone(),
             dataflow_descriptor.clone(),
         );
         let mut dataflow = match self.state.running.entry(dataflow_id) {
@@ -1566,7 +1535,7 @@ impl Daemon {
                             .handle_node_subscription(
                                 node_id.clone(),
                                 reply_sender,
-                                &self.state.coordinator_client,
+                                &self.state.coordinator_client().cloned(),
                                 &self.state.clock,
                                 &mut df.cascading_error_causes,
                             )
@@ -2144,7 +2113,7 @@ impl Daemon {
             df.pending_nodes
                 .handle_node_stop(
                     node_id,
-                    &self.state.coordinator_client,
+                    &self.state.coordinator_client().cloned(),
                     &self.state.clock,
                     &mut df.cascading_error_causes,
                 )
@@ -2213,11 +2182,11 @@ impl Daemon {
                 LogLevel::Info,
                 None,
                 Some("daemon".into()),
-                format!("dataflow finished on machine `{}`", self.state.daemon_id),
+                format!("dataflow finished on machine `{}`", self.state.daemon_id()),
             )
             .await;
 
-        if let Some(ref client) = self.state.coordinator_client {
+        if let Some(client) = self.state.coordinator_client() {
             let ctx = tarpc::context::current();
             let _ = client.all_nodes_finished(ctx, dataflow_id, result).await;
         }
@@ -3079,7 +3048,7 @@ impl RunningDataflow {
     ) -> eyre::Result<FinishDataflowWhen> {
         self.pending_nodes
             .handle_dataflow_stop(
-                &state.coordinator_client,
+                &state.coordinator_client().cloned(),
                 &state.clock,
                 &mut self.cascading_error_causes,
                 &self.dynamic_nodes,
