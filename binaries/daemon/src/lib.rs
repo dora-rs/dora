@@ -2766,10 +2766,16 @@ async fn set_up_event_stream(
 
     // Create mpsc channel for coordinator RPC requests (bridged from tarpc server)
     let (coordinator_tx, coordinator_rx) = mpsc::channel(10);
-    let (daemon_id, _rpc_server_handle) =
+    let (daemon_id, rpc_server_handle) =
         coordinator::register(coordinator_addr, machine_id.clone(), clock, coordinator_tx)
             .await
             .wrap_err("failed to connect to dora-coordinator")?;
+    // Monitor the RPC server task so panics are logged instead of silently lost.
+    tokio::spawn(async move {
+        if let Err(err) = rpc_server_handle.await {
+            tracing::error!("coordinator RPC server task panicked: {err}");
+        }
+    });
     let coordinator_events = ReceiverStream::new(coordinator_rx).map(
         |Timestamped {
              inner: event,
