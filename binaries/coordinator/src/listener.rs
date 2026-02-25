@@ -105,13 +105,13 @@ pub async fn handle_connection(
 /// handled directly using the shared `CoordinatorState`. Complex events
 /// that require cross-daemon coordination are forwarded to the event loop.
 #[derive(Clone)]
-pub struct DaemonEventServer {
+pub struct CoordinatorNotifyServer {
     pub daemon_id: DaemonId,
     pub events_tx: mpsc::Sender<Event>,
     pub coordinator_state: Arc<state::CoordinatorState>,
 }
 
-impl CoordinatorNotify for DaemonEventServer {
+impl CoordinatorNotify for CoordinatorNotifyServer {
     async fn all_nodes_ready(
         self,
         _ctx: tarpc::context::Context,

@@ -101,7 +101,7 @@ pub async fn register(
     >::default();
     let transport = tarpc::serde_transport::Transport::from((stream, codec));
 
-    let server = DaemonRpcServer {
+    let server = DaemonControlServer {
         state: state.clone(),
     };
 
@@ -150,11 +150,11 @@ pub async fn register(
 /// tarpc server that handles coordinator→daemon RPC calls directly using
 /// shared `DaemonState`.
 #[derive(Clone)]
-struct DaemonRpcServer {
+struct DaemonControlServer {
     state: Arc<DaemonState>,
 }
 
-impl DaemonControl for DaemonRpcServer {
+impl DaemonControl for DaemonControlServer {
     async fn build(
         self,
         _ctx: tarpc::context::Context,

@@ -64,12 +64,12 @@ async fn stop_dataflow_impl(
 }
 
 #[derive(Clone)]
-pub(crate) struct ControlServer {
+pub(crate) struct CoordinatorControlServer {
     pub(crate) state: Arc<CoordinatorState>,
     pub(crate) client_ip: Option<std::net::IpAddr>,
 }
 
-impl CoordinatorControl for ControlServer {
+impl CoordinatorControl for CoordinatorControlServer {
     async fn build(self, _context: Context, request: BuildRequest) -> Result<BuildId, String> {
         // assign a random build id
         let build_id = BuildId::generate();

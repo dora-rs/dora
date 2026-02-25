@@ -1,4 +1,4 @@
-use crate::{server::ControlServer, tcp_utils::tcp_send};
+use crate::{server::CoordinatorControlServer, tcp_utils::tcp_send};
 pub use control::ControlEvent;
 use dashmap::{
     DashMap,
@@ -216,7 +216,7 @@ where
     T::Error: std::error::Error + Send + Sync + 'static,
 {
     let channel = BaseChannel::with_defaults(transport);
-    let server = ControlServer { state, client_ip };
+    let server = CoordinatorControlServer { state, client_ip };
     channel.execute(server.serve()).for_each(|fut| async {
         tokio::spawn(fut);
     })
@@ -464,7 +464,7 @@ async fn start_inner(
                     >::default();
                     let transport = tarpc::serde_transport::Transport::from((connection, codec));
 
-                    let server = listener::DaemonEventServer {
+                    let server = listener::CoordinatorNotifyServer {
                         daemon_id: daemon_id.clone(),
                         events_tx: coordinator_state.daemon_events_tx.clone(),
                         coordinator_state: coordinator_state.clone(),
