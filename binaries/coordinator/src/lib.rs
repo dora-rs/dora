@@ -705,8 +705,6 @@ async fn start_inner(
                 tracing::info!("Destroying coordinator after receiving Ctrl-C signal");
                 handle_destroy(&coordinator_state).await?;
             }
-            // Handled in-place by DaemonEventServer
-            Event::DaemonHeartbeat { .. } => {}
             Event::Log(message) => {
                 if let Some(dataflow_id) = &message.dataflow_id {
                     if let Some(mut dataflow) =
@@ -730,10 +728,6 @@ async fn start_inner(
                     }
                 }
             }
-            // Handled in-place by DaemonEventServer
-            Event::DaemonExit { .. } => {}
-            // Handled in-place by DaemonEventServer
-            Event::NodeMetrics { .. } => {}
             Event::DataflowBuildResult {
                 build_id,
                 daemon_id,
@@ -1368,9 +1362,6 @@ async fn destroy_daemons(daemon_connections: &DaemonConnections) -> eyre::Result
 pub enum Event {
     NewDaemonConnection(TcpStream),
     DaemonConnectError(eyre::Report),
-    DaemonHeartbeat {
-        daemon_id: DaemonId,
-    },
     Dataflow {
         uuid: Uuid,
         event: DataflowEvent,
@@ -1380,9 +1371,6 @@ pub enum Event {
     DaemonHeartbeatInterval,
     CtrlC,
     Log(LogMessage),
-    DaemonExit {
-        daemon_id: dora_message::common::DaemonId,
-    },
     DataflowBuildResult {
         build_id: BuildId,
         daemon_id: DaemonId,
@@ -1392,10 +1380,6 @@ pub enum Event {
         dataflow_id: uuid::Uuid,
         daemon_id: DaemonId,
         result: eyre::Result<()>,
-    },
-    NodeMetrics {
-        dataflow_id: uuid::Uuid,
-        metrics: BTreeMap<NodeId, dora_message::daemon_to_coordinator::NodeMetrics>,
     },
     Close,
 }
@@ -1414,17 +1398,14 @@ impl Event {
         match self {
             Event::NewDaemonConnection(_) => "NewDaemonConnection",
             Event::DaemonConnectError(_) => "DaemonConnectError",
-            Event::DaemonHeartbeat { .. } => "DaemonHeartbeat",
             Event::Dataflow { .. } => "Dataflow",
             Event::Control(_) => "Control",
             Event::Daemon(_) => "Daemon",
             Event::DaemonHeartbeatInterval => "DaemonHeartbeatInterval",
             Event::CtrlC => "CtrlC",
             Event::Log(_) => "Log",
-            Event::DaemonExit { .. } => "DaemonExit",
             Event::DataflowBuildResult { .. } => "DataflowBuildResult",
             Event::DataflowSpawnResult { .. } => "DataflowSpawnResult",
-            Event::NodeMetrics { .. } => "NodeMetrics",
             Event::Close => "Close",
         }
     }
