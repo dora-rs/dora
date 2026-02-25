@@ -591,29 +591,6 @@ impl Daemon {
                             .await?;
                     }
                 },
-                Event::BuildDataflowResult {
-                    build_id,
-                    session_id,
-                    result,
-                } => {
-                    let (build_info, result) = match result {
-                        Ok(build_info) => (Some(build_info), Ok(())),
-                        Err(err) => (None, Err(err)),
-                    };
-                    if let Some(build_info) = build_info {
-                        self.state.builds.insert(build_id, build_info);
-                        if let Some(old_build_id) = self.state.sessions.insert(session_id, build_id)
-                        {
-                            self.state.builds.remove(&old_build_id);
-                        }
-                    }
-                    if let Some(client) = self.state.coordinator_client() {
-                        let ctx = tarpc::context::current();
-                        let _ = client
-                            .build_result(ctx, build_id, result.map_err(|err| format!("{err:?}")))
-                            .await;
-                    }
-                }
                 Event::SpawnDataflowResult {
                     dataflow_id,
                     result,
@@ -3392,11 +3369,6 @@ pub enum Event {
         dynamic_node: bool,
         result: Result<RunningNode, NodeError>,
     },
-    BuildDataflowResult {
-        build_id: BuildId,
-        session_id: SessionId,
-        result: eyre::Result<BuildInfo>,
-    },
     SpawnDataflowResult {
         dataflow_id: Uuid,
         result: eyre::Result<()>,
@@ -3430,7 +3402,6 @@ impl Event {
             Event::SpawnRequest { .. } => "SpawnRequest",
             Event::StopDataflowRequest { .. } => "StopDataflowRequest",
             Event::SpawnNodeResult { .. } => "SpawnNodeResult",
-            Event::BuildDataflowResult { .. } => "BuildDataflowResult",
             Event::SpawnDataflowResult { .. } => "SpawnDataflowResult",
             Event::NodeStopped { .. } => "NodeStopped",
         }
