@@ -5,9 +5,8 @@ use adora_message::{
     coordinator_to_cli::{ControlRequestReply, LogMessage},
     daemon_to_coordinator::NodeMetrics,
     descriptor::{Descriptor, ResolvedNode},
-    ws_protocol::WsRequest,
 };
-use eyre::{Context, eyre};
+use eyre::eyre;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::Instant;
@@ -82,21 +81,21 @@ impl DaemonConnection {
     }
 
     /// Send a message to the daemon and wait for a reply.
+    ///
+    /// Embeds raw JSON bytes directly to preserve u128 fidelity
+    /// for uhlc::ID inside timestamps.
     pub(crate) async fn send_and_receive(&mut self, message: &[u8]) -> eyre::Result<Vec<u8>> {
         let id = Uuid::new_v4();
-        let params: serde_json::Value =
-            serde_json::from_slice(message).context("failed to parse outgoing message")?;
-        let request = WsRequest {
-            id,
-            method: "daemon_command".to_string(),
-            params,
-        };
+        let params_str = std::str::from_utf8(message)
+            .map_err(|e| eyre!("outgoing message not UTF-8: {e}"))?;
+        let json =
+            format!(r#"{{"id":"{id}","method":"daemon_command","params":{params_str}}}"#);
 
         let (reply_tx, reply_rx) = oneshot::channel();
         self.pending_replies.lock().await.insert(id, reply_tx);
 
         self.sender
-            .send(serde_json::to_string(&request)?)
+            .send(json)
             .await
             .map_err(|_| eyre!("WS daemon send channel closed"))?;
 
@@ -113,16 +112,17 @@ impl DaemonConnection {
     }
 
     /// Send a message to the daemon without waiting for a reply (fire-and-forget).
+    ///
+    /// Embeds raw JSON bytes directly to preserve u128 fidelity
+    /// for uhlc::ID inside timestamps.
     pub(crate) async fn send(&mut self, message: &[u8]) -> eyre::Result<()> {
-        let params: serde_json::Value =
-            serde_json::from_slice(message).context("failed to parse outgoing message")?;
-        let request = WsRequest {
-            id: Uuid::new_v4(),
-            method: "daemon_event".to_string(),
-            params,
-        };
+        let params_str = std::str::from_utf8(message)
+            .map_err(|e| eyre!("outgoing message not UTF-8: {e}"))?;
+        let id = Uuid::new_v4();
+        let json =
+            format!(r#"{{"id":"{id}","method":"daemon_event","params":{params_str}}}"#);
         self.sender
-            .send(serde_json::to_string(&request)?)
+            .send(json)
             .await
             .map_err(|_| eyre!("WS daemon send channel closed"))
     }

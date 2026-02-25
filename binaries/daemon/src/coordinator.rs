@@ -4,7 +4,7 @@ use adora_message::{
     common::{DaemonId, Timestamped},
     coordinator_to_daemon::RegisterResult,
     daemon_to_coordinator::{CoordinatorRequest, DaemonCoordinatorReply, DaemonRegisterRequest},
-    ws_protocol::{WsRequest, WsResponse},
+    ws_protocol::WsResponse,
 };
 use eyre::eyre;
 use futures::{SinkExt, StreamExt};
@@ -32,16 +32,17 @@ pub struct CoordinatorSender {
 
 impl CoordinatorSender {
     /// Send a serialized event message to the coordinator (fire-and-forget).
+    ///
+    /// Embeds the raw JSON bytes directly to preserve u128 fidelity
+    /// for uhlc::ID inside timestamps.
     pub async fn send_event(&self, message: &[u8]) -> eyre::Result<()> {
-        let params: serde_json::Value =
-            serde_json::from_slice(message).map_err(|e| eyre!("failed to parse event: {e}"))?;
-        let request = WsRequest {
-            id: Uuid::new_v4(),
-            method: "daemon_event".to_string(),
-            params,
-        };
+        let params_str =
+            std::str::from_utf8(message).map_err(|e| eyre!("event message not UTF-8: {e}"))?;
+        let id = Uuid::new_v4();
+        let json =
+            format!(r#"{{"id":"{id}","method":"daemon_event","params":{params_str}}}"#);
         self.sender
-            .send(serde_json::to_string(&request)?)
+            .send(json)
             .await
             .map_err(|_| eyre!("WS send channel closed"))
     }
@@ -86,18 +87,19 @@ pub async fn register(
     // The coordinator sender writes to this, and the spawned task reads and forwards to WS.
     let (send_tx, mut send_rx) = mpsc::channel::<String>(64);
 
-    // Send Register request
-    let register_params = serde_json::to_value(&Timestamped {
+    // Send Register request.
+    // Serialize params via to_string (not to_value) to preserve u128 fidelity
+    // for uhlc::ID(NonZeroU128) inside the timestamp.
+    let register_params_json = serde_json::to_string(&Timestamped {
         inner: CoordinatorRequest::Register(DaemonRegisterRequest::new(machine_id)),
         timestamp: clock.new_timestamp(),
     })?;
-    let register_req = WsRequest {
-        id: Uuid::new_v4(),
-        method: "daemon_event".to_string(),
-        params: register_params,
-    };
+    let register_id = Uuid::new_v4();
+    let register_json = format!(
+        r#"{{"id":"{register_id}","method":"daemon_event","params":{register_params_json}}}"#
+    );
     ws_tx
-        .send(Message::Text(serde_json::to_string(&register_req)?.into()))
+        .send(Message::Text(register_json.into()))
         .await
         .map_err(|e| eyre!("failed to send register request: {e}"))?;
 
@@ -116,15 +118,12 @@ pub async fn register(
                 continue;
             };
 
-            let req: WsRequest = match serde_json::from_str(&text) {
+            // Parse directly from raw text to preserve u128 fidelity.
+            let raw: RegisterReplyRaw = match serde_json::from_str(&text) {
                 Ok(r) => r,
                 Err(_) => continue,
             };
-
-            let result: Timestamped<RegisterResult> = match serde_json::from_value(req.params) {
-                Ok(r) => r,
-                Err(_) => continue,
-            };
+            let result = raw.params;
 
             if let Err(err) = clock.update_with_timestamp(&result.timestamp) {
                 tracing::warn!("failed to update timestamp after register: {err}");
@@ -164,7 +163,9 @@ pub async fn register(
                         }
                     };
 
-                    let req: WsRequest = match serde_json::from_str(&text) {
+                    // Parse directly from raw text to preserve u128 fidelity
+                    // for uhlc::ID inside timestamps.
+                    let raw: CoordinatorCommandRaw = match serde_json::from_str(&text) {
                         Ok(r) => r,
                         Err(e) => {
                             tracing::warn!("failed to parse coordinator WS message: {e}");
@@ -172,17 +173,9 @@ pub async fn register(
                         }
                     };
 
-                    let request_id = req.id;
-                    let needs_reply = req.method == "daemon_command";
-
-                    let event: Timestamped<DaemonCoordinatorEvent> =
-                        match serde_json::from_value(req.params) {
-                            Ok(e) => e,
-                            Err(e) => {
-                                tracing::warn!("failed to parse coordinator event: {e}");
-                                continue;
-                            }
-                        };
+                    let request_id = raw.id;
+                    let needs_reply = raw.method == "daemon_command";
+                    let event = raw.params;
 
                     if let Err(err) = clock.update_with_timestamp(&event.timestamp) {
                         tracing::warn!("failed to update daemon clock: {err}");
@@ -245,6 +238,22 @@ pub async fn register(
         CoordinatorSender { sender: send_tx },
         ReceiverStream::new(rx),
     ))
+}
+
+/// Helper for deserializing register reply directly from raw JSON text,
+/// bypassing `serde_json::Value` to preserve u128 fidelity for uhlc::ID.
+#[derive(serde::Deserialize)]
+struct RegisterReplyRaw {
+    params: Timestamped<RegisterResult>,
+}
+
+/// Helper for deserializing coordinator commands directly from raw JSON text,
+/// bypassing `serde_json::Value` to preserve u128 fidelity for uhlc::ID.
+#[derive(serde::Deserialize)]
+struct CoordinatorCommandRaw {
+    id: Uuid,
+    method: String,
+    params: Timestamped<DaemonCoordinatorEvent>,
 }
 
 /// Simple jitter: uses system time nanos as a cheap pseudo-random source.

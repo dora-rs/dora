@@ -3,13 +3,30 @@
 //! Replaces `TcpRequestReplyConnection` with a single WS connection that handles
 //! both request-reply and log streaming.
 
-use adora_message::ws_protocol::{WsMessage, WsRequest, WsResponse};
+use adora_message::ws_protocol::WsRequest;
 use eyre::{Context, eyre};
 use futures::{SinkExt, StreamExt};
 use std::{collections::HashMap, net::SocketAddr, sync::mpsc as std_mpsc};
 use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
+
+/// Helper for deserializing incoming WS frames without going through
+/// `serde_json::Value` for the result/payload fields. This preserves
+/// u128 fidelity for uhlc::ID inside timestamps.
+#[derive(serde::Deserialize)]
+struct IncomingFrame {
+    #[serde(default)]
+    id: Option<Uuid>,
+    #[serde(default)]
+    event: Option<String>,
+    #[serde(default)]
+    result: Option<Box<serde_json::value::RawValue>>,
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default)]
+    payload: Option<Box<serde_json::value::RawValue>>,
+}
 
 /// A WebSocket session to the coordinator.
 ///
@@ -187,7 +204,7 @@ async fn session_loop(ws_stream: WsStream, mut cmd_rx: mpsc::UnboundedReceiver<S
                     Err(_) => break,
                 };
 
-                let parsed: WsMessage = match serde_json::from_str(&text) {
+                let frame: IncomingFrame = match serde_json::from_str(&text) {
                     Ok(m) => m,
                     Err(e) => {
                         tracing::warn!("failed to parse WS message: {e}");
@@ -195,23 +212,24 @@ async fn session_loop(ws_stream: WsStream, mut cmd_rx: mpsc::UnboundedReceiver<S
                     }
                 };
 
-                match parsed {
-                    WsMessage::Response(resp) => {
-                        handle_response(
-                            resp,
-                            &mut pending_requests,
-                            &mut pending_subscribes,
-                            &mut log_subscribers,
-                        );
+                if let Some(event_name) = &frame.event {
+                    // Event frame (e.g. log push)
+                    if event_name == "log" {
+                        if let Some(payload) = &frame.payload {
+                            let bytes = payload.get().as_bytes().to_vec();
+                            log_subscribers.retain(|tx| tx.send(Ok(bytes.clone())).is_ok());
+                        }
                     }
-                    WsMessage::Event(event) if event.event == "log" => {
-                        let bytes = match serde_json::to_vec(&event.payload) {
-                            Ok(b) => b,
-                            Err(_) => continue,
-                        };
-                        log_subscribers.retain(|tx| tx.send(Ok(bytes.clone())).is_ok());
-                    }
-                    _ => {}
+                } else if let Some(id) = frame.id {
+                    // Response frame
+                    handle_response(
+                        id,
+                        frame.result,
+                        frame.error,
+                        &mut pending_requests,
+                        &mut pending_subscribes,
+                        &mut log_subscribers,
+                    );
                 }
             }
         }
@@ -227,7 +245,9 @@ async fn session_loop(ws_stream: WsStream, mut cmd_rx: mpsc::UnboundedReceiver<S
 }
 
 fn handle_response(
-    resp: WsResponse,
+    id: Uuid,
+    result: Option<Box<serde_json::value::RawValue>>,
+    error: Option<String>,
     pending_requests: &mut HashMap<Uuid, oneshot::Sender<eyre::Result<Vec<u8>>>>,
     pending_subscribes: &mut HashMap<
         Uuid,
@@ -239,8 +259,8 @@ fn handle_response(
     log_subscribers: &mut Vec<std_mpsc::Sender<eyre::Result<Vec<u8>>>>,
 ) {
     // Check if this is a subscribe ack
-    if let Some((ack_tx, log_tx)) = pending_subscribes.remove(&resp.id) {
-        if let Some(error) = resp.error {
+    if let Some((ack_tx, log_tx)) = pending_subscribes.remove(&id) {
+        if let Some(error) = error {
             let _ = ack_tx.send(Err(eyre!("{error}")));
         } else {
             log_subscribers.push(log_tx);
@@ -250,25 +270,30 @@ fn handle_response(
     }
 
     // Normal request-reply
-    if let Some(reply_tx) = pending_requests.remove(&resp.id) {
-        let result = if let Some(error) = resp.error {
+    if let Some(reply_tx) = pending_requests.remove(&id) {
+        let reply = if let Some(error) = error {
             // Map WS error to ControlRequestReply::Error for compatibility
             let err_reply = adora_message::coordinator_to_cli::ControlRequestReply::Error(error);
             Ok(serde_json::to_vec(&err_reply).unwrap_or_default())
-        } else if let Some(result) = resp.result {
-            serde_json::to_vec(&result).map_err(|e| eyre!("failed to serialize response: {e}"))
+        } else if let Some(raw) = result {
+            // Preserve raw JSON bytes to maintain u128 fidelity for uhlc::ID
+            Ok(raw.get().as_bytes().to_vec())
         } else {
             Err(eyre!("empty WS response"))
         };
-        let _ = reply_tx.send(result);
+        let _ = reply_tx.send(reply);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use adora_message::ws_protocol::WsResponse;
     use serde_json::json;
+    use serde_json::value::RawValue;
+
+    fn raw(val: serde_json::Value) -> Box<RawValue> {
+        serde_json::value::to_raw_value(&val).unwrap()
+    }
 
     #[test]
     fn handle_response_routes_to_pending() {
@@ -279,8 +304,14 @@ mod tests {
         let mut subscribes = HashMap::new();
         let mut subs = Vec::new();
 
-        let resp = WsResponse::ok(id, json!({"List": []}));
-        handle_response(resp, &mut pending, &mut subscribes, &mut subs);
+        handle_response(
+            id,
+            Some(raw(json!({"List": []}))),
+            None,
+            &mut pending,
+            &mut subscribes,
+            &mut subs,
+        );
 
         let mut rx = rx;
         let result = rx.try_recv().unwrap().unwrap();
@@ -296,8 +327,14 @@ mod tests {
         let mut subs = Vec::new();
 
         // Response with unknown id should be dropped without panic
-        let resp = WsResponse::ok(id, json!("ignored"));
-        handle_response(resp, &mut pending, &mut subscribes, &mut subs);
+        handle_response(
+            id,
+            Some(raw(json!("ignored"))),
+            None,
+            &mut pending,
+            &mut subscribes,
+            &mut subs,
+        );
     }
 
     #[test]
@@ -311,8 +348,14 @@ mod tests {
         let mut subs = Vec::new();
 
         // Successful subscribe ack
-        let resp = WsResponse::ok(id, json!({"subscribed": true}));
-        handle_response(resp, &mut pending, &mut subscribes, &mut subs);
+        handle_response(
+            id,
+            Some(raw(json!({"subscribed": true}))),
+            None,
+            &mut pending,
+            &mut subscribes,
+            &mut subs,
+        );
 
         // ack should succeed
         assert!(ack_rx.try_recv().unwrap().is_ok());
@@ -338,8 +381,14 @@ mod tests {
         subscribes.insert(id, (ack_tx, log_tx));
         let mut subs = Vec::new();
 
-        let resp = WsResponse::err(id, "not found".into());
-        handle_response(resp, &mut pending, &mut subscribes, &mut subs);
+        handle_response(
+            id,
+            None,
+            Some("not found".into()),
+            &mut pending,
+            &mut subscribes,
+            &mut subs,
+        );
 
         assert!(ack_rx.try_recv().unwrap().is_err());
         assert!(subs.is_empty());

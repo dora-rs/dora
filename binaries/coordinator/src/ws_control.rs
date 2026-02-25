@@ -5,7 +5,6 @@ use adora_message::{
     ws_protocol::{WsRequest, WsResponse},
 };
 use axum::extract::ws::{Message, WebSocket};
-use eyre::Context;
 use futures::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
@@ -137,13 +136,19 @@ pub(crate) async fn handle_control_ws(socket: WebSocket, event_tx: mpsc::Sender<
 
                 let stop = matches!(reply, ControlRequestReply::CoordinatorStopped);
 
-                let resp = match serde_json::to_value(&reply)
-                    .context("failed to serialize reply")
-                {
-                    Ok(val) => WsResponse::ok(req.id, val),
-                    Err(e) => WsResponse::err(req.id, format!("{e}")),
+                // Serialize reply via to_string (not to_value) to preserve u128
+                // fidelity for uhlc::ID inside DataflowResult timestamps.
+                let resp_json = match serde_json::to_string(&reply) {
+                    Ok(result_json) => {
+                        format!(r#"{{"id":"{}","result":{result_json}}}"#, req.id)
+                    }
+                    Err(e) => {
+                        let err_json = serde_json::to_string(&format!("{e}"))
+                            .unwrap_or_else(|_| "\"serialization error\"".to_string());
+                        format!(r#"{{"id":"{}","error":{err_json}}}"#, req.id)
+                    }
                 };
-                if send_ws_response(&mut ws_tx, &resp).await.is_err() || stop {
+                if ws_tx.send(Message::Text(resp_json.into())).await.is_err() || stop {
                     break;
                 }
             }
