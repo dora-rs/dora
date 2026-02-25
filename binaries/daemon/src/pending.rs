@@ -11,7 +11,7 @@ use dora_message::{
 use eyre::bail;
 use tokio::sync::oneshot;
 
-use crate::CascadingErrorCauses;
+use crate::{CascadingErrorCauses, log::DataflowLogger};
 
 pub struct PendingNodes {
     dataflow_id: DataflowId,
@@ -69,12 +69,13 @@ impl PendingNodes {
         coordinator_client: &Option<DaemonNotificationClient>,
         clock: &HLC,
         cascading_errors: &mut CascadingErrorCauses,
+        logger: &mut DataflowLogger<'_>,
     ) -> eyre::Result<DataflowStatus> {
         self.waiting_subscribers
             .insert(node_id.clone(), reply_sender);
         self.local_nodes.remove(&node_id);
 
-        self.update_dataflow_status(coordinator_client, clock, cascading_errors)
+        self.update_dataflow_status(coordinator_client, clock, cascading_errors, logger)
             .await
     }
 
@@ -84,15 +85,19 @@ impl PendingNodes {
         coordinator_client: &Option<DaemonNotificationClient>,
         clock: &HLC,
         cascading_errors: &mut CascadingErrorCauses,
+        logger: &mut DataflowLogger<'_>,
     ) -> eyre::Result<()> {
         if self.local_nodes.remove(node_id) {
-            tracing::warn!(
-                dataflow_id = %self.dataflow_id,
-                %node_id,
-                "node exited before initializing dora connection"
-            );
+            logger
+                .log(
+                    dora_message::daemon_to_coordinator::LogLevel::Warn,
+                    Some(node_id.clone()),
+                    Some("daemon::pending".into()),
+                    "node exited before initializing dora connection",
+                )
+                .await;
             self.exited_before_subscribe.push(node_id.clone());
-            self.update_dataflow_status(coordinator_client, clock, cascading_errors)
+            self.update_dataflow_status(coordinator_client, clock, cascading_errors, logger)
                 .await?;
         }
         Ok(())
@@ -101,23 +106,24 @@ impl PendingNodes {
     /// Synchronous part of [`handle_node_stop`] that only mutates local state
     /// without doing any async I/O. Use [`check_and_answer_subscribers`] +
     /// a manual RPC call afterwards to complete the reporting.
+    ///
+    /// Returns `true` if the node was pending and was removed, indicating
+    /// that the caller should log the event via the logger.
     pub fn handle_node_stop_sync(
         &mut self,
         node_id: &NodeId,
         cascading_errors: &mut CascadingErrorCauses,
-    ) {
+    ) -> bool {
         if self.local_nodes.remove(node_id) {
-            tracing::warn!(
-                dataflow_id = %self.dataflow_id,
-                %node_id,
-                "node exited before initializing dora connection"
-            );
             self.exited_before_subscribe.push(node_id.clone());
             // Check and answer locally without RPC — caller must handle
             // reporting to coordinator separately.
             if self.local_nodes.is_empty() && !self.external_nodes {
                 self.answer_subscribe_requests_sync(Vec::new(), cascading_errors);
             }
+            true
+        } else {
+            false
         }
     }
 
@@ -156,11 +162,12 @@ impl PendingNodes {
         clock: &HLC,
         cascading_errors: &mut CascadingErrorCauses,
         dynamic_nodes: &BTreeSet<NodeId>,
+        logger: &mut DataflowLogger<'_>,
     ) -> eyre::Result<Vec<LogMessage>> {
         // remove all local dynamic nodes that are not yet started
         for node_id in dynamic_nodes {
             if self.local_nodes.remove(node_id) {
-                self.update_dataflow_status(coordinator_client, clock, cascading_errors)
+                self.update_dataflow_status(coordinator_client, clock, cascading_errors, logger)
                     .await?;
             }
         }
@@ -188,11 +195,13 @@ impl PendingNodes {
         coordinator_client: &Option<DaemonNotificationClient>,
         clock: &HLC,
         cascading_errors: &mut CascadingErrorCauses,
+        logger: &mut DataflowLogger<'_>,
     ) -> eyre::Result<DataflowStatus> {
         if self.local_nodes.is_empty() {
             if self.external_nodes {
                 if !self.reported_init_to_coordinator {
-                    self.report_nodes_ready(coordinator_client, clock).await?;
+                    self.report_nodes_ready(coordinator_client, clock, logger)
+                        .await?;
                     self.reported_init_to_coordinator = true;
                 }
                 Ok(DataflowStatus::Pending)
@@ -250,16 +259,23 @@ impl PendingNodes {
         &self,
         coordinator_client: &Option<DaemonNotificationClient>,
         _clock: &HLC,
+        logger: &mut DataflowLogger<'_>,
     ) -> eyre::Result<()> {
         let Some(client) = coordinator_client else {
             bail!("no coordinator client to send AllNodesReady");
         };
 
-        tracing::info!(
-            dataflow_id = %self.dataflow_id,
-            "all local nodes are ready (exit before subscribe: {:?}), waiting for remote nodes",
-            self.exited_before_subscribe
-        );
+        logger
+            .log(
+                dora_message::daemon_to_coordinator::LogLevel::Info,
+                None,
+                Some("daemon".into()),
+                format!(
+                    "all local nodes are ready (exit before subscribe: {:?}), waiting for remote nodes",
+                    self.exited_before_subscribe
+                ),
+            )
+            .await;
 
         let ctx = tarpc::context::current();
         client

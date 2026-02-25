@@ -527,6 +527,7 @@ impl Daemon {
                         // First, handle pending nodes (may do RPC to coordinator)
                         // while holding the DashMap guard briefly for extraction.
                         {
+                            let mut logger = self.logger.for_dataflow(dataflow_id);
                             let mut dataflow =
                                 self.state.running.get_mut(&dataflow_id).ok_or_else(|| {
                                     format!("no running dataflow with ID `{dataflow_id}`")
@@ -538,6 +539,7 @@ impl Daemon {
                                     &self.state.clock,
                                     &mut df.cascading_error_causes,
                                     &df.dynamic_nodes,
+                                    &mut logger,
                                 )
                                 .await
                                 .map_err(|err| format!("{err:?}"))?;
@@ -713,7 +715,10 @@ impl Daemon {
         let mut dataflows_to_finish = Vec::new();
         for dataflow_id in dataflow_ids {
             if let Some(mut dataflow) = self.state.running.get_mut(&dataflow_id) {
-                let finish_when = dataflow.stop_all(&self.state, None, false).await?;
+                let mut logger = self.logger.for_dataflow(dataflow_id);
+                let finish_when = dataflow
+                    .stop_all(&self.state, None, false, &mut logger)
+                    .await?;
                 if matches!(finish_when, FinishDataflowWhen::Now) {
                     dataflows_to_finish.push(dataflow_id);
                 }
@@ -1591,6 +1596,7 @@ impl Daemon {
                                 &self.state.coordinator_client().cloned(),
                                 &self.state.clock,
                                 &mut df.cascading_error_causes,
+                                &mut logger,
                             )
                             .await?;
                         match status {
@@ -2146,7 +2152,7 @@ impl Daemon {
         dynamic_node: bool,
     ) -> eyre::Result<()> {
         let mut logger = self.logger.for_dataflow(dataflow_id);
-        {
+        let exited_before_subscribe = {
             let mut dataflow = match self.state.running.get_mut(&dataflow_id) {
                 Some(dataflow) => dataflow,
                 None if dynamic_node => {
@@ -2164,7 +2170,18 @@ impl Daemon {
 
             let df = &mut *dataflow;
             df.pending_nodes
-                .handle_node_stop_sync(node_id, &mut df.cascading_error_causes);
+                .handle_node_stop_sync(node_id, &mut df.cascading_error_causes)
+        };
+        // DashMap guard is dropped — safe to do async I/O.
+        if exited_before_subscribe {
+            logger
+                .log(
+                    LogLevel::Warn,
+                    Some(node_id.clone()),
+                    Some("daemon::pending".into()),
+                    "node exited before initializing dora connection",
+                )
+                .await;
         }
         // DashMap guard is dropped — safe to do async I/O (RPC to coordinator).
         // Check if all local nodes are ready and report to coordinator if needed.
@@ -2185,7 +2202,18 @@ impl Daemon {
                 if let Some(dataflow) = self.state.running.get(&dataflow_id) {
                     let exited = dataflow.pending_nodes.exited_before_subscribe().to_vec();
                     drop(dataflow);
-                    // DashMap guard is dropped — safe to do RPC.
+                    // DashMap guard is dropped — safe to do async I/O.
+                    logger
+                        .log(
+                            LogLevel::Info,
+                            None,
+                            Some("daemon".into()),
+                            format!(
+                                "all local nodes are ready (exit before subscribe: {exited:?}), \
+                                 waiting for remote nodes",
+                            ),
+                        )
+                        .await;
                     let ctx = tarpc::context::current();
                     client
                         .all_nodes_ready(ctx, dataflow_id, exited)
@@ -3120,6 +3148,7 @@ impl RunningDataflow {
         state: &state::DaemonState,
         grace_duration: Option<Duration>,
         force: bool,
+        logger: &mut DataflowLogger<'_>,
     ) -> eyre::Result<FinishDataflowWhen> {
         self.pending_nodes
             .handle_dataflow_stop(
@@ -3127,6 +3156,7 @@ impl RunningDataflow {
                 &state.clock,
                 &mut self.cascading_error_causes,
                 &self.dynamic_nodes,
+                logger,
             )
             .await?;
 
