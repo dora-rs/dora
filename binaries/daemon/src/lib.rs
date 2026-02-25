@@ -646,7 +646,10 @@ impl Daemon {
         if let Some(client) = self.state.coordinator_client() {
             let ctx = tarpc::context::current();
             if let Err(err) = client.daemon_exit(ctx).await {
-                tracing::error!(?err, "failed to send daemon_exit notification to coordinator");
+                tracing::error!(
+                    ?err,
+                    "failed to send daemon_exit notification to coordinator"
+                );
             }
         }
 
