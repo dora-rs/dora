@@ -248,7 +248,7 @@ fn resolve_name(
 }
 
 #[derive(Default)]
-struct DaemonConnections {
+pub(crate) struct DaemonConnections {
     daemons: DashMap<DaemonId, DaemonConnection>,
 }
 
@@ -264,7 +264,7 @@ impl DaemonConnections {
         self.daemons.get(id)
     }
 
-    fn get_mut(&self, id: &DaemonId) -> Option<RefMut<'_, DaemonId, DaemonConnection>> {
+    pub(crate) fn get_mut(&self, id: &DaemonId) -> Option<RefMut<'_, DaemonId, DaemonConnection>> {
         self.daemons.get_mut(id)
     }
 
@@ -294,7 +294,7 @@ impl DaemonConnections {
         self.daemons.iter()
     }
 
-    fn remove(&self, daemon_id: &DaemonId) -> Option<DaemonConnection> {
+    pub(crate) fn remove(&self, daemon_id: &DaemonId) -> Option<DaemonConnection> {
         self.daemons
             .remove(daemon_id)
             .map(|(_, connection)| connection)
@@ -462,6 +462,7 @@ async fn start_inner(
                     let server = listener::DaemonEventServer {
                         daemon_id: daemon_id.clone(),
                         events_tx: coordinator_state.daemon_events_tx.clone(),
+                        coordinator_state: coordinator_state.clone(),
                     };
 
                     let channel = BaseChannel::with_defaults(transport);
@@ -699,16 +700,8 @@ async fn start_inner(
                 tracing::info!("Destroying coordinator after receiving Ctrl-C signal");
                 handle_destroy(&coordinator_state).await?;
             }
-            Event::DaemonHeartbeat {
-                daemon_id: machine_id,
-            } => {
-                if let Some(mut connection_ref) =
-                    coordinator_state.daemon_connections.get_mut(&machine_id)
-                {
-                    let connection = connection_ref.value_mut();
-                    connection.last_heartbeat = Instant::now();
-                }
-            }
+            // Handled in-place by DaemonEventServer
+            Event::DaemonHeartbeat { .. } => {}
             Event::Log(message) => {
                 if let Some(dataflow_id) = &message.dataflow_id {
                     if let Some(mut dataflow) =
@@ -732,23 +725,10 @@ async fn start_inner(
                     }
                 }
             }
-            Event::DaemonExit { daemon_id } => {
-                tracing::info!("Daemon `{daemon_id}` exited");
-                coordinator_state.daemon_connections.remove(&daemon_id);
-            }
-            Event::NodeMetrics {
-                dataflow_id,
-                metrics,
-            } => {
-                // Store metrics for this dataflow
-                if let Some(mut dataflow) =
-                    coordinator_state.running_dataflows.get_mut(&dataflow_id)
-                {
-                    for (node_id, node_metrics) in metrics {
-                        dataflow.node_metrics.insert(node_id, node_metrics);
-                    }
-                }
-            }
+            // Handled in-place by DaemonEventServer
+            Event::DaemonExit { .. } => {}
+            // Handled in-place by DaemonEventServer
+            Event::NodeMetrics { .. } => {}
             Event::DataflowBuildResult {
                 build_id,
                 daemon_id,
@@ -830,7 +810,10 @@ async fn start_inner(
     Ok(())
 }
 
-async fn send_log_message(log_subscribers: &mut Vec<LogSubscriber>, message: &LogMessage) {
+pub(crate) async fn send_log_message(
+    log_subscribers: &mut Vec<LogSubscriber>,
+    message: &LogMessage,
+) {
     for subscriber in log_subscribers.iter_mut() {
         let send_result =
             tokio::time::timeout(Duration::from_millis(100), subscriber.send_message(message));
@@ -862,9 +845,9 @@ fn dataflow_result(
     }
 }
 
-struct DaemonConnection {
+pub(crate) struct DaemonConnection {
     client: DaemonControlClient,
-    last_heartbeat: Instant,
+    pub(crate) last_heartbeat: Instant,
     peer_addr: Option<SocketAddr>,
 }
 

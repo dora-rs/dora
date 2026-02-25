@@ -1,15 +1,17 @@
-use crate::{DaemonRequest, DataflowEvent, Event, tcp_utils::tcp_receive};
+use crate::{
+    DaemonRequest, DataflowEvent, Event, send_log_message, state, tcp_utils::tcp_receive,
+};
 use dora_core::uhlc::HLC;
 use dora_message::{
     common::DaemonId,
     daemon_to_coordinator::{
-        CoordinatorRequest, DaemonNotification, DataflowDaemonResult, LogMessage,
-        NodeMetrics, Timestamped,
+        CoordinatorRequest, DaemonNotification, DataflowDaemonResult, LogMessage, NodeMetrics,
+        Timestamped,
     },
     tarpc,
 };
 use eyre::Context;
-use std::{collections::BTreeMap, io::ErrorKind, net::SocketAddr, sync::Arc};
+use std::{collections::BTreeMap, io::ErrorKind, net::SocketAddr, sync::Arc, time::Instant};
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::mpsc,
@@ -98,14 +100,17 @@ pub async fn handle_connection(
     }
 }
 
-/// tarpc server that handles daemon→coordinator RPC calls.
+/// tarpc server that handles daemon→coordinator notification RPC calls.
 ///
 /// Each daemon gets its own server instance, identified by `daemon_id`.
-/// The server translates incoming RPC calls into coordinator `Event`s.
+/// Simple notifications (heartbeat, log, daemon_exit, node_metrics) are
+/// handled directly using the shared `CoordinatorState`. Complex events
+/// that require cross-daemon coordination are forwarded to the event loop.
 #[derive(Clone)]
 pub struct DaemonEventServer {
     pub daemon_id: DaemonId,
     pub events_tx: mpsc::Sender<Event>,
+    pub coordinator_state: Arc<state::CoordinatorState>,
 }
 
 impl DaemonNotification for DaemonEventServer {
@@ -142,22 +147,44 @@ impl DaemonNotification for DaemonEventServer {
     }
 
     async fn heartbeat(self, _ctx: tarpc::context::Context) {
-        let event = Event::DaemonHeartbeat {
-            daemon_id: self.daemon_id,
-        };
-        let _ = self.events_tx.send(event).await;
+        if let Some(mut connection_ref) = self
+            .coordinator_state
+            .daemon_connections
+            .get_mut(&self.daemon_id)
+        {
+            connection_ref.last_heartbeat = Instant::now();
+        }
     }
 
     async fn log(self, _ctx: tarpc::context::Context, message: LogMessage) {
-        let event = Event::Log(message);
-        let _ = self.events_tx.send(event).await;
+        if let Some(dataflow_id) = &message.dataflow_id {
+            if let Some(mut dataflow) = self
+                .coordinator_state
+                .running_dataflows
+                .get_mut(dataflow_id)
+            {
+                if dataflow.log_subscribers.is_empty() {
+                    dataflow.buffered_log_messages.push(message);
+                } else {
+                    send_log_message(&mut dataflow.log_subscribers, &message).await;
+                }
+            }
+        } else if let Some(build_id) = &message.build_id {
+            if let Some(mut build) = self.coordinator_state.running_builds.get_mut(build_id) {
+                if build.log_subscribers.is_empty() {
+                    build.buffered_log_messages.push(message);
+                } else {
+                    send_log_message(&mut build.log_subscribers, &message).await;
+                }
+            }
+        }
     }
 
     async fn daemon_exit(self, _ctx: tarpc::context::Context) {
-        let event = Event::DaemonExit {
-            daemon_id: self.daemon_id,
-        };
-        let _ = self.events_tx.send(event).await;
+        tracing::info!("Daemon `{}` exited", self.daemon_id);
+        self.coordinator_state
+            .daemon_connections
+            .remove(&self.daemon_id);
     }
 
     async fn node_metrics(
@@ -166,11 +193,15 @@ impl DaemonNotification for DaemonEventServer {
         dataflow_id: Uuid,
         metrics: BTreeMap<dora_message::id::NodeId, NodeMetrics>,
     ) {
-        let event = Event::NodeMetrics {
-            dataflow_id,
-            metrics,
-        };
-        let _ = self.events_tx.send(event).await;
+        if let Some(mut dataflow) = self
+            .coordinator_state
+            .running_dataflows
+            .get_mut(&dataflow_id)
+        {
+            for (node_id, node_metrics) in metrics {
+                dataflow.node_metrics.insert(node_id, node_metrics);
+            }
+        }
     }
 
     async fn build_result(
