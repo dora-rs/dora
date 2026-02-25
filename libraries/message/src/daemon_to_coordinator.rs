@@ -7,6 +7,7 @@ use crate::{
     BuildId, DataflowId, common::DaemonId, current_crate_version, id::NodeId, versions_compatible,
 };
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum CoordinatorRequest {
     Register(DaemonRegisterRequest),

@@ -17,6 +17,7 @@ use std::{
 };
 use uuid::{NoContext, Timestamp, Uuid};
 
+#[allow(clippy::too_many_arguments)]
 #[tracing::instrument(skip(daemon_connections, clock))]
 pub(super) async fn spawn_dataflow(
     build_id: Option<BuildId>,

@@ -233,11 +233,11 @@ impl AdoraNode {
             } => Self::init(node_config),
             DaemonReply::NodeConfig { result: Err(error) } => {
                 let capped: String = error.chars().take(512).collect();
-                return Err(NodeError::Init(format!(
+                Err(NodeError::Init(format!(
                     "failed to get node config from daemon: {capped}"
-                )));
+                )))
             }
-            _ => return Err(NodeError::Init("unexpected reply from daemon".into())),
+            _ => Err(NodeError::Init("unexpected reply from daemon".into())),
         }
     }
 
@@ -919,13 +919,11 @@ impl AdoraNode {
     pub fn dataflow_descriptor(&self) -> NodeResult<&Descriptor> {
         match &self.dataflow_descriptor {
             Ok(d) => Ok(d),
-            Err(err) => {
-                return Err(NodeError::Data(format!(
-                    "failed to parse dataflow descriptor: {err}\n\n\
+            Err(err) => Err(NodeError::Data(format!(
+                "failed to parse dataflow descriptor: {err}\n\n\
                     This might be caused by mismatched version numbers of adora \
                     daemon and the adora node API"
-                )));
-            }
+            ))),
         }
     }
 }

@@ -10,7 +10,7 @@ use crate::types::{Action, Message, Service};
 pub struct Package {
     pub name: String,
     pub path: PathBuf,
-    pub dependencies: Vec<Package>,
+    pub dependencies: Vec<Self>,
     pub messages: Vec<Message>,
     pub services: Vec<Service>,
     pub actions: Vec<Action>,

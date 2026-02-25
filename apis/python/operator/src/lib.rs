@@ -292,7 +292,7 @@ pub fn metadata_to_pydict<'a>(
 
     // Extract seconds and microseconds (Python datetime supports microsecond precision)
     let seconds = duration_since_epoch.as_secs() as i64;
-    let microseconds = duration_since_epoch.subsec_micros() as u32;
+    let microseconds = duration_since_epoch.subsec_micros();
 
     // Get UTC timezone from Python's datetime module and create timezone-aware datetime
     // We use Python's datetime.fromtimestamp() to create a UTC-aware datetime object

@@ -26,10 +26,6 @@ impl DaemonConnections {
         }
     }
 
-    pub(crate) fn get(&self, id: &DaemonId) -> Option<&DaemonConnection> {
-        self.daemons.get(id)
-    }
-
     pub(crate) fn get_mut(&mut self, id: &DaemonId) -> Option<&mut DaemonConnection> {
         self.daemons.get_mut(id)
     }
@@ -86,10 +82,9 @@ impl DaemonConnection {
     /// for uhlc::ID inside timestamps.
     pub(crate) async fn send_and_receive(&mut self, message: &[u8]) -> eyre::Result<Vec<u8>> {
         let id = Uuid::new_v4();
-        let params_str = std::str::from_utf8(message)
-            .map_err(|e| eyre!("outgoing message not UTF-8: {e}"))?;
-        let json =
-            format!(r#"{{"id":"{id}","method":"daemon_command","params":{params_str}}}"#);
+        let params_str =
+            std::str::from_utf8(message).map_err(|e| eyre!("outgoing message not UTF-8: {e}"))?;
+        let json = format!(r#"{{"id":"{id}","method":"daemon_command","params":{params_str}}}"#);
 
         let (reply_tx, reply_rx) = oneshot::channel();
         self.pending_replies.lock().await.insert(id, reply_tx);
@@ -116,11 +111,10 @@ impl DaemonConnection {
     /// Embeds raw JSON bytes directly to preserve u128 fidelity
     /// for uhlc::ID inside timestamps.
     pub(crate) async fn send(&mut self, message: &[u8]) -> eyre::Result<()> {
-        let params_str = std::str::from_utf8(message)
-            .map_err(|e| eyre!("outgoing message not UTF-8: {e}"))?;
+        let params_str =
+            std::str::from_utf8(message).map_err(|e| eyre!("outgoing message not UTF-8: {e}"))?;
         let id = Uuid::new_v4();
-        let json =
-            format!(r#"{{"id":"{id}","method":"daemon_event","params":{params_str}}}"#);
+        let json = format!(r#"{{"id":"{id}","method":"daemon_event","params":{params_str}}}"#);
         self.sender
             .send(json)
             .await

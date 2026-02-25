@@ -103,6 +103,7 @@ impl Spawner {
         Ok(task)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn prepare_node_inner(
         self,
         node: ResolvedNode,

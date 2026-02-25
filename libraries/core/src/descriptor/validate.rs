@@ -605,7 +605,7 @@ fn validate_ros2_qos(
         }
     }
     if let Some(depth) = qos.keep_last {
-        if depth < 1 || depth > 10_000 {
+        if !(1..=10_000).contains(&depth) {
             bail!(
                 "node `{node_id}`: QoS keep_last depth {depth} out of range, \
                  must be between 1 and 10000"

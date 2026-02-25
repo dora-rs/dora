@@ -178,6 +178,7 @@ impl Daemon {
         .map(|_| ())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn run_dataflow(
         dataflow_path: &Path,
         build_id: Option<BuildId>,
@@ -214,8 +215,7 @@ impl Daemon {
         let (events_tx, events_rx) = flume::bounded(10);
         if nodes
             .iter()
-            .find(|(_n, resolved_nodes)| resolved_nodes.kind.dynamic())
-            .is_some()
+            .any(|(_n, resolved_nodes)| resolved_nodes.kind.dynamic())
         {
             // Spawn local listener for dynamic nodes
             let _listen_port = local_listener::spawn_listener_loop(
@@ -987,7 +987,7 @@ impl Daemon {
 
     fn check_node_health(&self) {
         let now_millis = node_communication::current_millis();
-        for (_dataflow_id, dataflow) in &self.running {
+        for dataflow in self.running.values() {
             for (node_id, node) in &dataflow.running_nodes {
                 let Some(timeout) = node.health_check_timeout else {
                     continue;
@@ -2583,7 +2583,7 @@ async fn read_last_n_lines(file: &mut File, mut tail: usize) -> io::Result<Vec<u
         file.read_exact(&mut buffer[..read_len]).await?;
         let read_buf = if at_end {
             at_end = false;
-            &buffer[..read_len].trim_ascii_end()
+            buffer[..read_len].trim_ascii_end()
         } else {
             &buffer[..read_len]
         };
@@ -3107,7 +3107,7 @@ impl RunningDataflow {
         clock: &Arc<HLC>,
     ) -> eyre::Result<()> {
         for interval in self.timers.keys().copied() {
-            if self._timer_handles.get(&interval).is_some() {
+            if self._timer_handles.contains_key(&interval) {
                 continue;
             }
             let events_tx = events_tx.clone();

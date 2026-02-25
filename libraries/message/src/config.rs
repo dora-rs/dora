@@ -267,32 +267,23 @@ pub struct CommunicationConfig {
     pub remote: RemoteCommunicationConfig,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
 pub enum LocalCommunicationConfig {
+    #[default]
     Tcp,
     Shmem,
     UnixDomain,
 }
 
-impl Default for LocalCommunicationConfig {
-    fn default() -> Self {
-        Self::Tcp
-    }
-}
-
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(deny_unknown_fields, rename_all = "lowercase")]
+#[derive(Default)]
 pub enum RemoteCommunicationConfig {
+    #[default]
     Tcp,
     // TODO:a
     // Zenoh {
     //     config: Option<serde_yaml::Value>,
     //     prefix: String,
     // },
-}
-
-impl Default for RemoteCommunicationConfig {
-    fn default() -> Self {
-        Self::Tcp
-    }
 }

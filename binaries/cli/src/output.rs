@@ -110,7 +110,7 @@ fn print_pretty(log_message: LogMessage, config: &LogOutputConfig) {
             let colored_id = node_id
                 .to_string()
                 .bold()
-                .color(word_to_color(&node_id.to_string()));
+                .color(word_to_color(node_id.as_ref()));
             let padding = if daemon.is_empty() { "" } else { " " };
             format!("{colored_id}{padding}{daemon}{colon} ")
         }

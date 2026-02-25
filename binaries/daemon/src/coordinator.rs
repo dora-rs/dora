@@ -39,8 +39,7 @@ impl CoordinatorSender {
         let params_str =
             std::str::from_utf8(message).map_err(|e| eyre!("event message not UTF-8: {e}"))?;
         let id = Uuid::new_v4();
-        let json =
-            format!(r#"{{"id":"{id}","method":"daemon_event","params":{params_str}}}"#);
+        let json = format!(r#"{{"id":"{id}","method":"daemon_event","params":{params_str}}}"#);
         self.sender
             .send(json)
             .await

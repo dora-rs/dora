@@ -607,6 +607,7 @@ fn send_output(sender: &mut Box<OutputSender>, id: String, data: &[u8]) -> ffi::
     send_output_internal(sender, id, data, Default::default())
 }
 
+#[allow(clippy::borrowed_box)]
 fn log_message(sender: &Box<OutputSender>, level: String, message: String) -> ffi::AdoraResult {
     sender.0.log(&level, &message, None);
     ffi::AdoraResult {
@@ -614,6 +615,7 @@ fn log_message(sender: &Box<OutputSender>, level: String, message: String) -> ff
     }
 }
 
+#[allow(clippy::boxed_local)]
 fn send_output_with_metadata(
     sender: &mut Box<OutputSender>,
     id: String,

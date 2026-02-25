@@ -3,6 +3,9 @@
 //! `WsSession` creates its own tokio runtime internally (`block_on`), so these
 //! tests run the coordinator on a background thread and use `WsSession` from
 //! the main test thread (no nested runtimes).
+//!
+//! Tests in the `real_dataflow` module use full coordinator+daemon+node stack
+//! via `adora up` CLI to test the complete lifecycle.
 
 use adora_cli::WsSession;
 use adora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply};
@@ -135,5 +138,172 @@ fn cli_multiple_requests_same_session() {
             assert!(daemons.is_empty());
         }
         other => panic!("expected ConnectedDaemons, got {other:?}"),
+    }
+}
+
+/// Full-stack E2E tests using coordinator + daemon + real nodes.
+///
+/// These tests use the `adora` CLI binary via `adora up` / `adora start` etc.
+/// They must run sequentially (--test-threads=1) because they share the
+/// coordinator port. They are in a separate module to group them logically.
+mod real_dataflow {
+    use std::path::Path;
+    use std::process::{Command, Stdio};
+    use std::sync::Once;
+    use std::time::Duration;
+
+    static BUILD: Once = Once::new();
+
+    fn adora_bin() -> String {
+        let manifest = env!("CARGO_MANIFEST_DIR");
+        let target_dir = Path::new(manifest).join("target/debug/adora");
+        if target_dir.exists() {
+            return target_dir.to_string_lossy().to_string();
+        }
+        "adora".to_string()
+    }
+
+    fn ensure_built() {
+        BUILD.call_once(|| {
+            let status = Command::new("cargo")
+                .args([
+                    "build",
+                    "-p",
+                    "adora-cli",
+                    "-p",
+                    "rust-dataflow-example-node",
+                    "-p",
+                    "rust-dataflow-example-status-node",
+                    "-p",
+                    "rust-dataflow-example-sink",
+                ])
+                .status()
+                .expect("failed to build");
+            assert!(status.success());
+        });
+    }
+
+    fn cleanup(adora: &str) {
+        let _ = Command::new(adora)
+            .args(["stop", "--all"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        std::thread::sleep(Duration::from_millis(500));
+        let _ = Command::new(adora)
+            .arg("destroy")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        std::thread::sleep(Duration::from_millis(500));
+    }
+
+    fn start_cluster(adora: &str) {
+        cleanup(adora);
+        let status = Command::new(adora)
+            .arg("up")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("failed to run adora up");
+        assert!(status.success(), "adora up failed");
+    }
+
+    /// Full lifecycle: start -> list (shows dataflow) -> stop -> destroy
+    #[test]
+    #[ignore] // Requires exclusive coordinator port; run with --ignored --test-threads=1
+    fn e2e_start_list_stop() {
+        ensure_built();
+        let adora = adora_bin();
+        start_cluster(&adora);
+
+        let yaml =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/rust-dataflow/dataflow.yml");
+
+        // Start dataflow
+        let status = Command::new(&adora)
+            .args(["start", yaml.to_str().unwrap(), "--detach"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "adora start failed");
+
+        // Brief pause to let it register
+        std::thread::sleep(Duration::from_secs(1));
+
+        // List should show a dataflow (Running or Succeeded -- it may finish quickly)
+        let list_output = Command::new(&adora).arg("list").output().unwrap();
+        assert!(list_output.status.success(), "adora list failed");
+        let stdout = String::from_utf8_lossy(&list_output.stdout);
+        let has_dataflow =
+            stdout.contains("Running") || stdout.contains("Succeeded") || stdout.contains("Failed");
+        assert!(
+            has_dataflow,
+            "expected a dataflow in list output, got: {stdout}"
+        );
+
+        // Stop all
+        let _ = Command::new(&adora)
+            .args(["stop", "--all"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+
+        cleanup(&adora);
+    }
+
+    /// Verify that a second start after the first completes works correctly.
+    #[test]
+    #[ignore] // Requires exclusive coordinator port; run with --ignored --test-threads=1
+    fn e2e_sequential_dataflows() {
+        ensure_built();
+        let adora = adora_bin();
+        start_cluster(&adora);
+
+        let yaml =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/rust-dataflow/dataflow.yml");
+
+        // First dataflow
+        let status = Command::new(&adora)
+            .args(["start", yaml.to_str().unwrap(), "--detach"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "first start failed");
+
+        // Wait for it to finish
+        std::thread::sleep(Duration::from_secs(8));
+
+        // Stop if still running
+        let _ = Command::new(&adora)
+            .args(["stop", "--all"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+
+        std::thread::sleep(Duration::from_secs(1));
+
+        // Second dataflow -- verifies coordinator handles sequential runs
+        let status2 = Command::new(&adora)
+            .args(["start", yaml.to_str().unwrap(), "--detach"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status2.success(), "second start failed");
+
+        std::thread::sleep(Duration::from_secs(1));
+
+        // Verify it's listed
+        let list_output = Command::new(&adora).arg("list").output().unwrap();
+        assert!(list_output.status.success());
+        let stdout = String::from_utf8_lossy(&list_output.stdout);
+        let has_dataflow =
+            stdout.contains("Running") || stdout.contains("Succeeded") || stdout.contains("Failed");
+        assert!(has_dataflow, "second dataflow not listed: {stdout}");
+
+        cleanup(&adora);
     }
 }

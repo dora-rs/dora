@@ -391,7 +391,7 @@ fn read_log_file(path: &Path) -> Result<Vec<LogMessage>> {
         Ok(content
             .lines()
             .filter(|line| !line.trim().is_empty())
-            .filter_map(|line| parse_jsonl_line(line))
+            .filter_map(parse_jsonl_line)
             .collect())
     } else {
         // Legacy .txt files: try to parse each line as JSON (LogMessage)
@@ -399,7 +399,7 @@ fn read_log_file(path: &Path) -> Result<Vec<LogMessage>> {
         let messages: Vec<LogMessage> = content
             .lines()
             .filter(|line| !line.trim().is_empty())
-            .filter_map(|line| parse_jsonl_line(line))
+            .filter_map(parse_jsonl_line)
             .collect();
 
         if messages.is_empty() {
@@ -791,6 +791,7 @@ fn stream_logs_from_coordinator(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn logs(
     session: &WsSession,
     uuid: Uuid,
@@ -831,10 +832,7 @@ pub fn logs(
     // Unified filter pipeline: parse -> time_filter -> grep -> tail -> print
     let now = Utc::now();
     let content = String::from_utf8_lossy(&logs);
-    let messages: Vec<LogMessage> = content
-        .lines()
-        .filter_map(|line| parse_jsonl_line(line))
-        .collect();
+    let messages: Vec<LogMessage> = content.lines().filter_map(parse_jsonl_line).collect();
     let filtered = apply_time_filters(messages, since, until, now);
     let grepped = apply_grep(filtered, grep);
     let display = apply_tail(grepped, tail);

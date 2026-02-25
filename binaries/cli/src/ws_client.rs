@@ -119,18 +119,19 @@ impl WsSession {
 
 type WsStream =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+type PendingRequests = HashMap<Uuid, oneshot::Sender<eyre::Result<Vec<u8>>>>;
+type PendingSubscribes = HashMap<
+    Uuid,
+    (
+        oneshot::Sender<eyre::Result<()>>,
+        std_mpsc::Sender<eyre::Result<Vec<u8>>>,
+    ),
+>;
 
 async fn session_loop(ws_stream: WsStream, mut cmd_rx: mpsc::UnboundedReceiver<SessionCommand>) {
     let (mut ws_tx, mut ws_rx) = ws_stream.split();
-    let mut pending_requests: HashMap<Uuid, oneshot::Sender<eyre::Result<Vec<u8>>>> =
-        HashMap::new();
-    let mut pending_subscribes: HashMap<
-        Uuid,
-        (
-            oneshot::Sender<eyre::Result<()>>,
-            std_mpsc::Sender<eyre::Result<Vec<u8>>>,
-        ),
-    > = HashMap::new();
+    let mut pending_requests: PendingRequests = HashMap::new();
+    let mut pending_subscribes: PendingSubscribes = HashMap::new();
     let mut log_subscribers: Vec<std_mpsc::Sender<eyre::Result<Vec<u8>>>> = Vec::new();
 
     loop {
@@ -248,14 +249,8 @@ fn handle_response(
     id: Uuid,
     result: Option<Box<serde_json::value::RawValue>>,
     error: Option<String>,
-    pending_requests: &mut HashMap<Uuid, oneshot::Sender<eyre::Result<Vec<u8>>>>,
-    pending_subscribes: &mut HashMap<
-        Uuid,
-        (
-            oneshot::Sender<eyre::Result<()>>,
-            std_mpsc::Sender<eyre::Result<Vec<u8>>>,
-        ),
-    >,
+    pending_requests: &mut PendingRequests,
+    pending_subscribes: &mut PendingSubscribes,
     log_subscribers: &mut Vec<std_mpsc::Sender<eyre::Result<Vec<u8>>>>,
 ) {
     // Check if this is a subscribe ack

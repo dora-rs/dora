@@ -239,14 +239,14 @@ impl GenericString {
 
     fn value_tokens(self, value: &str) -> impl ToTokens {
         match self {
-            GenericString::BoundedString(max) => {
+            Self::BoundedString(max) => {
                 assert!(
                     value.len() <= max,
                     "default value length {} exceeds bounded string max {max}",
                     value.len()
                 );
             }
-            GenericString::BoundedWString(max) => {
+            Self::BoundedWString(max) => {
                 let utf16_len = value.encode_utf16().count();
                 assert!(
                     utf16_len <= max,
