@@ -119,7 +119,7 @@ impl PendingNodes {
             // Check and answer locally without RPC — caller must handle
             // reporting to coordinator separately.
             if self.local_nodes.is_empty() && !self.external_nodes {
-                self.answer_subscribe_requests_sync(Vec::new(), cascading_errors);
+                self.answer_subscribe_requests(Vec::new(), cascading_errors);
             }
             true
         } else {
@@ -146,7 +146,7 @@ impl PendingNodes {
                 false
             }
         } else {
-            self.answer_subscribe_requests_sync(Vec::new(), cascading_errors);
+            self.answer_subscribe_requests(Vec::new(), cascading_errors);
             false
         }
     }
@@ -184,8 +184,7 @@ impl PendingNodes {
             bail!("received external `all_nodes_ready` event before local nodes were ready");
         }
 
-        self.answer_subscribe_requests(exited_before_subscribe, cascading_errors)
-            .await;
+        self.answer_subscribe_requests(exited_before_subscribe, cascading_errors);
 
         Ok(())
     }
@@ -206,8 +205,7 @@ impl PendingNodes {
                 }
                 Ok(DataflowStatus::Pending)
             } else {
-                self.answer_subscribe_requests(Vec::new(), cascading_errors)
-                    .await;
+                self.answer_subscribe_requests(Vec::new(), cascading_errors);
                 Ok(DataflowStatus::AllNodesReady)
             }
         } else {
@@ -215,15 +213,7 @@ impl PendingNodes {
         }
     }
 
-    async fn answer_subscribe_requests(
-        &mut self,
-        exited_before_subscribe_external: Vec<NodeId>,
-        cascading_errors: &mut CascadingErrorCauses,
-    ) {
-        self.answer_subscribe_requests_sync(exited_before_subscribe_external, cascading_errors);
-    }
-
-    fn answer_subscribe_requests_sync(
+    fn answer_subscribe_requests(
         &mut self,
         exited_before_subscribe_external: Vec<NodeId>,
         cascading_errors: &mut CascadingErrorCauses,

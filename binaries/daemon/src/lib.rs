@@ -620,13 +620,19 @@ impl Daemon {
                 } => {
                     if let Some(client) = self.state.coordinator_client() {
                         let ctx = tarpc::context::current();
-                        let _ = client
+                        if let Err(err) = client
                             .spawn_result(
                                 ctx,
                                 dataflow_id,
                                 result.map_err(|err| format!("{err:?}")),
                             )
-                            .await;
+                            .await
+                        {
+                            tracing::error!(
+                                ?err,
+                                "failed to send spawn_result notification to coordinator"
+                            );
+                        }
                     }
                 }
                 Event::NodeStopped {
@@ -662,7 +668,9 @@ impl Daemon {
 
         if let Some(client) = self.state.coordinator_client() {
             let ctx = tarpc::context::current();
-            let _ = client.daemon_exit(ctx).await;
+            if let Err(err) = client.daemon_exit(ctx).await {
+                tracing::error!(?err, "failed to send daemon_exit notification to coordinator");
+            }
         }
 
         Ok(self
@@ -769,7 +777,12 @@ impl Daemon {
 
                 if let Some(client) = state.coordinator_client() {
                     let ctx = tarpc::context::current();
-                    let _ = client.spawn_result(ctx, dataflow_id, spawn_result).await;
+                    if let Err(err) = client.spawn_result(ctx, dataflow_id, spawn_result).await {
+                        tracing::error!(
+                            ?err,
+                            "failed to send spawn_result notification to coordinator"
+                        );
+                    }
                 }
             });
         }
@@ -2262,7 +2275,12 @@ impl Daemon {
 
         if let Some(client) = self.state.coordinator_client() {
             let ctx = tarpc::context::current();
-            let _ = client.all_nodes_finished(ctx, dataflow_id, result).await;
+            if let Err(err) = client.all_nodes_finished(ctx, dataflow_id, result).await {
+                tracing::error!(
+                    ?err,
+                    "failed to send all_nodes_finished notification to coordinator"
+                );
+            }
         }
         self.state.running.remove(&dataflow_id);
 
