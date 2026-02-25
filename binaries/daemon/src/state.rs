@@ -8,7 +8,7 @@ use dora_core::{
 use dora_message::{
     BuildId, DataflowId, SessionId,
     common::{DaemonId, NodeError},
-    daemon_to_coordinator::{DaemonToCoordinatorControlClient, DataflowDaemonResult},
+    daemon_to_coordinator::{DaemonNotificationClient, DataflowDaemonResult},
     id::NodeId,
     node_to_daemon::Timestamped,
     tarpc,
@@ -37,7 +37,7 @@ pub(crate) struct DaemonState {
 
     /// tarpc client for daemon→coordinator RPC (replaces raw TCP `coordinator_connection`).
     /// Set once during registration via [`set_coordinator_client`].
-    coordinator_client: std::sync::OnceLock<DaemonToCoordinatorControlClient>,
+    coordinator_client: std::sync::OnceLock<DaemonNotificationClient>,
     /// Last time we received a heartbeat from the coordinator.
     pub(crate) last_coordinator_heartbeat: Mutex<Instant>,
     /// Git clone management for builds.
@@ -119,12 +119,12 @@ impl DaemonState {
     }
 
     /// Set the coordinator client after registration. Can only be called once.
-    pub(crate) fn set_coordinator_client(&self, client: DaemonToCoordinatorControlClient) {
+    pub(crate) fn set_coordinator_client(&self, client: DaemonNotificationClient) {
         let _ = self.coordinator_client.set(client);
     }
 
     /// Get the coordinator client, if set.
-    pub(crate) fn coordinator_client(&self) -> Option<&DaemonToCoordinatorControlClient> {
+    pub(crate) fn coordinator_client(&self) -> Option<&DaemonNotificationClient> {
         self.coordinator_client.get()
     }
 

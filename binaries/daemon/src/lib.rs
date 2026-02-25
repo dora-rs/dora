@@ -2692,7 +2692,7 @@ async fn set_up_event_stream(
 ) -> eyre::Result<(
     (
         DaemonId,
-        dora_message::daemon_to_coordinator::DaemonToCoordinatorControlClient,
+        dora_message::daemon_to_coordinator::DaemonNotificationClient,
     ),
     impl Stream<Item = Timestamped<Event>> + Unpin,
 )> {

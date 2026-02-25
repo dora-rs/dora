@@ -19,7 +19,7 @@ pub enum CoordinatorRequest {
     /// Forward a log message from a daemon over the legacy raw-TCP path.
     ///
     /// All other daemon→coordinator communication now uses the
-    /// `DaemonToCoordinatorControl` tarpc service on the reverse channel.
+    /// `DaemonNotification` tarpc service on the notification channel.
     Log {
         daemon_id: DaemonId,
         message: LogMessage,
@@ -64,13 +64,13 @@ impl DataflowDaemonResult {
     }
 }
 
-/// tarpc service for daemon→coordinator RPC calls.
+/// tarpc service for daemon→coordinator notifications.
 ///
-/// This replaces the raw TCP `DaemonEvent` messages sent over
-/// `coordinator_connection`. The coordinator runs a tarpc server
-/// implementing this trait, and each daemon holds a client.
+/// The coordinator runs a tarpc server implementing this trait,
+/// and each daemon holds a client to notify the coordinator about
+/// events such as node readiness, dataflow completion, and metrics.
 #[tarpc::service]
-pub trait DaemonToCoordinatorControl {
+pub trait DaemonNotification {
     /// Report that all local nodes on this daemon are ready.
     async fn all_nodes_ready(dataflow_id: DataflowId, exited_before_subscribe: Vec<NodeId>);
     /// Report that all nodes on this daemon have finished.

@@ -3,7 +3,7 @@ use dora_core::uhlc::HLC;
 use dora_message::{
     common::DaemonId,
     daemon_to_coordinator::{
-        CoordinatorRequest, DaemonToCoordinatorControl, DataflowDaemonResult, LogMessage,
+        CoordinatorRequest, DaemonNotification, DataflowDaemonResult, LogMessage,
         NodeMetrics, Timestamped,
     },
     tarpc,
@@ -108,7 +108,7 @@ pub struct DaemonEventServer {
     pub events_tx: mpsc::Sender<Event>,
 }
 
-impl DaemonToCoordinatorControl for DaemonEventServer {
+impl DaemonNotification for DaemonEventServer {
     async fn all_nodes_ready(
         self,
         _ctx: tarpc::context::Context,

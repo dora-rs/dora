@@ -4,7 +4,7 @@ use dora_core::{config::NodeId, uhlc::HLC};
 use dora_message::{
     DataflowId,
     common::DaemonId,
-    daemon_to_coordinator::{DaemonToCoordinatorControlClient, LogMessage},
+    daemon_to_coordinator::{DaemonNotificationClient, LogMessage},
     daemon_to_node::DaemonReply,
     tarpc,
 };
@@ -66,7 +66,7 @@ impl PendingNodes {
         &mut self,
         node_id: NodeId,
         reply_sender: oneshot::Sender<DaemonReply>,
-        coordinator_client: &Option<DaemonToCoordinatorControlClient>,
+        coordinator_client: &Option<DaemonNotificationClient>,
         clock: &HLC,
         cascading_errors: &mut CascadingErrorCauses,
     ) -> eyre::Result<DataflowStatus> {
@@ -81,7 +81,7 @@ impl PendingNodes {
     pub async fn handle_node_stop(
         &mut self,
         node_id: &NodeId,
-        coordinator_client: &Option<DaemonToCoordinatorControlClient>,
+        coordinator_client: &Option<DaemonNotificationClient>,
         clock: &HLC,
         cascading_errors: &mut CascadingErrorCauses,
     ) -> eyre::Result<()> {
@@ -152,7 +152,7 @@ impl PendingNodes {
 
     pub async fn handle_dataflow_stop(
         &mut self,
-        coordinator_client: &Option<DaemonToCoordinatorControlClient>,
+        coordinator_client: &Option<DaemonNotificationClient>,
         clock: &HLC,
         cascading_errors: &mut CascadingErrorCauses,
         dynamic_nodes: &BTreeSet<NodeId>,
@@ -185,7 +185,7 @@ impl PendingNodes {
 
     async fn update_dataflow_status(
         &mut self,
-        coordinator_client: &Option<DaemonToCoordinatorControlClient>,
+        coordinator_client: &Option<DaemonNotificationClient>,
         clock: &HLC,
         cascading_errors: &mut CascadingErrorCauses,
     ) -> eyre::Result<DataflowStatus> {
@@ -248,7 +248,7 @@ impl PendingNodes {
 
     async fn report_nodes_ready(
         &self,
-        coordinator_client: &Option<DaemonToCoordinatorControlClient>,
+        coordinator_client: &Option<DaemonNotificationClient>,
         _clock: &HLC,
     ) -> eyre::Result<()> {
         let Some(client) = coordinator_client else {

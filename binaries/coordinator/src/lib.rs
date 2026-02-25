@@ -447,14 +447,14 @@ async fn start_inner(
                     // Set up a tarpc server for daemon→coordinator RPC on this
                     // second TCP connection.
                     use dora_message::daemon_to_coordinator::{
-                        DaemonToCoordinatorControl, DaemonToCoordinatorControlRequest,
-                        DaemonToCoordinatorControlResponse,
+                        DaemonNotification, DaemonNotificationRequest,
+                        DaemonNotificationResponse,
                     };
                     use tarpc::server::{BaseChannel, Channel};
 
                     let codec = tokio_serde::formats::Json::<
-                        ClientMessage<DaemonToCoordinatorControlRequest>,
-                        Response<DaemonToCoordinatorControlResponse>,
+                        ClientMessage<DaemonNotificationRequest>,
+                        Response<DaemonNotificationResponse>,
                     >::default();
                     let transport = tarpc::serde_transport::Transport::from((connection, codec));
 

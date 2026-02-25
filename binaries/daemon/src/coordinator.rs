@@ -12,8 +12,8 @@ use dora_message::{
         RegisterResult, SpawnDataflowNodes,
     },
     daemon_to_coordinator::{
-        CoordinatorRequest, DaemonRegisterRequest, DaemonToCoordinatorControlClient,
-        DaemonToCoordinatorControlRequest, DaemonToCoordinatorControlResponse,
+        CoordinatorRequest, DaemonNotificationClient, DaemonNotificationRequest,
+        DaemonNotificationResponse, DaemonRegisterRequest,
     },
     daemon_to_node::NodeEvent,
     id::{NodeId, OperatorId},
@@ -38,7 +38,7 @@ pub struct RegisterResult2 {
     /// Handle for the coordinator→daemon tarpc server task.
     pub rpc_server_handle: JoinHandle<()>,
     /// tarpc client for daemon→coordinator RPC calls.
-    pub coordinator_client: DaemonToCoordinatorControlClient,
+    pub coordinator_client: DaemonNotificationClient,
 }
 
 /// Connect to the coordinator, register, set up bidirectional tarpc channels.
@@ -46,7 +46,7 @@ pub struct RegisterResult2 {
 /// 1. Opens a TCP connection, sends `Register`, receives `DaemonId`.
 /// 2. Converts that connection into a tarpc server (coordinator→daemon `DaemonControl`).
 /// 3. Opens a **second** TCP connection, sends `RegisterReverseChannel`, and
-///    creates a tarpc client (daemon→coordinator `DaemonToCoordinatorControl`).
+///    creates a tarpc client (daemon→coordinator `DaemonNotification`).
 pub async fn register(
     addr: SocketAddr,
     machine_id: Option<String>,
@@ -130,13 +130,13 @@ pub async fn register(
 
     // Set up tarpc client for daemon→coordinator RPC on the reverse stream
     let reverse_codec = tokio_serde::formats::Json::<
-        Response<DaemonToCoordinatorControlResponse>,
-        ClientMessage<DaemonToCoordinatorControlRequest>,
+        Response<DaemonNotificationResponse>,
+        ClientMessage<DaemonNotificationRequest>,
     >::default();
     let reverse_transport =
         tarpc::serde_transport::Transport::from((reverse_stream, reverse_codec));
     let coordinator_client =
-        DaemonToCoordinatorControlClient::new(client::Config::default(), reverse_transport).spawn();
+        DaemonNotificationClient::new(client::Config::default(), reverse_transport).spawn();
 
     tracing::info!("Reverse-channel RPC client established for daemon→coordinator");
 
