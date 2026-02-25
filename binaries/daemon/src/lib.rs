@@ -16,8 +16,7 @@ use dora_core::{
 use dora_message::{
     BuildId, DataflowId, SessionId,
     common::{
-        DaemonId, DataMessage, GitSource, LogLevel, NodeError, NodeErrorCause,
-        NodeExitStatus,
+        DaemonId, DataMessage, GitSource, LogLevel, NodeError, NodeErrorCause, NodeExitStatus,
     },
     coordinator_to_cli::DataflowResult,
     coordinator_to_daemon::SpawnDataflowNodes,
@@ -3212,7 +3211,6 @@ impl RunningDataflow {
     fn open_inputs(&self, node_id: &NodeId) -> &BTreeSet<DataId> {
         self.open_inputs.get(node_id).unwrap_or(&self.empty_set)
     }
-
 }
 
 fn empty_type_info() -> ArrowTypeInfo {

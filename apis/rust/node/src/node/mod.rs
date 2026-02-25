@@ -464,9 +464,9 @@ impl DoraNode {
         let (zenoh_session, shm_provider, publishers) = if !is_interactive {
             let rt = Handle::try_current()
                 .context("failed to get tokio runtime handle for zenoh session")?;
-            let session = rt.block_on(async {
-                dora_core::topics::open_zenoh_session(None).await
-            }).wrap_err("failed to open zenoh session for node")?;
+            let session = rt
+                .block_on(async { dora_core::topics::open_zenoh_session(None).await })
+                .wrap_err("failed to open zenoh session for node")?;
 
             // Create SHM provider with configurable pool size
             let pool_size: usize = std::env::var("DORA_NODE_SHM_POOL_SIZE")
@@ -475,8 +475,8 @@ impl DoraNode {
                 .unwrap_or(64 * 1024 * 1024); // 64MB default
 
             let provider = {
-                use zenoh::shm::*;
                 use zenoh::Wait;
+                use zenoh::shm::*;
                 ShmProviderBuilder::default_backend(pool_size)
                     .wait()
                     .map_err(|e| eyre::eyre!("{e}"))
@@ -486,14 +486,14 @@ impl DoraNode {
             // Declare publishers for each output
             let mut pubs = HashMap::new();
             for output_id in run_config.outputs.iter() {
-                let topic = dora_core::topics::zenoh_output_publish_topic(
-                    dataflow_id, &node_id, output_id,
-                );
-                let publisher = rt.block_on(async {
-                    session.declare_publisher(topic).await
-                })
-                .map_err(|e| eyre::eyre!("{e}"))
-                .wrap_err_with(|| format!("failed to declare zenoh publisher for output {output_id}"))?;
+                let topic =
+                    dora_core::topics::zenoh_output_publish_topic(dataflow_id, &node_id, output_id);
+                let publisher = rt
+                    .block_on(async { session.declare_publisher(topic).await })
+                    .map_err(|e| eyre::eyre!("{e}"))
+                    .wrap_err_with(|| {
+                        format!("failed to declare zenoh publisher for output {output_id}")
+                    })?;
                 pubs.insert(output_id.clone(), publisher);
             }
 
@@ -696,34 +696,41 @@ impl DoraNode {
     ) -> eyre::Result<()> {
         let metadata = Metadata::from_parameters(self.clock.new_timestamp(), type_info, parameters);
 
-        let data = match sample {
-            Some(sample) => Some(sample.finalize()),
-            None => None,
-        };
-
         // If we have a zenoh publisher for this output, publish via zenoh
         if let Some(publisher) = self.publishers.get(&output_id) {
-            if let Some(ref data_msg) = data {
-                match data_msg {
-                    DataMessage::Vec(v) => {
-                        let rt = Handle::try_current()
-                            .context("failed to get tokio runtime handle for zenoh publish")?;
-                        rt.block_on(async {
-                            publisher
-                                .put(v.as_slice())
-                                .await
-                                .map_err(|e| eyre::eyre!("{e}"))
-                        })
-                        .wrap_err("zenoh publish failed")?;
+            if let Some(sample) = sample {
+                let rt = Handle::try_current()
+                    .context("failed to get tokio runtime handle for zenoh publish")?;
+                match sample.inner {
+                    DataSampleInner::ZenohShm(sbuf) => {
+                        // Publish the SHM buffer directly for zero-copy transfer
+                        rt.block_on(async { publisher.put(sbuf).await })
+                            .map_err(|e| eyre::eyre!("{e}"))
+                            .wrap_err("zenoh SHM publish failed")?;
+                    }
+                    DataSampleInner::Vec(v) => {
+                        rt.block_on(async { publisher.put(v.as_slice()).await })
+                            .map_err(|e| eyre::eyre!("{e}"))
+                            .wrap_err("zenoh publish failed")?;
                     }
                 }
+                // Still notify daemon of output via control channel (with no data,
+                // since data was sent via zenoh)
+                self.control_channel
+                    .send_message(output_id.clone(), metadata, None)
+                    .wrap_err_with(|| format!("failed to send output {output_id}"))?;
+            } else {
+                // No data to publish
+                self.control_channel
+                    .send_message(output_id.clone(), metadata, None)
+                    .wrap_err_with(|| format!("failed to send output {output_id}"))?;
             }
-            // Still notify daemon of output via control channel (for lifecycle/routing metadata)
-            self.control_channel
-                .send_message(output_id.clone(), metadata, data)
-                .wrap_err_with(|| format!("failed to send output {output_id}"))?;
         } else {
             // Fallback: send via control channel only (interactive/testing mode)
+            let data = match sample {
+                Some(sample) => Some(sample.finalize()),
+                None => None,
+            };
             self.control_channel
                 .send_message(output_id.clone(), metadata, data)
                 .wrap_err_with(|| format!("failed to send output {output_id}"))?;
@@ -770,11 +777,26 @@ impl DoraNode {
 
     /// Allocates a [`DataSample`] of the specified size.
     ///
-    /// The data sample uses an aligned Vec. When the output is published via zenoh,
-    /// zenoh's shared memory transport handles zero-copy data transfer transparently.
+    /// When a zenoh SHM provider is available, the buffer is allocated from shared memory,
+    /// enabling zero-copy data transfer between nodes on the same machine.
+    /// Falls back to an aligned Vec when no SHM provider is available (interactive/testing mode).
     pub fn allocate_data_sample(&mut self, data_len: usize) -> eyre::Result<DataSample> {
-        let avec: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, data_len);
-        Ok(avec.into())
+        if let Some(provider) = &self.shm_provider {
+            use zenoh::Wait;
+            use zenoh::shm::{BlockOn, GarbageCollect};
+            let sbuf = provider
+                .alloc(data_len)
+                .with_policy::<BlockOn<GarbageCollect>>()
+                .wait()
+                .map_err(|e| eyre::eyre!("failed to allocate zenoh SHM buffer: {e}"))?;
+            Ok(DataSample {
+                len: data_len,
+                inner: DataSampleInner::ZenohShm(sbuf),
+            })
+        } else {
+            let avec: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, data_len);
+            Ok(avec.into())
+        }
     }
 
     /// Returns the full dataflow descriptor that this node is part of.
@@ -815,6 +837,8 @@ impl Drop for DoraNode {
 
 /// A data region suitable for sending as an output message.
 ///
+/// When zenoh SHM is available, the buffer is backed by shared memory for zero-copy transfer.
+///
 /// `DataSample` implements the [`Deref`] and [`DerefMut`] traits to read and write the mapped data.
 pub struct DataSample {
     inner: DataSampleInner,
@@ -825,6 +849,11 @@ impl DataSample {
     fn finalize(self) -> DataMessage {
         match self.inner {
             DataSampleInner::Vec(buffer) => DataMessage::Vec(buffer),
+            DataSampleInner::ZenohShm(sbuf) => {
+                // Copy SHM data into a Vec for the control channel fallback path
+                let data = &sbuf[..self.len];
+                DataMessage::Vec(AVec::from_slice(128, data))
+            }
         }
     }
 }
@@ -833,19 +862,19 @@ impl Deref for DataSample {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
-        let slice = match &self.inner {
-            DataSampleInner::Vec(data) => data,
-        };
-        &slice[..self.len]
+        match &self.inner {
+            DataSampleInner::Vec(data) => &data[..self.len],
+            DataSampleInner::ZenohShm(sbuf) => &sbuf[..self.len],
+        }
     }
 }
 
 impl DerefMut for DataSample {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        let slice = match &mut self.inner {
-            DataSampleInner::Vec(data) => data,
-        };
-        &mut slice[..self.len]
+        match &mut self.inner {
+            DataSampleInner::Vec(data) => &mut data[..self.len],
+            DataSampleInner::ZenohShm(sbuf) => &mut sbuf[..self.len],
+        }
     }
 }
 
@@ -862,6 +891,7 @@ impl std::fmt::Debug for DataSample {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let kind = match &self.inner {
             DataSampleInner::Vec(_) => "Vec",
+            DataSampleInner::ZenohShm(_) => "ZenohShm",
         };
         f.debug_struct("DataSample")
             .field("len", &self.len)
@@ -872,6 +902,7 @@ impl std::fmt::Debug for DataSample {
 
 enum DataSampleInner {
     Vec(AVec<u8, ConstAlign<128>>),
+    ZenohShm(zenoh::shm::ZShmMut),
 }
 
 /// Init Opentelemetry Tracing
