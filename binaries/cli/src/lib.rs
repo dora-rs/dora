@@ -10,7 +10,8 @@ mod formatting;
 pub mod output;
 pub mod session;
 mod template;
-pub mod ws_client;
+mod ws_client;
+pub use ws_client::WsSession;
 
 pub use command::build;
 pub use command::{Executable, Run as RunCommand, run};

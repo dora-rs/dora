@@ -1,6 +1,7 @@
 use crate::{Event, control::ControlEvent};
 use adora_message::{
-    cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply,
+    cli_to_coordinator::ControlRequest,
+    coordinator_to_cli::ControlRequestReply,
     ws_protocol::{WsRequest, WsResponse},
 };
 use axum::extract::ws::{Message, WebSocket};
@@ -32,10 +33,7 @@ async fn send_ws_response(
 ///
 /// For LogSubscribe/BuildLogSubscribe: ack via WsResponse, then push WsEvent{event:"log"}
 /// on the same connection.
-pub(crate) async fn handle_control_ws(
-    socket: WebSocket,
-    event_tx: mpsc::Sender<Event>,
-) {
+pub(crate) async fn handle_control_ws(socket: WebSocket, event_tx: mpsc::Sender<Event>) {
     let (mut ws_tx, mut ws_rx) = socket.split();
     // Channel for log events to push back on same WS connection
     let (log_tx, mut log_rx) = mpsc::channel::<String>(64);

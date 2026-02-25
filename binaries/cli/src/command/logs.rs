@@ -123,11 +123,9 @@ impl Executable for LogsArgs {
         };
 
         let config = build_log_config(&self)?;
-        let session =
-            connect_to_coordinator((self.coordinator_addr, self.coordinator_port).into())
-                .wrap_err("failed to connect to adora coordinator")?;
-        let uuid =
-            resolve_dataflow_identifier_interactive(&session, self.dataflow.as_deref())?;
+        let session = connect_to_coordinator((self.coordinator_addr, self.coordinator_port).into())
+            .wrap_err("failed to connect to adora coordinator")?;
+        let uuid = resolve_dataflow_identifier_interactive(&session, self.dataflow.as_deref())?;
         logs(
             &session,
             uuid,

@@ -141,9 +141,7 @@ pub fn attach_dataflow(
     std::thread::spawn(move || {
         while let Ok(raw) = log_rx.recv() {
             let parsed: eyre::Result<LogMessage> = match raw {
-                Ok(bytes) => {
-                    serde_json::from_slice(&bytes).context("failed to parse log message")
-                }
+                Ok(bytes) => serde_json::from_slice(&bytes).context("failed to parse log message"),
                 Err(err) => Err(err),
             };
             if tx.send(AttachEvent::Log(parsed)).is_err() {

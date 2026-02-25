@@ -3,6 +3,8 @@
 //! Each test spins up a real coordinator, connects via tokio-tungstenite,
 //! and exercises the /api/control and /health endpoints.
 
+mod common;
+
 use adora_message::{
     BuildId,
     cli_to_coordinator::ControlRequest,
@@ -10,27 +12,8 @@ use adora_message::{
 };
 use futures::{SinkExt, StreamExt};
 use serde_json::json;
-use std::net::SocketAddr;
 use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
-
-/// Start a coordinator on a random port and return (port, background_task).
-///
-/// The coordinator is spawned on a background tokio task.
-/// Dropping the `JoinHandle` does NOT stop it — caller should
-/// just let it run until the test ends (tokio runtime drop cleans up).
-async fn start_test_coordinator() -> (u16, tokio::task::JoinHandle<()>) {
-    let bind: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let (port, future) = adora_coordinator::start_testing(bind, futures::stream::empty())
-        .await
-        .expect("failed to start coordinator");
-    let handle = tokio::spawn(async move {
-        let _ = future.await;
-    });
-    // Brief yield so the server is ready to accept connections
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    (port, handle)
-}
 
 /// Connect a tokio-tungstenite client to the control endpoint.
 async fn connect_control(
@@ -74,11 +57,9 @@ async fn request_reply(
     }
 }
 
-// ── Test 16: GET /health returns "ok" ──
-
 #[tokio::test]
 async fn connect_and_health_check() {
-    let (port, _handle) = start_test_coordinator().await;
+    let (port, _handle) = common::start_test_coordinator().await;
 
     // Use raw TCP + HTTP/1.1 request (no reqwest dependency needed)
     let mut stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{port}"))
@@ -96,11 +77,9 @@ async fn connect_and_health_check() {
     assert!(response.ends_with("ok") || response.contains("\r\n\r\nok"));
 }
 
-// ── Test 17: List returns empty dataflow list ──
-
 #[tokio::test]
 async fn control_list_empty() {
-    let (port, _handle) = start_test_coordinator().await;
+    let (port, _handle) = common::start_test_coordinator().await;
     let mut ws = connect_control(port).await;
 
     let params = serde_json::to_value(&ControlRequest::List).unwrap();
@@ -119,11 +98,9 @@ async fn control_list_empty() {
     assert!(list.as_array().unwrap().is_empty());
 }
 
-// ── Test 18: Invalid JSON -> error response ──
-
 #[tokio::test]
 async fn control_invalid_json() {
-    let (port, _handle) = start_test_coordinator().await;
+    let (port, _handle) = common::start_test_coordinator().await;
     let mut ws = connect_control(port).await;
 
     ws.send(Message::Text("not json at all".into()))
@@ -140,11 +117,9 @@ async fn control_invalid_json() {
     }
 }
 
-// ── Test 19: Valid WsRequest but bad params -> error response ──
-
 #[tokio::test]
 async fn control_invalid_params() {
-    let (port, _handle) = start_test_coordinator().await;
+    let (port, _handle) = common::start_test_coordinator().await;
     let mut ws = connect_control(port).await;
 
     let resp = request_reply(&mut ws, "control", json!({"not_a_variant": true})).await;
@@ -152,11 +127,9 @@ async fn control_invalid_params() {
     assert!(resp.error.unwrap().contains("invalid params"));
 }
 
-// ── Test 20: Destroy unknown UUID -> error ──
-
 #[tokio::test]
 async fn control_destroy_nonexistent() {
-    let (port, _handle) = start_test_coordinator().await;
+    let (port, _handle) = common::start_test_coordinator().await;
     let mut ws = connect_control(port).await;
 
     let params = serde_json::to_value(&ControlRequest::Destroy).unwrap();
@@ -168,11 +141,9 @@ async fn control_destroy_nonexistent() {
     assert_eq!(result, json!("DestroyOk"));
 }
 
-// ── Test 21: DaemonConnected request -> reply (false when no daemons) ──
-
 #[tokio::test]
 async fn control_status() {
-    let (port, _handle) = start_test_coordinator().await;
+    let (port, _handle) = common::start_test_coordinator().await;
     let mut ws = connect_control(port).await;
 
     let params = serde_json::to_value(&ControlRequest::DaemonConnected).unwrap();
@@ -185,11 +156,9 @@ async fn control_status() {
     assert_eq!(connected, &json!(false));
 }
 
-// ── Test 22: WS ping -> pong ──
-
 #[tokio::test]
 async fn control_ping_pong() {
-    let (port, _handle) = start_test_coordinator().await;
+    let (port, _handle) = common::start_test_coordinator().await;
     let mut ws = connect_control(port).await;
 
     ws.send(Message::Ping(vec![1, 2, 3].into())).await.unwrap();
@@ -201,11 +170,9 @@ async fn control_ping_pong() {
     }
 }
 
-// ── Test 23: Concurrent requests all get correct responses ──
-
 #[tokio::test]
 async fn control_concurrent_requests() {
-    let (port, _handle) = start_test_coordinator().await;
+    let (port, _handle) = common::start_test_coordinator().await;
     let mut ws = connect_control(port).await;
 
     let mut ids = Vec::new();
@@ -244,11 +211,9 @@ async fn control_concurrent_requests() {
     }
 }
 
-// ── Test 24: Client Close frame -> server handles gracefully ──
-
 #[tokio::test]
 async fn control_connection_close() {
-    let (port, _handle) = start_test_coordinator().await;
+    let (port, _handle) = common::start_test_coordinator().await;
     let mut ws = connect_control(port).await;
 
     // Verify connection works
@@ -269,11 +234,9 @@ async fn control_connection_close() {
     }
 }
 
-// ── Test 25: LogSubscribe for unknown dataflow -> error ──
-
 #[tokio::test]
 async fn log_subscribe_nonexistent() {
-    let (port, _handle) = start_test_coordinator().await;
+    let (port, _handle) = common::start_test_coordinator().await;
     let mut ws = connect_control(port).await;
 
     let fake_id = Uuid::new_v4();
@@ -292,11 +255,9 @@ async fn log_subscribe_nonexistent() {
     );
 }
 
-// ── Test 26: BuildLogSubscribe for unknown build -> error ──
-
 #[tokio::test]
 async fn build_log_subscribe_nonexistent() {
-    let (port, _handle) = start_test_coordinator().await;
+    let (port, _handle) = common::start_test_coordinator().await;
     let mut ws = connect_control(port).await;
 
     let fake_id = BuildId::generate();

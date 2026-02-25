@@ -48,17 +48,14 @@ pub struct Stop {
 impl Executable for Stop {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
-        let session =
-            connect_to_coordinator((self.coordinator_addr, self.coordinator_port).into())
-                .wrap_err("could not connect to adora coordinator")?;
+        let session = connect_to_coordinator((self.coordinator_addr, self.coordinator_port).into())
+            .wrap_err("could not connect to adora coordinator")?;
         match (self.uuid, self.name) {
             (Some(uuid), _) => stop_dataflow(uuid, self.grace_duration, self.force, &session),
             (None, Some(name)) => {
                 stop_dataflow_by_name(name, self.grace_duration, self.force, &session)
             }
-            (None, None) => {
-                stop_dataflow_interactive(self.grace_duration, self.force, &session)
-            }
+            (None, None) => stop_dataflow_interactive(self.grace_duration, self.force, &session),
         }
     }
 }

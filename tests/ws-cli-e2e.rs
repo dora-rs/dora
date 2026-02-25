@@ -4,7 +4,7 @@
 //! tests run the coordinator on a background thread and use `WsSession` from
 //! the main test thread (no nested runtimes).
 
-use adora_cli::ws_client::WsSession;
+use adora_cli::WsSession;
 use adora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply};
 use std::net::SocketAddr;
 
@@ -29,8 +29,17 @@ fn start_coordinator_background() -> u16 {
     });
 
     let port = port_rx.recv().expect("failed to receive coordinator port");
-    // Brief sleep to let the server settle
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    // Poll until the coordinator is accepting connections (up to 2s)
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        if std::net::TcpStream::connect(format!("127.0.0.1:{port}")).is_ok() {
+            break;
+        }
+        if std::time::Instant::now() > deadline {
+            panic!("coordinator did not become ready within 2s");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     port
 }
 
@@ -41,8 +50,6 @@ fn send_request(session: &WsSession, req: &ControlRequest) -> eyre::Result<Contr
     let reply: ControlRequestReply = serde_json::from_slice(&reply_bytes)?;
     Ok(reply)
 }
-
-// ── Test 31: CLI list returns empty when no dataflows ──
 
 #[test]
 fn cli_list_empty() {
@@ -59,8 +66,6 @@ fn cli_list_empty() {
     }
 }
 
-// ── Test 32: CLI status shows daemon connected ──
-
 #[test]
 fn cli_status_no_daemon() {
     let port = start_coordinator_background();
@@ -75,8 +80,6 @@ fn cli_status_no_daemon() {
         other => panic!("expected DaemonConnected, got {other:?}"),
     }
 }
-
-// ── Test 33: CLI stop with bad UUID returns error ──
 
 #[test]
 fn cli_stop_nonexistent() {
@@ -107,8 +110,6 @@ fn cli_stop_nonexistent() {
         other => panic!("expected Error, got {other:?}"),
     }
 }
-
-// ── Test 34: Multiple sequential requests on same session ──
 
 #[test]
 fn cli_multiple_requests_same_session() {

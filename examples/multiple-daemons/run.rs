@@ -44,11 +44,9 @@ async fn main() -> eyre::Result<()> {
         IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
         ADORA_COORDINATOR_PORT_WS_DEFAULT,
     );
-    let (coordinator_port, coordinator) = adora_coordinator::start(
-        coordinator_bind,
-        ReceiverStream::new(coordinator_events_rx),
-    )
-    .await?;
+    let (coordinator_port, coordinator) =
+        adora_coordinator::start(coordinator_bind, ReceiverStream::new(coordinator_events_rx))
+            .await?;
 
     tracing::info!("coordinator running on {coordinator_port}");
 

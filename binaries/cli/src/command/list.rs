@@ -45,17 +45,10 @@ impl Executable for ListArgs {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
 
-        let session =
-            connect_to_coordinator((self.coordinator_addr, self.coordinator_port).into())
-                .map_err(|_| eyre!("Failed to connect to coordinator"))?;
+        let session = connect_to_coordinator((self.coordinator_addr, self.coordinator_port).into())
+            .map_err(|_| eyre!("Failed to connect to coordinator"))?;
 
-        list(
-            &session,
-            self.format,
-            self.status,
-            self.name,
-            self.sort_by,
-        )
+        list(&session, self.format, self.status, self.name, self.sort_by)
     }
 }
 

@@ -189,7 +189,10 @@ async fn session_loop(ws_stream: WsStream, mut cmd_rx: mpsc::UnboundedReceiver<S
 
                 let parsed: WsMessage = match serde_json::from_str(&text) {
                     Ok(m) => m,
-                    Err(_) => continue,
+                    Err(e) => {
+                        tracing::warn!("failed to parse WS message: {e}");
+                        continue;
+                    }
                 };
 
                 match parsed {
@@ -343,11 +346,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn request_timeout() {
-        // Create a session_loop-like setup but never reply, verifying the
-        // oneshot gets an error when dropped (simulating session close).
+    async fn sender_drop_signals_receiver_error() {
+        // Verify that dropping the oneshot sender (simulating session close)
+        // causes the receiver to get a RecvError.
         let (tx, rx) = oneshot::channel::<eyre::Result<Vec<u8>>>();
-        // Drop the sender to simulate no response
         drop(tx);
         let result = rx.await;
         assert!(result.is_err()); // RecvError = sender dropped

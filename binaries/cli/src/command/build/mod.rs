@@ -193,11 +193,8 @@ pub fn build(
         BuildKind::ThroughCoordinator {
             coordinator_session,
         } => {
-            let local_working_dir = local_working_dir(
-                &dataflow_path,
-                &dataflow_descriptor,
-                &coordinator_session,
-            )?;
+            let local_working_dir =
+                local_working_dir(&dataflow_path, &dataflow_descriptor, &coordinator_session)?;
             let build_id = build_distributed_dataflow(
                 &coordinator_session,
                 dataflow_descriptor,
@@ -214,11 +211,7 @@ pub fn build(
 
             // wait until dataflow build is finished
 
-            wait_until_dataflow_built(
-                build_id,
-                &coordinator_session,
-                log::LevelFilter::Info,
-            )?;
+            wait_until_dataflow_built(build_id, &coordinator_session, log::LevelFilter::Info)?;
 
             dataflow_session.build_id = Some(build_id);
             dataflow_session.local_build = None;
@@ -233,9 +226,7 @@ pub fn build(
 
 enum BuildKind {
     Local,
-    ThroughCoordinator {
-        coordinator_session: WsSession,
-    },
+    ThroughCoordinator { coordinator_session: WsSession },
 }
 
 fn connect_to_coordinator_with_defaults(

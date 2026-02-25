@@ -54,6 +54,7 @@ pub async fn start(
 
 /// Like [`start`] but without registering a ctrl-c handler.
 /// Useful for tests that run multiple coordinators in the same process.
+#[doc(hidden)]
 pub async fn start_testing(
     bind: SocketAddr,
     external_events: impl Stream<Item = Event> + Unpin,

@@ -240,7 +240,11 @@ pub async fn register(
         }
     });
 
-    Ok((daemon_id, CoordinatorSender { sender: send_tx }, ReceiverStream::new(rx)))
+    Ok((
+        daemon_id,
+        CoordinatorSender { sender: send_tx },
+        ReceiverStream::new(rx),
+    ))
 }
 
 /// Simple jitter: uses system time nanos as a cheap pseudo-random source.

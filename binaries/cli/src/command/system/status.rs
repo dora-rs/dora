@@ -100,9 +100,7 @@ pub fn daemon_running(session: &WsSession) -> Result<bool, eyre::ErrReport> {
     Ok(running)
 }
 
-fn query_running_dataflow_count(
-    session: &WsSession,
-) -> Result<usize, eyre::ErrReport> {
+fn query_running_dataflow_count(session: &WsSession) -> Result<usize, eyre::ErrReport> {
     let reply_raw = session
         .request(&serde_json::to_vec(&ControlRequest::List).unwrap())
         .wrap_err("failed to send List message")?;

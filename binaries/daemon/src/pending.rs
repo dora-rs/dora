@@ -115,13 +115,8 @@ impl PendingNodes {
         // remove all local dynamic nodes that are not yet started
         for node_id in dynamic_nodes {
             if self.local_nodes.remove(node_id) {
-                self.update_dataflow_status(
-                    coordinator_sender,
-                    clock,
-                    cascading_errors,
-                    logger,
-                )
-                .await?;
+                self.update_dataflow_status(coordinator_sender, clock, cascading_errors, logger)
+                    .await?;
             }
         }
 

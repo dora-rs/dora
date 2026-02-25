@@ -24,10 +24,7 @@ pub struct DataflowSelector {
 }
 
 impl DataflowSelector {
-    pub fn resolve(
-        &self,
-        session: &WsSession,
-    ) -> eyre::Result<(Uuid, Descriptor)> {
+    pub fn resolve(&self, session: &WsSession) -> eyre::Result<(Uuid, Descriptor)> {
         let dataflow_id =
             resolve_dataflow_identifier_interactive(session, self.dataflow.as_deref())?;
         let reply_raw = session

@@ -130,6 +130,21 @@ async fn handle_daemon_request(
 
     match message.inner {
         CoordinatorRequest::Register(register_request) => {
+            // Reject re-registration on the same connection
+            if tracked_daemon_id.is_some() {
+                tracing::warn!("daemon attempted re-register on same connection, rejecting");
+                return false;
+            }
+            // Validate machine_id length to prevent abuse
+            if let Some(ref mid) = register_request.machine_id {
+                if mid.len() > 256 {
+                    tracing::warn!(
+                        "daemon register rejected: machine_id too long ({} bytes)",
+                        mid.len()
+                    );
+                    return false;
+                }
+            }
             let connection = DaemonConnection::new(cmd_tx.clone(), pending_replies.clone());
             let (daemon_id_tx, daemon_id_rx) = oneshot::channel();
             let event = DaemonRequest::Register {
@@ -152,9 +167,9 @@ async fn handle_daemon_request(
             if let Some(tracked) = tracked_daemon_id {
                 if *tracked != daemon_id {
                     tracing::warn!(
-                        "daemon sent event with mismatched id: expected `{tracked}`, got `{daemon_id}`"
+                        "daemon sent event with mismatched id: expected `{tracked}`, got `{daemon_id}` — closing connection"
                     );
-                    return true;
+                    return false;
                 }
             }
             if let Some(coordinator_event) = translate_daemon_event(daemon_id, event) {

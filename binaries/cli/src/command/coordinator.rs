@@ -46,11 +46,8 @@ impl Executable for Coordinator {
             .context("tokio runtime failed")?;
         rt.block_on(async {
             let bind = SocketAddr::new(self.interface, self.port);
-            let (port, task) = adora_coordinator::start(
-                bind,
-                futures::stream::empty::<Event>(),
-            )
-            .await?;
+            let (port, task) =
+                adora_coordinator::start(bind, futures::stream::empty::<Event>()).await?;
             if !self.quiet {
                 println!("Listening on port {port}");
             }
