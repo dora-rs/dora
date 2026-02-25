@@ -102,4 +102,15 @@ pub trait DaemonControl {
     async fn destroy() -> DaemonResult<()>;
     /// Heartbeat check.
     async fn heartbeat();
+    /// Return the daemon's version info for compatibility checking.
+    async fn get_version() -> DaemonVersionInfo;
+}
+
+/// Version info returned by the daemon's `get_version` RPC method.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct DaemonVersionInfo {
+    /// The daemon's own crate version (e.g. "0.4.1")
+    pub daemon_version: String,
+    /// The dora-message crate version used by the daemon (e.g. "0.7.0")
+    pub message_format_version: String,
 }

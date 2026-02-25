@@ -72,7 +72,6 @@ pub async fn handle_connection(
             CoordinatorRequest::Register(register_request) => {
                 let event = DaemonRequest::Register {
                     connection,
-                    version_check_result: register_request.check_version(),
                     machine_id: register_request.machine_id,
                 };
                 let _ = events_tx.send(Event::Daemon(event)).await;

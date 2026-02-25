@@ -434,4 +434,14 @@ impl DaemonControl for DaemonRpcServer {
     async fn heartbeat(self, _ctx: tarpc::context::Context) {
         *self.state.last_coordinator_heartbeat.lock().await = std::time::Instant::now();
     }
+
+    async fn get_version(
+        self,
+        _ctx: tarpc::context::Context,
+    ) -> dora_message::coordinator_to_daemon::DaemonVersionInfo {
+        dora_message::coordinator_to_daemon::DaemonVersionInfo {
+            daemon_version: env!("CARGO_PKG_VERSION").to_string(),
+            message_format_version: dora_message::VERSION.to_string(),
+        }
+    }
 }
