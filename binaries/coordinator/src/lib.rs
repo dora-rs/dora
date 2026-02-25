@@ -12,7 +12,8 @@ use dora_core::{
 use dora_message::{
     BuildId, SessionId,
     cli_to_coordinator::{
-        BuildRequest, CliControl, CliControlClient, CliControlRequest, CliControlResponse,
+        BuildRequest, CoordinatorControl, CoordinatorControlClient, CoordinatorControlRequest,
+        CoordinatorControlResponse,
     },
     common::DaemonId,
     coordinator_to_cli::{DataflowResult, LogLevel, LogMessage, StopDataflowReply},
@@ -98,13 +99,19 @@ pub async fn start(
 
 /// Start the coordinator with an in-process RPC server instead of a TCP listener.
 ///
-/// Returns the `CliControlClient` to communicate with the RPC server.
+/// Returns the `CoordinatorControlClient` to communicate with the RPC server.
 ///
 /// This function is mainly useful for testing.
 pub async fn start_with_channel_rpc(
     bind: SocketAddr,
     external_events: impl Stream<Item = Event> + Unpin,
-) -> Result<(CliControlClient, impl Future<Output = eyre::Result<()>>), eyre::ErrReport> {
+) -> Result<
+    (
+        CoordinatorControlClient,
+        impl Future<Output = eyre::Result<()>>,
+    ),
+    eyre::ErrReport,
+> {
     let tasks = FuturesUnordered::new();
 
     let (_daemon_port, coordinator_state, future) =
@@ -117,7 +124,8 @@ pub async fn start_with_channel_rpc(
         coordinator_state,
         None,
     ));
-    let control_client = CliControlClient::new(client::Config::default(), client_transport).spawn();
+    let control_client =
+        CoordinatorControlClient::new(client::Config::default(), client_transport).spawn();
 
     Ok((control_client, future))
 }
@@ -195,14 +203,16 @@ async fn init_coordinator(
     Ok((daemon_port, state_for_caller, future))
 }
 
-/// Serve [`CliControl`] RPC requests from the given transport.
+/// Serve [`CoordinatorControl`] RPC requests from the given transport.
 fn serve_control_requests<T>(
     transport: T,
     state: Arc<state::CoordinatorState>,
     client_ip: Option<std::net::IpAddr>,
 ) -> impl Future<Output = ()>
 where
-    T: Transport<Response<CliControlResponse>, ClientMessage<CliControlRequest>> + Send + 'static,
+    T: Transport<Response<CoordinatorControlResponse>, ClientMessage<CoordinatorControlRequest>>
+        + Send
+        + 'static,
     T::Error: std::error::Error + Send + Sync + 'static,
 {
     let channel = BaseChannel::with_defaults(transport);
@@ -444,13 +454,13 @@ async fn start_inner(
                     // Set up a tarpc server for daemon→coordinator RPC on this
                     // second TCP connection.
                     use dora_message::daemon_to_coordinator::{
-                        DaemonNotification, DaemonNotificationRequest, DaemonNotificationResponse,
+                        CoordinatorNotify, CoordinatorNotifyRequest, CoordinatorNotifyResponse,
                     };
                     use tarpc::server::{BaseChannel, Channel};
 
                     let codec = tokio_serde::formats::Json::<
-                        ClientMessage<DaemonNotificationRequest>,
-                        Response<DaemonNotificationResponse>,
+                        ClientMessage<CoordinatorNotifyRequest>,
+                        Response<CoordinatorNotifyResponse>,
                     >::default();
                     let transport = tarpc::serde_transport::Transport::from((connection, codec));
 

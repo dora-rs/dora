@@ -1,6 +1,6 @@
 use crate::tcp::AsyncTcpConnection;
 use dora_core::descriptor::{CoreNodeKind, Descriptor, DescriptorExt, resolve_path};
-use dora_message::cli_to_coordinator::{CliControlClient, LegacyControlRequest};
+use dora_message::cli_to_coordinator::{CoordinatorControlClient, LegacyControlRequest};
 use dora_message::common::LogMessage;
 use dora_message::coordinator_to_cli::{CheckDataflowReply, DataflowResult, StopDataflowReply};
 use dora_message::id::{NodeId, OperatorId};
@@ -20,7 +20,7 @@ pub async fn attach_dataflow(
     dataflow: Descriptor,
     dataflow_path: PathBuf,
     dataflow_id: Uuid,
-    client: &CliControlClient,
+    client: &CoordinatorControlClient,
     hot_reload: bool,
     coordinator_socket: SocketAddr,
     log_level: log::LevelFilter,

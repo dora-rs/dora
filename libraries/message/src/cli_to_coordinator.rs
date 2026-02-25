@@ -64,7 +64,7 @@ pub enum LegacyControlRequest {
 type Result<T> = std::result::Result<T, String>;
 
 #[tarpc::service]
-pub trait CliControl {
+pub trait CoordinatorControl {
     async fn build(request: BuildRequest) -> Result<BuildId>;
     async fn wait_for_build(build_id: BuildId) -> Result<()>;
     async fn start(request: StartRequest) -> Result<Uuid>;

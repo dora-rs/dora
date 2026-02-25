@@ -9,7 +9,7 @@ use crate::{
 use clap::Args;
 use dora_core::topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT;
 use dora_message::{
-    cli_to_coordinator::CliControlClient, coordinator_to_cli::DataflowStatus, tarpc,
+    cli_to_coordinator::CoordinatorControlClient, coordinator_to_cli::DataflowStatus, tarpc,
 };
 use eyre::{Context, eyre};
 use serde::Serialize;
@@ -69,7 +69,7 @@ struct DataflowMetrics {
 }
 
 async fn list(
-    client: &CliControlClient,
+    client: &CoordinatorControlClient,
     format: OutputFormat,
     status_filter: Option<String>,
     name_filter: Option<String>,

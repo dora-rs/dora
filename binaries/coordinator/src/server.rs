@@ -3,7 +3,7 @@ use std::{collections::BTreeSet, sync::Arc, time::Duration};
 use dora_core::config::{NodeId, OperatorId};
 use dora_message::{
     BuildId,
-    cli_to_coordinator::{BuildRequest, CliControl, StartRequest},
+    cli_to_coordinator::{BuildRequest, CoordinatorControl, StartRequest},
     common::DaemonId,
     coordinator_to_cli::{
         CheckDataflowReply, DataflowIdAndName, DataflowInfo, DataflowList, DataflowListEntry,
@@ -69,7 +69,7 @@ pub(crate) struct ControlServer {
     pub(crate) client_ip: Option<std::net::IpAddr>,
 }
 
-impl CliControl for ControlServer {
+impl CoordinatorControl for ControlServer {
     async fn build(self, _context: Context, request: BuildRequest) -> Result<BuildId, String> {
         // assign a random build id
         let build_id = BuildId::generate();

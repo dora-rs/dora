@@ -18,7 +18,7 @@ use dora_core::{
     topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST},
 };
 use dora_message::{
-    cli_to_coordinator::{CliControlClient, LegacyControlRequest, StartRequest},
+    cli_to_coordinator::{CoordinatorControlClient, LegacyControlRequest, StartRequest},
     common::LogMessage,
     tarpc,
 };
@@ -115,7 +115,7 @@ async fn start_dataflow(
     name: Option<String>,
     coordinator_socket: SocketAddr,
     uv: bool,
-) -> Result<(PathBuf, Descriptor, CliControlClient, Uuid), eyre::Error> {
+) -> Result<(PathBuf, Descriptor, CoordinatorControlClient, Uuid), eyre::Error> {
     let dataflow = resolve_dataflow(dataflow)
         .await
         .context("could not resolve dataflow")?;
@@ -153,7 +153,7 @@ async fn start_dataflow(
 
 async fn wait_until_dataflow_started(
     dataflow_id: Uuid,
-    client: &CliControlClient,
+    client: &CoordinatorControlClient,
     coordinator_addr: SocketAddr,
     log_level: log::LevelFilter,
     print_daemon_id: bool,
