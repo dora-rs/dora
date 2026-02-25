@@ -16,14 +16,14 @@ use dora_core::{
 use dora_message::{
     BuildId, DataflowId, SessionId,
     common::{
-        DaemonId, DataMessage, DropToken, GitSource, LogLevel, NodeError, NodeErrorCause,
+        DaemonId, DataMessage, GitSource, LogLevel, NodeError, NodeErrorCause,
         NodeExitStatus,
     },
     coordinator_to_cli::DataflowResult,
     coordinator_to_daemon::SpawnDataflowNodes,
     daemon_to_coordinator::DataflowDaemonResult,
     daemon_to_daemon::InterDaemonEvent,
-    daemon_to_node::{DaemonReply, NodeConfig, NodeDropEvent, NodeEvent},
+    daemon_to_node::{DaemonReply, NodeConfig, NodeEvent},
     descriptor::{NodeSource, RestartPolicy},
     metadata::{self, ArrowTypeInfo},
     node_to_daemon::{DynamicNodeEvent, Timestamped},
@@ -37,7 +37,6 @@ use local_listener::DynamicNodeEventWrapper;
 use log::{DaemonLogger, DataflowLogger, Logger};
 use pending::PendingNodes;
 use process_wrap::tokio::TokioChildWrapper;
-use shared_memory_server::ShmemConf;
 use spawn::Spawner;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
@@ -1593,22 +1592,6 @@ impl Daemon {
                     }
                 }
             }
-            DaemonNodeEvent::SubscribeDrop {
-                event_sender,
-                reply_sender,
-            } => {
-                let dataflow = self.state.running.get_mut(&dataflow_id).wrap_err_with(|| {
-                    format!("failed to subscribe: no running dataflow with ID `{dataflow_id}`")
-                });
-                let result = match dataflow {
-                    Ok(mut dataflow) => {
-                        dataflow.drop_channels.insert(node_id, event_sender);
-                        Ok(())
-                    }
-                    Err(err) => Err(err.to_string()),
-                };
-                let _ = reply_sender.send(DaemonReply::Result(result));
-            }
             DaemonNodeEvent::CloseOutputs {
                 outputs,
                 reply_sender,
@@ -1652,34 +1635,6 @@ impl Daemon {
                 .send_out(dataflow_id, node_id, output_id, metadata, data)
                 .await
                 .context("failed to send out")?,
-            DaemonNodeEvent::ReportDrop { tokens } => {
-                let dataflow = self.state.running.get_mut(&dataflow_id).wrap_err_with(|| {
-                    format!(
-                        "failed to get handle drop tokens: \
-                        no running dataflow with ID `{dataflow_id}`"
-                    )
-                });
-
-                match dataflow {
-                    Ok(mut dataflow) => {
-                        for token in tokens {
-                            match dataflow.pending_drop_tokens.get_mut(&token) {
-                                Some(info) => {
-                                    if info.pending_nodes.remove(&node_id) {
-                                        dataflow.check_drop_token(token, &self.state.clock).await?;
-                                    } else {
-                                        tracing::warn!(
-                                            "node `{node_id}` is not pending for drop token `{token:?}`"
-                                        );
-                                    }
-                                }
-                                None => tracing::warn!("unknown drop token `{token:?}`"),
-                            }
-                        }
-                    }
-                    Err(err) => tracing::warn!("{err:?}"),
-                }
-            }
             DaemonNodeEvent::EventStreamDropped { reply_sender } => {
                 let reply = match self.state.running.get_mut(&dataflow_id) {
                     Some(mut dataflow) => {
@@ -2079,9 +2034,6 @@ impl Daemon {
                 .await?;
         }
 
-        if let Some(mut dataflow) = self.state.running.get_mut(&dataflow_id) {
-            dataflow.drop_channels.remove(node_id);
-        }
         Ok(())
     }
 
@@ -2765,13 +2717,12 @@ async fn send_output_to_local_receivers(
     dataflow: &mut RunningDataflow,
     metadata: &metadata::Metadata,
     data: Option<DataMessage>,
-    clock: &HLC,
+    _clock: &HLC,
 ) -> Result<Option<AVec<u8, ConstAlign<128>>>, eyre::ErrReport> {
     let timestamp = metadata.timestamp();
     let empty_set = BTreeSet::new();
     let output_id = OutputId(node_id, output_id);
     let local_receivers = dataflow.mappings.get(&output_id).unwrap_or(&empty_set);
-    let OutputId(node_id, _) = output_id;
     let mut closed = Vec::new();
     for (receiver_id, input_id) in local_receivers {
         if let Some(channel) = dataflow.subscribe_channels.get(receiver_id) {
@@ -2784,19 +2735,7 @@ async fn send_output_to_local_receivers(
                 inner: item,
                 timestamp,
             }) {
-                Ok(()) => {
-                    if let Some(token) = data.as_ref().and_then(|d| d.drop_token()) {
-                        dataflow
-                            .pending_drop_tokens
-                            .entry(token)
-                            .or_insert_with(|| DropTokenInformation {
-                                owner: node_id.clone(),
-                                pending_nodes: Default::default(),
-                            })
-                            .pending_nodes
-                            .insert(receiver_id.clone());
-                    }
-                }
+                Ok(()) => {}
                 Err(_) => {
                     closed.push(receiver_id);
                 }
@@ -2806,34 +2745,10 @@ async fn send_output_to_local_receivers(
     for id in closed {
         dataflow.subscribe_channels.remove(id);
     }
-    let (data_bytes, drop_token) = match data {
-        None => (None, None),
-        Some(DataMessage::SharedMemory {
-            shared_memory_id,
-            len,
-            drop_token,
-        }) => {
-            let memory = ShmemConf::new()
-                .os_id(shared_memory_id)
-                .open()
-                .wrap_err("failed to map shared memory output")?;
-            let data = Some(AVec::from_slice(1, &unsafe { memory.as_slice() }[..len]));
-            (data, Some(drop_token))
-        }
-        Some(DataMessage::Vec(v)) => (Some(v), None),
+    let data_bytes = match data {
+        None => None,
+        Some(DataMessage::Vec(v)) => Some(v),
     };
-    if let Some(token) = drop_token {
-        // insert token into `pending_drop_tokens` even if there are no local subscribers
-        dataflow
-            .pending_drop_tokens
-            .entry(token)
-            .or_insert_with(|| DropTokenInformation {
-                owner: node_id.clone(),
-                pending_nodes: Default::default(),
-            });
-        // check if all local subscribers are finished with the token
-        dataflow.check_drop_token(token, clock).await?;
-    }
     Ok(data_bytes)
 }
 
@@ -2990,7 +2905,6 @@ pub struct RunningDataflow {
     dataflow_started: bool,
 
     subscribe_channels: HashMap<NodeId, UnboundedSender<Timestamped<NodeEvent>>>,
-    drop_channels: HashMap<NodeId, UnboundedSender<Timestamped<NodeDropEvent>>>,
     mappings: HashMap<OutputId, BTreeSet<InputId>>,
     timers: BTreeMap<Duration, BTreeSet<InputId>>,
     open_inputs: BTreeMap<NodeId, BTreeSet<DataId>>,
@@ -3003,8 +2917,6 @@ pub struct RunningDataflow {
     dynamic_nodes: BTreeSet<NodeId>,
 
     open_external_mappings: BTreeSet<OutputId>,
-
-    pending_drop_tokens: HashMap<DropToken, DropTokenInformation>,
 
     /// Keep handles to all timer tasks of this dataflow to cancel them on drop.
     _timer_handles: BTreeMap<Duration, futures::future::RemoteHandle<()>>,
@@ -3062,14 +2974,12 @@ impl RunningDataflow {
             pending_nodes: PendingNodes::new(dataflow_id, daemon_id, events_tx, clock),
             dataflow_started: false,
             subscribe_channels: HashMap::new(),
-            drop_channels: HashMap::new(),
             mappings: HashMap::new(),
             timers: BTreeMap::new(),
             open_inputs: BTreeMap::new(),
             running_nodes: BTreeMap::new(),
             dynamic_nodes: BTreeSet::new(),
             open_external_mappings: Default::default(),
-            pending_drop_tokens: HashMap::new(),
             _timer_handles: BTreeMap::new(),
             _listener_tasks: Vec::new(),
             stop_sent: false,
@@ -3303,37 +3213,6 @@ impl RunningDataflow {
         self.open_inputs.get(node_id).unwrap_or(&self.empty_set)
     }
 
-    async fn check_drop_token(&mut self, token: DropToken, clock: &HLC) -> eyre::Result<()> {
-        match self.pending_drop_tokens.entry(token) {
-            std::collections::hash_map::Entry::Occupied(entry) => {
-                if entry.get().pending_nodes.is_empty() {
-                    let (drop_token, info) = entry.remove_entry();
-                    let result = match self.drop_channels.get_mut(&info.owner) {
-                        Some(channel) => send_with_timestamp(
-                            channel,
-                            NodeDropEvent::OutputDropped { drop_token },
-                            clock,
-                        )
-                        .wrap_err("send failed"),
-                        None => Err(eyre!("no subscribe channel for node `{}`", &info.owner)),
-                    };
-                    if let Err(err) = result.wrap_err_with(|| {
-                        format!(
-                            "failed to report drop token `{drop_token:?}` to owner `{}`",
-                            &info.owner
-                        )
-                    }) {
-                        tracing::warn!("{err:?}");
-                    }
-                }
-            }
-            std::collections::hash_map::Entry::Vacant(_) => {
-                tracing::warn!("check_drop_token called with already closed token")
-            }
-        }
-
-        Ok(())
-    }
 }
 
 fn empty_type_info() -> ArrowTypeInfo {
@@ -3351,14 +3230,6 @@ fn empty_type_info() -> ArrowTypeInfo {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct OutputId(NodeId, DataId);
 type InputId = (NodeId, DataId);
-
-struct DropTokenInformation {
-    /// The node that created the associated drop token.
-    owner: NodeId,
-    /// Contains the set of pending nodes that still have access to the input
-    /// associated with a drop token.
-    pending_nodes: BTreeSet<NodeId>,
-}
 
 #[derive(Debug)]
 pub enum Event {
@@ -3452,10 +3323,6 @@ pub enum DaemonNodeEvent {
         event_sender: UnboundedSender<Timestamped<NodeEvent>>,
         reply_sender: oneshot::Sender<DaemonReply>,
     },
-    SubscribeDrop {
-        event_sender: UnboundedSender<Timestamped<NodeDropEvent>>,
-        reply_sender: oneshot::Sender<DaemonReply>,
-    },
     CloseOutputs {
         outputs: Vec<dora_core::config::DataId>,
         reply_sender: oneshot::Sender<DaemonReply>,
@@ -3464,9 +3331,6 @@ pub enum DaemonNodeEvent {
         output_id: DataId,
         metadata: metadata::Metadata,
         data: Option<DataMessage>,
-    },
-    ReportDrop {
-        tokens: Vec<DropToken>,
     },
     EventStreamDropped {
         reply_sender: oneshot::Sender<DaemonReply>,

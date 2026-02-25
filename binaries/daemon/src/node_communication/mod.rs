@@ -6,8 +6,8 @@ use dora_core::{
 };
 use dora_message::{
     DataflowId,
-    common::{DropToken, Timestamped},
-    daemon_to_node::{DaemonCommunication, DaemonReply, NodeDropEvent, NodeEvent},
+    common::Timestamped,
+    daemon_to_node::{DaemonCommunication, DaemonReply, NodeEvent},
     node_to_daemon::DaemonRequest,
 };
 use eyre::{Context, eyre};
@@ -76,34 +76,17 @@ pub async fn spawn_listener_loop(
                 .size(4096)
                 .create()
                 .wrap_err("failed to allocate daemon_events_region")?;
-            let daemon_drop_region = ShmemConf::new()
-                .size(4096)
-                .create()
-                .wrap_err("failed to allocate daemon_drop_region")?;
-            let daemon_events_close_region = ShmemConf::new()
-                .size(4096)
-                .create()
-                .wrap_err("failed to allocate daemon_drop_region")?;
             let daemon_control_region_id = daemon_control_region.get_os_id().to_owned();
             let daemon_events_region_id = daemon_events_region.get_os_id().to_owned();
-            let daemon_drop_region_id = daemon_drop_region.get_os_id().to_owned();
-            let daemon_events_close_region_id = daemon_events_close_region.get_os_id().to_owned();
 
             let s_control = unsafe { ShmemServer::new(daemon_control_region) }
                 .wrap_err("failed to create control server")?;
             let s_events = unsafe { ShmemServer::new(daemon_events_region) }
                 .wrap_err("failed to create events server")?;
-            let s_drop = unsafe { ShmemServer::new(daemon_drop_region) }
-                .wrap_err("failed to create drop server")?;
-            let s_events_close = unsafe { ShmemServer::new(daemon_events_close_region) }
-                .wrap_err("failed to create events close server")?;
 
-            // Run all four shmem listener loops inside a single task so that
+            // Run both shmem listener loops inside a single task so that
             // a single AbortHandle can stop all of them when the dataflow
-            // finishes.  Previously each was a separate fire-and-forget spawn
-            // with no way to cancel them, causing task + blocking-thread leaks
-            // on every dataflow run (and blocking-thread exhaustion after node
-            // crashes, because `pthread_cond_wait` blocked indefinitely).
+            // finishes.
             let event_loop_node_id = format!("{dataflow_id}/{node_id}");
             let handle = tokio::spawn({
                 let daemon_tx = daemon_tx.clone();
@@ -117,19 +100,7 @@ pub async fn spawn_listener_loop(
                             queue_sizes.clone(),
                             clock.clone(),
                         ),
-                        shmem::listener_loop(
-                            s_events,
-                            daemon_tx.clone(),
-                            queue_sizes.clone(),
-                            clock.clone(),
-                        ),
-                        shmem::listener_loop(
-                            s_drop,
-                            daemon_tx.clone(),
-                            queue_sizes.clone(),
-                            clock.clone(),
-                        ),
-                        shmem::listener_loop(s_events_close, daemon_tx, queue_sizes, clock),
+                        shmem::listener_loop(s_events, daemon_tx, queue_sizes, clock),
                     );
                     tracing::debug!("all shmem listener loops finished for `{event_loop_node_id}`");
                 }
@@ -140,8 +111,6 @@ pub async fn spawn_listener_loop(
                 DaemonCommunication::Shmem {
                     daemon_control_region_id,
                     daemon_events_region_id,
-                    daemon_drop_region_id,
-                    daemon_events_close_region_id,
                 },
                 Some(abort_handle),
             ))
@@ -188,7 +157,6 @@ struct Listener {
     node_id: NodeId,
     daemon_tx: mpsc::Sender<Timestamped<Event>>,
     subscribed_events: Option<UnboundedReceiver<Timestamped<NodeEvent>>>,
-    subscribed_drop_events: Option<UnboundedReceiver<Timestamped<NodeDropEvent>>>,
     queue: VecDeque<Box<Option<Timestamped<NodeEvent>>>>,
     clock: Arc<uhlc::HLC>,
 }
@@ -236,7 +204,6 @@ impl Listener {
                             node_id,
                             daemon_tx,
                             subscribed_events: None,
-                            subscribed_drop_events: None,
                             queue: VecDeque::new(),
                             clock: hlc.clone(),
                         };
@@ -386,23 +353,7 @@ impl Listener {
                 .await?;
                 self.subscribed_events = Some(rx);
             }
-            DaemonRequest::SubscribeDrop => {
-                let (tx, rx) = mpsc::unbounded_channel();
-                let (reply_sender, reply) = oneshot::channel();
-                self.process_daemon_event(
-                    DaemonNodeEvent::SubscribeDrop {
-                        event_sender: tx,
-                        reply_sender,
-                    },
-                    Some(reply),
-                    connection,
-                )
-                .await?;
-                self.subscribed_drop_events = Some(rx);
-            }
-            DaemonRequest::NextEvent { drop_tokens } => {
-                self.report_drop_tokens(drop_tokens).await?;
-
+            DaemonRequest::NextEvent => {
                 // try to take the queued events first
                 let queued_events: Vec<_> = mem::take(&mut self.queue)
                     .into_iter()
@@ -429,31 +380,6 @@ impl Listener {
                     .await
                     .wrap_err_with(|| format!("failed to send NextEvent reply: {reply:?}"))?;
             }
-            DaemonRequest::ReportDropTokens { drop_tokens } => {
-                self.report_drop_tokens(drop_tokens).await?;
-
-                self.send_reply(DaemonReply::Empty, connection)
-                    .await
-                    .wrap_err("failed to send ReportDropTokens reply")?;
-            }
-            DaemonRequest::NextFinishedDropTokens => {
-                let reply = match self.subscribed_drop_events.as_mut() {
-                    // wait for next event
-                    Some(events) => match events.recv().await {
-                        Some(event) => DaemonReply::NextDropEvents(vec![event]),
-                        None => DaemonReply::NextDropEvents(vec![]),
-                    },
-                    None => DaemonReply::Result(Err("Ignoring event request because no drop \
-                        subscribe message was sent yet"
-                        .into())),
-                };
-
-                self.send_reply(reply.clone(), connection)
-                    .await
-                    .wrap_err_with(|| {
-                        format!("failed to send NextFinishedDropTokens reply: {reply:?}")
-                    })?;
-            }
             DaemonRequest::EventStreamDropped => {
                 let (reply_sender, reply) = oneshot::channel();
                 self.process_daemon_event(
@@ -463,27 +389,6 @@ impl Listener {
                 )
                 .await?;
             }
-        }
-        Ok(())
-    }
-
-    async fn report_drop_tokens(&mut self, drop_tokens: Vec<DropToken>) -> eyre::Result<()> {
-        if !drop_tokens.is_empty() {
-            let event = Event::Node {
-                dataflow_id: self.dataflow_id,
-                node_id: self.node_id.clone(),
-                event: DaemonNodeEvent::ReportDrop {
-                    tokens: drop_tokens,
-                },
-            };
-            let event = Timestamped {
-                inner: event,
-                timestamp: self.clock.new_timestamp(),
-            };
-            self.daemon_tx
-                .send(event)
-                .await
-                .map_err(|_| eyre!("failed to report drop tokens to daemon"))?;
         }
         Ok(())
     }

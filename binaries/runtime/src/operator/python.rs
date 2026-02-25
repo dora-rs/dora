@@ -296,7 +296,6 @@ mod callback_impl {
     use dora_core::metadata::ArrowTypeInfoExt;
     use dora_message::metadata::ArrowTypeInfo;
     use dora_node_api::{
-        ZERO_COPY_THRESHOLD,
         arrow_utils::{copy_array_into_sample, required_data_size},
     };
     use dora_operator_api_python::pydict_to_metadata;
@@ -346,23 +345,9 @@ mod callback_impl {
                 .unwrap_or_default();
             let _ = span.enter();
 
-            let allocate_sample = |data_len| {
-                if data_len > ZERO_COPY_THRESHOLD {
-                    let (tx, rx) = oneshot::channel();
-                    self.events_tx
-                        .send(OperatorEvent::AllocateOutputSample {
-                            len: data_len,
-                            sample: tx,
-                        })
-                        .map_err(|_| eyre!("failed to send output to runtime"))?;
-                    rx.blocking_recv()
-                        .wrap_err("failed to request output sample")?
-                        .wrap_err("failed to allocate output sample")
-                } else {
-                    let avec: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, data_len);
-
-                    Ok(avec.into())
-                }
+            let allocate_sample = |data_len| -> eyre::Result<dora_node_api::DataSample> {
+                let avec: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, data_len);
+                Ok(avec.into())
             };
 
             let (sample, type_info) = if let Ok(py_bytes) = data.downcast_bound::<PyBytes>(py) {
