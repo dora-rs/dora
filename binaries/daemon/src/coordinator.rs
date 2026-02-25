@@ -283,35 +283,38 @@ impl DaemonControl for DaemonRpcServer {
         tracing::debug!(
             "received AllNodesReady (exited_before_subscribe: {exited_before_subscribe:?})"
         );
-        match self.state.running.get_mut(&dataflow_id) {
-            Some(mut dataflow) => {
-                let ready = exited_before_subscribe.is_empty();
-                let df = &mut *dataflow;
-                if let Err(err) = df
-                    .pending_nodes
-                    .handle_external_all_nodes_ready(
-                        exited_before_subscribe,
-                        &mut df.cascading_error_causes,
-                    )
+        // Handle pending nodes while holding the DashMap guard, then drop
+        // the guard before doing any further async work.
+        let ready = {
+            let Some(mut dataflow) = self.state.running.get_mut(&dataflow_id) else {
+                tracing::warn!("received AllNodesReady for unknown dataflow (ID `{dataflow_id}`)");
+                return;
+            };
+            let ready = exited_before_subscribe.is_empty();
+            let df = &mut *dataflow;
+            if let Err(err) = df
+                .pending_nodes
+                .handle_external_all_nodes_ready(
+                    exited_before_subscribe,
+                    &mut df.cascading_error_causes,
+                )
+                .await
+            {
+                tracing::error!("failed to handle AllNodesReady: {err:?}");
+                return;
+            }
+            ready
+        };
+        // DashMap guard is now dropped — safe to re-acquire.
+        if ready {
+            tracing::info!("coordinator reported that all nodes are ready, starting dataflow");
+            if let Some(mut dataflow) = self.state.running.get_mut(&dataflow_id) {
+                if let Err(err) = dataflow
+                    .start(&self.state.events_tx, &self.state.clock)
                     .await
                 {
-                    tracing::error!("failed to handle AllNodesReady: {err:?}");
-                    return;
+                    tracing::error!("failed to start dataflow: {err:?}");
                 }
-                if ready {
-                    tracing::info!(
-                        "coordinator reported that all nodes are ready, starting dataflow"
-                    );
-                    if let Err(err) = dataflow
-                        .start(&self.state.events_tx, &self.state.clock)
-                        .await
-                    {
-                        tracing::error!("failed to start dataflow: {err:?}");
-                    }
-                }
-            }
-            None => {
-                tracing::warn!("received AllNodesReady for unknown dataflow (ID `{dataflow_id}`)");
             }
         }
     }
