@@ -2491,55 +2491,80 @@ impl Daemon {
                     NodeExitStatus::Success => Ok(()),
                     exit_status => {
                         let dataflow = self.running.get(&dataflow_id);
-                        let caused_by_node = dataflow
-                            .and_then(|dataflow| {
-                                dataflow.cascading_error_causes.error_caused_by(&node_id)
-                            })
-                            .cloned();
+                        let is_expected_shutdown_exit =
+                            dataflow.as_ref().map(|d| d.stop_sent).unwrap_or(false)
+                                && matches!(
+                                    &exit_status,
+                                    NodeExitStatus::Signal(15)
+                                        | NodeExitStatus::Signal(9)
+                                        | NodeExitStatus::ExitCode(143)
+                                );
 
-                        let grace_duration_kill = dataflow
-                            .map(|d| d.grace_duration_kills.contains(&node_id))
-                            .unwrap_or_default();
-
-                        let cause = match caused_by_node {
-                            Some(caused_by_node) => {
-                                logger
+                        if is_expected_shutdown_exit {
+                            logger
                                 .log(
                                     LogLevel::Info,
                                     Some("daemon".into()),
-                                    format!("marking `{node_id}` as cascading error caused by `{caused_by_node}`")
+                                    format!(
+                                        "treating shutdown exit status {exit_status:?} as success \
+                                         because dataflow stop was requested"
+                                    ),
                                 )
                                 .await;
+                            Ok(())
+                        } else {
+                            let caused_by_node = dataflow
+                                .and_then(|dataflow| {
+                                    dataflow.cascading_error_causes.error_caused_by(&node_id)
+                                })
+                                .cloned();
+                            let grace_duration_kill = dataflow
+                                .map(|d| d.grace_duration_kills.contains(&node_id))
+                                .unwrap_or_default();
 
-                                NodeErrorCause::Cascading { caused_by_node }
-                            }
-                            None if grace_duration_kill => NodeErrorCause::GraceDuration,
-                            None => {
-                                let cause = dataflow
-                                    .and_then(|d| d.node_stderr_most_recent.get(&node_id))
-                                    .map(|queue| {
-                                        let mut lines = Vec::new();
-                                        if queue.is_full() {
-                                            lines.push("[...]".into());
-                                        }
-                                        while let Some(line) = queue.pop() {
-                                            lines.push(line);
-                                        }
-                                        lines
-                                    })
-                                    .map(extract_err_from_stderr)
-                                    .unwrap_or_default();
+                            let cause = match caused_by_node {
+                                Some(caused_by_node) => {
+                                    logger
+                                        .log(
+                                            LogLevel::Info,
+                                            Some("daemon".into()),
+                                            format!(
+                                                "marking `{node_id}` as cascading error caused by `{caused_by_node}`"
+                                            ),
+                                        )
+                                        .await;
 
-                                NodeErrorCause::Other { stderr: cause }
-                            }
-                        };
-                        Err(NodeError {
-                            timestamp: self.clock.new_timestamp(),
-                            cause,
-                            exit_status,
-                        })
+                                    NodeErrorCause::Cascading { caused_by_node }
+                                }
+                                None if grace_duration_kill => NodeErrorCause::GraceDuration,
+                                None => {
+                                    let cause = dataflow
+                                        .and_then(|d| d.node_stderr_most_recent.get(&node_id))
+                                        .map(|queue| {
+                                            let mut lines = Vec::new();
+                                            if queue.is_full() {
+                                                lines.push("[...]".into());
+                                            }
+                                            while let Some(line) = queue.pop() {
+                                                lines.push(line);
+                                            }
+                                            lines
+                                        })
+                                        .map(extract_err_from_stderr)
+                                        .unwrap_or_default();
+
+                                    NodeErrorCause::Other { stderr: cause }
+                                }
+                            };
+                            Err(NodeError {
+                                timestamp: self.clock.new_timestamp(),
+                                cause,
+                                exit_status,
+                            })
+                        }
                     }
                 };
+
 
                 logger
                     .log(

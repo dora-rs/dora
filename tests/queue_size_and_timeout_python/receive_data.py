@@ -15,6 +15,8 @@ def main() -> None:
         if message is None:
             break
 
+        if message["type"] in {"STOP", "INPUT_CLOSED", "ALL_INPUTS_CLOSED"}:
+            break
         if message["type"] != "INPUT":
             continue
         sent = message["value"][0].as_py()

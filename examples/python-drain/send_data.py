@@ -10,9 +10,12 @@ node = Node()
 
 i = 0
 for event in node:
+    if event["type"] in {"STOP", "INPUT_CLOSED", "ALL_INPUTS_CLOSED"}:
+        break
+    if event["type"] != "INPUT":
+        continue
     if i == 100:
         break
-    else:
-        i += 1
+    i += 1
     now = time.perf_counter_ns()
     node.send_output("data", pa.array([np.uint64(now)]))

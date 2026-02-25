@@ -7,6 +7,8 @@ def main():
     node = Node()
     log = logging.getLogger(__name__)
     for event in node:
+        if event["type"] == "STOP":
+            break
         if event["type"] == "INPUT":
             logging.info(f"info {event['value'].to_numpy()}")
             log.log(logging.DEBUG, f"received {event['id']} with data")

@@ -5,11 +5,12 @@ from dora import Node
 
 async def main():
     node = Node()
-    for _ in range(50):
+    while True:
         event = await node.recv_async()
-        if event["type"] == "STOP":
+        if event["type"] in {"STOP", "INPUT_CLOSED", "ALL_INPUTS_CLOSED"}:
             break
-        del event
+        if event["type"] != "INPUT":
+            continue
     print("done!")
 
 

@@ -162,6 +162,40 @@
 //! are buffered in memory before being written out at the end of the node's execution. Thus, it is
 //! not recommended to use this feature with long-running dataflows or dataflows that process
 //! large amounts of data.
+//!
+//! ## Reproducible Regression Workflow
+//!
+//! The following workflow can be used to build deterministic regression tests for a node:
+//!
+//! 1. Record real input events from a dataflow run.
+//! 2. Re-run only the node executable in integration test mode with recorded inputs.
+//! 3. Compare the generated JSONL outputs with a checked-in expected output file.
+//!
+//! Example:
+//!
+//! ```bash
+//! # 1) Record the incoming events of each node while running a dataflow
+//! RECORD_DIR="$(mktemp -d /tmp/dora-it-recordings.XXXXXX)"
+//! DORA_WRITE_EVENTS_TO="$RECORD_DIR" dora run examples/rust-dataflow/dataflow.yml
+//!
+//! # 2) Run one node in integration test mode with deterministic outputs
+//! DORA_TEST_WITH_INPUTS="$RECORD_DIR/inputs-node.json" \
+//! DORA_TEST_WRITE_OUTPUTS_TO="$RECORD_DIR/outputs-node.jsonl" \
+//! DORA_TEST_NO_OUTPUT_TIME_OFFSET=1 \
+//! cargo run -p rust-dataflow-example-node
+//!
+//! # 3) Compare with expected output
+//! diff -u tests/sample-inputs/expected-outputs-rust-node.jsonl \
+//!   "$RECORD_DIR/outputs-node.jsonl"
+//! ```
+//!
+//! Notes:
+//!
+//! - `DORA_TEST_NO_OUTPUT_TIME_OFFSET=1` removes machine-dependent timing fields from outputs.
+//! - `DORA_TEST_WRITE_OUTPUTS_TO` is optional but recommended in CI/tests to avoid accidental file
+//!   placement.
+//! - The node executable must initialize through
+//!   [`DoraNode::init_from_env`](crate::DoraNode::init_from_env).
 
 use std::cell::Cell;
 
