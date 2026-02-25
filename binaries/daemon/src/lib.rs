@@ -2164,13 +2164,35 @@ impl Daemon {
 
             let df = &mut *dataflow;
             df.pending_nodes
-                .handle_node_stop(
-                    node_id,
-                    &self.state.coordinator_client().cloned(),
-                    &self.state.clock,
-                    &mut df.cascading_error_causes,
-                )
-                .await?;
+                .handle_node_stop_sync(node_id, &mut df.cascading_error_causes);
+        }
+        // DashMap guard is dropped — safe to do async I/O (RPC to coordinator).
+        // Check if all local nodes are ready and report to coordinator if needed.
+        // We must not hold the DashMap guard during the RPC call.
+        let needs_report = self
+            .state
+            .running
+            .get_mut(&dataflow_id)
+            .map(|mut dataflow| {
+                let df = &mut *dataflow;
+                df.pending_nodes
+                    .check_and_answer_subscribers(&mut df.cascading_error_causes)
+            })
+            .unwrap_or(false);
+        if needs_report {
+            // DashMap guard is dropped — safe to do RPC.
+            if let Some(client) = self.state.coordinator_client() {
+                if let Some(dataflow) = self.state.running.get(&dataflow_id) {
+                    let exited = dataflow.pending_nodes.exited_before_subscribe().to_vec();
+                    drop(dataflow);
+                    // DashMap guard is dropped — safe to do RPC.
+                    let ctx = tarpc::context::current();
+                    client
+                        .all_nodes_ready(ctx, dataflow_id, exited)
+                        .await
+                        .map_err(|err| eyre!("failed to send AllNodesReady RPC: {err}"))?;
+                }
+            }
         }
 
         // node only reaches here if it will not be restarted

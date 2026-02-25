@@ -98,6 +98,58 @@ impl PendingNodes {
         Ok(())
     }
 
+    /// Synchronous part of [`handle_node_stop`] that only mutates local state
+    /// without doing any async I/O. Use [`check_and_answer_subscribers`] +
+    /// a manual RPC call afterwards to complete the reporting.
+    pub fn handle_node_stop_sync(
+        &mut self,
+        node_id: &NodeId,
+        cascading_errors: &mut CascadingErrorCauses,
+    ) {
+        if self.local_nodes.remove(node_id) {
+            tracing::warn!(
+                dataflow_id = %self.dataflow_id,
+                %node_id,
+                "node exited before initializing dora connection"
+            );
+            self.exited_before_subscribe.push(node_id.clone());
+            // Check and answer locally without RPC — caller must handle
+            // reporting to coordinator separately.
+            if self.local_nodes.is_empty() && !self.external_nodes {
+                self.answer_subscribe_requests_sync(Vec::new(), cascading_errors);
+            }
+        }
+    }
+
+    /// Check if all local nodes are ready and, if so, answer waiting
+    /// subscribers. Returns `true` if the caller should report readiness
+    /// to the coordinator (i.e., `external_nodes` is true, all local nodes
+    /// are ready, and we haven't reported yet).
+    pub fn check_and_answer_subscribers(
+        &mut self,
+        cascading_errors: &mut CascadingErrorCauses,
+    ) -> bool {
+        if !self.local_nodes.is_empty() {
+            return false;
+        }
+        if self.external_nodes {
+            if !self.reported_init_to_coordinator {
+                self.reported_init_to_coordinator = true;
+                true
+            } else {
+                false
+            }
+        } else {
+            self.answer_subscribe_requests_sync(Vec::new(), cascading_errors);
+            false
+        }
+    }
+
+    /// Access the list of nodes that exited before subscribing.
+    pub fn exited_before_subscribe(&self) -> &[NodeId] {
+        &self.exited_before_subscribe
+    }
+
     pub async fn handle_dataflow_stop(
         &mut self,
         coordinator_client: &Option<DaemonToCoordinatorControlClient>,
@@ -155,6 +207,14 @@ impl PendingNodes {
     }
 
     async fn answer_subscribe_requests(
+        &mut self,
+        exited_before_subscribe_external: Vec<NodeId>,
+        cascading_errors: &mut CascadingErrorCauses,
+    ) {
+        self.answer_subscribe_requests_sync(exited_before_subscribe_external, cascading_errors);
+    }
+
+    fn answer_subscribe_requests_sync(
         &mut self,
         exited_before_subscribe_external: Vec<NodeId>,
         cascading_errors: &mut CascadingErrorCauses,
