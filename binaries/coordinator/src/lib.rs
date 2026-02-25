@@ -419,6 +419,38 @@ async fn start_inner(
                         }
                     }
                 }
+                DaemonRequest::RegisterReverseChannel {
+                    daemon_id,
+                    connection,
+                } => {
+                    // Set up a tarpc server for daemon→coordinator RPC on this
+                    // second TCP connection.
+                    use dora_message::daemon_to_coordinator::{
+                        DaemonToCoordinatorControl, DaemonToCoordinatorControlRequest,
+                        DaemonToCoordinatorControlResponse,
+                    };
+                    use tarpc::server::{BaseChannel, Channel};
+
+                    let codec = tokio_serde::formats::Json::<
+                        ClientMessage<DaemonToCoordinatorControlRequest>,
+                        Response<DaemonToCoordinatorControlResponse>,
+                    >::default();
+                    let transport = tarpc::serde_transport::Transport::from((connection, codec));
+
+                    let server = listener::DaemonEventServer {
+                        daemon_id: daemon_id.clone(),
+                        events_tx: coordinator_state.daemon_events_tx.clone(),
+                    };
+
+                    let channel = BaseChannel::with_defaults(transport);
+                    tokio::spawn(channel.execute(server.serve()).for_each(|fut| async {
+                        tokio::spawn(fut);
+                    }));
+
+                    tracing::info!(
+                        "reverse-channel RPC server established for daemon `{daemon_id}`"
+                    );
+                }
             },
             Event::Dataflow { uuid, event } => match event {
                 DataflowEvent::ReadyOnDaemon {
@@ -1405,6 +1437,10 @@ pub enum DaemonRequest {
     Register {
         version_check_result: Result<(), String>,
         machine_id: Option<String>,
+        connection: TcpStream,
+    },
+    RegisterReverseChannel {
+        daemon_id: DaemonId,
         connection: TcpStream,
     },
 }

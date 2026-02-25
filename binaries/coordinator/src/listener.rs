@@ -1,12 +1,20 @@
 use crate::{DaemonRequest, DataflowEvent, Event, tcp_utils::tcp_receive};
 use dora_core::uhlc::HLC;
-use dora_message::daemon_to_coordinator::{CoordinatorRequest, DaemonEvent, Timestamped};
+use dora_message::{
+    common::DaemonId,
+    daemon_to_coordinator::{
+        CoordinatorRequest, DaemonEvent, DaemonToCoordinatorControl, DataflowDaemonResult,
+        LogMessage, NodeMetrics, Timestamped,
+    },
+    tarpc,
+};
 use eyre::Context;
-use std::{io::ErrorKind, net::SocketAddr, sync::Arc};
+use std::{collections::BTreeMap, io::ErrorKind, net::SocketAddr, sync::Arc};
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::mpsc,
 };
+use uuid::Uuid;
 
 pub async fn create_listener(bind: SocketAddr) -> eyre::Result<TcpListener> {
     let socket = match TcpListener::bind(bind).await {
@@ -67,6 +75,14 @@ pub async fn handle_connection(
                     connection,
                     version_check_result: register_request.check_version(),
                     machine_id: register_request.machine_id,
+                };
+                let _ = events_tx.send(Event::Daemon(event)).await;
+                break;
+            }
+            CoordinatorRequest::RegisterReverseChannel { daemon_id } => {
+                let event = DaemonRequest::RegisterReverseChannel {
+                    daemon_id,
+                    connection,
                 };
                 let _ = events_tx.send(Event::Daemon(event)).await;
                 break;
@@ -154,5 +170,109 @@ pub async fn handle_connection(
                 }
             },
         };
+    }
+}
+
+/// tarpc server that handles daemon→coordinator RPC calls.
+///
+/// Each daemon gets its own server instance, identified by `daemon_id`.
+/// The server translates incoming RPC calls into coordinator `Event`s.
+#[derive(Clone)]
+pub struct DaemonEventServer {
+    pub daemon_id: DaemonId,
+    pub events_tx: mpsc::Sender<Event>,
+}
+
+impl DaemonToCoordinatorControl for DaemonEventServer {
+    async fn all_nodes_ready(
+        self,
+        _ctx: tarpc::context::Context,
+        dataflow_id: Uuid,
+        exited_before_subscribe: Vec<dora_message::id::NodeId>,
+    ) {
+        let event = Event::Dataflow {
+            uuid: dataflow_id,
+            event: DataflowEvent::ReadyOnDaemon {
+                daemon_id: self.daemon_id,
+                exited_before_subscribe,
+            },
+        };
+        let _ = self.events_tx.send(event).await;
+    }
+
+    async fn all_nodes_finished(
+        self,
+        _ctx: tarpc::context::Context,
+        dataflow_id: Uuid,
+        result: DataflowDaemonResult,
+    ) {
+        let event = Event::Dataflow {
+            uuid: dataflow_id,
+            event: DataflowEvent::DataflowFinishedOnDaemon {
+                daemon_id: self.daemon_id,
+                result,
+            },
+        };
+        let _ = self.events_tx.send(event).await;
+    }
+
+    async fn heartbeat(self, _ctx: tarpc::context::Context) {
+        let event = Event::DaemonHeartbeat {
+            daemon_id: self.daemon_id,
+        };
+        let _ = self.events_tx.send(event).await;
+    }
+
+    async fn log(self, _ctx: tarpc::context::Context, message: LogMessage) {
+        let event = Event::Log(message);
+        let _ = self.events_tx.send(event).await;
+    }
+
+    async fn daemon_exit(self, _ctx: tarpc::context::Context) {
+        let event = Event::DaemonExit {
+            daemon_id: self.daemon_id,
+        };
+        let _ = self.events_tx.send(event).await;
+    }
+
+    async fn node_metrics(
+        self,
+        _ctx: tarpc::context::Context,
+        dataflow_id: Uuid,
+        metrics: BTreeMap<dora_message::id::NodeId, NodeMetrics>,
+    ) {
+        let event = Event::NodeMetrics {
+            dataflow_id,
+            metrics,
+        };
+        let _ = self.events_tx.send(event).await;
+    }
+
+    async fn build_result(
+        self,
+        _ctx: tarpc::context::Context,
+        build_id: dora_message::BuildId,
+        result: Result<(), String>,
+    ) {
+        let event = Event::DataflowBuildResult {
+            build_id,
+            daemon_id: self.daemon_id,
+            result: result.map_err(|err| eyre::eyre!(err)),
+        };
+        let _ = self.events_tx.send(event).await;
+    }
+
+    async fn spawn_result(
+        self,
+        _ctx: tarpc::context::Context,
+        dataflow_id: Uuid,
+        result: Result<(), String>,
+    ) {
+        let event = Event::DataflowSpawnResult {
+            dataflow_id,
+            daemon_id: self.daemon_id,
+            result: result.map_err(|err| eyre::eyre!(err)),
+        };
+        let _ = self.events_tx.send(event).await;
     }
 }

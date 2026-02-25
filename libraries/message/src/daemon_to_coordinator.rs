@@ -10,6 +10,14 @@ use crate::{
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum CoordinatorRequest {
     Register(DaemonRegisterRequest),
+    /// Register a reverse-channel connection for daemon→coordinator RPC.
+    ///
+    /// Sent on a second TCP connection after the initial registration.
+    /// The coordinator sets up a `DaemonToCoordinatorControl` tarpc server
+    /// on this connection.
+    RegisterReverseChannel {
+        daemon_id: DaemonId,
+    },
     Event {
         daemon_id: DaemonId,
         event: DaemonEvent,
@@ -108,4 +116,29 @@ pub enum DaemonCoordinatorReply {
     StopResult(Result<(), String>),
     DestroyResult { result: Result<(), String> },
     Logs(Result<Vec<u8>, String>),
+}
+
+/// tarpc service for daemon→coordinator RPC calls.
+///
+/// This replaces the raw TCP `DaemonEvent` messages sent over
+/// `coordinator_connection`. The coordinator runs a tarpc server
+/// implementing this trait, and each daemon holds a client.
+#[tarpc::service]
+pub trait DaemonToCoordinatorControl {
+    /// Report that all local nodes on this daemon are ready.
+    async fn all_nodes_ready(dataflow_id: DataflowId, exited_before_subscribe: Vec<NodeId>);
+    /// Report that all nodes on this daemon have finished.
+    async fn all_nodes_finished(dataflow_id: DataflowId, result: DataflowDaemonResult);
+    /// Daemon heartbeat.
+    async fn heartbeat();
+    /// Forward a log message to the coordinator.
+    async fn log(message: LogMessage);
+    /// Notify the coordinator that this daemon is exiting.
+    async fn daemon_exit();
+    /// Report resource metrics for running nodes.
+    async fn node_metrics(dataflow_id: DataflowId, metrics: BTreeMap<NodeId, NodeMetrics>);
+    /// Report that a build has completed (or failed) on this daemon.
+    async fn build_result(build_id: BuildId, result: Result<(), String>);
+    /// Report that a dataflow spawn has completed (or failed) on this daemon.
+    async fn spawn_result(dataflow_id: DataflowId, result: Result<(), String>);
 }

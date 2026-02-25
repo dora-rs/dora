@@ -1,22 +1,21 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-use dora_core::{
-    config::NodeId,
-    uhlc::{HLC, Timestamp},
-};
+use dora_core::{config::NodeId, uhlc::HLC};
 use dora_message::{
     DataflowId,
     common::DaemonId,
-    daemon_to_coordinator::{CoordinatorRequest, DaemonEvent, LogLevel, LogMessage, Timestamped},
+    daemon_to_coordinator::{DaemonToCoordinatorControlClient, LogMessage},
     daemon_to_node::DaemonReply,
+    tarpc,
 };
-use eyre::{Context, bail};
-use tokio::{net::TcpStream, sync::oneshot};
+use eyre::bail;
+use tokio::sync::oneshot;
 
-use crate::{CascadingErrorCauses, log::DataflowLogger, socket_stream_utils::socket_stream_send};
+use crate::CascadingErrorCauses;
 
 pub struct PendingNodes {
     dataflow_id: DataflowId,
+    #[allow(dead_code)]
     daemon_id: DaemonId,
 
     /// The local nodes that are still waiting to start.
@@ -67,38 +66,33 @@ impl PendingNodes {
         &mut self,
         node_id: NodeId,
         reply_sender: oneshot::Sender<DaemonReply>,
-        coordinator_connection: &mut Option<TcpStream>,
+        coordinator_client: &Option<DaemonToCoordinatorControlClient>,
         clock: &HLC,
         cascading_errors: &mut CascadingErrorCauses,
-        logger: &mut DataflowLogger<'_>,
     ) -> eyre::Result<DataflowStatus> {
         self.waiting_subscribers
             .insert(node_id.clone(), reply_sender);
         self.local_nodes.remove(&node_id);
 
-        self.update_dataflow_status(coordinator_connection, clock, cascading_errors, logger)
+        self.update_dataflow_status(coordinator_client, clock, cascading_errors)
             .await
     }
 
     pub async fn handle_node_stop(
         &mut self,
         node_id: &NodeId,
-        coordinator_connection: &mut Option<TcpStream>,
+        coordinator_client: &Option<DaemonToCoordinatorControlClient>,
         clock: &HLC,
         cascading_errors: &mut CascadingErrorCauses,
-        logger: &mut DataflowLogger<'_>,
     ) -> eyre::Result<()> {
         if self.local_nodes.remove(node_id) {
-            logger
-                .log(
-                    LogLevel::Warn,
-                    Some(node_id.clone()),
-                    Some("daemon::pending".into()),
-                    "node exited before initializing dora connection",
-                )
-                .await;
+            tracing::warn!(
+                dataflow_id = %self.dataflow_id,
+                %node_id,
+                "node exited before initializing dora connection"
+            );
             self.exited_before_subscribe.push(node_id.clone());
-            self.update_dataflow_status(coordinator_connection, clock, cascading_errors, logger)
+            self.update_dataflow_status(coordinator_client, clock, cascading_errors)
                 .await?;
         }
         Ok(())
@@ -106,22 +100,16 @@ impl PendingNodes {
 
     pub async fn handle_dataflow_stop(
         &mut self,
-        coordinator_connection: &mut Option<TcpStream>,
+        coordinator_client: &Option<DaemonToCoordinatorControlClient>,
         clock: &HLC,
         cascading_errors: &mut CascadingErrorCauses,
         dynamic_nodes: &BTreeSet<NodeId>,
-        logger: &mut DataflowLogger<'_>,
     ) -> eyre::Result<Vec<LogMessage>> {
         // remove all local dynamic nodes that are not yet started
         for node_id in dynamic_nodes {
             if self.local_nodes.remove(node_id) {
-                self.update_dataflow_status(
-                    coordinator_connection,
-                    clock,
-                    cascading_errors,
-                    logger,
-                )
-                .await?;
+                self.update_dataflow_status(coordinator_client, clock, cascading_errors)
+                    .await?;
             }
         }
 
@@ -145,16 +133,14 @@ impl PendingNodes {
 
     async fn update_dataflow_status(
         &mut self,
-        coordinator_connection: &mut Option<TcpStream>,
+        coordinator_client: &Option<DaemonToCoordinatorControlClient>,
         clock: &HLC,
         cascading_errors: &mut CascadingErrorCauses,
-        logger: &mut DataflowLogger<'_>,
     ) -> eyre::Result<DataflowStatus> {
         if self.local_nodes.is_empty() {
             if self.external_nodes {
                 if !self.reported_init_to_coordinator {
-                    self.report_nodes_ready(coordinator_connection, clock.new_timestamp(), logger)
-                        .await?;
+                    self.report_nodes_ready(coordinator_client, clock).await?;
                     self.reported_init_to_coordinator = true;
                 }
                 Ok(DataflowStatus::Pending)
@@ -202,39 +188,25 @@ impl PendingNodes {
 
     async fn report_nodes_ready(
         &self,
-        coordinator_connection: &mut Option<TcpStream>,
-        timestamp: Timestamp,
-        logger: &mut DataflowLogger<'_>,
+        coordinator_client: &Option<DaemonToCoordinatorControlClient>,
+        _clock: &HLC,
     ) -> eyre::Result<()> {
-        let Some(connection) = coordinator_connection else {
-            bail!("no coordinator connection to send AllNodesReady");
+        let Some(client) = coordinator_client else {
+            bail!("no coordinator client to send AllNodesReady");
         };
 
-        logger
-            .log(
-                LogLevel::Info,
-                None,
-                Some("daemon".into()),
-                format!(
-                "all local nodes are ready (exit before subscribe: {:?}), waiting for remote nodes",
-                self.exited_before_subscribe
-            ),
-            )
-            .await;
+        tracing::info!(
+            dataflow_id = %self.dataflow_id,
+            "all local nodes are ready (exit before subscribe: {:?}), waiting for remote nodes",
+            self.exited_before_subscribe
+        );
 
-        let msg = serde_json::to_vec(&Timestamped {
-            inner: CoordinatorRequest::Event {
-                daemon_id: self.daemon_id.clone(),
-                event: DaemonEvent::AllNodesReady {
-                    dataflow_id: self.dataflow_id,
-                    exited_before_subscribe: self.exited_before_subscribe.clone(),
-                },
-            },
-            timestamp,
-        })?;
-        socket_stream_send(connection, &msg)
+        let ctx = tarpc::context::current();
+        client
+            .all_nodes_ready(ctx, self.dataflow_id, self.exited_before_subscribe.clone())
             .await
-            .wrap_err("failed to send AllNodesReady message to dora-coordinator")?;
+            .map_err(|err| eyre::eyre!("failed to send AllNodesReady RPC: {err}"))?;
+
         Ok(())
     }
 }

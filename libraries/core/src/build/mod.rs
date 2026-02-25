@@ -1,5 +1,5 @@
 pub use git::GitManager;
-pub use logger::{BuildLogger, LogLevelOrStdout};
+pub use logger::{BuildLogger, LogLevelOrStdout, TracingBuildLogger};
 
 use std::{collections::BTreeMap, future::Future, path::PathBuf};
 
