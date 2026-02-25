@@ -206,11 +206,16 @@ impl DaemonControl for DaemonControlServer {
                     .map(|_| ())
                     .map_err(|err| format!("{err:?}"));
 
-                // Store the build info
+                // Update session mapping and clean up any previous build associated
+                // with this session, to match the event-loop behavior.
+                if let Some(old_build_id) = state.sessions.insert(session_id, build_id) {
+                    state.builds.remove(&old_build_id);
+                }
+
+                // Store the build info for the new build_id
                 if let Ok(info) = result {
                     state.builds.insert(build_id, info);
                 }
-                state.sessions.insert(session_id, build_id);
 
                 // Report to coordinator
                 if let Some(client) = state.coordinator_client() {
