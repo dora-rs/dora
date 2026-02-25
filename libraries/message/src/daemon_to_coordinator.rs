@@ -8,12 +8,12 @@ use crate::{BuildId, DataflowId, common::DaemonId, id::NodeId};
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum CoordinatorRequest {
     Register(DaemonRegisterRequest),
-    /// Register a reverse-channel connection for daemon→coordinator RPC.
+    /// Register a notification channel for daemon→coordinator RPC.
     ///
     /// Sent on a second TCP connection after the initial registration.
-    /// The coordinator sets up a `DaemonToCoordinatorControl` tarpc server
+    /// The coordinator sets up a `DaemonNotification` tarpc server
     /// on this connection.
-    RegisterReverseChannel {
+    RegisterNotificationChannel {
         daemon_id: DaemonId,
     },
     /// Forward a log message from a daemon over the legacy raw-TCP path.

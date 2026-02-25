@@ -440,7 +440,7 @@ async fn start_inner(
                         }
                     }
                 }
-                DaemonRequest::RegisterReverseChannel {
+                DaemonRequest::RegisterNotificationChannel {
                     daemon_id,
                     connection,
                 } => {
@@ -1459,7 +1459,7 @@ pub enum DaemonRequest {
         machine_id: Option<String>,
         connection: TcpStream,
     },
-    RegisterReverseChannel {
+    RegisterNotificationChannel {
         daemon_id: DaemonId,
         connection: TcpStream,
     },

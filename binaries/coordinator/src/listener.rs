@@ -77,8 +77,8 @@ pub async fn handle_connection(
                 let _ = events_tx.send(Event::Daemon(event)).await;
                 break;
             }
-            CoordinatorRequest::RegisterReverseChannel { daemon_id } => {
-                let event = DaemonRequest::RegisterReverseChannel {
+            CoordinatorRequest::RegisterNotificationChannel { daemon_id } => {
+                let event = DaemonRequest::RegisterNotificationChannel {
                     daemon_id,
                     connection,
                 };

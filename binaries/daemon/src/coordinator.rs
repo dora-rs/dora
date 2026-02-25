@@ -119,14 +119,14 @@ pub async fn register(
         .wrap_err("failed to set TCP_NODELAY on reverse channel")?;
 
     let reverse_register = serde_json::to_vec(&Timestamped {
-        inner: CoordinatorRequest::RegisterReverseChannel {
+        inner: CoordinatorRequest::RegisterNotificationChannel {
             daemon_id: daemon_id.clone(),
         },
         timestamp: clock.new_timestamp(),
     })?;
     socket_stream_send(&mut reverse_stream, &reverse_register)
         .await
-        .wrap_err("failed to send RegisterReverseChannel to dora-coordinator")?;
+        .wrap_err("failed to send RegisterNotificationChannel to dora-coordinator")?;
 
     // Set up tarpc client for daemon→coordinator RPC on the reverse stream
     let reverse_codec = tokio_serde::formats::Json::<
