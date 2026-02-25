@@ -74,8 +74,8 @@ pub fn check_version_compatibility(remote_version: &str) -> eyre::Result<()> {
     let crate_version = current_crate_version();
     let specified_version = semver::Version::parse(remote_version)
         .map_err(|e| eyre::eyre!("failed to parse remote version `{remote_version}`: {e}"))?;
-    let compatible = versions_compatible(&crate_version, &specified_version)
-        .map_err(|e| eyre::eyre!(e))?;
+    let compatible =
+        versions_compatible(&crate_version, &specified_version).map_err(|e| eyre::eyre!(e))?;
     if compatible {
         Ok(())
     } else {

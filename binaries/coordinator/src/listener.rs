@@ -1,6 +1,4 @@
-use crate::{
-    DaemonRequest, DataflowEvent, Event, send_log_message, state, tcp_utils::tcp_receive,
-};
+use crate::{DaemonRequest, DataflowEvent, Event, send_log_message, state, tcp_utils::tcp_receive};
 use dora_core::uhlc::HLC;
 use dora_message::{
     common::DaemonId,

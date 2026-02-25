@@ -403,18 +403,14 @@ async fn start_inner(
                                     .spawn();
 
                             // Verify version compatibility via RPC
-                            let version_check_result = match daemon_client
-                                .get_version(tarpc::context::current())
-                                .await
-                            {
-                                Ok(info) => {
-                                    dora_message::check_version_compatibility(
+                            let version_check_result =
+                                match daemon_client.get_version(tarpc::context::current()).await {
+                                    Ok(info) => dora_message::check_version_compatibility(
                                         &info.message_format_version,
                                     )
-                                    .wrap_err("daemon is not compatible with this coordinator")
-                                }
-                                Err(err) => Err(eyre!("get_version RPC failed: {err}")),
-                            };
+                                    .wrap_err("daemon is not compatible with this coordinator"),
+                                    Err(err) => Err(eyre!("get_version RPC failed: {err}")),
+                                };
 
                             match version_check_result {
                                 Ok(()) => {
@@ -448,8 +444,7 @@ async fn start_inner(
                     // Set up a tarpc server for daemon→coordinator RPC on this
                     // second TCP connection.
                     use dora_message::daemon_to_coordinator::{
-                        DaemonNotification, DaemonNotificationRequest,
-                        DaemonNotificationResponse,
+                        DaemonNotification, DaemonNotificationRequest, DaemonNotificationResponse,
                     };
                     use tarpc::server::{BaseChannel, Channel};
 
