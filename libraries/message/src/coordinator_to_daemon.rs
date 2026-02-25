@@ -32,34 +32,6 @@ impl RegisterResult {
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
-pub enum DaemonCoordinatorEvent {
-    Build(BuildDataflowNodes),
-    Spawn(SpawnDataflowNodes),
-    AllNodesReady {
-        dataflow_id: DataflowId,
-        exited_before_subscribe: Vec<NodeId>,
-    },
-    StopDataflow {
-        dataflow_id: DataflowId,
-        grace_duration: Option<Duration>,
-        #[serde(default)]
-        force: bool,
-    },
-    ReloadDataflow {
-        dataflow_id: DataflowId,
-        node_id: NodeId,
-        operator_id: Option<OperatorId>,
-    },
-    Logs {
-        dataflow_id: DataflowId,
-        node_id: NodeId,
-        tail: Option<usize>,
-    },
-    Destroy,
-    Heartbeat,
-}
-
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub struct BuildDataflowNodes {
     pub build_id: BuildId,
     pub session_id: SessionId,

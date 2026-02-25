@@ -18,9 +18,13 @@ pub enum CoordinatorRequest {
     RegisterReverseChannel {
         daemon_id: DaemonId,
     },
-    Event {
+    /// Forward a log message from a daemon over the legacy raw-TCP path.
+    ///
+    /// All other daemon→coordinator communication now uses the
+    /// `DaemonToCoordinatorControl` tarpc service on the reverse channel.
+    Log {
         daemon_id: DaemonId,
-        event: DaemonEvent,
+        message: LogMessage,
     },
 }
 
@@ -54,33 +58,6 @@ impl DaemonRegisterRequest {
     }
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub enum DaemonEvent {
-    BuildResult {
-        build_id: BuildId,
-        result: Result<(), String>,
-    },
-    SpawnResult {
-        dataflow_id: DataflowId,
-        result: Result<(), String>,
-    },
-    AllNodesReady {
-        dataflow_id: DataflowId,
-        exited_before_subscribe: Vec<NodeId>,
-    },
-    AllNodesFinished {
-        dataflow_id: DataflowId,
-        result: DataflowDaemonResult,
-    },
-    Heartbeat,
-    Log(LogMessage),
-    Exit,
-    NodeMetrics {
-        dataflow_id: DataflowId,
-        metrics: BTreeMap<NodeId, NodeMetrics>,
-    },
-}
-
 /// Resource metrics for a node process
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct NodeMetrics {
@@ -106,16 +83,6 @@ impl DataflowDaemonResult {
     pub fn is_ok(&self) -> bool {
         self.node_results.values().all(|r| r.is_ok())
     }
-}
-
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
-pub enum DaemonCoordinatorReply {
-    TriggerBuildResult(Result<(), String>),
-    TriggerSpawnResult(Result<(), String>),
-    ReloadResult(Result<(), String>),
-    StopResult(Result<(), String>),
-    DestroyResult { result: Result<(), String> },
-    Logs(Result<Vec<u8>, String>),
 }
 
 /// tarpc service for daemon→coordinator RPC calls.

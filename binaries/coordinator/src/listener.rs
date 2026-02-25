@@ -3,8 +3,8 @@ use dora_core::uhlc::HLC;
 use dora_message::{
     common::DaemonId,
     daemon_to_coordinator::{
-        CoordinatorRequest, DaemonEvent, DaemonToCoordinatorControl, DataflowDaemonResult,
-        LogMessage, NodeMetrics, Timestamped,
+        CoordinatorRequest, DaemonToCoordinatorControl, DataflowDaemonResult, LogMessage,
+        NodeMetrics, Timestamped,
     },
     tarpc,
 };
@@ -68,7 +68,6 @@ pub async fn handle_connection(
             tracing::warn!("failed to update coordinator clock: {err}");
         }
 
-        // handle the message and translate it to a DaemonEvent
         match message.inner {
             CoordinatorRequest::Register(register_request) => {
                 let event = DaemonRequest::Register {
@@ -87,88 +86,15 @@ pub async fn handle_connection(
                 let _ = events_tx.send(Event::Daemon(event)).await;
                 break;
             }
-            CoordinatorRequest::Event { daemon_id, event } => match event {
-                DaemonEvent::AllNodesReady {
-                    dataflow_id,
-                    exited_before_subscribe,
-                } => {
-                    let event = Event::Dataflow {
-                        uuid: dataflow_id,
-                        event: DataflowEvent::ReadyOnDaemon {
-                            daemon_id,
-                            exited_before_subscribe,
-                        },
-                    };
-                    if events_tx.send(event).await.is_err() {
-                        break;
-                    }
+            CoordinatorRequest::Log {
+                daemon_id: _,
+                message,
+            } => {
+                let event = Event::Log(message);
+                if events_tx.send(event).await.is_err() {
+                    break;
                 }
-                DaemonEvent::AllNodesFinished {
-                    dataflow_id,
-                    result,
-                } => {
-                    let event = Event::Dataflow {
-                        uuid: dataflow_id,
-                        event: DataflowEvent::DataflowFinishedOnDaemon { daemon_id, result },
-                    };
-                    if events_tx.send(event).await.is_err() {
-                        break;
-                    }
-                }
-                DaemonEvent::Heartbeat => {
-                    let event = Event::DaemonHeartbeat { daemon_id };
-                    if events_tx.send(event).await.is_err() {
-                        break;
-                    }
-                }
-                DaemonEvent::Log(message) => {
-                    let event = Event::Log(message);
-                    if events_tx.send(event).await.is_err() {
-                        break;
-                    }
-                }
-                DaemonEvent::Exit => {
-                    let event = Event::DaemonExit { daemon_id };
-                    if events_tx.send(event).await.is_err() {
-                        break;
-                    }
-                }
-                DaemonEvent::NodeMetrics {
-                    dataflow_id,
-                    metrics,
-                } => {
-                    let event = Event::NodeMetrics {
-                        dataflow_id,
-                        metrics,
-                    };
-                    if events_tx.send(event).await.is_err() {
-                        break;
-                    }
-                }
-                DaemonEvent::BuildResult { build_id, result } => {
-                    let event = Event::DataflowBuildResult {
-                        build_id,
-                        daemon_id,
-                        result: result.map_err(|err| eyre::eyre!(err)),
-                    };
-                    if events_tx.send(event).await.is_err() {
-                        break;
-                    }
-                }
-                DaemonEvent::SpawnResult {
-                    dataflow_id,
-                    result,
-                } => {
-                    let event = Event::DataflowSpawnResult {
-                        dataflow_id,
-                        daemon_id,
-                        result: result.map_err(|err| eyre::eyre!(err)),
-                    };
-                    if events_tx.send(event).await.is_err() {
-                        break;
-                    }
-                }
-            },
+            }
         };
     }
 }
