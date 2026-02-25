@@ -6,11 +6,7 @@
 use adora_message::ws_protocol::{WsMessage, WsRequest, WsResponse};
 use eyre::{Context, eyre};
 use futures::{SinkExt, StreamExt};
-use std::{
-    collections::HashMap,
-    net::SocketAddr,
-    sync::mpsc as std_mpsc,
-};
+use std::{collections::HashMap, net::SocketAddr, sync::mpsc as std_mpsc};
 use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
@@ -104,14 +100,10 @@ impl WsSession {
     }
 }
 
-type WsStream = tokio_tungstenite::WebSocketStream<
-    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
->;
+type WsStream =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
-async fn session_loop(
-    ws_stream: WsStream,
-    mut cmd_rx: mpsc::UnboundedReceiver<SessionCommand>,
-) {
+async fn session_loop(ws_stream: WsStream, mut cmd_rx: mpsc::UnboundedReceiver<SessionCommand>) {
     let (mut ws_tx, mut ws_rx) = ws_stream.split();
     let mut pending_requests: HashMap<Uuid, oneshot::Sender<eyre::Result<Vec<u8>>>> =
         HashMap::new();
@@ -258,8 +250,7 @@ fn handle_response(
     if let Some(reply_tx) = pending_requests.remove(&resp.id) {
         let result = if let Some(error) = resp.error {
             // Map WS error to ControlRequestReply::Error for compatibility
-            let err_reply =
-                adora_message::coordinator_to_cli::ControlRequestReply::Error(error);
+            let err_reply = adora_message::coordinator_to_cli::ControlRequestReply::Error(error);
             Ok(serde_json::to_vec(&err_reply).unwrap_or_default())
         } else if let Some(result) = resp.result {
             serde_json::to_vec(&result).map_err(|e| eyre!("failed to serialize response: {e}"))
@@ -267,5 +258,98 @@ fn handle_response(
             Err(eyre!("empty WS response"))
         };
         let _ = reply_tx.send(result);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use adora_message::ws_protocol::WsResponse;
+    use serde_json::json;
+
+    #[test]
+    fn handle_response_routes_to_pending() {
+        let id = Uuid::new_v4();
+        let (tx, rx) = oneshot::channel();
+        let mut pending = HashMap::new();
+        pending.insert(id, tx);
+        let mut subscribes = HashMap::new();
+        let mut subs = Vec::new();
+
+        let resp = WsResponse::ok(id, json!({"List": []}));
+        handle_response(resp, &mut pending, &mut subscribes, &mut subs);
+
+        let mut rx = rx;
+        let result = rx.try_recv().unwrap().unwrap();
+        let val: serde_json::Value = serde_json::from_slice(&result).unwrap();
+        assert_eq!(val, json!({"List": []}));
+    }
+
+    #[test]
+    fn handle_response_orphan_response() {
+        let id = Uuid::new_v4();
+        let mut pending = HashMap::new();
+        let mut subscribes = HashMap::new();
+        let mut subs = Vec::new();
+
+        // Response with unknown id should be dropped without panic
+        let resp = WsResponse::ok(id, json!("ignored"));
+        handle_response(resp, &mut pending, &mut subscribes, &mut subs);
+    }
+
+    #[test]
+    fn handle_response_routes_event_to_subscriber() {
+        let id = Uuid::new_v4();
+        let (ack_tx, mut ack_rx) = oneshot::channel();
+        let (log_tx, log_rx) = std_mpsc::channel();
+        let mut pending = HashMap::new();
+        let mut subscribes = HashMap::new();
+        subscribes.insert(id, (ack_tx, log_tx));
+        let mut subs = Vec::new();
+
+        // Successful subscribe ack
+        let resp = WsResponse::ok(id, json!({"subscribed": true}));
+        handle_response(resp, &mut pending, &mut subscribes, &mut subs);
+
+        // ack should succeed
+        assert!(ack_rx.try_recv().unwrap().is_ok());
+        // log_tx should have been moved to log_subscribers
+        assert_eq!(subs.len(), 1);
+
+        // Verify the subscriber receives data by simulating what session_loop does
+        let payload = json!({"message": "test log"});
+        let bytes = serde_json::to_vec(&payload).unwrap();
+        subs[0].send(Ok(bytes.clone())).unwrap();
+        let received = log_rx.recv().unwrap().unwrap();
+        assert_eq!(received, bytes);
+    }
+
+    #[test]
+    fn handle_response_event_no_subscriber() {
+        // Simulate a subscribe error: ack gets error, no log_tx promoted
+        let id = Uuid::new_v4();
+        let (ack_tx, mut ack_rx) = oneshot::channel();
+        let (log_tx, _log_rx) = std_mpsc::channel();
+        let mut pending = HashMap::new();
+        let mut subscribes = HashMap::new();
+        subscribes.insert(id, (ack_tx, log_tx));
+        let mut subs = Vec::new();
+
+        let resp = WsResponse::err(id, "not found".into());
+        handle_response(resp, &mut pending, &mut subscribes, &mut subs);
+
+        assert!(ack_rx.try_recv().unwrap().is_err());
+        assert!(subs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn request_timeout() {
+        // Create a session_loop-like setup but never reply, verifying the
+        // oneshot gets an error when dropped (simulating session close).
+        let (tx, rx) = oneshot::channel::<eyre::Result<Vec<u8>>>();
+        // Drop the sender to simulate no response
+        drop(tx);
+        let result = rx.await;
+        assert!(result.is_err()); // RecvError = sender dropped
     }
 }

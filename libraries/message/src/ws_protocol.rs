@@ -70,3 +70,103 @@ pub enum WsMessage {
     Response(WsResponse),
     Event(WsEvent),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn ws_request_roundtrip() {
+        let id = Uuid::new_v4();
+        let req = WsRequest {
+            id,
+            method: "control".into(),
+            params: json!({"foo": 42}),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let decoded: WsRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.id, id);
+        assert_eq!(decoded.method, "control");
+        assert_eq!(decoded.params, json!({"foo": 42}));
+    }
+
+    #[test]
+    fn ws_response_ok_roundtrip() {
+        let id = Uuid::new_v4();
+        let resp = WsResponse::ok(id, json!({"status": "running"}));
+        let json = serde_json::to_string(&resp).unwrap();
+        let decoded: WsResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.id, id);
+        assert_eq!(decoded.result, Some(json!({"status": "running"})));
+        assert!(decoded.error.is_none());
+    }
+
+    #[test]
+    fn ws_response_err_roundtrip() {
+        let id = Uuid::new_v4();
+        let resp = WsResponse::err(id, "something failed".into());
+        let json = serde_json::to_string(&resp).unwrap();
+        let decoded: WsResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.id, id);
+        assert!(decoded.result.is_none());
+        assert_eq!(decoded.error.as_deref(), Some("something failed"));
+    }
+
+    #[test]
+    fn ws_event_roundtrip() {
+        let evt = WsEvent {
+            event: "log".into(),
+            payload: json!({"line": "hello"}),
+        };
+        let json = serde_json::to_string(&evt).unwrap();
+        let decoded: WsEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.event, "log");
+        assert_eq!(decoded.payload, json!({"line": "hello"}));
+    }
+
+    #[test]
+    fn ws_message_dispatches_to_response() {
+        let id = Uuid::new_v4();
+        let json = json!({"id": id, "result": {"ok": true}}).to_string();
+        let msg: WsMessage = serde_json::from_str(&json).unwrap();
+        assert!(matches!(msg, WsMessage::Response(_)));
+    }
+
+    #[test]
+    fn ws_message_dispatches_to_event() {
+        let json = json!({"event": "log", "payload": {}}).to_string();
+        let msg: WsMessage = serde_json::from_str(&json).unwrap();
+        assert!(matches!(msg, WsMessage::Event(_)));
+    }
+
+    #[test]
+    fn ws_response_ok_helper() {
+        let id = Uuid::new_v4();
+        let resp = WsResponse::ok(id, json!("done"));
+        assert_eq!(resp.result, Some(json!("done")));
+        assert!(resp.error.is_none());
+    }
+
+    #[test]
+    fn ws_response_err_helper() {
+        let id = Uuid::new_v4();
+        let resp = WsResponse::err(id, "bad".into());
+        assert!(resp.result.is_none());
+        assert_eq!(resp.error.as_deref(), Some("bad"));
+    }
+
+    #[test]
+    fn ws_request_nil_id_rejected() {
+        // Malformed JSON (missing required fields) -> serde error
+        let bad = r#"{"id": null}"#;
+        assert!(serde_json::from_str::<WsRequest>(bad).is_err());
+    }
+
+    #[test]
+    fn ws_message_unknown_shape() {
+        // JSON that matches neither Request, Response, nor Event
+        let bad = json!({"random": "stuff"}).to_string();
+        assert!(serde_json::from_str::<WsMessage>(&bad).is_err());
+    }
+}

@@ -1,5 +1,3 @@
-pub use control::ControlEvent;
-pub use events::{DaemonRequest, DataflowEvent, Event};
 use crate::{
     events::set_up_ctrlc_handler,
     handlers::{
@@ -20,6 +18,8 @@ use adora_message::{
     coordinator_to_daemon::{DaemonCoordinatorEvent, RegisterResult, Timestamped},
     daemon_to_coordinator::DataflowDaemonResult,
 };
+pub use control::ControlEvent;
+pub use events::{DaemonRequest, DataflowEvent, Event};
 use eyre::{Result, WrapErr, bail, eyre};
 use futures::{Future, Stream, StreamExt, stream::FuturesUnordered};
 use futures_concurrency::stream::Merge;
@@ -48,22 +48,36 @@ pub async fn start(
     bind: SocketAddr,
     external_events: impl Stream<Item = Event> + Unpin,
 ) -> Result<(u16, impl Future<Output = eyre::Result<()>>), eyre::ErrReport> {
+    let ctrlc_events = set_up_ctrlc_handler()?;
+    start_with_events(bind, external_events, ctrlc_events).await
+}
+
+/// Like [`start`] but without registering a ctrl-c handler.
+/// Useful for tests that run multiple coordinators in the same process.
+pub async fn start_testing(
+    bind: SocketAddr,
+    external_events: impl Stream<Item = Event> + Unpin,
+) -> Result<(u16, impl Future<Output = eyre::Result<()>>), eyre::ErrReport> {
+    start_with_events(bind, external_events, futures::stream::empty()).await
+}
+
+async fn start_with_events(
+    bind: SocketAddr,
+    external_events: impl Stream<Item = Event> + Unpin,
+    extra_events: impl Stream<Item = Event> + Unpin,
+) -> Result<(u16, impl Future<Output = eyre::Result<()>>), eyre::ErrReport> {
     let clock = Arc::new(HLC::default());
 
     let mut tasks = FuturesUnordered::new();
-
-    // Setup ctrl-c handler
-    let ctrlc_events = set_up_ctrlc_handler()?;
 
     // Setup WS event channel (used by axum WS handlers)
     let (ws_event_tx, ws_event_rx) = tokio::sync::mpsc::channel::<Event>(64);
     let ws_events = ReceiverStream::new(ws_event_rx);
 
     // Start WS server
-    let (port, ws_shutdown, ws_future) =
-        ws_server::serve(bind, ws_event_tx.clone(), clock.clone())
-            .await
-            .wrap_err("failed to start WS server")?;
+    let (port, ws_shutdown, ws_future) = ws_server::serve(bind, ws_event_tx.clone(), clock.clone())
+        .await
+        .wrap_err("failed to start WS server")?;
     tracing::info!("WS server listening on port {port}");
     tasks.push(tokio::spawn(async move {
         if let Err(e) = ws_future.await {
@@ -71,12 +85,7 @@ pub async fn start(
         }
     }));
 
-    let events = (
-        external_events,
-        ctrlc_events,
-        ws_events,
-    )
-        .merge();
+    let events = (external_events, extra_events, ws_events).merge();
 
     let future = async move {
         start_inner(events, clock).await?;
@@ -164,7 +173,11 @@ async fn start_inner(
                         .send(&serde_json::to_vec(&reply)?)
                         .await
                         .context("failed to send register reply");
-                    match version_check_result.map_err(|e| eyre!(e)).and(existing_result.map_err(|e| eyre!(e))).and(send_result) {
+                    match version_check_result
+                        .map_err(|e| eyre!(e))
+                        .and(existing_result.map_err(|e| eyre!(e)))
+                        .and(send_result)
+                    {
                         Ok(()) => {
                             let _ = daemon_id_tx.send(daemon_id.clone());
                             daemon_connections.add(daemon_id.clone(), connection);
@@ -211,15 +224,12 @@ async fn start_inner(
                                         );
                                         continue;
                                     };
-                                    connection
-                                        .send(&message)
-                                        .await
-                                        .wrap_err_with(|| {
-                                            format!(
-                                                "failed to send AllNodesReady({uuid}) message \
+                                    connection.send(&message).await.wrap_err_with(|| {
+                                        format!(
+                                            "failed to send AllNodesReady({uuid}) message \
                                             to machine {daemon_id}"
-                                            )
-                                        })?;
+                                        )
+                                    })?;
                                 }
                             }
                         }
@@ -815,8 +825,12 @@ async fn start_inner(
                         if dataflow.log_subscribers.is_empty() {
                             if dataflow.buffered_log_messages.len() < MAX_BUFFERED_LOG_MESSAGES {
                                 dataflow.buffered_log_messages.push(message);
-                            } else if dataflow.buffered_log_messages.len() == MAX_BUFFERED_LOG_MESSAGES {
-                                tracing::warn!("log buffer full for dataflow {dataflow_id}, dropping new messages");
+                            } else if dataflow.buffered_log_messages.len()
+                                == MAX_BUFFERED_LOG_MESSAGES
+                            {
+                                tracing::warn!(
+                                    "log buffer full for dataflow {dataflow_id}, dropping new messages"
+                                );
                                 dataflow.buffered_log_messages.push(message);
                             }
                         } else {
@@ -828,8 +842,11 @@ async fn start_inner(
                         if build.log_subscribers.is_empty() {
                             if build.buffered_log_messages.len() < MAX_BUFFERED_LOG_MESSAGES {
                                 build.buffered_log_messages.push(message);
-                            } else if build.buffered_log_messages.len() == MAX_BUFFERED_LOG_MESSAGES {
-                                tracing::warn!("log buffer full for build {build_id}, dropping new messages");
+                            } else if build.buffered_log_messages.len() == MAX_BUFFERED_LOG_MESSAGES
+                            {
+                                tracing::warn!(
+                                    "log buffer full for build {build_id}, dropping new messages"
+                                );
                                 build.buffered_log_messages.push(message);
                             }
                         } else {

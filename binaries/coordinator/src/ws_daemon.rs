@@ -5,7 +5,7 @@ use crate::{
 use adora_core::uhlc::HLC;
 use adora_message::{
     common::DaemonId,
-    daemon_to_coordinator::{CoordinatorRequest, DaemonEvent, Timestamped},
+    daemon_to_coordinator::{CoordinatorRequest, DaemonEvent},
     ws_protocol::WsResponse,
 };
 use axum::extract::ws::{Message, WebSocket};
@@ -52,7 +52,8 @@ pub(crate) async fn handle_daemon_ws(
                     }
                 };
 
-                // Distinguish request vs response by checking for "method" key
+                // Distinguish request vs response by checking for "method" key.
+                // Parse to Value first just for routing (u128 precision loss is OK here).
                 let value: serde_json::Value = match serde_json::from_str(&text) {
                     Ok(v) => v,
                     Err(e) => {
@@ -62,9 +63,10 @@ pub(crate) async fn handle_daemon_ws(
                 };
 
                 if value.get("method").is_some() {
-                    // Daemon event (WsRequest containing CoordinatorRequest)
+                    // Daemon request: deserialize Timestamped<CoordinatorRequest>
+                    // directly from raw text to preserve u128 fidelity (uhlc::ID).
                     if !handle_daemon_request(
-                        value,
+                        &text,
                         &event_tx,
                         &clock,
                         &cmd_tx,
@@ -94,30 +96,33 @@ pub(crate) async fn handle_daemon_ws(
     }
 }
 
+/// A helper struct to deserialize `Timestamped<CoordinatorRequest>` directly
+/// from the raw JSON text, bypassing `serde_json::Value` which cannot represent
+/// `u128` numbers (used by `uhlc::ID(NonZeroU128)` in uhlc 0.5.x).
+#[derive(serde::Deserialize)]
+struct DaemonWsRequestRaw {
+    params: adora_message::daemon_to_coordinator::Timestamped<
+        adora_message::daemon_to_coordinator::CoordinatorRequest,
+    >,
+}
+
 /// Handle a daemon request (event or register). Returns false if the event channel closed.
 async fn handle_daemon_request(
-    value: serde_json::Value,
+    raw_text: &str,
     event_tx: &mpsc::Sender<Event>,
     clock: &HLC,
     cmd_tx: &mpsc::Sender<String>,
     pending_replies: &Arc<Mutex<HashMap<Uuid, oneshot::Sender<String>>>>,
     tracked_daemon_id: &mut Option<DaemonId>,
 ) -> bool {
-    let params = match value.get("params") {
-        Some(p) => p.clone(),
-        None => {
-            tracing::warn!("daemon WS request missing params");
-            return true;
-        }
-    };
-
-    let message: Timestamped<CoordinatorRequest> = match serde_json::from_value(params) {
+    let parsed: DaemonWsRequestRaw = match serde_json::from_str(raw_text) {
         Ok(m) => m,
         Err(e) => {
-            tracing::warn!("failed to parse daemon request params: {e}");
+            tracing::warn!("failed to parse daemon request: {e}");
             return true;
         }
     };
+    let message = parsed.params;
 
     if let Err(err) = clock.update_with_timestamp(&message.timestamp) {
         tracing::warn!("failed to update coordinator clock: {err}");
@@ -229,9 +234,6 @@ async fn handle_daemon_response(
         };
         let _ = sender.send(result_json);
     } else {
-        tracing::warn!(
-            "no pending reply for daemon WS response id {}",
-            response.id
-        );
+        tracing::warn!("no pending reply for daemon WS response id {}", response.id);
     }
 }

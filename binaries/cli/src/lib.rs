@@ -10,7 +10,7 @@ mod formatting;
 pub mod output;
 pub mod session;
 mod template;
-pub(crate) mod ws_client;
+pub mod ws_client;
 
 pub use command::build;
 pub use command::{Executable, Run as RunCommand, run};
