@@ -31,7 +31,7 @@ pub(crate) struct DaemonState {
 
     pub(crate) running: DashMap<DataflowId, RunningDataflow>,
     pub(crate) working_dir: DashMap<DataflowId, PathBuf>,
-    pub(crate) dataflow_node_results: DashMap<Uuid, BTreeMap<NodeId, Result<(), NodeError>>>,
+    pub(crate) dataflow_node_results: DashMap<DataflowId, BTreeMap<NodeId, Result<(), NodeError>>>,
     pub(crate) sessions: DashMap<SessionId, BuildId>,
     pub(crate) builds: DashMap<BuildId, BuildInfo>,
 
