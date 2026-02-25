@@ -33,7 +33,7 @@ const DAEMON_COORDINATOR_RETRY_INTERVAL: std::time::Duration = Duration::from_se
 
 /// Result of [`register`]: everything the daemon needs after connecting to the
 /// coordinator.
-pub struct RegisterResult2 {
+pub struct DaemonRegistration {
     pub daemon_id: DaemonId,
     /// Handle for the coordinator→daemon tarpc server task.
     pub rpc_server_handle: JoinHandle<()>,
@@ -45,14 +45,14 @@ pub struct RegisterResult2 {
 ///
 /// 1. Opens a TCP connection, sends `Register`, receives `DaemonId`.
 /// 2. Converts that connection into a tarpc server (coordinator→daemon `DaemonControl`).
-/// 3. Opens a **second** TCP connection, sends `RegisterReverseChannel`, and
+/// 3. Opens a **second** TCP connection, sends `RegisterNotificationChannel`, and
 ///    creates a tarpc client (daemon→coordinator `DaemonNotification`).
 pub async fn register(
     addr: SocketAddr,
     machine_id: Option<String>,
     clock: &Arc<HLC>,
     state: Arc<DaemonState>,
-) -> eyre::Result<RegisterResult2> {
+) -> eyre::Result<DaemonRegistration> {
     // --- First connection: registration + coordinator→daemon RPC ---
     let mut stream = loop {
         match TcpStream::connect(addr)
@@ -140,7 +140,7 @@ pub async fn register(
 
     tracing::info!("Reverse-channel RPC client established for daemon→coordinator");
 
-    Ok(RegisterResult2 {
+    Ok(DaemonRegistration {
         daemon_id,
         rpc_server_handle,
         coordinator_client,
