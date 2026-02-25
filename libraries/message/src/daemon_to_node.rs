@@ -8,7 +8,7 @@ use crate::{
     metadata::Metadata,
 };
 
-pub use crate::common::{DataMessage, DropToken, SharedMemoryId, Timestamped};
+pub use crate::common::{DataMessage, Timestamped};
 
 // Passed via env variable
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -21,6 +21,7 @@ pub struct RuntimeConfig {
 pub struct NodeConfig {
     pub dataflow_id: DataflowId,
     pub node_id: NodeId,
+    pub coordinator_addr: Option<std::net::IpAddr>,
     pub run_config: NodeRunConfig,
     pub daemon_communication: Option<DaemonCommunication>,
     pub dataflow_descriptor: serde_yaml::Value,
@@ -31,10 +32,8 @@ pub struct NodeConfig {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum DaemonCommunication {
     Shmem {
-        daemon_control_region_id: SharedMemoryId,
-        daemon_drop_region_id: SharedMemoryId,
-        daemon_events_region_id: SharedMemoryId,
-        daemon_events_close_region_id: SharedMemoryId,
+        daemon_control_region_id: String,
+        daemon_events_region_id: String,
     },
     Tcp {
         socket_addr: SocketAddr,
@@ -51,9 +50,8 @@ pub enum DaemonCommunication {
 #[allow(clippy::large_enum_variant)]
 pub enum DaemonReply {
     Result(Result<(), String>),
-    PreparedMessage { shared_memory_id: SharedMemoryId },
+    PreparedMessage { shared_memory_id: String },
     NextEvents(Vec<Timestamped<NodeEvent>>),
-    NextDropEvents(Vec<Timestamped<NodeDropEvent>>),
     NodeConfig { result: Result<NodeConfig, String> },
     Empty,
 }
@@ -82,9 +80,4 @@ pub enum NodeEvent {
         error: String,
         source_node_id: NodeId,
     },
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub enum NodeDropEvent {
-    OutputDropped { drop_token: DropToken },
 }

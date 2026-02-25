@@ -10,7 +10,6 @@ use crate::{
 use self::{
     arrow_utils::{copy_array_into_sample, required_data_size},
     control_channel::ControlChannel,
-    drop_stream::DropStream,
 };
 use aligned_vec::{AVec, ConstAlign};
 use arrow::array::Array;
@@ -26,19 +25,17 @@ use dora_message::{
     DataflowId,
     daemon_to_node::{DaemonCommunication, DaemonReply, NodeConfig},
     metadata::{ArrowTypeInfo, Metadata, MetadataParameters},
-    node_to_daemon::{DaemonRequest, DataMessage, DropToken, Timestamped},
+    node_to_daemon::{DaemonRequest, DataMessage, Timestamped},
 };
 use eyre::{WrapErr, bail};
 use is_terminal::IsTerminal;
-use shared_memory_extended::{Shmem, ShmemConf};
 
 use std::sync::Mutex;
 use std::{
-    collections::{BTreeSet, HashMap, VecDeque},
+    collections::BTreeSet,
     ops::{Deref, DerefMut},
     path::PathBuf,
     sync::Arc,
-    time::Duration,
 };
 use tokio::runtime::Handle;
 
@@ -48,23 +45,9 @@ use tracing::{info, warn};
 
 pub mod arrow_utils;
 mod control_channel;
-mod drop_stream;
 
-/// The data size threshold at which we start using shared memory.
-///
-/// Shared memory works by sharing memory pages. This means that the smallest
-/// memory region that can be shared is one memory page, which is typically
-/// 4KiB.
-///
-/// Using shared memory for messages smaller than the page size still requires
-/// sharing a full page, so we have some memory overhead. We also have some
-/// performance overhead because we need to issue multiple syscalls. For small
-/// messages it is faster to send them over a traditional TCP stream (or similar).
-///
-/// This hardcoded threshold value specifies which messages are sent through
-/// shared memory. Messages that are smaller than this threshold are sent through
-/// TCP.
-pub const ZERO_COPY_THRESHOLD: usize = 4096;
+/// Deprecated compatibility constant. Zero-copy threshold is no longer used.
+pub const ZERO_COPY_THRESHOLD: usize = 0;
 
 /// Allows sending outputs and retrieving node information.
 ///
@@ -76,10 +59,6 @@ pub struct DoraNode {
     node_config: NodeRunConfig,
     control_channel: ControlChannel,
     clock: Arc<uhlc::HLC>,
-
-    sent_out_shared_memory: HashMap<DropToken, ShmemHandle>,
-    drop_stream: DropStream,
-    cache: VecDeque<ShmemHandle>,
 
     dataflow_descriptor: serde_yaml::Result<Descriptor>,
     warned_unknown_output: BTreeSet<DataId>,
@@ -356,6 +335,7 @@ impl DoraNode {
         let node_config = NodeConfig {
             dataflow_id: DataflowId::new_v4(),
             node_id: "".parse()?,
+            coordinator_addr: None,
             run_config: NodeRunConfig {
                 inputs: Default::default(),
                 outputs: Default::default(),
@@ -385,6 +365,7 @@ impl DoraNode {
         let node_config = NodeConfig {
             dataflow_id: DataflowId::new_v4(),
             node_id: "".parse()?,
+            coordinator_addr: None,
             run_config: NodeRunConfig {
                 inputs: Default::default(),
                 outputs: Default::default(),
@@ -419,6 +400,7 @@ impl DoraNode {
         let NodeConfig {
             dataflow_id,
             node_id,
+            coordinator_addr: _,
             run_config,
             daemon_communication,
             dataflow_descriptor,
@@ -468,9 +450,6 @@ impl DoraNode {
             write_events_to,
         )
         .wrap_err("failed to init event stream")?;
-        let drop_stream =
-            DropStream::init(dataflow_id, &node_id, &daemon_communication, clock.clone())
-                .wrap_err("failed to init drop stream")?;
         let control_channel =
             ControlChannel::init(dataflow_id, &node_id, &daemon_communication, clock.clone())
                 .wrap_err("failed to init control channel")?;
@@ -480,9 +459,6 @@ impl DoraNode {
             node_config: run_config.clone(),
             control_channel,
             clock,
-            sent_out_shared_memory: HashMap::new(),
-            drop_stream,
-            cache: VecDeque::new(),
             dataflow_descriptor: serde_yaml::from_value(dataflow_descriptor),
             warned_unknown_output: BTreeSet::new(),
             interactive: false,
@@ -666,25 +642,13 @@ impl DoraNode {
         parameters: MetadataParameters,
         sample: Option<DataSample>,
     ) -> eyre::Result<()> {
-        if !self.interactive {
-            self.handle_finished_drop_tokens()?;
-        }
-
         let metadata = Metadata::from_parameters(self.clock.new_timestamp(), type_info, parameters);
 
-        let (data, shmem) = match sample {
-            Some(sample) => sample.finalize(),
-            None => (None, None),
-        };
+        let data = sample.map(DataSample::finalize);
 
         self.control_channel
             .send_message(output_id.clone(), metadata, data)
             .wrap_err_with(|| format!("failed to send output {output_id}"))?;
-
-        if let Some((shared_memory, drop_token)) = shmem {
-            self.sent_out_shared_memory
-                .insert(drop_token, shared_memory);
-        }
 
         Ok(())
     }
@@ -726,77 +690,9 @@ impl DoraNode {
     }
 
     /// Allocates a [`DataSample`] of the specified size.
-    ///
-    /// The data sample will use shared memory when suitable to enable efficient data transfer
-    /// when sending an output message.
     pub fn allocate_data_sample(&mut self, data_len: usize) -> eyre::Result<DataSample> {
-        let data = if data_len >= ZERO_COPY_THRESHOLD && !self.interactive {
-            // create shared memory region
-            let shared_memory = self.allocate_shared_memory(data_len)?;
-
-            DataSample {
-                inner: DataSampleInner::Shmem(shared_memory),
-                len: data_len,
-            }
-        } else {
-            let avec: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, data_len);
-
-            avec.into()
-        };
-
-        Ok(data)
-    }
-
-    fn allocate_shared_memory(&mut self, data_len: usize) -> eyre::Result<ShmemHandle> {
-        let cache_index = self
-            .cache
-            .iter()
-            .enumerate()
-            .rev()
-            .filter(|(_, s)| s.len() >= data_len)
-            .min_by_key(|(_, s)| s.len())
-            .map(|(i, _)| i);
-        let memory = match cache_index {
-            Some(i) => {
-                // we know that this index exists, so we can safely unwrap here
-                self.cache.remove(i).unwrap()
-            }
-            None => ShmemHandle(Box::new(
-                ShmemConf::new()
-                    .size(data_len)
-                    .writable(true)
-                    .create()
-                    .wrap_err("failed to allocate shared memory")?,
-            )),
-        };
-        assert!(memory.len() >= data_len);
-
-        Ok(memory)
-    }
-
-    fn handle_finished_drop_tokens(&mut self) -> eyre::Result<()> {
-        loop {
-            match self.drop_stream.try_recv() {
-                Ok(token) => match self.sent_out_shared_memory.remove(&token) {
-                    Some(region) => self.add_to_cache(region),
-                    None => tracing::warn!("received unknown finished drop token `{token:?}`"),
-                },
-                Err(flume::TryRecvError::Empty) => break,
-                Err(flume::TryRecvError::Disconnected) => {
-                    bail!("event stream was closed before sending all expected drop tokens")
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn add_to_cache(&mut self, memory: ShmemHandle) {
-        const MAX_CACHE_SIZE: usize = 20;
-
-        self.cache.push_back(memory);
-        while self.cache.len() > MAX_CACHE_SIZE {
-            self.cache.pop_front();
-        }
+        let avec: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, data_len);
+        Ok(avec.into())
     }
 
     /// Returns the full dataflow descriptor that this node is part of.
@@ -829,37 +725,6 @@ impl Drop for DoraNode {
             tracing::warn!("{err:?}")
         }
 
-        while !self.sent_out_shared_memory.is_empty() {
-            if self.drop_stream.is_empty() {
-                tracing::trace!(
-                    "waiting for {} remaining drop tokens",
-                    self.sent_out_shared_memory.len()
-                );
-            }
-
-            match self.drop_stream.recv_timeout(Duration::from_secs(2)) {
-                Ok(token) => {
-                    self.sent_out_shared_memory.remove(&token);
-                }
-                Err(flume::RecvTimeoutError::Disconnected) => {
-                    tracing::warn!(
-                        "finished_drop_tokens channel closed while still waiting for drop tokens; \
-                        closing {} shared memory regions that might not yet been mapped.",
-                        self.sent_out_shared_memory.len()
-                    );
-                    break;
-                }
-                Err(flume::RecvTimeoutError::Timeout) => {
-                    tracing::warn!(
-                        "timeout while waiting for drop tokens; \
-                        closing {} shared memory regions that might not yet been mapped.",
-                        self.sent_out_shared_memory.len()
-                    );
-                    break;
-                }
-            }
-        }
-
         if let Err(err) = self.control_channel.report_outputs_done() {
             tracing::warn!("{err:?}")
         }
@@ -877,18 +742,9 @@ pub struct DataSample {
 }
 
 impl DataSample {
-    fn finalize(self) -> (Option<DataMessage>, Option<(ShmemHandle, DropToken)>) {
+    fn finalize(self) -> DataMessage {
         match self.inner {
-            DataSampleInner::Shmem(shared_memory) => {
-                let drop_token = DropToken::generate();
-                let data = DataMessage::SharedMemory {
-                    shared_memory_id: shared_memory.get_os_id().to_owned(),
-                    len: self.len,
-                    drop_token,
-                };
-                (Some(data), Some((shared_memory, drop_token)))
-            }
-            DataSampleInner::Vec(buffer) => (Some(DataMessage::Vec(buffer)), None),
+            DataSampleInner::Vec(buffer) => DataMessage::Vec(buffer),
         }
     }
 }
@@ -898,7 +754,6 @@ impl Deref for DataSample {
 
     fn deref(&self) -> &Self::Target {
         let slice = match &self.inner {
-            DataSampleInner::Shmem(handle) => unsafe { handle.as_slice() },
             DataSampleInner::Vec(data) => data,
         };
         &slice[..self.len]
@@ -908,7 +763,6 @@ impl Deref for DataSample {
 impl DerefMut for DataSample {
     fn deref_mut(&mut self) -> &mut Self::Target {
         let slice = match &mut self.inner {
-            DataSampleInner::Shmem(handle) => unsafe { handle.as_slice_mut() },
             DataSampleInner::Vec(data) => data,
         };
         &mut slice[..self.len]
@@ -927,7 +781,6 @@ impl From<AVec<u8, ConstAlign<128>>> for DataSample {
 impl std::fmt::Debug for DataSample {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let kind = match &self.inner {
-            DataSampleInner::Shmem(_) => "SharedMemory",
             DataSampleInner::Vec(_) => "Vec",
         };
         f.debug_struct("DataSample")
@@ -938,28 +791,8 @@ impl std::fmt::Debug for DataSample {
 }
 
 enum DataSampleInner {
-    Shmem(ShmemHandle),
     Vec(AVec<u8, ConstAlign<128>>),
 }
-
-struct ShmemHandle(Box<Shmem>);
-
-impl Deref for ShmemHandle {
-    type Target = Shmem;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl DerefMut for ShmemHandle {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
-unsafe impl Send for ShmemHandle {}
-unsafe impl Sync for ShmemHandle {}
 
 /// Init Opentelemetry Tracing
 ///

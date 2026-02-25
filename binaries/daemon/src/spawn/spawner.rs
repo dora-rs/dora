@@ -68,6 +68,7 @@ impl Spawner {
         let node_config = NodeConfig {
             dataflow_id,
             node_id: node_id.clone(),
+            coordinator_addr: None,
             run_config: node.kind.run_config(),
             daemon_communication: Some(daemon_communication),
             dataflow_descriptor: serde_yaml::to_value(&self.dataflow_descriptor)

@@ -85,8 +85,7 @@ impl IntegrationTestingEvents {
         let reply = match &request.inner {
             DaemonRequest::Register(_) => DaemonReply::Result(Ok(())),
             DaemonRequest::Subscribe => DaemonReply::Result(Ok(())),
-            DaemonRequest::SubscribeDrop => DaemonReply::Result(Ok(())),
-            DaemonRequest::NextEvent { .. } => {
+            DaemonRequest::NextEvent => {
                 let events = if let Some(event) = self.next_event()? {
                     vec![event]
                 } else {
@@ -106,14 +105,6 @@ impl IntegrationTestingEvents {
             DaemonRequest::OutputsDone => {
                 println!("{}", "node reports OutputsDone".blue());
                 DaemonReply::Result(Ok(()))
-            }
-            DaemonRequest::ReportDropTokens { drop_tokens } => {
-                println!("{} {drop_tokens:?}", "node reports drop tokens".blue());
-                DaemonReply::Empty
-            }
-            DaemonRequest::NextFinishedDropTokens => {
-                // interactive nodes don't use shared memory -> no drop tokens
-                DaemonReply::NextDropEvents(vec![])
             }
             DaemonRequest::EventStreamDropped => {
                 println!("{}", "node reports EventStreamDropped".blue());
