@@ -18,7 +18,10 @@ use dora_core::{
     config::{DataId, NodeId, NodeRunConfig},
     descriptor::Descriptor,
     metadata::ArrowTypeInfoExt,
-    topics::{DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, LOCALHOST},
+    topics::{
+        DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, LOCALHOST, open_zenoh_session,
+        zenoh_output_publish_topic,
+    },
     uhlc,
 };
 use dora_message::{
@@ -29,14 +32,17 @@ use dora_message::{
 };
 use eyre::{WrapErr, bail};
 use is_terminal::IsTerminal;
+use zenoh::Wait;
 
+#[cfg(feature = "tracing")]
 use std::sync::Mutex;
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashMap},
     ops::{Deref, DerefMut},
     path::PathBuf,
     sync::Arc,
 };
+#[cfg(feature = "tracing")]
 use tokio::runtime::Handle;
 
 #[cfg(feature = "tracing")]
@@ -59,6 +65,9 @@ pub struct DoraNode {
     node_config: NodeRunConfig,
     control_channel: ControlChannel,
     clock: Arc<uhlc::HLC>,
+    _zenoh_session: Option<zenoh::Session>,
+    shm_provider: Option<zenoh::shm::ShmProvider<zenoh::shm::PosixShmProviderBackend>>,
+    publishers: HashMap<DataId, zenoh::pubsub::Publisher<'static>>,
 
     dataflow_descriptor: serde_yaml::Result<Descriptor>,
     warned_unknown_output: BTreeSet<DataId>,
@@ -400,7 +409,7 @@ impl DoraNode {
         let NodeConfig {
             dataflow_id,
             node_id,
-            coordinator_addr: _,
+            coordinator_addr,
             run_config,
             daemon_communication,
             dataflow_descriptor,
@@ -446,6 +455,7 @@ impl DoraNode {
             &node_id,
             &daemon_communication,
             input_config,
+            coordinator_addr,
             clock.clone(),
             write_events_to,
         )
@@ -453,12 +463,52 @@ impl DoraNode {
         let control_channel =
             ControlChannel::init(dataflow_id, &node_id, &daemon_communication, clock.clone())
                 .wrap_err("failed to init control channel")?;
+        let (zenoh_session, shm_provider, publishers) = if matches!(
+            daemon_communication,
+            DaemonCommunicationWrapper::Standard(_)
+        ) {
+            match futures::executor::block_on(open_zenoh_session(coordinator_addr)) {
+                Ok(zenoh_session) => {
+                    let shm_pool_size = std::env::var("DORA_NODE_SHM_POOL_SIZE")
+                        .ok()
+                        .and_then(|value| value.parse::<usize>().ok())
+                        .unwrap_or(64 * 1024 * 1024);
+                    let shm_provider =
+                        zenoh::shm::ShmProviderBuilder::default_backend(shm_pool_size)
+                            .wait()
+                            .map_err(|e| eyre::eyre!(e))
+                            .wrap_err("failed to create zenoh shm provider")?;
+                    let mut publishers = HashMap::new();
+                    for output_id in &run_config.outputs {
+                        let topic = zenoh_output_publish_topic(dataflow_id, &node_id, output_id);
+                        let publisher = zenoh_session
+                            .declare_publisher(topic)
+                            .wait()
+                            .map_err(|e| eyre::eyre!(e))
+                            .wrap_err("failed to declare zenoh output publisher")?;
+                        publishers.insert(output_id.clone(), publisher);
+                    }
+                    (Some(zenoh_session), Some(shm_provider), publishers)
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        "failed to initialize zenoh in node, falling back to Vec data path: {err:?}"
+                    );
+                    (None, None, HashMap::new())
+                }
+            }
+        } else {
+            (None, None, HashMap::new())
+        };
         let node = Self {
             id: node_id,
             dataflow_id,
             node_config: run_config.clone(),
             control_channel,
             clock,
+            _zenoh_session: zenoh_session,
+            shm_provider,
+            publishers,
             dataflow_descriptor: serde_yaml::from_value(dataflow_descriptor),
             warned_unknown_output: BTreeSet::new(),
             interactive: false,
@@ -643,8 +693,28 @@ impl DoraNode {
         sample: Option<DataSample>,
     ) -> eyre::Result<()> {
         let metadata = Metadata::from_parameters(self.clock.new_timestamp(), type_info, parameters);
-
-        let data = sample.map(DataSample::finalize);
+        let data = match sample {
+            None => None,
+            Some(DataSample {
+                inner: DataSampleInner::ZenohShm(shm),
+                ..
+            }) => {
+                if let Some(publisher) = self.publishers.get(&output_id) {
+                    publisher
+                        .put(shm)
+                        .wait()
+                        .map_err(|e| eyre::eyre!(e))
+                        .wrap_err("failed to publish output over zenoh")?;
+                    None
+                } else {
+                    tracing::warn!(
+                        "missing zenoh publisher for output `{output_id}`, skipping payload"
+                    );
+                    None
+                }
+            }
+            Some(sample) => Some(sample.finalize()),
+        };
 
         self.control_channel
             .send_message(output_id.clone(), metadata, data)
@@ -691,6 +761,18 @@ impl DoraNode {
 
     /// Allocates a [`DataSample`] of the specified size.
     pub fn allocate_data_sample(&mut self, data_len: usize) -> eyre::Result<DataSample> {
+        if let Some(provider) = &self.shm_provider {
+            let buffer = provider
+                .alloc(data_len)
+                .with_policy::<zenoh::shm::BlockOn<zenoh::shm::GarbageCollect>>()
+                .wait()
+                .map_err(|e| eyre::eyre!(e))
+                .wrap_err("failed to allocate zenoh shm buffer")?;
+            return Ok(DataSample {
+                inner: DataSampleInner::ZenohShm(buffer),
+                len: data_len,
+            });
+        }
         let avec: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, data_len);
         Ok(avec.into())
     }
@@ -744,6 +826,9 @@ pub struct DataSample {
 impl DataSample {
     fn finalize(self) -> DataMessage {
         match self.inner {
+            DataSampleInner::ZenohShm(_) => {
+                unreachable!("zenoh shm samples are handled before finalize")
+            }
             DataSampleInner::Vec(buffer) => DataMessage::Vec(buffer),
         }
     }
@@ -753,19 +838,19 @@ impl Deref for DataSample {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
-        let slice = match &self.inner {
-            DataSampleInner::Vec(data) => data,
-        };
-        &slice[..self.len]
+        match &self.inner {
+            DataSampleInner::ZenohShm(data) => &data[..self.len],
+            DataSampleInner::Vec(data) => &data[..self.len],
+        }
     }
 }
 
 impl DerefMut for DataSample {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        let slice = match &mut self.inner {
-            DataSampleInner::Vec(data) => data,
-        };
-        &mut slice[..self.len]
+        match &mut self.inner {
+            DataSampleInner::ZenohShm(data) => &mut data[..self.len],
+            DataSampleInner::Vec(data) => &mut data[..self.len],
+        }
     }
 }
 
@@ -781,6 +866,7 @@ impl From<AVec<u8, ConstAlign<128>>> for DataSample {
 impl std::fmt::Debug for DataSample {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let kind = match &self.inner {
+            DataSampleInner::ZenohShm(_) => "ZenohShm",
             DataSampleInner::Vec(_) => "Vec",
         };
         f.debug_struct("DataSample")
@@ -791,6 +877,7 @@ impl std::fmt::Debug for DataSample {
 }
 
 enum DataSampleInner {
+    ZenohShm(zenoh::shm::ZShmMut),
     Vec(AVec<u8, ConstAlign<128>>),
 }
 

@@ -6,6 +6,7 @@ use std::{
     time::Duration,
 };
 
+use aligned_vec::{AVec, ConstAlign};
 use dora_message::{
     DataflowId,
     daemon_to_node::{DaemonCommunication, DaemonReply, DataMessage, NodeEvent},
@@ -27,10 +28,12 @@ use crate::{
     event_stream::data_conversion::RawData,
 };
 use dora_core::{
-    config::{Input, NodeId},
+    config::{Input, InputMapping, NodeId},
+    topics::{open_zenoh_session, zenoh_output_publish_topic},
     uhlc,
 };
 use eyre::{Context, eyre};
+use zenoh::Wait;
 
 pub use scheduler::Scheduler as EventScheduler;
 
@@ -69,6 +72,8 @@ pub struct EventStream {
     write_events_to: Option<WriteEventsTo>,
     start_timestamp: uhlc::Timestamp,
     use_scheduler: bool,
+    _zenoh_session: Option<zenoh::Session>,
+    zenoh_input_buffers: HashMap<DataId, flume::Receiver<AVec<u8, ConstAlign<128>>>>,
 }
 
 impl EventStream {
@@ -78,6 +83,7 @@ impl EventStream {
         node_id: &NodeId,
         daemon_communication: &DaemonCommunicationWrapper,
         input_config: BTreeMap<DataId, Input>,
+        coordinator_addr: Option<std::net::IpAddr>,
         clock: Arc<uhlc::HLC>,
         write_events_to: Option<PathBuf>,
     ) -> eyre::Result<Self> {
@@ -192,6 +198,13 @@ impl EventStream {
             None => None,
         };
 
+        let (zenoh_session, zenoh_input_buffers) = Self::init_zenoh_subscribers(
+            dataflow_id,
+            &input_config,
+            coordinator_addr,
+            daemon_communication,
+        )?;
+
         Self::init_on_channel(
             dataflow_id,
             node_id,
@@ -200,6 +213,8 @@ impl EventStream {
             clock,
             scheduler,
             write_events_to,
+            zenoh_session,
+            zenoh_input_buffers,
         )
     }
 
@@ -211,6 +226,8 @@ impl EventStream {
         clock: Arc<uhlc::HLC>,
         scheduler: Scheduler,
         write_events_to: Option<WriteEventsTo>,
+        zenoh_session: Option<zenoh::Session>,
+        zenoh_input_buffers: HashMap<DataId, flume::Receiver<AVec<u8, ConstAlign<128>>>>,
     ) -> eyre::Result<Self> {
         channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;
         let reply = channel
@@ -254,7 +271,63 @@ impl EventStream {
             scheduler,
             write_events_to,
             use_scheduler,
+            _zenoh_session: zenoh_session,
+            zenoh_input_buffers,
         })
+    }
+
+    fn init_zenoh_subscribers(
+        dataflow_id: DataflowId,
+        input_config: &BTreeMap<DataId, Input>,
+        coordinator_addr: Option<std::net::IpAddr>,
+        daemon_communication: &DaemonCommunicationWrapper,
+    ) -> eyre::Result<(
+        Option<zenoh::Session>,
+        HashMap<DataId, flume::Receiver<AVec<u8, ConstAlign<128>>>>,
+    )> {
+        if !matches!(
+            daemon_communication,
+            DaemonCommunicationWrapper::Standard(_)
+        ) {
+            return Ok((None, HashMap::new()));
+        }
+
+        let session = match futures::executor::block_on(open_zenoh_session(coordinator_addr)) {
+            Ok(session) => session,
+            Err(err) => {
+                tracing::warn!("failed to initialize zenoh input subscriptions: {err:?}");
+                return Ok((None, HashMap::new()));
+            }
+        };
+
+        let mut buffers = HashMap::new();
+        for (input_id, input) in input_config {
+            let InputMapping::User(mapping) = &input.mapping else {
+                continue;
+            };
+            let topic = zenoh_output_publish_topic(dataflow_id, &mapping.source, &mapping.output);
+            let subscriber = session
+                .declare_subscriber(topic)
+                .wait()
+                .map_err(|e| eyre!(e))
+                .wrap_err("failed to declare zenoh input subscriber")?;
+            let (tx, rx) = flume::bounded(32);
+            std::thread::spawn(move || {
+                loop {
+                    let sample = futures::executor::block_on(subscriber.recv_async());
+                    let payload = match sample {
+                        Ok(sample) => sample.payload().to_bytes().into_owned(),
+                        Err(_) => break,
+                    };
+                    let payload = AVec::from_slice(128, &payload);
+                    if tx.send(payload).is_err() {
+                        break;
+                    }
+                }
+            });
+            buffers.insert(input_id.clone(), rx);
+        }
+        Ok((Some(session), buffers))
     }
 
     /// Synchronously waits for the next event.
@@ -339,9 +412,37 @@ impl EventStream {
         self.scheduler.is_empty() & self.receiver.is_empty()
     }
 
-    fn add_event(&mut self, event: EventItem) {
+    fn add_event(&mut self, mut event: EventItem) {
+        self.inject_zenoh_payload(&mut event);
         self.record_event(&event).unwrap();
         self.scheduler.add_event(event);
+    }
+
+    fn inject_zenoh_payload(&mut self, event: &mut EventItem) {
+        let EventItem::NodeEvent {
+            event: NodeEvent::Input { id, data, .. },
+            ..
+        } = event
+        else {
+            return;
+        };
+        if data.is_some() {
+            return;
+        }
+        let Some(buffer) = self.zenoh_input_buffers.get(id) else {
+            return;
+        };
+        match buffer.recv_timeout(Duration::from_secs(5)) {
+            Ok(payload) => {
+                *data = Some(DataMessage::Vec(payload));
+            }
+            Err(flume::RecvTimeoutError::Timeout) => {
+                tracing::warn!("timed out waiting for zenoh payload for input `{id}`");
+            }
+            Err(flume::RecvTimeoutError::Disconnected) => {
+                tracing::warn!("zenoh payload channel disconnected for input `{id}`");
+            }
+        }
     }
 
     fn record_event(&mut self, event: &EventItem) -> eyre::Result<()> {
