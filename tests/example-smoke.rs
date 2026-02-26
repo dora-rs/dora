@@ -1,7 +1,11 @@
-//! Smoke tests for examples using the WS control plane (adora up + adora start).
+//! Smoke tests for example dataflows.
 //!
-//! Each test starts a coordinator+daemon via `adora up`, runs a dataflow,
-//! waits for it to complete or times out, then cleans up.
+//! Two modes are exercised:
+//!
+//! - **Networked** (`adora up` + `adora start --detach` + poll + `adora stop` +
+//!   `adora destroy`): exercises the full coordinator/daemon WS control plane.
+//! - **Local** (`adora run --stop-after`): runs everything in-process, testing
+//!   the single-process dataflow path.
 //!
 //! Run with: `cargo test --test example-smoke -- --test-threads=1`
 
@@ -10,8 +14,10 @@ use std::process::{Command, Stdio};
 use std::sync::Once;
 use std::time::Duration;
 
-static BUILD_NODES: Once = Once::new();
 static BUILD_CLI: Once = Once::new();
+static BUILD_RUST_NODES: Once = Once::new();
+static BUILD_BENCHMARK_NODES: Once = Once::new();
+static BUILD_LOG_SINK_NODES: Once = Once::new();
 
 fn adora_bin() -> String {
     let manifest = env!("CARGO_MANIFEST_DIR");
@@ -33,7 +39,7 @@ fn ensure_cli_built() {
 }
 
 fn ensure_rust_nodes_built() {
-    BUILD_NODES.call_once(|| {
+    BUILD_RUST_NODES.call_once(|| {
         let status = Command::new("cargo")
             .args([
                 "build",
@@ -52,6 +58,41 @@ fn ensure_rust_nodes_built() {
     });
 }
 
+fn ensure_benchmark_nodes_built() {
+    BUILD_BENCHMARK_NODES.call_once(|| {
+        let status = Command::new("cargo")
+            .args([
+                "build",
+                "--release",
+                "-p",
+                "benchmark-example-node",
+                "-p",
+                "benchmark-example-sink",
+            ])
+            .status()
+            .expect("failed to run cargo build for benchmark");
+        assert!(status.success(), "failed to build benchmark nodes");
+    });
+}
+
+fn ensure_log_sink_nodes_built() {
+    BUILD_LOG_SINK_NODES.call_once(|| {
+        let status = Command::new("cargo")
+            .args([
+                "build",
+                "-p",
+                "log-sink-file",
+                "-p",
+                "log-sink-alert",
+                "-p",
+                "log-sink-tcp",
+            ])
+            .status()
+            .expect("failed to run cargo build for log sinks");
+        assert!(status.success(), "failed to build log sink nodes");
+    });
+}
+
 /// Ensure no leftover coordinator/daemon from a previous test or manual run.
 fn cleanup_stale(adora: &str) {
     let _ = Command::new(adora)
@@ -63,6 +104,11 @@ fn cleanup_stale(adora: &str) {
 }
 
 /// Run an example dataflow through the full WS control plane lifecycle.
+///
+/// 1. `adora up` -- start coordinator + daemon
+/// 2. `adora start <yaml> --detach` -- launch the dataflow
+/// 3. Poll `adora list --json` until "Running" disappears or timeout
+/// 4. `adora stop --all` + `adora destroy` -- clean up
 fn run_smoke_test(name: &str, yaml_path: &str, timeout: Duration) {
     ensure_cli_built();
 
@@ -132,6 +178,41 @@ fn run_smoke_test(name: &str, yaml_path: &str, timeout: Duration) {
         .status();
 }
 
+/// Run an example dataflow locally with `adora run --stop-after`.
+///
+/// Exercises the single-process path where CLI, coordinator, and daemon
+/// all run in the same process.
+fn run_smoke_test_local(name: &str, yaml_path: &str, stop_after_secs: u64) {
+    ensure_cli_built();
+
+    let adora = adora_bin();
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let full_yaml = Path::new(manifest_dir).join(yaml_path);
+    assert!(
+        full_yaml.exists(),
+        "{name}: dataflow YAML not found at {full_yaml:?}"
+    );
+
+    let stop_after = format!("{stop_after_secs}s");
+    let status = Command::new(&adora)
+        .args([
+            "run",
+            full_yaml.to_str().unwrap(),
+            "--stop-after",
+            &stop_after,
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .unwrap_or_else(|e| panic!("{name}: failed to run adora run: {e}"));
+
+    assert!(status.success(), "{name}: adora run failed");
+}
+
+// ---------------------------------------------------------------------------
+// Rust dataflow examples (pre-built nodes)
+// ---------------------------------------------------------------------------
+
 #[test]
 fn smoke_rust_dataflow() {
     ensure_rust_nodes_built();
@@ -159,5 +240,198 @@ fn smoke_rust_dataflow_socket() {
         "rust-dataflow-socket",
         "examples/rust-dataflow/dataflow_socket.yml",
         Duration::from_secs(30),
+    );
+}
+
+#[test]
+fn smoke_rust_dataflow_url() {
+    ensure_rust_nodes_built();
+    run_smoke_test(
+        "rust-dataflow-url",
+        "examples/rust-dataflow-url/dataflow.yml",
+        Duration::from_secs(30),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Benchmark example (release build)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn smoke_benchmark() {
+    ensure_benchmark_nodes_built();
+    run_smoke_test(
+        "benchmark",
+        "examples/benchmark/dataflow.yml",
+        Duration::from_secs(30),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Log-sink examples (Rust sinks + Python sources)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn smoke_log_sink_file() {
+    ensure_log_sink_nodes_built();
+    run_smoke_test(
+        "log-sink-file",
+        "examples/log-sink-file/dataflow.yml",
+        Duration::from_secs(30),
+    );
+}
+
+#[test]
+fn smoke_log_sink_alert() {
+    ensure_log_sink_nodes_built();
+    run_smoke_test(
+        "log-sink-alert",
+        "examples/log-sink-alert/dataflow.yml",
+        Duration::from_secs(30),
+    );
+}
+
+#[test]
+fn smoke_log_sink_tcp() {
+    ensure_log_sink_nodes_built();
+    run_smoke_test(
+        "log-sink-tcp",
+        "examples/log-sink-tcp/dataflow.yml",
+        Duration::from_secs(30),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Python examples (all use networked lifecycle: up/start/stop/destroy)
+//
+// Timer-driven examples run until the timeout, then get stopped.
+// Self-terminating examples (e.g. python-dataflow) exit on their own.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn smoke_python_dataflow() {
+    run_smoke_test(
+        "python-dataflow",
+        "examples/python-dataflow/dataflow.yml",
+        Duration::from_secs(30),
+    );
+}
+
+#[test]
+fn smoke_python_async() {
+    run_smoke_test(
+        "python-async",
+        "examples/python-async/dataflow.yaml",
+        Duration::from_secs(15),
+    );
+}
+
+#[test]
+fn smoke_python_drain() {
+    run_smoke_test(
+        "python-drain",
+        "examples/python-drain/dataflow.yaml",
+        Duration::from_secs(15),
+    );
+}
+
+#[test]
+fn smoke_python_log() {
+    run_smoke_test(
+        "python-log",
+        "examples/python-log/dataflow.yaml",
+        Duration::from_secs(15),
+    );
+}
+
+#[test]
+fn smoke_python_logging() {
+    run_smoke_test(
+        "python-logging",
+        "examples/python-logging/dataflow.yml",
+        Duration::from_secs(15),
+    );
+}
+
+#[test]
+fn smoke_python_multiple_arrays() {
+    run_smoke_test(
+        "python-multiple-arrays",
+        "examples/python-multiple-arrays/dataflow.yml",
+        Duration::from_secs(15),
+    );
+}
+
+#[test]
+fn smoke_python_concurrent_rw() {
+    run_smoke_test(
+        "python-concurrent-rw",
+        "examples/python-concurrent-rw/dataflow.yml",
+        Duration::from_secs(15),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Local-mode tests (adora run --stop-after)
+//
+// Same examples as above but exercising the single-process path.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn smoke_local_python_dataflow() {
+    run_smoke_test_local(
+        "local-python-dataflow",
+        "examples/python-dataflow/dataflow.yml",
+        30,
+    );
+}
+
+#[test]
+fn smoke_local_python_async() {
+    run_smoke_test_local(
+        "local-python-async",
+        "examples/python-async/dataflow.yaml",
+        10,
+    );
+}
+
+#[test]
+fn smoke_local_python_drain() {
+    run_smoke_test_local(
+        "local-python-drain",
+        "examples/python-drain/dataflow.yaml",
+        10,
+    );
+}
+
+#[test]
+fn smoke_local_python_log() {
+    run_smoke_test_local("local-python-log", "examples/python-log/dataflow.yaml", 10);
+}
+
+#[test]
+fn smoke_local_python_logging() {
+    run_smoke_test_local(
+        "local-python-logging",
+        "examples/python-logging/dataflow.yml",
+        10,
+    );
+}
+
+#[test]
+fn smoke_local_python_multiple_arrays() {
+    run_smoke_test_local(
+        "local-python-multiple-arrays",
+        "examples/python-multiple-arrays/dataflow.yml",
+        10,
+    );
+}
+
+#[test]
+fn smoke_local_python_concurrent_rw() {
+    run_smoke_test_local(
+        "local-python-concurrent-rw",
+        "examples/python-concurrent-rw/dataflow.yml",
+        10,
     );
 }
