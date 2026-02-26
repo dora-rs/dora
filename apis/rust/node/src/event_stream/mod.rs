@@ -279,67 +279,93 @@ impl EventStream {
 
                     // Spawn a background task to receive zenoh samples and feed them
                     // into the event channel
-                    rt.spawn(async move {
-                        while let Ok(sample) = subscriber.recv_async().await {
-                            let payload = sample.payload();
-                            let payload_len = payload.len();
+                    rt.spawn({
+                        let input_id_for_panic = input_id_clone.clone();
+                        let tx_for_panic = tx_clone.clone();
+                        async move {
+                            let result = std::panic::AssertUnwindSafe(async {
+                                while let Ok(sample) = subscriber.recv_async().await {
+                                    let payload = sample.payload();
+                                    let payload_len = payload.len();
 
-                            // Extract metadata from the attachment (sent by the publisher)
-                            let metadata = if let Some(attachment) = sample.attachment() {
-                                let attachment_bytes = attachment.to_bytes();
-                                match bincode::deserialize::<Metadata>(&attachment_bytes) {
-                                    Ok(m) => m,
-                                    Err(e) => {
-                                        tracing::warn!(
-                                            "failed to deserialize metadata attachment for input {}: {e}",
+                                    // Extract metadata from the attachment (sent by the publisher)
+                                    let metadata =
+                                        if let Some(attachment) = sample.attachment() {
+                                            let attachment_bytes = attachment.to_bytes();
+                                            match bincode::deserialize::<Metadata>(
+                                                &attachment_bytes,
+                                            ) {
+                                                Ok(m) => m,
+                                                Err(e) => {
+                                                    tracing::warn!(
+                                                    "failed to deserialize metadata attachment for input {}: {e}",
+                                                    input_id_clone
+                                                );
+                                                    continue;
+                                                }
+                                            }
+                                        } else {
+                                            // No attachment: create a fallback metadata with a
+                                            // receiver timestamp. This loses the original sender
+                                            // timestamp.
+                                            tracing::warn!(
+                                            "zenoh sample for input {} has no metadata attachment, using fallback",
                                             input_id_clone
                                         );
-                                        continue;
+                                            Metadata::new(
+                                                clock_clone.new_timestamp(),
+                                                dora_message::metadata::ArrowTypeInfo::byte_array(
+                                                    payload_len,
+                                                ),
+                                            )
+                                        };
+
+                                    // Try zero-copy path: if the payload is backed by SHM,
+                                    // reference it directly without copying.
+                                    let event_item = if let Some(shm) = payload.as_shm() {
+                                        EventItem::ZenohShmInput {
+                                            id: input_id_clone.clone(),
+                                            metadata,
+                                            shm: shm.to_owned(),
+                                        }
+                                    } else {
+                                        // Fallback: copy bytes for non-SHM payloads
+                                        // (e.g. remote subscribers)
+                                        let payload_bytes = payload.to_bytes();
+                                        let data_vec: AVec<u8, ConstAlign<128>> =
+                                            AVec::from_slice(128, &payload_bytes);
+                                        let event = NodeEvent::Input {
+                                            id: input_id_clone.clone(),
+                                            metadata,
+                                            data: Some(DataMessage::Vec(data_vec)),
+                                        };
+                                        let (drop_tx, _drop_rx) = flume::bounded(0);
+                                        EventItem::NodeEvent {
+                                            event,
+                                            ack_channel: drop_tx,
+                                        }
+                                    };
+
+                                    if tx_clone.send(event_item).is_err() {
+                                        // Event channel closed, stop listening
+                                        break;
                                     }
                                 }
-                            } else {
-                                // No attachment: create a fallback metadata with a receiver
-                                // timestamp. This loses the original sender timestamp.
-                                tracing::warn!(
-                                    "zenoh sample for input {} has no metadata attachment, using fallback",
-                                    input_id_clone
+                            })
+                            .catch_unwind()
+                            .await;
+
+                            if result.is_err() {
+                                tracing::error!(
+                                    "zenoh subscriber task for input {} panicked",
+                                    input_id_for_panic
                                 );
-                                Metadata::new(
-                                    clock_clone.new_timestamp(),
-                                    dora_message::metadata::ArrowTypeInfo::byte_array(
-                                        payload_len,
+                                let _ = tx_for_panic.send(EventItem::FatalError(
+                                    eyre::eyre!(
+                                        "zenoh subscriber task for input {} panicked",
+                                        input_id_for_panic
                                     ),
-                                )
-                            };
-
-                            // Try zero-copy path: if the payload is backed by SHM,
-                            // reference it directly without copying.
-                            let event_item = if let Some(shm) = payload.as_shm() {
-                                EventItem::ZenohShmInput {
-                                    id: input_id_clone.clone(),
-                                    metadata,
-                                    shm: shm.to_owned(),
-                                }
-                            } else {
-                                // Fallback: copy bytes for non-SHM payloads (e.g. remote subscribers)
-                                let payload_bytes = payload.to_bytes();
-                                let data_vec: AVec<u8, ConstAlign<128>> =
-                                    AVec::from_slice(128, &payload_bytes);
-                                let event = NodeEvent::Input {
-                                    id: input_id_clone.clone(),
-                                    metadata,
-                                    data: Some(DataMessage::Vec(data_vec)),
-                                };
-                                let (drop_tx, _drop_rx) = flume::bounded(0);
-                                EventItem::NodeEvent {
-                                    event,
-                                    ack_channel: drop_tx,
-                                }
-                            };
-
-                            if tx_clone.send(event_item).is_err() {
-                                // Event channel closed, stop listening
-                                break;
+                                ));
                             }
                         }
                     });
