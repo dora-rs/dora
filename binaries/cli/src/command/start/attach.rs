@@ -1,5 +1,5 @@
 use dora_core::descriptor::{CoreNodeKind, Descriptor, DescriptorExt, resolve_path};
-use dora_core::topics::zenoh_log_topic_for_dataflow;
+use dora_core::topics::zenoh_log_subscribe_all_for_dataflow;
 use dora_message::cli_to_coordinator::CoordinatorControlClient;
 use dora_message::common::LogMessage;
 use dora_message::coordinator_to_cli::{CheckDataflowReply, DataflowResult, StopDataflowReply};
@@ -125,7 +125,7 @@ pub async fn attach_dataflow(
     let zenoh_session = dora_core::topics::open_zenoh_session(Some(coordinator_addr))
         .await
         .wrap_err("failed to open zenoh session for log subscription")?;
-    let log_topic = zenoh_log_topic_for_dataflow(dataflow_id);
+    let log_topic = zenoh_log_subscribe_all_for_dataflow(dataflow_id);
     let subscriber = zenoh_session
         .declare_subscriber(&log_topic)
         .await

@@ -1,6 +1,6 @@
 use dora_core::{
     descriptor::Descriptor,
-    topics::zenoh_log_topic_for_build,
+    topics::zenoh_log_subscribe_all_for_build,
 };
 use dora_message::{
     BuildId,
@@ -53,7 +53,7 @@ pub async fn wait_until_dataflow_built(
     let zenoh_session = dora_core::topics::open_zenoh_session(Some(coordinator_addr))
         .await
         .wrap_err("failed to open zenoh session for build log subscription")?;
-    let log_topic = zenoh_log_topic_for_build(&build_id);
+    let log_topic = zenoh_log_subscribe_all_for_build(&build_id);
     let subscriber = zenoh_session
         .declare_subscriber(&log_topic)
         .await

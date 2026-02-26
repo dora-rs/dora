@@ -78,18 +78,68 @@ pub fn zenoh_output_publish_topic(
     format!("dora/{network_id}/{dataflow_id}/output/{node_id}/{output_id}")
 }
 
-/// Zenoh key expression for publishing log messages for a specific dataflow.
+/// Zenoh key expression for publishing a log message originating from a
+/// specific node in a dataflow.
 ///
-/// Format: `dora/log/dataflow/{dataflow_id}`
+/// Format: `dora/log/dataflow/{dataflow_id}/node/{node_id}`
 #[cfg(feature = "zenoh")]
-pub fn zenoh_log_topic_for_dataflow(dataflow_id: uuid::Uuid) -> String {
-    format!("dora/log/dataflow/{dataflow_id}")
+pub fn zenoh_log_topic_for_dataflow_node(
+    dataflow_id: uuid::Uuid,
+    node_id: &dora_message::id::NodeId,
+) -> String {
+    format!("dora/log/dataflow/{dataflow_id}/node/{node_id}")
 }
 
-/// Zenoh key expression for publishing log messages for a specific build.
+/// Zenoh key expression for publishing a daemon-level log message (not
+/// associated with a specific node) for a dataflow.
 ///
-/// Format: `dora/log/build/{build_id}`
+/// Format: `dora/log/dataflow/{dataflow_id}/daemon/{daemon_id}`
 #[cfg(feature = "zenoh")]
-pub fn zenoh_log_topic_for_build(build_id: &dora_message::BuildId) -> String {
-    format!("dora/log/build/{build_id}")
+pub fn zenoh_log_topic_for_dataflow_daemon(
+    dataflow_id: uuid::Uuid,
+    daemon_id: &dora_message::common::DaemonId,
+) -> String {
+    format!("dora/log/dataflow/{dataflow_id}/daemon/{daemon_id}")
+}
+
+/// Zenoh key expression for subscribing to log messages from **all** sources
+/// (nodes and daemons) of a dataflow.
+///
+/// Format: `dora/log/dataflow/{dataflow_id}/**`
+#[cfg(feature = "zenoh")]
+pub fn zenoh_log_subscribe_all_for_dataflow(dataflow_id: uuid::Uuid) -> String {
+    format!("dora/log/dataflow/{dataflow_id}/**")
+}
+
+/// Zenoh key expression for publishing a log message originating from a
+/// specific node during a build.
+///
+/// Format: `dora/log/build/{build_id}/node/{node_id}`
+#[cfg(feature = "zenoh")]
+pub fn zenoh_log_topic_for_build_node(
+    build_id: &dora_message::BuildId,
+    node_id: &dora_message::id::NodeId,
+) -> String {
+    format!("dora/log/build/{build_id}/node/{node_id}")
+}
+
+/// Zenoh key expression for publishing a daemon-level log message during a
+/// build (not associated with a specific node).
+///
+/// Format: `dora/log/build/{build_id}/daemon/{daemon_id}`
+#[cfg(feature = "zenoh")]
+pub fn zenoh_log_topic_for_build_daemon(
+    build_id: &dora_message::BuildId,
+    daemon_id: &dora_message::common::DaemonId,
+) -> String {
+    format!("dora/log/build/{build_id}/daemon/{daemon_id}")
+}
+
+/// Zenoh key expression for subscribing to log messages from **all** sources
+/// (nodes and daemons) of a build.
+///
+/// Format: `dora/log/build/{build_id}/**`
+#[cfg(feature = "zenoh")]
+pub fn zenoh_log_subscribe_all_for_build(build_id: &dora_message::BuildId) -> String {
+    format!("dora/log/build/{build_id}/**")
 }

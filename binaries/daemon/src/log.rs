@@ -7,7 +7,10 @@ use std::{
 use dora_core::{
     build::{BuildLogger, LogLevelOrStdout},
     config::NodeId,
-    topics::{zenoh_log_topic_for_build, zenoh_log_topic_for_dataflow},
+    topics::{
+        zenoh_log_topic_for_build_daemon, zenoh_log_topic_for_build_node,
+        zenoh_log_topic_for_dataflow_daemon, zenoh_log_topic_for_dataflow_node,
+    },
     uhlc,
 };
 use dora_message::{
@@ -261,9 +264,17 @@ impl Logger {
         match &self.destination {
             LogDestination::Zenoh { session } => {
                 let topic = if let Some(dataflow_id) = &message.dataflow_id {
-                    zenoh_log_topic_for_dataflow(*dataflow_id)
+                    if let Some(node_id) = &message.node_id {
+                        zenoh_log_topic_for_dataflow_node(*dataflow_id, node_id)
+                    } else {
+                        zenoh_log_topic_for_dataflow_daemon(*dataflow_id, &self.daemon_id)
+                    }
                 } else if let Some(build_id) = &message.build_id {
-                    zenoh_log_topic_for_build(build_id)
+                    if let Some(node_id) = &message.node_id {
+                        zenoh_log_topic_for_build_node(build_id, node_id)
+                    } else {
+                        zenoh_log_topic_for_build_daemon(build_id, &self.daemon_id)
+                    }
                 } else {
                     // No dataflow or build context; fall back to tracing.
                     Self::log_via_tracing(&message);
