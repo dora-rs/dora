@@ -42,6 +42,7 @@ mod event;
 pub mod merged;
 mod scheduler;
 mod thread;
+const ZENOH_PAYLOAD_ALIGNMENT: usize = 128;
 
 /// Asynchronous iterator over the incoming [`Event`]s destined for this node.
 ///
@@ -307,7 +308,10 @@ impl EventStream {
                 loop {
                     let sample = futures::executor::block_on(subscriber.recv_async());
                     let payload = match sample {
-                        Ok(sample) => AVec::from_slice(128, sample.payload().to_bytes().as_ref()),
+                        Ok(sample) => AVec::from_slice(
+                            ZENOH_PAYLOAD_ALIGNMENT,
+                            sample.payload().to_bytes().as_ref(),
+                        ),
                         Err(_) => break,
                     };
                     let item = EventItem::ZenohPayload {
@@ -414,12 +418,14 @@ impl EventStream {
                 event: NodeEvent::Input { data: None, .. },
                 ..
             } => {
-                let id = match &event {
+                let Some(id) = (match &event {
                     EventItem::NodeEvent {
                         event: NodeEvent::Input { id, .. },
                         ..
-                    } => id.clone(),
-                    _ => unreachable!(),
+                    } => Some(id.clone()),
+                    _ => None,
+                }) else {
+                    return;
                 };
                 if !self.zenoh_inputs.contains(&id) {
                     self.record_and_schedule(event);
@@ -632,7 +638,10 @@ impl EventStream {
 
     fn convert_event_item(item: EventItem) -> Event {
         match item {
-            EventItem::NodeEvent { event, ack_channel } => match event {
+            EventItem::NodeEvent {
+                event,
+                ack_channel: _ack_channel,
+            } => match event {
                 NodeEvent::Stop => Event::Stop(event::StopCause::Manual),
                 NodeEvent::Reload { operator_id } => Event::Reload { operator_id },
                 NodeEvent::InputClosed { id } => Event::InputClosed { id },
@@ -646,7 +655,6 @@ impl EventStream {
                     source_node_id,
                 },
                 NodeEvent::Input { id, metadata, data } => {
-                    let _ = ack_channel;
                     let data = data_to_arrow_array(data, &metadata);
                     match data {
                         Ok(data) => Event::Input {
@@ -666,9 +674,9 @@ impl EventStream {
             EventItem::TimeoutError(err) => {
                 Event::Error(format!("Timeout event stream error: {err:?}"))
             }
-            EventItem::ZenohPayload { .. } => {
-                Event::Error("unexpected standalone zenoh payload event".into())
-            }
+            EventItem::ZenohPayload { id, .. } => Event::Error(format!(
+                "unexpected standalone zenoh payload event for input `{id}`"
+            )),
         }
     }
 }
