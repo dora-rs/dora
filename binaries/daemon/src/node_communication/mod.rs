@@ -131,9 +131,7 @@ pub async fn spawn_listener_loop(
                         ),
                         shmem::listener_loop(s_events_close, daemon_tx, queue_sizes, clock),
                     );
-                    tracing::debug!(
-                        "all shmem listener loops finished for `{event_loop_node_id}`"
-                    );
+                    tracing::debug!("all shmem listener loops finished for `{event_loop_node_id}`");
                 }
             });
             let abort_handle = handle.abort_handle();
