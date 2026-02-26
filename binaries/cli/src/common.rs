@@ -65,7 +65,7 @@ pub(crate) fn handle_dataflow_result(
 pub(crate) async fn query_running_dataflows(
     client: &CliControlClient,
 ) -> eyre::Result<DataflowList> {
-    rpc("list dataflows", client.list(tarpc::context::current())).await
+    rpc::<DataflowList, _>("list dataflows", client.list(tarpc::context::current())).await
 }
 
 pub(crate) async fn resolve_dataflow_identifier_interactive(
@@ -100,16 +100,27 @@ pub(crate) async fn resolve_dataflow_identifier_interactive(
 #[derive(Debug, clap::Args)]
 pub(crate) struct CoordinatorOptions {
     /// Address of the dora coordinator
-    #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
-    pub coordinator_addr: IpAddr,
+    #[clap(long, value_name = "IP")]
+    pub coordinator_addr: Option<IpAddr>,
     /// Port number of the coordinator control server
-    #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
-    pub coordinator_port: u16,
+    #[clap(long, value_name = "PORT")]
+    pub coordinator_port: Option<u16>,
 }
 
 impl CoordinatorOptions {
     pub async fn connect_rpc(&self) -> eyre::Result<CliControlClient> {
-        connect_and_check_version(self.coordinator_addr, self.coordinator_port).await
+        let (addr, port) = self.resolve();
+        connect_to_coordinator_rpc(addr, port).await
+    }
+
+    /// Resolve coordinator address and port from CLI args, config file, or defaults
+    /// Priority: CLI args > config file > hardcoded defaults
+    pub fn resolve(&self) -> (IpAddr, u16) {
+        resolve_coordinator_addr(
+            self.coordinator_addr,
+            self.coordinator_port,
+            DORA_COORDINATOR_PORT_CONTROL_DEFAULT,
+        )
     }
 }
 
@@ -119,12 +130,46 @@ pub(crate) async fn connect_to_coordinator_rpc(
     control_port: u16,
 ) -> eyre::Result<CliControlClient> {
     let rpc_port = dora_coordinator_port_rpc(control_port);
-    let transport =
-        tarpc::serde_transport::tcp::connect((addr, rpc_port), tokio_serde::formats::Json::default)
-            .await
-            .context("failed to connect tarpc client to coordinator")?;
+    let transport = tarpc::serde_transport::tcp::connect((addr, rpc_port), || {
+        tokio_serde::formats::Json::default()
+    })
+    .await
+    .context("failed to connect tarpc client to coordinator")?;
     let client = CliControlClient::new(client::Config::default(), transport).spawn();
     Ok(client)
+}
+
+/// Resolve coordinator address and port from optional CLI args, config file, or defaults
+/// Priority: CLI args > config file > hardcoded defaults
+pub(crate) fn resolve_coordinator_addr(
+    cli_addr: Option<IpAddr>,
+    cli_port: Option<u16>,
+    default_port: u16,
+) -> (IpAddr, u16) {
+    use crate::command::config::DoraConfig;
+
+    // Try to load config (ignore errors, just use defaults)
+    let config = DoraConfig::load().ok();
+
+    let addr = cli_addr
+        .or_else(|| {
+            config
+                .as_ref()
+                .and_then(|c| c.coordinator.as_ref())
+                .and_then(|c| c.addr)
+        })
+        .unwrap_or(LOCALHOST);
+
+    let port = cli_port
+        .or_else(|| {
+            config
+                .as_ref()
+                .and_then(|c| c.coordinator.as_ref())
+                .and_then(|c| c.port)
+        })
+        .unwrap_or(default_port);
+
+    (addr, port)
 }
 
 pub(crate) async fn resolve_dataflow(dataflow: String) -> eyre::Result<PathBuf> {
@@ -168,7 +213,7 @@ pub(crate) async fn local_working_dir(
 pub(crate) async fn cli_and_daemon_on_same_machine(
     client: &CliControlClient,
 ) -> eyre::Result<bool> {
-    rpc(
+    rpc::<bool, _>(
         "check if CLI and daemon on same machine",
         client.cli_and_default_daemon_on_same_machine(tarpc::context::current()),
     )
@@ -179,99 +224,4 @@ pub(crate) fn write_events_to() -> Option<PathBuf> {
     std::env::var("DORA_WRITE_EVENTS_TO")
         .ok()
         .map(PathBuf::from)
-}
-
-/// Connect to the coordinator and check that the message format version is compatible.
-pub(crate) async fn connect_and_check_version(
-    addr: IpAddr,
-    control_port: u16,
-) -> eyre::Result<CliControlClient> {
-    let client = connect_to_coordinator_rpc(addr, control_port).await?;
-    check_coordinator_version(&client).await?;
-    Ok(client)
-}
-
-/// Check that the coordinator's message format version matches this CLI's.
-pub(crate) async fn check_coordinator_version(client: &CliControlClient) -> eyre::Result<()> {
-    let version_info = match client.get_version(tarpc::context::current()).await {
-        Ok(v) => v,
-        Err(_) => {
-            bail!(
-                "Failed to query coordinator version. \
-                 The coordinator may be running an older version of dora \
-                 that is incompatible with this CLI (message format v{}).",
-                dora_message::VERSION
-            );
-        }
-    };
-    let local = semver::Version::parse(dora_message::VERSION)
-        .map_err(|e| eyre::eyre!("failed to parse local message format version: {e}"))?;
-    let remote = semver::Version::parse(&version_info.message_format_version)
-        .map_err(|e| eyre::eyre!("failed to parse coordinator message format version: {e}"))?;
-    if !semver_compatible(&local, &remote) {
-        bail!(
-            "CLI message format (v{local}) is not compatible with \
-             coordinator message format (v{remote}). \
-             Please ensure CLI and coordinator are the same version."
-        );
-    }
-    Ok(())
-}
-
-/// Check if two semver versions are compatible using Rust/Cargo conventions:
-/// - For `0.0.x`: only the exact same version is compatible.
-/// - For `0.x.y` (x > 0): major and minor must match (patch may differ).
-/// - For `>=1.0.0`: only major must match.
-fn semver_compatible(a: &semver::Version, b: &semver::Version) -> bool {
-    if a.major != b.major {
-        return false;
-    }
-    if a.major == 0 {
-        if a.minor != b.minor {
-            return false;
-        }
-        if a.minor == 0 {
-            return a.patch == b.patch;
-        }
-    }
-    true
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn v(s: &str) -> semver::Version {
-        semver::Version::parse(s).unwrap()
-    }
-
-    #[test]
-    fn test_semver_compatible_pre_1_0() {
-        // Same minor: compatible (patch may differ)
-        assert!(semver_compatible(&v("0.7.0"), &v("0.7.0")));
-        assert!(semver_compatible(&v("0.7.0"), &v("0.7.1")));
-        assert!(semver_compatible(&v("0.7.3"), &v("0.7.1")));
-
-        // Different minor: incompatible
-        assert!(!semver_compatible(&v("0.7.0"), &v("0.8.0")));
-        assert!(!semver_compatible(&v("0.6.0"), &v("0.7.0")));
-    }
-
-    #[test]
-    fn test_semver_compatible_0_0_x() {
-        // 0.0.x requires exact patch match
-        assert!(semver_compatible(&v("0.0.1"), &v("0.0.1")));
-        assert!(!semver_compatible(&v("0.0.1"), &v("0.0.2")));
-    }
-
-    #[test]
-    fn test_semver_compatible_post_1_0() {
-        // Same major: compatible
-        assert!(semver_compatible(&v("1.0.0"), &v("1.0.0")));
-        assert!(semver_compatible(&v("1.0.0"), &v("1.2.3")));
-        assert!(semver_compatible(&v("2.1.0"), &v("2.5.3")));
-
-        // Different major: incompatible
-        assert!(!semver_compatible(&v("1.0.0"), &v("2.0.0")));
-    }
 }

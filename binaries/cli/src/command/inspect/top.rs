@@ -15,7 +15,7 @@ use dora_core::topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT;
 use dora_message::{coordinator_to_cli::NodeInfo, id::NodeId, tarpc};
 use eyre::Context;
 
-use crate::common::{connect_and_check_version, rpc};
+use crate::common::{connect_to_coordinator_rpc, rpc};
 use ratatui::{
     Frame, Terminal,
     backend::{Backend, CrosstermBackend},
@@ -24,8 +24,6 @@ use ratatui::{
     widgets::{Block, Borders, Cell, Row, Table, TableState},
 };
 use uuid::Uuid;
-
-use crate::LOCALHOST;
 
 use super::super::{Executable, default_tracing};
 
@@ -41,11 +39,11 @@ use super::super::{Executable, default_tracing};
 #[derive(Debug, Args)]
 pub struct Top {
     /// Address of the dora coordinator
-    #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
-    pub coordinator_addr: std::net::IpAddr,
+    #[clap(long, value_name = "IP")]
+    pub coordinator_addr: Option<std::net::IpAddr>,
     /// Port number of the coordinator control server
-    #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
-    pub coordinator_port: u16,
+    #[clap(long, value_name = "PORT")]
+    pub coordinator_port: Option<u16>,
     /// Refresh interval in seconds
     #[clap(long, value_name = "SECONDS", default_value_t = 2)]
     pub refresh_interval: u64,
@@ -54,6 +52,13 @@ pub struct Top {
 impl Executable for Top {
     async fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
+
+        use crate::common::resolve_coordinator_addr;
+        let (addr, port) = resolve_coordinator_addr(
+            self.coordinator_addr,
+            self.coordinator_port,
+            DORA_COORDINATOR_PORT_CONTROL_DEFAULT,
+        );
 
         // Setup terminal
         enable_raw_mode()?;
@@ -64,13 +69,7 @@ impl Executable for Top {
 
         // Create app and run it
         let refresh_duration = Duration::from_secs(self.refresh_interval);
-        let res = run_app(
-            &mut terminal,
-            self.coordinator_addr,
-            self.coordinator_port,
-            refresh_duration,
-        )
-        .await;
+        let res = run_app(&mut terminal, addr, port, refresh_duration).await;
 
         // Restore terminal
         disable_raw_mode()?;
@@ -260,7 +259,7 @@ async fn run_app<B: Backend>(
     let mut node_infos: Vec<NodeInfo> = Vec::new();
 
     // Reuse coordinator connection
-    let client = connect_and_check_version(coordinator_addr, coordinator_port)
+    let client = connect_to_coordinator_rpc(coordinator_addr, coordinator_port)
         .await
         .wrap_err("Failed to connect to coordinator")?;
 

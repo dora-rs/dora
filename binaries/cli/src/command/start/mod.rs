@@ -7,7 +7,7 @@ use crate::tcp::AsyncTcpConnection;
 use crate::{
     command::start::attach::attach_dataflow,
     common::{
-        connect_and_check_version, local_working_dir, long_context, resolve_dataflow, rpc,
+        connect_to_coordinator_rpc, local_working_dir, long_context, resolve_dataflow, rpc,
         write_events_to,
     },
     output::print_log_message,
@@ -15,7 +15,7 @@ use crate::{
 };
 use dora_core::{
     descriptor::{Descriptor, DescriptorExt},
-    topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST},
+    topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT,
 };
 use dora_message::{
     cli_to_coordinator::{CliControlClient, LegacyControlRequest, StartRequest},
@@ -41,11 +41,11 @@ pub struct Start {
     #[clap(long)]
     name: Option<String>,
     /// Address of the dora coordinator
-    #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
-    coordinator_addr: IpAddr,
+    #[clap(long, value_name = "IP")]
+    coordinator_addr: Option<IpAddr>,
     /// Port number of the coordinator control server
-    #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
-    coordinator_port: u16,
+    #[clap(long, value_name = "PORT")]
+    coordinator_port: Option<u16>,
     /// Attach to the dataflow and wait for its completion
     #[clap(long, action)]
     attach: bool,
@@ -63,7 +63,13 @@ pub struct Start {
 impl Executable for Start {
     async fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
-        let coordinator_socket: SocketAddr = (self.coordinator_addr, self.coordinator_port).into();
+        use crate::common::resolve_coordinator_addr;
+        let (addr, port) = resolve_coordinator_addr(
+            self.coordinator_addr,
+            self.coordinator_port,
+            DORA_COORDINATOR_PORT_CONTROL_DEFAULT,
+        );
+        let coordinator_socket = (addr, port).into();
 
         let (dataflow, dataflow_descriptor, client, dataflow_id) =
             start_dataflow(self.dataflow, self.name, coordinator_socket, self.uv).await?;
@@ -124,7 +130,7 @@ async fn start_dataflow(
     let dataflow_session =
         DataflowSession::read_session(&dataflow).context("failed to read DataflowSession")?;
 
-    let client = connect_and_check_version(coordinator_socket.ip(), coordinator_socket.port())
+    let client = connect_to_coordinator_rpc(coordinator_socket.ip(), coordinator_socket.port())
         .await
         .wrap_err("failed to connect to dora coordinator")?;
 

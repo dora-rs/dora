@@ -3,13 +3,13 @@ use std::{io::Write, net::SocketAddr};
 use super::{Executable, default_tracing};
 use crate::{
     common::{
-        connect_and_check_version, long_context, resolve_dataflow_identifier_interactive, rpc,
+        connect_to_coordinator_rpc, long_context, resolve_dataflow_identifier_interactive, rpc,
     },
     output::print_log_message,
     tcp::AsyncTcpConnection,
 };
 use clap::Args;
-use dora_core::topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST};
+use dora_core::topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT;
 use dora_message::{
     cli_to_coordinator::{CliControlClient, LegacyControlRequest},
     common::LogMessage,
@@ -33,18 +33,26 @@ pub struct LogsArgs {
     #[clap(long, short)]
     pub follow: bool,
     /// Address of the dora coordinator
-    #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
-    pub coordinator_addr: std::net::IpAddr,
+    #[clap(long, value_name = "IP")]
+    pub coordinator_addr: Option<std::net::IpAddr>,
     /// Port number of the coordinator control server
-    #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
-    pub coordinator_port: u16,
+    #[clap(long, value_name = "PORT")]
+    pub coordinator_port: Option<u16>,
 }
 
 impl Executable for LogsArgs {
     async fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
 
-        let client = connect_and_check_version(self.coordinator_addr, self.coordinator_port)
+        // Resolve coordinator address and port from CLI args, config, or defaults
+        use crate::common::resolve_coordinator_addr;
+        let (addr, port) = resolve_coordinator_addr(
+            self.coordinator_addr,
+            self.coordinator_port,
+            DORA_COORDINATOR_PORT_CONTROL_DEFAULT,
+        );
+
+        let client = connect_to_coordinator_rpc(addr, port)
             .await
             .wrap_err("failed to connect to dora coordinator")?;
         let uuid =
@@ -55,7 +63,7 @@ impl Executable for LogsArgs {
             self.node,
             self.tail,
             self.follow,
-            (self.coordinator_addr, self.coordinator_port).into(),
+            (addr, port).into(),
         )
         .await
     }

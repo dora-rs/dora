@@ -144,7 +144,7 @@ async fn info(
     // Collect statistics by subscribing to messages
     let stats = TopicStats::default();
 
-    let coordinator_addr = coordinator.coordinator_addr;
+    let (coordinator_addr, _) = coordinator.resolve();
 
     let zenoh_session = open_zenoh_session(Some(coordinator_addr))
         .await

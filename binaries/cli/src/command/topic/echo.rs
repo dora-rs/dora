@@ -75,8 +75,9 @@ async fn inspect(
 ) -> eyre::Result<()> {
     let client = coordinator.connect_rpc().await?;
     let (dataflow_id, topics) = selector.resolve(&client).await?;
+    let (coordinator_addr, _) = coordinator.resolve();
 
-    let zenoh_session = open_zenoh_session(Some(coordinator.coordinator_addr))
+    let zenoh_session = open_zenoh_session(Some(coordinator_addr))
         .await
         .context("failed to open zenoh session")?;
 

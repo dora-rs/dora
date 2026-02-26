@@ -1,5 +1,5 @@
 use super::{Executable, default_tracing, up};
-use dora_core::topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST};
+use dora_core::topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT;
 use std::net::IpAddr;
 use std::path::PathBuf;
 
@@ -10,20 +10,23 @@ pub struct Destroy {
     #[clap(long, hide = true)]
     config: Option<PathBuf>,
     /// Address of the dora coordinator
-    #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
-    coordinator_addr: IpAddr,
+    #[clap(long, value_name = "IP")]
+    coordinator_addr: Option<IpAddr>,
     /// Port number of the coordinator control server
-    #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
-    coordinator_port: u16,
+    #[clap(long, value_name = "PORT")]
+    coordinator_port: Option<u16>,
 }
 
 impl Executable for Destroy {
     async fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
-        up::destroy(
-            self.config.as_deref(),
-            (self.coordinator_addr, self.coordinator_port).into(),
-        )
-        .await
+        use crate::common::resolve_coordinator_addr;
+        let (addr, port) = resolve_coordinator_addr(
+            self.coordinator_addr,
+            self.coordinator_port,
+            DORA_COORDINATOR_PORT_CONTROL_DEFAULT,
+        );
+
+        up::destroy(self.config.as_deref(), (addr, port).into()).await
     }
 }

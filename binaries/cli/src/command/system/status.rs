@@ -1,8 +1,5 @@
 use crate::command::{Executable, default_tracing};
-use crate::{
-    LOCALHOST,
-    common::{connect_to_coordinator_rpc, rpc},
-};
+use crate::common::{connect_to_coordinator_rpc, rpc};
 use dora_core::descriptor::DescriptorExt;
 use dora_core::{descriptor::Descriptor, topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT};
 use dora_message::{
@@ -92,7 +89,7 @@ pub async fn check_environment(coordinator_addr: SocketAddr) -> eyre::Result<()>
 }
 
 pub async fn daemon_running(client: &CliControlClient) -> Result<bool, eyre::ErrReport> {
-    rpc(
+    rpc::<bool, _>(
         "check daemon connection",
         client.daemon_connected(tarpc::context::current()),
     )
@@ -100,7 +97,11 @@ pub async fn daemon_running(client: &CliControlClient) -> Result<bool, eyre::Err
 }
 
 async fn query_running_dataflow_count(client: &CliControlClient) -> Result<usize, eyre::ErrReport> {
-    let list = rpc("list dataflows", client.list(tarpc::context::current())).await?;
+    let list = rpc::<dora_message::coordinator_to_cli::DataflowList, _>(
+        "list dataflows",
+        client.list(tarpc::context::current()),
+    )
+    .await?;
     Ok(list
         .0
         .iter()
@@ -114,16 +115,23 @@ pub struct Status {
     #[clap(long, value_name = "PATH", value_hint = clap::ValueHint::FilePath)]
     dataflow: Option<PathBuf>,
     /// Address of the dora coordinator
-    #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
-    coordinator_addr: IpAddr,
+    #[clap(long, value_name = "IP")]
+    coordinator_addr: Option<IpAddr>,
     /// Port number of the coordinator control server
-    #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
-    coordinator_port: u16,
+    #[clap(long, value_name = "PORT")]
+    coordinator_port: Option<u16>,
 }
 
 impl Executable for Status {
     async fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
+
+        use crate::common::resolve_coordinator_addr;
+        let (addr, port) = resolve_coordinator_addr(
+            self.coordinator_addr,
+            self.coordinator_port,
+            DORA_COORDINATOR_PORT_CONTROL_DEFAULT,
+        );
 
         match self.dataflow {
             Some(dataflow) => {
@@ -134,11 +142,9 @@ impl Executable for Status {
                     .ok_or_else(|| eyre::eyre!("dataflow path has no parent dir"))?
                     .to_owned();
                 Descriptor::blocking_read(&dataflow)?.check(&working_dir)?;
-                check_environment((self.coordinator_addr, self.coordinator_port).into()).await?
+                check_environment((addr, port).into()).await?
             }
-            None => {
-                check_environment((self.coordinator_addr, self.coordinator_port).into()).await?
-            }
+            None => check_environment((addr, port).into()).await?,
         }
 
         Ok(())

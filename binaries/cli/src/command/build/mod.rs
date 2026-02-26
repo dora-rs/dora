@@ -57,7 +57,7 @@ use std::{collections::BTreeMap, net::IpAddr};
 
 use super::{Executable, default_tracing};
 use crate::{
-    common::{connect_and_check_version, local_working_dir, resolve_dataflow},
+    common::{connect_to_coordinator_rpc, local_working_dir, resolve_dataflow},
     session::DataflowSession,
 };
 
@@ -264,7 +264,7 @@ async fn connect_to_coordinator_rpc_with_defaults(
 ) -> eyre::Result<CliControlClient> {
     let addr = coordinator_addr.unwrap_or(LOCALHOST);
     let control_port = coordinator_port.unwrap_or(DORA_COORDINATOR_PORT_CONTROL_DEFAULT);
-    connect_and_check_version(addr, control_port).await
+    connect_to_coordinator_rpc(addr, control_port).await
 }
 
 fn coordinator_socket(
