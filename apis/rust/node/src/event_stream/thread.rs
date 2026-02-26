@@ -2,11 +2,13 @@ use dora_core::{config::NodeId, uhlc};
 use dora_message::{
     daemon_to_node::{DaemonReply, NodeEvent},
     id::DataId,
+    metadata::Metadata,
     node_to_daemon::{DaemonRequest, Timestamped},
 };
 use eyre::eyre;
 use flume::RecvTimeoutError;
 use std::{collections::BTreeSet, sync::Arc, time::Duration};
+use zenoh::shm::ZShm;
 
 use crate::daemon_connection::DaemonChannel;
 
@@ -30,6 +32,13 @@ pub enum EventItem {
     NodeEvent {
         event: NodeEvent,
         ack_channel: flume::Sender<()>,
+    },
+    /// Zero-copy input delivered via zenoh SHM. The ZShm buffer references
+    /// shared memory directly without copying the payload.
+    ZenohShmInput {
+        id: DataId,
+        metadata: Metadata,
+        shm: ZShm,
     },
     FatalError(eyre::Report),
     TimeoutError(eyre::Report),
