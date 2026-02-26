@@ -35,6 +35,14 @@ impl RedbStore {
     pub fn open(path: &Path) -> Result<Self> {
         let db = Database::create(path).wrap_err("failed to open redb database")?;
 
+        // Restrict file permissions to owner-only on Unix.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+                .wrap_err("failed to set redb file permissions to 0600")?;
+        }
+
         // Ensure tables exist and check schema version.
         let txn = db
             .begin_write()
@@ -79,8 +87,11 @@ fn encode<T: serde::Serialize>(value: &T) -> Result<Vec<u8>> {
 }
 
 fn decode<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T> {
-    let (val, _) = bincode::serde::decode_from_slice(bytes, BINCODE_CONFIG)
-        .map_err(|e| eyre!("decode error: {e}"))?;
+    // Use a 64 MiB limit to guard against corrupted data that encodes huge
+    // allocation sizes in bincode's varint length prefixes.
+    let config = bincode::config::standard().with_limit::<{ 64 * 1024 * 1024 }>();
+    let (val, _) =
+        bincode::serde::decode_from_slice(bytes, config).map_err(|e| eyre!("decode error: {e}"))?;
     Ok(val)
 }
 
@@ -147,22 +158,22 @@ impl CoordinatorStore for RedbStore {
     // -- Dataflow state --
 
     fn put_dataflow(&self, record: &DataflowRecord) -> Result<()> {
-        let key = record.uuid.as_bytes().to_vec();
+        let key: &[u8] = record.uuid.as_bytes();
         let value = encode(record)?;
         let txn = self.db.begin_write()?;
         {
             let mut table = txn.open_table(DATAFLOWS)?;
-            table.insert(key.as_slice(), value.as_slice())?;
+            table.insert(key, value.as_slice())?;
         }
         txn.commit()?;
         Ok(())
     }
 
     fn get_dataflow(&self, uuid: &Uuid) -> Result<Option<DataflowRecord>> {
-        let key = uuid.as_bytes().to_vec();
+        let key: &[u8] = uuid.as_bytes();
         let txn = self.db.begin_read()?;
         let table = txn.open_table(DATAFLOWS)?;
-        match table.get(key.as_slice())? {
+        match table.get(key)? {
             Some(value) => Ok(Some(decode(value.value())?)),
             None => Ok(None),
         }
@@ -180,11 +191,11 @@ impl CoordinatorStore for RedbStore {
     }
 
     fn delete_dataflow(&self, uuid: &Uuid) -> Result<()> {
-        let key = uuid.as_bytes().to_vec();
+        let key: &[u8] = uuid.as_bytes();
         let txn = self.db.begin_write()?;
         {
             let mut table = txn.open_table(DATAFLOWS)?;
-            table.remove(key.as_slice())?;
+            table.remove(key)?;
         }
         txn.commit()?;
         Ok(())
@@ -193,22 +204,22 @@ impl CoordinatorStore for RedbStore {
     // -- Build state --
 
     fn put_build(&self, record: &BuildRecord) -> Result<()> {
-        let key = record.build_id.as_bytes().to_vec();
+        let key: &[u8] = record.build_id.as_bytes();
         let value = encode(record)?;
         let txn = self.db.begin_write()?;
         {
             let mut table = txn.open_table(BUILDS)?;
-            table.insert(key.as_slice(), value.as_slice())?;
+            table.insert(key, value.as_slice())?;
         }
         txn.commit()?;
         Ok(())
     }
 
     fn get_build(&self, build_id: &Uuid) -> Result<Option<BuildRecord>> {
-        let key = build_id.as_bytes().to_vec();
+        let key: &[u8] = build_id.as_bytes();
         let txn = self.db.begin_read()?;
         let table = txn.open_table(BUILDS)?;
-        match table.get(key.as_slice())? {
+        match table.get(key)? {
             Some(value) => Ok(Some(decode(value.value())?)),
             None => Ok(None),
         }
@@ -226,11 +237,11 @@ impl CoordinatorStore for RedbStore {
     }
 
     fn delete_build(&self, build_id: &Uuid) -> Result<()> {
-        let key = build_id.as_bytes().to_vec();
+        let key: &[u8] = build_id.as_bytes();
         let txn = self.db.begin_write()?;
         {
             let mut table = txn.open_table(BUILDS)?;
-            table.remove(key.as_slice())?;
+            table.remove(key)?;
         }
         txn.commit()?;
         Ok(())
@@ -368,6 +379,44 @@ mod tests {
             let loaded = store.get_dataflow(&uuid).unwrap().unwrap();
             assert_eq!(loaded.name.as_deref(), Some("persistent"));
             assert_eq!(loaded.status, crate::DataflowStatus::Running);
+        }
+    }
+
+    #[test]
+    fn reopen_same_version_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("version.redb");
+        RedbStore::open(&path).unwrap();
+        // Reopening with the same SCHEMA_VERSION should succeed.
+        RedbStore::open(&path).unwrap();
+    }
+
+    #[test]
+    fn schema_version_mismatch_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mismatch.redb");
+
+        // Create a database and write a different schema version directly.
+        {
+            let db = Database::create(&path).unwrap();
+            let txn = db.begin_write().unwrap();
+            {
+                let mut meta = txn.open_table(META).unwrap();
+                meta.insert(SCHEMA_VERSION_KEY, SCHEMA_VERSION + 1).unwrap();
+            }
+            txn.commit().unwrap();
+        }
+
+        // RedbStore::open should refuse due to version mismatch.
+        match RedbStore::open(&path) {
+            Ok(_) => panic!("expected schema version mismatch error"),
+            Err(e) => {
+                let msg = format!("{e}");
+                assert!(
+                    msg.contains("schema version mismatch"),
+                    "expected schema version mismatch error, got: {msg}"
+                );
+            }
         }
     }
 }

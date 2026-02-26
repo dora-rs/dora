@@ -152,6 +152,7 @@ async fn start_inner(
                         record.status = StoreDataflowStatus::Failed {
                             error: "coordinator restarted".into(),
                         };
+                        record.generation += 1;
                         record.updated_at = state::now_millis();
                         if let Err(e) = store.put_dataflow(&record) {
                             tracing::warn!("failed to update stale dataflow record: {e}");
@@ -343,8 +344,9 @@ async fn start_inner(
                                 } else {
                                     StoreDataflowStatus::Succeeded
                                 };
-                                if let Err(e) =
-                                    store.put_dataflow(&finished_dataflow.make_record(final_status))
+                                if let Err(e) = finished_dataflow
+                                    .make_record(final_status)
+                                    .and_then(|r| store.put_dataflow(&r))
                                 {
                                     tracing::warn!("failed to persist dataflow finish: {e}");
                                 }
@@ -356,7 +358,7 @@ async fn start_inner(
                                     finished_dataflow.spawn_result,
                                     CachedResult::Cached { .. }
                                 ) {
-                                    log::error!("pending spawn result on dataflow finish");
+                                    tracing::error!("pending spawn result on dataflow finish");
                                 }
                             }
                         }
@@ -459,9 +461,10 @@ async fn start_inner(
                                 Ok(mut dataflow) => {
                                     let uuid = dataflow.uuid;
                                     // Persist: dataflow started
-                                    if let Err(e) = store.put_dataflow(
-                                        &dataflow.make_record(StoreDataflowStatus::Pending),
-                                    ) {
+                                    if let Err(e) = dataflow
+                                        .make_record(StoreDataflowStatus::Pending)
+                                        .and_then(|r| store.put_dataflow(&r))
+                                    {
                                         tracing::warn!("failed to persist dataflow start: {e}");
                                     }
                                     running_dataflows.insert(uuid, dataflow);
@@ -554,6 +557,13 @@ async fn start_inner(
 
                             match dataflow {
                                 Ok(dataflow) => {
+                                    // Persist: dataflow stopping
+                                    if let Err(e) = dataflow
+                                        .make_record(StoreDataflowStatus::Stopping)
+                                        .and_then(|r| store.put_dataflow(&r))
+                                    {
+                                        tracing::warn!("failed to persist dataflow stopping: {e}");
+                                    }
                                     dataflow.stop_reply_senders.push(reply_sender);
                                 }
                                 Err(err) => {
@@ -589,6 +599,15 @@ async fn start_inner(
 
                                 match dataflow {
                                     Ok(dataflow) => {
+                                        // Persist: dataflow stopping
+                                        if let Err(e) = dataflow
+                                            .make_record(StoreDataflowStatus::Stopping)
+                                            .and_then(|r| store.put_dataflow(&r))
+                                        {
+                                            tracing::warn!(
+                                                "failed to persist dataflow stopping: {e}"
+                                            );
+                                        }
                                         dataflow.stop_reply_senders.push(reply_sender);
                                     }
                                     Err(err) => {
@@ -981,9 +1000,10 @@ async fn start_inner(
                                     ControlRequestReply::DataflowSpawned { uuid: dataflow_id },
                                 ));
                                 // Persist: dataflow now running
-                                if let Err(e) = store.put_dataflow(
-                                    &dataflow.make_record(StoreDataflowStatus::Running),
-                                ) {
+                                if let Err(e) = dataflow
+                                    .make_record(StoreDataflowStatus::Running)
+                                    .and_then(|r| store.put_dataflow(&r))
+                                {
                                     tracing::warn!("failed to persist dataflow running: {e}");
                                 }
                             }

@@ -174,10 +174,11 @@ pub(crate) fn now_millis() -> u64 {
 impl RunningDataflow {
     /// Create a persistable [`DataflowRecord`] snapshot of this dataflow.
     /// Increments `store_generation` on each call.
-    pub(crate) fn make_record(&mut self, status: DataflowStatus) -> DataflowRecord {
+    pub(crate) fn make_record(&mut self, status: DataflowStatus) -> eyre::Result<DataflowRecord> {
         self.store_generation += 1;
-        let descriptor_json = serde_json::to_string(&self.descriptor).unwrap_or_default();
-        DataflowRecord {
+        let descriptor_json = serde_json::to_string(&self.descriptor)
+            .map_err(|e| eyre::eyre!("failed to serialize descriptor: {e}"))?;
+        Ok(DataflowRecord {
             uuid: self.uuid,
             name: self.name.clone(),
             descriptor_json,
@@ -186,7 +187,7 @@ impl RunningDataflow {
             generation: self.store_generation,
             created_at: self.created_at,
             updated_at: now_millis(),
-        }
+        })
     }
 }
 

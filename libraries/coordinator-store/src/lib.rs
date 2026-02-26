@@ -95,6 +95,7 @@ pub trait CoordinatorStore: Send + Sync {
     fn delete_dataflow(&self, uuid: &Uuid) -> Result<()>;
 
     // -- Build state --
+    // NOTE: Not yet wired into the coordinator event loop (Phase 2).
 
     fn put_build(&self, record: &BuildRecord) -> Result<()>;
     fn get_build(&self, build_id: &Uuid) -> Result<Option<BuildRecord>>;
