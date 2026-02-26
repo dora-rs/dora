@@ -563,7 +563,7 @@ impl Daemon {
                     }
                 }
                 Event::DaemonError(err) => {
-                    tracing::error!("Daemon error: {err:?}");
+                    bail!(err.wrap_err("fatal error from background task"));
                 }
                 Event::SpawnNodeResult {
                     dataflow_id,
@@ -600,20 +600,19 @@ impl Daemon {
                     result,
                 } => {
                     if let Some(client) = self.state.coordinator_client() {
-                        let ctx = tarpc::context::current();
-                        if let Err(err) = client
-                            .spawn_result(
-                                ctx,
-                                dataflow_id,
-                                result.map_err(|err| format!("{err:?}")),
-                            )
-                            .await
-                        {
-                            tracing::error!(
-                                ?err,
-                                "failed to send spawn_result notification to coordinator"
-                            );
-                        }
+                        let client = client.clone();
+                        let result = result.map_err(|err| format!("{err:?}"));
+                        tokio::spawn(async move {
+                            if let Err(err) = client
+                                .spawn_result(tarpc::context::current(), dataflow_id, result)
+                                .await
+                            {
+                                tracing::error!(
+                                    ?err,
+                                    "failed to send spawn_result notification to coordinator"
+                                );
+                            }
+                        });
                     }
                 }
                 Event::NodeStopped {
@@ -1098,6 +1097,8 @@ impl Daemon {
             dataflow_id,
             self.state.daemon_id().clone(),
             dataflow_descriptor.clone(),
+            self.state.events_tx.clone(),
+            self.state.clock.clone(),
         );
         let mut dataflow = match self.state.running.entry(dataflow_id) {
             dashmap::Entry::Vacant(entry) => {
@@ -2187,11 +2188,25 @@ impl Daemon {
                             ),
                         )
                         .await;
-                    let ctx = tarpc::context::current();
-                    client
-                        .all_nodes_ready(ctx, dataflow_id, exited)
-                        .await
-                        .map_err(|err| eyre!("failed to send AllNodesReady RPC: {err}"))?;
+                    let client = client.clone();
+                    let events_tx = self.state.events_tx.clone();
+                    let clock = self.state.clock.clone();
+                    tokio::spawn(async move {
+                        if let Err(err) = client
+                            .all_nodes_ready(tarpc::context::current(), dataflow_id, exited)
+                            .await
+                        {
+                            let _ = events_tx
+                                .send(Timestamped {
+                                    inner: Event::DaemonError(
+                                        eyre::eyre!(err)
+                                            .wrap_err("failed to send AllNodesReady RPC"),
+                                    ),
+                                    timestamp: clock.new_timestamp(),
+                                })
+                                .await;
+                        }
+                    });
                 }
             }
         }
@@ -3038,11 +3053,13 @@ impl RunningDataflow {
         dataflow_id: Uuid,
         daemon_id: DaemonId,
         dataflow_descriptor: Descriptor,
+        events_tx: tokio::sync::mpsc::Sender<Timestamped<Event>>,
+        clock: Arc<HLC>,
     ) -> RunningDataflow {
         let (finished_tx, _) = broadcast::channel(1);
         Self {
             id: dataflow_id,
-            pending_nodes: PendingNodes::new(dataflow_id, daemon_id),
+            pending_nodes: PendingNodes::new(dataflow_id, daemon_id, events_tx, clock),
             dataflow_started: false,
             subscribe_channels: HashMap::new(),
             drop_channels: HashMap::new(),

@@ -1,17 +1,20 @@
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::{
+    collections::{BTreeSet, HashMap, HashSet},
+    sync::Arc,
+};
 
 use dora_core::{config::NodeId, uhlc::HLC};
 use dora_message::{
     DataflowId,
-    common::DaemonId,
+    common::{DaemonId, Timestamped},
     daemon_to_coordinator::{CoordinatorNotifyClient, LogMessage},
     daemon_to_node::DaemonReply,
     tarpc,
 };
 use eyre::bail;
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
 
-use crate::{CascadingErrorCauses, log::DataflowLogger};
+use crate::{CascadingErrorCauses, Event, log::DataflowLogger};
 
 pub struct PendingNodes {
     dataflow_id: DataflowId,
@@ -35,10 +38,20 @@ pub struct PendingNodes {
 
     /// Whether the local init result was already reported to the coordinator.
     reported_init_to_coordinator: bool,
+
+    /// Channel to send fatal errors back to the daemon event loop.
+    events_tx: mpsc::Sender<Timestamped<Event>>,
+    /// Clock for timestamping events sent to the event loop.
+    clock: Arc<HLC>,
 }
 
 impl PendingNodes {
-    pub fn new(dataflow_id: DataflowId, daemon_id: DaemonId) -> Self {
+    pub fn new(
+        dataflow_id: DataflowId,
+        daemon_id: DaemonId,
+        events_tx: mpsc::Sender<Timestamped<Event>>,
+        clock: Arc<HLC>,
+    ) -> Self {
         Self {
             dataflow_id,
             daemon_id,
@@ -47,6 +60,8 @@ impl PendingNodes {
             waiting_subscribers: HashMap::new(),
             exited_before_subscribe: Default::default(),
             reported_init_to_coordinator: false,
+            events_tx,
+            clock,
         }
     }
 
@@ -267,11 +282,26 @@ impl PendingNodes {
             )
             .await;
 
-        let ctx = tarpc::context::current();
-        client
-            .all_nodes_ready(ctx, self.dataflow_id, self.exited_before_subscribe.clone())
-            .await
-            .map_err(|err| eyre::eyre!("failed to send AllNodesReady RPC: {err}"))?;
+        let client = client.clone();
+        let dataflow_id = self.dataflow_id;
+        let exited = self.exited_before_subscribe.clone();
+        let events_tx = self.events_tx.clone();
+        let clock = self.clock.clone();
+        tokio::spawn(async move {
+            if let Err(err) = client
+                .all_nodes_ready(tarpc::context::current(), dataflow_id, exited)
+                .await
+            {
+                let _ = events_tx
+                    .send(Timestamped {
+                        inner: Event::DaemonError(
+                            eyre::eyre!(err).wrap_err("failed to send AllNodesReady RPC"),
+                        ),
+                        timestamp: clock.new_timestamp(),
+                    })
+                    .await;
+            }
+        });
 
         Ok(())
     }
