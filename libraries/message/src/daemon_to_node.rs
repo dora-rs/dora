@@ -26,6 +26,9 @@ pub struct NodeConfig {
     pub dataflow_descriptor: serde_yaml::Value,
     pub dynamic: bool,
     pub write_events_to: Option<PathBuf>,
+    /// The coordinator address for zenoh peer discovery.
+    /// Used by nodes to connect to the same zenoh network as the daemon.
+    pub coordinator_addr: Option<std::net::IpAddr>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
