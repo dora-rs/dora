@@ -105,8 +105,18 @@ pub(crate) async fn handle_destroy(
     daemon_connections: &mut DaemonConnections,
     abortable_events: &futures::stream::AbortHandle,
     clock: &HLC,
+    store: &dyn adora_coordinator_store::CoordinatorStore,
 ) -> Result<(), eyre::ErrReport> {
     abortable_events.abort();
+    // Persist Stopping for all running dataflows before sending stop messages.
+    for dataflow in running_dataflows.values_mut() {
+        if let Err(e) = dataflow
+            .make_record(adora_coordinator_store::DataflowStatus::Stopping)
+            .and_then(|r| store.put_dataflow(&r))
+        {
+            tracing::warn!("failed to persist dataflow stopping on destroy: {e}");
+        }
+    }
     for dataflow_uuid in running_dataflows.keys().cloned().collect::<Vec<_>>() {
         let _ = stop_dataflow(
             running_dataflows,

@@ -334,16 +334,25 @@ async fn start_inner(
                                         }),
                                 };
                                 // Persist: dataflow finished
-                                let has_errors = dataflow_results
-                                    .get(&uuid)
-                                    .is_some_and(|r| r.values().any(|dr| !dr.is_ok()));
-                                let final_status = if has_errors {
-                                    StoreDataflowStatus::Failed {
-                                        error: "one or more nodes failed".into(),
-                                    }
-                                } else {
-                                    StoreDataflowStatus::Succeeded
-                                };
+                                let final_status =
+                                    if let Some(results) = dataflow_results.get(&uuid) {
+                                        let errors: Vec<String> = results
+                                            .values()
+                                            .flat_map(|dr| dr.node_results.iter())
+                                            .filter_map(|(node_id, r)| {
+                                                r.as_ref().err().map(|e| format!("{node_id}: {e}"))
+                                            })
+                                            .collect();
+                                        if errors.is_empty() {
+                                            StoreDataflowStatus::Succeeded
+                                        } else {
+                                            StoreDataflowStatus::Failed {
+                                                error: errors.join("; "),
+                                            }
+                                        }
+                                    } else {
+                                        StoreDataflowStatus::Succeeded
+                                    };
                                 if let Err(e) = finished_dataflow
                                     .make_record(final_status)
                                     .and_then(|r| store.put_dataflow(&r))
@@ -674,6 +683,7 @@ async fn start_inner(
                                 &mut daemon_connections,
                                 &abort_handle,
                                 &clock,
+                                store.as_ref(),
                             )
                             .await
                             .map(|()| ControlRequestReply::DestroyOk);
@@ -888,6 +898,7 @@ async fn start_inner(
                     &mut daemon_connections,
                     &abort_handle,
                     &clock,
+                    store.as_ref(),
                 )
                 .await?;
             }
@@ -1010,6 +1021,17 @@ async fn start_inner(
                         }
                         Err(err) => {
                             tracing::warn!("error while spawning dataflow `{dataflow_id}`");
+                            // Persist: spawn failed
+                            if let Err(e) = dataflow
+                                .make_record(StoreDataflowStatus::Failed {
+                                    error: format!("spawn failed: {err}"),
+                                })
+                                .and_then(|r| store.put_dataflow(&r))
+                            {
+                                tracing::warn!(
+                                    "failed to persist dataflow spawn failure: {e}"
+                                );
+                            }
                             dataflow.spawn_result.set_result(Err(err));
                         }
                     };
