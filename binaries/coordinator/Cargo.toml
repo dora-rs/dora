@@ -13,6 +13,7 @@ repository.workspace = true
 [features]
 default = ["tracing"]
 tracing = ["dep:adora-tracing"]
+redb-backend = ["adora-coordinator-store/redb-backend"]
 
 [dependencies]
 eyre = "0.6.7"

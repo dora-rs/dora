@@ -8,7 +8,17 @@ description.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = []
+redb-backend = ["dep:redb", "dep:bincode"]
+
 [dependencies]
 adora-message = { workspace = true }
+bincode = { version = "2.0", features = ["serde"], optional = true }
 eyre = "0.6.8"
+redb = { version = "2", optional = true }
+serde = { version = "1", features = ["derive"] }
 uuid = { version = "1.7", features = ["serde"] }
+
+[dev-dependencies]
+tempfile = "3"

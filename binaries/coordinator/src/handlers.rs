@@ -2,7 +2,7 @@ use crate::{
     log_subscriber::LogSubscriber,
     run::{SpawnedDataflow, spawn_dataflow},
     state::{
-        ArchivedDataflow, CachedResult, DaemonConnection, DaemonConnections, RunningBuild,
+        self, ArchivedDataflow, CachedResult, DaemonConnection, DaemonConnections, RunningBuild,
         RunningDataflow,
     },
 };
@@ -462,6 +462,8 @@ pub(crate) async fn start_dataflow(
         buffered_log_messages: Vec::new(),
         log_subscribers: Vec::new(),
         pending_spawn_results: daemons,
+        created_at: state::now_millis(),
+        store_generation: 0,
     })
 }
 

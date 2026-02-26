@@ -6,6 +6,8 @@ use crate::{
     },
     state::{ArchivedDataflow, CachedResult, RunningBuild, RunningDataflow},
 };
+use adora_coordinator_store::DataflowStatus as StoreDataflowStatus;
+pub use adora_coordinator_store::{self, CoordinatorStore, InMemoryStore};
 use adora_core::uhlc::HLC;
 use adora_message::{
     BuildId, DataflowId,
@@ -47,9 +49,10 @@ mod ws_server;
 pub async fn start(
     bind: SocketAddr,
     external_events: impl Stream<Item = Event> + Unpin,
+    store: Arc<dyn CoordinatorStore>,
 ) -> Result<(u16, impl Future<Output = eyre::Result<()>>), eyre::ErrReport> {
     let ctrlc_events = set_up_ctrlc_handler()?;
-    start_with_events(bind, external_events, ctrlc_events).await
+    start_with_events(bind, external_events, ctrlc_events, store).await
 }
 
 /// Like [`start`] but without registering a ctrl-c handler.
@@ -59,13 +62,15 @@ pub async fn start_testing(
     bind: SocketAddr,
     external_events: impl Stream<Item = Event> + Unpin,
 ) -> Result<(u16, impl Future<Output = eyre::Result<()>>), eyre::ErrReport> {
-    start_with_events(bind, external_events, futures::stream::empty()).await
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    start_with_events(bind, external_events, futures::stream::empty(), store).await
 }
 
 async fn start_with_events(
     bind: SocketAddr,
     external_events: impl Stream<Item = Event> + Unpin,
     extra_events: impl Stream<Item = Event> + Unpin,
+    store: Arc<dyn CoordinatorStore>,
 ) -> Result<(u16, impl Future<Output = eyre::Result<()>>), eyre::ErrReport> {
     let clock = Arc::new(HLC::default());
 
@@ -89,7 +94,7 @@ async fn start_with_events(
     let events = (external_events, extra_events, ws_events).merge();
 
     let future = async move {
-        start_inner(events, clock).await?;
+        start_inner(events, clock, store).await?;
 
         tracing::debug!("coordinator main loop finished, shutting down WS server");
         ws_shutdown.shutdown();
@@ -109,6 +114,7 @@ async fn start_with_events(
 async fn start_inner(
     events: impl Stream<Item = Event> + Unpin,
     clock: Arc<HLC>,
+    store: Arc<dyn CoordinatorStore>,
 ) -> eyre::Result<()> {
     let daemon_heartbeat_interval =
         tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(Duration::from_secs(3)))
@@ -128,6 +134,37 @@ async fn start_inner(
         HashMap::new();
     let mut archived_dataflows: HashMap<DataflowId, ArchivedDataflow> = HashMap::new();
     let mut daemon_connections = DaemonConnections::default();
+
+    // Recover persisted state: mark any previously-running dataflows as failed
+    // (full reconciliation with daemons is Phase 2 work).
+    match store.list_dataflows() {
+        Ok(records) => {
+            for mut record in records {
+                match record.status {
+                    StoreDataflowStatus::Pending
+                    | StoreDataflowStatus::Running
+                    | StoreDataflowStatus::Stopping => {
+                        tracing::info!(
+                            "recovering stale dataflow {} ({:?}) -> marking as Failed",
+                            record.uuid,
+                            record.name
+                        );
+                        record.status = StoreDataflowStatus::Failed {
+                            error: "coordinator restarted".into(),
+                        };
+                        record.updated_at = state::now_millis();
+                        if let Err(e) = store.put_dataflow(&record) {
+                            tracing::warn!("failed to update stale dataflow record: {e}");
+                        }
+                    }
+                    StoreDataflowStatus::Succeeded | StoreDataflowStatus::Failed { .. } => {}
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!("failed to read persisted dataflows on startup: {e}");
+        }
+    }
 
     while let Some(event) = events.next().await {
         // used below for measuring the event handling duration
@@ -295,6 +332,23 @@ async fn start_inner(
                                             DataflowResult::ok_empty(uuid, clock.new_timestamp())
                                         }),
                                 };
+                                // Persist: dataflow finished
+                                let has_errors = dataflow_results
+                                    .get(&uuid)
+                                    .is_some_and(|r| r.values().any(|dr| !dr.is_ok()));
+                                let final_status = if has_errors {
+                                    StoreDataflowStatus::Failed {
+                                        error: "one or more nodes failed".into(),
+                                    }
+                                } else {
+                                    StoreDataflowStatus::Succeeded
+                                };
+                                if let Err(e) =
+                                    store.put_dataflow(&finished_dataflow.make_record(final_status))
+                                {
+                                    tracing::warn!("failed to persist dataflow finish: {e}");
+                                }
+
                                 for sender in finished_dataflow.stop_reply_senders {
                                     let _ = sender.send(Ok(reply.clone()));
                                 }
@@ -402,8 +456,14 @@ async fn start_inner(
                                 Ok(dataflow)
                             };
                             match inner.await {
-                                Ok(dataflow) => {
+                                Ok(mut dataflow) => {
                                     let uuid = dataflow.uuid;
+                                    // Persist: dataflow started
+                                    if let Err(e) = store.put_dataflow(
+                                        &dataflow.make_record(StoreDataflowStatus::Pending),
+                                    ) {
+                                        tracing::warn!("failed to persist dataflow start: {e}");
+                                    }
                                     running_dataflows.insert(uuid, dataflow);
                                     let _ = reply_sender.send(Ok(
                                         ControlRequestReply::DataflowStartTriggered { uuid },
@@ -920,6 +980,12 @@ async fn start_inner(
                                 dataflow.spawn_result.set_result(Ok(
                                     ControlRequestReply::DataflowSpawned { uuid: dataflow_id },
                                 ));
+                                // Persist: dataflow now running
+                                if let Err(e) = store.put_dataflow(
+                                    &dataflow.make_record(StoreDataflowStatus::Running),
+                                ) {
+                                    tracing::warn!("failed to persist dataflow running: {e}");
+                                }
                             }
                         }
                         Err(err) => {

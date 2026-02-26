@@ -19,6 +19,7 @@ path = "src/main.rs"
 default = ["tracing"]
 tracing = ["dep:adora-tracing"]
 python = ["pyo3"]
+redb-backend = ["adora-coordinator/redb-backend"]
 
 [dependencies]
 arrow = { workspace = true }

@@ -1,4 +1,5 @@
 use crate::log_subscriber::LogSubscriber;
+use adora_coordinator_store::{DataflowRecord, DataflowStatus};
 use adora_core::config::NodeId;
 use adora_message::{
     common::DaemonId,
@@ -156,6 +157,37 @@ pub(crate) struct RunningDataflow {
     pub(crate) log_subscribers: Vec<LogSubscriber>,
 
     pub(crate) pending_spawn_results: BTreeSet<DaemonId>,
+
+    /// Timestamp (unix millis) when this dataflow was first persisted.
+    pub(crate) created_at: u64,
+    /// Monotonically increasing version; bumped on every persist.
+    pub(crate) store_generation: u64,
+}
+
+pub(crate) fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+impl RunningDataflow {
+    /// Create a persistable [`DataflowRecord`] snapshot of this dataflow.
+    /// Increments `store_generation` on each call.
+    pub(crate) fn make_record(&mut self, status: DataflowStatus) -> DataflowRecord {
+        self.store_generation += 1;
+        let descriptor_json = serde_json::to_string(&self.descriptor).unwrap_or_default();
+        DataflowRecord {
+            uuid: self.uuid,
+            name: self.name.clone(),
+            descriptor_json,
+            status,
+            daemon_ids: self.daemons.iter().cloned().collect(),
+            generation: self.store_generation,
+            created_at: self.created_at,
+            updated_at: now_millis(),
+        }
+    }
 }
 
 pub(crate) enum CachedResult {
