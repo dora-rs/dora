@@ -89,6 +89,7 @@ impl DescriptorExt for Descriptor {
                     run_config: NodeRunConfig {
                         inputs: node.inputs,
                         outputs: node.outputs,
+                        shared_memory_pool_size: node.shared_memory_pool_size,
                     },
                     envs: None,
                     restart_policy: node.restart_policy,

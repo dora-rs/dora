@@ -339,6 +339,7 @@ impl DoraNode {
             run_config: NodeRunConfig {
                 inputs: Default::default(),
                 outputs: Default::default(),
+                shared_memory_pool_size: None,
             },
             daemon_communication: Some(DaemonCommunication::Interactive),
             dataflow_descriptor: serde_yaml::Value::Null,
@@ -369,6 +370,7 @@ impl DoraNode {
             run_config: NodeRunConfig {
                 inputs: Default::default(),
                 outputs: Default::default(),
+                shared_memory_pool_size: None,
             },
             daemon_communication: None,
             dataflow_descriptor: serde_yaml::Value::Null,
@@ -482,10 +484,16 @@ impl DoraNode {
             // The pool is used for zero-copy output publishing. If the pool is
             // exhausted, allocation blocks until receivers release buffers (see
             // `allocate_data_sample`). For high-throughput nodes with large
-            // messages, increase via DORA_NODE_SHM_POOL_SIZE (bytes).
-            let pool_size: usize = std::env::var("DORA_NODE_SHM_POOL_SIZE")
-                .ok()
-                .and_then(|s| s.parse().ok())
+            // messages, configure via `shared_memory_pool_size` in the dataflow
+            // YAML or the `DORA_NODE_SHM_POOL_SIZE` env var (bytes).
+            let pool_size: usize = run_config
+                .shared_memory_pool_size
+                .map(|bs| bs.as_bytes())
+                .or_else(|| {
+                    std::env::var("DORA_NODE_SHM_POOL_SIZE")
+                        .ok()
+                        .and_then(|s| s.parse().ok())
+                })
                 .unwrap_or(64 * 1024 * 1024); // 64MB default
 
             let provider = {

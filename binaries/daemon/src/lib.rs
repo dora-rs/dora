@@ -3465,6 +3465,7 @@ impl CoreNodeKindExt for CoreNodeKind {
             CoreNodeKind::Runtime(n) => NodeRunConfig {
                 inputs: runtime_node_inputs(n),
                 outputs: runtime_node_outputs(n),
+                shared_memory_pool_size: None,
             },
             CoreNodeKind::Custom(n) => n.run_config.clone(),
         }
