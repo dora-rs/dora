@@ -964,7 +964,6 @@ async fn start_inner(
                                 tracing::warn!(
                                     "log buffer full for dataflow {dataflow_id}, dropping new messages"
                                 );
-                                dataflow.buffered_log_messages.push(message);
                             }
                         } else {
                             send_log_message(&mut dataflow.log_subscribers, &message).await;
@@ -980,7 +979,6 @@ async fn start_inner(
                                 tracing::warn!(
                                     "log buffer full for build {build_id}, dropping new messages"
                                 );
-                                build.buffered_log_messages.push(message);
                             }
                         } else {
                             send_log_message(&mut build.log_subscribers, &message).await;

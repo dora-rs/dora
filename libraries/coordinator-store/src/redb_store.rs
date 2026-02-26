@@ -52,6 +52,9 @@ impl RedbStore {
             .wrap_err("failed to open redb database")?;
 
         // Restrict file permissions to owner-only on Unix.
+        // NOTE: On Windows, file permissions are governed by ACLs and not
+        // enforced here. Administrators should use NTFS ACLs to restrict
+        // access to the database file in production deployments.
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -71,9 +74,11 @@ impl RedbStore {
             match stored {
                 Some(v) if v != SCHEMA_VERSION => {
                     return Err(eyre!(
-                        "redb schema version mismatch: database has v{v}, \
+                        "redb schema version mismatch: database at `{}` has v{v}, \
                          but this binary expects v{SCHEMA_VERSION}. \
-                         Migration is required."
+                         Delete the file and restart to create a fresh database, \
+                         or use `--store memory` to bypass persistence.",
+                        path.display()
                     ));
                 }
                 Some(_) => {} // version matches
