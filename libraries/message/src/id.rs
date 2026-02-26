@@ -30,29 +30,25 @@ impl std::fmt::Display for InvalidId {
 
 impl std::error::Error for InvalidId {}
 
-#[derive(
-    Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
-)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, JsonSchema)]
 pub struct NodeId(pub(crate) String);
 
-#[derive(Debug)]
-pub struct NodeIdContainsSlash;
-
-impl std::fmt::Display for NodeIdContainsSlash {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "NodeId must not contain `/`")
+impl<'de> Deserialize<'de> for NodeId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        validate_id(&s).map_err(serde::de::Error::custom)?;
+        Ok(NodeId(s))
     }
 }
 
-impl std::error::Error for NodeIdContainsSlash {}
-
 impl FromStr for NodeId {
-    type Err = NodeIdContainsSlash;
+    type Err = InvalidId;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if s.contains('/') {
-            return Err(NodeIdContainsSlash);
-        }
+        validate_id(s)?;
         Ok(Self(s.to_owned()))
     }
 }
@@ -60,7 +56,7 @@ impl FromStr for NodeId {
 impl From<String> for NodeId {
     fn from(id: String) -> Self {
         if let Err(e) = validate_id(&id) {
-            log::warn!("NodeId '{id}' failed validation: {e}");
+            panic!("invalid NodeId '{id}': {e}");
         }
         Self(id)
     }
@@ -109,10 +105,19 @@ impl AsRef<str> for OperatorId {
     }
 }
 
-#[derive(
-    Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
-)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, JsonSchema)]
 pub struct DataId(String);
+
+impl<'de> Deserialize<'de> for DataId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        validate_id(&s).map_err(serde::de::Error::custom)?;
+        Ok(DataId(s))
+    }
+}
 
 impl From<DataId> for String {
     fn from(id: DataId) -> Self {
@@ -123,7 +128,7 @@ impl From<DataId> for String {
 impl From<String> for DataId {
     fn from(id: String) -> Self {
         if let Err(e) = validate_id(&id) {
-            log::warn!("DataId '{id}' failed validation: {e}");
+            panic!("invalid DataId '{id}': {e}");
         }
         Self(id)
     }
@@ -158,9 +163,29 @@ mod tests {
     }
 
     #[test]
-    fn node_id_from_str_rejects_slash() {
+    fn node_id_from_str_rejects_invalid() {
         assert!(NodeId::from_str("hello").is_ok());
         assert!(NodeId::from_str("hello/world").is_err());
+        assert!(NodeId::from_str("hello world").is_err());
+        assert!(NodeId::from_str("").is_err());
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid NodeId")]
+    fn node_id_from_string_panics_on_invalid() {
+        let _id: NodeId = "bad/id".to_string().into();
+    }
+
+    #[test]
+    fn node_id_deserialize_rejects_invalid() {
+        let result: Result<NodeId, _> = serde_json::from_str("\"bad/id\"");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn data_id_deserialize_rejects_invalid() {
+        let result: Result<DataId, _> = serde_json::from_str("\"bad;id\"");
+        assert!(result.is_err());
     }
 }
 

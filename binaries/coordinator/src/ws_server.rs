@@ -41,7 +41,14 @@ fn validate_token(
         return Ok(()); // auth disabled
     };
     match provided {
-        Some(t) if t == expected.as_hex() => Ok(()),
+        Some(t)
+            if adora_message::auth::constant_time_eq(
+                t.as_bytes(),
+                expected.as_hex().as_bytes(),
+            ) =>
+        {
+            Ok(())
+        }
         _ => {
             tracing::warn!("rejected WebSocket connection: invalid or missing auth token");
             Err(StatusCode::UNAUTHORIZED)

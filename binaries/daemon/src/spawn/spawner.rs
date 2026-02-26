@@ -29,9 +29,11 @@ use tokio::sync::mpsc;
 /// Environment variable names that must never be passed to spawned nodes.
 const ENV_DENYLIST: &[&str] = &[
     "LD_PRELOAD",
+    "LD_AUDIT",
     "DYLD_INSERT_LIBRARIES",
     "DYLD_LIBRARY_PATH",
     "LD_LIBRARY_PATH",
+    "ADORA_AUTH_TOKEN",
 ];
 
 /// Returns true if the env var key is denied, logging a warning if so.

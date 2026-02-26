@@ -56,9 +56,10 @@ pub async fn register(
     CoordinatorSender,
     impl Stream<Item = Timestamped<CoordinatorEvent>>,
 )> {
+    let display_url = format!("ws://{addr}/api/daemon");
     let ws_url = match adora_message::auth::discover_token() {
-        Some(token) => format!("ws://{addr}/api/daemon?token={}", token.as_hex()),
-        None => format!("ws://{addr}/api/daemon"),
+        Some(token) => format!("{display_url}?token={}", token.as_hex()),
+        None => display_url.clone(),
     };
     let ws_stream = {
         let mut backoff = DAEMON_COORDINATOR_RETRY_INITIAL;
@@ -74,7 +75,7 @@ pub async fn register(
                     );
                     let sleep_duration = backoff.saturating_add(jitter);
                     tracing::warn!(
-                        "Could not connect to WS at {ws_url}: {err}. Retrying in {sleep_duration:#?}.."
+                        "Could not connect to WS at {display_url}: {err}. Retrying in {sleep_duration:#?}.."
                     );
                     tokio::time::sleep(sleep_duration).await;
                     backoff = (backoff * 2).min(DAEMON_COORDINATOR_RETRY_MAX);

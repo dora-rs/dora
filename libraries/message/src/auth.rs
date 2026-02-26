@@ -17,7 +17,10 @@ const TOKEN_BYTES: usize = 32;
 const TOKEN_FILENAME: &str = ".adora-token";
 
 /// Opaque authentication token.
-#[derive(Clone, PartialEq, Eq)]
+///
+/// `PartialEq`/`Eq` are intentionally not derived to prevent accidental
+/// non-constant-time comparisons. Use [`constant_time_eq`] instead.
+#[derive(Clone)]
 pub struct AuthToken(String);
 
 impl AuthToken {
@@ -38,32 +41,22 @@ impl fmt::Debug for AuthToken {
     }
 }
 
+/// Constant-time byte comparison to prevent timing side-channel attacks.
+pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
 /// Generate a cryptographically random 32-byte token.
 pub fn generate_token() -> AuthToken {
-    use std::io::Read;
     let mut buf = [0u8; TOKEN_BYTES];
-
-    // Use /dev/urandom on Unix, BCryptGenRandom on Windows via getrandom fallback
-    #[cfg(unix)]
-    {
-        let mut f = fs::File::open("/dev/urandom").expect("failed to open /dev/urandom");
-        f.read_exact(&mut buf).expect("failed to read /dev/urandom");
-    }
-    #[cfg(not(unix))]
-    {
-        // Fallback: use std::collections::hash_map::RandomState for entropy
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        use std::time::SystemTime;
-        for chunk in buf.chunks_mut(8) {
-            let mut h = DefaultHasher::new();
-            SystemTime::now().hash(&mut h);
-            std::thread::current().id().hash(&mut h);
-            let bytes = h.finish().to_le_bytes();
-            chunk.copy_from_slice(&bytes[..chunk.len()]);
-        }
-    }
-
+    getrandom::getrandom(&mut buf).expect("failed to generate random bytes");
     let hex: String = buf.iter().map(|b| format!("{b:02x}")).collect();
     AuthToken(hex)
 }
@@ -74,16 +67,29 @@ pub fn token_path(working_dir: &Path) -> PathBuf {
 }
 
 /// Write the token to `<working_dir>/.adora-token` with owner-only permissions.
+///
+/// On Unix, the file is created with mode `0o600` atomically to prevent
+/// a TOCTOU window where the file is briefly world-readable.
 pub fn write_token(working_dir: &Path, token: &AuthToken) -> std::io::Result<()> {
     let path = token_path(working_dir);
-    let mut file = fs::File::create(&path)?;
-    file.write_all(token.as_hex().as_bytes())?;
-    file.write_all(b"\n")?;
 
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&path)?;
+        file.write_all(token.as_hex().as_bytes())?;
+        file.write_all(b"\n")?;
+    }
+    #[cfg(not(unix))]
+    {
+        let mut file = fs::File::create(&path)?;
+        file.write_all(token.as_hex().as_bytes())?;
+        file.write_all(b"\n")?;
     }
 
     Ok(())
@@ -150,18 +156,24 @@ mod tests {
 
     #[test]
     fn write_and_read_token() {
-        let dir = std::env::temp_dir().join("adora-auth-test");
-        let _ = fs::create_dir_all(&dir);
+        let dir = tempfile::tempdir().unwrap();
 
         let token = generate_token();
-        write_token(&dir, &token).unwrap();
+        write_token(dir.path(), &token).unwrap();
 
-        let read_back = read_token(&dir).unwrap().unwrap();
+        let read_back = read_token(dir.path()).unwrap().unwrap();
         assert_eq!(token.as_hex(), read_back.as_hex());
 
-        remove_token(&dir);
-        assert!(read_token(&dir).unwrap().is_none());
+        remove_token(dir.path());
+        assert!(read_token(dir.path()).unwrap().is_none());
+    }
 
-        let _ = fs::remove_dir_all(&dir);
+    #[test]
+    fn constant_time_eq_works() {
+        assert!(constant_time_eq(b"hello", b"hello"));
+        assert!(!constant_time_eq(b"hello", b"world"));
+        assert!(!constant_time_eq(b"hello", b"hell"));
+        assert!(!constant_time_eq(b"", b"x"));
+        assert!(constant_time_eq(b"", b""));
     }
 }
