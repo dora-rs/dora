@@ -845,11 +845,16 @@ impl Daemon {
                 }
             }
 
-            // Send metrics to coordinator if we have any
+            // Send metrics to coordinator if we have any (fire-and-forget).
             if !metrics.is_empty() {
                 if let Some(client) = self.state.coordinator_client() {
-                    let ctx = tarpc::context::current();
-                    let _ = client.node_metrics(ctx, *dataflow_id, metrics).await;
+                    let client = client.clone();
+                    let dataflow_id = *dataflow_id;
+                    tokio::spawn(async move {
+                        let _ = client
+                            .node_metrics(tarpc::context::current(), dataflow_id, metrics)
+                            .await;
+                    });
                 }
             }
         }
@@ -2258,13 +2263,18 @@ impl Daemon {
             .await;
 
         if let Some(client) = self.state.coordinator_client() {
-            let ctx = tarpc::context::current();
-            if let Err(err) = client.all_nodes_finished(ctx, dataflow_id, result).await {
-                tracing::error!(
-                    ?err,
-                    "failed to send all_nodes_finished notification to coordinator"
-                );
-            }
+            let client = client.clone();
+            tokio::spawn(async move {
+                if let Err(err) = client
+                    .all_nodes_finished(tarpc::context::current(), dataflow_id, result)
+                    .await
+                {
+                    tracing::error!(
+                        ?err,
+                        "failed to send all_nodes_finished notification to coordinator"
+                    );
+                }
+            });
         }
         self.state.running.remove(&dataflow_id);
 

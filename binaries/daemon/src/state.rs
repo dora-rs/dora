@@ -154,8 +154,12 @@ impl DaemonState {
         }
 
         if let Some(client) = self.coordinator_client.get() {
-            let ctx = tarpc::context::current();
-            let _ = client.all_nodes_finished(ctx, dataflow_id, result).await;
+            let client = client.clone();
+            tokio::spawn(async move {
+                let _ = client
+                    .all_nodes_finished(tarpc::context::current(), dataflow_id, result)
+                    .await;
+            });
         }
         self.running.remove(&dataflow_id);
 
