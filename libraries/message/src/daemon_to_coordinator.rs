@@ -3,7 +3,9 @@ use std::collections::BTreeMap;
 pub use crate::common::{
     DataMessage, LogLevel, LogMessage, NodeError, NodeErrorCause, NodeExitStatus, Timestamped,
 };
-use crate::{BuildId, DataflowId, common::DaemonId, id::NodeId};
+use crate::{
+    BuildId, DataflowId, common::DaemonId, current_crate_version, id::NodeId, versions_compatible,
+};
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum CoordinatorRequest {
@@ -28,12 +30,31 @@ pub enum CoordinatorRequest {
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct DaemonRegisterRequest {
+    dora_version: semver::Version,
     pub machine_id: Option<String>,
 }
 
 impl DaemonRegisterRequest {
     pub fn new(machine_id: Option<String>) -> Self {
-        Self { machine_id }
+        Self {
+            dora_version: current_crate_version(),
+            machine_id,
+        }
+    }
+
+    pub fn check_version(&self) -> Result<(), String> {
+        let crate_version = current_crate_version();
+        let specified_version = &self.dora_version;
+
+        if versions_compatible(&crate_version, specified_version)? {
+            Ok(())
+        } else {
+            Err(format!(
+                "version mismatch: message format v{} is not compatible \
+                with expected message format v{crate_version}",
+                self.dora_version
+            ))
+        }
     }
 }
 

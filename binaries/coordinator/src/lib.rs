@@ -366,6 +366,7 @@ async fn start_inner(
                 DaemonRequest::Register {
                     machine_id,
                     mut connection,
+                    version_check_result,
                 } => {
                     let existing = match &machine_id {
                         Some(id) => coordinator_state
@@ -385,7 +386,7 @@ async fn start_inner(
                     let daemon_id = DaemonId::new(machine_id);
 
                     let reply: Timestamped<RegisterResult> = Timestamped {
-                        inner: match existing_result.as_ref() {
+                        inner: match version_check_result.as_ref().and(existing_result.as_ref()) {
                             Ok(_) => RegisterResult::Ok {
                                 daemon_id: daemon_id.clone(),
                             },
@@ -397,7 +398,11 @@ async fn start_inner(
                     let send_result = tcp_send(&mut connection, &serde_json::to_vec(&reply)?)
                         .await
                         .context("tcp send failed");
-                    match existing_result.map_err(|e| eyre!(e)).and(send_result) {
+                    match version_check_result
+                        .map_err(|e| eyre!(e))
+                        .and(existing_result.map_err(|e| eyre!(e)))
+                        .and(send_result)
+                    {
                         Ok(()) => {
                             // Set up tarpc client on the registered stream.
                             // The daemon runs a tarpc server on its end.
@@ -412,33 +417,14 @@ async fn start_inner(
                                 DaemonControlClient::new(client::Config::default(), transport)
                                     .spawn();
 
-                            // Verify version compatibility via RPC
-                            let version_check_result =
-                                match daemon_client.get_version(tarpc::context::current()).await {
-                                    Ok(info) => dora_message::check_version_compatibility(
-                                        &info.message_format_version,
-                                    )
-                                    .wrap_err("daemon is not compatible with this coordinator"),
-                                    Err(err) => Err(eyre!("get_version RPC failed: {err}")),
-                                };
-
-                            match version_check_result {
-                                Ok(()) => {
-                                    coordinator_state.daemon_connections.add(
-                                        daemon_id.clone(),
-                                        DaemonConnection {
-                                            client: daemon_client,
-                                            last_heartbeat: Instant::now(),
-                                            peer_addr,
-                                        },
-                                    );
-                                }
-                                Err(err) => {
-                                    tracing::warn!(
-                                        "version mismatch with daemon `{daemon_id}`: {err}"
-                                    );
-                                }
-                            }
+                            coordinator_state.daemon_connections.add(
+                                daemon_id.clone(),
+                                DaemonConnection {
+                                    client: daemon_client,
+                                    last_heartbeat: Instant::now(),
+                                    peer_addr,
+                                },
+                            );
                         }
                         Err(err) => {
                             tracing::warn!(
@@ -1198,6 +1184,7 @@ pub enum DaemonRequest {
     Register {
         machine_id: Option<String>,
         connection: TcpStream,
+        version_check_result: Result<(), String>,
     },
     RegisterNotificationChannel {
         daemon_id: DaemonId,

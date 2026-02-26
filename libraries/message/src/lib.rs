@@ -86,13 +86,13 @@ pub fn check_version_compatibility(remote_version: &str) -> eyre::Result<()> {
     }
 }
 
-fn current_crate_version() -> semver::Version {
+pub(crate) fn current_crate_version() -> semver::Version {
     let crate_version_raw = env!("CARGO_PKG_VERSION");
 
     semver::Version::parse(crate_version_raw).unwrap()
 }
 
-fn versions_compatible(
+pub(crate) fn versions_compatible(
     crate_version: &semver::Version,
     specified_version: &semver::Version,
 ) -> Result<bool, String> {
