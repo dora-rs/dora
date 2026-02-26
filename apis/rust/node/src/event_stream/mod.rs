@@ -252,8 +252,7 @@ impl EventStream {
         // Set up zenoh subscribers for user inputs
         let mut zenoh_input_ids = std::collections::BTreeSet::new();
         if let Some(session) = zenoh_session {
-            let rt = tokio::runtime::Handle::try_current()
-                .context("failed to get tokio runtime handle for zenoh subscribers")?;
+            use zenoh::Wait;
 
             for (input_id, input) in input_config {
                 if let InputMapping::User(mapping) = &input.mapping {
@@ -264,8 +263,9 @@ impl EventStream {
                         &mapping.source,
                         &mapping.output,
                     );
-                    let subscriber = rt
-                        .block_on(async { session.declare_subscriber(&topic).await })
+                    let subscriber = session
+                        .declare_subscriber(&topic)
+                        .wait()
                         .map_err(|e| eyre::eyre!("{e}"))
                         .wrap_err_with(|| {
                             format!(
@@ -277,20 +277,21 @@ impl EventStream {
                     let input_id_clone = input_id.clone();
                     let clock_clone = clock.clone();
 
-                    // Spawn a background task to receive zenoh samples and feed them
-                    // into the event channel
-                    rt.spawn({
+                    // Spawn a background thread to receive zenoh samples and feed them
+                    // into the event channel. Uses blocking recv() so no tokio runtime needed.
+                    std::thread::spawn({
                         let input_id_for_panic = input_id_clone.clone();
                         let tx_for_panic = tx_clone.clone();
-                        async move {
-                            let result = std::panic::AssertUnwindSafe(async {
-                                while let Ok(sample) = subscriber.recv_async().await {
-                                    let payload = sample.payload();
-                                    let payload_len = payload.len();
+                        move || {
+                            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                                || {
+                                    while let Ok(sample) = subscriber.recv() {
+                                        let payload = sample.payload();
+                                        let payload_len = payload.len();
 
-                                    // Extract metadata from the attachment (sent by the publisher)
-                                    let metadata =
-                                        if let Some(attachment) = sample.attachment() {
+                                        // Extract metadata from the attachment (sent by the publisher)
+                                        let metadata = if let Some(attachment) = sample.attachment()
+                                        {
                                             let attachment_bytes = attachment.to_bytes();
                                             match bincode::deserialize::<Metadata>(
                                                 &attachment_bytes,
@@ -298,9 +299,9 @@ impl EventStream {
                                                 Ok(m) => m,
                                                 Err(e) => {
                                                     tracing::warn!(
-                                                    "failed to deserialize metadata attachment for input {}: {e}",
-                                                    input_id_clone
-                                                );
+                                                        "failed to deserialize metadata attachment for input {}: {e}",
+                                                        input_id_clone
+                                                    );
                                                     continue;
                                                 }
                                             }
@@ -309,9 +310,9 @@ impl EventStream {
                                             // receiver timestamp. This loses the original sender
                                             // timestamp.
                                             tracing::warn!(
-                                            "zenoh sample for input {} has no metadata attachment, using fallback",
-                                            input_id_clone
-                                        );
+                                                "zenoh sample for input {} has no metadata attachment, using fallback",
+                                                input_id_clone
+                                            );
                                             Metadata::new(
                                                 clock_clone.new_timestamp(),
                                                 dora_message::metadata::ArrowTypeInfo::byte_array(
@@ -320,52 +321,49 @@ impl EventStream {
                                             )
                                         };
 
-                                    // Try zero-copy path: if the payload is backed by SHM,
-                                    // reference it directly without copying.
-                                    let event_item = if let Some(shm) = payload.as_shm() {
-                                        EventItem::ZenohShmInput {
-                                            id: input_id_clone.clone(),
-                                            metadata,
-                                            shm: shm.to_owned(),
-                                        }
-                                    } else {
-                                        // Fallback: copy bytes for non-SHM payloads
-                                        // (e.g. remote subscribers)
-                                        let payload_bytes = payload.to_bytes();
-                                        let data_vec: AVec<u8, ConstAlign<128>> =
-                                            AVec::from_slice(128, &payload_bytes);
-                                        let event = NodeEvent::Input {
-                                            id: input_id_clone.clone(),
-                                            metadata,
-                                            data: Some(DataMessage::Vec(data_vec)),
+                                        // Try zero-copy path: if the payload is backed by SHM,
+                                        // reference it directly without copying.
+                                        let event_item = if let Some(shm) = payload.as_shm() {
+                                            EventItem::ZenohShmInput {
+                                                id: input_id_clone.clone(),
+                                                metadata,
+                                                shm: shm.to_owned(),
+                                            }
+                                        } else {
+                                            // Fallback: copy bytes for non-SHM payloads
+                                            // (e.g. remote subscribers)
+                                            let payload_bytes = payload.to_bytes();
+                                            let data_vec: AVec<u8, ConstAlign<128>> =
+                                                AVec::from_slice(128, &payload_bytes);
+                                            let event = NodeEvent::Input {
+                                                id: input_id_clone.clone(),
+                                                metadata,
+                                                data: Some(DataMessage::Vec(data_vec)),
+                                            };
+                                            let (drop_tx, _drop_rx) = flume::bounded(0);
+                                            EventItem::NodeEvent {
+                                                event,
+                                                ack_channel: drop_tx,
+                                            }
                                         };
-                                        let (drop_tx, _drop_rx) = flume::bounded(0);
-                                        EventItem::NodeEvent {
-                                            event,
-                                            ack_channel: drop_tx,
-                                        }
-                                    };
 
-                                    if tx_clone.send(event_item).is_err() {
-                                        // Event channel closed, stop listening
-                                        break;
+                                        if tx_clone.send(event_item).is_err() {
+                                            // Event channel closed, stop listening
+                                            break;
+                                        }
                                     }
-                                }
-                            })
-                            .catch_unwind()
-                            .await;
+                                },
+                            ));
 
                             if result.is_err() {
                                 tracing::error!(
                                     "zenoh subscriber task for input {} panicked",
                                     input_id_for_panic
                                 );
-                                let _ = tx_for_panic.send(EventItem::FatalError(
-                                    eyre::eyre!(
-                                        "zenoh subscriber task for input {} panicked",
-                                        input_id_for_panic
-                                    ),
-                                ));
+                                let _ = tx_for_panic.send(EventItem::FatalError(eyre::eyre!(
+                                    "zenoh subscriber task for input {} panicked",
+                                    input_id_for_panic
+                                )));
                             }
                         }
                     });

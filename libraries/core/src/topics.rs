@@ -69,6 +69,60 @@ pub async fn open_zenoh_session(coordinator_addr: Option<IpAddr>) -> eyre::Resul
 }
 
 #[cfg(feature = "zenoh")]
+pub fn open_zenoh_session_sync(coordinator_addr: Option<IpAddr>) -> eyre::Result<zenoh::Session> {
+    use eyre::{Context, eyre};
+    use tracing::warn;
+    use zenoh::Wait;
+
+    let zenoh_session = match std::env::var(zenoh::Config::DEFAULT_CONFIG_PATH_ENV) {
+        Ok(path) => {
+            let zenoh_config = zenoh::Config::from_file(&path)
+                .map_err(|e| eyre!(e))
+                .wrap_err_with(|| format!("failed to read zenoh config from {path}"))?;
+            zenoh::open(zenoh_config)
+                .wait()
+                .map_err(|e| eyre!(e))
+                .context("failed to open zenoh session")?
+        }
+        Err(std::env::VarError::NotPresent) => {
+            let mut zenoh_config = zenoh::Config::default();
+            if cfg!(not(target_os = "windows")) {
+                zenoh_config
+                    .insert_json5("routing/peer", r#"{ mode: "linkstate" }"#)
+                    .unwrap();
+            }
+
+            if let Some(addr) = coordinator_addr {
+                zenoh_config
+                    .insert_json5(
+                        "connect/endpoints",
+                        &format!(
+                            r#"{{ router: ["tcp/[::]:7447"], peer: ["tcp/{}:5456"] }}"#,
+                            addr
+                        ),
+                    )
+                    .unwrap();
+            }
+            if let Ok(zenoh_session) = zenoh::open(zenoh_config).wait() {
+                zenoh_session
+            } else {
+                warn!("failed to open zenoh session, retrying with default config");
+                let zenoh_config = zenoh::Config::default();
+                zenoh::open(zenoh_config)
+                    .wait()
+                    .map_err(|e| eyre!(e))
+                    .context("failed to open zenoh session")?
+            }
+        }
+        Err(std::env::VarError::NotUnicode(_)) => eyre::bail!(
+            "{} env variable is not valid unicode",
+            zenoh::Config::DEFAULT_CONFIG_PATH_ENV
+        ),
+    };
+    Ok(zenoh_session)
+}
+
+#[cfg(feature = "zenoh")]
 pub fn zenoh_output_publish_topic(
     dataflow_id: uuid::Uuid,
     node_id: &dora_message::id::NodeId,

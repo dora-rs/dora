@@ -452,10 +452,7 @@ impl DoraNode {
         );
 
         let zenoh_session = if !is_interactive {
-            let rt = Handle::try_current()
-                .context("failed to get tokio runtime handle for zenoh session")?;
-            let session = rt
-                .block_on(async { dora_core::topics::open_zenoh_session(coordinator_addr).await })
+            let session = dora_core::topics::open_zenoh_session_sync(coordinator_addr)
                 .wrap_err("failed to open zenoh session for node")?;
             Some(session)
         } else {
@@ -476,9 +473,10 @@ impl DoraNode {
             ControlChannel::init(dataflow_id, &node_id, &daemon_communication, clock.clone())
                 .wrap_err("failed to init control channel")?;
 
-        let (shm_provider, publishers) = if let Some(ref session) = zenoh_session {
-            let rt = Handle::try_current()
-                .context("failed to get tokio runtime handle for zenoh SHM")?;
+        let has_outputs = !run_config.outputs.is_empty();
+        let (shm_provider, publishers) = if zenoh_session.is_some() && has_outputs {
+            use zenoh::Wait;
+            let session = zenoh_session.as_ref().unwrap();
 
             // Create SHM provider with configurable pool size.
             // The pool is used for zero-copy output publishing. If the pool is
@@ -491,7 +489,6 @@ impl DoraNode {
                 .unwrap_or(64 * 1024 * 1024); // 64MB default
 
             let provider = {
-                use zenoh::Wait;
                 use zenoh::shm::*;
                 ShmProviderBuilder::default_backend(pool_size)
                     .wait()
@@ -504,8 +501,9 @@ impl DoraNode {
             for output_id in run_config.outputs.iter() {
                 let topic =
                     dora_core::topics::zenoh_output_publish_topic(dataflow_id, &node_id, output_id);
-                let publisher = rt
-                    .block_on(async { session.declare_publisher(topic).await })
+                let publisher = session
+                    .declare_publisher(topic)
+                    .wait()
                     .map_err(|e| eyre::eyre!("{e}"))
                     .wrap_err_with(|| {
                         format!("failed to declare zenoh publisher for output {output_id}")
@@ -715,8 +713,7 @@ impl DoraNode {
         // If we have a zenoh publisher for this output, publish via zenoh
         if let Some(publisher) = self.publishers.get(&output_id) {
             if let Some(sample) = sample {
-                let rt = Handle::try_current()
-                    .context("failed to get tokio runtime handle for zenoh publish")?;
+                use zenoh::Wait;
 
                 // Serialize metadata as a zenoh attachment so receivers get both
                 // the data payload (zero-copy via SHM) and the metadata.
@@ -726,21 +723,20 @@ impl DoraNode {
                 match sample.inner {
                     DataSampleInner::ZenohShm(sbuf) => {
                         // Publish the SHM buffer directly for zero-copy transfer
-                        rt.block_on(async {
-                            publisher.put(sbuf).attachment(&metadata_bytes[..]).await
-                        })
-                        .map_err(|e| eyre::eyre!("{e}"))
-                        .wrap_err("zenoh SHM publish failed")?;
+                        publisher
+                            .put(sbuf)
+                            .attachment(&metadata_bytes[..])
+                            .wait()
+                            .map_err(|e| eyre::eyre!("{e}"))
+                            .wrap_err("zenoh SHM publish failed")?;
                     }
                     DataSampleInner::Vec(v) => {
-                        rt.block_on(async {
-                            publisher
-                                .put(v.as_slice())
-                                .attachment(&metadata_bytes[..])
-                                .await
-                        })
-                        .map_err(|e| eyre::eyre!("{e}"))
-                        .wrap_err("zenoh publish failed")?;
+                        publisher
+                            .put(v.as_slice())
+                            .attachment(&metadata_bytes[..])
+                            .wait()
+                            .map_err(|e| eyre::eyre!("{e}"))
+                            .wrap_err("zenoh publish failed")?;
                     }
                 }
                 // Still notify daemon of output via control channel (with no data,
