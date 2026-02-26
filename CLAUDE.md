@@ -102,6 +102,61 @@ CI runs on Ubuntu, macOS, and Windows. Key jobs:
 - Cross-compilation checks for arm32, arm64, musl, mingw targets
 - MSRV check via `cargo hack check --rust-version`
 
+## Test-Driven Development
+
+All new features and bug fixes must follow the RED-GREEN-IMPROVE cycle:
+
+1. **RED**: Write a failing test that defines the expected behavior
+2. **GREEN**: Write the minimum code to make the test pass
+3. **IMPROVE**: Refactor while keeping tests green
+
+### Which test tier to write first
+
+| Change type | Start with | File/location |
+|-------------|-----------|---------------|
+| New library function | Unit test | `#[cfg(test)]` in same file |
+| New coordinator/daemon behavior | Integration test | `binaries/coordinator/tests/` |
+| New CLI command or flag | Smoke test (networked) | `tests/example-smoke.rs` using `run_smoke_test()` |
+| New dataflow feature | Smoke test (both modes) | `tests/example-smoke.rs` using both `run_smoke_test()` and `run_smoke_test_local()` |
+| Bug fix | Regression test | Whichever tier reproduces the bug |
+| New example dataflow | Smoke test entry | Add to `tests/example-smoke.rs` and `scripts/smoke-all.sh` |
+
+### Workflow
+
+```bash
+# 1. Write failing test, verify it fails
+cargo test -p <crate> <test_name>
+
+# 2. Implement until test passes
+cargo test -p <crate> <test_name>
+
+# 3. Refactor, then verify everything still passes
+cargo test -p <crate>
+cargo clippy -p <crate> -- -D warnings
+cargo fmt --all -- --check
+
+# 4. Run smoke tests if the change touches CLI/coordinator/daemon
+cargo test --test example-smoke -- --test-threads=1
+```
+
+### Smoke test patterns
+
+Two helpers are available in `tests/example-smoke.rs`:
+
+- `run_smoke_test(name, yaml, timeout)` -- networked: `adora up` + `adora start --detach` + poll + `adora stop` + `adora destroy`
+- `run_smoke_test_local(name, yaml, stop_after_secs)` -- local: `adora run --stop-after`
+
+New example dataflows should have tests in both modes. Use `Once` guards to share build steps across tests.
+
+For quick local validation: `./scripts/smoke-all.sh`
+
+### References
+
+- Full testing guide: `docs/testing-guide.md`
+- Smoke tests: `tests/example-smoke.rs`
+- E2E tests: `tests/ws-cli-e2e.rs`
+- Fault tolerance tests: `tests/fault-tolerance-e2e.rs`
+
 ## Conventions
 
 - Format with `rustfmt` default settings before submitting PRs
