@@ -281,7 +281,10 @@ impl EventStream {
                     // into the event channel
                     rt.spawn(async move {
                         while let Ok(sample) = subscriber.recv_async().await {
-                            // Extract the data payload
+                            // Extract the data payload.
+                            // Note: This copies the bytes from the zenoh buffer into an AVec.
+                            // A future optimization could use payload.as_shm() for true
+                            // zero-copy into Arrow via Buffer::from_custom_allocation.
                             let payload_bytes = sample.payload().to_bytes();
                             let data_vec: AVec<u8, ConstAlign<128>> =
                                 AVec::from_slice(128, &payload_bytes);
@@ -300,7 +303,12 @@ impl EventStream {
                                     }
                                 }
                             } else {
-                                // No attachment: create a basic metadata with just a timestamp
+                                // No attachment: create a fallback metadata with a receiver
+                                // timestamp. This loses the original sender timestamp.
+                                tracing::warn!(
+                                    "zenoh sample for input {} has no metadata attachment, using fallback",
+                                    input_id_clone
+                                );
                                 Metadata::new(
                                     clock_clone.new_timestamp(),
                                     dora_message::metadata::ArrowTypeInfo::byte_array(
@@ -314,6 +322,8 @@ impl EventStream {
                                 metadata,
                                 data: Some(DataMessage::Vec(data_vec)),
                             };
+                            // The ack_channel is required by the EventItem structure but
+                            // is not used for zenoh-delivered events (no acknowledgment needed).
                             let (drop_tx, _drop_rx) = flume::bounded(0);
                             if tx_clone
                                 .send(EventItem::NodeEvent {
