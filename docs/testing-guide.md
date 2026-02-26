@@ -209,8 +209,8 @@ typos ─────────────┘
 |-----|--------|-----------|
 | **fmt** | ubuntu-latest | `cargo fmt --all -- --check` |
 | **clippy** | ubuntu-latest | `cargo clippy --all ... -- -D warnings` |
-| **test** | ubuntu-latest | `cargo test --all ...` (excl. Python) |
-| **e2e** | ubuntu-latest | smoke tests + ignored WS E2E tests |
+| **test** | ubuntu-latest | `cargo test --all ...` (excl. Python + adora-examples) |
+| **e2e** | ubuntu-latest | example-tests, fault-tolerance, smoke tests, WS E2E |
 | **typos** | ubuntu-latest | `crate-ci/typos@master` |
 
 The `e2e` job only runs after `test` passes. All other jobs run in parallel.
