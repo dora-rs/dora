@@ -281,13 +281,8 @@ impl EventStream {
                     // into the event channel
                     rt.spawn(async move {
                         while let Ok(sample) = subscriber.recv_async().await {
-                            // Extract the data payload.
-                            // Note: This copies the bytes from the zenoh buffer into an AVec.
-                            // A future optimization could use payload.as_shm() for true
-                            // zero-copy into Arrow via Buffer::from_custom_allocation.
-                            let payload_bytes = sample.payload().to_bytes();
-                            let data_vec: AVec<u8, ConstAlign<128>> =
-                                AVec::from_slice(128, &payload_bytes);
+                            let payload = sample.payload();
+                            let payload_len = payload.len();
 
                             // Extract metadata from the attachment (sent by the publisher)
                             let metadata = if let Some(attachment) = sample.attachment() {
@@ -312,26 +307,37 @@ impl EventStream {
                                 Metadata::new(
                                     clock_clone.new_timestamp(),
                                     dora_message::metadata::ArrowTypeInfo::byte_array(
-                                        data_vec.len(),
+                                        payload_len,
                                     ),
                                 )
                             };
 
-                            let event = NodeEvent::Input {
-                                id: input_id_clone.clone(),
-                                metadata,
-                                data: Some(DataMessage::Vec(data_vec)),
-                            };
-                            // The ack_channel is required by the EventItem structure but
-                            // is not used for zenoh-delivered events (no acknowledgment needed).
-                            let (drop_tx, _drop_rx) = flume::bounded(0);
-                            if tx_clone
-                                .send(EventItem::NodeEvent {
+                            // Try zero-copy path: if the payload is backed by SHM,
+                            // reference it directly without copying.
+                            let event_item = if let Some(shm) = payload.as_shm() {
+                                EventItem::ZenohShmInput {
+                                    id: input_id_clone.clone(),
+                                    metadata,
+                                    shm: shm.to_owned(),
+                                }
+                            } else {
+                                // Fallback: copy bytes for non-SHM payloads (e.g. remote subscribers)
+                                let payload_bytes = payload.to_bytes();
+                                let data_vec: AVec<u8, ConstAlign<128>> =
+                                    AVec::from_slice(128, &payload_bytes);
+                                let event = NodeEvent::Input {
+                                    id: input_id_clone.clone(),
+                                    metadata,
+                                    data: Some(DataMessage::Vec(data_vec)),
+                                };
+                                let (drop_tx, _drop_rx) = flume::bounded(0);
+                                EventItem::NodeEvent {
                                     event,
                                     ack_channel: drop_tx,
-                                })
-                                .is_err()
-                            {
+                                }
+                            };
+
+                            if tx_clone.send(event_item).is_err() {
                                 // Event channel closed, stop listening
                                 break;
                             }
@@ -521,7 +527,11 @@ impl EventStream {
                         Some(event_json)
                     }
                 },
-                _ => None,
+                // ZenohShmInput events are not recorded to avoid copying the SHM data.
+                // FatalError/TimeoutError events are not recorded.
+                EventItem::ZenohShmInput { .. }
+                | EventItem::FatalError(_)
+                | EventItem::TimeoutError(_) => None,
             };
             if let Some(event_json) = event_json {
                 write_events_to.events_buffer.push(event_json);
@@ -634,6 +644,21 @@ impl EventStream {
                 }
                 NodeEvent::AllInputsClosed => Event::Stop(event::StopCause::AllInputsClosed),
             },
+
+            EventItem::ZenohShmInput { id, metadata, shm } => {
+                let raw_data = RawData::ZenohShm(shm);
+                match raw_data
+                    .into_arrow_array(&metadata.type_info)
+                    .map(arrow::array::make_array)
+                {
+                    Ok(data) => Event::Input {
+                        id,
+                        metadata,
+                        data: data.into(),
+                    },
+                    Err(err) => Event::Error(format!("{err:?}")),
+                }
+            }
 
             EventItem::FatalError(err) => {
                 Event::Error(format!("fatal event stream error: {err:?}"))
