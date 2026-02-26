@@ -1,7 +1,7 @@
 #![warn(missing_docs)]
 
 use crate::{
-    config::{CommunicationConfig, Input, InputMapping, NodeRunConfig},
+    config::{ByteSize, CommunicationConfig, Input, InputMapping, NodeRunConfig},
     id::{DataId, NodeId, OperatorId},
 };
 use schemars::JsonSchema;
@@ -506,6 +506,21 @@ pub struct Node {
     /// Defaults to `RestartPolicy::Never`.
     #[serde(default)]
     pub restart_policy: RestartPolicy,
+
+    /// Size of the zenoh shared memory pool for zero-copy output publishing.
+    ///
+    /// Accepts an integer (raw bytes) or a string with a unit suffix
+    /// (`KB`, `MB`, `GB`, case-insensitive). Defaults to 64 MB if not set.
+    ///
+    /// ## Example
+    ///
+    /// ```yaml
+    /// nodes:
+    ///   - id: camera-node
+    ///     shared_memory_pool_size: 128MB
+    /// ```
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shared_memory_pool_size: Option<ByteSize>,
 
     /// Unstable machine deployment configuration
     #[schemars(skip)]

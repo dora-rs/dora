@@ -35,6 +35,17 @@ pub struct NodeRunConfig {
     ///  - output_2
     #[serde(default)]
     pub outputs: BTreeSet<DataId>,
+
+    /// Size of the zenoh shared memory pool for zero-copy output publishing.
+    ///
+    /// Accepts an integer (raw bytes) or a string with a unit suffix
+    /// (`KB`, `MB`, `GB`, case-insensitive). Defaults to 64 MB if not set.
+    ///
+    /// e.g.
+    ///
+    /// shared_memory_pool_size: 128MB
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shared_memory_pool_size: Option<ByteSize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -256,5 +267,128 @@ pub enum RemoteCommunicationConfig {
 impl Default for RemoteCommunicationConfig {
     fn default() -> Self {
         Self::Tcp
+    }
+}
+
+/// A byte size that can be deserialized from either an integer (raw bytes) or a
+/// string with a unit suffix (`KB`, `MB`, `GB`, case-insensitive).
+///
+/// Examples: `67108864`, `"64MB"`, `"1 GB"`, `"512kb"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ByteSize(pub usize);
+
+impl ByteSize {
+    pub fn as_bytes(&self) -> usize {
+        self.0
+    }
+}
+
+impl FromStr for ByteSize {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let s = s.trim();
+        // Find where the numeric part ends and the unit begins
+        let (num_part, unit_part) = match s.find(|c: char| c.is_alphabetic()) {
+            Some(pos) => (s[..pos].trim(), s[pos..].trim()),
+            None => {
+                // No unit — parse as raw bytes
+                let bytes: usize = s.parse().map_err(|_| format!("invalid byte size: `{s}`"))?;
+                return Ok(ByteSize(bytes));
+            }
+        };
+
+        let num: f64 = num_part
+            .parse()
+            .map_err(|_| format!("invalid number in byte size: `{num_part}`"))?;
+
+        let multiplier: usize = match unit_part.to_uppercase().as_str() {
+            "B" => 1,
+            "KB" | "K" => 1024,
+            "MB" | "M" => 1024 * 1024,
+            "GB" | "G" => 1024 * 1024 * 1024,
+            other => return Err(format!("unknown byte size unit: `{other}`")),
+        };
+
+        Ok(ByteSize((num * multiplier as f64) as usize))
+    }
+}
+
+impl fmt::Display for ByteSize {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let bytes = self.0;
+        if bytes == 0 {
+            write!(f, "0B")
+        } else if bytes % (1024 * 1024 * 1024) == 0 {
+            write!(f, "{}GB", bytes / (1024 * 1024 * 1024))
+        } else if bytes % (1024 * 1024) == 0 {
+            write!(f, "{}MB", bytes / (1024 * 1024))
+        } else if bytes % 1024 == 0 {
+            write!(f, "{}KB", bytes / 1024)
+        } else {
+            write!(f, "{bytes}")
+        }
+    }
+}
+
+impl Serialize for ByteSize {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        // Serialize as integer (bytes) for round-trip fidelity
+        self.0.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for ByteSize {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de;
+
+        struct ByteSizeVisitor;
+
+        impl de::Visitor<'_> for ByteSizeVisitor {
+            type Value = ByteSize;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("a byte size as integer or string (e.g. 67108864, \"64MB\")")
+            }
+
+            fn visit_u64<E: de::Error>(self, v: u64) -> Result<ByteSize, E> {
+                Ok(ByteSize(v as usize))
+            }
+
+            fn visit_i64<E: de::Error>(self, v: i64) -> Result<ByteSize, E> {
+                if v < 0 {
+                    return Err(E::custom("byte size cannot be negative"));
+                }
+                Ok(ByteSize(v as usize))
+            }
+
+            fn visit_str<E: de::Error>(self, v: &str) -> Result<ByteSize, E> {
+                v.parse().map_err(E::custom)
+            }
+        }
+
+        deserializer.deserialize_any(ByteSizeVisitor)
+    }
+}
+
+impl JsonSchema for ByteSize {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "ByteSize".into()
+    }
+
+    fn json_schema(_gen: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "anyOf": [
+                { "type": "integer" },
+                { "type": "string" }
+            ],
+            "description": "Byte size: integer (raw bytes) or string with unit (e.g. \"128MB\", \"1GB\")"
+        })
     }
 }
