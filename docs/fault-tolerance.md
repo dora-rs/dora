@@ -1,6 +1,6 @@
 # Fault Tolerance
 
-Adora provides built-in fault tolerance for robotic and AI dataflows. Nodes can automatically restart on failure, detect stale upstream connections, and gracefully degrade when inputs are unavailable.
+Adora provides built-in fault tolerance for robotic and AI dataflows. Nodes can automatically restart on failure, detect stale upstream connections, gracefully degrade when inputs are unavailable, and the coordinator can persist state to disk so it survives crashes and restarts.
 
 ## Features at a Glance
 
@@ -14,6 +14,7 @@ Adora provides built-in fault tolerance for robotic and AI dataflows. Nodes can 
 | InputTracker API | Rust nodes | `adora_node_api::InputTracker` |
 | Observability | Daemon-wide | Atomic counters logged periodically |
 | Distributed health | Multi-daemon | Coordinator heartbeat monitoring |
+| Coordinator state persistence | Coordinator | `--store redb` (requires `redb-backend` feature) |
 
 ---
 
@@ -361,6 +362,144 @@ Currently this is informational. Future work may include automatic migration of 
 
 ---
 
+## Coordinator State Persistence
+
+By default the coordinator holds all state in memory. If the coordinator process crashes or is restarted, all knowledge of running dataflows is lost -- daemons continue running but become orphaned, and users must manually re-run dataflows.
+
+The **redb store backend** solves this by persisting coordinator state to a single file on disk using [redb](https://docs.rs/redb), a pure-Rust embedded key-value store with copy-on-write B-trees that are crash-safe by design.
+
+### Design: Stateless Coordinator with Stateful Backend
+
+The coordinator itself remains stateless in the K8s sense -- it can be stopped and restarted at any time. All durable state lives in the store backend behind the `CoordinatorStore` trait:
+
+```
+Coordinator (stateless process)
+    |
+    v
+CoordinatorStore trait
+    |
+    +-- InMemoryStore (default, no persistence)
+    +-- RedbStore     (persists to ~/.adora/coordinator.redb)
+```
+
+This separation means:
+- The coordinator event loop never reads from the filesystem during normal operation (only at startup recovery)
+- All state mutations are written to the store at well-defined persistence points
+- The store can be swapped without changing coordinator logic
+
+### Enabling Persistence
+
+```bash
+# Use default path (~/.adora/coordinator.redb)
+adora coordinator --store redb
+
+# Use custom path
+adora coordinator --store redb:/path/to/coordinator.redb
+
+# Default: in-memory only (no persistence)
+adora coordinator --store memory
+```
+
+The `redb` backend requires the `redb-backend` Cargo feature, which is enabled in the default CLI build.
+
+### What Is Persisted
+
+The store tracks three record types:
+
+| Record | Key | Persisted Fields |
+|--------|-----|-----------------|
+| `DataflowRecord` | UUID (16 bytes) | uuid, name, descriptor (JSON), status, daemon IDs, generation counter, created/updated timestamps |
+| `BuildRecord` | UUID (16 bytes) | build ID, status, errors, created/updated timestamps |
+| `DaemonInfo` | DaemonId (bincode) | daemon ID, machine ID |
+
+Records are serialized with [bincode](https://docs.rs/bincode/2) for compact, fast encoding.
+
+### Dataflow Status Lifecycle
+
+The coordinator persists dataflow status at every state transition:
+
+```
+Start command     -->  Pending
+All daemons ready -->  Running
+Stop command      -->  Stopping
+All nodes finish  -->  Succeeded  or  Failed { error }
+Spawn failure     -->  Failed { error: "spawn failed: ..." }
+```
+
+Each persist call increments the record's `generation` counter, providing a monotonic version for conflict detection.
+
+### Persistence Points
+
+The coordinator writes to the store at these moments in the event loop:
+
+1. **Dataflow started** (`ControlRequest::Start`) -- record created with status `Pending`
+2. **Dataflow spawned** (`DataflowSpawnResult` success from all daemons) -- updated to `Running`
+3. **Spawn failed** (`DataflowSpawnResult` error) -- updated to `Failed` with the actual error message
+4. **Stop requested** (`ControlRequest::Stop` or `StopByName`) -- updated to `Stopping`
+5. **All nodes finished** (`DataflowFinishedOnDaemon`) -- updated to `Succeeded` or `Failed` with per-node error details
+6. **Graceful shutdown** (Ctrl-C or `Destroy` command) -- all running dataflows marked `Stopping` before stop messages are sent
+
+If a store write fails, the coordinator logs a warning and continues operating with in-memory state. This prevents a store failure from blocking the dataflow lifecycle.
+
+### Startup Recovery
+
+When the coordinator starts with a redb store that contains data from a previous run, it performs recovery:
+
+1. Read all persisted dataflow records via `store.list_dataflows()`
+2. For any record with a non-terminal status (`Pending`, `Running`, `Stopping`):
+   - Mark it as `Failed { error: "coordinator restarted" }`
+   - Increment the generation counter
+   - Write the updated record back to the store
+3. Terminal records (`Succeeded`, `Failed`) are left unchanged
+
+This ensures that stale dataflows from a crashed coordinator are not confused with actively running ones. The daemons that were running those dataflows will detect the coordinator disconnect independently.
+
+### Error Detail Preservation
+
+When a dataflow fails, the `Failed` status includes the actual per-node error messages rather than a generic string:
+
+```
+Failed { error: "node-1: exited with code 137; node-2: failed to spawn node: binary not found" }
+```
+
+Errors are collected from `DataflowDaemonResult.node_results` across all daemons, formatted as `node_id: error_message`, and joined with `; `.
+
+### Schema Versioning
+
+The redb database includes a `meta` table with a `schema_version` key. On open:
+
+- If no version exists (fresh database), the current version is written
+- If the stored version matches the binary's version, the database opens normally
+- If there is a mismatch, the database is rejected with an error
+
+This prevents silent data corruption when the serialization format of stored records changes between Adora versions. The current schema version is `1`.
+
+### File Security
+
+On Unix systems:
+- The database file is set to `0600` (owner read/write only) after creation
+- The default directory (`~/.adora/`) is set to `0700` (owner only)
+- Custom paths provided via `redb:/path` are validated to reject `..` components
+
+### Internal Architecture
+
+```rust
+// Store trait (libraries/coordinator-store/src/lib.rs)
+pub trait CoordinatorStore: Send + Sync {
+    fn put_dataflow(&self, record: &DataflowRecord) -> Result<()>;
+    fn get_dataflow(&self, uuid: &Uuid) -> Result<Option<DataflowRecord>>;
+    fn list_dataflows(&self) -> Result<Vec<DataflowRecord>>;
+    fn delete_dataflow(&self, uuid: &Uuid) -> Result<()>;
+    // ... daemon and build methods
+}
+```
+
+The `RedbStore` implementation uses three redb tables (`daemons`, `dataflows`, `builds`) with UUID-based binary keys and bincode-serialized values. All operations are synchronous (redb is a synchronous library); the coordinator calls them directly from the async event loop since they are fast in-process operations.
+
+A bincode deserialization limit of 64 MiB guards against corrupted data that could encode huge allocation sizes in length prefixes.
+
+---
+
 ## Complete YAML Reference
 
 ```yaml
@@ -655,7 +794,37 @@ Machine C (daemon):                planner, actuator-driver
 5. Nodes on A and C with inputs from Machine B's nodes receive `InputClosed` events (via their input timeouts)
 6. CLI queries to `ConnectedMachines` show only A and C with their `last_heartbeat_ago_ms`
 
-### 6. Periodic Batch Job with Always-Restart
+### 6. Coordinator Crash Recovery with redb Persistence
+
+A long-running multi-daemon deployment where the coordinator must survive restarts without losing track of dataflow history.
+
+```bash
+# Start coordinator with persistent store
+adora coordinator --store redb
+
+# In another terminal, start a dataflow
+adora start examples/rust-dataflow/dataflow.yml --name my-pipeline --detach
+
+# Coordinator crashes or is killed (e.g., OOM, hardware failure)
+# ... time passes ...
+
+# Restart coordinator with the same store
+adora coordinator --store redb
+```
+
+**What happens on restart:**
+
+1. Coordinator opens `~/.adora/coordinator.redb` and reads persisted dataflow records
+2. Finds `my-pipeline` with status `Running`
+3. Marks it as `Failed { error: "coordinator restarted" }`, increments generation
+4. Logs: `INFO recovering stale dataflow <uuid> ("my-pipeline") -> marking as Failed`
+5. `adora list` now shows `my-pipeline` with its final status and timestamps
+6. Daemons detect the coordinator disconnect independently and stop their nodes
+7. User can start a fresh dataflow -- the coordinator is fully operational
+
+The key benefit: the coordinator retains a complete history of dataflow lifecycle events across restarts. Without `--store redb`, all state would be lost and the operator would have no record of what was running before the crash.
+
+### 7. Periodic Batch Job with Always-Restart
 
 A node that processes batches and exits when done. It should restart to process the next batch.
 
@@ -696,8 +865,11 @@ The node processes one batch, exits with code 0, waits 10s, then restarts to pro
 
 **Use `InputTracker` for critical paths**. When a node must keep running even with degraded inputs, use `InputTracker` to fall back to cached data. This is essential for sensor fusion, planning, and control nodes.
 
+**Use `--store redb` for production deployments**. The redb backend ensures the coordinator retains dataflow history across crashes and restarts. The in-memory default is fine for development but loses all state on exit. The redb file is small (proportional to the number of dataflow records) and adds negligible overhead.
+
 **Combine features for defense in depth**:
-- `restart_policy` + `restart_delay` -> recover from crashes
-- `health_check_timeout` -> recover from hangs
-- `input_timeout` -> detect stale upstream
+- `restart_policy` + `restart_delay` -> recover from node crashes
+- `health_check_timeout` -> recover from hung nodes
+- `input_timeout` -> detect stale upstream data
 - `InputTracker` -> graceful degradation in node code
+- `--store redb` -> survive coordinator crashes
