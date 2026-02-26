@@ -388,6 +388,7 @@ impl CliControl for ControlServer {
                             memory_mb: m.memory_bytes as f64 / 1000.0 / 1000.0,
                             disk_read_mb_s: m.disk_read_bytes.map(|b| b as f64 / 1000.0 / 1000.0),
                             disk_write_mb_s: m.disk_write_bytes.map(|b| b as f64 / 1000.0 / 1000.0),
+                            start_time: m.start_time,
                         }
                     });
 

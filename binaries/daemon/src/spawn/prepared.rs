@@ -90,6 +90,7 @@ impl PreparedNode {
                 }
             },
             listener_abort_handle: self.listener_abort_handle.clone(),
+            start_time: None,
         };
 
         tokio::spawn(self.restart_loop(logger, finished_rx, disable_restart, pid));

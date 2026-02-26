@@ -1034,6 +1034,7 @@ impl Daemon {
                                         (disk_usage.written_bytes as f64 / METRICS_INTERVAL_SECS)
                                             as u64,
                                     ),
+                                    start_time: running_node.start_time,
                                 },
                             );
                         }
@@ -1741,6 +1742,10 @@ impl Daemon {
                         let _ = reply_sender.send(DaemonReply::Result(Err(err)));
                     }
                     Ok(dataflow) => {
+                        if let Some(node) = dataflow.running_nodes.get_mut(&node_id) {
+                            node.start_time = Some(self.clock.new_timestamp());
+                        }
+
                         Self::subscribe(dataflow, node_id.clone(), event_sender, &self.clock).await;
 
                         let status = dataflow
@@ -2862,6 +2867,7 @@ pub struct RunningNode {
     /// Abort handle for this node's listener task, carried here until the dataflow
     /// collects it into `RunningDataflow::_listener_tasks`.
     listener_abort_handle: Option<tokio::task::AbortHandle>,
+    start_time: Option<uhlc::Timestamp>,
 }
 
 impl RunningNode {

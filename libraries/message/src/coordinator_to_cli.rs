@@ -27,6 +27,8 @@ pub struct NodeMetricsInfo {
     pub disk_read_mb_s: Option<f64>,
     /// Disk write MB/s (if available)
     pub disk_write_mb_s: Option<f64>,
+    /// Node start time
+    pub start_time: Option<uhlc::Timestamp>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
