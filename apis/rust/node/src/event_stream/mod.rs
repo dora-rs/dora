@@ -6,10 +6,12 @@ use std::{
     time::Duration,
 };
 
+use aligned_vec::{AVec, ConstAlign};
 use dora_message::{
     DataflowId,
     daemon_to_node::{DaemonCommunication, DaemonReply, DataMessage, NodeEvent},
     id::DataId,
+    metadata::Metadata,
     node_to_daemon::{DaemonRequest, Timestamped},
 };
 pub use event::{Event, StopCause};
@@ -27,7 +29,8 @@ use crate::{
     event_stream::data_conversion::RawData,
 };
 use dora_core::{
-    config::{Input, NodeId},
+    config::{Input, InputMapping, NodeId},
+    metadata::ArrowTypeInfoExt,
     uhlc,
 };
 use eyre::{Context, eyre};
@@ -69,10 +72,14 @@ pub struct EventStream {
     write_events_to: Option<WriteEventsTo>,
     start_timestamp: uhlc::Timestamp,
     use_scheduler: bool,
+    /// Set of input IDs that have zenoh subscriptions.
+    /// When a daemon event arrives with `data: None` for one of these inputs,
+    /// we skip it because the data will arrive via zenoh.
+    zenoh_input_ids: Arc<std::collections::BTreeSet<DataId>>,
 }
 
 impl EventStream {
-    #[tracing::instrument(level = "trace", skip(clock))]
+    #[tracing::instrument(level = "trace", skip(clock, zenoh_session))]
     pub(crate) fn init(
         dataflow_id: DataflowId,
         node_id: &NodeId,
@@ -80,6 +87,7 @@ impl EventStream {
         input_config: BTreeMap<DataId, Input>,
         clock: Arc<uhlc::HLC>,
         write_events_to: Option<PathBuf>,
+        zenoh_session: Option<&zenoh::Session>,
     ) -> eyre::Result<Self> {
         let channel = match daemon_communication {
             DaemonCommunicationWrapper::Standard(daemon_communication) => {
@@ -195,6 +203,8 @@ impl EventStream {
             clock,
             scheduler,
             write_events_to,
+            zenoh_session,
+            &input_config,
         )
     }
 
@@ -206,6 +216,8 @@ impl EventStream {
         clock: Arc<uhlc::HLC>,
         scheduler: Scheduler,
         write_events_to: Option<WriteEventsTo>,
+        zenoh_session: Option<&zenoh::Session>,
+        input_config: &BTreeMap<DataId, Input>,
     ) -> eyre::Result<Self> {
         channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;
         let reply = channel
@@ -237,7 +249,97 @@ impl EventStream {
             _ => true,
         };
 
-        let thread_handle = thread::init(node_id.clone(), tx, channel, clock.clone())?;
+        // Set up zenoh subscribers for user inputs
+        let mut zenoh_input_ids = std::collections::BTreeSet::new();
+        if let Some(session) = zenoh_session {
+            let rt = tokio::runtime::Handle::try_current()
+                .context("failed to get tokio runtime handle for zenoh subscribers")?;
+
+            for (input_id, input) in input_config {
+                if let InputMapping::User(mapping) = &input.mapping {
+                    zenoh_input_ids.insert(input_id.clone());
+
+                    let topic = dora_core::topics::zenoh_output_publish_topic(
+                        dataflow_id,
+                        &mapping.source,
+                        &mapping.output,
+                    );
+                    let subscriber = rt
+                        .block_on(async { session.declare_subscriber(&topic).await })
+                        .map_err(|e| eyre::eyre!("{e}"))
+                        .wrap_err_with(|| {
+                            format!(
+                                "failed to declare zenoh subscriber for input {input_id} on topic {topic}"
+                            )
+                        })?;
+
+                    let tx_clone = tx.clone();
+                    let input_id_clone = input_id.clone();
+                    let clock_clone = clock.clone();
+
+                    // Spawn a background task to receive zenoh samples and feed them
+                    // into the event channel
+                    rt.spawn(async move {
+                        while let Ok(sample) = subscriber.recv_async().await {
+                            // Extract the data payload
+                            let payload_bytes = sample.payload().to_bytes();
+                            let data_vec: AVec<u8, ConstAlign<128>> =
+                                AVec::from_slice(128, &payload_bytes);
+
+                            // Extract metadata from the attachment (sent by the publisher)
+                            let metadata = if let Some(attachment) = sample.attachment() {
+                                let attachment_bytes = attachment.to_bytes();
+                                match bincode::deserialize::<Metadata>(&attachment_bytes) {
+                                    Ok(m) => m,
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            "failed to deserialize metadata attachment for input {}: {e}",
+                                            input_id_clone
+                                        );
+                                        continue;
+                                    }
+                                }
+                            } else {
+                                // No attachment: create a basic metadata with just a timestamp
+                                Metadata::new(
+                                    clock_clone.new_timestamp(),
+                                    dora_message::metadata::ArrowTypeInfo::byte_array(
+                                        data_vec.len(),
+                                    ),
+                                )
+                            };
+
+                            let event = NodeEvent::Input {
+                                id: input_id_clone.clone(),
+                                metadata,
+                                data: Some(DataMessage::Vec(data_vec)),
+                            };
+                            let (drop_tx, _drop_rx) = flume::bounded(0);
+                            if tx_clone
+                                .send(EventItem::NodeEvent {
+                                    event,
+                                    ack_channel: drop_tx,
+                                })
+                                .is_err()
+                            {
+                                // Event channel closed, stop listening
+                                break;
+                            }
+                        }
+                    });
+                }
+            }
+        }
+
+        let zenoh_input_ids = Arc::new(zenoh_input_ids);
+
+        let thread_handle = thread::init(
+            node_id.clone(),
+            tx,
+            channel,
+            clock.clone(),
+            zenoh_input_ids.clone(),
+        )?;
 
         Ok(EventStream {
             node_id: node_id.clone(),
@@ -249,6 +351,7 @@ impl EventStream {
             scheduler,
             write_events_to,
             use_scheduler,
+            zenoh_input_ids,
         })
     }
 

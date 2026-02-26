@@ -344,6 +344,7 @@ impl DoraNode {
             dataflow_descriptor: serde_yaml::Value::Null,
             dynamic: false,
             write_events_to: None,
+            coordinator_addr: None,
         };
         let (mut node, events) = Self::init(node_config)?;
         node.interactive = true;
@@ -373,6 +374,7 @@ impl DoraNode {
             dataflow_descriptor: serde_yaml::Value::Null,
             dynamic: false,
             write_events_to: None,
+            coordinator_addr: None,
         };
         let testing_comm = TestingCommunication {
             input,
@@ -404,6 +406,7 @@ impl DoraNode {
             dataflow_descriptor,
             dynamic,
             write_events_to,
+            coordinator_addr,
         } = node_config;
         let clock = Arc::new(uhlc::HLC::default());
         let input_config = run_config.inputs.clone();
@@ -439,20 +442,7 @@ impl DoraNode {
             },
         };
 
-        let event_stream = EventStream::init(
-            dataflow_id,
-            &node_id,
-            &daemon_communication,
-            input_config,
-            clock.clone(),
-            write_events_to,
-        )
-        .wrap_err("failed to init event stream")?;
-        let control_channel =
-            ControlChannel::init(dataflow_id, &node_id, &daemon_communication, clock.clone())
-                .wrap_err("failed to init control channel")?;
-
-        // Set up zenoh session and SHM provider for data plane (unless interactive/testing)
+        // Set up zenoh session for data plane (unless interactive/testing)
         let is_interactive = matches!(
             &daemon_communication,
             DaemonCommunicationWrapper::Testing { .. }
@@ -461,12 +451,34 @@ impl DoraNode {
             DaemonCommunicationWrapper::Standard(DaemonCommunication::Interactive)
         );
 
-        let (zenoh_session, shm_provider, publishers) = if !is_interactive {
+        let zenoh_session = if !is_interactive {
             let rt = Handle::try_current()
                 .context("failed to get tokio runtime handle for zenoh session")?;
             let session = rt
-                .block_on(async { dora_core::topics::open_zenoh_session(None).await })
+                .block_on(async { dora_core::topics::open_zenoh_session(coordinator_addr).await })
                 .wrap_err("failed to open zenoh session for node")?;
+            Some(session)
+        } else {
+            None
+        };
+
+        let event_stream = EventStream::init(
+            dataflow_id,
+            &node_id,
+            &daemon_communication,
+            input_config,
+            clock.clone(),
+            write_events_to,
+            zenoh_session.as_ref(),
+        )
+        .wrap_err("failed to init event stream")?;
+        let control_channel =
+            ControlChannel::init(dataflow_id, &node_id, &daemon_communication, clock.clone())
+                .wrap_err("failed to init control channel")?;
+
+        let (shm_provider, publishers) = if let Some(ref session) = zenoh_session {
+            let rt = Handle::try_current()
+                .context("failed to get tokio runtime handle for zenoh SHM")?;
 
             // Create SHM provider with configurable pool size
             let pool_size: usize = std::env::var("DORA_NODE_SHM_POOL_SIZE")
@@ -497,9 +509,9 @@ impl DoraNode {
                 pubs.insert(output_id.clone(), publisher);
             }
 
-            (Some(session), Some(provider), pubs)
+            (Some(provider), pubs)
         } else {
-            (None, None, HashMap::new())
+            (None, HashMap::new())
         };
 
         let node = Self {
@@ -701,17 +713,30 @@ impl DoraNode {
             if let Some(sample) = sample {
                 let rt = Handle::try_current()
                     .context("failed to get tokio runtime handle for zenoh publish")?;
+
+                // Serialize metadata as a zenoh attachment so receivers get both
+                // the data payload (zero-copy via SHM) and the metadata.
+                let metadata_bytes = bincode::serialize(&metadata)
+                    .wrap_err("failed to serialize metadata for zenoh attachment")?;
+
                 match sample.inner {
                     DataSampleInner::ZenohShm(sbuf) => {
                         // Publish the SHM buffer directly for zero-copy transfer
-                        rt.block_on(async { publisher.put(sbuf).await })
-                            .map_err(|e| eyre::eyre!("{e}"))
-                            .wrap_err("zenoh SHM publish failed")?;
+                        rt.block_on(async {
+                            publisher.put(sbuf).attachment(&metadata_bytes[..]).await
+                        })
+                        .map_err(|e| eyre::eyre!("{e}"))
+                        .wrap_err("zenoh SHM publish failed")?;
                     }
                     DataSampleInner::Vec(v) => {
-                        rt.block_on(async { publisher.put(v.as_slice()).await })
-                            .map_err(|e| eyre::eyre!("{e}"))
-                            .wrap_err("zenoh publish failed")?;
+                        rt.block_on(async {
+                            publisher
+                                .put(v.as_slice())
+                                .attachment(&metadata_bytes[..])
+                                .await
+                        })
+                        .map_err(|e| eyre::eyre!("{e}"))
+                        .wrap_err("zenoh publish failed")?;
                     }
                 }
                 // Still notify daemon of output via control channel (with no data,

@@ -1,11 +1,12 @@
 use dora_core::{config::NodeId, uhlc};
 use dora_message::{
     daemon_to_node::{DaemonReply, NodeEvent},
+    id::DataId,
     node_to_daemon::{DaemonRequest, Timestamped},
 };
 use eyre::eyre;
 use flume::RecvTimeoutError;
-use std::{sync::Arc, time::Duration};
+use std::{collections::BTreeSet, sync::Arc, time::Duration};
 
 use crate::daemon_connection::DaemonChannel;
 
@@ -14,9 +15,12 @@ pub fn init(
     tx: flume::Sender<EventItem>,
     channel: DaemonChannel,
     clock: Arc<uhlc::HLC>,
+    zenoh_input_ids: Arc<BTreeSet<DataId>>,
 ) -> eyre::Result<EventStreamThreadHandle> {
     let node_id_cloned = node_id.clone();
-    let join_handle = std::thread::spawn(|| event_stream_loop(node_id_cloned, tx, channel, clock));
+    let join_handle = std::thread::spawn(move || {
+        event_stream_loop(node_id_cloned, tx, channel, clock, zenoh_input_ids)
+    });
     Ok(EventStreamThreadHandle::new(node_id, join_handle))
 }
 
@@ -78,12 +82,13 @@ impl Drop for EventStreamThreadHandle {
     }
 }
 
-#[tracing::instrument(skip(tx, channel, clock))]
+#[tracing::instrument(skip(tx, channel, clock, zenoh_input_ids))]
 fn event_stream_loop(
     node_id: NodeId,
     tx: flume::Sender<EventItem>,
     mut channel: DaemonChannel,
     clock: Arc<uhlc::HLC>,
+    zenoh_input_ids: Arc<BTreeSet<DataId>>,
 ) {
     let mut tx = Some(tx);
     let mut close_tx = false;
@@ -123,6 +128,23 @@ fn event_stream_loop(
             if let Err(err) = clock.update_with_timestamp(&timestamp) {
                 tracing::warn!("failed to update HLC: {err}");
             }
+
+            // Skip daemon Input events with data: None for zenoh-subscribed inputs,
+            // because the data will arrive via zenoh subscribers instead.
+            if let NodeEvent::Input {
+                id: ref input_id,
+                data: None,
+                ..
+            } = inner
+            {
+                if zenoh_input_ids.contains(input_id) {
+                    tracing::trace!(
+                        "skipping daemon Input event with data: None for zenoh-subscribed input `{input_id}`"
+                    );
+                    continue;
+                }
+            }
+
             if matches!(&inner, NodeEvent::AllInputsClosed) {
                 close_tx = true;
             }
