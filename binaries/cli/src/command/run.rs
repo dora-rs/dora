@@ -67,6 +67,12 @@ pub struct Run {
         verbatim_doc_comment
     )]
     pub log_filter: Option<String>,
+    /// Allow shell nodes to execute arbitrary commands.
+    ///
+    /// Shell nodes are disabled by default for security reasons. This flag
+    /// sets the ADORA_ALLOW_SHELL_NODES environment variable.
+    #[clap(long)]
+    pub allow_shell_nodes: bool,
 }
 
 impl Run {
@@ -78,6 +84,7 @@ impl Run {
             log_level: LogLevelOrStdout::Stdout,
             log_format: LogFormat::Pretty,
             log_filter: None,
+            allow_shell_nodes: false,
         }
     }
 }
@@ -90,6 +97,12 @@ pub fn run(dataflow: String, uv: bool) -> eyre::Result<()> {
 
 impl Executable for Run {
     fn execute(self) -> eyre::Result<()> {
+        if self.allow_shell_nodes {
+            // SAFETY: Called before spawning any threads (tokio runtime not yet built),
+            // so there are no concurrent reads of environment variables.
+            unsafe { std::env::set_var("ADORA_ALLOW_SHELL_NODES", "true") };
+        }
+
         let rt = Builder::new_multi_thread()
             .enable_all()
             .build()

@@ -94,6 +94,31 @@ pub async fn spawn_listener_loop(
                 .size(4096)
                 .create()
                 .wrap_err("failed to allocate daemon_drop_region")?;
+
+            // Restrict shared memory regions to owner-only access
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let owner_only = std::fs::Permissions::from_mode(0o600);
+                for region in [
+                    &daemon_control_region,
+                    &daemon_events_region,
+                    &daemon_drop_region,
+                    &daemon_events_close_region,
+                ] {
+                    let os_id = region.get_os_id();
+                    // On Linux, shmem lives at /dev/shm/<os_id>
+                    let shmem_path = std::path::Path::new("/dev/shm").join(os_id);
+                    if shmem_path.exists() {
+                        if let Err(e) = std::fs::set_permissions(&shmem_path, owner_only.clone()) {
+                            tracing::warn!(
+                                "failed to set shmem permissions on {}: {e}",
+                                shmem_path.display()
+                            );
+                        }
+                    }
+                }
+            }
             let daemon_control_region_id = daemon_control_region.get_os_id().to_owned();
             let daemon_events_region_id = daemon_events_region.get_os_id().to_owned();
             let daemon_drop_region_id = daemon_drop_region.get_os_id().to_owned();
@@ -169,11 +194,21 @@ pub async fn spawn_listener_loop(
         }
         #[cfg(unix)]
         LocalCommunicationConfig::UnixDomain => {
+            use std::os::unix::fs::PermissionsExt;
             use std::path::Path;
             let tmpfile_dir = Path::new("/tmp");
             let tmpfile_dir = tmpfile_dir.join(dataflow_id.to_string());
             if !tmpfile_dir.exists() {
                 std::fs::create_dir_all(&tmpfile_dir).context("could not create tmp dir")?;
+            }
+            // Restrict directory to owner-only access
+            if let Err(e) =
+                std::fs::set_permissions(&tmpfile_dir, std::fs::Permissions::from_mode(0o700))
+            {
+                tracing::warn!(
+                    "failed to set permissions on {}: {e}",
+                    tmpfile_dir.display()
+                );
             }
             let socket_file = tmpfile_dir.join(format!("{node_id}.sock"));
             let socket = match UnixListener::bind(&socket_file) {

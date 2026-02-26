@@ -33,10 +33,22 @@ pub struct Daemon {
     /// Suppresses all log output to stdout.
     #[clap(long)]
     quiet: bool,
+    /// Allow shell nodes to execute arbitrary commands.
+    ///
+    /// Shell nodes are disabled by default for security reasons. This flag
+    /// sets the ADORA_ALLOW_SHELL_NODES environment variable.
+    #[clap(long)]
+    allow_shell_nodes: bool,
 }
 
 impl Executable for Daemon {
     fn execute(self) -> eyre::Result<()> {
+        if self.allow_shell_nodes {
+            // SAFETY: Called before spawning any threads (tokio runtime not yet built),
+            // so there are no concurrent reads of environment variables.
+            unsafe { std::env::set_var("ADORA_ALLOW_SHELL_NODES", "true") };
+        }
+
         let rt = Builder::new_multi_thread()
             .enable_all()
             .build()

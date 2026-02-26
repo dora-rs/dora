@@ -52,7 +52,21 @@ pub async fn start(
     store: Arc<dyn CoordinatorStore>,
 ) -> Result<(u16, impl Future<Output = eyre::Result<()>>), eyre::ErrReport> {
     let ctrlc_events = set_up_ctrlc_handler()?;
-    start_with_events(bind, external_events, ctrlc_events, store).await
+
+    // Generate auth token and write to CWD
+    let token = adora_message::auth::generate_token();
+    if let Ok(cwd) = std::env::current_dir() {
+        if let Err(e) = adora_message::auth::write_token(&cwd, &token) {
+            tracing::warn!("failed to write auth token: {e}");
+        } else {
+            tracing::info!(
+                "auth token written to {}",
+                adora_message::auth::token_path(&cwd).display()
+            );
+        }
+    }
+
+    start_with_events(bind, external_events, ctrlc_events, store, Some(token)).await
 }
 
 /// Like [`start`] but without registering a ctrl-c handler.
@@ -63,7 +77,8 @@ pub async fn start_testing(
     external_events: impl Stream<Item = Event> + Unpin,
 ) -> Result<(u16, impl Future<Output = eyre::Result<()>>), eyre::ErrReport> {
     let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
-    start_with_events(bind, external_events, futures::stream::empty(), store).await
+    // Tests run without auth by default
+    start_with_events(bind, external_events, futures::stream::empty(), store, None).await
 }
 
 async fn start_with_events(
@@ -71,6 +86,7 @@ async fn start_with_events(
     external_events: impl Stream<Item = Event> + Unpin,
     extra_events: impl Stream<Item = Event> + Unpin,
     store: Arc<dyn CoordinatorStore>,
+    auth_token: Option<adora_message::auth::AuthToken>,
 ) -> Result<(u16, impl Future<Output = eyre::Result<()>>), eyre::ErrReport> {
     let clock = Arc::new(HLC::default());
 
@@ -81,9 +97,10 @@ async fn start_with_events(
     let ws_events = ReceiverStream::new(ws_event_rx);
 
     // Start WS server
-    let (port, ws_shutdown, ws_future) = ws_server::serve(bind, ws_event_tx.clone(), clock.clone())
-        .await
-        .wrap_err("failed to start WS server")?;
+    let (port, ws_shutdown, ws_future) =
+        ws_server::serve(bind, ws_event_tx.clone(), clock.clone(), auth_token)
+            .await
+            .wrap_err("failed to start WS server")?;
     tracing::info!("WS server listening on port {port}");
     tasks.push(tokio::spawn(async move {
         if let Err(e) = ws_future.await {
@@ -1086,6 +1103,47 @@ async fn start_inner(
                     );
                 }
             },
+            Event::DaemonStatusReport {
+                daemon_id,
+                running_dataflows: reported_dataflows,
+            } => {
+                tracing::info!(
+                    "daemon {daemon_id} reports {} running dataflow(s)",
+                    reported_dataflows.len()
+                );
+                // Reconcile: if daemon reports a dataflow as running and it exists in
+                // the store as Pending/Failed, update it to Running.
+                for df_id in &reported_dataflows {
+                    match store.get_dataflow(df_id) {
+                        Ok(Some(mut record)) => match record.status {
+                            StoreDataflowStatus::Failed { .. } | StoreDataflowStatus::Pending => {
+                                tracing::info!(
+                                    "reconciling dataflow {df_id}: {:?} -> Running (daemon reports active)",
+                                    record.status
+                                );
+                                record.status = StoreDataflowStatus::Running;
+                                record.generation += 1;
+                                record.updated_at = state::now_millis();
+                                if let Err(e) = store.put_dataflow(&record) {
+                                    persist_failure_count += 1;
+                                    tracing::warn!("failed to reconcile dataflow {df_id}: {e}");
+                                }
+                            }
+                            _ => {}
+                        },
+                        Ok(None) => {
+                            tracing::warn!(
+                                "daemon reports dataflow {df_id} running, but not found in store"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "failed to look up dataflow {df_id} for reconciliation: {e}"
+                            );
+                        }
+                    }
+                }
+            }
         }
 
         // warn if event handling took too long -> the main loop should never be blocked for too long

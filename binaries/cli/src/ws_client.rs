@@ -59,10 +59,13 @@ impl WsSession {
             .build()
             .context("failed to create tokio runtime for WS session")?;
 
-        let ws_url = format!("ws://{addr}/api/control");
+        let ws_url = match adora_message::auth::discover_token() {
+            Some(token) => format!("ws://{addr}/api/control?token={}", token.as_hex()),
+            None => format!("ws://{addr}/api/control"),
+        };
         let ws_stream = rt
             .block_on(async { tokio_tungstenite::connect_async(&ws_url).await })
-            .map_err(|e| eyre!("failed to connect to coordinator at {ws_url}: {e}"))?
+            .map_err(|e| eyre!("failed to connect to coordinator at {}: {e}", addr))?
             .0;
 
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();

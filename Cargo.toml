@@ -100,6 +100,8 @@ serde_yaml = "0.9.33"
 zenoh = "1.1.1"
 serde_json = "1.0.145"
 thiserror = "2.0"
+colored = "3.0.0"
+inquire = { version = "0.7.5", default-features = false }
 
 [package]
 name = "adora-examples"
@@ -122,7 +124,7 @@ adora-message = { workspace = true }
 adora-tracing = { workspace = true }
 adora-download = { workspace = true }
 dunce = "1.0.2"
-serde_yaml = "0.8.23"
+serde_yaml = { workspace = true }
 serde_json = { workspace = true }
 uuid = { version = "1.7", features = ["v7", "serde"] }
 tracing = "0.1.36"
@@ -187,4 +189,5 @@ path = "tests/example-smoke.rs"
 # The profile that 'dist' will build with
 [profile.dist]
 inherits = "release"
-lto = "thin"
+lto = "fat"
+codegen-units = 1

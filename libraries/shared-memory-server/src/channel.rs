@@ -19,8 +19,16 @@ pub struct ShmemChannel {
     server: bool,
 }
 
-#[allow(clippy::missing_safety_doc)]
 impl ShmemChannel {
+    /// Initialize a new server-side shared-memory channel.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that:
+    /// - `memory` points to a valid, freshly created shared-memory region.
+    /// - The region has sufficient size for two events, a disconnect flag,
+    ///   a length field, and the data area.
+    /// - No other channel is using the same `memory` region.
     pub unsafe fn new_server(memory: Shmem) -> eyre::Result<Self> {
         let (server_event, server_event_len) = unsafe { Event::new(memory.as_ptr(), true) }
             .map_err(|err| eyre!("failed to open raw server event: {err}"))?;
@@ -62,6 +70,14 @@ impl ShmemChannel {
         })
     }
 
+    /// Attach to an existing server-side shared-memory channel as a client.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that:
+    /// - `memory` points to a shared-memory region previously initialized by
+    ///   [`ShmemChannel::new_server`].
+    /// - No other client is using the same `memory` region concurrently.
     pub unsafe fn new_client(memory: Shmem) -> eyre::Result<Self> {
         let (server_event, server_event_len) = unsafe { Event::from_existing(memory.as_ptr()) }
             .map_err(|err| eyre!("failed to open raw server event: {err}"))?;

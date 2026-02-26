@@ -66,6 +66,11 @@ pub enum DaemonEvent {
         result: DataflowDaemonResult,
     },
     Heartbeat,
+    /// Sent by the daemon after registration to report its current state.
+    /// Enables coordinator-daemon reconciliation on reconnect.
+    StatusReport {
+        running_dataflows: Vec<DataflowId>,
+    },
     Log(LogMessage),
     Exit,
     NodeMetrics {

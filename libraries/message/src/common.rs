@@ -325,8 +325,24 @@ impl DaemonId {
     pub fn new(machine_id: Option<String>) -> Self {
         DaemonId {
             machine_id,
-            uuid: Uuid::new_v4(),
+            uuid: Uuid::now_v7(),
         }
+    }
+
+    /// Load a persisted daemon ID from `<working_dir>/.daemon-id`, or create and persist a new one.
+    pub fn load_or_create(
+        working_dir: &std::path::Path,
+        machine_id: Option<String>,
+    ) -> std::io::Result<Self> {
+        let path = working_dir.join(".daemon-id");
+        if let Ok(contents) = std::fs::read_to_string(&path) {
+            if let Ok(uuid) = contents.trim().parse::<Uuid>() {
+                return Ok(DaemonId { machine_id, uuid });
+            }
+        }
+        let id = Self::new(machine_id);
+        std::fs::write(&path, id.uuid.to_string())?;
+        Ok(id)
     }
 
     pub fn matches_machine_id(&self, machine_id: &str) -> bool {
@@ -445,5 +461,29 @@ mod tests {
         let trace = LogLevelOrStdout::LogLevel(LogLevel::Trace);
         assert!(trace.passes(&LogLevelOrStdout::LogLevel(LogLevel::Trace)));
         assert!(!trace.passes(&LogLevelOrStdout::LogLevel(LogLevel::Debug)));
+    }
+
+    #[test]
+    fn daemon_id_uses_v7_uuid() {
+        let id = DaemonId::new(None);
+        // v7 UUIDs have version nibble = 7
+        assert_eq!(id.uuid.get_version_num(), 7);
+    }
+
+    #[test]
+    fn daemon_id_load_or_create_persists() {
+        let dir = tempfile::tempdir().unwrap();
+        let id1 = DaemonId::load_or_create(dir.path(), Some("m1".into())).unwrap();
+        let id2 = DaemonId::load_or_create(dir.path(), Some("m1".into())).unwrap();
+        assert_eq!(id1.uuid, id2.uuid);
+    }
+
+    #[test]
+    fn daemon_id_load_or_create_different_dirs() {
+        let dir1 = tempfile::tempdir().unwrap();
+        let dir2 = tempfile::tempdir().unwrap();
+        let id1 = DaemonId::load_or_create(dir1.path(), None).unwrap();
+        let id2 = DaemonId::load_or_create(dir2.path(), None).unwrap();
+        assert_ne!(id1.uuid, id2.uuid);
     }
 }

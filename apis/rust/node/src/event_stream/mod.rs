@@ -232,7 +232,7 @@ impl EventStream {
 
         close_channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;
 
-        let (tx, rx) = flume::bounded(100_000_000);
+        let (tx, rx) = flume::bounded(10_000);
 
         let use_scheduler = match &channel {
             DaemonChannel::IntegrationTestChannel(_) => {

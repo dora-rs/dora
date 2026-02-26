@@ -49,7 +49,7 @@ fn build_version_string() -> String {
             // Check for version mismatch
             if python_version != cli_version {
                 version_output.push_str(&format!(
-                    "\n⚠️  WARNING: Version mismatch detected!\n   CLI version ({}) differs from Python adora-rs version ({})\n",
+                    "\nWARNING: Version mismatch detected!\n   CLI version ({}) differs from Python adora-rs version ({})\n",
                     cli_version,
                     python_version
                 ));

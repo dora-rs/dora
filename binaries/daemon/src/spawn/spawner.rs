@@ -26,6 +26,26 @@ use std::{
 };
 use tokio::sync::mpsc;
 
+/// Environment variable names that must never be passed to spawned nodes.
+const ENV_DENYLIST: &[&str] = &[
+    "LD_PRELOAD",
+    "DYLD_INSERT_LIBRARIES",
+    "DYLD_LIBRARY_PATH",
+    "LD_LIBRARY_PATH",
+];
+
+/// Returns true if the env var key is denied, logging a warning if so.
+fn is_denied_env(key: &str) -> bool {
+    if ENV_DENYLIST.contains(&key) {
+        tracing::warn!(
+            "skipping denied environment variable '{key}' (security: could inject shared libraries)"
+        );
+        true
+    } else {
+        false
+    }
+}
+
 #[derive(Clone)]
 pub struct Spawner {
     pub dataflow_id: DataflowId,
@@ -134,13 +154,17 @@ impl Spawner {
                     // the node runtime.
                     if let Some(envs) = &node.env {
                         for (key, value) in envs {
-                            command = command.env(key, value.to_string());
+                            if !is_denied_env(key) {
+                                command = command.env(key, value.to_string());
+                            }
                         }
                     }
                     if let Some(envs) = &n.envs {
                         // node has some inner env variables -> add them too
                         for (key, value) in envs {
-                            command = command.env(key, value.to_string());
+                            if !is_denied_env(key) {
+                                command = command.env(key, value.to_string());
+                            }
                         }
                     }
 
@@ -292,7 +316,9 @@ impl Spawner {
                     // the node runtime.
                     if let Some(envs) = &node.env {
                         for (key, value) in envs {
-                            command = command.env(key, value.to_string());
+                            if !is_denied_env(key) {
+                                command = command.env(key, value.to_string());
+                            }
                         }
                     }
 

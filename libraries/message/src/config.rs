@@ -281,9 +281,4 @@ pub enum LocalCommunicationConfig {
 pub enum RemoteCommunicationConfig {
     #[default]
     Tcp,
-    // TODO:a
-    // Zenoh {
-    //     config: Option<serde_yaml::Value>,
-    //     prefix: String,
-    // },
 }

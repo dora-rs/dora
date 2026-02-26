@@ -56,7 +56,10 @@ pub async fn register(
     CoordinatorSender,
     impl Stream<Item = Timestamped<CoordinatorEvent>>,
 )> {
-    let ws_url = format!("ws://{addr}/api/daemon");
+    let ws_url = match adora_message::auth::discover_token() {
+        Some(token) => format!("ws://{addr}/api/daemon?token={}", token.as_hex()),
+        None => format!("ws://{addr}/api/daemon"),
+    };
     let ws_stream = {
         let mut backoff = DAEMON_COORDINATOR_RETRY_INITIAL;
         loop {

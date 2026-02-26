@@ -181,6 +181,10 @@ out/
 # MacOS DS_Store
 .DS_Store
 
+# Adora auth token (generated at runtime)
+.adora-token
+.daemon-id
+
 #Miscellaneous
 yolo.yml
 

@@ -3,6 +3,33 @@ use std::{borrow::Borrow, convert::Infallible, str::FromStr};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+/// Validate that an identifier contains only safe characters: `[a-zA-Z0-9_.-]`.
+fn validate_id(id: &str) -> Result<(), InvalidId> {
+    if id.is_empty() {
+        return Err(InvalidId("identifier must not be empty".into()));
+    }
+    if let Some(ch) = id
+        .chars()
+        .find(|c| !c.is_ascii_alphanumeric() && *c != '_' && *c != '-' && *c != '.')
+    {
+        return Err(InvalidId(format!(
+            "identifier contains invalid character '{ch}' -- only [a-zA-Z0-9_.-] are allowed"
+        )));
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvalidId(pub String);
+
+impl std::fmt::Display for InvalidId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for InvalidId {}
+
 #[derive(
     Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
 )]
@@ -32,6 +59,9 @@ impl FromStr for NodeId {
 
 impl From<String> for NodeId {
     fn from(id: String) -> Self {
+        if let Err(e) = validate_id(&id) {
+            log::warn!("NodeId '{id}' failed validation: {e}");
+        }
         Self(id)
     }
 }
@@ -92,6 +122,9 @@ impl From<DataId> for String {
 
 impl From<String> for DataId {
     fn from(id: String) -> Self {
+        if let Err(e) = validate_id(&id) {
+            log::warn!("DataId '{id}' failed validation: {e}");
+        }
         Self(id)
     }
 }
@@ -99,6 +132,35 @@ impl From<String> for DataId {
 impl From<&str> for DataId {
     fn from(id: &str) -> Self {
         id.to_owned().into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn valid_ids() {
+        assert!(validate_id("my-node").is_ok());
+        assert!(validate_id("my_node").is_ok());
+        assert!(validate_id("MyNode123").is_ok());
+        assert!(validate_id("node.v2").is_ok());
+        assert!(validate_id("a").is_ok());
+    }
+
+    #[test]
+    fn invalid_ids() {
+        assert!(validate_id("").is_err());
+        assert!(validate_id("node/output").is_err());
+        assert!(validate_id("node name").is_err());
+        assert!(validate_id("node;rm").is_err());
+        assert!(validate_id("node\0").is_err());
+    }
+
+    #[test]
+    fn node_id_from_str_rejects_slash() {
+        assert!(NodeId::from_str("hello").is_ok());
+        assert!(NodeId::from_str("hello/world").is_err());
     }
 }
 

@@ -28,17 +28,15 @@ use adora_message::{
     metadata::{self, ArrowTypeInfo},
     node_to_daemon::{DynamicNodeEvent, Timestamped},
 };
-use adora_node_api::{Parameter, arrow::datatypes::DataType};
+use adora_node_api::arrow::datatypes::DataType;
 use aligned_vec::{AVec, ConstAlign};
 use coordinator::CoordinatorEvent;
 use crossbeam::queue::ArrayQueue;
 use eyre::{Context, ContextCompat, Result, bail, eyre};
-use futures::{FutureExt, TryFutureExt, future, stream};
+use futures::{TryFutureExt, future, stream};
 use futures_concurrency::stream::Merge;
 use local_listener::DynamicNodeEventWrapper;
 use log::{DaemonLogger, DataflowLogger, Logger};
-use pending::PendingNodes;
-use process_wrap::tokio::TokioChildWrapper;
 use shared_memory_server::ShmemConf;
 use spawn::Spawner;
 use std::{
@@ -51,7 +49,7 @@ use std::{
     pin::pin,
     sync::{
         Arc,
-        atomic::{self, AtomicBool, AtomicU32, AtomicU64},
+        atomic::{self},
     },
     time::{Duration, Instant},
 };
@@ -65,7 +63,7 @@ use tokio::{
     },
 };
 use tokio_stream::{Stream, StreamExt, wrappers::ReceiverStream};
-use tracing::{error, warn};
+use tracing::error;
 use uuid::{NoContext, Timestamp, Uuid};
 
 pub use flume;
@@ -73,17 +71,20 @@ pub use log::LogDestination;
 
 mod coordinator;
 mod extract_err_from_stderr;
+pub(crate) mod fault_tolerance;
 mod local_listener;
 mod log;
 mod node_communication;
 mod pending;
+pub(crate) mod running_dataflow;
 mod socket_stream_utils;
 mod spawn;
 
-#[cfg(feature = "telemetry")]
-use adora_tracing::telemetry::serialize_context;
-#[cfg(feature = "telemetry")]
-use tracing_opentelemetry::OpenTelemetrySpanExt;
+pub(crate) use fault_tolerance::{CascadingErrorCauses, FaultToleranceStats};
+pub(crate) use running_dataflow::{
+    DropTokenInformation, FinishDataflowWhen, InputDeadline, ProcessHandle, ProcessOperation,
+    RunningDataflow, RunningNode,
+};
 
 use crate::{extract_err_from_stderr::extract_err_from_stderr, pending::DataflowStatus};
 
@@ -432,6 +433,24 @@ impl Daemon {
         incoming_events: impl Stream<Item = Timestamped<Event>> + Unpin,
     ) -> eyre::Result<DaemonRunResult> {
         let mut events = incoming_events;
+
+        // Send status report to coordinator so it can reconcile dataflow state.
+        if let Some(sender) = &self.coordinator_sender {
+            let running_dataflows: Vec<_> = self.running.keys().copied().collect();
+            let event = DaemonEvent::StatusReport { running_dataflows };
+            let stamped = Timestamped {
+                inner: CoordinatorRequest::Event {
+                    daemon_id: self.daemon_id.clone(),
+                    event,
+                },
+                timestamp: self.clock.new_timestamp(),
+            };
+            if let Ok(bytes) = serde_json::to_vec(&stamped) {
+                if let Err(err) = sender.send_event(&bytes).await {
+                    tracing::warn!("failed to send status report to coordinator: {err}");
+                }
+            }
+        }
 
         while let Some(event) = events.next().await {
             let Timestamped { inner, timestamp } = event;
@@ -2879,418 +2898,10 @@ fn break_input(
     }
 }
 
-struct InputDeadline {
-    timeout: Duration,
-    last_received: Instant,
-}
+// RunningDataflow and related types are in running_dataflow.rs
+// FaultToleranceStats and CascadingErrorCauses are in fault_tolerance.rs
 
-/// Atomic counters for fault tolerance events, visible in periodic health check logs.
-#[derive(Default)]
-struct FaultToleranceStats {
-    restarts: AtomicU64,
-    health_check_kills: AtomicU64,
-    input_timeouts: AtomicU64,
-    circuit_breaker_recoveries: AtomicU64,
-}
-
-impl FaultToleranceStats {
-    fn any_nonzero(&self) -> bool {
-        self.restarts.load(atomic::Ordering::Relaxed) > 0
-            || self.health_check_kills.load(atomic::Ordering::Relaxed) > 0
-            || self.input_timeouts.load(atomic::Ordering::Relaxed) > 0
-            || self
-                .circuit_breaker_recoveries
-                .load(atomic::Ordering::Relaxed)
-                > 0
-    }
-}
-
-#[derive(Debug)]
-pub struct RunningNode {
-    process: Option<ProcessHandle>,
-    node_config: NodeConfig,
-    pid: Option<Arc<AtomicU32>>,
-    restart_policy: RestartPolicy,
-    /// Don't restart the node even if the restart policy says so.
-    ///
-    /// This flag is set when all inputs of the node were closed and when a manual stop command
-    /// was sent.
-    disable_restart: Arc<AtomicBool>,
-    /// Shared timestamp (millis since epoch) updated by the node's Listener on every request.
-    last_activity: Arc<AtomicU64>,
-    /// If set, the daemon kills this node when it hasn't communicated within this duration.
-    health_check_timeout: Option<Duration>,
-}
-
-impl RunningNode {
-    pub fn restarts_disabled(&self) -> bool {
-        self.disable_restart.load(atomic::Ordering::Acquire)
-    }
-
-    pub fn disable_restart(&mut self) {
-        self.disable_restart.store(true, atomic::Ordering::Release);
-    }
-}
-
-#[derive(Debug)]
-enum ProcessOperation {
-    SoftKill,
-    Kill,
-}
-
-impl ProcessOperation {
-    pub fn execute(&self, child: &mut dyn TokioChildWrapper) {
-        match self {
-            Self::SoftKill => {
-                #[cfg(unix)]
-                {
-                    // Send SIGTERM
-                    if let Err(err) = child.signal(15) {
-                        warn!("failed to send SIGTERM to process {:?}: {err}", child.id());
-                    }
-                }
-
-                #[cfg(windows)]
-                unsafe {
-                    let Some(pid) = child.id() else {
-                        warn!("failed to get child process id");
-                        return;
-                    };
-                    if let Err(err) = windows::Win32::System::Console::GenerateConsoleCtrlEvent(
-                        windows::Win32::System::Console::CTRL_BREAK_EVENT,
-                        pid,
-                    ) {
-                        warn!("failed to send CTRL_BREAK_EVENT to process {pid}: {err}");
-                    }
-                }
-
-                #[cfg(not(any(unix, windows)))]
-                {
-                    warn!("killing process is not implemented on this platform");
-                }
-            }
-            Self::Kill => {
-                if let Err(err) = child.start_kill() {
-                    warn!("failed to kill child process: {err}");
-                }
-            }
-        }
-    }
-}
-
-#[derive(Debug)]
-struct ProcessHandle {
-    op_tx: flume::Sender<ProcessOperation>,
-}
-
-impl ProcessHandle {
-    pub fn new(op_tx: flume::Sender<ProcessOperation>) -> Self {
-        Self { op_tx }
-    }
-
-    /// Returns true if the process is not finished yet and the operation is
-    /// delivered.
-    pub fn submit(&self, operation: ProcessOperation) -> bool {
-        self.op_tx.send(operation).is_ok()
-    }
-}
-
-impl Drop for ProcessHandle {
-    fn drop(&mut self) {
-        if self.submit(ProcessOperation::Kill) {
-            warn!("process was killed on drop because it was still running");
-        }
-    }
-}
-
-pub struct RunningDataflow {
-    id: Uuid,
-
-    descriptor: Descriptor,
-
-    /// Local nodes that are not started yet
-    pending_nodes: PendingNodes,
-
-    dataflow_started: bool,
-
-    subscribe_channels: HashMap<NodeId, UnboundedSender<Timestamped<NodeEvent>>>,
-    drop_channels: HashMap<NodeId, UnboundedSender<Timestamped<NodeDropEvent>>>,
-    mappings: HashMap<OutputId, BTreeSet<InputId>>,
-    timers: BTreeMap<Duration, BTreeSet<InputId>>,
-    open_inputs: BTreeMap<NodeId, BTreeSet<DataId>>,
-    input_deadlines: HashMap<(NodeId, DataId), InputDeadline>,
-    /// Inputs that timed out but may recover when upstream starts producing again.
-    /// Maps (node_id, input_id) to the original timeout duration for deadline recreation.
-    broken_inputs: HashMap<(NodeId, DataId), Duration>,
-    running_nodes: BTreeMap<NodeId, RunningNode>,
-
-    /// List of all dynamic node IDs.
-    ///
-    /// We want to treat dynamic nodes differently in some cases, so we need
-    /// to know which nodes are dynamic.
-    dynamic_nodes: BTreeSet<NodeId>,
-
-    open_external_mappings: BTreeSet<OutputId>,
-
-    pending_drop_tokens: HashMap<DropToken, DropTokenInformation>,
-
-    /// Keep handles to all timer tasks of this dataflow to cancel them on drop.
-    _timer_handles: BTreeMap<Duration, futures::future::RemoteHandle<()>>,
-    stop_sent: bool,
-
-    /// Used in `open_inputs`.
-    ///
-    /// TODO: replace this with a constant once `BTreeSet::new` is `const` on stable.
-    empty_set: BTreeSet<DataId>,
-
-    /// Contains the node that caused the error for nodes that experienced a cascading error.
-    cascading_error_causes: CascadingErrorCauses,
-    grace_duration_kills: Arc<crossbeam_skiplist::SkipSet<NodeId>>,
-
-    node_stderr_most_recent: BTreeMap<NodeId, Arc<ArrayQueue<String>>>,
-
-    publishers: BTreeMap<OutputId, zenoh::pubsub::Publisher<'static>>,
-
-    finished_tx: broadcast::Sender<()>,
-
-    publish_all_messages_to_zenoh: bool,
-}
-
-/// Indicates whether a dataflow should be finished immediately after stop_all()
-/// or whether to wait for SpawnedNodeResult events from running nodes.
-#[must_use]
-pub enum FinishDataflowWhen {
-    /// Finish the dataflow immediately (all nodes are dynamic or no nodes running)
-    Now,
-    /// Wait for SpawnedNodeResult events from non-dynamic nodes
-    WaitForNodes,
-}
-
-impl RunningDataflow {
-    fn new(
-        dataflow_id: Uuid,
-        daemon_id: DaemonId,
-        dataflow_descriptor: Descriptor,
-    ) -> RunningDataflow {
-        let (finished_tx, _) = broadcast::channel(1);
-        Self {
-            id: dataflow_id,
-            pending_nodes: PendingNodes::new(dataflow_id, daemon_id),
-            dataflow_started: false,
-            subscribe_channels: HashMap::new(),
-            drop_channels: HashMap::new(),
-            mappings: HashMap::new(),
-            timers: BTreeMap::new(),
-            open_inputs: BTreeMap::new(),
-            input_deadlines: HashMap::new(),
-            broken_inputs: HashMap::new(),
-            running_nodes: BTreeMap::new(),
-            dynamic_nodes: BTreeSet::new(),
-            open_external_mappings: Default::default(),
-            pending_drop_tokens: HashMap::new(),
-            _timer_handles: BTreeMap::new(),
-            stop_sent: false,
-            empty_set: BTreeSet::new(),
-            cascading_error_causes: Default::default(),
-            grace_duration_kills: Default::default(),
-            node_stderr_most_recent: BTreeMap::new(),
-            publishers: Default::default(),
-            finished_tx,
-            publish_all_messages_to_zenoh: dataflow_descriptor.debug.publish_all_messages_to_zenoh,
-            descriptor: dataflow_descriptor,
-        }
-    }
-
-    async fn start(
-        &mut self,
-        events_tx: &mpsc::Sender<Timestamped<Event>>,
-        clock: &Arc<HLC>,
-    ) -> eyre::Result<()> {
-        for interval in self.timers.keys().copied() {
-            if self._timer_handles.contains_key(&interval) {
-                continue;
-            }
-            let events_tx = events_tx.clone();
-            let dataflow_id = self.id;
-            let clock = clock.clone();
-            let task = async move {
-                let mut interval_stream = tokio::time::interval(interval);
-                let hlc = HLC::default();
-                loop {
-                    interval_stream.tick().await;
-
-                    let span = tracing::span!(tracing::Level::TRACE, "tick");
-                    let _ = span.enter();
-
-                    let mut parameters = BTreeMap::new();
-                    parameters.insert(
-                        "open_telemetry_context".to_string(),
-                        #[cfg(feature = "telemetry")]
-                        Parameter::String(serialize_context(&span.context())),
-                        #[cfg(not(feature = "telemetry"))]
-                        Parameter::String("".into()),
-                    );
-
-                    let metadata = metadata::Metadata::from_parameters(
-                        hlc.new_timestamp(),
-                        empty_type_info(),
-                        parameters,
-                    );
-
-                    let event = Timestamped {
-                        inner: AdoraEvent::Timer {
-                            dataflow_id,
-                            interval,
-                            metadata,
-                        }
-                        .into(),
-                        timestamp: clock.new_timestamp(),
-                    };
-                    if events_tx.send(event).await.is_err() {
-                        break;
-                    }
-                }
-            };
-            let (task, handle) = task.remote_handle();
-            tokio::spawn(task);
-            self._timer_handles.insert(interval, handle);
-        }
-
-        Ok(())
-    }
-
-    async fn stop_all(
-        &mut self,
-        coordinator_sender: &mut Option<coordinator::CoordinatorSender>,
-        clock: &HLC,
-        grace_duration: Option<Duration>,
-        force: bool,
-        logger: &mut DataflowLogger<'_>,
-    ) -> eyre::Result<FinishDataflowWhen> {
-        self.pending_nodes
-            .handle_dataflow_stop(
-                coordinator_sender,
-                clock,
-                &mut self.cascading_error_causes,
-                &self.dynamic_nodes,
-                logger,
-            )
-            .await?;
-
-        for node in self.running_nodes.values_mut() {
-            node.disable_restart();
-        }
-
-        for (_node_id, channel) in self.subscribe_channels.drain() {
-            let _ = send_with_timestamp(&channel, NodeEvent::Stop, clock);
-        }
-
-        let running_processes: Vec<_> = self
-            .running_nodes
-            .iter_mut()
-            .map(|(id, n)| (id.clone(), n.process.take()))
-            .collect();
-        if force {
-            for (_, proc) in &running_processes {
-                if let Some(proc) = proc {
-                    proc.submit(crate::ProcessOperation::Kill);
-                }
-            }
-        } else {
-            let grace_duration_kills = self.grace_duration_kills.clone();
-            tokio::spawn(async move {
-                let duration = grace_duration.unwrap_or(Duration::from_millis(10000));
-                tokio::time::sleep(duration).await;
-
-                for (node, proc) in &running_processes {
-                    if let Some(proc) = proc {
-                        if proc.submit(crate::ProcessOperation::SoftKill) {
-                            grace_duration_kills.insert(node.clone());
-                        }
-                    }
-                }
-
-                let kill_duration = duration / 2;
-                tokio::time::sleep(kill_duration).await;
-
-                for (node, proc) in &running_processes {
-                    if let Some(proc) = proc {
-                        if proc.submit(crate::ProcessOperation::Kill) {
-                            grace_duration_kills.insert(node.clone());
-                            warn!(
-                                "{node} was killed due to not stopping within the {:#?} grace period",
-                                duration + kill_duration
-                            );
-                        }
-                    }
-                }
-            });
-        }
-        self.stop_sent = true;
-
-        // Determine if we should finish immediately or wait for nodes
-        Ok(self.should_finish_immediately())
-    }
-
-    /// Check if dataflow should finish immediately after stop_all().
-    /// Returns `Now` if all running nodes are dynamic (they won't send SpawnedNodeResult).
-    /// Returns `WaitForNodes` if there are non-dynamic nodes to wait for.
-    fn should_finish_immediately(&self) -> FinishDataflowWhen {
-        // Only finish immediately if:
-        // 1. No pending nodes
-        // 2. All running nodes are dynamic (they won't send SpawnedNodeResult)
-        // 3. Stop was sent (stop_all() was called)
-        if !self.pending_nodes.local_nodes_pending()
-            && self
-                .running_nodes
-                .iter()
-                .all(|(_id, n)| n.node_config.dynamic)
-            && self.stop_sent
-        {
-            FinishDataflowWhen::Now
-        } else {
-            FinishDataflowWhen::WaitForNodes
-        }
-    }
-
-    fn open_inputs(&self, node_id: &NodeId) -> &BTreeSet<DataId> {
-        self.open_inputs.get(node_id).unwrap_or(&self.empty_set)
-    }
-
-    async fn check_drop_token(&mut self, token: DropToken, clock: &HLC) -> eyre::Result<()> {
-        match self.pending_drop_tokens.entry(token) {
-            std::collections::hash_map::Entry::Occupied(entry) => {
-                if entry.get().pending_nodes.is_empty() {
-                    let (drop_token, info) = entry.remove_entry();
-                    let result = match self.drop_channels.get_mut(&info.owner) {
-                        Some(channel) => send_with_timestamp(
-                            channel,
-                            NodeDropEvent::OutputDropped { drop_token },
-                            clock,
-                        )
-                        .wrap_err("send failed"),
-                        None => Err(eyre!("no subscribe channel for node `{}`", &info.owner)),
-                    };
-                    if let Err(err) = result.wrap_err_with(|| {
-                        format!(
-                            "failed to report drop token `{drop_token:?}` to owner `{}`",
-                            &info.owner
-                        )
-                    }) {
-                        tracing::warn!("{err:?}");
-                    }
-                }
-            }
-            std::collections::hash_map::Entry::Vacant(_) => {
-                tracing::warn!("check_drop_token called with already closed token")
-            }
-        }
-
-        Ok(())
-    }
-}
-
-fn empty_type_info() -> ArrowTypeInfo {
+pub(crate) fn empty_type_info() -> ArrowTypeInfo {
     ArrowTypeInfo {
         data_type: DataType::Null,
         len: 0,
@@ -3304,15 +2915,6 @@ fn empty_type_info() -> ArrowTypeInfo {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct OutputId(NodeId, DataId);
-type InputId = (NodeId, DataId);
-
-struct DropTokenInformation {
-    /// The node that created the associated drop token.
-    owner: NodeId,
-    /// Contains the set of pending nodes that still have access to the input
-    /// associated with a drop token.
-    pending_nodes: BTreeSet<NodeId>,
-}
 
 #[derive(Debug)]
 pub enum Event {
@@ -3444,7 +3046,7 @@ enum RunStatus {
     Exit,
 }
 
-fn send_with_timestamp<T>(
+pub(crate) fn send_with_timestamp<T>(
     sender: &UnboundedSender<Timestamped<T>>,
     event: T,
     clock: &HLC,
@@ -3490,26 +3092,6 @@ fn set_up_ctrlc_handler(
     Ok(ctrlc_rx)
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct CascadingErrorCauses {
-    caused_by: BTreeMap<NodeId, NodeId>,
-}
-
-impl CascadingErrorCauses {
-    pub fn experienced_cascading_error(&self, node: &NodeId) -> bool {
-        self.caused_by.contains_key(node)
-    }
-
-    /// Return the ID of the node that caused a cascading error for the given node, if any.
-    pub fn error_caused_by(&self, node: &NodeId) -> Option<&NodeId> {
-        self.caused_by.get(node)
-    }
-
-    pub fn report_cascading_error(&mut self, causing_node: NodeId, affected_node: NodeId) {
-        self.caused_by.entry(affected_node).or_insert(causing_node);
-    }
-}
-
 fn runtime_node_inputs(n: &RuntimeNode) -> BTreeMap<DataId, Input> {
     n.operators
         .iter()
@@ -3545,6 +3127,7 @@ mod fault_tolerance_tests {
         daemon_to_node::NodeEvent,
         descriptor::{Debug as DescriptorDebug, Descriptor},
     };
+    use std::sync::atomic::{AtomicBool, AtomicU64};
 
     fn test_dataflow() -> RunningDataflow {
         let descriptor = Descriptor {

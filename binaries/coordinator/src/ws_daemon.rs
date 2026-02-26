@@ -223,6 +223,10 @@ fn translate_daemon_event(daemon_id: DaemonId, event: DaemonEvent) -> Option<Eve
             daemon_id,
             result: result.map_err(|err| eyre::eyre!(err)),
         }),
+        DaemonEvent::StatusReport { running_dataflows } => Some(Event::DaemonStatusReport {
+            daemon_id,
+            running_dataflows,
+        }),
     }
 }
 

@@ -1,8 +1,10 @@
 use crate::{events::Event, ws_control::handle_control_ws, ws_daemon::handle_daemon_ws};
 use adora_core::uhlc::HLC;
+use adora_message::auth::AuthToken;
 use axum::{
     Router,
-    extract::{State, ws::WebSocketUpgrade},
+    extract::{Query, State, ws::WebSocketUpgrade},
+    http::StatusCode,
     response::IntoResponse,
     routing::get,
 };
@@ -20,6 +22,31 @@ const MAX_WS_CONNECTIONS: usize = 256;
 pub(crate) struct WsState {
     pub event_tx: mpsc::Sender<Event>,
     pub clock: Arc<HLC>,
+    pub auth_token: Option<AuthToken>,
+}
+
+#[derive(serde::Deserialize)]
+struct TokenQuery {
+    #[serde(default)]
+    token: Option<String>,
+}
+
+/// Validate the token from query params against the expected token.
+/// Returns `Ok(())` if auth is disabled or token matches.
+fn validate_token(
+    expected: &Option<AuthToken>,
+    provided: &Option<String>,
+) -> Result<(), StatusCode> {
+    let Some(expected) = expected else {
+        return Ok(()); // auth disabled
+    };
+    match provided {
+        Some(t) if t == expected.as_hex() => Ok(()),
+        _ => {
+            tracing::warn!("rejected WebSocket connection: invalid or missing auth token");
+            Err(StatusCode::UNAUTHORIZED)
+        }
+    }
 }
 
 /// Build the axum router with WS routes.
@@ -38,20 +65,26 @@ async fn health() -> &'static str {
 
 async fn ws_control_handler(
     State(state): State<Arc<WsState>>,
+    Query(query): Query<TokenQuery>,
     ws: WebSocketUpgrade,
-) -> impl IntoResponse {
-    ws.max_message_size(MAX_CONTROL_MESSAGE_BYTES)
-        .on_upgrade(move |socket| handle_control_ws(socket, state.event_tx.clone()))
+) -> Result<impl IntoResponse, StatusCode> {
+    validate_token(&state.auth_token, &query.token)?;
+    Ok(ws
+        .max_message_size(MAX_CONTROL_MESSAGE_BYTES)
+        .on_upgrade(move |socket| handle_control_ws(socket, state.event_tx.clone())))
 }
 
 async fn ws_daemon_handler(
     State(state): State<Arc<WsState>>,
+    Query(query): Query<TokenQuery>,
     ws: WebSocketUpgrade,
-) -> impl IntoResponse {
-    ws.max_message_size(MAX_CONTROL_MESSAGE_BYTES)
+) -> Result<impl IntoResponse, StatusCode> {
+    validate_token(&state.auth_token, &query.token)?;
+    Ok(ws
+        .max_message_size(MAX_CONTROL_MESSAGE_BYTES)
         .on_upgrade(move |socket| {
             handle_daemon_ws(socket, state.event_tx.clone(), state.clock.clone())
-        })
+        }))
 }
 
 /// Start the axum WS server. Returns the bound port, a shutdown trigger, and a future to await.
@@ -59,6 +92,7 @@ pub(crate) async fn serve(
     bind: SocketAddr,
     event_tx: mpsc::Sender<Event>,
     clock: Arc<HLC>,
+    auth_token: Option<AuthToken>,
 ) -> eyre::Result<(
     u16,
     ShutdownTrigger,
@@ -66,7 +100,11 @@ pub(crate) async fn serve(
 )> {
     let listener = TcpListener::bind(bind).await?;
     let port = listener.local_addr()?.port();
-    let state = WsState { event_tx, clock };
+    let state = WsState {
+        event_tx,
+        clock,
+        auth_token,
+    };
     let app = router(state);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 

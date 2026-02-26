@@ -45,6 +45,10 @@ pub enum Event {
         dataflow_id: Uuid,
         metrics: BTreeMap<NodeId, NodeMetrics>,
     },
+    DaemonStatusReport {
+        daemon_id: DaemonId,
+        running_dataflows: Vec<Uuid>,
+    },
 }
 
 impl Event {
@@ -70,6 +74,7 @@ impl Event {
             Event::DataflowBuildResult { .. } => "DataflowBuildResult",
             Event::DataflowSpawnResult { .. } => "DataflowSpawnResult",
             Event::NodeMetrics { .. } => "NodeMetrics",
+            Event::DaemonStatusReport { .. } => "DaemonStatusReport",
         }
     }
 }

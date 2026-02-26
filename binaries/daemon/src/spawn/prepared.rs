@@ -465,7 +465,7 @@ impl PreparedNode {
                     })
                     .await;
                 if sent.is_err() {
-                    println!("Could not log: {content}");
+                    tracing::warn!("Could not log: {content}");
                 }
             }
         });
@@ -521,7 +521,7 @@ impl PreparedNode {
                     })
                     .await;
                 if sent.is_err() {
-                    println!("Could not log: {content}");
+                    tracing::warn!("Could not log: {content}");
                 }
             }
         });
