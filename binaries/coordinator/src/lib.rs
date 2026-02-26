@@ -515,17 +515,25 @@ async fn start_inner(
                 }
             },
             Event::DaemonHeartbeatInterval => {
-                // Collect daemon IDs and elapsed times while briefly holding
-                // the DashMap lock.  Drop the lock before doing any async I/O.
-                let daemons_to_check: Vec<(DaemonId, Duration)> = coordinator_state
-                    .daemon_connections
-                    .iter()
-                    .map(|r| (r.key().clone(), r.value().last_heartbeat.elapsed()))
-                    .collect();
+                // Collect daemon IDs, elapsed times, and clients while briefly
+                // holding the DashMap lock.  Drop the lock before doing any
+                // async I/O.
+                let daemons_to_check: Vec<(DaemonId, Duration, DaemonControlClient)> =
+                    coordinator_state
+                        .daemon_connections
+                        .iter()
+                        .map(|r| {
+                            (
+                                r.key().clone(),
+                                r.value().last_heartbeat.elapsed(),
+                                r.value().client.clone(),
+                            )
+                        })
+                        .collect();
                 // DashMap lock is now dropped.
 
                 let mut disconnected = BTreeSet::new();
-                for (machine_id, elapsed) in daemons_to_check {
+                for (machine_id, elapsed, client) in daemons_to_check {
                     if elapsed > Duration::from_secs(15) {
                         tracing::warn!(
                             "no heartbeat message from machine `{machine_id}` since {elapsed:?}",
@@ -535,28 +543,18 @@ async fn start_inner(
                         disconnected.insert(machine_id);
                         continue;
                     }
-                    let client = match coordinator_state.daemon_connections.get(&machine_id) {
-                        Some(connection) => connection.client.clone(),
-                        None => {
-                            disconnected.insert(machine_id);
-                            continue;
+                    // Send a heartbeat ping to the daemon so it knows the
+                    // coordinator is still alive.  This is fire-and-forget:
+                    // the daemon independently sends its own heartbeat to the
+                    // coordinator (updating `last_heartbeat`), so a failed
+                    // ping here does not mean the daemon is gone.
+                    tokio::spawn(async move {
+                        if let Err(err) = client.heartbeat(tarpc::context::current()).await {
+                            tracing::warn!(
+                                "failed to send heartbeat to daemon `{machine_id}`: {err}"
+                            );
                         }
-                    };
-                    // DashMap lock is dropped — safe to do async I/O.
-                    let result: eyre::Result<()> = tokio::time::timeout(
-                        Duration::from_millis(500),
-                        client.heartbeat(tarpc::context::current()),
-                    )
-                    .await
-                    .wrap_err("timeout")
-                    .and_then(|r: Result<(), _>| r.map_err(|e| eyre!("{e}")))
-                    .wrap_err_with(|| {
-                        format!("failed to send heartbeat message to daemon at `{machine_id}`")
                     });
-                    if let Err(err) = result {
-                        tracing::warn!("{err:?}");
-                        disconnected.insert(machine_id);
-                    }
                 }
                 if !disconnected.is_empty() {
                     tracing::error!("Disconnecting daemons that failed watchdog: {disconnected:?}");

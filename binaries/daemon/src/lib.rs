@@ -450,8 +450,12 @@ impl Daemon {
                 Event::DynamicNode(event) => self.handle_dynamic_node_event(event).await?,
                 Event::HeartbeatInterval => {
                     if let Some(client) = self.state.coordinator_client() {
-                        let ctx = tarpc::context::current();
-                        let _ = client.heartbeat(ctx).await;
+                        // Fire-and-forget: notify the coordinator we're alive.
+                        // Don't block the event loop waiting for the RPC response.
+                        let client = client.clone();
+                        tokio::spawn(async move {
+                            let _ = client.heartbeat(tarpc::context::current()).await;
+                        });
 
                         let last_hb = self.state.last_coordinator_heartbeat.lock().await;
                         if last_hb.elapsed() > Duration::from_secs(20) {
