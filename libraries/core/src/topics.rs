@@ -77,3 +77,19 @@ pub fn zenoh_output_publish_topic(
     let network_id = "default";
     format!("dora/{network_id}/{dataflow_id}/output/{node_id}/{output_id}")
 }
+
+/// Zenoh key expression for publishing log messages for a specific dataflow.
+///
+/// Format: `dora/log/dataflow/{dataflow_id}`
+#[cfg(feature = "zenoh")]
+pub fn zenoh_log_topic_for_dataflow(dataflow_id: uuid::Uuid) -> String {
+    format!("dora/log/dataflow/{dataflow_id}")
+}
+
+/// Zenoh key expression for publishing log messages for a specific build.
+///
+/// Format: `dora/log/build/{build_id}`
+#[cfg(feature = "zenoh")]
+pub fn zenoh_log_topic_for_build(build_id: &dora_message::BuildId) -> String {
+    format!("dora/log/build/{build_id}")
+}

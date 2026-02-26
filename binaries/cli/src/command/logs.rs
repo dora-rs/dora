@@ -1,4 +1,4 @@
-use std::{io::Write, net::SocketAddr};
+use std::io::Write;
 
 use super::{Executable, default_tracing};
 use crate::{
@@ -6,13 +6,13 @@ use crate::{
         connect_and_check_version, long_context, resolve_dataflow_identifier_interactive, rpc,
     },
     output::print_log_message,
-    tcp::AsyncTcpConnection,
 };
 use clap::Args;
-use dora_core::topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST};
+use dora_core::topics::{
+    DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST, zenoh_log_topic_for_dataflow,
+};
 use dora_message::{
-    cli_to_coordinator::{CoordinatorControlClient, LegacyControlRequest},
-    common::LogMessage,
+    cli_to_coordinator::CoordinatorControlClient, common::LogMessage,
 };
 use eyre::{Context, Result};
 use uuid::Uuid;
@@ -55,7 +55,7 @@ impl Executable for LogsArgs {
             self.node,
             self.tail,
             self.follow,
-            (self.coordinator_addr, self.coordinator_port).into(),
+            self.coordinator_addr,
         )
         .await
     }
@@ -67,7 +67,7 @@ pub async fn logs(
     node: dora_message::id::NodeId,
     tail: Option<usize>,
     follow: bool,
-    coordinator_addr: SocketAddr,
+    coordinator_addr: std::net::IpAddr,
 ) -> Result<()> {
     let logs = rpc(
         "retrieve logs",
@@ -88,34 +88,44 @@ pub async fn logs(
         .build()
         .filter();
 
-    // subscribe to log messages
-    let mut log_session = AsyncTcpConnection {
-        stream: tokio::net::TcpStream::connect(coordinator_addr)
-            .await
-            .wrap_err("failed to connect to dora coordinator")?,
-    };
-    log_session
-        .send(
-            &serde_json::to_vec(&LegacyControlRequest::LogSubscribe {
-                dataflow_id: uuid,
-                level: log_level,
-            })
-            .wrap_err("failed to serialize message")?,
-        )
+    // Subscribe to log messages via zenoh
+    let zenoh_session = dora_core::topics::open_zenoh_session(Some(coordinator_addr))
         .await
-        .wrap_err("failed to send log subscribe request to coordinator")?;
-    while let Ok(raw) = log_session.receive().await {
-        let parsed: eyre::Result<LogMessage> =
-            serde_json::from_slice(&raw).context("failed to parse log message");
-        match parsed {
-            Ok(log_message) => {
-                print_log_message(log_message, false, false);
+        .wrap_err("failed to open zenoh session for log subscription")?;
+    let log_topic = zenoh_log_topic_for_dataflow(uuid);
+    let subscriber = zenoh_session
+        .declare_subscriber(&log_topic)
+        .await
+        .map_err(|e| eyre::eyre!(e))
+        .wrap_err("failed to subscribe to log topic")?;
+    loop {
+        match subscriber.recv_async().await {
+            Ok(sample) => {
+                let payload = sample.payload().to_bytes();
+                let parsed: eyre::Result<LogMessage> = serde_json::from_slice(&payload)
+                    .context("failed to parse log message from zenoh");
+                match parsed {
+                    Ok(log_message) => {
+                        if should_display(&log_message, log_level) {
+                            print_log_message(log_message, false, false);
+                        }
+                    }
+                    Err(err) => {
+                        tracing::warn!("failed to parse log message: {err:?}")
+                    }
+                }
             }
-            Err(err) => {
-                tracing::warn!("failed to parse log message: {err:?}")
-            }
+            Err(_) => break,
         }
     }
 
     Ok(())
+}
+
+/// Check whether a log message should be displayed given the log level filter.
+fn should_display(message: &LogMessage, filter: log::LevelFilter) -> bool {
+    match &message.level {
+        dora_core::build::LogLevelOrStdout::Stdout => true,
+        dora_core::build::LogLevelOrStdout::LogLevel(level) => *level <= filter,
+    }
 }

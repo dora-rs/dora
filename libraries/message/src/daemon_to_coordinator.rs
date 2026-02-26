@@ -18,14 +18,6 @@ pub enum CoordinatorRequest {
     RegisterNotificationChannel {
         daemon_id: DaemonId,
     },
-    /// Forward a log message from a daemon over the legacy raw-TCP path.
-    ///
-    /// All other daemon→coordinator communication now uses the
-    /// `CoordinatorNotify` tarpc service on the notification channel.
-    Log {
-        daemon_id: DaemonId,
-        message: LogMessage,
-    },
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]

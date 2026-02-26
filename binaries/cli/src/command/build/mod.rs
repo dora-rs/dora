@@ -211,7 +211,6 @@ pub async fn build_async(
                 .context("failed to write out dataflow session file")?;
         }
         BuildKind::ThroughCoordinator { coordinator_client } => {
-            let coord = coordinator_socket(coordinator_addr, coordinator_port);
             let local_working_dir =
                 local_working_dir(&dataflow_path, &dataflow_descriptor, &coordinator_client)
                     .await?;
@@ -235,7 +234,7 @@ pub async fn build_async(
             wait_until_dataflow_built(
                 build_id,
                 &coordinator_client,
-                coordinator_socket(coordinator_addr, coordinator_port),
+                coordinator_addr.unwrap_or(LOCALHOST),
                 log::LevelFilter::Info,
             )
             .await?;
@@ -267,11 +266,3 @@ async fn connect_to_coordinator_rpc_with_defaults(
     connect_and_check_version(addr, control_port).await
 }
 
-fn coordinator_socket(
-    coordinator_addr: Option<std::net::IpAddr>,
-    coordinator_port: Option<u16>,
-) -> std::net::SocketAddr {
-    let coordinator_addr = coordinator_addr.unwrap_or(LOCALHOST);
-    let coordinator_port = coordinator_port.unwrap_or(DORA_COORDINATOR_PORT_CONTROL_DEFAULT);
-    (coordinator_addr, coordinator_port).into()
-}

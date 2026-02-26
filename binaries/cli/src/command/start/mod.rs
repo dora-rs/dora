@@ -3,7 +3,6 @@
 //! The `dora start` command does not run any build commands, nor update git dependencies or similar. Use `dora build` for that.
 
 use super::{Executable, default_tracing};
-use crate::tcp::AsyncTcpConnection;
 use crate::{
     command::start::attach::attach_dataflow,
     common::{
@@ -15,10 +14,10 @@ use crate::{
 };
 use dora_core::{
     descriptor::{Descriptor, DescriptorExt},
-    topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST},
+    topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST, zenoh_log_topic_for_dataflow},
 };
 use dora_message::{
-    cli_to_coordinator::{CoordinatorControlClient, LegacyControlRequest, StartRequest},
+    cli_to_coordinator::{CoordinatorControlClient, StartRequest},
     common::LogMessage,
     tarpc,
 };
@@ -91,7 +90,7 @@ impl Executable for Start {
                 dataflow_id,
                 &client,
                 self.hot_reload,
-                coordinator_socket,
+                self.coordinator_addr,
                 log_level,
             )
             .await
@@ -101,7 +100,7 @@ impl Executable for Start {
             wait_until_dataflow_started(
                 dataflow_id,
                 &client,
-                coordinator_socket,
+                self.coordinator_addr,
                 log::LevelFilter::Info,
                 print_daemon_name,
             )
@@ -154,37 +153,39 @@ async fn start_dataflow(
 async fn wait_until_dataflow_started(
     dataflow_id: Uuid,
     client: &CoordinatorControlClient,
-    coordinator_addr: SocketAddr,
+    coordinator_addr: IpAddr,
     log_level: log::LevelFilter,
     print_daemon_id: bool,
 ) -> eyre::Result<()> {
-    // subscribe to log messages (TCP streaming)
-    let mut log_session = AsyncTcpConnection {
-        stream: tokio::net::TcpStream::connect(coordinator_addr)
-            .await
-            .wrap_err("failed to connect to dora coordinator")?,
-    };
-    log_session
-        .send(
-            &serde_json::to_vec(&LegacyControlRequest::LogSubscribe {
-                dataflow_id,
-                level: log_level,
-            })
-            .wrap_err("failed to serialize message")?,
-        )
+    // Subscribe to log messages via zenoh
+    let zenoh_session = dora_core::topics::open_zenoh_session(Some(coordinator_addr))
         .await
-        .wrap_err("failed to send log subscribe request to coordinator")?;
+        .wrap_err("failed to open zenoh session for log subscription")?;
+    let log_topic = zenoh_log_topic_for_dataflow(dataflow_id);
+    let subscriber = zenoh_session
+        .declare_subscriber(&log_topic)
+        .await
+        .map_err(|e| eyre::eyre!(e))
+        .wrap_err("failed to subscribe to log topic")?;
     tokio::spawn(async move {
-        while let Ok(raw) = log_session.receive().await {
-            let parsed: eyre::Result<LogMessage> =
-                serde_json::from_slice(&raw).context("failed to parse log message");
-            match parsed {
-                Ok(log_message) => {
-                    print_log_message(log_message, false, print_daemon_id);
+        loop {
+            match subscriber.recv_async().await {
+                Ok(sample) => {
+                    let payload = sample.payload().to_bytes();
+                    let parsed: eyre::Result<LogMessage> = serde_json::from_slice(&payload)
+                        .context("failed to parse log message from zenoh");
+                    match parsed {
+                        Ok(log_message) => {
+                            if should_display(&log_message, log_level) {
+                                print_log_message(log_message, false, print_daemon_id);
+                            }
+                        }
+                        Err(err) => {
+                            tracing::warn!("failed to parse log message: {err:?}")
+                        }
+                    }
                 }
-                Err(err) => {
-                    tracing::warn!("failed to parse log message: {err:?}")
-                }
+                Err(_) => break,
             }
         }
     });
@@ -197,4 +198,12 @@ async fn wait_until_dataflow_started(
     eprintln!("dataflow started: {dataflow_id}");
 
     Ok(())
+}
+
+/// Check whether a log message should be displayed given the log level filter.
+fn should_display(message: &LogMessage, filter: log::LevelFilter) -> bool {
+    match &message.level {
+        dora_core::build::LogLevelOrStdout::Stdout => true,
+        dora_core::build::LogLevelOrStdout::LogLevel(level) => *level <= filter,
+    }
 }

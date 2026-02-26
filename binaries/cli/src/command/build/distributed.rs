@@ -1,14 +1,16 @@
-use crate::tcp::AsyncTcpConnection;
-use dora_core::descriptor::Descriptor;
+use dora_core::{
+    descriptor::Descriptor,
+    topics::zenoh_log_topic_for_build,
+};
 use dora_message::{
     BuildId,
-    cli_to_coordinator::{BuildRequest, CoordinatorControlClient, LegacyControlRequest},
+    cli_to_coordinator::{BuildRequest, CoordinatorControlClient},
     common::{GitSource, LogMessage},
     id::NodeId,
     tarpc,
 };
 use eyre::Context;
-use std::{collections::BTreeMap, net::SocketAddr};
+use std::{collections::BTreeMap, net::IpAddr};
 
 use crate::common::{long_context, rpc};
 use crate::output::print_log_message;
@@ -44,36 +46,38 @@ pub async fn build_distributed_dataflow(
 pub async fn wait_until_dataflow_built(
     build_id: BuildId,
     client: &CoordinatorControlClient,
-    coordinator_socket: SocketAddr,
+    coordinator_addr: IpAddr,
     log_level: log::LevelFilter,
 ) -> eyre::Result<BuildId> {
-    // subscribe to build log messages (TCP streaming)
-    let mut log_session = AsyncTcpConnection {
-        stream: tokio::net::TcpStream::connect(coordinator_socket)
-            .await
-            .wrap_err("failed to connect to dora coordinator")?,
-    };
-    log_session
-        .send(
-            &serde_json::to_vec(&LegacyControlRequest::BuildLogSubscribe {
-                build_id,
-                level: log_level,
-            })
-            .wrap_err("failed to serialize message")?,
-        )
+    // Subscribe to build log messages via zenoh
+    let zenoh_session = dora_core::topics::open_zenoh_session(Some(coordinator_addr))
         .await
-        .wrap_err("failed to send build log subscribe request to coordinator")?;
+        .wrap_err("failed to open zenoh session for build log subscription")?;
+    let log_topic = zenoh_log_topic_for_build(&build_id);
+    let subscriber = zenoh_session
+        .declare_subscriber(&log_topic)
+        .await
+        .map_err(|e| eyre::eyre!(e))
+        .wrap_err("failed to subscribe to build log topic")?;
     tokio::spawn(async move {
-        while let Ok(raw) = log_session.receive().await {
-            let parsed: eyre::Result<LogMessage> =
-                serde_json::from_slice(&raw).context("failed to parse log message");
-            match parsed {
-                Ok(log_message) => {
-                    print_log_message(log_message, false, true);
+        loop {
+            match subscriber.recv_async().await {
+                Ok(sample) => {
+                    let payload = sample.payload().to_bytes();
+                    let parsed: eyre::Result<LogMessage> = serde_json::from_slice(&payload)
+                        .context("failed to parse log message from zenoh");
+                    match parsed {
+                        Ok(log_message) => {
+                            if should_display(&log_message, log_level) {
+                                print_log_message(log_message, false, true);
+                            }
+                        }
+                        Err(err) => {
+                            tracing::warn!("failed to parse log message: {err:?}")
+                        }
+                    }
                 }
-                Err(err) => {
-                    tracing::warn!("failed to parse log message: {err:?}")
-                }
+                Err(_) => break,
             }
         }
     });
@@ -85,4 +89,12 @@ pub async fn wait_until_dataflow_built(
     .await?;
     eprintln!("dataflow build finished successfully");
     Ok(build_id)
+}
+
+/// Check whether a log message should be displayed given the log level filter.
+fn should_display(message: &LogMessage, filter: log::LevelFilter) -> bool {
+    match &message.level {
+        dora_core::build::LogLevelOrStdout::Stdout => true,
+        dora_core::build::LogLevelOrStdout::LogLevel(level) => *level <= filter,
+    }
 }

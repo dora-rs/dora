@@ -1,6 +1,6 @@
-use crate::tcp::AsyncTcpConnection;
 use dora_core::descriptor::{CoreNodeKind, Descriptor, DescriptorExt, resolve_path};
-use dora_message::cli_to_coordinator::{CoordinatorControlClient, LegacyControlRequest};
+use dora_core::topics::zenoh_log_topic_for_dataflow;
+use dora_message::cli_to_coordinator::CoordinatorControlClient;
 use dora_message::common::LogMessage;
 use dora_message::coordinator_to_cli::{CheckDataflowReply, DataflowResult, StopDataflowReply};
 use dora_message::id::{NodeId, OperatorId};
@@ -8,7 +8,7 @@ use dora_message::tarpc;
 use eyre::Context;
 use notify::event::ModifyKind;
 use notify::{Config, Event as NotifyEvent, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
-use std::{collections::HashMap, net::SocketAddr};
+use std::{collections::HashMap, net::IpAddr};
 use std::{path::PathBuf, time::Duration};
 use tracing::info;
 use uuid::Uuid;
@@ -22,7 +22,7 @@ pub async fn attach_dataflow(
     dataflow_id: Uuid,
     client: &CoordinatorControlClient,
     hot_reload: bool,
-    coordinator_socket: SocketAddr,
+    coordinator_addr: IpAddr,
     log_level: log::LevelFilter,
 ) -> Result<(), eyre::ErrReport> {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -121,28 +121,39 @@ pub async fn attach_dataflow(
     })
     .wrap_err("failed to set ctrl-c handler")?;
 
-    // subscribe to log messages
-    let mut log_session = AsyncTcpConnection {
-        stream: tokio::net::TcpStream::connect(coordinator_socket)
-            .await
-            .wrap_err("failed to connect to dora coordinator")?,
-    };
-    log_session
-        .send(
-            &serde_json::to_vec(&LegacyControlRequest::LogSubscribe {
-                dataflow_id,
-                level: log_level,
-            })
-            .wrap_err("failed to serialize message")?,
-        )
+    // Subscribe to log messages via zenoh
+    let zenoh_session = dora_core::topics::open_zenoh_session(Some(coordinator_addr))
         .await
-        .wrap_err("failed to send log subscribe request to coordinator")?;
+        .wrap_err("failed to open zenoh session for log subscription")?;
+    let log_topic = zenoh_log_topic_for_dataflow(dataflow_id);
+    let subscriber = zenoh_session
+        .declare_subscriber(&log_topic)
+        .await
+        .map_err(|e| eyre::eyre!(e))
+        .wrap_err("failed to subscribe to log topic")?;
     tokio::spawn(async move {
-        while let Ok(raw) = log_session.receive().await {
-            let parsed: eyre::Result<LogMessage> =
-                serde_json::from_slice(&raw).context("failed to parse log message");
-            if tx.send(AttachEvent::Log(parsed)).is_err() {
-                break;
+        loop {
+            match subscriber.recv_async().await {
+                Ok(sample) => {
+                    let payload = sample.payload().to_bytes();
+                    let parsed: eyre::Result<LogMessage> = serde_json::from_slice(&payload)
+                        .context("failed to parse log message from zenoh");
+                    match parsed {
+                        Ok(log_message) => {
+                            if should_display(&log_message, log_level) {
+                                if tx.send(AttachEvent::Log(Ok(log_message))).is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            if tx.send(AttachEvent::Log(Err(err))).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+                Err(_) => break,
             }
         }
     });
@@ -207,6 +218,14 @@ pub async fn attach_dataflow(
                 info!("dataflow {uuid} reloaded")
             }
         };
+    }
+}
+
+/// Check whether a log message should be displayed given the log level filter.
+fn should_display(message: &LogMessage, filter: log::LevelFilter) -> bool {
+    match &message.level {
+        dora_core::build::LogLevelOrStdout::Stdout => true,
+        dora_core::build::LogLevelOrStdout::LogLevel(level) => *level <= filter,
     }
 }
 

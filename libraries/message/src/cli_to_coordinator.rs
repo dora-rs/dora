@@ -49,18 +49,6 @@ pub struct StartRequest {
     pub write_events_to: Option<PathBuf>,
 }
 
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-pub enum LegacyControlRequest {
-    LogSubscribe {
-        dataflow_id: Uuid,
-        level: log::LevelFilter,
-    },
-    BuildLogSubscribe {
-        build_id: BuildId,
-        level: log::LevelFilter,
-    },
-}
-
 type Result<T> = std::result::Result<T, String>;
 
 #[tarpc::service]
