@@ -1,6 +1,8 @@
+use aligned_vec::{AVec, ConstAlign};
 use dora_core::{config::NodeId, uhlc};
 use dora_message::{
     daemon_to_node::{DaemonReply, NodeEvent},
+    id::DataId,
     node_to_daemon::{DaemonRequest, Timestamped},
 };
 use eyre::eyre;
@@ -26,6 +28,10 @@ pub enum EventItem {
     NodeEvent {
         event: NodeEvent,
         ack_channel: flume::Sender<()>,
+    },
+    ZenohPayload {
+        id: DataId,
+        payload: AVec<u8, ConstAlign<128>>,
     },
     FatalError(eyre::Report),
     TimeoutError(eyre::Report),

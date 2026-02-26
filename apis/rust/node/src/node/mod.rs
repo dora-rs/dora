@@ -450,19 +450,6 @@ impl DoraNode {
             },
         };
 
-        let event_stream = EventStream::init(
-            dataflow_id,
-            &node_id,
-            &daemon_communication,
-            input_config,
-            coordinator_addr,
-            clock.clone(),
-            write_events_to,
-        )
-        .wrap_err("failed to init event stream")?;
-        let control_channel =
-            ControlChannel::init(dataflow_id, &node_id, &daemon_communication, clock.clone())
-                .wrap_err("failed to init control channel")?;
         let (zenoh_session, shm_provider, publishers) = if matches!(
             daemon_communication,
             DaemonCommunicationWrapper::Standard(_)
@@ -500,6 +487,19 @@ impl DoraNode {
         } else {
             (None, None, HashMap::new())
         };
+        let event_stream = EventStream::init(
+            dataflow_id,
+            &node_id,
+            &daemon_communication,
+            input_config,
+            zenoh_session.clone(),
+            clock.clone(),
+            write_events_to,
+        )
+        .wrap_err("failed to init event stream")?;
+        let control_channel =
+            ControlChannel::init(dataflow_id, &node_id, &daemon_communication, clock.clone())
+                .wrap_err("failed to init control channel")?;
         let node = Self {
             id: node_id,
             dataflow_id,
@@ -887,7 +887,7 @@ enum DataSampleInner {
 #[cfg(feature = "tracing")]
 pub fn init_tracing(
     node_id: &NodeId,
-    dataflow_id: &DataflowId,
+    _dataflow_id: &DataflowId,
 ) -> eyre::Result<Arc<Mutex<Option<OtelGuard>>>> {
     let node_id_str = node_id.to_string();
     let guard: Arc<Mutex<Option<OtelGuard>>> = Arc::new(Mutex::new(None));
@@ -919,7 +919,7 @@ pub fn init_tracing(
 
     #[cfg(feature = "metrics")]
     {
-        let id = format!("{dataflow_id}/{node_id}");
+        let id = format!("{_dataflow_id}/{node_id}");
         let monitor_task = async move {
             use dora_metrics::run_metrics_monitor;
 

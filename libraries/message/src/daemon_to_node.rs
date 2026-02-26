@@ -50,7 +50,6 @@ pub enum DaemonCommunication {
 #[allow(clippy::large_enum_variant)]
 pub enum DaemonReply {
     Result(Result<(), String>),
-    PreparedMessage { shared_memory_id: String },
     NextEvents(Vec<Timestamped<NodeEvent>>),
     NodeConfig { result: Result<NodeConfig, String> },
     Empty,

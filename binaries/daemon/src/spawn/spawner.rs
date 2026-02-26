@@ -27,6 +27,7 @@ pub struct Spawner {
     pub dataflow_id: DataflowId,
     pub daemon_tx: mpsc::Sender<Timestamped<Event>>,
     pub dataflow_descriptor: Descriptor,
+    pub coordinator_addr: Option<std::net::IpAddr>,
     /// clock is required for generating timestamps when dropping messages early because queue is full
     pub clock: Arc<HLC>,
     pub uv: bool,
@@ -68,7 +69,7 @@ impl Spawner {
         let node_config = NodeConfig {
             dataflow_id,
             node_id: node_id.clone(),
-            coordinator_addr: None,
+            coordinator_addr: self.coordinator_addr,
             run_config: node.kind.run_config(),
             daemon_communication: Some(daemon_communication),
             dataflow_descriptor: serde_yaml::to_value(&self.dataflow_descriptor)

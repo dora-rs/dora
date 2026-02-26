@@ -95,6 +95,7 @@ pub struct Daemon {
 
     events_tx: mpsc::Sender<Timestamped<Event>>,
 
+    coordinator_addr: Option<SocketAddr>,
     coordinator_connection: Option<TcpStream>,
     last_coordinator_heartbeat: Instant,
     daemon_id: DaemonId,
@@ -386,6 +387,7 @@ impl Daemon {
             running: HashMap::new(),
             working_dir: HashMap::new(),
             events_tx: dora_events_tx,
+            coordinator_addr,
             coordinator_connection,
             last_coordinator_heartbeat: Instant::now(),
             daemon_id,
@@ -1366,6 +1368,7 @@ impl Daemon {
             dataflow_id,
             daemon_tx: self.events_tx.clone(),
             dataflow_descriptor,
+            coordinator_addr: self.coordinator_addr.map(|addr| addr.ip()),
             clock: self.clock.clone(),
             uv,
         };

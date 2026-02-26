@@ -45,10 +45,7 @@ impl InteractiveEvents {
                 metadata,
                 data,
             } => {
-                let (drop_tx, drop_rx) = flume::unbounded();
-                let array = data_to_arrow_array(data.clone(), metadata, drop_tx);
-                // interactive nodes don't use shared memory -> no drop tokens
-                let _ = drop_rx;
+                let array = data_to_arrow_array(data.clone(), metadata);
 
                 let array_display = match array {
                     Err(err) => format!("<error>: {err:?}"),
