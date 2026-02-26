@@ -16,7 +16,22 @@ const BUILDS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("builds");
 const SCHEMA_VERSION: u32 = 1;
 const SCHEMA_VERSION_KEY: &str = "schema_version";
 
-const BINCODE_CONFIG: bincode::config::Configuration = bincode::config::standard();
+/// Run `f` with umask set to `0o077` (owner-only) on Unix, restoring afterwards.
+/// This ensures files/dirs created inside `f` have restrictive permissions from
+/// the start, closing the TOCTOU window between creation and `set_permissions`.
+#[cfg(unix)]
+fn with_restrictive_umask<T>(f: impl FnOnce() -> T) -> T {
+    // SAFETY: umask is always safe to call and has no undefined behavior.
+    let old = unsafe { libc::umask(0o077) };
+    let result = f();
+    unsafe { libc::umask(old) };
+    result
+}
+
+#[cfg(not(unix))]
+fn with_restrictive_umask<T>(f: impl FnOnce() -> T) -> T {
+    f()
+}
 
 /// Persistent [`CoordinatorStore`] backed by [redb](https://docs.rs/redb).
 ///
@@ -33,7 +48,8 @@ impl RedbStore {
     /// table. On subsequent opens, validates that the stored version matches
     /// the compiled-in version and returns an error if they differ.
     pub fn open(path: &Path) -> Result<Self> {
-        let db = Database::create(path).wrap_err("failed to open redb database")?;
+        let db = with_restrictive_umask(|| Database::create(path))
+            .wrap_err("failed to open redb database")?;
 
         // Restrict file permissions to owner-only on Unix.
         #[cfg(unix)]
@@ -83,12 +99,16 @@ impl RedbStore {
 // ---------------------------------------------------------------------------
 
 fn encode<T: serde::Serialize>(value: &T) -> Result<Vec<u8>> {
-    bincode::serde::encode_to_vec(value, BINCODE_CONFIG).map_err(|e| eyre!("encode error: {e}"))
+    bincode::serde::encode_to_vec(value, bincode::config::standard())
+        .map_err(|e| eyre!("encode error: {e}"))
 }
 
+/// Decode uses a separate config with a 64 MiB limit that `encode` intentionally
+/// omits: encoding our own data needs no guard, but decoding potentially corrupt
+/// data must cap allocation sizes to prevent OOM from malformed varint length
+/// prefixes. The limit type is a const generic in bincode 2.x, so it cannot
+/// share a single `const` with the unlimited encode config.
 fn decode<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T> {
-    // Use a 64 MiB limit to guard against corrupted data that encodes huge
-    // allocation sizes in bincode's varint length prefixes.
     let config = bincode::config::standard().with_limit::<{ 64 * 1024 * 1024 }>();
     let (val, _) =
         bincode::serde::decode_from_slice(bytes, config).map_err(|e| eyre!("decode error: {e}"))?;

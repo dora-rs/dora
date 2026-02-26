@@ -114,8 +114,19 @@ fn default_redb_path() -> eyre::Result<std::path::PathBuf> {
         .or_else(|_| std::env::var("USERPROFILE"))
         .unwrap_or_else(|_| ".".into());
     let dir = std::path::PathBuf::from(home).join(".adora");
+    // Set restrictive umask before creating directory to close the TOCTOU window
+    // between creation and set_permissions.
+    #[cfg(unix)]
+    {
+        // SAFETY: umask is always safe to call and has no undefined behavior.
+        let old = unsafe { libc::umask(0o077) };
+        let result = std::fs::create_dir_all(&dir);
+        unsafe { libc::umask(old) };
+        result?;
+    }
+    #[cfg(not(unix))]
     std::fs::create_dir_all(&dir)?;
-    // Restrict directory permissions to owner-only on Unix.
+    // Defense-in-depth: also set permissions explicitly.
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

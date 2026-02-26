@@ -19,7 +19,7 @@ path = "src/main.rs"
 default = ["tracing"]
 tracing = ["dep:adora-tracing"]
 python = ["pyo3"]
-redb-backend = ["adora-coordinator/redb-backend"]
+redb-backend = ["adora-coordinator/redb-backend", "dep:libc"]
 
 [dependencies]
 arrow = { workspace = true }
@@ -27,6 +27,7 @@ arrow-schema = { workspace = true }
 clap = { version = "4.0.3", features = ["derive", "string", "env"] }
 clap_complete = "4.5.61"
 eyre = "0.6.8"
+libc = { version = "0.2", optional = true }
 adora-core = { workspace = true, features = ["zenoh"] }
 adora-message = { workspace = true }
 adora-node-api-c = { workspace = true }

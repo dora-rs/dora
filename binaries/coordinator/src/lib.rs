@@ -134,6 +134,24 @@ async fn start_inner(
         HashMap::new();
     let mut archived_dataflows: HashMap<DataflowId, ArchivedDataflow> = HashMap::new();
     let mut daemon_connections = DaemonConnections::default();
+    let mut persist_failure_count: u64 = 0;
+
+    // Clear stale daemon records -- connections cannot survive a coordinator restart.
+    match store.list_daemons() {
+        Ok(daemons) => {
+            for info in &daemons {
+                if let Err(e) = store.unregister_daemon(&info.daemon_id) {
+                    tracing::warn!("failed to clear stale daemon record: {e}");
+                }
+            }
+            if !daemons.is_empty() {
+                tracing::info!("cleared {} stale daemon records", daemons.len());
+            }
+        }
+        Err(e) => {
+            tracing::warn!("failed to read persisted daemons on startup: {e}");
+        }
+    }
 
     // Recover persisted state: mark any previously-running dataflows as failed
     // (full reconciliation with daemons is Phase 2 work).
@@ -155,6 +173,7 @@ async fn start_inner(
                         record.generation += 1;
                         record.updated_at = state::now_millis();
                         if let Err(e) = store.put_dataflow(&record) {
+                            persist_failure_count += 1;
                             tracing::warn!("failed to update stale dataflow record: {e}");
                         }
                     }
@@ -220,6 +239,15 @@ async fn start_inner(
                         Ok(()) => {
                             let _ = daemon_id_tx.send(daemon_id.clone());
                             daemon_connections.add(daemon_id.clone(), connection);
+                            if let Err(e) =
+                                store.register_daemon(adora_coordinator_store::DaemonInfo {
+                                    daemon_id: daemon_id.clone(),
+                                    machine_id: daemon_id.machine_id().map(|s| s.to_owned()),
+                                })
+                            {
+                                persist_failure_count += 1;
+                                tracing::warn!("failed to persist daemon registration: {e}");
+                            }
                         }
                         Err(err) => {
                             tracing::warn!(
@@ -357,6 +385,7 @@ async fn start_inner(
                                     .make_record(final_status)
                                     .and_then(|r| store.put_dataflow(&r))
                                 {
+                                    persist_failure_count += 1;
                                     tracing::warn!("failed to persist dataflow finish: {e}");
                                 }
 
@@ -474,6 +503,7 @@ async fn start_inner(
                                         .make_record(StoreDataflowStatus::Pending)
                                         .and_then(|r| store.put_dataflow(&r))
                                     {
+                                        persist_failure_count += 1;
                                         tracing::warn!("failed to persist dataflow start: {e}");
                                     }
                                     running_dataflows.insert(uuid, dataflow);
@@ -571,6 +601,7 @@ async fn start_inner(
                                         .make_record(StoreDataflowStatus::Stopping)
                                         .and_then(|r| store.put_dataflow(&r))
                                     {
+                                        persist_failure_count += 1;
                                         tracing::warn!("failed to persist dataflow stopping: {e}");
                                     }
                                     dataflow.stop_reply_senders.push(reply_sender);
@@ -613,6 +644,7 @@ async fn start_inner(
                                             .make_record(StoreDataflowStatus::Stopping)
                                             .and_then(|r| store.put_dataflow(&r))
                                         {
+                                            persist_failure_count += 1;
                                             tracing::warn!(
                                                 "failed to persist dataflow stopping: {e}"
                                             );
@@ -873,6 +905,10 @@ async fn start_inner(
                     tracing::error!("Disconnecting daemons that failed watchdog: {disconnected:?}");
                     for machine_id in &disconnected {
                         daemon_connections.remove(machine_id);
+                        if let Err(e) = store.unregister_daemon(machine_id) {
+                            persist_failure_count += 1;
+                            tracing::warn!("failed to persist daemon unregistration: {e}");
+                        }
                     }
                     // Notify remaining daemons about disconnected peers
                     for disconnected_id in &disconnected {
@@ -889,6 +925,12 @@ async fn start_inner(
                             }
                         }
                     }
+                }
+                if persist_failure_count > 0 {
+                    tracing::warn!(
+                        persist_failures = persist_failure_count,
+                        "store persistence failures since startup"
+                    );
                 }
             }
             Event::CtrlC => {
@@ -949,6 +991,10 @@ async fn start_inner(
             Event::DaemonExit { daemon_id } => {
                 tracing::info!("Daemon `{daemon_id}` exited");
                 daemon_connections.remove(&daemon_id);
+                if let Err(e) = store.unregister_daemon(&daemon_id) {
+                    persist_failure_count += 1;
+                    tracing::warn!("failed to persist daemon unregistration: {e}");
+                }
             }
             Event::NodeMetrics {
                 dataflow_id,
@@ -1015,6 +1061,7 @@ async fn start_inner(
                                     .make_record(StoreDataflowStatus::Running)
                                     .and_then(|r| store.put_dataflow(&r))
                                 {
+                                    persist_failure_count += 1;
                                     tracing::warn!("failed to persist dataflow running: {e}");
                                 }
                             }
@@ -1028,9 +1075,8 @@ async fn start_inner(
                                 })
                                 .and_then(|r| store.put_dataflow(&r))
                             {
-                                tracing::warn!(
-                                    "failed to persist dataflow spawn failure: {e}"
-                                );
+                                persist_failure_count += 1;
+                                tracing::warn!("failed to persist dataflow spawn failure: {e}");
                             }
                             dataflow.spawn_result.set_result(Err(err));
                         }

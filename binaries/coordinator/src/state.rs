@@ -171,6 +171,21 @@ pub(crate) fn now_millis() -> u64 {
         .as_millis() as u64
 }
 
+/// Maximum bytes for error strings persisted in `DataflowStatus::Failed`.
+const MAX_ERROR_BYTES: usize = 4096;
+
+/// Truncate `s` to at most `max_bytes` bytes on a UTF-8 char boundary.
+fn truncate_str(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 impl RunningDataflow {
     /// Create a persistable [`DataflowRecord`] snapshot of this dataflow.
     /// Increments `store_generation` on each call.
@@ -178,6 +193,12 @@ impl RunningDataflow {
         self.store_generation += 1;
         let descriptor_json = serde_json::to_string(&self.descriptor)
             .map_err(|e| eyre::eyre!("failed to serialize descriptor: {e}"))?;
+        let status = match status {
+            DataflowStatus::Failed { error } => DataflowStatus::Failed {
+                error: truncate_str(&error, MAX_ERROR_BYTES).to_owned(),
+            },
+            other => other,
+        };
         Ok(DataflowRecord {
             uuid: self.uuid,
             name: self.name.clone(),
