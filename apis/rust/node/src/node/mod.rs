@@ -480,7 +480,11 @@ impl DoraNode {
             let rt = Handle::try_current()
                 .context("failed to get tokio runtime handle for zenoh SHM")?;
 
-            // Create SHM provider with configurable pool size
+            // Create SHM provider with configurable pool size.
+            // The pool is used for zero-copy output publishing. If the pool is
+            // exhausted, allocation blocks until receivers release buffers (see
+            // `allocate_data_sample`). For high-throughput nodes with large
+            // messages, increase via DORA_NODE_SHM_POOL_SIZE (bytes).
             let pool_size: usize = std::env::var("DORA_NODE_SHM_POOL_SIZE")
                 .ok()
                 .and_then(|s| s.parse().ok())
@@ -805,6 +809,14 @@ impl DoraNode {
     /// When a zenoh SHM provider is available, the buffer is allocated from shared memory,
     /// enabling zero-copy data transfer between nodes on the same machine.
     /// Falls back to an aligned Vec when no SHM provider is available (interactive/testing mode).
+    ///
+    /// # Blocking behavior
+    ///
+    /// SHM allocation uses `BlockOn<GarbageCollect>`: if the pool is full, it triggers
+    /// garbage collection of released buffers and blocks until space is available. This
+    /// can stall the sender if receivers hold onto buffers for a long time. Increase the
+    /// pool size via the `DORA_NODE_SHM_POOL_SIZE` environment variable (default: 64 MB)
+    /// if you observe send stalls.
     pub fn allocate_data_sample(&mut self, data_len: usize) -> eyre::Result<DataSample> {
         if let Some(provider) = &self.shm_provider {
             use zenoh::Wait;
