@@ -34,7 +34,7 @@ All three must pass before opening a PR. Python packages are excluded because th
 | **Lint** | Warnings, correctness | `cargo clippy --all ...` | ~60s |
 | **Unit** | Individual functions | `cargo test --all ...` | ~90s |
 | **Integration** | Node I/O via env vars | `cargo test --test example-tests` | ~30s |
-| **Smoke** | Full CLI lifecycle | `cargo test --test example-smoke -- --test-threads=1` | ~2min |
+| **Smoke** | Full CLI lifecycle | `cargo test --test example-smoke -- --test-threads=1` | ~3min |
 | **E2E** | Multi-dataflow scenarios | `cargo test --test ws-cli-e2e -- --ignored --test-threads=1` | ~2min |
 | **Fault tolerance** | Restart policies, timeouts | `cargo test --test fault-tolerance-e2e` | ~45s |
 | **Typos** | Spelling | Install [typos-cli](https://github.com/crate-ci/typos), then `typos` | ~2s |
@@ -49,6 +49,8 @@ Unit tests live alongside the code they test using `#[cfg(test)]` modules. Key c
 |-------|-----------|---------------|
 | adora-arrow-convert | ~26 | Round-trip Arrow type conversions |
 | adora-cli | ~25 | Log grep/filtering, JSON parsing, WebSocket client |
+| adora-coordinator | ~15 | WS control/daemon plane, health check, concurrent requests |
+| adora-coordinator-store | ~10 | In-memory and redb CRUD, schema versioning, persistence |
 | adora-core | ~8 | Dataflow descriptor validation |
 | adora-log-utils | ~11 | Log parsing utilities |
 | ros2-bridge | ~30 | ROS2 message/service/action parsing |
@@ -83,17 +85,61 @@ Sample input/output files live in `tests/sample-inputs/`.
 
 File: `tests/example-smoke.rs`
 
-These start a full coordinator+daemon cluster via `adora up`, run example dataflows, and verify they complete within a timeout.
+Two execution modes are tested for each applicable example:
+
+- **Networked** (`adora up` + `adora start --detach` + poll + `adora stop` + `adora destroy`): exercises the full coordinator/daemon WS control plane.
+- **Local** (`adora run --stop-after`): runs everything in-process, testing the single-process dataflow path.
 
 ```bash
 # Must run single-threaded (shared coordinator port)
 cargo test --test example-smoke -- --test-threads=1
+
+# Run only networked or local tests
+cargo test --test example-smoke smoke_rust -- --test-threads=1
+cargo test --test example-smoke smoke_local -- --test-threads=1
 ```
 
-Tests included:
-- `smoke_rust_dataflow` -- basic 3-node dataflow (30s timeout)
-- `smoke_rust_dataflow_dynamic` -- dynamic dataflow (30s timeout)
-- `smoke_rust_dataflow_socket` -- socket-based communication (30s timeout)
+A bash script is also available for quick local validation:
+
+```bash
+./scripts/smoke-all.sh              # all examples
+./scripts/smoke-all.sh --rust-only  # Rust examples only
+./scripts/smoke-all.sh --python-only # Python examples only
+```
+
+**Networked tests (15):**
+
+| Test | Example | Timeout |
+|------|---------|---------|
+| `smoke_rust_dataflow` | rust-dataflow/dataflow.yml | 30s |
+| `smoke_rust_dataflow_dynamic` | rust-dataflow/dataflow_dynamic.yml | 30s |
+| `smoke_rust_dataflow_socket` | rust-dataflow/dataflow_socket.yml | 30s |
+| `smoke_rust_dataflow_url` | rust-dataflow-url/dataflow.yml | 30s |
+| `smoke_benchmark` | benchmark/dataflow.yml | 30s |
+| `smoke_log_sink_file` | log-sink-file/dataflow.yml | 30s |
+| `smoke_log_sink_alert` | log-sink-alert/dataflow.yml | 30s |
+| `smoke_log_sink_tcp` | log-sink-tcp/dataflow.yml | 30s |
+| `smoke_python_dataflow` | python-dataflow/dataflow.yml | 30s |
+| `smoke_python_async` | python-async/dataflow.yaml | 15s |
+| `smoke_python_drain` | python-drain/dataflow.yaml | 15s |
+| `smoke_python_log` | python-log/dataflow.yaml | 15s |
+| `smoke_python_logging` | python-logging/dataflow.yml | 15s |
+| `smoke_python_multiple_arrays` | python-multiple-arrays/dataflow.yml | 15s |
+| `smoke_python_concurrent_rw` | python-concurrent-rw/dataflow.yml | 15s |
+
+**Local tests (7):**
+
+| Test | Example | stop-after |
+|------|---------|------------|
+| `smoke_local_python_dataflow` | python-dataflow/dataflow.yml | 30s |
+| `smoke_local_python_async` | python-async/dataflow.yaml | 10s |
+| `smoke_local_python_drain` | python-drain/dataflow.yaml | 10s |
+| `smoke_local_python_log` | python-log/dataflow.yaml | 10s |
+| `smoke_local_python_logging` | python-logging/dataflow.yml | 10s |
+| `smoke_local_python_multiple_arrays` | python-multiple-arrays/dataflow.yml | 10s |
+| `smoke_local_python_concurrent_rw` | python-concurrent-rw/dataflow.yml | 10s |
+
+Examples requiring special dependencies (webcam, CUDA, ROS2, C/C++ toolchain, multi-machine deploy) are not included in smoke tests.
 
 ### E2E Tests (WebSocket CLI)
 
@@ -260,13 +306,20 @@ This writes `inputs-{node_id}.json` files that can be used directly with `ADORA_
 
 ### Workspace-level integration tests
 
-Add new test files in the `tests/` directory. For tests that need the full CLI stack, follow the pattern in `tests/example-smoke.rs`:
+Add new test files in the `tests/` directory. For tests that need the full CLI stack, follow the patterns in `tests/example-smoke.rs`:
+
+**Networked pattern** (exercises coordinator + daemon):
 1. Build nodes with `Once` guards (avoid rebuilding per test)
 2. Clean up stale processes with `adora destroy`
 3. Start cluster with `adora up`
 4. Run dataflow with `adora start --detach`
 5. Poll `adora list --json` for completion
 6. Clean up with `adora stop --all` and `adora destroy`
+
+**Local pattern** (single-process, in-process coordinator):
+1. Build CLI with `Once` guard
+2. Run `adora run <yaml> --stop-after <duration>`
+3. Assert exit code is success
 
 ### Conventions
 
@@ -301,8 +354,15 @@ pkill -f adora-daemon
 
 ### Smoke tests hang or timeout
 
-- Increase the timeout in the test if your machine is slow (look for `Duration::from_secs(30)`)
-- Check that example nodes build successfully: `cargo build -p rust-dataflow-example-node -p rust-dataflow-example-status-node -p rust-dataflow-example-sink`
+- Increase the timeout in the test if your machine is slow (look for `Duration::from_secs(...)`)
+- Check that example nodes build successfully:
+  ```bash
+  cargo build -p rust-dataflow-example-node -p rust-dataflow-example-status-node \
+    -p rust-dataflow-example-sink -p rust-dataflow-example-sink-dynamic
+  cargo build -p log-sink-file -p log-sink-alert -p log-sink-tcp
+  cargo build --release -p benchmark-example-node -p benchmark-example-sink
+  ```
+- For Python smoke tests, ensure `pyarrow` and `numpy` are installed
 
 ### E2E tests fail when run in parallel
 
