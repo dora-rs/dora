@@ -63,10 +63,9 @@ jobs:
             name: dora-rs-cli
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-          architecture: ${{ matrix.platform.target }}
+      # - uses: actions/setup-python@v5
+      #   with:
+      #     python-version: ${{ env.PYTHON_VERSION }}
       - run: rustup default stable
       - run: rustup update
       - uses: Swatinem/rust-cache@v2
@@ -82,6 +81,7 @@ jobs:
           manylinux: manylinux_2_28
           working-directory: ${{ matrix.repository.path }}
           # before-script-linux: sudo apt-get install libatomic1-i386-cross libatomic1-armhf-cross && mkdir -p $HOME/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/i686-unknown-linux-gnu/lib/ && ln -s /usr/i686-linux-gnu/lib/libatomic.so.1 $HOME/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/i686-unknown-linux-gnu/lib/libatomic.so && ln -s /usr/i686-linux-gnu/lib/libatomic.so.1 $HOME/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/i686-unknown-linux-gnu/lib/libatomic.so.1 && ln -s /usr/i686-linux-gnu/lib/libatomic.so.1 /opt/hostedtoolcache/Python/3.8.18/x64/lib/libatomic.so.1 && mkdir -p $HOME/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/armv7-unknown-linux-gnueabihf/lib/ && ln -s /usr/arm-linux-gnueabihf/lib/libatomic.so.1 $HOME/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/armv7-unknown-linux-gnueabihf/lib/libatomic.so
+          before-script-linux: sudo apt-get install libatomic1-i386-cross libatomic1-armhf-cross && mkdir -p $HOME/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/i686-unknown-linux-gnu/lib/ && ln -s /usr/i686-linux-gnu/lib/libatomic.so.1 $HOME/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/i686-unknown-linux-gnu/lib/libatomic.so && ln -s /usr/i686-linux-gnu/lib/libatomic.so.1 $HOME/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/i686-unknown-linux-gnu/lib/libatomic.so.1 && mkdir -p $HOME/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/armv7-unknown-linux-gnueabihf/lib/ && ln -s /usr/arm-linux-gnueabihf/lib/libatomic.so.1 $HOME/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/armv7-unknown-linux-gnueabihf/lib/libatomic.so
       - name: Upload wheels
         if: github.event_name == 'release'
         uses: actions/upload-artifact@v4
@@ -108,10 +108,9 @@ jobs:
             name: dora-rs-cli
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-          architecture: ${{ matrix.platform.target }}
+      # - uses: actions/setup-python@v5
+      #   with:
+      #     python-version: ${{ env.PYTHON_VERSION }}
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -151,10 +150,9 @@ jobs:
         CFLAGS_armv7_unknown_linux_musleabihf: "-mfpu=vfpv3-d16"
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-          architecture: ${{ matrix.platform.target }}
+      # - uses: actions/setup-python@v5
+      #   with:
+      #     python-version: ${{ env.PYTHON_VERSION }}
       - name: Build Wheels
         uses: PyO3/maturin-action@v1
         with:
