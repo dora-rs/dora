@@ -202,25 +202,52 @@ fn run_record(args: Record) -> eyre::Result<()> {
 }
 
 fn find_record_node_binary() -> eyre::Result<PathBuf> {
+    if let Some(path) = search_record_node_binary() {
+        return Ok(path);
+    }
+
+    // Auto-build on demand
+    eprintln!("adora-record-node not found, building...");
+    let status = std::process::Command::new("cargo")
+        .args(["build", "-p", "adora-record-node"])
+        .status();
+    match status {
+        Ok(s) if s.success() => {}
+        Ok(s) => bail!("failed to build adora-record-node (exit code: {s})"),
+        Err(e) => bail!(
+            "could not find `adora-record-node` binary and `cargo build` failed: {e}\n\
+             Build it manually with: cargo build -p adora-record-node"
+        ),
+    }
+
+    search_record_node_binary().ok_or_else(|| {
+        eyre::eyre!(
+            "built adora-record-node but could not find the binary.\n\
+             Try: cargo build -p adora-record-node"
+        )
+    })
+}
+
+fn search_record_node_binary() -> Option<PathBuf> {
     // Check next to current executable first
     if let Ok(exe) = std::env::current_exe() {
         let dir = exe.parent().unwrap_or(std::path::Path::new("."));
         let candidate = dir.join("adora-record-node");
         if candidate.exists() {
-            return Ok(candidate);
+            return Some(candidate);
         }
         #[cfg(target_os = "windows")]
         {
             let candidate = dir.join("adora-record-node.exe");
             if candidate.exists() {
-                return Ok(candidate);
+                return Some(candidate);
             }
         }
     }
 
     // Check PATH
     if let Ok(path) = which::which("adora-record-node") {
-        return Ok(path);
+        return Some(path);
     }
 
     // Check cargo target directory (development)
@@ -230,14 +257,11 @@ fn find_record_node_binary() -> eyre::Result<PathBuf> {
     for profile in ["debug", "release"] {
         let candidate = cargo_target.join(profile).join("adora-record-node");
         if candidate.exists() {
-            return Ok(dunce::canonicalize(candidate)?);
+            return dunce::canonicalize(candidate).ok();
         }
     }
 
-    bail!(
-        "could not find `adora-record-node` binary.\n\
-         Build it with: cargo build -p adora-record-node"
-    )
+    None
 }
 
 fn format_topics(topics: Vec<String>) -> String {
