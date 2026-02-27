@@ -23,6 +23,7 @@ impl Executable for Up {
 }
 
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct UpConfig {}
 
 pub(crate) fn up(config_path: Option<&Path>) -> eyre::Result<()> {

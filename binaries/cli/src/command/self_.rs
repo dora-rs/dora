@@ -1,3 +1,5 @@
+use std::io::IsTerminal;
+
 use super::{Executable, default_tracing};
 use clap::Subcommand;
 use eyre::{Context, bail};
@@ -77,6 +79,9 @@ impl Executable for SelfSubCommand {
                 }
             }
             SelfSubCommand::Uninstall { force } => {
+                if !force && !std::io::stdin().is_terminal() {
+                    bail!("use --force for non-interactive uninstall");
+                }
                 if !force {
                     let confirmed =
                         inquire::Confirm::new("Are you sure you want to uninstall Adora CLI?")

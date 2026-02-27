@@ -113,18 +113,13 @@ pub fn attach_dataflow(
                     force: true,
                 }))
                 .ok();
-            std::process::abort();
+            std::process::exit(1);
         } else {
-            if ctrlc_tx
-                .send(AttachEvent::Control(ControlRequest::Stop {
-                    dataflow_uuid: dataflow_id,
-                    grace_duration: None,
-                    force: false,
-                }))
-                .is_err()
-            {
-                // bail!("failed to report ctrl-c event to adora-daemon");
-            }
+            let _ = ctrlc_tx.send(AttachEvent::Control(ControlRequest::Stop {
+                dataflow_uuid: dataflow_id,
+                grace_duration: None,
+                force: false,
+            }));
             ctrlc_sent = true;
         }
     })

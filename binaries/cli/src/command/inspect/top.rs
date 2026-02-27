@@ -42,7 +42,7 @@ pub struct Top {
     #[clap(flatten)]
     coordinator: CoordinatorOptions,
     /// Refresh interval in seconds
-    #[clap(long, value_name = "SECONDS", default_value_t = 2)]
+    #[clap(long, value_name = "SECONDS", default_value_t = 2, value_parser = clap::value_parser!(u64).range(1..))]
     pub refresh_interval: u64,
 }
 

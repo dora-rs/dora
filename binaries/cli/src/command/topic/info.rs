@@ -45,7 +45,7 @@ pub struct Info {
     selector: TopicSelector,
 
     /// Duration in seconds to collect statistics (default: 5)
-    #[clap(long, default_value_t = 5)]
+    #[clap(long, default_value_t = 5, value_parser = clap::value_parser!(u64).range(1..))]
     duration: u64,
 
     #[clap(flatten)]

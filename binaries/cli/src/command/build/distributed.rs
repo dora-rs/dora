@@ -42,7 +42,7 @@ pub fn build_distributed_dataflow(
             serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
         match result {
             ControlRequestReply::DataflowBuildTriggered { build_id } => {
-                eprintln!("dataflow build triggered: {build_id}");
+                println!("dataflow build triggered: {build_id}");
                 build_id
             }
             ControlRequestReply::Error(err) => bail!("{err}"),
@@ -93,7 +93,7 @@ pub fn wait_until_dataflow_built(
     match result {
         ControlRequestReply::DataflowBuildFinished { build_id, result } => match result {
             Ok(()) => {
-                eprintln!("dataflow build finished successfully");
+                println!("dataflow build finished successfully");
                 Ok(build_id)
             }
             Err(err) => bail!("{err}"),

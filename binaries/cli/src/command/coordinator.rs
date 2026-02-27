@@ -28,7 +28,7 @@ pub struct Coordinator {
     /// State store backend: "memory" (default) or "redb" or "redb:/path/to/file.redb".
     /// The "redb" backend persists coordinator state to disk so it survives restarts.
     /// Requires the `redb-backend` feature.
-    #[clap(long, default_value = "memory")]
+    #[clap(long, default_value = "memory", value_parser = parse_store_spec)]
     store: String,
 }
 
@@ -63,6 +63,16 @@ impl Executable for Coordinator {
             task.await
         })
         .context("failed to run adora-coordinator")
+    }
+}
+
+fn parse_store_spec(s: &str) -> Result<String, String> {
+    match s {
+        "memory" => Ok(s.to_string()),
+        s if s == "redb" || s.starts_with("redb:") => Ok(s.to_string()),
+        other => Err(format!(
+            "unknown store backend: `{other}` (expected `memory` or `redb`)"
+        )),
     }
 }
 

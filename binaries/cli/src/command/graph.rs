@@ -69,7 +69,11 @@ fn create(dataflow: std::path::PathBuf, mermaid: bool, open: bool) -> eyre::Resu
         );
 
         if open {
-            webbrowser::open(path.as_os_str().to_str().unwrap())?;
+            webbrowser::open(
+                path.as_os_str()
+                    .to_str()
+                    .ok_or_else(|| eyre::eyre!("path contains non-UTF-8 characters"))?,
+            )?;
         }
     }
     Ok(())

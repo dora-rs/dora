@@ -816,7 +816,7 @@ pub fn logs(
                         tail
                     },
                 })
-                .wrap_err("")?,
+                .wrap_err("failed to serialize Logs request")?,
             )
             .wrap_err("failed to send Logs request message")?;
 

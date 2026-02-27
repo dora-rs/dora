@@ -7,6 +7,7 @@ use ratatui::{DefaultTerminal, prelude::*, widgets::*};
 use std::{
     borrow::Cow,
     collections::{BTreeSet, VecDeque},
+    io::{self, IsTerminal},
     iter,
     net::IpAddr,
     sync::{Arc, Mutex},
@@ -49,6 +50,14 @@ use crate::{
 /// _unstable_debug:
 ///   publish_all_messages_to_zenoh: true
 /// ```
+fn parse_window(s: &str) -> Result<usize, String> {
+    let val: usize = s.parse().map_err(|e| format!("{e}"))?;
+    if val == 0 {
+        return Err("window must be at least 1".to_string());
+    }
+    Ok(val)
+}
+
 #[derive(Debug, clap::Args)]
 #[clap(verbatim_doc_comment)]
 pub struct Hz {
@@ -56,7 +65,7 @@ pub struct Hz {
     selector: TopicSelector,
 
     /// Sliding window size in seconds
-    #[clap(long, default_value_t = 10)]
+    #[clap(long, default_value_t = 10, value_parser = parse_window)]
     window: usize,
 
     #[clap(flatten)]
@@ -65,6 +74,10 @@ pub struct Hz {
 
 impl Executable for Hz {
     fn execute(self) -> eyre::Result<()> {
+        if !io::stdout().is_terminal() {
+            eyre::bail!("`adora topic hz` requires an interactive terminal");
+        }
+
         let session = self.coordinator.connect()?;
         let (dataflow_id, topics) = self.selector.resolve(&session)?;
 
