@@ -16,6 +16,12 @@ use serde::Serialize;
 use tabwriter::TabWriter;
 use uuid::Uuid;
 
+#[derive(Debug, Clone, clap::ValueEnum)]
+pub enum SortField {
+    Cpu,
+    Memory,
+}
+
 #[derive(Debug, Args)]
 /// List running dataflows.
 pub struct ListArgs {
@@ -32,7 +38,7 @@ pub struct ListArgs {
     pub name: Option<String>,
     /// Sort by field (memory, cpu)
     #[clap(long, value_name = "FIELD")]
-    pub sort_by: Option<String>,
+    pub sort_by: Option<SortField>,
     /// Only print dataflow UUIDs, one per line
     #[clap(long, short = 'q', conflicts_with = "format")]
     pub quiet: bool,
@@ -77,7 +83,7 @@ fn list(
     format: OutputFormat,
     status_filter: Option<String>,
     name_filter: Option<String>,
-    sort_by: Option<String>,
+    sort_by: Option<SortField>,
     quiet: bool,
 ) -> Result<(), eyre::ErrReport> {
     let list = query_running_dataflows(session)?;
@@ -163,27 +169,20 @@ fn list(
 
     // Apply sorting
     if let Some(ref sort_field) = sort_by {
-        let sort_lower = sort_field.to_lowercase();
-        match sort_lower.as_str() {
-            "cpu" => {
+        match sort_field {
+            SortField::Cpu => {
                 entries.sort_by(|a, b| {
                     b.cpu
                         .partial_cmp(&a.cpu)
                         .unwrap_or(std::cmp::Ordering::Equal)
                 });
             }
-            "memory" => {
+            SortField::Memory => {
                 entries.sort_by(|a, b| {
                     b.memory
                         .partial_cmp(&a.memory)
                         .unwrap_or(std::cmp::Ordering::Equal)
                 });
-            }
-            _ => {
-                eprintln!(
-                    "Unknown sort field: {}. Valid options: cpu, memory",
-                    sort_field
-                );
             }
         }
     }

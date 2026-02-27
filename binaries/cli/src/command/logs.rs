@@ -267,10 +267,15 @@ fn follow_local_logs(args: &LogsArgs) -> Result<()> {
 fn find_dataflow_dir(out_dir: &Path, dataflow_id: Option<&str>) -> Result<PathBuf> {
     if let Some(id) = dataflow_id {
         let dir = out_dir.join(id);
-        if dir.exists() {
-            return Ok(dir);
+        // Validate the resolved path stays within out_dir
+        let canonical = dunce::canonicalize(&dir)
+            .wrap_err_with(|| format!("dataflow directory not found: {}", dir.display()))?;
+        let canonical_base =
+            dunce::canonicalize(out_dir).wrap_err("failed to canonicalize out/ directory")?;
+        if !canonical.starts_with(&canonical_base) {
+            bail!("invalid dataflow identifier: path traversal detected");
         }
-        bail!("dataflow directory not found: {}", dir.display());
+        return Ok(canonical);
     }
 
     // Find the most recent dataflow directory by modification time

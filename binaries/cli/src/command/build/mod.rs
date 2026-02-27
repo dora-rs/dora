@@ -77,10 +77,10 @@ pub struct Build {
     #[clap(value_name = "PATH")]
     dataflow: String,
     /// Address of the adora coordinator
-    #[clap(long, value_name = "IP")]
+    #[clap(long, value_name = "IP", env = "ADORA_COORDINATOR_ADDR")]
     coordinator_addr: Option<IpAddr>,
     /// Port number of the coordinator control server
-    #[clap(long, value_name = "PORT")]
+    #[clap(long, value_name = "PORT", env = "ADORA_COORDINATOR_PORT")]
     coordinator_port: Option<u16>,
     // Use UV to build nodes.
     #[clap(long, action)]
