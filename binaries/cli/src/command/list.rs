@@ -22,6 +22,13 @@ pub enum SortField {
     Memory,
 }
 
+#[derive(Debug, Clone, Copy, clap::ValueEnum, Serialize)]
+pub enum StatusFilter {
+    Running,
+    Finished,
+    Failed,
+}
+
 #[derive(Debug, Args)]
 /// List running dataflows.
 pub struct ListArgs {
@@ -32,7 +39,7 @@ pub struct ListArgs {
     pub format: OutputFormat,
     /// Filter by status (running, finished, failed)
     #[clap(long, value_name = "STATUS")]
-    pub status: Option<String>,
+    pub status: Option<StatusFilter>,
     /// Filter by dataflow name
     #[clap(long, value_name = "PATTERN")]
     pub name: Option<String>,
@@ -81,7 +88,7 @@ struct DataflowMetrics {
 fn list(
     session: &WsSession,
     format: OutputFormat,
-    status_filter: Option<String>,
+    status_filter: Option<StatusFilter>,
     name_filter: Option<String>,
     sort_by: Option<SortField>,
     quiet: bool,
@@ -149,15 +156,14 @@ fn list(
         .collect();
 
     // Apply status filter
-    if let Some(ref status_str) = status_filter {
-        let status_lower = status_str.to_lowercase();
+    if let Some(status_filter) = status_filter {
         entries.retain(|entry| {
-            let entry_status = match entry.status {
-                DataflowStatus::Running => "running",
-                DataflowStatus::Finished => "finished",
-                DataflowStatus::Failed => "failed",
-            };
-            entry_status.starts_with(&status_lower)
+            matches!(
+                (status_filter, &entry.status),
+                (StatusFilter::Running, DataflowStatus::Running)
+                    | (StatusFilter::Finished, DataflowStatus::Finished)
+                    | (StatusFilter::Failed, DataflowStatus::Failed)
+            )
         });
     }
 

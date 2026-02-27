@@ -59,7 +59,7 @@ impl Executable for SelfSubCommand {
                                 );
                             }
                         }
-                        Err(e) => println!("Failed to check for updates: {e}"),
+                        Err(e) => bail!("failed to check for updates: {e}"),
                     }
                 } else {
                     // Perform the actual update
@@ -72,7 +72,7 @@ impl Executable for SelfSubCommand {
                                 println!("Successfully updated Adora CLI to version: {version}");
                             }
                         },
-                        Err(e) => println!("Failed to update: {e}"),
+                        Err(e) => bail!("failed to update: {e}"),
                     }
                 }
             }

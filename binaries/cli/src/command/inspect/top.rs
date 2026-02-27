@@ -78,11 +78,7 @@ impl Executable for Top {
         )?;
         terminal.show_cursor()?;
 
-        if let Err(err) = res {
-            eprintln!("Error: {err:?}");
-        }
-
-        Ok(())
+        res
     }
 }
 

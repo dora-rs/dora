@@ -65,7 +65,7 @@ fn stop_dataflow_interactive(
     let list = query_running_dataflows(session).wrap_err("failed to query running dataflows")?;
     let active = list.get_active();
     if active.is_empty() {
-        eprintln!("No dataflows are running");
+        println!("No dataflows are running");
     } else if active.len() == 1 {
         stop_dataflow(active[0].uuid, grace_duration, force, session)?;
     } else if !std::io::stdin().is_terminal() {
