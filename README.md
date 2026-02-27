@@ -22,6 +22,8 @@
 
 </div>
 
+> **Built with AI-assisted agentic engineering** -- code generation, reviews, refactoring, testing, and commits are driven by autonomous AI agents.
+
 ---
 
 ## Table of Contents
@@ -349,6 +351,10 @@ We welcome contributors of all experience levels. See the [contributing guide](C
 
 - [Discord](https://discord.gg/6eMGGutkfE)
 - [GitHub Discussions](https://github.com/orgs/adora-rs/discussions)
+
+## AI-Assisted Development
+
+This repository is maintained with AI-assisted agentic engineering. Code generation, reviews, refactoring, testing, and commits are driven by autonomous AI agents -- enabling faster iteration and higher code quality at scale.
 
 ## License
 
