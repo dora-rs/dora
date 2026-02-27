@@ -149,12 +149,7 @@ async fn init_coordinator(
     // Setup ctrl-c handler
     let ctrlc_events = set_up_ctrlc_handler()?;
 
-    let events = (
-        external_events,
-        new_daemon_connections,
-        ctrlc_events,
-    )
-        .merge();
+    let events = (external_events, new_daemon_connections, ctrlc_events).merge();
 
     let daemon_heartbeat_interval =
         tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(Duration::from_secs(3)))

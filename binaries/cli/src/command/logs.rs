@@ -11,9 +11,7 @@ use clap::Args;
 use dora_core::topics::{
     DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST, zenoh_log_subscribe_all_for_dataflow,
 };
-use dora_message::{
-    cli_to_coordinator::CoordinatorControlClient, common::LogMessage,
-};
+use dora_message::{cli_to_coordinator::CoordinatorControlClient, common::LogMessage};
 use eyre::{Context, Result};
 use uuid::Uuid;
 

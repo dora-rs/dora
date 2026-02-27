@@ -1,7 +1,4 @@
-use dora_core::{
-    descriptor::Descriptor,
-    topics::zenoh_log_subscribe_all_for_build,
-};
+use dora_core::{descriptor::Descriptor, topics::zenoh_log_subscribe_all_for_build};
 use dora_message::{
     BuildId,
     cli_to_coordinator::{BuildRequest, CoordinatorControlClient},

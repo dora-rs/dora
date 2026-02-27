@@ -265,4 +265,3 @@ async fn connect_to_coordinator_rpc_with_defaults(
     let control_port = coordinator_port.unwrap_or(DORA_COORDINATOR_PORT_CONTROL_DEFAULT);
     connect_and_check_version(addr, control_port).await
 }
-

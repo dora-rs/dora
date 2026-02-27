@@ -14,7 +14,9 @@ use crate::{
 };
 use dora_core::{
     descriptor::{Descriptor, DescriptorExt},
-    topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST, zenoh_log_subscribe_all_for_dataflow},
+    topics::{
+        DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST, zenoh_log_subscribe_all_for_dataflow,
+    },
 };
 use dora_message::{
     cli_to_coordinator::{CoordinatorControlClient, StartRequest},
