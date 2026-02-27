@@ -176,7 +176,7 @@ async fn log_to_terminal(
         {
             Ok(event) => event,
             Err(_) => {
-                eprintln!("Received invalid event");
+                eprintln!("Received invalid event on {node_id}/{output_id}");
                 continue;
             }
         };
@@ -198,7 +198,7 @@ async fn log_to_terminal(
                     let array = match buffer_into_arrow_array(&buffer, &metadata.type_info) {
                         Ok(array) => array,
                         Err(e) => {
-                            eprintln!("invalid data: {e}");
+                            eprintln!("invalid data on {node_id}/{output_id}: {e}");
                             continue;
                         }
                     };

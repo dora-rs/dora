@@ -17,10 +17,10 @@ use tracing::level_filters::LevelFilter;
 /// Run coordinator
 pub struct Coordinator {
     /// Network interface to bind to
-    #[clap(long, default_value_t = LISTEN_DEFAULT)]
+    #[clap(long, default_value_t = LISTEN_DEFAULT, env = "ADORA_COORDINATOR_INTERFACE")]
     interface: IpAddr,
     /// Port number to bind to
-    #[clap(long, default_value_t = ADORA_COORDINATOR_PORT_WS_DEFAULT)]
+    #[clap(long, default_value_t = ADORA_COORDINATOR_PORT_WS_DEFAULT, env = "ADORA_COORDINATOR_PORT")]
     port: u16,
     /// Suppresses all log output to stdout.
     #[clap(long)]

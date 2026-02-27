@@ -58,9 +58,25 @@ impl Executable for List {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "lowercase")]
+enum NodeStatus {
+    Running,
+    Unknown,
+}
+
+impl std::fmt::Display for NodeStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NodeStatus::Running => f.write_str("Running"),
+            NodeStatus::Unknown => f.write_str("Unknown"),
+        }
+    }
+}
+
+#[derive(Serialize)]
 struct OutputEntry {
     node: String,
-    status: String,
+    status: NodeStatus,
     pid: String,
     cpu: String,
     memory: String,
@@ -114,7 +130,7 @@ fn list(
         .map(|node| {
             let (status, pid, cpu, memory) = if let Some(metrics) = node.metrics {
                 (
-                    "Running".to_string(),
+                    NodeStatus::Running,
                     metrics.pid.to_string(),
                     format!("{:.1}%", metrics.cpu_usage),
                     format!("{:.0} MB", metrics.memory_mb),
@@ -122,7 +138,7 @@ fn list(
             } else {
                 // Node exists but no metrics available (might be starting or error state)
                 (
-                    "Unknown".to_string(),
+                    NodeStatus::Unknown,
                     "-".to_string(),
                     "-".to_string(),
                     "-".to_string(),

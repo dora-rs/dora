@@ -233,7 +233,7 @@ async fn run_hz(
             )
             .await
             {
-                eprintln!("Error subscribing to {topic}: {e}");
+                tracing::warn!("error subscribing to {topic}: {e}");
             }
         });
     }
