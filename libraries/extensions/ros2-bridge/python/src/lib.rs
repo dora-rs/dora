@@ -14,7 +14,7 @@ use dora_ros2_bridge_msg_gen::types::Message;
 use eyre::{Context, ContextCompat, Result, eyre};
 use futures::{Stream, StreamExt};
 use pyo3::{
-    Bound, PyAny, PyObject, PyResult, Python,
+    Bound, Py, PyAny, PyResult, Python,
     prelude::{pyclass, pymethods},
     types::{PyAnyMethods, PyDict, PyList, PyModule, PyModuleMethods},
 };
@@ -23,6 +23,8 @@ use typed::{TypeInfo, TypedValue, deserialize::StructDeserializer};
 
 pub mod qos;
 pub mod typed;
+
+type PyObject = Py<PyAny>;
 
 /// ROS2 Context holding all messages definition for receiving and sending messages to ROS2.
 ///
@@ -58,7 +60,7 @@ impl Ros2Context {
     #[new]
     #[pyo3(signature = (ros_paths=None))]
     pub fn new(ros_paths: Option<Vec<PathBuf>>) -> eyre::Result<Self> {
-        Python::with_gil(|py| -> Result<()> {
+        Python::attach(|py| -> Result<()> {
             let warnings = py
                 .import("warnings")
                 .wrap_err("failed to import `warnings` module")?;
@@ -400,7 +402,7 @@ impl Ros2Subscription {
         let message = value.to_pyarrow(py)?;
         // TODO: add `info`
 
-        Ok(Some(message))
+        Ok(Some(message.into()))
     }
 }
 
