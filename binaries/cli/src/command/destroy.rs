@@ -1,6 +1,5 @@
 use super::{Executable, default_tracing, up};
-use adora_core::topics::{ADORA_COORDINATOR_PORT_WS_DEFAULT, LOCALHOST};
-use std::net::IpAddr;
+use crate::common::CoordinatorOptions;
 use std::path::PathBuf;
 
 #[derive(Debug, clap::Args)]
@@ -9,12 +8,8 @@ pub struct Destroy {
     /// Use a custom configuration
     #[clap(long, hide = true)]
     config: Option<PathBuf>,
-    /// Address of the adora coordinator
-    #[clap(long, value_name = "IP", default_value_t = LOCALHOST, env = "ADORA_COORDINATOR_ADDR")]
-    coordinator_addr: IpAddr,
-    /// Port number of the coordinator
-    #[clap(long, value_name = "PORT", default_value_t = ADORA_COORDINATOR_PORT_WS_DEFAULT, env = "ADORA_COORDINATOR_PORT")]
-    coordinator_port: u16,
+    #[clap(flatten)]
+    coordinator: CoordinatorOptions,
 }
 
 impl Executable for Destroy {
@@ -22,7 +17,11 @@ impl Executable for Destroy {
         default_tracing()?;
         up::destroy(
             self.config.as_deref(),
-            (self.coordinator_addr, self.coordinator_port).into(),
+            (
+                self.coordinator.coordinator_addr,
+                self.coordinator.coordinator_port,
+            )
+                .into(),
         )
     }
 }

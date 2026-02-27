@@ -5,23 +5,20 @@
 use super::{Executable, default_tracing};
 use crate::{
     command::start::attach::attach_dataflow,
-    common::{connect_to_coordinator, local_working_dir, resolve_dataflow, write_events_to},
+    common::{
+        CoordinatorOptions, connect_to_coordinator, local_working_dir, resolve_dataflow,
+        write_events_to,
+    },
     output::{LogOutputConfig, print_log_message},
     session::DataflowSession,
     ws_client::WsSession,
 };
-use adora_core::{
-    descriptor::{Descriptor, DescriptorExt},
-    topics::{ADORA_COORDINATOR_PORT_WS_DEFAULT, LOCALHOST},
-};
+use adora_core::descriptor::{Descriptor, DescriptorExt};
 use adora_message::{
     cli_to_coordinator::ControlRequest, common::LogMessage, coordinator_to_cli::ControlRequestReply,
 };
 use eyre::{Context, bail};
-use std::{
-    net::{IpAddr, SocketAddr},
-    path::PathBuf,
-};
+use std::{io::IsTerminal, net::SocketAddr, path::PathBuf};
 use uuid::Uuid;
 
 mod attach;
@@ -35,12 +32,8 @@ pub struct Start {
     /// Assign a name to the dataflow
     #[clap(long, short = 'n')]
     name: Option<String>,
-    /// Address of the adora coordinator
-    #[clap(long, value_name = "IP", default_value_t = LOCALHOST, env = "ADORA_COORDINATOR_ADDR")]
-    coordinator_addr: IpAddr,
-    /// Port number of the coordinator control server
-    #[clap(long, value_name = "PORT", default_value_t = ADORA_COORDINATOR_PORT_WS_DEFAULT, env = "ADORA_COORDINATOR_PORT")]
-    coordinator_port: u16,
+    #[clap(flatten)]
+    coordinator: CoordinatorOptions,
     /// Attach to the dataflow and wait for its completion
     #[clap(long, action)]
     attach: bool,
@@ -58,7 +51,11 @@ pub struct Start {
 impl Executable for Start {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
-        let coordinator_socket = (self.coordinator_addr, self.coordinator_port).into();
+        let coordinator_socket = (
+            self.coordinator.coordinator_addr,
+            self.coordinator.coordinator_port,
+        )
+            .into();
 
         let (dataflow, dataflow_descriptor, session, dataflow_id) =
             start_dataflow(self.dataflow, self.name, coordinator_socket, self.uv)?;
@@ -68,8 +65,12 @@ impl Executable for Start {
             (true, false) => true,
             (false, true) => false,
             (false, false) => {
-                println!("attaching to dataflow (use `--detach` to run in background)");
-                true
+                if std::io::stdin().is_terminal() {
+                    println!("attaching to dataflow (use `--detach` to run in background)");
+                    true
+                } else {
+                    false
+                }
             }
         };
 

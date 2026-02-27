@@ -1,13 +1,11 @@
 use super::{Executable, default_tracing};
-use crate::common::{connect_to_coordinator, handle_dataflow_result, query_running_dataflows};
+use crate::common::{CoordinatorOptions, handle_dataflow_result, query_running_dataflows};
 use crate::ws_client::WsSession;
-use adora_core::topics::{ADORA_COORDINATOR_PORT_WS_DEFAULT, LOCALHOST};
 use adora_message::cli_to_coordinator::ControlRequest;
 use adora_message::coordinator_to_cli::ControlRequestReply;
 use duration_str::parse;
 use eyre::{Context, bail};
 use std::io::IsTerminal;
-use std::net::IpAddr;
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -38,18 +36,16 @@ pub struct Stop {
     /// Force stop the dataflow by immediately terminating all its processes
     #[clap(short, long, action, group = "strategy")]
     force: bool,
-    /// Address of the adora coordinator
-    #[clap(long, value_name = "IP", default_value_t = LOCALHOST, env = "ADORA_COORDINATOR_ADDR")]
-    coordinator_addr: IpAddr,
-    /// Port number of the coordinator control server
-    #[clap(long, value_name = "PORT", default_value_t = ADORA_COORDINATOR_PORT_WS_DEFAULT, env = "ADORA_COORDINATOR_PORT")]
-    coordinator_port: u16,
+    #[clap(flatten)]
+    coordinator: CoordinatorOptions,
 }
 
 impl Executable for Stop {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
-        let session = connect_to_coordinator((self.coordinator_addr, self.coordinator_port).into())
+        let session = self
+            .coordinator
+            .connect()
             .wrap_err("could not connect to adora coordinator")?;
         match (self.uuid, self.name) {
             (Some(uuid), _) => stop_dataflow(uuid, self.grace_duration, self.force, &session),

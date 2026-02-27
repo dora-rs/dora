@@ -1,9 +1,8 @@
 use std::{
-    io,
+    io::{self, IsTerminal},
     time::{Duration, Instant},
 };
 
-use adora_core::topics::ADORA_COORDINATOR_PORT_WS_DEFAULT;
 use adora_message::{
     cli_to_coordinator::ControlRequest,
     coordinator_to_cli::{ControlRequestReply, NodeInfo},
@@ -25,7 +24,7 @@ use ratatui::{
 };
 use uuid::Uuid;
 
-use crate::{LOCALHOST, common::connect_to_coordinator};
+use crate::common::{CoordinatorOptions, connect_to_coordinator};
 
 use super::super::{Executable, default_tracing};
 
@@ -40,12 +39,8 @@ use super::super::{Executable, default_tracing};
 /// - Nodes can run on different machines with potentially different CPUs, so percentages are not comparable across machines
 #[derive(Debug, Args)]
 pub struct Top {
-    /// Address of the adora coordinator
-    #[clap(long, value_name = "IP", default_value_t = LOCALHOST, env = "ADORA_COORDINATOR_ADDR")]
-    pub coordinator_addr: std::net::IpAddr,
-    /// Port number of the coordinator control server
-    #[clap(long, value_name = "PORT", default_value_t = ADORA_COORDINATOR_PORT_WS_DEFAULT, env = "ADORA_COORDINATOR_PORT")]
-    pub coordinator_port: u16,
+    #[clap(flatten)]
+    coordinator: CoordinatorOptions,
     /// Refresh interval in seconds
     #[clap(long, value_name = "SECONDS", default_value_t = 2)]
     pub refresh_interval: u64,
@@ -54,6 +49,10 @@ pub struct Top {
 impl Executable for Top {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
+
+        if !io::stdout().is_terminal() {
+            eyre::bail!("`adora top` requires an interactive terminal");
+        }
 
         // Setup terminal
         enable_raw_mode()?;
@@ -66,8 +65,8 @@ impl Executable for Top {
         let refresh_duration = Duration::from_secs(self.refresh_interval);
         let res = run_app(
             &mut terminal,
-            self.coordinator_addr,
-            self.coordinator_port,
+            self.coordinator.coordinator_addr,
+            self.coordinator.coordinator_port,
             refresh_duration,
         );
 

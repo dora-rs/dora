@@ -2,18 +2,16 @@ use std::io::Write;
 
 use super::{Executable, default_tracing};
 use crate::{
-    LOCALHOST,
-    common::{connect_to_coordinator, query_running_dataflows},
+    common::{CoordinatorOptions, query_running_dataflows},
     formatting::OutputFormat,
     ws_client::WsSession,
 };
-use adora_core::topics::ADORA_COORDINATOR_PORT_WS_DEFAULT;
 use adora_message::{
     cli_to_coordinator::ControlRequest,
     coordinator_to_cli::{ControlRequestReply, DataflowStatus},
 };
 use clap::Args;
-use eyre::{Context, bail, eyre};
+use eyre::{Context, bail};
 use serde::Serialize;
 use tabwriter::TabWriter;
 use uuid::Uuid;
@@ -21,12 +19,8 @@ use uuid::Uuid;
 #[derive(Debug, Args)]
 /// List running dataflows.
 pub struct ListArgs {
-    /// Address of the adora coordinator
-    #[clap(long, value_name = "IP", default_value_t = LOCALHOST, env = "ADORA_COORDINATOR_ADDR")]
-    pub coordinator_addr: std::net::IpAddr,
-    /// Port number of the coordinator control server
-    #[clap(long, value_name = "PORT", default_value_t = ADORA_COORDINATOR_PORT_WS_DEFAULT, env = "ADORA_COORDINATOR_PORT")]
-    pub coordinator_port: u16,
+    #[clap(flatten)]
+    coordinator: CoordinatorOptions,
     /// Output format
     #[clap(long, short = 'f', value_name = "FORMAT", default_value_t = OutputFormat::Table)]
     pub format: OutputFormat,
@@ -40,7 +34,7 @@ pub struct ListArgs {
     #[clap(long, value_name = "FIELD")]
     pub sort_by: Option<String>,
     /// Only print dataflow UUIDs, one per line
-    #[clap(long, short = 'q')]
+    #[clap(long, short = 'q', conflicts_with = "format")]
     pub quiet: bool,
 }
 
@@ -48,8 +42,7 @@ impl Executable for ListArgs {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
 
-        let session = connect_to_coordinator((self.coordinator_addr, self.coordinator_port).into())
-            .map_err(|_| eyre!("Failed to connect to coordinator"))?;
+        let session = self.coordinator.connect()?;
 
         list(
             &session,

@@ -1,18 +1,19 @@
 use crate::command::{Executable, default_tracing};
+use crate::common::CoordinatorOptions;
+use crate::common::connect_to_coordinator;
 use crate::ws_client::WsSession;
-use crate::{LOCALHOST, common::connect_to_coordinator};
+use adora_core::descriptor::Descriptor;
 use adora_core::descriptor::DescriptorExt;
-use adora_core::{descriptor::Descriptor, topics::ADORA_COORDINATOR_PORT_WS_DEFAULT};
 use adora_message::{
     cli_to_coordinator::ControlRequest,
     coordinator_to_cli::{ControlRequestReply, DataflowStatus},
 };
 use eyre::{Context, bail};
+use std::path::PathBuf;
 use std::{
     io::{IsTerminal, Write},
     net::SocketAddr,
 };
-use std::{net::IpAddr, path::PathBuf};
 use termcolor::{Color, ColorChoice, ColorSpec, WriteColor};
 
 pub fn check_environment(coordinator_addr: SocketAddr) -> eyre::Result<()> {
@@ -118,23 +119,25 @@ fn query_running_dataflow_count(session: &WsSession) -> Result<usize, eyre::ErrR
     }
 }
 
+/// Check system health and connectivity to coordinator and daemon.
 #[derive(Debug, clap::Args)]
 pub struct Status {
     /// Path to the dataflow descriptor file (enables additional checks)
     #[clap(long, value_name = "PATH", value_hint = clap::ValueHint::FilePath)]
     dataflow: Option<PathBuf>,
-    /// Address of the adora coordinator
-    #[clap(long, value_name = "IP", default_value_t = LOCALHOST, env = "ADORA_COORDINATOR_ADDR")]
-    coordinator_addr: IpAddr,
-    /// Port number of the coordinator control server
-    #[clap(long, value_name = "PORT", default_value_t = ADORA_COORDINATOR_PORT_WS_DEFAULT, env = "ADORA_COORDINATOR_PORT")]
-    coordinator_port: u16,
+    #[clap(flatten)]
+    coordinator: CoordinatorOptions,
 }
 
 impl Executable for Status {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
 
+        let addr = (
+            self.coordinator.coordinator_addr,
+            self.coordinator.coordinator_port,
+        )
+            .into();
         match self.dataflow {
             Some(dataflow) => {
                 let working_dir = dataflow
@@ -144,9 +147,9 @@ impl Executable for Status {
                     .ok_or_else(|| eyre::eyre!("dataflow path has no parent dir"))?
                     .to_owned();
                 Descriptor::blocking_read(&dataflow)?.check(&working_dir)?;
-                check_environment((self.coordinator_addr, self.coordinator_port).into())?
+                check_environment(addr)?
             }
-            None => check_environment((self.coordinator_addr, self.coordinator_port).into())?,
+            None => check_environment(addr)?,
         }
 
         Ok(())

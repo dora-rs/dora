@@ -41,7 +41,7 @@ pub struct List {
     pub format: OutputFormat,
 
     /// Only print node IDs, one per line
-    #[clap(long, short = 'q')]
+    #[clap(long, short = 'q', conflicts_with = "format")]
     pub quiet: bool,
 
     #[clap(flatten)]

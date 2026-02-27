@@ -6,14 +6,13 @@ use std::{
 
 use super::{Executable, default_tracing};
 use crate::{
-    common::{connect_to_coordinator, resolve_dataflow_identifier_interactive},
+    common::{CoordinatorOptions, resolve_dataflow_identifier_interactive},
     output::{
         LogFormat, LogOutputConfig, parse_jsonl_line, parse_log_filter, parse_log_level_str,
         print_log_message,
     },
     ws_client::WsSession,
 };
-use adora_core::topics::{ADORA_COORDINATOR_PORT_WS_DEFAULT, LOCALHOST};
 use adora_message::{
     cli_to_coordinator::ControlRequest, common::LogMessage,
     coordinator_to_cli::ControlRequestReply, id::NodeId,
@@ -39,7 +38,7 @@ pub struct LogsArgs {
     #[clap(long)]
     pub all_nodes: bool,
     /// Number of lines to show from the end of the logs
-    #[clap(long, short = 'n')]
+    #[clap(long)]
     pub tail: Option<usize>,
     /// Follow log output
     #[clap(long, short)]
@@ -73,12 +72,8 @@ pub struct LogsArgs {
     /// Filter logs by text pattern (case-insensitive substring match)
     #[clap(long, value_name = "PATTERN")]
     pub grep: Option<String>,
-    /// Address of the adora coordinator
-    #[clap(long, value_name = "IP", default_value_t = LOCALHOST, env = "ADORA_COORDINATOR_ADDR")]
-    pub coordinator_addr: std::net::IpAddr,
-    /// Port number of the coordinator control server
-    #[clap(long, value_name = "PORT", default_value_t = ADORA_COORDINATOR_PORT_WS_DEFAULT, env = "ADORA_COORDINATOR_PORT")]
-    pub coordinator_port: u16,
+    #[clap(flatten)]
+    pub coordinator: CoordinatorOptions,
 }
 
 fn build_log_config(args: &LogsArgs) -> Result<LogOutputConfig> {
@@ -123,8 +118,7 @@ impl Executable for LogsArgs {
         };
 
         let config = build_log_config(&self)?;
-        let session = connect_to_coordinator((self.coordinator_addr, self.coordinator_port).into())
-            .wrap_err("failed to connect to adora coordinator")?;
+        let session = self.coordinator.connect()?;
         let uuid = resolve_dataflow_identifier_interactive(&session, self.dataflow.as_deref())?;
         logs(
             &session,
@@ -712,8 +706,7 @@ mod tests {
 /// Follow all nodes' logs via coordinator's LogSubscribe (dataflow-level).
 fn follow_all_nodes_coordinator(args: &LogsArgs) -> Result<()> {
     let config = build_log_config(args)?;
-    let session = connect_to_coordinator((args.coordinator_addr, args.coordinator_port).into())
-        .wrap_err("failed to connect to adora coordinator")?;
+    let session = args.coordinator.connect()?;
     let uuid = resolve_dataflow_identifier_interactive(&session, args.dataflow.as_deref())?;
 
     stream_logs_from_coordinator(
