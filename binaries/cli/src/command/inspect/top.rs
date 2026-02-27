@@ -65,8 +65,7 @@ impl Executable for Top {
         let refresh_duration = Duration::from_secs(self.refresh_interval);
         let res = run_app(
             &mut terminal,
-            self.coordinator.coordinator_addr,
-            self.coordinator.coordinator_port,
+            self.coordinator.socket_addr(),
             refresh_duration,
         );
 
@@ -249,16 +248,15 @@ impl App {
 
 fn run_app<B: Backend>(
     terminal: &mut Terminal<B>,
-    coordinator_addr: std::net::IpAddr,
-    coordinator_port: u16,
+    coordinator_addr: std::net::SocketAddr,
     refresh_duration: Duration,
 ) -> eyre::Result<()> {
     let mut app = App::new();
     let mut last_update = Instant::now();
 
     // Reuse coordinator connection
-    let session = connect_to_coordinator((coordinator_addr, coordinator_port).into())
-        .wrap_err("Failed to connect to coordinator")?;
+    let session =
+        connect_to_coordinator(coordinator_addr).wrap_err("Failed to connect to coordinator")?;
 
     // Query node info once initially
     let request = ControlRequest::GetNodeInfo;

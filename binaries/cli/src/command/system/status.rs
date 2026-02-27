@@ -133,11 +133,7 @@ impl Executable for Status {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
 
-        let addr = (
-            self.coordinator.coordinator_addr,
-            self.coordinator.coordinator_port,
-        )
-            .into();
+        let addr = self.coordinator.socket_addr();
         match self.dataflow {
             Some(dataflow) => {
                 let working_dir = dataflow

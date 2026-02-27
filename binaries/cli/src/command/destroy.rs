@@ -15,13 +15,6 @@ pub struct Destroy {
 impl Executable for Destroy {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
-        up::destroy(
-            self.config.as_deref(),
-            (
-                self.coordinator.coordinator_addr,
-                self.coordinator.coordinator_port,
-            )
-                .into(),
-        )
+        up::destroy(self.config.as_deref(), self.coordinator.socket_addr())
     }
 }

@@ -35,7 +35,7 @@ pub struct Start {
     #[clap(flatten)]
     coordinator: CoordinatorOptions,
     /// Attach to the dataflow and wait for its completion
-    #[clap(long, action)]
+    #[clap(long, action, conflicts_with = "detach")]
     attach: bool,
     /// Run the dataflow in background
     #[clap(long, action)]
@@ -51,24 +51,20 @@ pub struct Start {
 impl Executable for Start {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
-        let coordinator_socket = (
-            self.coordinator.coordinator_addr,
-            self.coordinator.coordinator_port,
-        )
-            .into();
+        let coordinator_socket = self.coordinator.socket_addr();
 
         let (dataflow, dataflow_descriptor, session, dataflow_id) =
             start_dataflow(self.dataflow, self.name, coordinator_socket, self.uv)?;
 
         let attach = match (self.attach, self.detach) {
-            (true, true) => eyre::bail!("both `--attach` and `--detach` are given"),
-            (true, false) => true,
+            (true, _) => true,
             (false, true) => false,
             (false, false) => {
                 if std::io::stdin().is_terminal() {
                     println!("attaching to dataflow (use `--detach` to run in background)");
                     true
                 } else {
+                    eprintln!("non-interactive mode: running in background");
                     false
                 }
             }

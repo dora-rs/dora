@@ -92,8 +92,12 @@ pub(crate) struct CoordinatorOptions {
 }
 
 impl CoordinatorOptions {
+    pub fn socket_addr(&self) -> SocketAddr {
+        (self.coordinator_addr, self.coordinator_port).into()
+    }
+
     pub fn connect(&self) -> eyre::Result<WsSession> {
-        connect_to_coordinator((self.coordinator_addr, self.coordinator_port).into())
+        connect_to_coordinator(self.socket_addr())
             .wrap_err("failed to connect to adora coordinator")
     }
 }
