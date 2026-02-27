@@ -39,6 +39,7 @@ members = [
     "libraries/recording",
     "libraries/shared-memory-server",
     "binaries/replay-node",
+    "binaries/record-node",
     "libraries/extensions/download",
     "libraries/extensions/telemetry/*",
     "libraries/extensions/ros2-bridge",

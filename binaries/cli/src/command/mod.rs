@@ -279,12 +279,39 @@ mod tests {
 
     #[test]
     fn parse_record() {
-        parse_ok(&["adora", "record"]);
+        parse_ok(&["adora", "record", "dataflow.yml"]);
     }
 
     #[test]
     fn parse_record_with_output() {
-        parse_ok(&["adora", "record", "-o", "capture.adorec"]);
+        parse_ok(&["adora", "record", "dataflow.yml", "-o", "capture.adorec"]);
+    }
+
+    #[test]
+    fn parse_record_with_topics() {
+        parse_ok(&[
+            "adora",
+            "record",
+            "dataflow.yml",
+            "--topics",
+            "sensor/image,lidar/points",
+        ]);
+    }
+
+    #[test]
+    fn parse_record_output_yaml() {
+        parse_ok(&[
+            "adora",
+            "record",
+            "dataflow.yml",
+            "--output-yaml",
+            "modified.yml",
+        ]);
+    }
+
+    #[test]
+    fn reject_record_no_file() {
+        parse_err(&["adora", "record"]);
     }
 
     #[test]

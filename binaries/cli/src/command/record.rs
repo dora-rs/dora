@@ -1,253 +1,248 @@
-use std::{
-    collections::BTreeSet,
-    fs::File,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
-    },
-    time::{Instant, SystemTime},
-};
+use std::{collections::BTreeMap, io::Write, path::PathBuf};
 
-use adora_core::topics::{open_zenoh_session, zenoh_output_publish_topic};
-use adora_recording::{RecordEntry, RecordingHeader, RecordingWriter};
 use clap::Args;
-use eyre::{Context, eyre};
-use tokio::{runtime::Builder, task::JoinSet};
+use eyre::{Context, bail};
 
-use crate::{
-    command::{
-        Executable, default_tracing,
-        topic::selector::{TopicIdentifier, TopicSelector},
-    },
-    common::CoordinatorOptions,
-};
+use crate::command::{Executable, Run, default_tracing};
 
 /// Record dataflow messages to a file for offline replay.
 ///
-/// Captures all (or filtered) topic data from a running dataflow via the
-/// Zenoh debug tap and streams it to an `.adorec` recording file.
-///
-/// The dataflow descriptor must include:
-///
-/// ```yaml
-/// _unstable_debug:
-///   publish_all_messages_to_zenoh: true
-/// ```
+/// Injects a record node into the dataflow that captures all (or filtered)
+/// topic data and writes it to an `.adorec` recording file.
 ///
 /// Examples:
 ///
 ///   Record all topics:
-///     adora record -d my-dataflow
+///     adora record dataflow.yml
 ///
 ///   Record specific topics:
-///     adora record -d my-dataflow sensor/image lidar/points
+///     adora record dataflow.yml --topics sensor/image,lidar/points
 ///
 ///   Specify output file:
-///     adora record -d my-dataflow -o capture.adorec
+///     adora record dataflow.yml -o capture.adorec
+///
+///   Just generate the modified YAML:
+///     adora record dataflow.yml --output-yaml modified.yml
 #[derive(Debug, Args)]
 #[clap(verbatim_doc_comment)]
 pub struct Record {
-    #[clap(flatten)]
-    selector: TopicSelector,
+    /// Path to the dataflow descriptor YAML file
+    #[clap(value_name = "DATAFLOW_YAML")]
+    file: String,
 
-    /// Output file path (default: {name}_{timestamp}.adorec)
+    /// Output recording file (default: recording_{timestamp}.adorec)
     #[clap(short, long, value_name = "PATH")]
     output: Option<String>,
 
-    #[clap(flatten)]
-    coordinator: CoordinatorOptions,
+    /// Topics to record (comma-separated node/output, default: all outputs)
+    #[clap(long, value_name = "TOPICS", value_delimiter = ',')]
+    topics: Vec<String>,
+
+    /// Just generate modified YAML, don't run
+    #[clap(long, value_name = "PATH")]
+    output_yaml: Option<String>,
 }
 
 impl Executable for Record {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
-        run_record(self.coordinator, self.selector, self.output)
+        run_record(self)
     }
 }
 
-fn run_record(
-    coordinator: CoordinatorOptions,
-    selector: TopicSelector,
-    output_path: Option<String>,
-) -> eyre::Result<()> {
-    let session = coordinator.connect()?;
-    let (dataflow_id, topics) = selector.resolve(&session)?;
+fn run_record(args: Record) -> eyre::Result<()> {
+    let yaml_bytes =
+        std::fs::read(&args.file).wrap_err_with(|| format!("failed to read {}", args.file))?;
+    let mut descriptor: serde_yaml::Value =
+        serde_yaml::from_slice(&yaml_bytes).wrap_err("failed to parse descriptor YAML")?;
 
-    // Get descriptor YAML for embedding in recording
-    let descriptor_yaml = {
-        use adora_message::{
-            cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply,
-        };
-        let reply_raw = session
-            .request(
-                &serde_json::to_vec(&ControlRequest::Info {
-                    dataflow_uuid: dataflow_id,
-                })
-                .unwrap(),
-            )
-            .wrap_err("failed to send info request")?;
-        let reply: ControlRequestReply =
-            serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-        match reply {
-            ControlRequestReply::DataflowInfo { descriptor, .. } => {
-                serde_yaml::to_string(&descriptor)
-                    .unwrap_or_default()
-                    .into_bytes()
+    // Discover all node outputs from the YAML
+    let nodes = descriptor
+        .get("nodes")
+        .and_then(|v| v.as_sequence())
+        .ok_or_else(|| eyre::eyre!("descriptor has no nodes array"))?;
+
+    let mut all_topics: BTreeMap<String, String> = BTreeMap::new();
+    for node in nodes {
+        let node_id = node.get("id").and_then(|v| v.as_str()).unwrap_or_default();
+        if let Some(outputs) = node.get("outputs").and_then(|v| v.as_sequence()) {
+            for output in outputs {
+                if let Some(output_id) = output.as_str() {
+                    let topic = format!("{node_id}/{output_id}");
+                    // input_id on record node: sanitized to avoid / in IDs
+                    let input_id = format!("{node_id}___{output_id}");
+                    all_topics.insert(topic, input_id);
+                }
             }
-            _ => vec![],
         }
+    }
+
+    if all_topics.is_empty() {
+        bail!("no outputs found in descriptor");
+    }
+
+    // Filter topics if --topics specified
+    let topics: BTreeMap<String, String> = if args.topics.is_empty() {
+        all_topics
+    } else {
+        let mut filtered = BTreeMap::new();
+        for requested in &args.topics {
+            match all_topics.get(requested) {
+                Some(input_id) => {
+                    filtered.insert(requested.clone(), input_id.clone());
+                }
+                None => bail!(
+                    "topic `{requested}` not found in descriptor. Available: {}",
+                    all_topics.keys().cloned().collect::<Vec<_>>().join(", ")
+                ),
+            }
+        }
+        filtered
     };
 
-    let output_file = match output_path {
-        Some(p) => p,
+    let output_file = match &args.output {
+        Some(p) => p.clone(),
         None => {
             let ts = chrono::Local::now().format("%Y%m%d_%H%M%S");
             format!("recording_{ts}.adorec")
         }
     };
+    let output_path = dunce::canonicalize(std::env::current_dir()?)
+        .unwrap_or_else(|_| std::env::current_dir().unwrap())
+        .join(&output_file);
 
-    let start_nanos = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos() as u64;
+    // Find record node binary
+    let record_node_bin = find_record_node_binary()?;
 
-    let header = RecordingHeader {
-        version: 1,
-        start_nanos,
-        dataflow_id,
-        descriptor_yaml,
-    };
+    // Build topic map JSON: { "input_id": "node/output" }
+    let topic_map: BTreeMap<&str, &str> = topics
+        .iter()
+        .map(|(topic, input_id)| (input_id.as_str(), topic.as_str()))
+        .collect();
+    let topics_json =
+        serde_json::to_string(&topic_map).wrap_err("failed to serialize topic map")?;
 
-    let file =
-        File::create(&output_file).wrap_err_with(|| format!("failed to create {output_file}"))?;
-
-    let writer =
-        RecordingWriter::new(file, &header).wrap_err("failed to write recording header")?;
-    let writer = Arc::new(std::sync::Mutex::new(writer));
-
-    let running = Arc::new(AtomicBool::new(true));
-    let msg_count = Arc::new(AtomicU64::new(0));
-
-    // Set up Ctrl-C handler
-    {
-        let running = running.clone();
-        ctrlc::set_handler(move || {
-            running.store(false, Ordering::SeqCst);
-        })
-        .wrap_err("failed to set Ctrl-C handler")?;
+    // Build inputs mapping for the record node YAML entry
+    let mut inputs_mapping = serde_yaml::Mapping::new();
+    for (topic, input_id) in &topics {
+        inputs_mapping.insert(
+            serde_yaml::Value::String(input_id.clone()),
+            serde_yaml::Value::String(topic.clone()),
+        );
     }
 
-    eprintln!("Recording to {output_file}");
-    eprintln!("Topics: {}", format_topics(&topics));
-    eprintln!("Press Ctrl-C to stop recording.\n");
+    // Build env vars
+    let mut env_mapping = serde_yaml::Mapping::new();
+    env_mapping.insert(
+        serde_yaml::Value::String("ADORA_RECORD_FILE".to_string()),
+        serde_yaml::Value::String(output_path.to_string_lossy().to_string()),
+    );
+    env_mapping.insert(
+        serde_yaml::Value::String("ADORA_RECORD_TOPICS".to_string()),
+        serde_yaml::Value::String(topics_json),
+    );
+    env_mapping.insert(
+        serde_yaml::Value::String("ADORA_RECORD_DESCRIPTOR".to_string()),
+        serde_yaml::Value::String(String::from_utf8_lossy(&yaml_bytes).to_string()),
+    );
 
-    let start_time = Instant::now();
+    // Build the record node YAML entry
+    let mut record_node = serde_yaml::Mapping::new();
+    record_node.insert(
+        serde_yaml::Value::String("id".to_string()),
+        serde_yaml::Value::String("__adora_record__".to_string()),
+    );
+    record_node.insert(
+        serde_yaml::Value::String("path".to_string()),
+        serde_yaml::Value::String(record_node_bin.to_string_lossy().to_string()),
+    );
+    record_node.insert(
+        serde_yaml::Value::String("inputs".to_string()),
+        serde_yaml::Value::Mapping(inputs_mapping),
+    );
+    record_node.insert(
+        serde_yaml::Value::String("env".to_string()),
+        serde_yaml::Value::Mapping(env_mapping),
+    );
 
-    let rt = Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .context("tokio runtime failed")?;
+    // Append record node to descriptor
+    let nodes_mut = descriptor
+        .get_mut("nodes")
+        .and_then(|v| v.as_sequence_mut())
+        .ok_or_else(|| eyre::eyre!("descriptor has no nodes array"))?;
+    nodes_mut.push(serde_yaml::Value::Mapping(record_node));
 
-    rt.block_on(async {
-        let zenoh_session = open_zenoh_session(Some(coordinator.coordinator_addr))
-            .await
-            .context("failed to open zenoh session")?;
+    let modified_yaml =
+        serde_yaml::to_string(&descriptor).wrap_err("failed to serialize modified descriptor")?;
 
-        let mut join_set = JoinSet::new();
-        for TopicIdentifier { node_id, data_id } in &topics {
-            let zenoh_session = zenoh_session.clone();
-            let writer = writer.clone();
-            let running = running.clone();
-            let msg_count = msg_count.clone();
-            let df_id = dataflow_id;
-            let node_id = node_id.clone();
-            let data_id = data_id.clone();
-            let start = start_nanos;
+    // If --output-yaml, just write and exit
+    if let Some(yaml_output_path) = args.output_yaml {
+        std::fs::write(&yaml_output_path, &modified_yaml)
+            .wrap_err_with(|| format!("failed to write {yaml_output_path}"))?;
+        eprintln!("Modified descriptor written to {yaml_output_path}");
+        return Ok(());
+    }
 
-            join_set.spawn(async move {
-                let subscribe_topic = zenoh_output_publish_topic(df_id, &node_id, &data_id);
-                let subscriber = zenoh_session
-                    .declare_subscriber(&subscribe_topic)
-                    .await
-                    .map_err(|e| eyre!(e))
-                    .wrap_err_with(|| format!("failed to subscribe to {node_id}/{data_id}"))?;
+    // Write to temp file and run
+    let mut tmp =
+        tempfile::NamedTempFile::with_suffix(".yml").wrap_err("failed to create temp file")?;
+    tmp.write_all(modified_yaml.as_bytes())?;
+    tmp.flush()?;
+    let tmp_path = tmp.into_temp_path();
 
-                while running.load(Ordering::SeqCst) {
-                    let result = tokio::time::timeout(
-                        std::time::Duration::from_millis(200),
-                        subscriber.recv_async(),
-                    )
-                    .await;
+    eprintln!("Recording {} topics to {output_file}", topics.len());
+    eprintln!(
+        "Topics: {}",
+        format_topics(topics.keys().cloned().collect())
+    );
+    eprintln!();
 
-                    let sample = match result {
-                        Ok(Ok(sample)) => sample,
-                        Ok(Err(_)) => break,
-                        Err(_) => continue, // timeout, check running flag
-                    };
-
-                    let now_nanos = SystemTime::now()
-                        .duration_since(SystemTime::UNIX_EPOCH)
-                        .unwrap()
-                        .as_nanos() as u64;
-
-                    let entry = RecordEntry {
-                        node_id: node_id.to_string(),
-                        output_id: data_id.to_string(),
-                        timestamp_offset_nanos: now_nanos.saturating_sub(start),
-                        event_bytes: sample.payload().to_bytes().to_vec(),
-                    };
-
-                    let mut w = writer.lock().unwrap();
-                    w.write_entry(&entry).wrap_err("failed to write record")?;
-                    drop(w);
-
-                    msg_count.fetch_add(1, Ordering::Relaxed);
-                }
-
-                Ok::<(), eyre::Error>(())
-            });
-        }
-
-        // Wait for all tasks to finish
-        while let Some(res) = join_set.join_next().await {
-            match res {
-                Ok(Ok(())) => {}
-                Ok(Err(e)) => eprintln!("Error: {e:#}"),
-                Err(e) => eprintln!("Task error: {e}"),
-            }
-        }
-
-        Ok::<(), eyre::Error>(())
-    })?;
-
-    // Write footer and print summary
-    let elapsed = start_time.elapsed();
-    let total_msgs = msg_count.load(Ordering::Relaxed);
-
-    let writer = Arc::try_unwrap(writer)
-        .map_err(|_| eyre!("writer still shared"))?
-        .into_inner()
-        .unwrap();
-    let footer = writer
-        .finish()
-        .wrap_err("failed to write recording footer")?;
-
-    eprintln!("\nRecording complete:");
-    eprintln!("  Messages: {total_msgs}");
-    eprintln!("  Duration: {:.1}s", elapsed.as_secs_f64());
-    eprintln!("  Bytes:    {}", footer.total_bytes);
-    eprintln!("  File:     {output_file}");
-
-    Ok(())
+    let run = Run::new(tmp_path.to_string_lossy().to_string());
+    run.execute()
 }
 
-fn format_topics(topics: &BTreeSet<TopicIdentifier>) -> String {
+fn find_record_node_binary() -> eyre::Result<PathBuf> {
+    // Check next to current executable first
+    if let Ok(exe) = std::env::current_exe() {
+        let dir = exe.parent().unwrap_or(std::path::Path::new("."));
+        let candidate = dir.join("adora-record-node");
+        if candidate.exists() {
+            return Ok(candidate);
+        }
+        #[cfg(target_os = "windows")]
+        {
+            let candidate = dir.join("adora-record-node.exe");
+            if candidate.exists() {
+                return Ok(candidate);
+            }
+        }
+    }
+
+    // Check PATH
+    if let Ok(path) = which::which("adora-record-node") {
+        return Ok(path);
+    }
+
+    // Check cargo target directory (development)
+    let cargo_target = std::env::var("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("target"));
+    for profile in ["debug", "release"] {
+        let candidate = cargo_target.join(profile).join("adora-record-node");
+        if candidate.exists() {
+            return Ok(dunce::canonicalize(candidate)?);
+        }
+    }
+
+    bail!(
+        "could not find `adora-record-node` binary.\n\
+         Build it with: cargo build -p adora-record-node"
+    )
+}
+
+fn format_topics(topics: Vec<String>) -> String {
     if topics.len() <= 5 {
-        topics
-            .iter()
-            .map(|t: &TopicIdentifier| t.to_string())
-            .collect::<Vec<_>>()
-            .join(", ")
+        topics.join(", ")
     } else {
         format!("{} topics", topics.len())
     }

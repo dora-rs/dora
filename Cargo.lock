@@ -431,6 +431,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "adora-record-node"
+version = "0.4.1"
+dependencies = [
+ "adora-message",
+ "adora-node-api",
+ "adora-recording",
+ "aligned-vec",
+ "eyre",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
 name = "adora-recording"
 version = "0.4.1"
 dependencies = [

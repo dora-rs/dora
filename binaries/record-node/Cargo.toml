@@ -1,0 +1,22 @@
+[package]
+name = "adora-record-node"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+documentation.workspace = true
+description = "Record node binary for adora dataflow recordings"
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "adora-record-node"
+path = "src/main.rs"
+
+[dependencies]
+adora-node-api = { workspace = true, default-features = false }
+adora-recording = { workspace = true }
+adora-message = { workspace = true }
+eyre = "0.6.8"
+aligned-vec = { version = "0.5.0", features = ["serde"] }
+serde_json = { workspace = true }
+uuid = { version = "1", features = ["v4"] }
