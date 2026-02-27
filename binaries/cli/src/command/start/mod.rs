@@ -64,7 +64,7 @@ impl Executable for Start {
                     println!("attaching to dataflow (use `--detach` to run in background)");
                     true
                 } else {
-                    eprintln!("non-interactive mode: running in background");
+                    println!("non-interactive mode: running in background");
                     false
                 }
             }
@@ -136,7 +136,7 @@ fn start_dataflow(
             serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
         match result {
             ControlRequestReply::DataflowStartTriggered { uuid } => {
-                eprintln!("dataflow start triggered: {uuid}");
+                println!("dataflow start triggered: {uuid}");
                 uuid
             }
             ControlRequestReply::Error(err) => bail!("{err}"),
@@ -187,7 +187,7 @@ fn wait_until_dataflow_started(
         serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
     match result {
         ControlRequestReply::DataflowSpawned { uuid } => {
-            eprintln!("dataflow started: {uuid}");
+            println!("dataflow started: {uuid}");
         }
         ControlRequestReply::Error(err) => bail!("{err}"),
         other => bail!("unexpected start dataflow reply: {other:?}"),

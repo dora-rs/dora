@@ -212,7 +212,7 @@ fn list(
             for entry in entries {
                 let status = match entry.status {
                     DataflowStatus::Running => "Running",
-                    DataflowStatus::Finished => "Succeeded",
+                    DataflowStatus::Finished => "Finished",
                     DataflowStatus::Failed => "Failed",
                 };
 

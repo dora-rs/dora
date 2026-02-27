@@ -27,7 +27,15 @@ struct UpConfig {}
 
 pub(crate) fn up(config_path: Option<&Path>) -> eyre::Result<()> {
     let UpConfig {} = parse_adora_config(config_path)?;
-    let coordinator_addr = (LOCALHOST, ADORA_COORDINATOR_PORT_WS_DEFAULT).into();
+    let addr: std::net::IpAddr = std::env::var("ADORA_COORDINATOR_ADDR")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(LOCALHOST);
+    let port: u16 = std::env::var("ADORA_COORDINATOR_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(ADORA_COORDINATOR_PORT_WS_DEFAULT);
+    let coordinator_addr = (addr, port).into();
     let session = match connect_to_coordinator(coordinator_addr) {
         Ok(session) => session,
         Err(_) => {

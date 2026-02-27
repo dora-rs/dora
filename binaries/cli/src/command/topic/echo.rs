@@ -95,19 +95,27 @@ fn inspect(
                 format,
             ));
         }
+        let mut first_error: Option<eyre::Error> = None;
         while let Some(res) = join_set.join_next().await {
             match res {
                 Ok(Ok(())) => {}
                 Ok(Err(e)) => {
-                    eprintln!("Error while inspecting output: {e}");
+                    if first_error.is_none() {
+                        first_error = Some(e);
+                    }
                 }
                 Err(e) => {
-                    eprintln!("Join error: {e}");
+                    if first_error.is_none() {
+                        first_error = Some(e.into());
+                    }
                 }
             }
         }
 
-        Result::<_, eyre::Error>::Ok(())
+        match first_error {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
     })
 }
 
