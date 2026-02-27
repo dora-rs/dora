@@ -36,7 +36,9 @@ members = [
     "libraries/coordinator-store",
     "libraries/core",
     "libraries/message",
+    "libraries/recording",
     "libraries/shared-memory-server",
+    "binaries/replay-node",
     "libraries/extensions/download",
     "libraries/extensions/telemetry/*",
     "libraries/extensions/ros2-bridge",
@@ -67,6 +69,7 @@ adora-operator-api-python = { version = "0.4.1", path = "apis/python/operator" }
 adora-operator-api-c = { version = "0.4.1", path = "apis/c/operator" }
 adora-node-api-c = { version = "0.4.1", path = "apis/c/node" }
 adora-core = { version = "0.4.1", path = "libraries/core" }
+adora-recording = { version = "0.4.1", path = "libraries/recording" }
 adora-arrow-convert = { version = "0.4.1", path = "libraries/arrow-convert" }
 adora-tracing = { version = "0.4.1", path = "libraries/extensions/telemetry/tracing" }
 adora-metrics = { version = "0.4.1", path = "libraries/extensions/telemetry/metrics" }

@@ -78,6 +78,9 @@ git2 = { workspace = true }
 zenoh = { workspace = true }
 arrow-json.workspace = true
 chrono = "0.4.42"
+adora-recording = { workspace = true }
+which = "7"
+tempfile = "3.23.0"
 
 [build-dependencies]
 pyo3-build-config = "0.23"

@@ -9,6 +9,8 @@ mod list;
 mod logs;
 mod new;
 mod node;
+mod record;
+mod replay;
 mod run;
 mod runtime;
 mod self_;
@@ -33,6 +35,8 @@ use list::ListArgs;
 use logs::LogsArgs;
 use new::NewArgs;
 use node::Node;
+use record::Record;
+use replay::Replay;
 use runtime::Runtime;
 use self_::SelfSubCommand;
 use start::Start;
@@ -81,6 +85,12 @@ pub enum Command {
     /// Manage and inspect dataflow nodes
     #[clap(subcommand, display_order = 14)]
     Node(Node),
+    /// Record dataflow messages to a file for offline replay
+    #[clap(display_order = 15)]
+    Record(Record),
+    /// Replay a recorded dataflow from a `.adorec` file
+    #[clap(display_order = 16)]
+    Replay(Replay),
 
     // -- Setup --
     /// Check system health
@@ -150,6 +160,8 @@ impl Executable for Command {
             Command::Inspect(args) => args.execute(),
             Command::Topic(args) => args.execute(),
             Command::Node(args) => args.execute(),
+            Command::Record(args) => args.execute(),
+            Command::Replay(args) => args.execute(),
             Command::Status(args) => args.execute(),
             Command::New(args) => args.execute(),
             Command::Graph(args) => args.execute(),
@@ -263,6 +275,51 @@ mod tests {
     #[test]
     fn parse_node_list() {
         parse_ok(&["adora", "node", "list"]);
+    }
+
+    #[test]
+    fn parse_record() {
+        parse_ok(&["adora", "record"]);
+    }
+
+    #[test]
+    fn parse_record_with_output() {
+        parse_ok(&["adora", "record", "-o", "capture.adorec"]);
+    }
+
+    #[test]
+    fn parse_replay() {
+        parse_ok(&["adora", "replay", "recording.adorec"]);
+    }
+
+    #[test]
+    fn parse_replay_with_options() {
+        parse_ok(&[
+            "adora",
+            "replay",
+            "recording.adorec",
+            "--speed",
+            "2.0",
+            "--loop",
+            "--replace",
+            "sensor,camera",
+        ]);
+    }
+
+    #[test]
+    fn parse_replay_output_yaml() {
+        parse_ok(&[
+            "adora",
+            "replay",
+            "recording.adorec",
+            "--output-yaml",
+            "modified.yml",
+        ]);
+    }
+
+    #[test]
+    fn reject_replay_no_file() {
+        parse_err(&["adora", "replay"]);
     }
 
     #[test]

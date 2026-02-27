@@ -7,7 +7,7 @@ mod echo;
 mod hz;
 mod info;
 mod list;
-mod selector;
+pub(crate) mod selector;
 
 /// Manage and inspect dataflow topics.
 #[derive(Debug, clap::Subcommand)]
