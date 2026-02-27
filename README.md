@@ -1,6 +1,6 @@
-# Adora
+# Adora (AI-Dora)
 
-**Dataflow-Oriented Robotic Architecture** -- a 100% Rust framework for building real-time robotics and AI applications.
+**Agentic Dataflow-Oriented Robotic Architecture** -- a 100% Rust framework for building real-time robotics and AI applications.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/adora-rs/adora/main/docs/src/logo.svg" width="350"/>
