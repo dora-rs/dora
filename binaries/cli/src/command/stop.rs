@@ -70,7 +70,9 @@ fn stop_dataflow_interactive(
     let active = list.get_active();
     if active.is_empty() {
         eprintln!("No dataflows are running");
-    } else if active.len() > 1 && !std::io::stdin().is_terminal() {
+    } else if active.len() == 1 {
+        stop_dataflow(active[0].uuid, grace_duration, force, session)?;
+    } else if !std::io::stdin().is_terminal() {
         bail!(
             "Multiple dataflows running. Specify one:\n  adora stop <UUID>\n  adora stop --name <NAME>"
         );

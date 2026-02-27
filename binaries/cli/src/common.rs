@@ -87,7 +87,7 @@ pub(crate) struct CoordinatorOptions {
     #[clap(long, value_name = "IP", default_value_t = LOCALHOST, env = "ADORA_COORDINATOR_ADDR")]
     pub coordinator_addr: IpAddr,
     /// Port number of the coordinator WebSocket server
-    #[clap(long, short = 'p', value_name = "PORT", default_value_t = ADORA_COORDINATOR_PORT_WS_DEFAULT, env = "ADORA_COORDINATOR_PORT")]
+    #[clap(long, value_name = "PORT", default_value_t = ADORA_COORDINATOR_PORT_WS_DEFAULT, env = "ADORA_COORDINATOR_PORT")]
     pub coordinator_port: u16,
 }
 
