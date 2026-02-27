@@ -63,9 +63,10 @@ jobs:
             name: dora-rs-cli
     steps:
       - uses: actions/checkout@v4
-      # - uses: actions/setup-python@v5
-      #   with:
-      #     python-version: ${{ env.PYTHON_VERSION }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          architecture: ${{ matrix.platform.target }}
       - run: rustup default stable
       - run: rustup update
       - uses: Swatinem/rust-cache@v2
@@ -107,9 +108,10 @@ jobs:
             name: dora-rs-cli
     steps:
       - uses: actions/checkout@v4
-      # - uses: actions/setup-python@v5
-      #   with:
-      #     python-version: ${{ env.PYTHON_VERSION }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          architecture: ${{ matrix.platform.target }}
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -149,9 +151,10 @@ jobs:
         CFLAGS_armv7_unknown_linux_musleabihf: "-mfpu=vfpv3-d16"
     steps:
       - uses: actions/checkout@v4
-      # - uses: actions/setup-python@v5
-      #   with:
-      #     python-version: ${{ env.PYTHON_VERSION }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          architecture: ${{ matrix.platform.target }}
       - name: Build Wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -190,7 +193,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --release --out dist -i ${{ env.PYTHON_VERSION }}
+          args: --release --out dist -i python${{ env.PYTHON_VERSION }}
           sccache: "true"
           working-directory: ${{ matrix.repository.path }}
       - name: Upload wheels
@@ -218,11 +221,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+          architecture: ${{ matrix.platform.target }}
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --release --out dist -i ${{ env.PYTHON_VERSION }}
+          args: --release --out dist -i python${{ env.PYTHON_VERSION }}
           working-directory: ${{ matrix.repository.path }}
       - name: Upload wheels
         if: github.event_name == 'release'
