@@ -33,13 +33,13 @@ pub struct Start {
     #[clap(value_name = "PATH")]
     dataflow: String,
     /// Assign a name to the dataflow
-    #[clap(long)]
+    #[clap(long, short = 'n')]
     name: Option<String>,
     /// Address of the adora coordinator
-    #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
+    #[clap(long, value_name = "IP", default_value_t = LOCALHOST, env = "ADORA_COORDINATOR_ADDR")]
     coordinator_addr: IpAddr,
     /// Port number of the coordinator control server
-    #[clap(long, value_name = "PORT", default_value_t = ADORA_COORDINATOR_PORT_WS_DEFAULT)]
+    #[clap(long, value_name = "PORT", default_value_t = ADORA_COORDINATOR_PORT_WS_DEFAULT, env = "ADORA_COORDINATOR_PORT")]
     coordinator_port: u16,
     /// Attach to the dataflow and wait for its completion
     #[clap(long, action)]

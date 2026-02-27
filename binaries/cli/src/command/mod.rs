@@ -4,7 +4,7 @@ mod coordinator;
 mod daemon;
 mod destroy;
 mod graph;
-mod inspect;
+pub mod inspect;
 mod list;
 mod logs;
 mod new;
@@ -44,43 +44,64 @@ use up::Up;
 /// adora-rs cli client
 #[derive(Debug, clap::Subcommand)]
 pub enum Command {
-    #[clap(subcommand)]
-    System(System),
-    /// Alias for `system status`
-    Check(system::status::Status),
-    Graph(Graph),
-    Build(Build),
-    New(NewArgs),
+    // -- Lifecycle --
+    #[clap(display_order = 1)]
     Run(Run),
+    #[clap(display_order = 2)]
     Up(Up),
+    /// Tear down coordinator and daemon. Stops any running dataflows first.
+    #[clap(name = "down", alias = "destroy", display_order = 3)]
     Destroy(Destroy),
+    #[clap(display_order = 4)]
+    Build(Build),
+    #[clap(display_order = 5)]
     Start(Start),
+    #[clap(display_order = 6)]
     Stop(Stop),
-    #[clap(alias = "ps")]
+
+    // -- Monitoring --
+    #[clap(alias = "ps", display_order = 10)]
     List(ListArgs),
-    // Planned for future releases:
-    // Dashboard,
     #[command(allow_missing_positional = true)]
+    #[clap(display_order = 11)]
     Logs(LogsArgs),
-    // Metrics,
-    // Stats,
-    // Get,
-    // Upgrade,
-    #[clap(subcommand)]
+    #[clap(subcommand, display_order = 12)]
     Inspect(Inspect),
-    Daemon(Daemon),
-    Runtime(Runtime),
-    Coordinator(Coordinator),
-    #[clap(subcommand)]
+    #[clap(subcommand, display_order = 13)]
     Topic(Topic),
-    #[clap(subcommand)]
+    #[clap(subcommand, display_order = 14)]
     Node(Node),
 
+    // -- Setup --
+    /// Check system health
+    #[clap(alias = "check", display_order = 20)]
+    Status(system::status::Status),
+    #[clap(display_order = 21)]
+    New(NewArgs),
+    #[clap(display_order = 22)]
+    Graph(Graph),
+    #[clap(subcommand, display_order = 23)]
+    System(System),
+
+    // -- Utility --
+    #[clap(display_order = 30)]
     Completion(Completion),
+    #[clap(display_order = 31)]
     Self_ {
         #[clap(subcommand)]
         command: SelfSubCommand,
     },
+
+    // -- Hidden: internal / aliases --
+    #[clap(hide = true)]
+    Daemon(Daemon),
+    #[clap(hide = true)]
+    Runtime(Runtime),
+    #[clap(hide = true)]
+    Coordinator(Coordinator),
+    /// Alias for `inspect top`
+    #[clap(hide = true)]
+    Top(inspect::top::Top),
 }
 
 fn default_tracing() -> eyre::Result<()> {
@@ -103,26 +124,27 @@ pub trait Executable {
 impl Executable for Command {
     fn execute(self) -> eyre::Result<()> {
         match self {
-            Command::System(args) => args.execute(),
-            Command::Check(args) => args.execute(),
-            Command::Coordinator(args) => args.execute(),
-            Command::Graph(args) => args.execute(),
-            Command::Build(args) => args.execute(),
-            Command::New(args) => args.execute(),
             Command::Run(args) => args.execute(),
             Command::Up(args) => args.execute(),
             Command::Destroy(args) => args.execute(),
+            Command::Build(args) => args.execute(),
             Command::Start(args) => args.execute(),
             Command::Stop(args) => args.execute(),
             Command::List(args) => args.execute(),
             Command::Logs(args) => args.execute(),
             Command::Inspect(args) => args.execute(),
-            Command::Daemon(args) => args.execute(),
-            Command::Self_ { command } => command.execute(),
-            Command::Runtime(args) => args.execute(),
             Command::Topic(args) => args.execute(),
             Command::Node(args) => args.execute(),
+            Command::Status(args) => args.execute(),
+            Command::New(args) => args.execute(),
+            Command::Graph(args) => args.execute(),
+            Command::System(args) => args.execute(),
             Command::Completion(args) => args.execute(),
+            Command::Self_ { command } => command.execute(),
+            Command::Daemon(args) => args.execute(),
+            Command::Runtime(args) => args.execute(),
+            Command::Coordinator(args) => args.execute(),
+            Command::Top(args) => args.execute(),
         }
     }
 }

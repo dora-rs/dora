@@ -41,10 +41,10 @@ use super::super::{Executable, default_tracing};
 #[derive(Debug, Args)]
 pub struct Top {
     /// Address of the adora coordinator
-    #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
+    #[clap(long, value_name = "IP", default_value_t = LOCALHOST, env = "ADORA_COORDINATOR_ADDR")]
     pub coordinator_addr: std::net::IpAddr,
     /// Port number of the coordinator control server
-    #[clap(long, value_name = "PORT", default_value_t = ADORA_COORDINATOR_PORT_WS_DEFAULT)]
+    #[clap(long, value_name = "PORT", default_value_t = ADORA_COORDINATOR_PORT_WS_DEFAULT, env = "ADORA_COORDINATOR_PORT")]
     pub coordinator_port: u16,
     /// Refresh interval in seconds
     #[clap(long, value_name = "SECONDS", default_value_t = 2)]

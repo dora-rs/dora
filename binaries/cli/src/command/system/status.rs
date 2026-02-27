@@ -124,10 +124,10 @@ pub struct Status {
     #[clap(long, value_name = "PATH", value_hint = clap::ValueHint::FilePath)]
     dataflow: Option<PathBuf>,
     /// Address of the adora coordinator
-    #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
+    #[clap(long, value_name = "IP", default_value_t = LOCALHOST, env = "ADORA_COORDINATOR_ADDR")]
     coordinator_addr: IpAddr,
     /// Port number of the coordinator control server
-    #[clap(long, value_name = "PORT", default_value_t = ADORA_COORDINATOR_PORT_WS_DEFAULT)]
+    #[clap(long, value_name = "PORT", default_value_t = ADORA_COORDINATOR_PORT_WS_DEFAULT, env = "ADORA_COORDINATOR_PORT")]
     coordinator_port: u16,
 }
 

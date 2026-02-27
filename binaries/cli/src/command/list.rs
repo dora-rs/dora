@@ -22,13 +22,13 @@ use uuid::Uuid;
 /// List running dataflows.
 pub struct ListArgs {
     /// Address of the adora coordinator
-    #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
+    #[clap(long, value_name = "IP", default_value_t = LOCALHOST, env = "ADORA_COORDINATOR_ADDR")]
     pub coordinator_addr: std::net::IpAddr,
     /// Port number of the coordinator control server
-    #[clap(long, value_name = "PORT", default_value_t = ADORA_COORDINATOR_PORT_WS_DEFAULT)]
+    #[clap(long, value_name = "PORT", default_value_t = ADORA_COORDINATOR_PORT_WS_DEFAULT, env = "ADORA_COORDINATOR_PORT")]
     pub coordinator_port: u16,
     /// Output format
-    #[clap(long, value_name = "FORMAT", default_value_t = OutputFormat::Table)]
+    #[clap(long, short = 'f', value_name = "FORMAT", default_value_t = OutputFormat::Table)]
     pub format: OutputFormat,
     /// Filter by status (running, finished, failed)
     #[clap(long, value_name = "STATUS")]
@@ -39,6 +39,9 @@ pub struct ListArgs {
     /// Sort by field (memory, cpu)
     #[clap(long, value_name = "FIELD")]
     pub sort_by: Option<String>,
+    /// Only print dataflow UUIDs, one per line
+    #[clap(long, short = 'q')]
+    pub quiet: bool,
 }
 
 impl Executable for ListArgs {
@@ -48,7 +51,14 @@ impl Executable for ListArgs {
         let session = connect_to_coordinator((self.coordinator_addr, self.coordinator_port).into())
             .map_err(|_| eyre!("Failed to connect to coordinator"))?;
 
-        list(&session, self.format, self.status, self.name, self.sort_by)
+        list(
+            &session,
+            self.format,
+            self.status,
+            self.name,
+            self.sort_by,
+            self.quiet,
+        )
     }
 }
 
@@ -75,6 +85,7 @@ fn list(
     status_filter: Option<String>,
     name_filter: Option<String>,
     sort_by: Option<String>,
+    quiet: bool,
 ) -> Result<(), eyre::ErrReport> {
     let list = query_running_dataflows(session)?;
 
@@ -182,6 +193,13 @@ fn list(
                 );
             }
         }
+    }
+
+    if quiet {
+        for entry in &entries {
+            println!("{}", entry.uuid);
+        }
+        return Ok(());
     }
 
     match format {

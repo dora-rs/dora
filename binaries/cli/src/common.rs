@@ -11,6 +11,7 @@ use adora_message::{
 use eyre::{Context, ContextCompat, bail};
 use std::{
     env::current_dir,
+    io::IsTerminal,
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
 };
@@ -70,6 +71,9 @@ pub(crate) fn resolve_dataflow_identifier_interactive(
         [] => bail!("No dataflows are running"),
         [entry] => entry.uuid,
         _ => {
+            if !std::io::stdin().is_terminal() {
+                bail!("Multiple dataflows running. Specify a UUID or name.");
+            }
             inquire::Select::new("Choose dataflow:", active)
                 .prompt()?
                 .uuid
@@ -80,10 +84,10 @@ pub(crate) fn resolve_dataflow_identifier_interactive(
 #[derive(Debug, clap::Args)]
 pub(crate) struct CoordinatorOptions {
     /// Address of the adora coordinator
-    #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
+    #[clap(long, value_name = "IP", default_value_t = LOCALHOST, env = "ADORA_COORDINATOR_ADDR")]
     pub coordinator_addr: IpAddr,
     /// Port number of the coordinator WebSocket server
-    #[clap(long, value_name = "PORT", default_value_t = ADORA_COORDINATOR_PORT_WS_DEFAULT)]
+    #[clap(long, short = 'p', value_name = "PORT", default_value_t = ADORA_COORDINATOR_PORT_WS_DEFAULT, env = "ADORA_COORDINATOR_PORT")]
     pub coordinator_port: u16,
 }
 

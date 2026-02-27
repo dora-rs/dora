@@ -1,4 +1,4 @@
-mod top;
+pub mod top;
 
 use clap::Subcommand;
 

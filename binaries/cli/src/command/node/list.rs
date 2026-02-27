@@ -37,8 +37,12 @@ pub struct List {
     pub dataflow: Option<String>,
 
     /// Output format
-    #[clap(long, value_name = "FORMAT", default_value_t = OutputFormat::Table)]
+    #[clap(long, short = 'f', value_name = "FORMAT", default_value_t = OutputFormat::Table)]
     pub format: OutputFormat,
+
+    /// Only print node IDs, one per line
+    #[clap(long, short = 'q')]
+    pub quiet: bool,
 
     #[clap(flatten)]
     coordinator: CoordinatorOptions,
@@ -49,7 +53,7 @@ impl Executable for List {
         default_tracing()?;
 
         let session = self.coordinator.connect()?;
-        list(&session, self.dataflow, self.format)
+        list(&session, self.dataflow, self.format, self.quiet)
     }
 }
 
@@ -68,6 +72,7 @@ fn list(
     session: &WsSession,
     dataflow_filter: Option<String>,
     format: OutputFormat,
+    quiet: bool,
 ) -> eyre::Result<()> {
     // Request node information from coordinator
     let reply_raw = session
@@ -141,6 +146,13 @@ fn list(
             }
         })
         .collect();
+
+    if quiet {
+        for entry in &entries {
+            println!("{}", entry.node);
+        }
+        return Ok(());
+    }
 
     match format {
         OutputFormat::Table => {

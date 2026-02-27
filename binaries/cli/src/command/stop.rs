@@ -6,6 +6,7 @@ use adora_message::cli_to_coordinator::ControlRequest;
 use adora_message::coordinator_to_cli::ControlRequestReply;
 use duration_str::parse;
 use eyre::{Context, bail};
+use std::io::IsTerminal;
 use std::net::IpAddr;
 use std::time::Duration;
 use uuid::Uuid;
@@ -18,7 +19,7 @@ pub struct Stop {
     /// UUID of the dataflow that should be stopped
     uuid: Option<Uuid>,
     /// Name of the dataflow that should be stopped
-    #[clap(long)]
+    #[clap(long, short = 'n')]
     name: Option<String>,
     /// Kill the dataflow if it doesn't stop after the given duration
     ///
@@ -38,10 +39,10 @@ pub struct Stop {
     #[clap(short, long, action, group = "strategy")]
     force: bool,
     /// Address of the adora coordinator
-    #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
+    #[clap(long, value_name = "IP", default_value_t = LOCALHOST, env = "ADORA_COORDINATOR_ADDR")]
     coordinator_addr: IpAddr,
     /// Port number of the coordinator control server
-    #[clap(long, value_name = "PORT", default_value_t = ADORA_COORDINATOR_PORT_WS_DEFAULT)]
+    #[clap(long, value_name = "PORT", default_value_t = ADORA_COORDINATOR_PORT_WS_DEFAULT, env = "ADORA_COORDINATOR_PORT")]
     coordinator_port: u16,
 }
 
@@ -69,6 +70,10 @@ fn stop_dataflow_interactive(
     let active = list.get_active();
     if active.is_empty() {
         eprintln!("No dataflows are running");
+    } else if active.len() > 1 && !std::io::stdin().is_terminal() {
+        bail!(
+            "Multiple dataflows running. Specify one:\n  adora stop <UUID>\n  adora stop --name <NAME>"
+        );
     } else {
         let selection = inquire::Select::new("Choose dataflow to stop:", active).prompt()?;
         stop_dataflow(selection.uuid, grace_duration, force, session)?;

@@ -4,16 +4,16 @@ use std::net::IpAddr;
 use std::path::PathBuf;
 
 #[derive(Debug, clap::Args)]
-/// Destroy running coordinator and daemon. If some dataflows are still running, they will be stopped first.
+/// Tear down coordinator and daemon. Stops any running dataflows first.
 pub struct Destroy {
     /// Use a custom configuration
     #[clap(long, hide = true)]
     config: Option<PathBuf>,
     /// Address of the adora coordinator
-    #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
+    #[clap(long, value_name = "IP", default_value_t = LOCALHOST, env = "ADORA_COORDINATOR_ADDR")]
     coordinator_addr: IpAddr,
     /// Port number of the coordinator
-    #[clap(long, value_name = "PORT", default_value_t = ADORA_COORDINATOR_PORT_WS_DEFAULT)]
+    #[clap(long, value_name = "PORT", default_value_t = ADORA_COORDINATOR_PORT_WS_DEFAULT, env = "ADORA_COORDINATOR_PORT")]
     coordinator_port: u16,
 }
 
