@@ -37,8 +37,6 @@ pub struct ListArgs {
     /// Sort by field (memory, cpu)
     #[clap(long, value_name = "FIELD")]
     pub sort_by: Option<String>,
-    #[clap(long)]
-    pub clean: bool,
 }
 
 impl Executable for ListArgs {
@@ -49,26 +47,18 @@ impl Executable for ListArgs {
             .await
             .wrap_err("failed to connect to dora coordinator")?;
 
-        list(
-            &client,
-            self.format,
-            self.status,
-            self.name,
-            self.sort_by,
-            self.clean,
-        )
-        .await
+        list(&client, self.format, self.status, self.name, self.sort_by).await
     }
 }
 
 #[derive(Serialize)]
-struct OutputEntry {
-    uuid: Uuid,
-    name: String,
-    status: DataflowStatus,
-    nodes: usize,
-    cpu: f64,
-    memory: f64,
+pub(super) struct OutputEntry {
+    pub uuid: Uuid,
+    pub name: String,
+    pub status: DataflowStatus,
+    pub nodes: usize,
+    pub cpu: f64,
+    pub memory: f64,
 }
 
 #[derive(Default)]
@@ -78,23 +68,66 @@ struct DataflowMetrics {
     total_memory_mb: f64,
 }
 
+/// Render a list of [`OutputEntry`] values to stdout in either table or JSON format.
+///
+/// When `show_metrics` is `false` the Nodes, CPU and Memory columns are omitted.
+pub(super) fn display_entries(
+    entries: &[OutputEntry],
+    format: OutputFormat,
+    show_metrics: bool,
+) -> eyre::Result<()> {
+    match format {
+        OutputFormat::Table => {
+            let mut tw = TabWriter::new(std::io::stdout().lock());
+            if show_metrics {
+                tw.write_all(b"UUID\tName\tStatus\tNodes\tCPU\tMemory\n")?;
+            } else {
+                tw.write_all(b"UUID\tName\tStatus\n")?;
+            }
+            for entry in entries {
+                let status = match entry.status {
+                    DataflowStatus::Running => "Running",
+                    DataflowStatus::Finished => "Succeeded",
+                    DataflowStatus::Failed => "Failed",
+                };
+                if show_metrics {
+                    tw.write_all(
+                        format!(
+                            "{}\t{}\t{}\t{}\t{}\t{}\n",
+                            entry.uuid,
+                            entry.name,
+                            status,
+                            entry.nodes,
+                            format!("{:.1}%", entry.cpu),
+                            format!("{:.1} GB", entry.memory),
+                        )
+                        .as_bytes(),
+                    )?;
+                } else {
+                    tw.write_all(
+                        format!("{}\t{}\t{}\n", entry.uuid, entry.name, status).as_bytes(),
+                    )?;
+                }
+            }
+            tw.flush()?;
+        }
+        OutputFormat::Json => {
+            for entry in entries {
+                println!("{}", serde_json::to_string(entry)?);
+            }
+        }
+    }
+    Ok(())
+}
+
 async fn list(
     client: &CliControlClient,
     format: OutputFormat,
     status_filter: Option<String>,
     name_filter: Option<String>,
     sort_by: Option<String>,
-    clean: bool,
 ) -> Result<(), eyre::ErrReport> {
-    let list = if !clean {
-        query_running_dataflows(client).await
-    } else {
-        rpc(
-            "clean finished dataflows",
-            client.clean(tarpc::context::current()),
-        )
-        .await
-    }?;
+    let list = query_running_dataflows(client).await?;
 
     // Get node information via tarpc
     let node_infos = rpc(
@@ -197,39 +230,5 @@ async fn list(
         }
     }
 
-    match format {
-        OutputFormat::Table => {
-            let mut tw = TabWriter::new(std::io::stdout().lock());
-            // Header
-            tw.write_all(format!("UUID\tName\tStatus\tNodes\tCPU\tMemory\n").as_bytes())?;
-            for entry in entries {
-                let status = match entry.status {
-                    DataflowStatus::Running => "Running",
-                    DataflowStatus::Finished => "Succeeded",
-                    DataflowStatus::Failed => "Failed",
-                };
-
-                tw.write_all(
-                    format!(
-                        "{}\t{}\t{}\t{}\t{}\t{}\n",
-                        entry.uuid,
-                        entry.name,
-                        status,
-                        entry.nodes,
-                        format!("{:.1}%", entry.cpu),
-                        format!("{:.1} GB", entry.memory)
-                    )
-                    .as_bytes(),
-                )?;
-            }
-            tw.flush()?;
-        }
-        OutputFormat::Json => {
-            for entry in entries {
-                println!("{}", serde_json::to_string(&entry)?);
-            }
-        }
-    }
-
-    Ok(())
+    display_entries(&entries, format, true)
 }

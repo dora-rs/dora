@@ -1,4 +1,5 @@
 mod build;
+mod clean;
 mod completion;
 mod coordinator;
 mod daemon;
@@ -23,6 +24,7 @@ pub use build::{build, build_async};
 pub use run::{Run, run, run_func};
 
 use build::Build;
+use clean::CleanArgs;
 use completion::Completion;
 use coordinator::Coordinator;
 use daemon::Daemon;
@@ -60,6 +62,8 @@ pub enum Command {
     Stop(Stop),
     #[clap(alias = "ps")]
     List(ListArgs),
+    /// Remove finished and failed dataflows from the list
+    Clean(CleanArgs),
     // Planned for future releases:
     // Dashboard,
     #[command(allow_missing_positional = true)]
@@ -119,6 +123,7 @@ impl Executable for Command {
             Command::Start(args) => args.execute().await,
             Command::Stop(args) => args.execute().await,
             Command::List(args) => args.execute().await,
+            Command::Clean(args) => args.execute().await,
             Command::Logs(args) => args.execute().await,
             Command::Inspect(args) => args.execute().await,
             Command::Daemon(args) => args.execute().await,
