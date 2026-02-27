@@ -118,6 +118,34 @@ fn create_store(spec: &str) -> eyre::Result<Arc<dyn CoordinatorStore>> {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_store_spec_memory() {
+        assert_eq!(parse_store_spec("memory").unwrap(), "memory");
+    }
+
+    #[test]
+    fn parse_store_spec_redb() {
+        assert_eq!(parse_store_spec("redb").unwrap(), "redb");
+    }
+
+    #[test]
+    fn parse_store_spec_redb_with_path() {
+        assert_eq!(
+            parse_store_spec("redb:/tmp/test.redb").unwrap(),
+            "redb:/tmp/test.redb"
+        );
+    }
+
+    #[test]
+    fn parse_store_spec_unknown() {
+        assert!(parse_store_spec("sqlite").is_err());
+    }
+}
+
 #[cfg(feature = "redb-backend")]
 fn default_redb_path() -> eyre::Result<std::path::PathBuf> {
     let home = std::env::var("HOME")

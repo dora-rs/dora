@@ -557,3 +557,28 @@ fn ui(
         .alignment(Alignment::Center);
     f.render_widget(footer, chunks[2]);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_window_valid() {
+        assert_eq!(parse_window("10").unwrap(), 10);
+    }
+
+    #[test]
+    fn parse_window_one() {
+        assert_eq!(parse_window("1").unwrap(), 1);
+    }
+
+    #[test]
+    fn parse_window_zero() {
+        assert!(parse_window("0").is_err());
+    }
+
+    #[test]
+    fn parse_window_non_numeric() {
+        assert!(parse_window("abc").is_err());
+    }
+}

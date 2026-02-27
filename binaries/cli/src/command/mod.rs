@@ -163,3 +163,122 @@ impl Executable for Command {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::Args;
+    use clap::{CommandFactory, Parser};
+
+    #[test]
+    fn verify_cli() {
+        Args::command().debug_assert();
+    }
+
+    fn parse_ok(args: &[&str]) {
+        Args::try_parse_from(args).unwrap_or_else(|e| panic!("failed to parse {args:?}: {e}"));
+    }
+
+    fn parse_err(args: &[&str]) {
+        assert!(
+            Args::try_parse_from(args).is_err(),
+            "expected parse error for {args:?}"
+        );
+    }
+
+    #[test]
+    fn parse_run() {
+        parse_ok(&["adora", "run", "foo.yml"]);
+    }
+
+    #[test]
+    fn parse_up() {
+        parse_ok(&["adora", "up"]);
+    }
+
+    #[test]
+    fn parse_down() {
+        parse_ok(&["adora", "down"]);
+    }
+
+    #[test]
+    fn parse_start() {
+        parse_ok(&["adora", "start", "foo.yml"]);
+    }
+
+    #[test]
+    fn parse_stop_uuid() {
+        parse_ok(&["adora", "stop", "a1a2a3a4-b1b2-c1c2-d1d2-e1e2e3e4e5e6"]);
+    }
+
+    #[test]
+    fn parse_list() {
+        parse_ok(&["adora", "list"]);
+    }
+
+    #[test]
+    fn parse_logs() {
+        parse_ok(&["adora", "logs"]);
+    }
+
+    #[test]
+    fn parse_build() {
+        parse_ok(&["adora", "build", "foo.yml"]);
+    }
+
+    #[test]
+    fn parse_graph() {
+        parse_ok(&["adora", "graph", "foo.yml"]);
+    }
+
+    #[test]
+    fn parse_new() {
+        parse_ok(&["adora", "new", "test"]);
+    }
+
+    #[test]
+    fn parse_status() {
+        parse_ok(&["adora", "status"]);
+    }
+
+    #[test]
+    fn parse_inspect_top() {
+        parse_ok(&["adora", "inspect", "top"]);
+    }
+
+    #[test]
+    fn parse_topic_list() {
+        parse_ok(&["adora", "topic", "list"]);
+    }
+
+    #[test]
+    fn parse_topic_hz() {
+        parse_ok(&["adora", "topic", "hz"]);
+    }
+
+    #[test]
+    fn parse_topic_echo() {
+        parse_ok(&["adora", "topic", "echo"]);
+    }
+
+    #[test]
+    fn parse_node_list() {
+        parse_ok(&["adora", "node", "list"]);
+    }
+
+    #[test]
+    fn reject_unknown_subcommand() {
+        parse_err(&["adora", "foo"]);
+    }
+
+    #[test]
+    fn help_exits_cleanly() {
+        let err = Args::try_parse_from(["adora", "--help"]).unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::DisplayHelp);
+    }
+
+    #[test]
+    fn version_exits_cleanly() {
+        let err = Args::try_parse_from(["adora", "--version"]).unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::DisplayVersion);
+    }
+}

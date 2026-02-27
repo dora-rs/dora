@@ -33,6 +33,7 @@ All three must pass before opening a PR. Python packages are excluded because th
 | **Format** | Code style | `cargo fmt --all -- --check` | ~5s |
 | **Lint** | Warnings, correctness | `cargo clippy --all ...` | ~60s |
 | **Unit** | Individual functions | `cargo test --all ...` | ~90s |
+| **CLI** | Command parsing, validation | `cargo test -p adora-cli` | ~5s |
 | **Integration** | Node I/O via env vars | `cargo test --test example-tests` | ~30s |
 | **Smoke** | Full CLI lifecycle | `cargo test --test example-smoke -- --test-threads=1` | ~3min |
 | **E2E** | Multi-dataflow scenarios | `cargo test --test ws-cli-e2e -- --ignored --test-threads=1` | ~2min |
@@ -48,7 +49,7 @@ Unit tests live alongside the code they test using `#[cfg(test)]` modules. Key c
 | Crate | Test count | What's tested |
 |-------|-----------|---------------|
 | adora-arrow-convert | ~26 | Round-trip Arrow type conversions |
-| adora-cli | ~25 | Log grep/filtering, JSON parsing, WebSocket client |
+| adora-cli | ~45 | Command parsing, value parsers, log grep/filtering, JSON parsing, WebSocket client |
 | adora-coordinator | ~15 | WS control/daemon plane, health check, concurrent requests |
 | adora-coordinator-store | ~10 | In-memory and redb CRUD, schema versioning, persistence |
 | adora-core | ~8 | Dataflow descriptor validation |
@@ -62,6 +63,28 @@ cargo test -p adora-cli
 cargo test -p adora-core
 cargo test -p adora-arrow-convert
 ```
+
+### CLI Tests
+
+CLI tests verify command parsing, argument validation, and value parsers without running any commands. They live in `#[cfg(test)]` modules inside the CLI crate.
+
+**What's tested:**
+- Clap schema validation (`Args::command().debug_assert()`)
+- Parsing of every subcommand (`run`, `up`, `down`, `start`, `stop`, `list`, `logs`, `build`, `graph`, `new`, `status`, `inspect top`, `topic list/hz/echo`, `node list`)
+- Rejection of unknown subcommands
+- `--help` and `--version` exit codes
+- Value parsers: `parse_store_spec` (coordinator store backend), `parse_window` (topic hz window)
+- Utility functions: `parse_version_from_pip_show`
+
+**How to run:**
+
+```bash
+cargo test -p adora-cli
+```
+
+**How to add new tests:**
+
+When adding a new CLI subcommand or value parser, add a corresponding test in the `#[cfg(test)]` module of the same file. For subcommand parsing, add a `parse_ok` call in `binaries/cli/src/command/mod.rs`. For value parsers, add tests in the file that defines the parser function.
 
 ### Integration Tests (Node I/O)
 

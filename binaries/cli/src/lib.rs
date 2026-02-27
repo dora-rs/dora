@@ -101,6 +101,31 @@ fn parse_version_from_pip_show(output: &[u8]) -> Option<String> {
     None
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pip_show_valid_output() {
+        let output = b"Name: adora-rs\nVersion: 0.4.1\nSummary: some desc\n";
+        assert_eq!(
+            parse_version_from_pip_show(output),
+            Some("0.4.1".to_string())
+        );
+    }
+
+    #[test]
+    fn pip_show_missing_version_line() {
+        let output = b"Name: adora-rs\nSummary: some desc\n";
+        assert_eq!(parse_version_from_pip_show(output), None);
+    }
+
+    #[test]
+    fn pip_show_empty() {
+        assert_eq!(parse_version_from_pip_show(b""), None);
+    }
+}
+
 #[derive(Debug, clap::Args)]
 pub struct CommandNew {
     /// The entity that should be created

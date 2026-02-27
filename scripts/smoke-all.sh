@@ -106,6 +106,9 @@ run_local() {
 echo "Building CLI..."
 cargo build -p adora-cli 2>&1 | tail -1
 
+echo "Running CLI unit tests..."
+cargo test -p adora-cli 2>&1 | tail -3
+
 if [ "$RUN_RUST" = true ]; then
     echo "Building Rust example nodes..."
     cargo build \
