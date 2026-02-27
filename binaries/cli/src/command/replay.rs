@@ -222,26 +222,52 @@ fn run_replay(args: Replay) -> eyre::Result<()> {
 }
 
 fn find_replay_node_binary() -> eyre::Result<PathBuf> {
+    if let Some(path) = search_replay_node_binary() {
+        return Ok(path);
+    }
+
+    // Auto-build on demand
+    eprintln!("adora-replay-node not found, building...");
+    let status = std::process::Command::new("cargo")
+        .args(["build", "-p", "adora-replay-node"])
+        .status();
+    match status {
+        Ok(s) if s.success() => {}
+        Ok(s) => bail!("failed to build adora-replay-node (exit code: {s})"),
+        Err(e) => bail!(
+            "could not find `adora-replay-node` binary and `cargo build` failed: {e}\n\
+             Build it manually with: cargo build -p adora-replay-node"
+        ),
+    }
+
+    search_replay_node_binary().ok_or_else(|| {
+        eyre::eyre!(
+            "built adora-replay-node but could not find the binary.\n\
+             Try: cargo build -p adora-replay-node"
+        )
+    })
+}
+
+fn search_replay_node_binary() -> Option<PathBuf> {
     // Check next to current executable first
     if let Ok(exe) = std::env::current_exe() {
         let dir = exe.parent().unwrap_or(std::path::Path::new("."));
         let candidate = dir.join("adora-replay-node");
         if candidate.exists() {
-            return Ok(candidate);
+            return Some(candidate);
         }
-        // Also check with .exe on Windows
         #[cfg(target_os = "windows")]
         {
             let candidate = dir.join("adora-replay-node.exe");
             if candidate.exists() {
-                return Ok(candidate);
+                return Some(candidate);
             }
         }
     }
 
     // Check PATH
     if let Ok(path) = which::which("adora-replay-node") {
-        return Ok(path);
+        return Some(path);
     }
 
     // Check cargo target directory (development)
@@ -251,12 +277,9 @@ fn find_replay_node_binary() -> eyre::Result<PathBuf> {
     for profile in ["debug", "release"] {
         let candidate = cargo_target.join(profile).join("adora-replay-node");
         if candidate.exists() {
-            return Ok(dunce::canonicalize(candidate)?);
+            return dunce::canonicalize(candidate).ok();
         }
     }
 
-    bail!(
-        "could not find `adora-replay-node` binary.\n\
-         Build it with: cargo build -p adora-replay-node"
-    )
+    None
 }
