@@ -1,6 +1,6 @@
 use std::{
     borrow::Cow,
-    collections::{HashMap, VecDeque},
+    collections::{BTreeMap, HashMap, VecDeque},
     path::Path,
     sync::{
         Arc,
@@ -9,8 +9,9 @@ use std::{
     time::Duration,
 };
 
-use adora_message::descriptor::{
-    Ros2BridgeConfig, Ros2Direction, Ros2QosConfig, Ros2Role, Ros2TopicConfig,
+use adora_message::{
+    descriptor::{Ros2BridgeConfig, Ros2Direction, Ros2QosConfig, Ros2Role, Ros2TopicConfig},
+    metadata::Parameter,
 };
 use adora_node_api::{
     AdoraNode, Event,
@@ -408,7 +409,55 @@ fn run_action_mode(
             run_action_client(client, goal_type_info, result_type_info, feedback_type_info)
         }
         Ros2Role::Server => {
-            eyre::bail!("action server role is not yet supported");
+            let goal_msg_name = format!("{type_name}_Goal");
+            let result_msg_name = format!("{type_name}_Result");
+            let feedback_msg_name = format!("{type_name}_Feedback");
+
+            let goal_type_info = TypeInfo {
+                package_name: Cow::Owned(package.clone()),
+                message_name: Cow::Owned(goal_msg_name),
+                messages: messages.clone(),
+            };
+            let result_type_info = TypeInfo {
+                package_name: Cow::Owned(package.clone()),
+                message_name: Cow::Owned(result_msg_name),
+                messages: messages.clone(),
+            };
+            let feedback_type_info = TypeInfo {
+                package_name: Cow::Owned(package.clone()),
+                message_name: Cow::Owned(feedback_msg_name),
+                messages: messages.clone(),
+            };
+
+            let (mut ros_node, _pool) = create_ros_node(&config)?;
+            let qos = config.qos.to_rustdds_qos();
+            let action_qos = ros2_client::action::ActionServerQosPolicies {
+                goal_service: qos.clone(),
+                result_service: qos.clone(),
+                cancel_service: qos.clone(),
+                feedback_publisher: qos.clone(),
+                status_publisher: qos,
+            };
+
+            let server = ros_node
+                .create_action_server::<BridgeActionType>(
+                    ros2_client::ServiceMapping::Enhanced,
+                    &ros2_client::Name::new("/", action_name.trim_start_matches('/'))
+                        .map_err(|e| eyre!("failed to create action name: {e}"))?,
+                    &ros2_client::ActionTypeName::new(&package, &type_name),
+                    action_qos,
+                )
+                .map_err(|e| eyre!("failed to create action server: {e:?}"))?;
+
+            let async_server = ros2_client::action::AsyncActionServer::new(server);
+            tracing::info!("action server created, waiting for goals from ROS2 clients");
+
+            run_action_server(
+                async_server,
+                goal_type_info,
+                result_type_info,
+                feedback_type_info,
+            )
         }
     }
 }
@@ -555,6 +604,173 @@ fn run_action_client(
 enum ActionEvent {
     Feedback(ArrayData),
     Result(ArrayData),
+}
+
+enum ServerEvent {
+    NewGoal {
+        goal_id: String,
+        handle: ros2_client::action::ExecutingGoalHandle<BridgeMessage>,
+        data: ArrayData,
+    },
+}
+
+fn run_action_server(
+    server: ros2_client::action::AsyncActionServer<BridgeActionType>,
+    goal_type_info: TypeInfo<'static>,
+    result_type_info: TypeInfo<'static>,
+    feedback_type_info: TypeInfo<'static>,
+) -> eyre::Result<()> {
+    let (mut node, adora_events) = AdoraNode::init_from_env()?;
+    let server = Arc::new(server);
+
+    // Map goal_id -> ExecutingGoalHandle for dispatching feedback/result
+    let mut executing_goals: HashMap<
+        String,
+        ros2_client::action::ExecutingGoalHandle<BridgeMessage>,
+    > = HashMap::new();
+
+    // Channel for new goals from the background receive thread.
+    // Bounded to provide backpressure: if the main loop can't keep up,
+    // the receive thread will block.
+    let (tx, rx) = flume::bounded::<ServerEvent>(MAX_CONCURRENT_GOALS * 2);
+
+    // Background thread: receive goals from ROS2 clients, auto-accept and
+    // start executing, then forward to the main loop.
+    let server_ref = server.clone();
+    std::thread::spawn(move || {
+        let _deser_guard = TypeInfoGuard::deserialize(goal_type_info);
+        futures::executor::block_on(async {
+            loop {
+                let new_goal_handle = match server_ref.receive_new_goal().await {
+                    Ok(h) => h,
+                    Err(e) => {
+                        tracing::warn!("failed to receive new goal: {e:?}");
+                        continue;
+                    }
+                };
+
+                let goal_data = server_ref.get_new_goal(new_goal_handle.clone());
+
+                let accepted = match server_ref.accept_goal(new_goal_handle).await {
+                    Ok(h) => h,
+                    Err(e) => {
+                        tracing::warn!("failed to accept goal: {e:?}");
+                        continue;
+                    }
+                };
+
+                let executing = match server_ref.start_executing_goal(accepted).await {
+                    Ok(h) => h,
+                    Err(e) => {
+                        tracing::warn!("failed to start executing goal: {e:?}");
+                        continue;
+                    }
+                };
+
+                let goal_id = executing.goal_id().uuid.to_string();
+
+                let data = match goal_data {
+                    Some(BridgeMessage(Some(d))) => d,
+                    _ => {
+                        tracing::warn!("goal {goal_id} contained no data");
+                        continue;
+                    }
+                };
+
+                if tx
+                    .send(ServerEvent::NewGoal {
+                        goal_id,
+                        handle: executing,
+                        data,
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+    });
+
+    let rx_stream = rx.into_stream();
+    let merged = adora_events.merge_external(Box::pin(rx_stream));
+
+    for event in futures::executor::block_on_stream(merged) {
+        match event {
+            MergedEvent::Adora(Event::Input { id, metadata, data }) => {
+                let goal_id = match metadata.parameters.get("goal_id") {
+                    Some(Parameter::String(s)) => s.clone(),
+                    _ => {
+                        tracing::warn!("action server input `{id}` missing goal_id in metadata");
+                        continue;
+                    }
+                };
+
+                match id.as_str() {
+                    "feedback" => {
+                        if let Some(handle) = executing_goals.get(&goal_id) {
+                            let handle = handle.clone();
+                            let array_data = data.to_data();
+                            let _guard = TypeInfoGuard::serialize(feedback_type_info.clone());
+                            if let Err(e) = futures::executor::block_on(
+                                server.publish_feedback(handle, BridgeMessage(Some(array_data))),
+                            ) {
+                                tracing::warn!(
+                                    "failed to publish feedback for goal {goal_id}: {e:?}"
+                                );
+                            }
+                        } else {
+                            tracing::warn!("feedback for unknown goal_id: {goal_id}");
+                        }
+                    }
+                    "result" => {
+                        if let Some(handle) = executing_goals.remove(&goal_id) {
+                            let array_data = data.to_data();
+                            let _guard = TypeInfoGuard::serialize(result_type_info.clone());
+                            if let Err(e) =
+                                futures::executor::block_on(server.send_result_response(
+                                    handle,
+                                    ros2_client::action::GoalEndStatus::Succeeded,
+                                    BridgeMessage(Some(array_data)),
+                                ))
+                            {
+                                tracing::warn!("failed to send result for goal {goal_id}: {e:?}");
+                            }
+                        } else {
+                            tracing::warn!("result for unknown goal_id: {goal_id}");
+                        }
+                    }
+                    other => {
+                        tracing::warn!("unexpected input `{other}` on action server");
+                    }
+                }
+            }
+            MergedEvent::Adora(Event::Stop(_)) => break,
+            MergedEvent::Adora(_) => {}
+            MergedEvent::External(server_event) => {
+                let ServerEvent::NewGoal {
+                    goal_id,
+                    handle,
+                    data,
+                } = server_event;
+
+                if executing_goals.len() >= MAX_CONCURRENT_GOALS {
+                    tracing::warn!(
+                        "max concurrent goals ({MAX_CONCURRENT_GOALS}) reached, \
+                         dropping goal {goal_id}"
+                    );
+                    continue;
+                }
+
+                executing_goals.insert(goal_id.clone(), handle);
+
+                let mut parameters = BTreeMap::new();
+                parameters.insert("goal_id".to_string(), Parameter::String(goal_id));
+                node.send_output("goal".into(), parameters, StructArray::from(data))?;
+            }
+        }
+    }
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

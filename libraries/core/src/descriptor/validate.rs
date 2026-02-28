@@ -564,7 +564,17 @@ fn validate_ros2_config(
                 }
             }
             Ros2Role::Server => {
-                bail!("node `{node_id}`: ros2 action server role is not yet supported");
+                if node_inputs.is_empty() {
+                    bail!(
+                        "node `{node_id}`: ros2 action server requires at least one input \
+                         (feedback/result)"
+                    );
+                }
+                if node_outputs.is_empty() {
+                    bail!(
+                        "node `{node_id}`: ros2 action server requires at least one output (goal)"
+                    );
+                }
             }
         }
     }
@@ -901,15 +911,43 @@ mod tests {
     }
 
     #[test]
-    fn validate_action_server_unsupported() {
+    fn validate_action_server_ok() {
         let config = action_config(Ros2Role::Server);
         let mut inputs = BTreeMap::new();
-        inputs.insert(DataId::from("goal".to_owned()), dummy_input());
+        inputs.insert(DataId::from("feedback".to_owned()), dummy_input());
         let mut outputs = BTreeSet::new();
-        outputs.insert(DataId::from("result".to_owned()));
-        let err = validate_ros2_config(&NodeId::from("n".to_owned()), &config, &inputs, &outputs)
-            .unwrap_err();
-        assert!(err.to_string().contains("not yet supported"));
+        outputs.insert(DataId::from("goal".to_owned()));
+        validate_ros2_config(&NodeId::from("n".to_owned()), &config, &inputs, &outputs).unwrap();
+    }
+
+    #[test]
+    fn validate_action_server_no_inputs() {
+        let config = action_config(Ros2Role::Server);
+        let mut outputs = BTreeSet::new();
+        outputs.insert(DataId::from("goal".to_owned()));
+        let err = validate_ros2_config(
+            &NodeId::from("n".to_owned()),
+            &config,
+            &BTreeMap::new(),
+            &outputs,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("input"));
+    }
+
+    #[test]
+    fn validate_action_server_no_outputs() {
+        let config = action_config(Ros2Role::Server);
+        let mut inputs = BTreeMap::new();
+        inputs.insert(DataId::from("feedback".to_owned()), dummy_input());
+        let err = validate_ros2_config(
+            &NodeId::from("n".to_owned()),
+            &config,
+            &inputs,
+            &BTreeSet::new(),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("output"));
     }
 
     #[test]

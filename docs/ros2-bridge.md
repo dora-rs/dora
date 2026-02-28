@@ -12,6 +12,7 @@ Adora provides a declarative YAML-based ROS2 bridge that lets any Adora node com
 | Service client | `service` + `role: client` | Send requests, receive responses |
 | Service server | `service` + `role: server` | Receive requests, send responses |
 | Action client | `action` + `role: client` | Send goals, receive feedback + result |
+| Action server | `action` + `role: server` | Receive goals, send feedback + result |
 | QoS policies | `qos` | Reliability, durability, history, liveliness |
 | Auto-spawn | Automatic | Bridge binary spawned by daemon as a Custom node |
 
@@ -43,6 +44,7 @@ Your user nodes never link against ROS2 -- all ROS2 communication is isolated in
 - **Message packages installed**: e.g., `turtlesim`, `geometry_msgs`, `example_interfaces`
 - **For service client**: A ROS2 service server must be running (or use a companion server dataflow)
 - **For action client**: A ROS2 action server must be running *before* starting the dataflow (no `wait_for_action_server` mechanism)
+- **For action server**: A ROS2 action client sends goals to the bridge (e.g., `ros2 action send_goal`)
 
 ---
 
@@ -235,6 +237,68 @@ The bridge supports up to 8 concurrent in-flight goals (`MAX_CONCURRENT_GOALS`).
 | Goal send timeout | 30 seconds |
 | Result retrieval timeout | 5 minutes |
 | Feedback | No timeout (streams until action completes) |
+
+### Action Server
+
+Expose an Adora handler node as a ROS2 action server that external ROS2 clients can call.
+
+```yaml
+nodes:
+  - id: fib_server
+    ros2:
+      action: /fibonacci
+      action_type: example_interfaces/Fibonacci
+      role: server
+    inputs:
+      feedback: handler/feedback
+      result: handler/result
+    outputs:
+      - goal
+
+  - id: handler
+    path: path/to/handler-node
+    inputs:
+      goal: fib_server/goal
+    outputs:
+      - feedback
+      - result
+```
+
+The bridge receives goals from ROS2 clients, auto-accepts them, and forwards the goal data on the `goal` output. The handler computes feedback and results and sends them back on the `feedback` and `result` inputs.
+
+### Goal ID Metadata
+
+Each goal is identified by a UUID string passed as a `goal_id` metadata parameter. The bridge sets `goal_id` on every `goal` output. The handler **must include the same `goal_id`** in metadata when sending `feedback` and `result` so the bridge can correlate them to the correct goal.
+
+The simplest approach is to pass through `metadata.parameters` from the goal event:
+
+```rust
+Event::Input { id, metadata, data } => match id.as_str() {
+    "goal" => {
+        let params = metadata.parameters; // contains goal_id
+        // ... compute ...
+        node.send_output("feedback".into(), params.clone(), feedback)?;
+        node.send_output("result".into(), params, result)?;
+    }
+    // ...
+}
+```
+
+### Action Server Lifecycle
+
+1. ROS2 client sends a goal request
+2. Bridge auto-accepts the goal and starts executing
+3. Bridge sends goal data on `goal` output with `goal_id` in metadata
+4. Handler sends `feedback` (zero or more times) with same `goal_id`
+5. Handler sends `result` (once) with same `goal_id`; bridge returns it to the ROS2 client with `Succeeded` status
+
+### Action Server Limits
+
+| Behavior | Value |
+|----------|-------|
+| Max concurrent goals | 8 (additional goals are dropped) |
+| Auto-accept | All goals are auto-accepted |
+| Result status | Always `Succeeded` (handler cannot signal failure) |
 
 ---
 
@@ -438,7 +502,7 @@ nodes:
       # Action mode (mutually exclusive with topic/topics/service)
       action: /action_name             # ROS2 action name
       action_type: package/TypeName    # ROS2 action type
-      role: client                     # client only (server not yet supported)
+      role: client                     # client | server
 
       # --- QoS (optional, applies to all channels) ---
       qos:
@@ -675,11 +739,40 @@ ros2 run examples_rclcpp_action_server fibonacci_action_server
 
 The goal node sends `{order: int32}`, receives streamed `{partial_sequence: int32[]}` feedback, and a final `{sequence: int32[]}` result.
 
+### 7. Action Server: Expose an Adora Handler as ROS2 Action
+
+```yaml
+nodes:
+  - id: fib_server
+    ros2:
+      action: /fibonacci
+      action_type: example_interfaces/Fibonacci
+      role: server
+    inputs:
+      feedback: handler/feedback
+      result: handler/result
+    outputs:
+      - goal
+
+  - id: handler
+    path: ./target/debug/handler
+    inputs:
+      goal: fib_server/goal
+    outputs:
+      - feedback
+      - result
+```
+
+The handler receives `{order: int32}` goals with a `goal_id` in metadata, sends `{partial_sequence: int32[]}` feedback, and a final `{sequence: int32[]}` result -- all with the same `goal_id` in metadata. External ROS2 clients can send goals:
+```bash
+ros2 action send_goal /fibonacci example_interfaces/action/Fibonacci "{order: 10}"
+```
+
 ---
 
 ## Limitations and Known Constraints
 
-- **Action server not supported**: Only `role: client` is implemented for actions. `role: server` will error at validation.
+- **Action server auto-accept**: All incoming goals are automatically accepted and moved to executing state. The handler cannot reject goals.
 - **Service server FIFO ordering**: The handler node must respond in the same order as requests arrive. Out-of-order responses are silently mismatched.
 - **No `wait_for_action_server`**: The `ros2_client` library does not provide this API. Start the action server before the dataflow. The first goal will time out (30s) if the server is unavailable.
 - **Single-flight service client**: The service client processes requests sequentially -- each request blocks until the response arrives (or times out at 30s).

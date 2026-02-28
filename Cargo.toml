@@ -23,6 +23,7 @@ members = [
     "examples/ros2-bridge/yaml-bridge-service/requester-node",
     "examples/ros2-bridge/yaml-bridge-service/handler-node",
     "examples/ros2-bridge/yaml-bridge-action/goal-node",
+    "examples/ros2-bridge/yaml-bridge-action-server/handler-node",
     "examples/benchmark/node",
     "examples/benchmark/sink",
     "examples/multiple-daemons/node",
