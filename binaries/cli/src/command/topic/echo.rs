@@ -11,10 +11,7 @@ use colored::Colorize;
 use eyre::eyre;
 
 use crate::{
-    command::{
-        Executable, default_tracing,
-        topic::selector::{TopicIdentifier, TopicSelector},
-    },
+    command::{Executable, default_tracing, topic::selector::TopicSelector},
     common::CoordinatorOptions,
     formatting::OutputFormat,
 };
@@ -79,12 +76,9 @@ fn inspect(
 
     let (_subscription_id, data_rx) = session.subscribe_topics(dataflow_id, ws_topics)?;
 
-    // Build a lookup from (node_id, data_id) -> display name
-    let topic_list: Vec<TopicIdentifier> = topics.into_iter().collect();
-    let _ = topic_list; // topics are identified by the events themselves
-
     let mut buf = Vec::with_capacity(1024);
     while let Ok(result) = data_rx.recv() {
+        buf.clear();
         let payload = match result {
             Ok(p) => p,
             Err(e) => {
@@ -203,8 +197,6 @@ fn inspect(
                         );
                     }
                 }
-
-                buf.clear();
             }
             InterDaemonEvent::OutputClosed {
                 node_id, output_id, ..

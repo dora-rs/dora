@@ -65,12 +65,26 @@ impl WsSession {
             .build()
             .context("failed to create tokio runtime for WS session")?;
 
-        let ws_url = match adora_message::auth::discover_token() {
-            Some(token) => format!("ws://{addr}/api/control?token={}", token.as_hex()),
-            None => format!("ws://{addr}/api/control"),
-        };
+        let ws_url = format!("ws://{addr}/api/control");
         let ws_stream = rt
-            .block_on(async { tokio_tungstenite::connect_async(&ws_url).await })
+            .block_on(async {
+                use tokio_tungstenite::tungstenite;
+                let mut request = tungstenite::http::Request::builder()
+                    .uri(&ws_url)
+                    .header("Host", addr.to_string())
+                    .header("Connection", "Upgrade")
+                    .header("Upgrade", "websocket")
+                    .header(
+                        "Sec-WebSocket-Key",
+                        tungstenite::handshake::client::generate_key(),
+                    )
+                    .header("Sec-WebSocket-Version", "13");
+                if let Some(token) = adora_message::auth::discover_token() {
+                    request = request.header("Authorization", format!("Bearer {}", token.as_hex()));
+                }
+                let request = request.body(()).expect("failed to build WS request");
+                tokio_tungstenite::connect_async(request).await
+            })
             .map_err(|e| eyre!("failed to connect to coordinator at {}: {e}", addr))?
             .0;
 
@@ -311,7 +325,10 @@ async fn session_loop(ws_stream: WsStream, mut cmd_rx: mpsc::UnboundedReceiver<S
                             tracing::warn!("binary WS frame too short ({} bytes)", data.len());
                             continue;
                         }
-                        let sub_id = Uuid::from_bytes(data[..16].try_into().unwrap());
+                        let Ok(sub_id_bytes): Result<[u8; 16], _> = data[..16].try_into() else {
+                            continue;
+                        };
+                        let sub_id = Uuid::from_bytes(sub_id_bytes);
                         let payload = data[16..].to_vec();
                         if let Some(tx) = topic_subscribers.get(&sub_id) {
                             if tx.send(Ok(payload)).is_err() {
@@ -323,7 +340,9 @@ async fn session_loop(ws_stream: WsStream, mut cmd_rx: mpsc::UnboundedReceiver<S
                     Ok(Message::Ping(data)) => {
                         let _ = ws_tx.send(Message::Pong(data)).await;
                     }
-                    Ok(_) => {}
+                    Ok(other) => {
+                        tracing::trace!("ignoring unexpected WS message type: {other:?}");
+                    }
                     Err(_) => break,
                 }
             }

@@ -12,6 +12,15 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
+/// Maximum topics allowed in a single TopicSubscribe request.
+const MAX_TOPICS_PER_SUBSCRIBE: usize = 64;
+
+/// Maximum concurrent topic subscriptions per WebSocket connection.
+const MAX_SUBSCRIPTIONS_PER_CONNECTION: usize = 16;
+
+/// Maximum binary payload size forwarded from Zenoh (64 MiB).
+const MAX_BINARY_PAYLOAD_BYTES: usize = 64 * 1024 * 1024;
+
 /// Serialize a `WsResponse` and send it over the WS connection.
 /// Returns `Err` if the WS send fails (connection closed).
 async fn send_ws_response(
@@ -26,6 +35,23 @@ async fn send_ws_response(
         }
     };
     ws_tx.send(Message::Text(json.into())).await.map_err(|_| ())
+}
+
+/// Format a `WsResponse`-shaped JSON envelope using `serde_json::to_string`.
+///
+/// This is needed (instead of `send_ws_response`) for replies that contain u128
+/// values (e.g. uhlc::ID) which lose fidelity through `serde_json::Value`.
+fn format_response_json(id: Uuid, reply: &impl serde::Serialize) -> String {
+    match serde_json::to_string(reply) {
+        Ok(result_json) => {
+            format!(r#"{{"id":"{id}","result":{result_json}}}"#)
+        }
+        Err(e) => {
+            let err_json = serde_json::to_string(&format!("{e}"))
+                .unwrap_or_else(|_| "\"serialization error\"".to_string());
+            format!(r#"{{"id":"{id}","error":{err_json}}}"#)
+        }
+    }
 }
 
 /// Lazily-initialized Zenoh session shared across topic subscriptions.
@@ -141,6 +167,34 @@ pub(crate) async fn handle_control_ws(socket: WebSocket, event_tx: mpsc::Sender<
                         continue;
                     }
                     ControlRequest::TopicSubscribe { dataflow_id, topics } => {
+                        // Validate topic count
+                        if topics.len() > MAX_TOPICS_PER_SUBSCRIBE {
+                            let resp = WsResponse::err(
+                                req.id,
+                                format!(
+                                    "too many topics ({}, max {})",
+                                    topics.len(),
+                                    MAX_TOPICS_PER_SUBSCRIBE
+                                ),
+                            );
+                            let _ = send_ws_response(&mut ws_tx, &resp).await;
+                            continue;
+                        }
+
+                        // Validate subscription count
+                        if topic_tasks.len() >= MAX_SUBSCRIPTIONS_PER_CONNECTION {
+                            let resp = WsResponse::err(
+                                req.id,
+                                format!(
+                                    "too many active subscriptions ({}, max {})",
+                                    topic_tasks.len(),
+                                    MAX_SUBSCRIPTIONS_PER_CONNECTION
+                                ),
+                            );
+                            let _ = send_ws_response(&mut ws_tx, &resp).await;
+                            continue;
+                        }
+
                         let (found_tx, found_rx) = oneshot::channel();
                         let _ = event_tx.send(Event::Control(ControlEvent::TopicSubscribe {
                             dataflow_id: *dataflow_id,
@@ -192,13 +246,26 @@ pub(crate) async fn handle_control_ws(socket: WebSocket, event_tx: mpsc::Sender<
                                     }
                                 };
 
+                                let mut dropped: u64 = 0;
                                 while let Ok(sample) = subscriber.recv_async().await {
                                     let payload = sample.payload().to_bytes();
+                                    if payload.len() > MAX_BINARY_PAYLOAD_BYTES {
+                                        tracing::warn!(
+                                            "dropping oversized payload ({} bytes) on {topic}",
+                                            payload.len()
+                                        );
+                                        continue;
+                                    }
                                     let mut frame = Vec::with_capacity(16 + payload.len());
                                     frame.extend_from_slice(&sub_id_bytes);
                                     frame.extend_from_slice(&payload);
                                     if binary_tx.try_send(frame).is_err() {
-                                        // Channel full or closed; drop sample
+                                        dropped += 1;
+                                        if dropped == 1 || dropped % 100 == 0 {
+                                            tracing::warn!(
+                                                "backpressure: dropped {dropped} frame(s) on {topic} (channel full)"
+                                            );
+                                        }
                                     }
                                 }
                             }));
@@ -207,16 +274,7 @@ pub(crate) async fn handle_control_ws(socket: WebSocket, event_tx: mpsc::Sender<
                         topic_tasks.insert(subscription_id, handles);
 
                         let reply = ControlRequestReply::TopicSubscribed { subscription_id };
-                        let resp_json = match serde_json::to_string(&reply) {
-                            Ok(result_json) => {
-                                format!(r#"{{"id":"{}","result":{result_json}}}"#, req.id)
-                            }
-                            Err(e) => {
-                                let err_json = serde_json::to_string(&format!("{e}"))
-                                    .unwrap_or_else(|_| "\"serialization error\"".to_string());
-                                format!(r#"{{"id":"{}","error":{err_json}}}"#, req.id)
-                            }
-                        };
+                        let resp_json = format_response_json(req.id, &reply);
                         if ws_tx.send(Message::Text(resp_json.into())).await.is_err() {
                             break;
                         }
@@ -228,8 +286,10 @@ pub(crate) async fn handle_control_ws(socket: WebSocket, event_tx: mpsc::Sender<
                                 h.abort();
                             }
                         }
-                        // Ack with a simple ok
-                        let resp = WsResponse::ok(req.id, serde_json::json!({"unsubscribed": true}));
+                        let resp = WsResponse::ok(
+                            req.id,
+                            serde_json::json!({"unsubscribed": true, "subscription_id": subscription_id}),
+                        );
                         let _ = send_ws_response(&mut ws_tx, &resp).await;
                         continue;
                     }
@@ -259,16 +319,7 @@ pub(crate) async fn handle_control_ws(socket: WebSocket, event_tx: mpsc::Sender<
 
                 // Serialize reply via to_string (not to_value) to preserve u128
                 // fidelity for uhlc::ID inside DataflowResult timestamps.
-                let resp_json = match serde_json::to_string(&reply) {
-                    Ok(result_json) => {
-                        format!(r#"{{"id":"{}","result":{result_json}}}"#, req.id)
-                    }
-                    Err(e) => {
-                        let err_json = serde_json::to_string(&format!("{e}"))
-                            .unwrap_or_else(|_| "\"serialization error\"".to_string());
-                        format!(r#"{{"id":"{}","error":{err_json}}}"#, req.id)
-                    }
-                };
+                let resp_json = format_response_json(req.id, &reply);
                 if ws_tx.send(Message::Text(resp_json.into())).await.is_err() || stop {
                     break;
                 }

@@ -4,7 +4,7 @@ use adora_message::auth::AuthToken;
 use axum::{
     Router,
     extract::{Query, State, ws::WebSocketUpgrade},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::get,
 };
@@ -31,7 +31,20 @@ struct TokenQuery {
     token: Option<String>,
 }
 
-/// Validate the token from query params against the expected token.
+/// Extract the auth token from the Authorization header ("Bearer <hex>")
+/// or fall back to the query parameter for backward compatibility.
+fn extract_token(headers: &HeaderMap, query: &TokenQuery) -> Option<String> {
+    if let Some(auth_header) = headers.get("authorization") {
+        if let Ok(value) = auth_header.to_str() {
+            if let Some(token) = value.strip_prefix("Bearer ") {
+                return Some(token.to_string());
+            }
+        }
+    }
+    query.token.clone()
+}
+
+/// Validate the provided token against the expected token.
 /// Returns `Ok(())` if auth is disabled or token matches.
 fn validate_token(
     expected: &Option<AuthToken>,
@@ -72,10 +85,12 @@ async fn health() -> &'static str {
 
 async fn ws_control_handler(
     State(state): State<Arc<WsState>>,
+    headers: HeaderMap,
     Query(query): Query<TokenQuery>,
     ws: WebSocketUpgrade,
 ) -> Result<impl IntoResponse, StatusCode> {
-    validate_token(&state.auth_token, &query.token)?;
+    let token = extract_token(&headers, &query);
+    validate_token(&state.auth_token, &token)?;
     Ok(ws
         .max_message_size(MAX_CONTROL_MESSAGE_BYTES)
         .on_upgrade(move |socket| handle_control_ws(socket, state.event_tx.clone())))
@@ -83,10 +98,12 @@ async fn ws_control_handler(
 
 async fn ws_daemon_handler(
     State(state): State<Arc<WsState>>,
+    headers: HeaderMap,
     Query(query): Query<TokenQuery>,
     ws: WebSocketUpgrade,
 ) -> Result<impl IntoResponse, StatusCode> {
-    validate_token(&state.auth_token, &query.token)?;
+    let token = extract_token(&headers, &query);
+    validate_token(&state.auth_token, &token)?;
     Ok(ws
         .max_message_size(MAX_CONTROL_MESSAGE_BYTES)
         .on_upgrade(move |socket| {

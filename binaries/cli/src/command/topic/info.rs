@@ -63,11 +63,21 @@ struct TopicStats {
     data_type: Arc<Mutex<Option<ArrowTypeInfo>>>,
 }
 
+/// Maximum timestamps to keep for frequency calculation.
+const MAX_TIMESTAMPS: usize = 10_000;
+
 impl TopicStats {
     fn record(&self, data_size: usize, type_info: &ArrowTypeInfo, now: Instant) {
         *self.message_count.lock().unwrap() += 1;
         *self.total_bytes.lock().unwrap() += data_size as u64;
-        self.timestamps.lock().unwrap().push(now);
+        let mut ts = self.timestamps.lock().unwrap();
+        if ts.len() >= MAX_TIMESTAMPS {
+            // Keep the recent half
+            let drain_to = ts.len() / 2;
+            ts.drain(..drain_to);
+        }
+        ts.push(now);
+        drop(ts);
         *self.data_type.lock().unwrap() = Some(type_info.clone());
     }
 

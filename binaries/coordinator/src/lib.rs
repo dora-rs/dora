@@ -72,6 +72,9 @@ pub async fn start(
 /// Like [`start`] but without registering a ctrl-c handler.
 /// Useful for tests that run multiple coordinators in the same process.
 #[doc(hidden)]
+#[doc(hidden)]
+/// Testing-only entry point. Starts coordinator without auth.
+/// Do NOT use in production.
 pub async fn start_testing(
     bind: SocketAddr,
     external_events: impl Stream<Item = Event> + Unpin,
@@ -901,12 +904,21 @@ async fn start_inner(
                 }
                 ControlEvent::TopicSubscribe {
                     dataflow_id,
-                    topics: _,
+                    topics,
                     found_tx,
                 } => {
-                    let found = running_dataflows
-                        .get(&dataflow_id)
-                        .is_some_and(|df| df.descriptor.debug.publish_all_messages_to_zenoh);
+                    let found = running_dataflows.get(&dataflow_id).is_some_and(|df| {
+                        if !df.descriptor.debug.publish_all_messages_to_zenoh {
+                            return false;
+                        }
+                        // Validate each requested topic exists in the descriptor
+                        topics.iter().all(|(node_id, data_id)| {
+                            df.descriptor
+                                .nodes
+                                .iter()
+                                .any(|node| node.id == *node_id && node.outputs.contains(data_id))
+                        })
+                    });
                     let _ = found_tx.send(found);
                 }
             },

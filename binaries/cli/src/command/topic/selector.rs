@@ -125,6 +125,10 @@ impl TopicSelector {
             }
         }
 
+        if data.is_empty() {
+            bail!("no outputs found in this dataflow");
+        }
+
         Ok((dataflow_id, data))
     }
 }

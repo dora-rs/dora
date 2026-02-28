@@ -9,6 +9,7 @@ mod list;
 mod logs;
 mod new;
 mod node;
+mod node_binary;
 mod record;
 mod replay;
 mod run;
