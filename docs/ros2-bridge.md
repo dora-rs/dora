@@ -290,7 +290,28 @@ Event::Input { id, metadata, data } => match id.as_str() {
 2. Bridge auto-accepts the goal and starts executing
 3. Bridge sends goal data on `goal` output with `goal_id` in metadata
 4. Handler sends `feedback` (zero or more times) with same `goal_id`
-5. Handler sends `result` (once) with same `goal_id`; bridge returns it to the ROS2 client with `Succeeded` status
+5. Handler sends `result` (once) with same `goal_id`; bridge returns it to the ROS2 client
+6. Result send times out after 5 minutes if the client never requests it
+
+### Goal Status
+
+By default, results are returned with `Succeeded` status. The handler can override this by setting a `goal_status` metadata parameter on the result output:
+
+| `goal_status` value | ROS2 Status | Use case |
+|---------------------|-------------|----------|
+| `"succeeded"` (or omitted) | `Succeeded` | Goal completed successfully |
+| `"aborted"` | `Aborted` | Goal failed during execution |
+| `"canceled"` | `Canceled` | Goal was canceled by the handler |
+
+Rust example:
+```rust
+use std::collections::BTreeMap;
+use adora_message::metadata::Parameter;
+
+let mut params = metadata.parameters; // contains goal_id
+params.insert("goal_status".to_string(), Parameter::String("aborted".into()));
+node.send_output("result".into(), params, error_result)?;
+```
 
 ### Action Server Limits
 
@@ -298,7 +319,45 @@ Event::Input { id, metadata, data } => match id.as_str() {
 |----------|-------|
 | Max concurrent goals | 8 (additional goals are dropped) |
 | Auto-accept | All goals are auto-accepted |
-| Result status | Always `Succeeded` (handler cannot signal failure) |
+| Result send timeout | 5 minutes |
+
+### Python Action Server Handler
+
+Python nodes receive goal data as PyArrow arrays with `goal_id` in the metadata dictionary. Pass it through on feedback/result outputs:
+
+```python
+for event in node:
+    if event["type"] == "INPUT" and event["id"] == "goal":
+        goal_id = event["metadata"]["goal_id"]
+        order = event["value"]["order"][0].as_py()
+
+        # Send feedback
+        node.send_output("feedback", feedback_array, {"goal_id": goal_id})
+
+        # Send result (with optional status)
+        node.send_output("result", result_array, {
+            "goal_id": goal_id,
+            "goal_status": "succeeded",  # or "aborted", "canceled"
+        })
+```
+
+### C++ Action Server Handler
+
+C++ nodes access `goal_id` via type-safe metadata accessors:
+
+```cpp
+auto goal_id = metadata->get_str("goal_id");
+
+// Send feedback with goal_id
+auto fb_metadata = new_metadata();
+fb_metadata->set_string("goal_id", goal_id);
+send_arrow_output_with_metadata("feedback", feedback_data, fb_metadata);
+
+// Send result with goal_id
+auto res_metadata = new_metadata();
+res_metadata->set_string("goal_id", goal_id);
+send_arrow_output_with_metadata("result", result_data, res_metadata);
+```
 
 ---
 
@@ -772,7 +831,8 @@ ros2 action send_goal /fibonacci example_interfaces/action/Fibonacci "{order: 10
 
 ## Limitations and Known Constraints
 
-- **Action server auto-accept**: All incoming goals are automatically accepted and moved to executing state. The handler cannot reject goals.
+- **Action server auto-accept**: All incoming goals are automatically accepted. The handler cannot reject goals before execution starts.
+- **No action cancel support**: Neither client nor server handles ROS2 cancel requests.
 - **Service server FIFO ordering**: The handler node must respond in the same order as requests arrive. Out-of-order responses are silently mismatched.
 - **No `wait_for_action_server`**: The `ros2_client` library does not provide this API. Start the action server before the dataflow. The first goal will time out (30s) if the server is unavailable.
 - **Single-flight service client**: The service client processes requests sequentially -- each request blocks until the response arrives (or times out at 30s).

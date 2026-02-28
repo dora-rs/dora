@@ -725,15 +725,38 @@ fn run_action_server(
                     "result" => {
                         if let Some(handle) = executing_goals.remove(&goal_id) {
                             let array_data = data.to_data();
+                            let status = match metadata.parameters.get("goal_status") {
+                                Some(Parameter::String(s)) => match s.as_str() {
+                                    "aborted" => ros2_client::action::GoalEndStatus::Aborted,
+                                    "canceled" => ros2_client::action::GoalEndStatus::Canceled,
+                                    _ => ros2_client::action::GoalEndStatus::Succeeded,
+                                },
+                                _ => ros2_client::action::GoalEndStatus::Succeeded,
+                            };
                             let _guard = TypeInfoGuard::serialize(result_type_info.clone());
-                            if let Err(e) =
-                                futures::executor::block_on(server.send_result_response(
-                                    handle,
-                                    ros2_client::action::GoalEndStatus::Succeeded,
-                                    BridgeMessage(Some(array_data)),
-                                ))
-                            {
-                                tracing::warn!("failed to send result for goal {goal_id}: {e:?}");
+                            let send_result = server.send_result_response(
+                                handle,
+                                status,
+                                BridgeMessage(Some(array_data)),
+                            );
+                            let result = futures::executor::block_on(async {
+                                futures::pin_mut!(send_result);
+                                let timeout = futures_timer::Delay::new(ACTION_RESULT_TIMEOUT);
+                                match futures::future::select(send_result, timeout).await {
+                                    futures::future::Either::Left((r, _)) => Some(r),
+                                    futures::future::Either::Right(_) => None,
+                                }
+                            });
+                            match result {
+                                Some(Err(e)) => {
+                                    tracing::warn!(
+                                        "failed to send result for goal {goal_id}: {e:?}"
+                                    );
+                                }
+                                None => {
+                                    tracing::warn!("result response timed out for goal {goal_id}");
+                                }
+                                _ => {}
                             }
                         } else {
                             tracing::warn!("result for unknown goal_id: {goal_id}");
@@ -761,11 +784,14 @@ fn run_action_server(
                     continue;
                 }
 
-                executing_goals.insert(goal_id.clone(), handle);
-
                 let mut parameters = BTreeMap::new();
-                parameters.insert("goal_id".to_string(), Parameter::String(goal_id));
-                node.send_output("goal".into(), parameters, StructArray::from(data))?;
+                parameters.insert("goal_id".to_string(), Parameter::String(goal_id.clone()));
+                if let Err(e) = node.send_output("goal".into(), parameters, StructArray::from(data))
+                {
+                    tracing::warn!("failed to send goal {goal_id} to handler: {e}");
+                    continue;
+                }
+                executing_goals.insert(goal_id, handle);
             }
         }
     }
