@@ -49,10 +49,9 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --release --out dist --find-interpreter --zig
+          args: --release --out dist --find-interpreter --zig -m ${{ matrix.repository.path }}/Cargo.toml
           sccache: false
           manylinux: auto
-          working-directory: ${{ matrix.repository.path }}
       - name: Upload wheels
         uses: actions/upload-artifact@v5
         with:
@@ -86,10 +85,10 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --release --out dist --find-interpreter
+          args: --release --out dist --find-interpreter -m ${{ matrix.repository.path }}/Cargo.toml
           sccache: false
           manylinux: musllinux_1_2
-          working-directory: ${{ matrix.repository.path }}
+          # working-directory: ${{ matrix.repository.path }}
       - name: Upload wheels
         uses: actions/upload-artifact@v5
         with:
@@ -125,9 +124,9 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --release --out dist --find-interpreter
+          args: --release --out dist --find-interpreter -m ${{ matrix.repository.path }}/Cargo.toml
           sccache: false
-          working-directory: ${{ matrix.repository.path }}
+          # working-directory: ${{ matrix.repository.path }}
       - name: Upload wheels
         uses: actions/upload-artifact@v5
         with:
@@ -157,9 +156,9 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --release --out dist --find-interpreter
+          args: --release --out dist --find-interpreter -m ${{ matrix.repository.path }}/Cargo.toml
           sccache: false
-          working-directory: ${{ matrix.repository.path }}
+          # working-directory: ${{ matrix.repository.path }}
       - name: Upload wheels
         uses: actions/upload-artifact@v5
         with:
