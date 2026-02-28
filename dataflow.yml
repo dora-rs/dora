@@ -1,0 +1,29 @@
+nodes:
+  - id: webcam
+    operator:
+      build: pip install -r requirements.txt
+      python: webcam.py
+      inputs:
+        tick: dora/timer/millis/50
+      outputs:
+        - image
+
+  - id: object_detection
+    operator:
+      build: pip install -r requirements.txt
+      python: object_detection.py
+      send_stdout_as: stdout
+      inputs:
+        image: webcam/image
+      outputs:
+        - bbox
+        - stdout
+
+  - id: plot
+    operator:
+      build: pip install -r requirements.txt
+      python: plot.py
+      inputs:
+        image: webcam/image
+        bbox: object_detection/bbox
+        assistant_message: object_detection/stdout
