@@ -19,6 +19,7 @@ Adora (AI-Dora, Dataflow-Oriented Robotic Architecture) is a 100% Rust framework
 - [Writing Operators](#writing-operators)
 - [Distributed Deployments](#distributed-deployments)
 - [Troubleshooting](#troubleshooting)
+- [Debugging and Observability](debugging.md) -- standalone guide covering record/replay, topic inspection, log analysis, and resource monitoring
 
 ---
 
@@ -382,6 +383,40 @@ adora stop [UUID_OR_NAME] [OPTIONS]
 If no identifier is given and running in a TTY, presents an interactive picker.
 
 **Stop sequence:** Send Event::Stop -> wait grace duration -> SIGTERM -> hard kill.
+
+#### `adora record`
+
+Record dataflow messages to an `.adorec` file for offline replay. See [Debugging Guide](debugging.md#record-and-replay) for full workflows.
+
+```
+adora record <DATAFLOW_YAML> [OPTIONS]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `<DATAFLOW_YAML>` | required | Path to dataflow descriptor |
+| `-o, --output <PATH>` | `recording_{timestamp}.adorec` | Output file path |
+| `--topics <TOPICS>` | all | Comma-separated `node/output` topics to record |
+| `--proxy` | false | Stream via WebSocket instead of recording on target |
+| `--output-yaml <PATH>` | | Write modified YAML without running (dry run) |
+
+Default mode injects a record node into the dataflow. `--proxy` mode requires a running dataflow and `publish_all_messages_to_zenoh: true`.
+
+#### `adora replay`
+
+Replay a recorded `.adorec` file by replacing source nodes with replay nodes. See [Debugging Guide](debugging.md#replaying-a-recording) for full workflows.
+
+```
+adora replay <FILE> [OPTIONS]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `<FILE>` | required | Path to `.adorec` recording |
+| `--speed <FLOAT>` | `1.0` | Playback speed (0 = max speed) |
+| `--loop` | false | Loop the recording |
+| `--replace <NODE_IDS>` | all recorded | Comma-separated nodes to replace |
+| `--output-yaml <PATH>` | | Write modified YAML without running (dry run) |
 
 ---
 
@@ -1104,6 +1139,8 @@ State is persisted to `~/.adora/coordinator.redb`. On restart, stale dataflows a
 ---
 
 ## Troubleshooting
+
+> For a comprehensive debugging guide covering record/replay workflows, topic inspection, resource monitoring, and end-to-end debugging scenarios, see [Debugging and Observability Guide](debugging.md).
 
 ### Common Issues
 

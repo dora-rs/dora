@@ -1,0 +1,523 @@
+# Debugging and Observability Guide
+
+This guide covers how to debug, record, replay, and monitor adora dataflows. It is written for new users who want to understand what went wrong in a dataflow, measure performance, or reproduce issues offline.
+
+---
+
+## Table of Contents
+
+- [Prerequisites](#prerequisites)
+- [Quick Debugging Checklist](#quick-debugging-checklist)
+- [Record and Replay](#record-and-replay)
+  - [Recording a Dataflow](#recording-a-dataflow)
+  - [Recording Specific Topics](#recording-specific-topics)
+  - [Proxy Recording (Remote / Diskless)](#proxy-recording-remote--diskless)
+  - [Replaying a Recording](#replaying-a-recording)
+  - [Replay Options](#replay-options)
+  - [Selective Replay](#selective-replay)
+  - [Recording File Format](#recording-file-format)
+- [Topic Inspection](#topic-inspection)
+  - [Listing Topics](#listing-topics)
+  - [Echoing Topic Data](#echoing-topic-data)
+  - [Measuring Frequency](#measuring-frequency)
+  - [Topic Metadata and Stats](#topic-metadata-and-stats)
+- [Resource Monitoring](#resource-monitoring)
+- [Log Analysis](#log-analysis)
+  - [Live Log Streaming](#live-log-streaming)
+  - [Local Log Files](#local-log-files)
+  - [Filtering and Searching](#filtering-and-searching)
+- [Dataflow Visualization](#dataflow-visualization)
+- [Monitoring Running Dataflows](#monitoring-running-dataflows)
+- [End-to-End Debugging Workflows](#end-to-end-debugging-workflows)
+
+---
+
+## Prerequisites
+
+Before using topic inspection commands (`topic echo`, `topic hz`, `topic info`), the dataflow descriptor must enable debug message publishing:
+
+```yaml
+_unstable_debug:
+  publish_all_messages_to_zenoh: true
+```
+
+This tells the daemon to publish all inter-node messages to Zenoh, where the coordinator can proxy them to CLI clients via WebSocket. Without this flag, topic inspection commands will return an error.
+
+The `record`, `replay`, `logs`, `list`, `top`, and `graph` commands do **not** require this flag.
+
+---
+
+## Quick Debugging Checklist
+
+When something goes wrong, follow this sequence:
+
+```bash
+# 1. Is the coordinator running?
+adora status
+
+# 2. What dataflows are active?
+adora list
+
+# 3. Check node resource usage
+adora top
+
+# 4. Stream logs from the problem node
+adora logs my-dataflow problem-node --follow --level debug
+
+# 5. Is the node producing output?
+adora topic echo -d my-dataflow problem-node/output
+
+# 6. Is it publishing at the expected rate?
+adora topic hz -d my-dataflow --window 5
+
+# 7. Visualize the dataflow graph
+adora graph dataflow.yml --open
+
+# 8. Record for offline analysis
+adora record dataflow.yml -o debug-capture.adorec
+```
+
+---
+
+## Record and Replay
+
+Record captures live dataflow messages to a file. Replay substitutes source nodes with recorded data, letting you reproduce behavior without hardware.
+
+### Recording a Dataflow
+
+```bash
+# Record all topics (default output: recording_{timestamp}.adorec)
+adora record dataflow.yml
+
+# Specify output file
+adora record dataflow.yml -o my-capture.adorec
+```
+
+This injects a hidden `__adora_record__` node into the dataflow that subscribes to all node outputs and writes them to an `.adorec` file. The record node binary (`adora-record-node`) is auto-built on first use.
+
+The recording runs until you press Ctrl-C or the dataflow stops.
+
+### Recording Specific Topics
+
+```bash
+# Only record camera and lidar
+adora record dataflow.yml --topics sensor/image,lidar/points
+```
+
+Topic names use the format `node_id/output_id`. Available topics can be discovered with `adora topic list -d <dataflow>`.
+
+### Proxy Recording (Remote / Diskless)
+
+When the target machine has no local disk or you want to record on your local machine:
+
+```bash
+# Start the dataflow first (detached)
+adora start dataflow.yml --detach
+
+# Record via WebSocket proxy -- data streams through coordinator to CLI
+adora record dataflow.yml --proxy -o capture.adorec
+
+# Record specific topics via proxy
+adora record dataflow.yml --proxy --topics sensor/image,lidar/points
+```
+
+How proxy mode works:
+1. The dataflow must already be running (`adora start --detach`)
+2. The CLI connects to the coordinator via WebSocket
+3. The coordinator subscribes to Zenoh on the CLI's behalf
+4. Message data streams through WebSocket binary frames to the CLI
+5. The CLI writes the `.adorec` file locally
+
+This requires `publish_all_messages_to_zenoh: true` in the descriptor.
+
+**When to use `--proxy`:**
+- Embedded targets with no local disk
+- Remote machines where you want the recording on your workstation
+- When you only have WebSocket connectivity (no direct Zenoh access)
+
+**When to use default mode (no `--proxy`):**
+- Same machine or shared filesystem
+- High-throughput scenarios (no WebSocket overhead)
+- No need for `publish_all_messages_to_zenoh`
+
+### Replaying a Recording
+
+```bash
+# Replay at original speed
+adora replay recording.adorec
+
+# Replay at 2x speed
+adora replay recording.adorec --speed 2.0
+
+# Replay as fast as possible (speed 0)
+adora replay recording.adorec --speed 0
+```
+
+Replay works by:
+1. Reading the `.adorec` file header to get the original dataflow descriptor
+2. Identifying which nodes produced the recorded data
+3. Replacing those source nodes with `adora-replay-node` instances
+4. Running the modified dataflow -- downstream nodes receive replayed data identically to live data
+
+The replay node binary (`adora-replay-node`) is auto-built on first use.
+
+### Replay Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--speed <FLOAT>` | `1.0` | Playback speed multiplier. `2.0` = 2x, `0.5` = half speed, `0` = as fast as possible |
+| `--loop` | off | Loop the recording continuously |
+| `--replace <NODES>` | all recorded | Comma-separated list of nodes to replace |
+| `--output-yaml <PATH>` | - | Write modified descriptor YAML without running |
+
+### Selective Replay
+
+Replace only specific source nodes while keeping others live:
+
+```bash
+# Only replace the sensor node, keep camera live
+adora replay recording.adorec --replace sensor
+
+# Replace sensor and lidar, keep everything else live
+adora replay recording.adorec --replace sensor,lidar
+```
+
+This is useful when you want to debug a specific processing pipeline with known input data while keeping other parts of the system live.
+
+### Dry Run (Output YAML)
+
+Both record and replay support `--output-yaml` to see the modified descriptor without running:
+
+```bash
+# See what the record-injected descriptor looks like
+adora record dataflow.yml --output-yaml record-modified.yml
+
+# See what the replay-modified descriptor looks like
+adora replay recording.adorec --output-yaml replay-modified.yml
+```
+
+### Recording File Format
+
+The `.adorec` format is a simple binary file:
+
+```
+┌──────────────────────────────────┐
+│ Header (bincode)                 │
+│   version: u32                   │
+│   start_nanos: u64               │
+│   dataflow_id: Uuid              │
+│   descriptor_yaml: Vec<u8>       │
+├──────────────────────────────────┤
+│ Entry 1 (bincode)                │
+│   node_id: String                │
+│   output_id: String              │
+│   timestamp_offset_nanos: u64    │
+│   event_bytes: Vec<u8>           │
+├──────────────────────────────────┤
+│ Entry 2 ...                      │
+├──────────────────────────────────┤
+│ ...                              │
+├──────────────────────────────────┤
+│ Footer (bincode)                 │
+│   total_messages: u64            │
+│   total_bytes: u64               │
+└──────────────────────────────────┘
+```
+
+The `event_bytes` field contains the raw `Timestamped<InterDaemonEvent>` bincode payload -- the same format used on the wire between daemons. The `descriptor_yaml` in the header stores the original dataflow descriptor so replay can reconstruct the dataflow.
+
+---
+
+## Topic Inspection
+
+Topic inspection commands subscribe to live dataflow messages via the coordinator's WebSocket proxy. They require `publish_all_messages_to_zenoh: true`.
+
+### Listing Topics
+
+```bash
+# List all topics in a running dataflow
+adora topic list -d my-dataflow
+
+# JSON output
+adora topic list -d my-dataflow --format json
+```
+
+Shows each output, which node publishes it, and which nodes subscribe to it. This command reads from the descriptor and does **not** require `publish_all_messages_to_zenoh`.
+
+### Echoing Topic Data
+
+Stream live topic data to the terminal:
+
+```bash
+# Echo a single topic
+adora topic echo -d my-dataflow camera_node/image
+
+# Echo multiple topics
+adora topic echo -d my-dataflow robot1/pose robot2/vel
+
+# JSON output (useful for piping to jq or other tools)
+adora topic echo -d my-dataflow robot1/pose --format json
+
+# Echo all topics
+adora topic echo -d my-dataflow
+```
+
+Each line shows the topic name, Arrow data content, and metadata parameters. Use `--format json` for machine-readable output:
+
+```json
+{"timestamp":1709000000000,"name":"robot1/pose","data":[1.0,2.0,3.0],"metadata":null}
+```
+
+### Measuring Frequency
+
+Interactive TUI showing per-topic publish frequency:
+
+```bash
+# All topics with 10-second sliding window
+adora topic hz -d my-dataflow --window 10
+
+# Specific topics with 5-second window
+adora topic hz -d my-dataflow robot1/pose robot2/vel --window 5
+```
+
+The TUI displays:
+- Average frequency (Hz)
+- Average, min, max interval
+- Standard deviation
+- Sparkline showing recent activity
+
+Press `q` or Ctrl-C to exit. Requires an interactive terminal.
+
+### Topic Metadata and Stats
+
+One-shot statistics collection:
+
+```bash
+# Collect stats for 5 seconds (default)
+adora topic info -d my-dataflow camera_node/image
+
+# Collect for 10 seconds
+adora topic info -d my-dataflow camera_node/image --duration 10
+```
+
+Reports:
+- Arrow data type
+- Publisher node
+- Subscriber nodes (from descriptor)
+- Message count and bandwidth
+- Publishing frequency
+
+---
+
+## Resource Monitoring
+
+`adora top` (also `adora inspect top`) provides a real-time TUI showing per-node resource usage:
+
+```bash
+# Default 2-second refresh
+adora top
+
+# Custom refresh interval
+adora top --refresh-interval 5
+```
+
+Displays for each node:
+- CPU usage (% of a single core)
+- Memory (RSS)
+- Node status
+
+Metrics are collected by daemons and reported to the coordinator, so this works for distributed dataflows across multiple machines. Press `q` or Ctrl-C to exit.
+
+Note: CPU percentages are per-core, so values can exceed 100% for multi-threaded nodes. Nodes on different machines may have different CPUs, so percentages are not directly comparable across machines.
+
+---
+
+## Log Analysis
+
+### Live Log Streaming
+
+```bash
+# Stream logs from a specific node
+adora logs my-dataflow sensor-node --follow
+
+# Stream logs from all nodes
+adora logs my-dataflow --all-nodes --follow
+
+# Filter by log level
+adora logs my-dataflow sensor-node --follow --level debug
+
+# Stream with grep filter
+adora logs my-dataflow --all-nodes --follow --grep "error"
+```
+
+Without `--follow`, reads from local log files. With `--follow`, streams live from the coordinator via WebSocket.
+
+### Local Log Files
+
+Logs are stored in the `out/` directory:
+
+```
+out/
+  <dataflow-uuid>/
+    log_<node-id>.jsonl          # current log
+    log_<node-id>.1.jsonl        # rotated (previous)
+    log_<node-id>.2.jsonl        # rotated (older)
+```
+
+Read directly:
+
+```bash
+# All nodes, local files
+adora logs --local --all-nodes
+
+# Specific node, last 50 lines
+adora logs --local sensor-node --tail 50
+```
+
+### Filtering and Searching
+
+| Flag | Example | Description |
+|------|---------|-------------|
+| `--level <LEVEL>` | `--level debug` | Minimum level: error, warn, info, debug, trace, stdout |
+| `--log-filter <FILTER>` | `--log-filter "sensor=debug,processor=warn"` | Per-node level filter |
+| `--grep <PATTERN>` | `--grep "timeout"` | Case-insensitive substring match |
+| `--since <DURATION>` | `--since 5m` | Only logs newer than this |
+| `--until <DURATION>` | `--until 1h` | Only logs older than this |
+| `--tail <N>` | `--tail 100` | Show last N lines |
+| `--log-format <FMT>` | `--log-format json` | Output format: pretty (default) or json |
+
+Environment variables:
+- `ADORA_LOG_LEVEL` -- default log level
+- `ADORA_LOG_FORMAT` -- default log format
+- `ADORA_LOG_FILTER` -- default per-node filter
+
+---
+
+## Dataflow Visualization
+
+Generate a visual graph of your dataflow:
+
+```bash
+# Generate HTML and open in browser
+adora graph dataflow.yml --open
+
+# Generate Mermaid diagram text
+adora graph dataflow.yml --mermaid
+```
+
+The Mermaid output can be pasted into [mermaid.live](https://mermaid.live/) or used in GitHub markdown:
+
+````markdown
+```mermaid
+graph TD
+    sensor --> processor
+    processor --> controller
+```
+````
+
+The HTML mode generates a self-contained file with an interactive mermaid.js diagram.
+
+---
+
+## Monitoring Running Dataflows
+
+```bash
+# List all dataflows (active and completed)
+adora list
+
+# List nodes in a specific dataflow
+adora node list -d my-dataflow
+
+# Check coordinator/daemon status
+adora status
+```
+
+`adora list` shows each dataflow's UUID, name, status, and node count. Use `-d <name>` with other commands to target a specific dataflow.
+
+---
+
+## End-to-End Debugging Workflows
+
+### Workflow 1: Node Not Producing Output
+
+```bash
+# 1. Verify the node is running
+adora list
+adora top
+
+# 2. Check its logs
+adora logs my-dataflow problem-node --follow --level trace
+
+# 3. Check if upstream nodes are publishing
+adora topic echo -d my-dataflow upstream-node/output
+
+# 4. Verify topic wiring
+adora topic list -d my-dataflow
+adora graph dataflow.yml --open
+```
+
+### Workflow 2: Unexpected Data or Wrong Values
+
+```bash
+# 1. Echo the topic to see raw data
+adora topic echo -d my-dataflow node/output --format json
+
+# 2. Record for offline analysis
+adora record dataflow.yml -o debug.adorec
+
+# 3. Replay with known input to isolate the issue
+adora replay debug.adorec --replace sensor --speed 0
+```
+
+### Workflow 3: Performance Issues
+
+```bash
+# 1. Check CPU/memory per node
+adora top
+
+# 2. Measure publish frequencies
+adora topic hz -d my-dataflow --window 10
+
+# 3. Get bandwidth stats for suspected bottleneck
+adora topic info -d my-dataflow heavy-node/output --duration 10
+
+# 4. Record and replay at max speed to find throughput limits
+adora record dataflow.yml -o perf.adorec
+adora replay perf.adorec --speed 0
+```
+
+### Workflow 4: Reproducing a Field Issue
+
+```bash
+# On the robot / target machine:
+adora start dataflow.yml --detach
+adora record dataflow.yml --proxy -o field-capture.adorec
+
+# Transfer the .adorec file to your workstation, then:
+adora replay field-capture.adorec
+adora replay field-capture.adorec --speed 0.5  # slow motion
+adora replay field-capture.adorec --loop        # continuous replay
+```
+
+### Workflow 5: Remote Debugging (No Direct Access)
+
+When you only have WebSocket connectivity to the coordinator:
+
+```bash
+# All these commands work over WebSocket -- no Zenoh needed
+adora list
+adora top
+adora logs my-dataflow --all-nodes --follow
+adora topic echo -d my-dataflow node/output
+adora topic hz -d my-dataflow
+adora record dataflow.yml --proxy -o remote-capture.adorec
+```
+
+---
+
+## See Also
+
+- [CLI Reference](cli.md) -- complete command reference
+- [WebSocket Control Plane](websocket-control-plane.md) -- how CLI communicates with coordinator
+- [WebSocket Topic Data Channel](websocket-topic-data-channel.md) -- how topic data is proxied
+- [Testing Guide](testing-guide.md) -- running smoke tests
