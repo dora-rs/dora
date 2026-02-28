@@ -1,4 +1,5 @@
 use crate::{Event, control::ControlEvent};
+use adora_core::topics::zenoh_output_publish_topic;
 use adora_message::{
     cli_to_coordinator::ControlRequest,
     coordinator_to_cli::ControlRequestReply,
@@ -6,7 +7,9 @@ use adora_message::{
 };
 use axum::extract::ws::{Message, WebSocket};
 use futures::{SinkExt, StreamExt};
+use std::collections::HashMap;
 use tokio::sync::{mpsc, oneshot};
+use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 /// Serialize a `WsResponse` and send it over the WS connection.
@@ -25,6 +28,22 @@ async fn send_ws_response(
     ws_tx.send(Message::Text(json.into())).await.map_err(|_| ())
 }
 
+/// Lazily-initialized Zenoh session shared across topic subscriptions.
+async fn get_or_init_zenoh(
+    zenoh_session: &mut Option<zenoh::Session>,
+) -> Result<zenoh::Session, String> {
+    if let Some(session) = zenoh_session.as_ref() {
+        return Ok(session.clone());
+    }
+    match adora_core::topics::open_zenoh_session(None).await {
+        Ok(session) => {
+            *zenoh_session = Some(session.clone());
+            Ok(session)
+        }
+        Err(e) => Err(format!("failed to open zenoh session: {e}")),
+    }
+}
+
 /// Handle a single CLI WebSocket connection on `/api/control`.
 ///
 /// For normal requests: deserialize ControlRequest from WsRequest.params,
@@ -32,10 +51,19 @@ async fn send_ws_response(
 ///
 /// For LogSubscribe/BuildLogSubscribe: ack via WsResponse, then push WsEvent{event:"log"}
 /// on the same connection.
+///
+/// For TopicSubscribe: validate via coordinator, open Zenoh subscribers, forward as binary
+/// WS frames with `subscription_id ++ payload` format.
 pub(crate) async fn handle_control_ws(socket: WebSocket, event_tx: mpsc::Sender<Event>) {
     let (mut ws_tx, mut ws_rx) = socket.split();
     // Channel for log events to push back on same WS connection
     let (log_tx, mut log_rx) = mpsc::channel::<String>(64);
+    // Channel for binary topic data frames
+    let (binary_tx, mut binary_rx) = mpsc::channel::<Vec<u8>>(64);
+    // Active topic subscription tasks, keyed by subscription_id
+    let mut topic_tasks: HashMap<Uuid, Vec<JoinHandle<()>>> = HashMap::new();
+    // Lazily initialized Zenoh session
+    let mut zenoh_session: Option<zenoh::Session> = None;
 
     loop {
         tokio::select! {
@@ -74,7 +102,7 @@ pub(crate) async fn handle_control_ws(socket: WebSocket, event_tx: mpsc::Sender<
                     }
                 };
 
-                // Handle LogSubscribe / BuildLogSubscribe specially
+                // Handle LogSubscribe / BuildLogSubscribe / TopicSubscribe / TopicUnsubscribe specially
                 match &control_request {
                     ControlRequest::LogSubscribe { dataflow_id, level } => {
                         let (found_tx, found_rx) = oneshot::channel();
@@ -109,6 +137,99 @@ pub(crate) async fn handle_control_ws(socket: WebSocket, event_tx: mpsc::Sender<
                         } else {
                             WsResponse::err(req.id, format!("no running build with id {build_id}"))
                         };
+                        let _ = send_ws_response(&mut ws_tx, &resp).await;
+                        continue;
+                    }
+                    ControlRequest::TopicSubscribe { dataflow_id, topics } => {
+                        let (found_tx, found_rx) = oneshot::channel();
+                        let _ = event_tx.send(Event::Control(ControlEvent::TopicSubscribe {
+                            dataflow_id: *dataflow_id,
+                            topics: topics.clone(),
+                            found_tx,
+                        })).await;
+
+                        let found = found_rx.await.unwrap_or(false);
+                        if !found {
+                            let resp = WsResponse::err(
+                                req.id,
+                                format!(
+                                    "dataflow {dataflow_id} not found or publish_all_messages_to_zenoh not enabled"
+                                ),
+                            );
+                            let _ = send_ws_response(&mut ws_tx, &resp).await;
+                            continue;
+                        }
+
+                        // Open Zenoh session lazily
+                        let session = match get_or_init_zenoh(&mut zenoh_session).await {
+                            Ok(s) => s,
+                            Err(e) => {
+                                let resp = WsResponse::err(req.id, e);
+                                let _ = send_ws_response(&mut ws_tx, &resp).await;
+                                continue;
+                            }
+                        };
+
+                        let subscription_id = Uuid::new_v4();
+                        let mut handles = Vec::with_capacity(topics.len());
+
+                        for (node_id, data_id) in topics {
+                            let topic = zenoh_output_publish_topic(
+                                *dataflow_id,
+                                node_id,
+                                data_id,
+                            );
+                            let session = session.clone();
+                            let binary_tx = binary_tx.clone();
+                            let sub_id_bytes = subscription_id.into_bytes();
+
+                            handles.push(tokio::spawn(async move {
+                                let subscriber = match session.declare_subscriber(&topic).await {
+                                    Ok(s) => s,
+                                    Err(e) => {
+                                        tracing::warn!("failed to subscribe to zenoh topic {topic}: {e}");
+                                        return;
+                                    }
+                                };
+
+                                while let Ok(sample) = subscriber.recv_async().await {
+                                    let payload = sample.payload().to_bytes();
+                                    let mut frame = Vec::with_capacity(16 + payload.len());
+                                    frame.extend_from_slice(&sub_id_bytes);
+                                    frame.extend_from_slice(&payload);
+                                    if binary_tx.try_send(frame).is_err() {
+                                        // Channel full or closed; drop sample
+                                    }
+                                }
+                            }));
+                        }
+
+                        topic_tasks.insert(subscription_id, handles);
+
+                        let reply = ControlRequestReply::TopicSubscribed { subscription_id };
+                        let resp_json = match serde_json::to_string(&reply) {
+                            Ok(result_json) => {
+                                format!(r#"{{"id":"{}","result":{result_json}}}"#, req.id)
+                            }
+                            Err(e) => {
+                                let err_json = serde_json::to_string(&format!("{e}"))
+                                    .unwrap_or_else(|_| "\"serialization error\"".to_string());
+                                format!(r#"{{"id":"{}","error":{err_json}}}"#, req.id)
+                            }
+                        };
+                        if ws_tx.send(Message::Text(resp_json.into())).await.is_err() {
+                            break;
+                        }
+                        continue;
+                    }
+                    ControlRequest::TopicUnsubscribe { subscription_id } => {
+                        if let Some(handles) = topic_tasks.remove(subscription_id) {
+                            for h in handles {
+                                h.abort();
+                            }
+                        }
+                        // Ack with a simple ok
+                        let resp = WsResponse::ok(req.id, serde_json::json!({"unsubscribed": true}));
                         let _ = send_ws_response(&mut ws_tx, &resp).await;
                         continue;
                     }
@@ -158,6 +279,19 @@ pub(crate) async fn handle_control_ws(socket: WebSocket, event_tx: mpsc::Sender<
                     break;
                 }
             }
+            // Binary topic data to push to CLI
+            Some(data) = binary_rx.recv() => {
+                if ws_tx.send(Message::Binary(data.into())).await.is_err() {
+                    break;
+                }
+            }
+        }
+    }
+
+    // Clean up: abort all topic subscription tasks
+    for (_, handles) in topic_tasks {
+        for h in handles {
+            h.abort();
         }
     }
 }

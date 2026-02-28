@@ -44,6 +44,9 @@ pub enum ControlRequestReply {
         cli: Option<IpAddr>,
     },
     NodeInfoList(Vec<NodeInfo>),
+    TopicSubscribed {
+        subscription_id: Uuid,
+    },
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]

@@ -6,7 +6,7 @@ use crate::{
     BuildId, SessionId,
     common::GitSource,
     descriptor::Descriptor,
-    id::{NodeId, OperatorId},
+    id::{DataId, NodeId, OperatorId},
 };
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -91,4 +91,11 @@ pub enum ControlRequest {
     },
     CliAndDefaultDaemonOnSameMachine,
     GetNodeInfo,
+    TopicSubscribe {
+        dataflow_id: Uuid,
+        topics: Vec<(NodeId, DataId)>,
+    },
+    TopicUnsubscribe {
+        subscription_id: Uuid,
+    },
 }

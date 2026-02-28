@@ -1,18 +1,14 @@
 use std::{ptr::NonNull, sync::Arc, time::SystemTime};
 
-use adora_core::topics::{open_zenoh_session, zenoh_output_publish_topic};
 use adora_message::{
     common::Timestamped,
     daemon_to_daemon::InterDaemonEvent,
-    id::{DataId, NodeId},
     metadata::{ArrowTypeInfo, BufferOffset, Parameter},
 };
 use arrow::{buffer::OffsetBuffer, datatypes::Field};
 use clap::Args;
 use colored::Colorize;
-use eyre::{Context, eyre};
-use tokio::{runtime::Builder, task::JoinSet};
-use uuid::Uuid;
+use eyre::eyre;
 
 use crate::{
     command::{
@@ -76,113 +72,46 @@ fn inspect(
     let session = coordinator.connect()?;
     let (dataflow_id, topics) = selector.resolve(&session)?;
 
-    let rt = Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .context("tokio runtime failed")?;
-    rt.block_on(async move {
-        let zenoh_session = open_zenoh_session(Some(coordinator.coordinator_addr))
-            .await
-            .context("failed to open zenoh session")?;
+    let ws_topics: Vec<_> = topics
+        .iter()
+        .map(|t| (t.node_id.clone(), t.data_id.clone()))
+        .collect();
 
-        let mut join_set = JoinSet::new();
-        for TopicIdentifier { node_id, data_id } in topics {
-            join_set.spawn(log_to_terminal(
-                zenoh_session.clone(),
-                dataflow_id,
-                node_id,
-                data_id,
-                format,
-            ));
-        }
-        let mut first_error: Option<eyre::Error> = None;
-        while let Some(res) = join_set.join_next().await {
-            match res {
-                Ok(Ok(())) => {}
-                Ok(Err(e)) => {
-                    if first_error.is_none() {
-                        first_error = Some(e);
-                    }
-                }
-                Err(e) => {
-                    if first_error.is_none() {
-                        first_error = Some(e.into());
-                    }
-                }
-            }
-        }
+    let (_subscription_id, data_rx) = session.subscribe_topics(dataflow_id, ws_topics)?;
 
-        match first_error {
-            Some(e) => Err(e),
-            None => Ok(()),
-        }
-    })
-}
+    // Build a lookup from (node_id, data_id) -> display name
+    let topic_list: Vec<TopicIdentifier> = topics.into_iter().collect();
+    let _ = topic_list; // topics are identified by the events themselves
 
-fn buffer_into_arrow_array(
-    raw_buffer: &arrow::buffer::Buffer,
-    type_info: &ArrowTypeInfo,
-) -> eyre::Result<arrow::array::ArrayData> {
-    if raw_buffer.is_empty() {
-        return Ok(arrow::array::ArrayData::new_empty(&type_info.data_type));
-    }
-
-    let mut buffers = Vec::new();
-    for BufferOffset { offset, len } in &type_info.buffer_offsets {
-        buffers.push(raw_buffer.slice_with_length(*offset, *len));
-    }
-
-    let mut child_data = Vec::new();
-    for child_type_info in &type_info.child_data {
-        child_data.push(buffer_into_arrow_array(raw_buffer, child_type_info)?)
-    }
-
-    arrow::array::ArrayData::try_new(
-        type_info.data_type.clone(),
-        type_info.len,
-        type_info
-            .validity
-            .clone()
-            .map(arrow::buffer::Buffer::from_vec),
-        type_info.offset,
-        buffers,
-        child_data,
-    )
-    .context("Error creating Arrow array")
-}
-
-async fn log_to_terminal(
-    zenoh_session: zenoh::Session,
-    dataflow_id: Uuid,
-    node_id: NodeId,
-    output_id: DataId,
-    format: OutputFormat,
-) -> eyre::Result<()> {
-    let subscribe_topic = zenoh_output_publish_topic(dataflow_id, &node_id, &output_id);
-    let output_name = format!("{node_id}/{output_id}");
-    let subscriber = zenoh_session
-        .declare_subscriber(subscribe_topic)
-        .await
-        .map_err(|e| eyre!(e))
-        .wrap_err_with(|| format!("failed to subscribe to {output_name}"))?;
-
-    let output_name = match format {
-        OutputFormat::Table => output_name.green().to_string(),
-        OutputFormat::Json => serde_json::to_string(&output_name).unwrap(),
-    };
     let mut buf = Vec::with_capacity(1024);
-    while let Ok(sample) = subscriber.recv_async().await {
-        let event = match Timestamped::deserialize_inter_daemon_event(&sample.payload().to_bytes())
-        {
-            Ok(event) => event,
-            Err(_) => {
-                eprintln!("Received invalid event on {node_id}/{output_id}");
+    while let Ok(result) = data_rx.recv() {
+        let payload = match result {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("Error receiving topic data: {e}");
                 continue;
             }
         };
+
+        let event = match Timestamped::deserialize_inter_daemon_event(&payload) {
+            Ok(event) => event,
+            Err(_) => {
+                eprintln!("Received invalid event");
+                continue;
+            }
+        };
+
         match event.inner {
-            InterDaemonEvent::Output { metadata, data, .. } => {
+            InterDaemonEvent::Output {
+                metadata,
+                data,
+                node_id,
+                output_id,
+                ..
+            } => {
                 use std::fmt::Write;
+
+                let output_name = format!("{node_id}/{output_id}");
 
                 let timestamp = SystemTime::now()
                     .duration_since(SystemTime::UNIX_EPOCH)
@@ -198,7 +127,7 @@ async fn log_to_terminal(
                     let array = match buffer_into_arrow_array(&buffer, &metadata.type_info) {
                         Ok(array) => array,
                         Err(e) => {
-                            eprintln!("invalid data on {node_id}/{output_id}: {e}");
+                            eprintln!("invalid data on {output_name}: {e}");
                             continue;
                         }
                     };
@@ -248,9 +177,14 @@ async fn log_to_terminal(
                     None
                 };
 
+                let display_name = match format {
+                    OutputFormat::Table => output_name.green().to_string(),
+                    OutputFormat::Json => serde_json::to_string(&output_name).unwrap(),
+                };
+
                 match format {
                     OutputFormat::Table => {
-                        let mut output = format!("{output_name}\t");
+                        let mut output = format!("{display_name}\t");
                         if let Some(s) = data_str {
                             write!(output, " {}={s}", "data".bold()).unwrap();
                         }
@@ -263,7 +197,7 @@ async fn log_to_terminal(
                         println!(
                             r#"{{"timestamp":{},"name":{},"data":{},"metadata":{}}}"#,
                             timestamp,
-                            output_name,
+                            display_name,
                             data_str.unwrap_or("null"),
                             metadata_str.as_deref().unwrap_or("null")
                         );
@@ -272,12 +206,45 @@ async fn log_to_terminal(
 
                 buf.clear();
             }
-            InterDaemonEvent::OutputClosed { .. } => {
+            InterDaemonEvent::OutputClosed {
+                node_id, output_id, ..
+            } => {
                 eprintln!("Output {node_id}/{output_id} closed");
-                break;
             }
         }
     }
 
     Ok(())
+}
+
+fn buffer_into_arrow_array(
+    raw_buffer: &arrow::buffer::Buffer,
+    type_info: &ArrowTypeInfo,
+) -> eyre::Result<arrow::array::ArrayData> {
+    if raw_buffer.is_empty() {
+        return Ok(arrow::array::ArrayData::new_empty(&type_info.data_type));
+    }
+
+    let mut buffers = Vec::new();
+    for BufferOffset { offset, len } in &type_info.buffer_offsets {
+        buffers.push(raw_buffer.slice_with_length(*offset, *len));
+    }
+
+    let mut child_data = Vec::new();
+    for child_type_info in &type_info.child_data {
+        child_data.push(buffer_into_arrow_array(raw_buffer, child_type_info)?)
+    }
+
+    arrow::array::ArrayData::try_new(
+        type_info.data_type.clone(),
+        type_info.len,
+        type_info
+            .validity
+            .clone()
+            .map(arrow::buffer::Buffer::from_vec),
+        type_info.offset,
+        buffers,
+        child_data,
+    )
+    .map_err(|e| eyre!("Error creating Arrow array: {e}"))
 }

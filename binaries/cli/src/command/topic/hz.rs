@@ -1,19 +1,15 @@
-use adora_core::topics::{open_zenoh_session, zenoh_output_publish_topic};
 use adora_message::{common::Timestamped, daemon_to_daemon::InterDaemonEvent};
 use crossterm::event::{Event, KeyCode, KeyModifiers};
-use eyre::{Context, eyre};
 use itertools::Itertools;
 use ratatui::{DefaultTerminal, prelude::*, widgets::*};
 use std::{
     borrow::Cow,
-    collections::{BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     io::{self, IsTerminal},
     iter,
-    net::IpAddr,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-use uuid::Uuid;
 
 use crate::{
     command::{
@@ -81,26 +77,17 @@ impl Executable for Hz {
         let session = self.coordinator.connect()?;
         let (dataflow_id, topics) = self.selector.resolve(&session)?;
 
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .context("tokio runtime failed")?;
-        let terminal = ratatui::init();
-        rt.block_on(async move {
-            run_hz(
-                terminal,
-                self.window,
-                dataflow_id,
-                topics,
-                self.coordinator.coordinator_addr,
-            )
-            .await
-        })
-        .inspect(|_| {
-            ratatui::restore();
-        })?;
+        let ws_topics: Vec<_> = topics
+            .iter()
+            .map(|t| (t.node_id.clone(), t.data_id.clone()))
+            .collect();
 
-        Ok(())
+        let (_subscription_id, data_rx) = session.subscribe_topics(dataflow_id, ws_topics)?;
+
+        let terminal = ratatui::init();
+        let result = run_hz(terminal, self.window, topics, data_rx);
+        ratatui::restore();
+        result
     }
 }
 
@@ -132,7 +119,6 @@ impl HzStats {
     }
 
     fn intervals_ms(&self) -> Vec<f64> {
-        // Return inter-arrival times in milliseconds for the current window
         self.timestamps
             .lock()
             .unwrap()
@@ -182,12 +168,11 @@ struct Stats {
     std_ms: f64,
 }
 
-async fn run_hz(
+fn run_hz(
     mut terminal: DefaultTerminal,
     window: usize,
-    dataflow_id: Uuid,
     outputs: BTreeSet<TopicIdentifier>,
-    coordinator_addr: IpAddr,
+    data_rx: std::sync::mpsc::Receiver<eyre::Result<Vec<u8>>>,
 ) -> eyre::Result<()> {
     // Add a synthetic aggregate entry ("<ALL>") that merges all outputs
     let mut topics_with_all = Vec::with_capacity(outputs.len() + 1);
@@ -195,19 +180,22 @@ async fn run_hz(
         node_id: "<ALL>".to_string().into(),
         data_id: "*".to_string().into(),
     });
-    topics_with_all.extend(outputs.into_iter());
+    topics_with_all.extend(outputs);
 
-    let stats = topics_with_all
+    let stats: Vec<_> = topics_with_all
         .iter()
         .map(|topic| (topic, Arc::new(HzStats::new(window))))
-        .collect::<Vec<_>>();
+        .collect();
+
+    // Build lookup map: (node_id, data_id) -> index in stats (skip index 0 = ALL)
+    let mut topic_index: BTreeMap<(String, String), usize> = BTreeMap::new();
+    for (i, (topic, _)) in stats.iter().enumerate().skip(1) {
+        topic_index.insert((topic.node_id.to_string(), topic.data_id.to_string()), i);
+    }
 
     let mut selected: usize = 0;
-    // Ssub-window for instantaneous rate (Hz)
     let sub_window = Duration::from_millis(1000);
-    // Keep a flowing sparkline per topic for recent rates
     let mut rate_series: Vec<VecDeque<u64>> = vec![VecDeque::with_capacity(240); stats.len()];
-    // Start time to decide whether full window elapsed
     let start = Instant::now();
 
     terminal.draw(|f| {
@@ -221,41 +209,39 @@ async fn run_hz(
         )
     })?;
 
-    let zenoh_session = open_zenoh_session(Some(coordinator_addr))
-        .await
-        .context("failed to open zenoh session")?;
-
-    // Spawn subscribers for each output
-    // Aggregator is at index 0
+    // Spawn receiver thread to feed stats from WS data
     let all_stats = stats[0].1.clone();
-    for (i, (topic, hz_stats)) in stats.iter().enumerate() {
-        if i == 0 {
-            continue;
-        }
-        let zenoh_session = zenoh_session.clone();
-        let topic = (*topic).clone();
-        let hz_stats = hz_stats.clone();
-        let all_stats_cloned = all_stats.clone();
-        tokio::spawn(async move {
-            if let Err(e) = subscribe_output(
-                zenoh_session,
-                dataflow_id,
-                &topic,
-                hz_stats,
-                Some(all_stats_cloned),
-            )
-            .await
-            {
-                tracing::warn!("error subscribing to {topic}: {e}");
+    let stats_clones: Vec<Arc<HzStats>> = stats.iter().map(|(_, s)| s.clone()).collect();
+    let topic_index_clone = topic_index.clone();
+    std::thread::spawn(move || {
+        while let Ok(result) = data_rx.recv() {
+            let payload = match result {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            let event = match Timestamped::deserialize_inter_daemon_event(&payload) {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            match event.inner {
+                InterDaemonEvent::Output {
+                    node_id, output_id, ..
+                } => {
+                    let now = Instant::now();
+                    all_stats.record(now);
+                    let key = (node_id.to_string(), output_id.to_string());
+                    if let Some(&idx) = topic_index_clone.get(&key) {
+                        stats_clones[idx].record(now);
+                    }
+                }
+                InterDaemonEvent::OutputClosed { .. } => {}
             }
-        });
-    }
+        }
+    });
 
     loop {
-        // Update per-topic instantaneous rate and append to series
         let now = Instant::now();
         for (i, (_topic, s)) in stats.iter().enumerate() {
-            // count messages within sub_window
             let cutoff = now - sub_window;
             let mut count = 0usize;
             let ts = s.timestamps.lock().unwrap();
@@ -318,44 +304,6 @@ async fn run_hz(
     Ok(())
 }
 
-async fn subscribe_output(
-    zenoh_session: zenoh::Session,
-    dataflow_id: Uuid,
-    topic: &TopicIdentifier,
-    hz_stats: Arc<HzStats>,
-    aggregate: Option<Arc<HzStats>>,
-) -> eyre::Result<()> {
-    let subscribe_topic = zenoh_output_publish_topic(dataflow_id, &topic.node_id, &topic.data_id);
-    let subscriber = zenoh_session
-        .declare_subscriber(subscribe_topic)
-        .await
-        .map_err(|e| eyre!(e))
-        .wrap_err_with(|| format!("failed to subscribe to {topic}"))?;
-
-    while let Ok(sample) = subscriber.recv_async().await {
-        let event = match Timestamped::deserialize_inter_daemon_event(&sample.payload().to_bytes())
-        {
-            Ok(event) => event,
-            Err(_) => continue,
-        };
-
-        match event.inner {
-            InterDaemonEvent::Output { .. } => {
-                let now = Instant::now();
-                hz_stats.record(now);
-                if let Some(all) = &aggregate {
-                    all.record(now);
-                }
-            }
-            InterDaemonEvent::OutputClosed { .. } => {
-                break;
-            }
-        }
-    }
-
-    Ok(())
-}
-
 fn ui(
     f: &mut Frame<'_>,
     stats: &[(&TopicIdentifier, Arc<HzStats>)],
@@ -364,7 +312,6 @@ fn ui(
     start: Instant,
     window_dur: Duration,
 ) {
-    // Layout: table | charts | footer
     let _chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -374,7 +321,6 @@ fn ui(
         ])
         .split(f.area());
 
-    // Table header: interval stats in ms + derived avg Hz
     let header = Row::new([
         "Output", "Avg (ms)", "Avg (Hz)", "Min (ms)", "Max (ms)", "Std (ms)",
     ])
@@ -426,7 +372,6 @@ fn ui(
     )
     .header(header);
 
-    // Reserve space for a one-line footer with shortcut hints.
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(3), Constraint::Length(1)])
@@ -434,25 +379,20 @@ fn ui(
 
     f.render_widget(table, chunks[0]);
 
-    // Charts area split horizontally
     let chart_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(chunks[1]);
 
-    // Draw charts for the selected topic if available
     if let Some((name, selected_stats)) = stats.get(selected) {
-        // Prepare data
         let intervals = selected_stats.intervals_ms();
         let now = Instant::now();
 
-        // Left: Rolling rate sparkline (Hz within sub-window)
         let mut series: Vec<u64> = rate_series
             .get(selected)
             .map(|d| d.iter().copied().collect())
             .unwrap_or_default();
         if series.is_empty() {
-            // Show hint while not enough samples
             let info = Paragraph::new("Waiting for data...")
                 .style(Style::default().fg(Color::Gray).italic())
                 .block(
@@ -462,8 +402,7 @@ fn ui(
                 );
             f.render_widget(info, chart_chunks[0]);
         } else {
-            // Fit series to available width
-            let w = chart_chunks[0].width.saturating_sub(2) as usize; // borders
+            let w = chart_chunks[0].width.saturating_sub(2) as usize;
             if series.len() > w {
                 series = series[series.len() - w..].to_vec();
             }
@@ -478,7 +417,6 @@ fn ui(
             f.render_widget(spark, chart_chunks[0]);
         }
 
-        // Right: Histogram (s) using BarChart
         if intervals.is_empty() {
             let info = Paragraph::new("No samples for histogram")
                 .style(Style::default().fg(Color::Gray).italic())
@@ -531,7 +469,6 @@ fn ui(
             f.render_widget(barchart, chart_chunks[1]);
         }
 
-        // If full window time not elapsed since start, render hint
         if now.duration_since(start) + Duration::from_millis(1) < window_dur {
             let warn = Paragraph::new(format!(
                 "Filling window: {:.0}/{:.0} ms",
@@ -543,7 +480,6 @@ fn ui(
             f.render_widget(warn, chunks[1]);
         }
     } else {
-        // Nothing selected or empty stats
         let info = Paragraph::new("No topics selected")
             .style(Style::default().fg(Color::Gray))
             .alignment(Alignment::Center)
@@ -551,7 +487,6 @@ fn ui(
         f.render_widget(info, chunks[1]);
     }
 
-    // Footer with key hints
     let footer = Paragraph::new("Up/Down: Select  |  Exit: q / Ctrl-C / Esc")
         .style(Style::default().fg(Color::Yellow))
         .alignment(Alignment::Center);

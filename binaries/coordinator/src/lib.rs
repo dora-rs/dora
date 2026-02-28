@@ -794,6 +794,16 @@ async fn start_inner(
                                 "BuildLogSubscribe request should be handled separately"
                             )));
                         }
+                        ControlRequest::TopicSubscribe { .. } => {
+                            let _ = reply_sender.send(Err(eyre::eyre!(
+                                "TopicSubscribe request should be handled separately"
+                            )));
+                        }
+                        ControlRequest::TopicUnsubscribe { .. } => {
+                            let _ = reply_sender.send(Err(eyre::eyre!(
+                                "TopicUnsubscribe request should be handled separately"
+                            )));
+                        }
                         ControlRequest::CliAndDefaultDaemonOnSameMachine => {
                             // With WS we can't inspect peer addresses.
                             // If an unnamed (local) daemon is connected, assume same
@@ -888,6 +898,16 @@ async fn start_inner(
                     } else {
                         let _ = found_tx.send(false);
                     }
+                }
+                ControlEvent::TopicSubscribe {
+                    dataflow_id,
+                    topics: _,
+                    found_tx,
+                } => {
+                    let found = running_dataflows
+                        .get(&dataflow_id)
+                        .is_some_and(|df| df.descriptor.debug.publish_all_messages_to_zenoh);
+                    let _ = found_tx.send(found);
                 }
             },
             Event::DaemonHeartbeatInterval => {

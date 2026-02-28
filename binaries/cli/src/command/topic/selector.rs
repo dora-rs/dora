@@ -72,18 +72,6 @@ impl TopicSelector {
         session: &WsSession,
     ) -> eyre::Result<(DataflowId, BTreeSet<TopicIdentifier>)> {
         let (dataflow_id, dataflow_descriptor) = self.dataflow.resolve(session)?;
-        if !dataflow_descriptor.debug.publish_all_messages_to_zenoh {
-            bail!(
-                "Dataflow `{dataflow_id}` does not have `publish_all_messages_to_zenoh` enabled. You should enable it in order to inspect data.\n\
-                \n\
-                Tip: Add the following snippet to your dataflow descriptor:\n\
-                \n\
-                ```\n\
-                _unstable_debug:\n  publish_all_messages_to_zenoh: true\n\
-                ```
-                "
-            );
-        }
 
         let node_map = dataflow_descriptor
             .nodes

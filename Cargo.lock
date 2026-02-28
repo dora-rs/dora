@@ -99,6 +99,7 @@ dependencies = [
  "adora-message",
  "adora-tracing",
  "axum",
+ "bincode 1.3.3",
  "ctrlc",
  "eyre",
  "futures",
@@ -115,6 +116,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "uuid",
+ "zenoh",
 ]
 
 [[package]]

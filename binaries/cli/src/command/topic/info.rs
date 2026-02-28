@@ -3,17 +3,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-use adora_core::{
-    config::InputMapping,
-    topics::{open_zenoh_session, zenoh_output_publish_topic},
-};
+use adora_core::config::InputMapping;
 use adora_message::{
     common::Timestamped, daemon_to_daemon::InterDaemonEvent, metadata::ArrowTypeInfo,
 };
 use arrow_schema::DataType;
 use clap::Args;
-use eyre::{Context, eyre};
-use tokio::runtime::Builder;
 
 use crate::{
     command::{Executable, default_tracing, topic::selector::TopicSelector},
@@ -142,71 +137,40 @@ fn info(
         }
     }
 
-    // Collect statistics by subscribing to messages
-    let rt = Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .context("tokio runtime failed")?;
+    // Subscribe via WS
+    let ws_topics = vec![(topic.node_id.clone(), topic.data_id.clone())];
+    let (_subscription_id, data_rx) = session.subscribe_topics(dataflow_id, ws_topics)?;
 
     let stats = Arc::new(TopicStats::default());
     let stats_clone = stats.clone();
-    let dataflow_id_clone = dataflow_id;
-    let topic_clone = topic.clone();
-    let coordinator_addr = coordinator.coordinator_addr;
 
-    rt.block_on(async move {
-        let zenoh_session = open_zenoh_session(Some(coordinator_addr))
-            .await
-            .context("failed to open zenoh session")?;
-
-        let subscribe_topic = zenoh_output_publish_topic(
-            dataflow_id_clone,
-            &topic_clone.node_id,
-            &topic_clone.data_id,
-        );
-        let subscriber = zenoh_session
-            .declare_subscriber(subscribe_topic)
-            .await
-            .map_err(|e| eyre!(e))
-            .wrap_err_with(|| format!("failed to subscribe to {}", topic_clone))?;
-
-        let start_time = Instant::now();
-        let duration = Duration::from_secs(duration_secs);
-        let end_time = start_time + duration;
-        let deadline = tokio::time::Instant::from_std(end_time);
-
-        // Collect messages for the specified duration
-        while Instant::now() < end_time {
-            let Ok(sample) = tokio::time::timeout_at(deadline, subscriber.recv_async()).await
-            else {
-                break;
-            };
-
-            match sample {
-                Ok(sample) => {
-                    let event = match Timestamped::deserialize_inter_daemon_event(
-                        &sample.payload().to_bytes(),
-                    ) {
-                        Ok(event) => event,
+    // Collect messages for the specified duration in a background thread
+    let duration = Duration::from_secs(duration_secs);
+    let start_time = Instant::now();
+    std::thread::spawn(move || {
+        while start_time.elapsed() < duration {
+            match data_rx.recv_timeout(duration.saturating_sub(start_time.elapsed())) {
+                Ok(Ok(payload)) => {
+                    let event = match Timestamped::deserialize_inter_daemon_event(&payload) {
+                        Ok(e) => e,
                         Err(_) => continue,
                     };
-
                     match event.inner {
                         InterDaemonEvent::Output { metadata, data, .. } => {
                             let data_size = data.as_ref().map(|d| d.len()).unwrap_or(0);
-                            let now = Instant::now();
-                            stats_clone.record(data_size, &metadata.type_info, now);
+                            stats_clone.record(data_size, &metadata.type_info, Instant::now());
                         }
-                        InterDaemonEvent::OutputClosed { .. } => {
-                            break;
-                        }
+                        InterDaemonEvent::OutputClosed { .. } => break,
                     }
                 }
-                Err(_) => break,
+                Ok(Err(_)) => continue,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
             }
         }
-        Ok::<(), eyre::Error>(())
-    })?;
+    })
+    .join()
+    .map_err(|_| eyre::eyre!("stats collection thread panicked"))?;
 
     // Display the information
     let message_count = *stats.message_count.lock().unwrap();

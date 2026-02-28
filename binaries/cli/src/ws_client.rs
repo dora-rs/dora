@@ -49,6 +49,12 @@ enum SessionCommand {
         log_tx: std_mpsc::Sender<eyre::Result<Vec<u8>>>,
         ack_tx: oneshot::Sender<eyre::Result<()>>,
     },
+    /// Subscribe to topic data via binary WS frames.
+    SubscribeTopics {
+        request: Vec<u8>,
+        data_tx: std_mpsc::Sender<eyre::Result<Vec<u8>>>,
+        ack_tx: oneshot::Sender<eyre::Result<Uuid>>,
+    },
 }
 
 impl WsSession {
@@ -92,6 +98,42 @@ impl WsSession {
             .map_err(|_| eyre!("WS session dropped reply"))?
     }
 
+    /// Subscribe to topic data via the coordinator's Zenoh proxy.
+    ///
+    /// Sends a `TopicSubscribe` request, waits for the ack, then returns
+    /// a `(subscription_id, receiver)` pair. Binary WS frames with matching
+    /// subscription UUID prefix are dispatched to the receiver.
+    pub fn subscribe_topics(
+        &self,
+        dataflow_id: Uuid,
+        topics: Vec<(adora_message::id::NodeId, adora_message::id::DataId)>,
+    ) -> eyre::Result<(Uuid, std_mpsc::Receiver<eyre::Result<Vec<u8>>>)> {
+        let request = serde_json::to_vec(
+            &adora_message::cli_to_coordinator::ControlRequest::TopicSubscribe {
+                dataflow_id,
+                topics,
+            },
+        )
+        .map_err(|e| eyre!("failed to serialize TopicSubscribe: {e}"))?;
+
+        let (data_tx, data_rx) = std_mpsc::channel();
+        let (ack_tx, ack_rx) = oneshot::channel();
+        self.cmd_tx
+            .send(SessionCommand::SubscribeTopics {
+                request,
+                data_tx,
+                ack_tx,
+            })
+            .map_err(|_| eyre!("WS session closed"))?;
+
+        let subscription_id = self
+            .rt
+            .block_on(ack_rx)
+            .map_err(|_| eyre!("WS session dropped ack"))??;
+
+        Ok((subscription_id, data_rx))
+    }
+
     /// Subscribe to log events on this connection.
     ///
     /// Sends the subscribe request (LogSubscribe or BuildLogSubscribe),
@@ -130,12 +172,22 @@ type PendingSubscribes = HashMap<
         std_mpsc::Sender<eyre::Result<Vec<u8>>>,
     ),
 >;
+type PendingTopicSubscribes = HashMap<
+    Uuid,
+    (
+        oneshot::Sender<eyre::Result<Uuid>>,
+        std_mpsc::Sender<eyre::Result<Vec<u8>>>,
+    ),
+>;
+type TopicSubscribers = HashMap<Uuid, std_mpsc::Sender<eyre::Result<Vec<u8>>>>;
 
 async fn session_loop(ws_stream: WsStream, mut cmd_rx: mpsc::UnboundedReceiver<SessionCommand>) {
     let (mut ws_tx, mut ws_rx) = ws_stream.split();
     let mut pending_requests: PendingRequests = HashMap::new();
     let mut pending_subscribes: PendingSubscribes = HashMap::new();
     let mut log_subscribers: Vec<std_mpsc::Sender<eyre::Result<Vec<u8>>>> = Vec::new();
+    let mut pending_topic_subscribes: PendingTopicSubscribes = HashMap::new();
+    let mut topic_subscribers: TopicSubscribers = HashMap::new();
 
     loop {
         tokio::select! {
@@ -193,47 +245,86 @@ async fn session_loop(ws_stream: WsStream, mut cmd_rx: mpsc::UnboundedReceiver<S
                             break;
                         }
                     }
+                    SessionCommand::SubscribeTopics { request, data_tx, ack_tx } => {
+                        let id = Uuid::new_v4();
+                        let params = match serde_json::from_slice(&request) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                let _ = ack_tx.send(Err(eyre!("failed to parse topic subscribe request: {e}")));
+                                continue;
+                            }
+                        };
+                        let req = WsRequest {
+                            id,
+                            method: "control".to_string(),
+                            params,
+                        };
+                        let json = match serde_json::to_string(&req) {
+                            Ok(j) => j,
+                            Err(e) => {
+                                let _ = ack_tx.send(Err(eyre!("failed to serialize WsRequest: {e}")));
+                                continue;
+                            }
+                        };
+                        pending_topic_subscribes.insert(id, (ack_tx, data_tx));
+                        if ws_tx.send(Message::Text(json.into())).await.is_err() {
+                            break;
+                        }
+                    }
                 }
             }
             msg = ws_rx.next() => {
                 let Some(msg) = msg else { break };
-                let text = match msg {
-                    Ok(Message::Text(text)) => text,
+                match msg {
+                    Ok(Message::Text(text)) => {
+                        let frame: IncomingFrame = match serde_json::from_str(&text) {
+                            Ok(m) => m,
+                            Err(e) => {
+                                tracing::warn!("failed to parse WS message: {e}");
+                                continue;
+                            }
+                        };
+
+                        if let Some(event_name) = &frame.event {
+                            if event_name == "log" {
+                                if let Some(payload) = &frame.payload {
+                                    let bytes = payload.get().as_bytes().to_vec();
+                                    log_subscribers.retain(|tx| tx.send(Ok(bytes.clone())).is_ok());
+                                }
+                            }
+                        } else if let Some(id) = frame.id {
+                            handle_response(
+                                id,
+                                frame.result,
+                                frame.error,
+                                &mut pending_requests,
+                                &mut pending_subscribes,
+                                &mut log_subscribers,
+                                &mut pending_topic_subscribes,
+                                &mut topic_subscribers,
+                            );
+                        }
+                    }
+                    Ok(Message::Binary(data)) => {
+                        // Binary frame: first 16 bytes = subscription UUID, rest = payload
+                        if data.len() < 16 {
+                            tracing::warn!("binary WS frame too short ({} bytes)", data.len());
+                            continue;
+                        }
+                        let sub_id = Uuid::from_bytes(data[..16].try_into().unwrap());
+                        let payload = data[16..].to_vec();
+                        if let Some(tx) = topic_subscribers.get(&sub_id) {
+                            if tx.send(Ok(payload)).is_err() {
+                                topic_subscribers.remove(&sub_id);
+                            }
+                        }
+                    }
                     Ok(Message::Close(_)) => break,
                     Ok(Message::Ping(data)) => {
                         let _ = ws_tx.send(Message::Pong(data)).await;
-                        continue;
                     }
-                    Ok(_) => continue,
+                    Ok(_) => {}
                     Err(_) => break,
-                };
-
-                let frame: IncomingFrame = match serde_json::from_str(&text) {
-                    Ok(m) => m,
-                    Err(e) => {
-                        tracing::warn!("failed to parse WS message: {e}");
-                        continue;
-                    }
-                };
-
-                if let Some(event_name) = &frame.event {
-                    // Event frame (e.g. log push)
-                    if event_name == "log" {
-                        if let Some(payload) = &frame.payload {
-                            let bytes = payload.get().as_bytes().to_vec();
-                            log_subscribers.retain(|tx| tx.send(Ok(bytes.clone())).is_ok());
-                        }
-                    }
-                } else if let Some(id) = frame.id {
-                    // Response frame
-                    handle_response(
-                        id,
-                        frame.result,
-                        frame.error,
-                        &mut pending_requests,
-                        &mut pending_subscribes,
-                        &mut log_subscribers,
-                    );
                 }
             }
         }
@@ -246,8 +337,12 @@ async fn session_loop(ws_stream: WsStream, mut cmd_rx: mpsc::UnboundedReceiver<S
     for (_, (ack, _)) in pending_subscribes.drain() {
         let _ = ack.send(Err(eyre!("WS connection closed")));
     }
+    for (_, (ack, _)) in pending_topic_subscribes.drain() {
+        let _ = ack.send(Err(eyre!("WS connection closed")));
+    }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_response(
     id: Uuid,
     result: Option<Box<serde_json::value::RawValue>>,
@@ -255,14 +350,44 @@ fn handle_response(
     pending_requests: &mut PendingRequests,
     pending_subscribes: &mut PendingSubscribes,
     log_subscribers: &mut Vec<std_mpsc::Sender<eyre::Result<Vec<u8>>>>,
+    pending_topic_subscribes: &mut PendingTopicSubscribes,
+    topic_subscribers: &mut TopicSubscribers,
 ) {
-    // Check if this is a subscribe ack
+    // Check if this is a log subscribe ack
     if let Some((ack_tx, log_tx)) = pending_subscribes.remove(&id) {
         if let Some(error) = error {
             let _ = ack_tx.send(Err(eyre!("{error}")));
         } else {
             log_subscribers.push(log_tx);
             let _ = ack_tx.send(Ok(()));
+        }
+        return;
+    }
+
+    // Check if this is a topic subscribe ack
+    if let Some((ack_tx, data_tx)) = pending_topic_subscribes.remove(&id) {
+        if let Some(error) = error {
+            let _ = ack_tx.send(Err(eyre!("{error}")));
+        } else if let Some(raw) = &result {
+            // Parse TopicSubscribed { subscription_id } from the result
+            let reply: Result<adora_message::coordinator_to_cli::ControlRequestReply, _> =
+                serde_json::from_str(raw.get());
+            match reply {
+                Ok(adora_message::coordinator_to_cli::ControlRequestReply::TopicSubscribed {
+                    subscription_id,
+                }) => {
+                    topic_subscribers.insert(subscription_id, data_tx);
+                    let _ = ack_tx.send(Ok(subscription_id));
+                }
+                Ok(adora_message::coordinator_to_cli::ControlRequestReply::Error(e)) => {
+                    let _ = ack_tx.send(Err(eyre!("{e}")));
+                }
+                _ => {
+                    let _ = ack_tx.send(Err(eyre!("unexpected topic subscribe reply")));
+                }
+            }
+        } else {
+            let _ = ack_tx.send(Err(eyre!("empty topic subscribe reply")));
         }
         return;
     }
@@ -301,6 +426,8 @@ mod tests {
         pending.insert(id, tx);
         let mut subscribes = HashMap::new();
         let mut subs = Vec::new();
+        let mut topic_pending = HashMap::new();
+        let mut topic_subs = HashMap::new();
 
         handle_response(
             id,
@@ -309,6 +436,8 @@ mod tests {
             &mut pending,
             &mut subscribes,
             &mut subs,
+            &mut topic_pending,
+            &mut topic_subs,
         );
 
         let mut rx = rx;
@@ -323,6 +452,8 @@ mod tests {
         let mut pending = HashMap::new();
         let mut subscribes = HashMap::new();
         let mut subs = Vec::new();
+        let mut topic_pending = HashMap::new();
+        let mut topic_subs = HashMap::new();
 
         // Response with unknown id should be dropped without panic
         handle_response(
@@ -332,6 +463,8 @@ mod tests {
             &mut pending,
             &mut subscribes,
             &mut subs,
+            &mut topic_pending,
+            &mut topic_subs,
         );
     }
 
@@ -344,6 +477,8 @@ mod tests {
         let mut subscribes = HashMap::new();
         subscribes.insert(id, (ack_tx, log_tx));
         let mut subs = Vec::new();
+        let mut topic_pending = HashMap::new();
+        let mut topic_subs = HashMap::new();
 
         // Successful subscribe ack
         handle_response(
@@ -353,6 +488,8 @@ mod tests {
             &mut pending,
             &mut subscribes,
             &mut subs,
+            &mut topic_pending,
+            &mut topic_subs,
         );
 
         // ack should succeed
@@ -378,6 +515,8 @@ mod tests {
         let mut subscribes = HashMap::new();
         subscribes.insert(id, (ack_tx, log_tx));
         let mut subs = Vec::new();
+        let mut topic_pending = HashMap::new();
+        let mut topic_subs = HashMap::new();
 
         handle_response(
             id,
@@ -386,10 +525,41 @@ mod tests {
             &mut pending,
             &mut subscribes,
             &mut subs,
+            &mut topic_pending,
+            &mut topic_subs,
         );
 
         assert!(ack_rx.try_recv().unwrap().is_err());
         assert!(subs.is_empty());
+    }
+
+    #[test]
+    fn handle_response_topic_subscribe_ack() {
+        let id = Uuid::new_v4();
+        let sub_id = Uuid::new_v4();
+        let (ack_tx, mut ack_rx) = oneshot::channel();
+        let (data_tx, _data_rx) = std_mpsc::channel();
+        let mut pending = HashMap::new();
+        let mut subscribes = HashMap::new();
+        let mut subs = Vec::new();
+        let mut topic_pending = HashMap::new();
+        topic_pending.insert(id, (ack_tx, data_tx));
+        let mut topic_subs = HashMap::new();
+
+        handle_response(
+            id,
+            Some(raw(json!({"TopicSubscribed": {"subscription_id": sub_id}}))),
+            None,
+            &mut pending,
+            &mut subscribes,
+            &mut subs,
+            &mut topic_pending,
+            &mut topic_subs,
+        );
+
+        let result_id = ack_rx.try_recv().unwrap().unwrap();
+        assert_eq!(result_id, sub_id);
+        assert!(topic_subs.contains_key(&sub_id));
     }
 
     #[tokio::test]

@@ -1,5 +1,7 @@
-use std::{collections::BTreeMap, io::Write, path::PathBuf};
+use std::{collections::BTreeMap, io::Write, path::PathBuf, time::SystemTime};
 
+use adora_message::{common::Timestamped, daemon_to_daemon::InterDaemonEvent, id::NodeId};
+use adora_recording::{RecordEntry, RecordingHeader, RecordingWriter};
 use clap::Args;
 use eyre::{Context, bail};
 
@@ -23,6 +25,9 @@ use crate::command::{Executable, Run, default_tracing};
 ///
 ///   Just generate the modified YAML:
 ///     adora record dataflow.yml --output-yaml modified.yml
+///
+///   Stream data through coordinator WS (for diskless targets):
+///     adora record dataflow.yml --proxy
 #[derive(Debug, Args)]
 #[clap(verbatim_doc_comment)]
 pub struct Record {
@@ -41,12 +46,24 @@ pub struct Record {
     /// Just generate modified YAML, don't run
     #[clap(long, value_name = "PATH")]
     output_yaml: Option<String>,
+
+    /// Stream data through coordinator WebSocket instead of recording on target.
+    /// Useful when the target machine has no local disk.
+    #[clap(long)]
+    proxy: bool,
+
+    #[clap(flatten)]
+    coordinator: crate::common::CoordinatorOptions,
 }
 
 impl Executable for Record {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
-        run_record(self)
+        if self.proxy {
+            run_record_proxy(self)
+        } else {
+            run_record(self)
+        }
     }
 }
 
@@ -199,6 +216,206 @@ fn run_record(args: Record) -> eyre::Result<()> {
 
     let run = Run::new(tmp_path.to_string_lossy().to_string());
     run.execute()
+}
+
+fn run_record_proxy(args: Record) -> eyre::Result<()> {
+    let yaml_bytes =
+        std::fs::read(&args.file).wrap_err_with(|| format!("failed to read {}", args.file))?;
+
+    // Parse descriptor to discover topics
+    let descriptor: serde_yaml::Value =
+        serde_yaml::from_slice(&yaml_bytes).wrap_err("failed to parse descriptor YAML")?;
+
+    let nodes = descriptor
+        .get("nodes")
+        .and_then(|v| v.as_sequence())
+        .ok_or_else(|| eyre::eyre!("descriptor has no nodes array"))?;
+
+    let mut all_topics: Vec<(String, String)> = Vec::new();
+    for node in nodes {
+        let node_id = node.get("id").and_then(|v| v.as_str()).unwrap_or_default();
+        if let Some(outputs) = node.get("outputs").and_then(|v| v.as_sequence()) {
+            for output in outputs {
+                if let Some(output_id) = output.as_str() {
+                    all_topics.push((node_id.to_string(), output_id.to_string()));
+                }
+            }
+        }
+    }
+
+    if all_topics.is_empty() {
+        bail!("no outputs found in descriptor");
+    }
+
+    // Filter topics if --topics specified
+    let topics: Vec<(String, String)> = if args.topics.is_empty() {
+        all_topics
+    } else {
+        let mut filtered = Vec::new();
+        for requested in &args.topics {
+            let parts: Vec<&str> = requested.splitn(2, '/').collect();
+            if parts.len() != 2 {
+                bail!("invalid topic format `{requested}`, expected `node/output`");
+            }
+            let (node, output) = (parts[0].to_string(), parts[1].to_string());
+            if !all_topics.iter().any(|(n, o)| n == &node && o == &output) {
+                let available: Vec<String> =
+                    all_topics.iter().map(|(n, o)| format!("{n}/{o}")).collect();
+                bail!(
+                    "topic `{requested}` not found in descriptor. Available: {}",
+                    available.join(", ")
+                );
+            }
+            filtered.push((node, output));
+        }
+        filtered
+    };
+
+    let output_file = match &args.output {
+        Some(p) => p.clone(),
+        None => {
+            let ts = chrono::Local::now().format("%Y%m%d_%H%M%S");
+            format!("recording_{ts}.adorec")
+        }
+    };
+
+    eprintln!("Proxy recording {} topics to {output_file}", topics.len());
+    eprintln!(
+        "Topics: {}",
+        format_topics(topics.iter().map(|(n, o)| format!("{n}/{o}")).collect())
+    );
+    eprintln!("Waiting for dataflow to start...");
+
+    // Connect to coordinator and wait for the dataflow
+    let session = args.coordinator.connect()?;
+
+    // List running dataflows, find the one that matches our descriptor name
+    // For proxy mode, the user should have already started the dataflow
+    let list_raw = session
+        .request(
+            &serde_json::to_vec(&adora_message::cli_to_coordinator::ControlRequest::List).unwrap(),
+        )
+        .wrap_err("failed to list dataflows")?;
+    let list_reply: adora_message::coordinator_to_cli::ControlRequestReply =
+        serde_json::from_slice(&list_raw).wrap_err("failed to parse list reply")?;
+
+    let active_ids = match list_reply {
+        adora_message::coordinator_to_cli::ControlRequestReply::DataflowList(list) => {
+            list.get_active()
+        }
+        _ => bail!("unexpected reply to List"),
+    };
+
+    if active_ids.is_empty() {
+        bail!(
+            "no running dataflows found. Start a dataflow first with `adora start`, \
+             then use `adora record --proxy` to record it."
+        );
+    }
+
+    // Use the first active dataflow (or let user pick if multiple)
+    let dataflow_id = if active_ids.len() == 1 {
+        active_ids[0].uuid
+    } else {
+        let choices: Vec<String> = active_ids.iter().map(|d| d.to_string()).collect();
+        let selected = inquire::Select::new("Select dataflow to record:", choices)
+            .prompt()
+            .wrap_err("dataflow selection cancelled")?;
+        active_ids
+            .iter()
+            .find(|d| d.to_string() == selected)
+            .unwrap()
+            .uuid
+    };
+
+    // Subscribe to topics via WS
+    let ws_topics: Vec<_> = topics
+        .iter()
+        .map(|(n, o)| (NodeId::from(n.clone()), o.clone().into()))
+        .collect();
+    let (_subscription_id, data_rx) = session.subscribe_topics(dataflow_id, ws_topics)?;
+
+    // Set up recording writer
+    let start_nanos = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos() as u64;
+
+    let header = RecordingHeader {
+        version: 1,
+        start_nanos,
+        dataflow_id,
+        descriptor_yaml: yaml_bytes,
+    };
+
+    let file = std::fs::File::create(&output_file)
+        .wrap_err_with(|| format!("failed to create {output_file}"))?;
+    let mut writer = RecordingWriter::new(file, &header)?;
+
+    eprintln!("Recording... (press Ctrl-C to stop)");
+
+    // Set up Ctrl-C handler
+    let (stop_tx, stop_rx) = std::sync::mpsc::channel();
+    ctrlc::set_handler(move || {
+        let _ = stop_tx.send(());
+    })
+    .wrap_err("failed to set ctrl-c handler")?;
+
+    let mut msg_count: u64 = 0;
+    loop {
+        // Check for Ctrl-C
+        if stop_rx.try_recv().is_ok() {
+            break;
+        }
+
+        match data_rx.recv_timeout(std::time::Duration::from_millis(100)) {
+            Ok(Ok(payload)) => {
+                // The payload is already `Timestamped<InterDaemonEvent>` bincode bytes.
+                // Parse it to extract node_id and output_id for the recording entry.
+                let event = match Timestamped::deserialize_inter_daemon_event(&payload) {
+                    Ok(e) => e,
+                    Err(_) => continue,
+                };
+
+                let (node_id, output_id) = match &event.inner {
+                    InterDaemonEvent::Output {
+                        node_id, output_id, ..
+                    } => (node_id.to_string(), output_id.to_string()),
+                    InterDaemonEvent::OutputClosed { .. } => continue,
+                };
+
+                let now_nanos = SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos() as u64;
+
+                let entry = RecordEntry {
+                    node_id,
+                    output_id,
+                    timestamp_offset_nanos: now_nanos.saturating_sub(start_nanos),
+                    event_bytes: payload,
+                };
+                writer.write_entry(&entry)?;
+                msg_count += 1;
+
+                if msg_count % 100 == 0 {
+                    writer.flush()?;
+                }
+            }
+            Ok(Err(_)) => continue,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+
+    let footer = writer.finish()?;
+    eprintln!(
+        "Recording complete: {} messages, {:.2} MB",
+        footer.total_messages,
+        footer.total_bytes as f64 / 1_048_576.0
+    );
+
+    Ok(())
 }
 
 fn find_record_node_binary() -> eyre::Result<PathBuf> {
