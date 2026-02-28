@@ -7,7 +7,7 @@ Adora's control plane uses WebSocket connections for all communication between t
 | Feature | Detail |
 |---------|--------|
 | Routes | `/api/control` (CLI), `/api/daemon` (daemons), `/health` |
-| Wire format | JSON text frames |
+| Wire format | JSON text frames + binary frames for topic data |
 | Protocol | UUID-correlated request-reply + fire-and-forget events |
 | Message size limit | 1 MiB (`MAX_CONTROL_MESSAGE_BYTES`) |
 | Concurrency limit | 256 connections (`MAX_WS_CONNECTIONS`) |
@@ -156,6 +156,8 @@ The CLI connects to `/api/control` to send `ControlRequest` commands and receive
 | `BuildLogSubscribe` | Subscribe to live build logs |
 | `CliAndDefaultDaemonOnSameMachine` | Check co-location |
 | `GetNodeInfo` | Get node metadata |
+| `TopicSubscribe` | Subscribe to live topic data via binary WS frames ([details](websocket-topic-data-channel.md)) |
+| `TopicUnsubscribe` | Cancel a topic subscription |
 
 ### Log subscription flow
 
@@ -195,6 +197,10 @@ The session loop maintains:
 - `pending_requests: HashMap<Uuid, oneshot::Sender>` -- for request-reply correlation
 - `pending_subscribes: HashMap<Uuid, (ack_tx, log_tx)>` -- for subscribe ack routing
 - `log_subscribers: Vec<std_mpsc::Sender>` -- for broadcasting log events
+- `pending_topic_subscribes: HashMap<Uuid, (ack_tx, data_tx)>` -- for topic subscribe ack routing
+- `topic_subscribers: HashMap<Uuid, std_mpsc::Sender>` -- for binary frame dispatch by subscription UUID
+
+Binary WS frames (topic data) are dispatched separately from text frames. See [WebSocket Topic Data Channel](websocket-topic-data-channel.md) for details.
 
 On disconnect, all pending requests receive an error via their oneshot channels.
 
@@ -405,11 +411,11 @@ CLI                    WsSession              Coordinator
 | Tier | Location | Tests | What's covered |
 |------|----------|-------|----------------|
 | Unit (protocol) | `libraries/message/src/ws_protocol.rs` | 10 | Roundtrip serialization, untagged dispatch, error cases |
-| Unit (client) | `binaries/cli/src/ws_client.rs` | 5 | Response routing, subscribe ack, orphan handling, disconnect |
+| Unit (client) | `binaries/cli/src/ws_client.rs` | 6 | Response routing, subscribe ack, topic subscribe ack, orphan handling, disconnect |
 | Integration (control) | `binaries/coordinator/tests/ws_control_tests.rs` | 11 | Health check, List, invalid JSON/params, Destroy, DaemonConnected, ping/pong, concurrent requests, connection close, log subscribe |
 | Integration (daemon) | `binaries/coordinator/tests/ws_daemon_tests.rs` | 4 | Register, register-then-status, disconnect cleanup, ping/pong |
 | E2E (WsSession) | `tests/ws-cli-e2e.rs` | 4 | WsSession + coordinator: list, status, stop, multi-request |
-| **Total** | | **34** | |
+| **Total** | | **35** | |
 
 ### Key test patterns
 
