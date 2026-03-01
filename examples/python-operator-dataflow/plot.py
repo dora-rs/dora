@@ -24,7 +24,17 @@ class Operator:
         if dora_event["type"] == "INPUT":
             id = dora_event["id"]
             if id == "image":
-                image = dora_event["value"].to_numpy().reshape((480, 640, 3)).copy()
+                # --- DYNAMIC RESHAPE FIX ---
+                # Instead of hardcoding (480, 640, 3), we use -1 to let 
+                # Python calculate the height automatically based on the data.
+                try:
+                    image_array = dora_event["value"].to_numpy()
+                    # Assuming width is 640 and channels are 3 (RGB)
+                    image = image_array.reshape((-1, 640, 3)).copy()
+                except Exception as e:
+                    # If the shape is totally different, skip this frame instead of crashing
+                    print(f"Reshape error: {e}")
+                    return DoraStatus.CONTINUE
                 
                 # FPS Calculation
                 curr = time.time()
@@ -47,7 +57,6 @@ class Operator:
                 cv2.putText(image, f"AI Latency: {self.inference_latency:.1f}ms", (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
                 
                 # --- SMART DISPLAY ---
-                # Only show the window if we ARE NOT in a headless environment
                 if not IS_HEADLESS:
                     cv2.imshow("frame", image)
                     if cv2.waitKey(1) & 0xFF == ord("q"): 
