@@ -17,6 +17,7 @@ nodes:
         image: webcam/image
       outputs:
         - bbox
+        - latency # Added for Project #1 Performance Tooling
         - stdout
 
   - id: plot
@@ -26,4 +27,5 @@ nodes:
       inputs:
         image: webcam/image
         bbox: object_detection/bbox
+        latency: object_detection/latency # Connected the new metric
         assistant_message: object_detection/stdout
