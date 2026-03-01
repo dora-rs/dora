@@ -25,22 +25,24 @@ fn main() -> eyre::Result<()> {
                     // correlate feedback/result to the correct goal.
                     let params = metadata.parameters;
 
-                    let struct_array = data
-                        .as_any()
-                        .downcast_ref::<StructArray>()
-                        .expect("expected struct array for goal");
-                    if struct_array.len() == 0 {
+                    let Some(struct_array) = data.as_any().downcast_ref::<StructArray>() else {
+                        eprintln!("Warning: expected struct array for goal, skipping");
+                        continue;
+                    };
+                    if struct_array.is_empty() {
                         eprintln!("Warning: received empty goal array");
                         continue;
                     }
 
-                    let order = struct_array
-                        .column_by_name("order")
-                        .expect("missing 'order' field")
-                        .as_any()
-                        .downcast_ref::<Int32Array>()
-                        .expect("expected Int32Array for 'order'")
-                        .value(0);
+                    let Some(order_col) = struct_array.column_by_name("order") else {
+                        eprintln!("Warning: missing 'order' field in goal");
+                        continue;
+                    };
+                    let Some(order_array) = order_col.as_any().downcast_ref::<Int32Array>() else {
+                        eprintln!("Warning: 'order' field is not Int32Array");
+                        continue;
+                    };
+                    let order = order_array.value(0);
 
                     println!("Received Fibonacci goal: order={order}");
 
@@ -54,13 +56,13 @@ fn main() -> eyre::Result<()> {
                         };
                         sequence.push(val);
 
-                        let feedback = make_list_struct("partial_sequence", &sequence);
+                        let feedback = make_list_struct("partial_sequence", &sequence)?;
                         node.send_output(feedback_output.clone(), params.clone(), feedback)?;
                         println!("Feedback: partial_sequence={sequence:?}");
                     }
 
                     // Send final result
-                    let result = make_list_struct("sequence", &sequence);
+                    let result = make_list_struct("sequence", &sequence)?;
                     node.send_output(result_output.clone(), params, result)?;
                     println!("Result: sequence={sequence:?}");
                 }
@@ -78,7 +80,7 @@ fn main() -> eyre::Result<()> {
 }
 
 /// Create an Arrow struct with a single `list<int32>` field.
-fn make_list_struct(field_name: &str, values: &[i32]) -> StructArray {
+fn make_list_struct(field_name: &str, values: &[i32]) -> eyre::Result<StructArray> {
     let mut builder = ListBuilder::new(Int32Builder::new());
     builder.values().append_slice(values);
     builder.append(true);
@@ -90,5 +92,5 @@ fn make_list_struct(field_name: &str, values: &[i32]) -> StructArray {
         false,
     ))];
     let arrays: Vec<Arc<dyn Array>> = vec![Arc::new(list_array)];
-    StructArray::try_new(fields.into(), arrays, None).expect("failed to create struct array")
+    Ok(StructArray::try_new(fields.into(), arrays, None)?)
 }

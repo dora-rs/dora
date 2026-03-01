@@ -612,6 +612,11 @@ enum ServerEvent {
         handle: ros2_client::action::ExecutingGoalHandle<BridgeMessage>,
         data: ArrayData,
     },
+    /// Goal accepted but contained no data; main loop should send Aborted.
+    AbortGoal {
+        goal_id: String,
+        handle: ros2_client::action::ExecutingGoalHandle<BridgeMessage>,
+    },
 }
 
 fn run_action_server(
@@ -672,7 +677,11 @@ fn run_action_server(
                 let data = match goal_data {
                     Some(BridgeMessage(Some(d))) => d,
                     _ => {
-                        tracing::warn!("goal {goal_id} contained no data");
+                        tracing::warn!("goal {goal_id} contained no data, aborting");
+                        let _ = tx.send(ServerEvent::AbortGoal {
+                            goal_id,
+                            handle: executing,
+                        });
                         continue;
                     }
                 };
@@ -727,9 +736,16 @@ fn run_action_server(
                             let array_data = data.to_data();
                             let status = match metadata.parameters.get("goal_status") {
                                 Some(Parameter::String(s)) => match s.as_str() {
+                                    "succeeded" => ros2_client::action::GoalEndStatus::Succeeded,
                                     "aborted" => ros2_client::action::GoalEndStatus::Aborted,
                                     "canceled" => ros2_client::action::GoalEndStatus::Canceled,
-                                    _ => ros2_client::action::GoalEndStatus::Succeeded,
+                                    other => {
+                                        tracing::warn!(
+                                            "unknown goal_status `{other}` for goal {goal_id}, \
+                                             defaulting to Aborted"
+                                        );
+                                        ros2_client::action::GoalEndStatus::Aborted
+                                    }
                                 },
                                 _ => ros2_client::action::GoalEndStatus::Succeeded,
                             };
@@ -769,34 +785,59 @@ fn run_action_server(
             }
             MergedEvent::Adora(Event::Stop(_)) => break,
             MergedEvent::Adora(_) => {}
-            MergedEvent::External(server_event) => {
-                let ServerEvent::NewGoal {
+            MergedEvent::External(server_event) => match server_event {
+                ServerEvent::AbortGoal { goal_id, handle } => {
+                    abort_executing_goal(&server, &result_type_info, handle, &goal_id);
+                }
+                ServerEvent::NewGoal {
                     goal_id,
                     handle,
                     data,
-                } = server_event;
+                } => {
+                    if executing_goals.len() >= MAX_CONCURRENT_GOALS {
+                        tracing::warn!(
+                            "max concurrent goals ({MAX_CONCURRENT_GOALS}) reached, \
+                             aborting goal {goal_id}"
+                        );
+                        abort_executing_goal(&server, &result_type_info, handle, &goal_id);
+                        continue;
+                    }
 
-                if executing_goals.len() >= MAX_CONCURRENT_GOALS {
-                    tracing::warn!(
-                        "max concurrent goals ({MAX_CONCURRENT_GOALS}) reached, \
-                         dropping goal {goal_id}"
-                    );
-                    continue;
+                    let mut parameters = BTreeMap::new();
+                    parameters.insert("goal_id".to_string(), Parameter::String(goal_id.clone()));
+                    if let Err(e) =
+                        node.send_output("goal".into(), parameters, StructArray::from(data))
+                    {
+                        tracing::warn!("failed to send goal {goal_id} to handler: {e}");
+                        abort_executing_goal(&server, &result_type_info, handle, &goal_id);
+                        continue;
+                    }
+                    executing_goals.insert(goal_id, handle);
                 }
-
-                let mut parameters = BTreeMap::new();
-                parameters.insert("goal_id".to_string(), Parameter::String(goal_id.clone()));
-                if let Err(e) = node.send_output("goal".into(), parameters, StructArray::from(data))
-                {
-                    tracing::warn!("failed to send goal {goal_id} to handler: {e}");
-                    continue;
-                }
-                executing_goals.insert(goal_id, handle);
-            }
+            },
         }
     }
 
     Ok(())
+}
+
+/// Send an Aborted result response for an executing goal so the ROS2 client
+/// doesn't hang indefinitely.
+fn abort_executing_goal(
+    server: &ros2_client::action::AsyncActionServer<BridgeActionType>,
+    result_type_info: &TypeInfo<'static>,
+    handle: ros2_client::action::ExecutingGoalHandle<BridgeMessage>,
+    goal_id: &str,
+) {
+    let _guard = TypeInfoGuard::serialize(result_type_info.clone());
+    let send = server.send_result_response(
+        handle,
+        ros2_client::action::GoalEndStatus::Aborted,
+        BridgeMessage(None),
+    );
+    if let Err(e) = futures::executor::block_on(send) {
+        tracing::warn!("failed to send abort for goal {goal_id}: {e:?}");
+    }
 }
 
 // ---------------------------------------------------------------------------
