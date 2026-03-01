@@ -1,3 +1,8 @@
+import os
+
+if os.environ.get('GITHUB_ACTIONS') == 'true':
+    os.environ['QT_QPA_PLATFORM'] = 'offscreen'
+
 import cv2
 import time
 import numpy as np
