@@ -177,6 +177,8 @@ nodes:
 
 The bridge receives ROS2 service requests, forwards them as Arrow on the `request` output, and waits for the handler node to send a response back on the `response` input. The response is then returned to the ROS2 client.
 
+See `examples/ros2-bridge/yaml-bridge-service/` for a working example.
+
 ### FIFO Ordering Constraint
 
 The service server uses a FIFO queue to match responses to requests. The handler node **must respond in the same order as requests arrive**. Out-of-order responses will be silently paired with the wrong ROS2 request ID. The maximum pending request queue is 64 -- additional requests are dropped when full.
@@ -266,6 +268,8 @@ nodes:
 
 The bridge receives goals from ROS2 clients, auto-accepts them, and forwards the goal data on the `goal` output. The handler computes feedback and results and sends them back on the `feedback` and `result` inputs.
 
+See `examples/ros2-bridge/yaml-bridge-action-server/` for a working Fibonacci example.
+
 ### Goal ID Metadata
 
 Each goal is identified by a UUID string passed as a `goal_id` metadata parameter. The bridge sets `goal_id` on every `goal` output. The handler **must include the same `goal_id`** in metadata when sending `feedback` and `result` so the bridge can correlate them to the correct goal.
@@ -293,6 +297,8 @@ Event::Input { id, metadata, data } => match id.as_str() {
 5. Handler sends `result` (once) with same `goal_id`; bridge returns it to the ROS2 client
 6. Result send times out after 5 minutes if the client never requests it
 
+Goals that contain no data or cannot be forwarded to the handler are automatically aborted -- the bridge sends `Aborted` status back to the ROS2 client so it does not hang indefinitely.
+
 ### Goal Status
 
 By default, results are returned with `Succeeded` status. The handler can override this by setting a `goal_status` metadata parameter on the result output:
@@ -302,6 +308,8 @@ By default, results are returned with `Succeeded` status. The handler can overri
 | `"succeeded"` (or omitted) | `Succeeded` | Goal completed successfully |
 | `"aborted"` | `Aborted` | Goal failed during execution |
 | `"canceled"` | `Canceled` | Goal was canceled by the handler |
+
+Unrecognized `goal_status` values default to `Aborted` with a warning logged. Omitting `goal_status` entirely defaults to `Succeeded`.
 
 Rust example:
 ```rust
@@ -317,7 +325,7 @@ node.send_output("result".into(), params, error_result)?;
 
 | Behavior | Value |
 |----------|-------|
-| Max concurrent goals | 8 (additional goals are dropped) |
+| Max concurrent goals | 8 (additional goals receive `Aborted` status) |
 | Auto-accept | All goals are auto-accepted |
 | Result send timeout | 5 minutes |
 
@@ -839,7 +847,7 @@ ros2 action send_goal /fibonacci example_interfaces/action/Fibonacci "{order: 10
 - **QoS uniform for service/action channels**: The `qos` config applies to all service/action sub-channels (goal, result, cancel, feedback, status). Per-channel QoS is not configurable.
 - **`AMENT_PREFIX_PATH` required**: The bridge fails at startup if no ROS2 message definitions are found.
 - **Max 64 topics**: Multi-topic mode supports at most 64 topics per bridge node.
-- **Max 8 concurrent action goals**: Additional goals are dropped when the limit is reached.
+- **Max 8 concurrent action goals**: Additional goals receive `Aborted` status when the limit is reached.
 - **Max 64 pending service requests (server)**: Requests are dropped when the queue is full.
 
 ---
