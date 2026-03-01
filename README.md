@@ -1,28 +1,8 @@
-# Adora (AI-Dora)
+# Adora
 
 **Agentic Dataflow-Oriented Robotic Architecture** -- a 100% Rust framework for building real-time robotics and AI applications.
 
-<p align="center">
-  <img src="https://raw.githubusercontent.com/adora-rs/adora/main/docs/src/logo.svg" width="350"/>
-</p>
-
-<div align="center">
-
-[Website](https://www.adora-rs.ai) |
-[Python API](https://adora-rs.ai/docs/guides/getting-started/conversation_py/) |
-[Rust API](https://docs.rs/adora-node-api/latest/adora_node_api/) |
-[Guide](https://www.adora-rs.ai/docs/guides/) |
-[Discord](https://discord.gg/6eMGGutkfE)
-
-[![Build and test](https://github.com/adora-rs/adora/workflows/CI/badge.svg)](https://github.com/adora-rs/adora/actions)
-[![crates.io](https://img.shields.io/crates/v/adora_node_api.svg)](https://crates.io/crates/adora-rs)
-[![docs.rs](https://docs.rs/adora-node-api/badge.svg)](https://docs.rs/adora-node-api/latest/adora_node_api/)
-[![PyPI](https://img.shields.io/pypi/v/adora-rs.svg)](https://pypi.org/project/adora-rs/)
-[![License](https://img.shields.io/github/license/adora-rs/adora)](https://github.com/adora-rs/adora/blob/main/LICENSE)
-
-</div>
-
-> **Built with AI-assisted agentic engineering** -- code generation, reviews, refactoring, testing, and commits are driven by autonomous AI agents.
+> Built and maintained with **agentic engineering** -- code generation, reviews, refactoring, testing, and commits are driven by autonomous AI agents.
 
 ---
 
@@ -42,14 +22,38 @@
 
 ## Features
 
-- **10-17x faster than ROS2** -- 100% Rust internals with zero-copy shared memory IPC
-- **Apache Arrow data format** -- columnar memory format with zero serialization overhead
-- **Multi-language** -- write nodes in Rust, Python, C, or C++
-- **Declarative dataflows** -- define pipelines in YAML, connect nodes through inputs/outputs
-- **Distributed** -- local shared memory + [Zenoh](https://zenoh.io/) for cross-machine communication
+### Performance
+
+- **10-17x faster than ROS2 Python** -- 100% Rust internals with zero-copy shared memory IPC for messages >4KB, flat latency from 4KB to 4MB payloads
+- **Apache Arrow native** -- columnar memory format end-to-end with zero serialization overhead; shared across all language bindings
+
+### Developer experience
+
+- **Single CLI, full lifecycle** -- `adora run` for local dev, `adora up/start` for distributed prod, plus build, logs, monitoring, record/replay all from one tool
+- **Declarative YAML dataflows** -- define pipelines as directed graphs, connect nodes through typed inputs/outputs, override with environment variables
+- **Multi-language nodes** -- write nodes in Rust, Python, C, or C++ with native APIs (not wrappers); mix languages freely in one dataflow
 - **Hot reload** -- live-reload Python operators without restarting the dataflow
-- **Pre-packaged nodes** -- [node hub](https://github.com/dora-rs/dora-hub/) for cameras, YOLO, LLMs, TTS, and more
-- **OpenTelemetry** -- built-in logging, metrics, and tracing
+- **Programmatic builder** -- construct dataflows in Python code as an alternative to YAML
+
+### Production readiness
+
+- **Fault tolerance** -- per-node restart policies (never/on-failure/always), exponential backoff, health monitoring, circuit breakers with configurable input timeouts
+- **Distributed by default** -- local shared memory between co-located nodes, automatic [Zenoh](https://zenoh.io/) pub-sub for cross-machine communication, machine-targeted deployment
+- **Coordinator persistence** -- optional redb-backed state store survives coordinator crashes and restarts
+- **OpenTelemetry** -- built-in structured logging with rotation/routing, metrics, and distributed tracing
+
+### Debugging and observability
+
+- **Record/replay** -- capture dataflow messages to `.adorec` files, replay offline at any speed with node substitution for regression testing
+- **Topic inspection** -- `topic echo` to print live data, `topic hz` TUI for frequency analysis, `topic info` for schema and bandwidth
+- **Resource monitoring** -- `inspect top` TUI showing per-node CPU, memory, and I/O across all machines
+- **Dataflow visualization** -- generate interactive HTML or Mermaid graphs from YAML descriptors
+
+### Ecosystem
+
+- **ROS2 bridge** -- bidirectional interop with ROS2 topics, services, and actions; QoS mapping; Arrow-native type conversion
+- **Pre-packaged nodes** -- [node hub](https://github.com/dora-rs/dora-hub/) with ready-made nodes for cameras, YOLO, LLMs, TTS, and more
+- **In-process operators** -- lightweight functions that run inside a shared runtime, avoiding per-node process overhead for simple transformations
 
 ## Installation
 
@@ -94,6 +98,7 @@ powershell -ExecutionPolicy ByPass -c "irm https://github.com/adora-rs/adora/rel
 | Feature | Description | Default |
 |---------|-------------|---------|
 | `tracing` | OpenTelemetry tracing support | Yes |
+| `metrics` | OpenTelemetry metrics collection | No |
 | `python` | Python operator support (PyO3) | No |
 | `redb-backend` | Persistent coordinator state (redb) | No |
 
@@ -162,7 +167,10 @@ adora down
 | `adora topic list` | List topics in a dataflow |
 | `adora topic hz <TOPIC>` | Measure topic publish frequency (TUI) |
 | `adora topic echo <TOPIC>` | Print topic messages to stdout |
+| `adora topic info <TOPIC>` | Show topic type and metadata |
 | `adora node list` | List nodes in a dataflow |
+| `adora record <PATH>` | Record dataflow messages to `.adorec` file |
+| `adora replay <FILE>` | Replay recorded messages from `.adorec` file |
 
 ### Setup and utilities
 
@@ -171,6 +179,7 @@ adora down
 | `adora status` | Check system health (alias: `check`) |
 | `adora new` | Generate a new project or node |
 | `adora graph <PATH>` | Visualize a dataflow (Mermaid or HTML) |
+| `adora system` | System management (daemon/coordinator control) |
 | `adora completion <SHELL>` | Generate shell completions |
 | `adora self update` | Update adora CLI |
 
@@ -240,35 +249,47 @@ CLI  -->  Coordinator  -->  Daemon(s)  -->  Nodes / Operators
 
 ```
 binaries/
-  cli/              # adora CLI binary
-  coordinator/      # Orchestration service
-  daemon/           # Node manager + IPC
-  runtime/          # In-process operator runtime
+  cli/                  # adora CLI binary
+  coordinator/          # Orchestration service
+  daemon/               # Node manager + IPC
+  runtime/              # In-process operator runtime
+  ros2-bridge-node/     # ROS2 bridge binary
+  record-node/          # Dataflow message recorder
+  replay-node/          # Recorded message replayer
 libraries/
-  core/             # Descriptor parsing, build utilities
-  message/          # Inter-component message types
-  shared-memory-server/  # Zero-copy IPC
-  arrow-convert/    # Arrow data conversion
+  core/                 # Descriptor parsing, build utilities
+  message/              # Inter-component message types (v0.7.0)
+  shared-memory-server/ # Zero-copy IPC
+  arrow-convert/        # Arrow data conversion
+  recording/            # .adorec recording format
+  log-utils/            # Log parsing, merging, formatting
+  coordinator-store/    # Persistent coordinator state (redb)
   extensions/
-    telemetry/      # OpenTelemetry tracing + metrics
-    ros2-bridge/    # ROS2 interop
+    telemetry/          # OpenTelemetry tracing + metrics
+    ros2-bridge/        # ROS2 interop (bridge, msg-gen, arrow, python)
+    download/           # Download utilities
 apis/
-  rust/             # Rust node and operator APIs
-  python/           # Python APIs (PyO3)
-  c/                # C node and operator APIs
-  c++/              # C++ node and operator APIs
-examples/           # Example dataflows
+  rust/node/            # Rust node API (adora-node-api)
+  rust/operator/        # Rust operator API (adora-operator-api)
+  python/node/          # Python node API (PyO3)
+  python/operator/      # Python operator API (PyO3)
+  python/cli/           # Python CLI interface
+  c/node/               # C node API
+  c/operator/           # C operator API
+  c++/node/             # C++ node API (CXX bridge)
+  c++/operator/         # C++ operator API (CXX bridge)
+examples/               # Example dataflows
 ```
 
 ## Language Support
 
-| Language | Node API | Operator API | Status |
-|----------|----------|--------------|--------|
-| Rust | `adora-node-api` | `adora-operator-api` | First-class |
-| Python >= 3.8 | `adora-node-api-python` | `adora-operator-api-python` | First-class |
-| C | `adora-node-api-c` | `adora-operator-api-c` | Supported |
-| C++ | via C API | via C API | Supported |
-| ROS2 >= Foxy | `adora-ros2-bridge` | -- | Experimental |
+| Language | Node API | Operator API | Docs | Status |
+|----------|----------|--------------|------|--------|
+| Rust | `adora-node-api` | `adora-operator-api` | [API Reference](docs/api-rust.md) | First-class |
+| Python >= 3.8 | `adora-node-api-python` | `adora-operator-api-python` | [API Reference](docs/api-python.md) | First-class |
+| C | `adora-node-api-c` | `adora-operator-api-c` | [API Reference](docs/api-c.md) | Supported |
+| C++ | `adora-node-api-cxx` | `adora-operator-api-cxx` | [API Reference](docs/api-cxx.md) | Supported |
+| ROS2 >= Foxy | `adora-ros2-bridge` | -- | [Bridge Guide](docs/ros2-bridge.md) | Experimental |
 
 ### Platform support
 
@@ -281,6 +302,8 @@ examples/           # Example dataflows
 
 ## Examples
 
+### Core language examples
+
 | Example | Language | Description |
 |---------|----------|-------------|
 | [rust-dataflow](examples/rust-dataflow) | Rust | Basic Rust node pipeline |
@@ -289,11 +312,49 @@ examples/           # Example dataflows
 | [python-dataflow-builder](examples/python-dataflow-builder) | Python | Pythonic imperative API |
 | [c-dataflow](examples/c-dataflow) | C | C node example |
 | [c++-dataflow](examples/c++-dataflow) | C++ | C++ node example |
+| [c++-arrow-dataflow](examples/c++-arrow-dataflow) | C++ | C++ with Arrow data |
 | [cmake-dataflow](examples/cmake-dataflow) | C/C++ | CMake-based build |
+
+### Advanced patterns
+
+| Example | Language | Description |
+|---------|----------|-------------|
+| [python-async](examples/python-async) | Python | Async Python nodes |
+| [python-concurrent-rw](examples/python-concurrent-rw) | Python | Concurrent read-write patterns |
+| [python-multiple-arrays](examples/python-multiple-arrays) | Python | Multi-array handling |
+| [python-drain](examples/python-drain) | Python | Event draining patterns |
+| [multiple-daemons](examples/multiple-daemons) | Rust | Distributed multi-daemon setup |
+| [rust-dataflow-git](examples/rust-dataflow-git) | Rust | Git-based dataflow loading |
+| [rust-dataflow-url](examples/rust-dataflow-url) | Rust | URL-based dataflow loading |
+
+### Logging
+
+| Example | Language | Description |
+|---------|----------|-------------|
+| [python-logging](examples/python-logging) | Python | Python logging integration |
+| [python-log](examples/python-log) | Python | Basic Python log output |
+| [log-sink-tcp](examples/log-sink-tcp) | YAML | TCP-based log sink |
+| [log-sink-file](examples/log-sink-file) | YAML | File-based log sink |
+| [log-sink-alert](examples/log-sink-alert) | YAML | Alert-based log sink |
+
+### Performance
+
+| Example | Language | Description |
+|---------|----------|-------------|
 | [benchmark](examples/benchmark) | Rust | CPU latency benchmark |
 | [cuda-benchmark](examples/cuda-benchmark) | Rust/CUDA | GPU zero-copy benchmark |
-| [multiple-daemons](examples/multiple-daemons) | Rust | Distributed multi-daemon setup |
-| [ros2-bridge](examples/ros2-bridge) | Rust/Python | ROS2 interoperability |
+
+### ROS2 integration
+
+| Example | Description |
+|---------|-------------|
+| [ros2-bridge/rust](examples/ros2-bridge/rust) | Rust ROS2 topics, services, actions |
+| [ros2-bridge/python](examples/ros2-bridge/python) | Python ROS2 integration |
+| [ros2-bridge/c++](examples/ros2-bridge/c++) | C++ ROS2 integration |
+| [ros2-bridge/yaml-bridge](examples/ros2-bridge/yaml-bridge) | YAML-based ROS2 topic bridge |
+| [ros2-bridge/yaml-bridge-service](examples/ros2-bridge/yaml-bridge-service) | YAML ROS2 service bridge |
+| [ros2-bridge/yaml-bridge-action](examples/ros2-bridge/yaml-bridge-action) | YAML ROS2 action client |
+| [ros2-bridge/yaml-bridge-action-server](examples/ros2-bridge/yaml-bridge-action-server) | YAML ROS2 action server |
 
 ## Development
 

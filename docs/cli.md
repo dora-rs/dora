@@ -20,6 +20,7 @@ Adora (AI-Dora, Dataflow-Oriented Robotic Architecture) is a 100% Rust framework
 - [Distributed Deployments](#distributed-deployments)
 - [Troubleshooting](#troubleshooting)
 - [Debugging and Observability](debugging.md) -- standalone guide covering record/replay, topic inspection, log analysis, and resource monitoring
+- **API References:** [Rust](api-rust.md) | [Python](api-python.md) | [C](api-c.md) | [C++](api-cxx.md)
 
 ---
 
@@ -670,6 +671,20 @@ echo 'eval "$(adora completion zsh)"' >> ~/.zshrc
 # Fish
 adora completion fish > ~/.config/fish/completions/adora.fish
 ```
+
+#### `adora system`
+
+System management commands.
+
+```
+adora system status [OPTIONS]
+```
+
+Currently provides `status` as a subcommand (equivalent to `adora status`).
+
+---
+
+### Utility Commands
 
 #### `adora self update`
 
