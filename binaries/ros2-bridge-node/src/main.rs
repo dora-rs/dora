@@ -33,6 +33,12 @@ const MAX_CONCURRENT_GOALS: usize = 8;
 /// Maximum pending service requests before dropping new ones.
 const MAX_PENDING_REQUESTS: usize = 64;
 
+/// Metadata parameter key for goal identification.
+const PARAM_GOAL_ID: &str = "goal_id";
+
+/// Metadata parameter key for goal completion status.
+const PARAM_GOAL_STATUS: &str = "goal_status";
+
 fn main() -> eyre::Result<()> {
     tracing_subscriber::fmt::init();
 
@@ -358,30 +364,23 @@ fn run_action_mode(
     let role = config.role.as_ref().context("role required for action")?;
     let (package, type_name) = parse_type_str(action_type)?;
 
+    let make_type_info = |suffix: &str| TypeInfo {
+        package_name: Cow::Owned(package.clone()),
+        message_name: Cow::Owned(format!("{type_name}_{suffix}")),
+        messages: messages.clone(),
+    };
+    let goal_type_info = make_type_info("Goal");
+    let result_type_info = make_type_info("Result");
+    let feedback_type_info = make_type_info("Feedback");
+
+    let (mut ros_node, _pool) = create_ros_node(&config)?;
+    let qos = config.qos.to_rustdds_qos();
+    let action_ros2_name = ros2_client::Name::new("/", action_name.trim_start_matches('/'))
+        .map_err(|e| eyre!("failed to create action name: {e}"))?;
+    let action_type_name = ros2_client::ActionTypeName::new(&package, &type_name);
+
     match role {
         Ros2Role::Client => {
-            let goal_msg_name = format!("{type_name}_Goal");
-            let result_msg_name = format!("{type_name}_Result");
-            let feedback_msg_name = format!("{type_name}_Feedback");
-
-            let goal_type_info = TypeInfo {
-                package_name: Cow::Owned(package.clone()),
-                message_name: Cow::Owned(goal_msg_name.clone()),
-                messages: messages.clone(),
-            };
-            let result_type_info = TypeInfo {
-                package_name: Cow::Owned(package.clone()),
-                message_name: Cow::Owned(result_msg_name.clone()),
-                messages: messages.clone(),
-            };
-            let feedback_type_info = TypeInfo {
-                package_name: Cow::Owned(package.clone()),
-                message_name: Cow::Owned(feedback_msg_name.clone()),
-                messages: messages.clone(),
-            };
-
-            let (mut ros_node, _pool) = create_ros_node(&config)?;
-            let qos = config.qos.to_rustdds_qos();
             let action_qos = ros2_client::action::ActionClientQosPolicies {
                 goal_service: qos.clone(),
                 result_service: qos.clone(),
@@ -393,9 +392,8 @@ fn run_action_mode(
             let client = ros_node
                 .create_action_client::<BridgeActionType>(
                     ros2_client::ServiceMapping::Enhanced,
-                    &ros2_client::Name::new("/", action_name.trim_start_matches('/'))
-                        .map_err(|e| eyre!("failed to create action name: {e}"))?,
-                    &ros2_client::ActionTypeName::new(&package, &type_name),
+                    &action_ros2_name,
+                    &action_type_name,
                     action_qos,
                 )
                 .map_err(|e| eyre!("failed to create action client: {e:?}"))?;
@@ -409,28 +407,6 @@ fn run_action_mode(
             run_action_client(client, goal_type_info, result_type_info, feedback_type_info)
         }
         Ros2Role::Server => {
-            let goal_msg_name = format!("{type_name}_Goal");
-            let result_msg_name = format!("{type_name}_Result");
-            let feedback_msg_name = format!("{type_name}_Feedback");
-
-            let goal_type_info = TypeInfo {
-                package_name: Cow::Owned(package.clone()),
-                message_name: Cow::Owned(goal_msg_name),
-                messages: messages.clone(),
-            };
-            let result_type_info = TypeInfo {
-                package_name: Cow::Owned(package.clone()),
-                message_name: Cow::Owned(result_msg_name),
-                messages: messages.clone(),
-            };
-            let feedback_type_info = TypeInfo {
-                package_name: Cow::Owned(package.clone()),
-                message_name: Cow::Owned(feedback_msg_name),
-                messages: messages.clone(),
-            };
-
-            let (mut ros_node, _pool) = create_ros_node(&config)?;
-            let qos = config.qos.to_rustdds_qos();
             let action_qos = ros2_client::action::ActionServerQosPolicies {
                 goal_service: qos.clone(),
                 result_service: qos.clone(),
@@ -442,9 +418,8 @@ fn run_action_mode(
             let server = ros_node
                 .create_action_server::<BridgeActionType>(
                     ros2_client::ServiceMapping::Enhanced,
-                    &ros2_client::Name::new("/", action_name.trim_start_matches('/'))
-                        .map_err(|e| eyre!("failed to create action name: {e}"))?,
-                    &ros2_client::ActionTypeName::new(&package, &type_name),
+                    &action_ros2_name,
+                    &action_type_name,
                     action_qos,
                 )
                 .map_err(|e| eyre!("failed to create action server: {e:?}"))?;
@@ -706,7 +681,7 @@ fn run_action_server(
     for event in futures::executor::block_on_stream(merged) {
         match event {
             MergedEvent::Adora(Event::Input { id, metadata, data }) => {
-                let goal_id = match metadata.parameters.get("goal_id") {
+                let goal_id = match metadata.parameters.get(PARAM_GOAL_ID) {
                     Some(Parameter::String(s)) => s.clone(),
                     _ => {
                         tracing::warn!("action server input `{id}` missing goal_id in metadata");
@@ -734,7 +709,7 @@ fn run_action_server(
                     "result" => {
                         if let Some(handle) = executing_goals.remove(&goal_id) {
                             let array_data = data.to_data();
-                            let status = match metadata.parameters.get("goal_status") {
+                            let status = match metadata.parameters.get(PARAM_GOAL_STATUS) {
                                 Some(Parameter::String(s)) => match s.as_str() {
                                     "succeeded" => ros2_client::action::GoalEndStatus::Succeeded,
                                     "aborted" => ros2_client::action::GoalEndStatus::Aborted,
@@ -804,7 +779,10 @@ fn run_action_server(
                     }
 
                     let mut parameters = BTreeMap::new();
-                    parameters.insert("goal_id".to_string(), Parameter::String(goal_id.clone()));
+                    parameters.insert(
+                        PARAM_GOAL_ID.to_string(),
+                        Parameter::String(goal_id.clone()),
+                    );
                     if let Err(e) =
                         node.send_output("goal".into(), parameters, StructArray::from(data))
                     {
@@ -1124,11 +1102,11 @@ fn load_messages() -> eyre::Result<Arc<HashMap<String, HashMap<String, Message>>
 }
 
 fn parse_type_str(type_str: &str) -> eyre::Result<(String, String)> {
-    let parts: Vec<&str> = type_str.split('/').collect();
-    if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
-        eyre::bail!("invalid type format: {type_str}, expected package/TypeName");
-    }
-    for (label, part) in [("package", parts[0]), ("type name", parts[1])] {
+    let (pkg, type_name) = type_str
+        .split_once('/')
+        .filter(|(p, t)| !p.is_empty() && !t.is_empty() && !t.contains('/'))
+        .ok_or_else(|| eyre!("invalid type format: {type_str}, expected package/TypeName"))?;
+    for (label, part) in [("package", pkg), ("type name", type_name)] {
         if !part.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
             eyre::bail!(
                 "invalid {label} `{part}` in type `{type_str}`: \
@@ -1136,7 +1114,7 @@ fn parse_type_str(type_str: &str) -> eyre::Result<(String, String)> {
             );
         }
     }
-    Ok((parts[0].to_string(), parts[1].to_string()))
+    Ok((pkg.to_string(), type_name.to_string()))
 }
 
 fn resolve_topics(config: &Ros2BridgeConfig) -> eyre::Result<Vec<Ros2TopicConfig>> {
