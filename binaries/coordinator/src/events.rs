@@ -96,6 +96,7 @@ pub enum DaemonRequest {
     Register {
         version_check_result: Result<(), String>,
         machine_id: Option<String>,
+        labels: BTreeMap<String, String>,
         connection: DaemonConnection,
         /// Sends back the assigned DaemonId on successful registration.
         daemon_id_tx: oneshot::Sender<DaemonId>,
@@ -109,11 +110,13 @@ impl std::fmt::Debug for DaemonRequest {
             DaemonRequest::Register {
                 version_check_result,
                 machine_id,
+                labels,
                 ..
             } => f
                 .debug_struct("Register")
                 .field("version_check_result", version_check_result)
                 .field("machine_id", machine_id)
+                .field("labels", labels)
                 .finish_non_exhaustive(),
         }
     }

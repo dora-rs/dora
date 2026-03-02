@@ -1,6 +1,6 @@
 use crate::{
     log_subscriber::LogSubscriber,
-    run::{SpawnedDataflow, spawn_dataflow},
+    run::{SpawnedDataflow, resolve_daemon, spawn_dataflow},
     state::{
         self, ArchivedDataflow, CachedResult, DaemonConnection, DaemonConnections, RunningBuild,
         RunningDataflow,
@@ -21,7 +21,6 @@ use adora_message::{
 };
 use eyre::{ContextCompat, WrapErr, bail, eyre};
 use futures::future::join_all;
-use itertools::Itertools;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     path::PathBuf,
@@ -326,44 +325,49 @@ pub(crate) async fn build_dataflow(
 ) -> eyre::Result<RunningBuild> {
     let nodes = dataflow.resolve_aliases_and_set_defaults()?;
 
-    let mut git_sources_by_daemon = git_sources
-        .into_iter()
-        .into_grouping_map_by(|(id, _)| {
-            nodes
-                .get(id)
-                .and_then(|n| n.deploy.as_ref().and_then(|d| d.machine.as_ref()))
-        })
-        .collect();
-    let mut prev_git_sources_by_daemon = prev_git_sources
-        .into_iter()
-        .into_grouping_map_by(|(id, _)| {
-            nodes
-                .get(id)
-                .and_then(|n| n.deploy.as_ref().and_then(|d| d.machine.as_ref()))
-        })
-        .collect();
+    // Resolve each node to its target daemon, group git sources by daemon.
+    let mut nodes_by_daemon: BTreeMap<DaemonId, Vec<NodeId>> = BTreeMap::new();
+    let mut git_sources_by_daemon: BTreeMap<DaemonId, BTreeMap<NodeId, GitSource>> =
+        BTreeMap::new();
+    let mut prev_git_sources_by_daemon: BTreeMap<DaemonId, BTreeMap<NodeId, GitSource>> =
+        BTreeMap::new();
 
-    let nodes_by_daemon = nodes
-        .values()
-        .into_group_map_by(|n| n.deploy.as_ref().and_then(|d| d.machine.as_ref()));
+    for (node_id, node) in &nodes {
+        let daemon_id = resolve_daemon(daemon_connections, node.deploy.as_ref())?;
+        nodes_by_daemon
+            .entry(daemon_id.clone())
+            .or_default()
+            .push(node_id.clone());
+        if let Some(gs) = git_sources.get(node_id) {
+            git_sources_by_daemon
+                .entry(daemon_id.clone())
+                .or_default()
+                .insert(node_id.clone(), gs.clone());
+        }
+        if let Some(gs) = prev_git_sources.get(node_id) {
+            prev_git_sources_by_daemon
+                .entry(daemon_id)
+                .or_default()
+                .insert(node_id.clone(), gs.clone());
+        }
+    }
 
     let mut daemons = BTreeSet::new();
-    for (machine, nodes_on_machine) in &nodes_by_daemon {
-        let nodes_on_machine = nodes_on_machine.iter().map(|n| n.id.clone()).collect();
+    for (daemon_id, nodes_on_daemon) in &nodes_by_daemon {
         tracing::debug!(
-            "Running dataflow build `{build_id}` on machine `{machine:?}` (nodes: {nodes_on_machine:?})"
+            "Running dataflow build `{build_id}` on daemon `{daemon_id}` (nodes: {nodes_on_daemon:?})"
         );
 
         let build_command = BuildDataflowNodes {
             build_id,
             session_id,
             local_working_dir: local_working_dir.clone(),
-            git_sources: git_sources_by_daemon.remove(machine).unwrap_or_default(),
+            git_sources: git_sources_by_daemon.remove(daemon_id).unwrap_or_default(),
             prev_git_sources: prev_git_sources_by_daemon
-                .remove(machine)
+                .remove(daemon_id)
                 .unwrap_or_default(),
             dataflow_descriptor: dataflow.clone(),
-            nodes_on_machine,
+            nodes_on_machine: nodes_on_daemon.iter().cloned().collect(),
             uv,
         };
         let message = serde_json::to_vec(&Timestamped {
@@ -371,11 +375,24 @@ pub(crate) async fn build_dataflow(
             timestamp: clock.new_timestamp(),
         })?;
 
-        let daemon_id =
-            build_dataflow_on_machine(daemon_connections, machine.map(|s| s.as_str()), &message)
-                .await
-                .wrap_err_with(|| format!("failed to build dataflow on machine `{machine:?}`"))?;
-        daemons.insert(daemon_id);
+        let daemon_connection = daemon_connections
+            .get_mut(daemon_id)
+            .wrap_err_with(|| format!("no daemon connection for daemon `{daemon_id}`"))?;
+
+        let reply_raw = daemon_connection
+            .send_and_receive(&message)
+            .await
+            .wrap_err("failed to send/receive build message")?;
+        match serde_json::from_slice(&reply_raw)
+            .wrap_err("failed to deserialize build reply from daemon")?
+        {
+            DaemonCoordinatorReply::TriggerBuildResult(result) => result
+                .map_err(|e| eyre!(e))
+                .wrap_err("daemon returned an error")?,
+            _ => bail!("unexpected reply"),
+        }
+
+        daemons.insert(daemon_id.clone());
     }
 
     tracing::info!("successfully triggered dataflow build `{build_id}`",);
@@ -387,42 +404,6 @@ pub(crate) async fn build_dataflow(
         log_subscribers: Vec::new(),
         pending_build_results: daemons,
     })
-}
-
-async fn build_dataflow_on_machine(
-    daemon_connections: &mut DaemonConnections,
-    machine: Option<&str>,
-    message: &[u8],
-) -> Result<DaemonId, eyre::ErrReport> {
-    let daemon_id = match machine {
-        Some(machine) => daemon_connections
-            .get_matching_daemon_id(machine)
-            .wrap_err_with(|| format!("no matching daemon for machine id {machine:?}"))?
-            .clone(),
-        None => daemon_connections
-            .unnamed()
-            .next()
-            .wrap_err("no unnamed daemon connections")?
-            .clone(),
-    };
-
-    let daemon_connection = daemon_connections
-        .get_mut(&daemon_id)
-        .wrap_err_with(|| format!("no daemon connection for daemon `{daemon_id}`"))?;
-
-    let reply_raw = daemon_connection
-        .send_and_receive(message)
-        .await
-        .wrap_err("failed to send/receive build message")?;
-    match serde_json::from_slice(&reply_raw)
-        .wrap_err("failed to deserialize build reply from daemon")?
-    {
-        DaemonCoordinatorReply::TriggerBuildResult(result) => result
-            .map_err(|e| eyre!(e))
-            .wrap_err("daemon returned an error")?,
-        _ => bail!("unexpected reply"),
-    }
-    Ok(daemon_id)
 }
 
 #[allow(clippy::too_many_arguments)]

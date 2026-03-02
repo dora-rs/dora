@@ -1,9 +1,12 @@
-use crate::{events::Event, ws_control::handle_control_ws, ws_daemon::handle_daemon_ws};
+use crate::{
+    artifacts::ArtifactStore, events::Event, ws_control::handle_control_ws,
+    ws_daemon::handle_daemon_ws,
+};
 use adora_core::uhlc::HLC;
 use adora_message::auth::AuthToken;
 use axum::{
     Router,
-    extract::{Query, State, ws::WebSocketUpgrade},
+    extract::{Path, Query, State, ws::WebSocketUpgrade},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::get,
@@ -23,6 +26,7 @@ pub(crate) struct WsState {
     pub event_tx: mpsc::Sender<Event>,
     pub clock: Arc<HLC>,
     pub auth_token: Option<AuthToken>,
+    pub artifact_store: Arc<ArtifactStore>,
 }
 
 #[derive(serde::Deserialize)]
@@ -74,6 +78,7 @@ pub(crate) fn router(state: WsState) -> Router {
     Router::new()
         .route("/api/control", get(ws_control_handler))
         .route("/api/daemon", get(ws_daemon_handler))
+        .route("/api/artifacts/{build_id}/{node_id}", get(artifact_handler))
         .route("/health", get(health))
         .with_state(Arc::new(state))
         .layer(ServiceBuilder::new().layer(ConcurrencyLimitLayer::new(MAX_WS_CONNECTIONS)))
@@ -111,12 +116,39 @@ async fn ws_daemon_handler(
         }))
 }
 
+async fn artifact_handler(
+    State(state): State<Arc<WsState>>,
+    headers: HeaderMap,
+    Query(query): Query<TokenQuery>,
+    Path((build_id, node_id)): Path<(String, String)>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let token = extract_token(&headers, &query);
+    validate_token(&state.auth_token, &token)?;
+
+    let build_uuid: uuid::Uuid = build_id.parse().map_err(|_| StatusCode::BAD_REQUEST)?;
+
+    let path = state
+        .artifact_store
+        .get_path(&build_uuid, &node_id)
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    let data = tokio::fs::read(&path)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok((
+        [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
+        data,
+    ))
+}
+
 /// Start the axum WS server. Returns the bound port, a shutdown trigger, and a future to await.
 pub(crate) async fn serve(
     bind: SocketAddr,
     event_tx: mpsc::Sender<Event>,
     clock: Arc<HLC>,
     auth_token: Option<AuthToken>,
+    artifact_store: Arc<ArtifactStore>,
 ) -> eyre::Result<(
     u16,
     ShutdownTrigger,
@@ -128,6 +160,7 @@ pub(crate) async fn serve(
         event_tx,
         clock,
         auth_token,
+        artifact_store,
     };
     let app = router(state);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();

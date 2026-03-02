@@ -50,6 +50,7 @@ impl CoordinatorSender {
 pub async fn register(
     addr: SocketAddr,
     machine_id: Option<String>,
+    labels: std::collections::BTreeMap<String, String>,
     clock: Arc<HLC>,
 ) -> eyre::Result<(
     DaemonId,
@@ -107,7 +108,7 @@ pub async fn register(
     // Serialize params via to_string (not to_value) to preserve u128 fidelity
     // for uhlc::ID(NonZeroU128) inside the timestamp.
     let register_params_json = serde_json::to_string(&Timestamped {
-        inner: CoordinatorRequest::Register(DaemonRegisterRequest::new(machine_id)),
+        inner: CoordinatorRequest::Register(DaemonRegisterRequest::new(machine_id, labels)),
         timestamp: clock.new_timestamp(),
     })?;
     let register_id = Uuid::new_v4();

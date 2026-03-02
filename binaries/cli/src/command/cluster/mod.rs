@@ -3,13 +3,20 @@ use adora_message::{
     coordinator_to_cli::{ControlRequestReply, DaemonInfo},
 };
 use eyre::{Context, bail};
+use std::collections::BTreeMap;
 
 use crate::{command::Executable, ws_client::WsSession};
 
+use self::config::MachineConfig;
+
 pub mod config;
 mod down;
+mod install;
+mod restart;
 mod status;
+mod uninstall;
 mod up;
+mod upgrade;
 
 /// Manage a multi-machine cluster.
 #[derive(Debug, clap::Subcommand)]
@@ -17,6 +24,10 @@ pub enum Cluster {
     Up(up::Up),
     Status(status::Status),
     Down(down::Down),
+    Install(install::Install),
+    Uninstall(uninstall::Uninstall),
+    Upgrade(upgrade::Upgrade),
+    Restart(restart::Restart),
 }
 
 impl Executable for Cluster {
@@ -25,6 +36,10 @@ impl Executable for Cluster {
             Cluster::Up(cmd) => cmd.execute(),
             Cluster::Status(cmd) => cmd.execute(),
             Cluster::Down(cmd) => cmd.execute(),
+            Cluster::Install(cmd) => cmd.execute(),
+            Cluster::Uninstall(cmd) => cmd.execute(),
+            Cluster::Upgrade(cmd) => cmd.execute(),
+            Cluster::Restart(cmd) => cmd.execute(),
         }
     }
 }
@@ -40,4 +55,44 @@ pub(crate) fn query_connected_daemons(session: &WsSession) -> eyre::Result<Vec<D
         ControlRequestReply::Error(err) => bail!("{err}"),
         other => bail!("unexpected reply: {other:?}"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Shared SSH helpers
+// ---------------------------------------------------------------------------
+
+/// Format the SSH target string from a machine config.
+pub(super) fn ssh_target(machine: &MachineConfig) -> String {
+    match &machine.user {
+        Some(user) => format!("{user}@{}", machine.host),
+        None => machine.host.clone(),
+    }
+}
+
+/// Format the `--labels key=val,key=val` argument string.
+pub(super) fn format_labels_arg(labels: &BTreeMap<String, String>) -> String {
+    if labels.is_empty() {
+        String::new()
+    } else {
+        let pairs: Vec<String> = labels.iter().map(|(k, v)| format!("{k}={v}")).collect();
+        format!(" --labels {}", pairs.join(","))
+    }
+}
+
+/// Run a command on a remote machine via SSH. Returns whether it succeeded.
+pub(super) fn run_ssh(target: &str, cmd: &str) -> eyre::Result<bool> {
+    let status = std::process::Command::new("ssh")
+        .args([
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=10",
+            "-o",
+            "StrictHostKeyChecking=accept-new",
+            target,
+            cmd,
+        ])
+        .status()
+        .with_context(|| format!("failed to run ssh to {target}"))?;
+    Ok(status.success())
 }

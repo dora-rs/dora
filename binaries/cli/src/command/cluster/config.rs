@@ -1,5 +1,9 @@
 use eyre::{Context, bail};
-use std::{collections::HashSet, net::IpAddr, path::Path};
+use std::{
+    collections::{BTreeMap, HashSet},
+    net::IpAddr,
+    path::Path,
+};
 
 use adora_core::topics::ADORA_COORDINATOR_PORT_WS_DEFAULT;
 
@@ -29,10 +33,9 @@ pub struct MachineConfig {
     pub host: String,
     #[serde(default)]
     pub user: Option<String>,
-    /// For future label-based scheduling.
+    /// Labels for label-based scheduling (e.g. `gpu: "true"`, `arch: arm64`).
     #[serde(default)]
-    #[allow(dead_code)]
-    pub labels: Vec<String>,
+    pub labels: BTreeMap<String, String>,
 }
 
 impl ClusterConfig {
@@ -93,13 +96,20 @@ mod tests {
     #[test]
     fn parse_full() {
         let f = write_yaml(
-            "coordinator:\n  addr: 10.0.0.1\n  port: 7000\nmachines:\n  - id: a\n    host: 10.0.0.2\n    user: bob\n    labels: [gpu, arm]\n  - id: b\n    host: 10.0.0.3\n",
+            "coordinator:\n  addr: 10.0.0.1\n  port: 7000\nmachines:\n  - id: a\n    host: 10.0.0.2\n    user: bob\n    labels:\n      gpu: \"true\"\n      arch: arm64\n  - id: b\n    host: 10.0.0.3\n",
         );
         let cfg = ClusterConfig::load(f.path()).unwrap();
         assert_eq!(cfg.coordinator.port, 7000);
         assert_eq!(cfg.machines.len(), 2);
         assert_eq!(cfg.machines[0].user.as_deref(), Some("bob"));
-        assert_eq!(cfg.machines[0].labels, vec!["gpu", "arm"]);
+        assert_eq!(
+            cfg.machines[0].labels.get("gpu").map(|s| s.as_str()),
+            Some("true")
+        );
+        assert_eq!(
+            cfg.machines[0].labels.get("arch").map(|s| s.as_str()),
+            Some("arm64")
+        );
     }
 
     #[test]

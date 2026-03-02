@@ -166,6 +166,7 @@ mod tests {
         let info = DaemonInfo {
             daemon_id: id.clone(),
             machine_id: Some("m1".into()),
+            labels: Default::default(),
         };
 
         store.register_daemon(info).unwrap();

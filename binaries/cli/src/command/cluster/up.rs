@@ -14,7 +14,7 @@ use crate::{
 };
 
 use super::config::ClusterConfig;
-use super::query_connected_daemons;
+use super::{format_labels_arg, query_connected_daemons, run_ssh, ssh_target};
 
 /// Bring up a multi-machine cluster from a cluster.yml file.
 ///
@@ -65,39 +65,35 @@ impl Executable for Up {
         // 2. SSH into each machine to start a daemon
         let mut ssh_failures: Vec<(String, String)> = Vec::new();
         for machine in &config.machines {
-            let target = match &machine.user {
-                Some(user) => format!("{user}@{}", machine.host),
-                None => machine.host.clone(),
-            };
+            let target = ssh_target(machine);
+            let labels_arg = format_labels_arg(&machine.labels);
             let remote_cmd = format!(
-                "nohup adora daemon --machine-id {id} --coordinator-addr {addr} --coordinator-port {port} --quiet > /tmp/adora-daemon-{id}.log 2>&1 &",
+                "nohup adora daemon --machine-id {id} --coordinator-addr {addr} --coordinator-port {port}{labels} --quiet > /tmp/adora-daemon-{id}.log 2>&1 &",
                 id = machine.id,
                 addr = config.coordinator.addr,
                 port = config.coordinator.port,
+                labels = labels_arg,
             );
 
             println!("Starting daemon on {} ({})", machine.id, target);
-            let status = Command::new("ssh")
-                .args([
-                    "-o",
-                    "BatchMode=yes",
-                    "-o",
-                    "ConnectTimeout=10",
-                    "-o",
-                    "StrictHostKeyChecking=accept-new",
-                    &target,
-                    &remote_cmd,
-                ])
-                .status()
-                .with_context(|| format!("failed to run ssh for machine `{}`", machine.id))?;
-
-            if !status.success() {
-                let msg = format!("ssh exited with {status}");
-                eprintln!(
-                    "  WARNING: failed to start daemon on `{}`: {msg}",
-                    machine.id
-                );
-                ssh_failures.push((machine.id.clone(), msg));
+            match run_ssh(&target, &remote_cmd) {
+                Ok(true) => {}
+                Ok(false) => {
+                    let msg = "ssh command failed".to_string();
+                    eprintln!(
+                        "  WARNING: failed to start daemon on `{}`: {msg}",
+                        machine.id
+                    );
+                    ssh_failures.push((machine.id.clone(), msg));
+                }
+                Err(err) => {
+                    let msg = format!("{err}");
+                    eprintln!(
+                        "  WARNING: failed to start daemon on `{}`: {msg}",
+                        machine.id
+                    );
+                    ssh_failures.push((machine.id.clone(), msg));
+                }
             }
         }
 

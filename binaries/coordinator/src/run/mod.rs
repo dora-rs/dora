@@ -6,11 +6,10 @@ use adora_message::{
     common::DaemonId,
     coordinator_to_daemon::{DaemonCoordinatorEvent, SpawnDataflowNodes, Timestamped},
     daemon_to_coordinator::DaemonCoordinatorReply,
-    descriptor::{Descriptor, ResolvedNode},
+    descriptor::{Deploy, Descriptor, ResolvedNode},
     id::NodeId,
 };
 use eyre::{ContextCompat, WrapErr, bail, eyre};
-use itertools::Itertools;
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::PathBuf,
@@ -32,17 +31,20 @@ pub(super) async fn spawn_dataflow(
     let nodes = dataflow.resolve_aliases_and_set_defaults()?;
     let uuid = Uuid::new_v7(Timestamp::now(NoContext));
 
-    let nodes_by_daemon = nodes
-        .values()
-        .into_group_map_by(|n| n.deploy.as_ref().and_then(|d| d.machine.as_ref()));
+    // Resolve each node to its target daemon, then group by daemon.
+    let mut nodes_by_daemon: BTreeMap<DaemonId, Vec<&ResolvedNode>> = BTreeMap::new();
+    for node in nodes.values() {
+        let daemon_id = resolve_daemon(daemon_connections, node.deploy.as_ref())?;
+        nodes_by_daemon.entry(daemon_id).or_default().push(node);
+    }
 
     let mut daemons = BTreeSet::new();
     let mut node_to_daemon = BTreeMap::new();
 
-    for (machine, nodes_on_machine) in &nodes_by_daemon {
-        let spawn_nodes = nodes_on_machine.iter().map(|n| n.id.clone()).collect();
+    for (daemon_id, nodes_on_daemon) in &nodes_by_daemon {
+        let spawn_nodes = nodes_on_daemon.iter().map(|n| n.id.clone()).collect();
         tracing::debug!(
-            "Spawning dataflow `{uuid}` on machine `{machine:?}` (nodes: {spawn_nodes:?})"
+            "Spawning dataflow `{uuid}` on daemon `{daemon_id}` (nodes: {spawn_nodes:?})"
         );
 
         let spawn_command = SpawnDataflowNodes {
@@ -55,20 +57,32 @@ pub(super) async fn spawn_dataflow(
             spawn_nodes,
             uv,
             write_events_to: write_events_to.clone(),
+            artifact_base_url: None,
         };
         let message = serde_json::to_vec(&Timestamped {
             inner: DaemonCoordinatorEvent::Spawn(spawn_command),
             timestamp: clock.new_timestamp(),
         })?;
 
-        let daemon_id =
-            spawn_dataflow_on_machine(daemon_connections, machine.map(|m| m.as_str()), &message)
-                .await
-                .wrap_err_with(|| format!("failed to spawn dataflow on machine `{machine:?}`"))?;
-        daemons.insert(daemon_id.clone());
+        let daemon_connection = daemon_connections
+            .get_mut(daemon_id)
+            .wrap_err_with(|| format!("no daemon connection for daemon `{daemon_id}`"))?;
 
-        // Map each node on this machine to its daemon
-        for node in nodes_on_machine {
+        let reply_raw = daemon_connection
+            .send_and_receive(&message)
+            .await
+            .wrap_err("failed to send/receive spawn message")?;
+        match serde_json::from_slice(&reply_raw)
+            .wrap_err("failed to deserialize spawn reply from daemon")?
+        {
+            DaemonCoordinatorReply::TriggerSpawnResult(result) => result
+                .map_err(|e| eyre!(e))
+                .wrap_err("daemon returned an error")?,
+            _ => bail!("unexpected reply"),
+        }
+
+        daemons.insert(daemon_id.clone());
+        for node in nodes_on_daemon {
             node_to_daemon.insert(node.id.clone(), daemon_id.clone());
         }
     }
@@ -83,40 +97,30 @@ pub(super) async fn spawn_dataflow(
     })
 }
 
-async fn spawn_dataflow_on_machine(
-    daemon_connections: &mut DaemonConnections,
-    machine: Option<&str>,
-    message: &[u8],
-) -> Result<DaemonId, eyre::ErrReport> {
-    let daemon_id = match machine {
-        Some(machine) => daemon_connections
-            .get_matching_daemon_id(machine)
-            .wrap_err_with(|| format!("no matching daemon for machine id {machine:?}"))?
-            .clone(),
-        None => daemon_connections
+/// Resolve which daemon should run a node based on its deploy config.
+/// Priority: machine > labels > unnamed.
+pub(super) fn resolve_daemon(
+    connections: &DaemonConnections,
+    deploy: Option<&Deploy>,
+) -> eyre::Result<DaemonId> {
+    match deploy {
+        Some(d) if d.machine.is_some() => {
+            let machine = d.machine.as_deref().unwrap();
+            connections
+                .get_matching_daemon_id(machine)
+                .cloned()
+                .wrap_err_with(|| format!("no matching daemon for machine id `{machine}`"))
+        }
+        Some(d) if !d.labels.is_empty() => connections
+            .get_matching_daemon_by_labels(&d.labels)
+            .cloned()
+            .wrap_err_with(|| format!("no daemon matches labels {:?}", d.labels)),
+        _ => connections
             .unnamed()
             .next()
-            .wrap_err("no unnamed daemon connections")?
-            .clone(),
-    };
-
-    let daemon_connection = daemon_connections
-        .get_mut(&daemon_id)
-        .wrap_err_with(|| format!("no daemon connection for daemon `{daemon_id}`"))?;
-
-    let reply_raw = daemon_connection
-        .send_and_receive(message)
-        .await
-        .wrap_err("failed to send/receive spawn message")?;
-    match serde_json::from_slice(&reply_raw)
-        .wrap_err("failed to deserialize spawn reply from daemon")?
-    {
-        DaemonCoordinatorReply::TriggerSpawnResult(result) => result
-            .map_err(|e| eyre!(e))
-            .wrap_err("daemon returned an error")?,
-        _ => bail!("unexpected reply"),
+            .cloned()
+            .wrap_err("no unnamed daemon connections"),
     }
-    Ok(daemon_id)
 }
 
 pub struct SpawnedDataflow {

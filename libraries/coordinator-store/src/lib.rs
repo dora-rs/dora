@@ -10,6 +10,7 @@ pub use redb_store::RedbStore;
 use adora_message::common::DaemonId;
 use eyre::Result;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
@@ -21,6 +22,8 @@ use uuid::Uuid;
 pub struct DaemonInfo {
     pub daemon_id: DaemonId,
     pub machine_id: Option<String>,
+    #[serde(default)]
+    pub labels: BTreeMap<String, String>,
 }
 
 /// Persistable dataflow record (desired state + observed status).

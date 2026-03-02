@@ -21,13 +21,16 @@ pub enum CoordinatorRequest {
 pub struct DaemonRegisterRequest {
     adora_version: semver::Version,
     pub machine_id: Option<String>,
+    #[serde(default)]
+    pub labels: BTreeMap<String, String>,
 }
 
 impl DaemonRegisterRequest {
-    pub fn new(machine_id: Option<String>) -> Self {
+    pub fn new(machine_id: Option<String>, labels: BTreeMap<String, String>) -> Self {
         Self {
             adora_version: current_crate_version(),
             machine_id,
+            labels,
         }
     }
 

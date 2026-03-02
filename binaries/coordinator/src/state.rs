@@ -56,6 +56,17 @@ impl DaemonConnections {
     pub(crate) fn unnamed(&self) -> impl Iterator<Item = &DaemonId> {
         self.daemons.keys().filter(|id| id.machine_id().is_none())
     }
+
+    /// Find the first daemon whose labels are a superset of `required`.
+    pub(crate) fn get_matching_daemon_by_labels(
+        &self,
+        required: &BTreeMap<String, String>,
+    ) -> Option<&DaemonId> {
+        self.daemons.iter().find_map(|(id, conn)| {
+            let all_match = required.iter().all(|(k, v)| conn.labels.get(k) == Some(v));
+            if all_match { Some(id) } else { None }
+        })
+    }
 }
 
 pub(crate) struct DaemonConnection {
@@ -63,6 +74,7 @@ pub(crate) struct DaemonConnection {
     /// Shared with the ws_daemon handler task to resolve correlation-based replies.
     pub(crate) pending_replies: Arc<Mutex<HashMap<Uuid, oneshot::Sender<String>>>>,
     pub(crate) last_heartbeat: Instant,
+    pub(crate) labels: BTreeMap<String, String>,
 }
 
 impl DaemonConnection {
@@ -74,6 +86,7 @@ impl DaemonConnection {
             sender,
             pending_replies,
             last_heartbeat: Instant::now(),
+            labels: BTreeMap::new(),
         }
     }
 

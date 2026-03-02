@@ -134,6 +134,7 @@ impl Daemon {
     pub async fn run(
         coordinator_ws_addr: SocketAddr,
         machine_id: Option<String>,
+        labels: BTreeMap<String, String>,
         local_listen_port: u16,
     ) -> eyre::Result<()> {
         let clock = Arc::new(HLC::default());
@@ -144,6 +145,7 @@ impl Daemon {
             let incoming_events = set_up_event_stream(
                 coordinator_ws_addr,
                 &machine_id,
+                labels,
                 &clock,
                 remote_daemon_events_rx,
                 local_listen_port,
@@ -241,6 +243,7 @@ impl Daemon {
             dataflow_descriptor: descriptor,
             uv,
             write_events_to,
+            artifact_base_url: None,
         };
 
         let clock = Arc::new(HLC::default());
@@ -774,6 +777,7 @@ impl Daemon {
                 spawn_nodes,
                 uv,
                 write_events_to,
+                artifact_base_url: _,
             }) => {
                 match dataflow_descriptor.communication.remote {
                     adora_core::config::RemoteCommunicationConfig::Tcp => {}
@@ -2635,6 +2639,7 @@ async fn read_last_n_lines(file: &mut File, mut tail: usize) -> io::Result<Vec<u
 async fn set_up_event_stream(
     coordinator_ws_addr: SocketAddr,
     machine_id: &Option<String>,
+    labels: BTreeMap<String, String>,
     clock: &Arc<HLC>,
     remote_daemon_events_rx: flume::Receiver<eyre::Result<Timestamped<InterDaemonEvent>>>,
     // used for dynamic nodes
@@ -2655,10 +2660,14 @@ async fn set_up_event_stream(
             timestamp: clock_cloned.new_timestamp(),
         },
     });
-    let (daemon_id, coordinator_sender, coordinator_events) =
-        coordinator::register(coordinator_ws_addr, machine_id.clone(), clock.clone())
-            .await
-            .wrap_err("failed to connect to adora-coordinator")?;
+    let (daemon_id, coordinator_sender, coordinator_events) = coordinator::register(
+        coordinator_ws_addr,
+        machine_id.clone(),
+        labels,
+        clock.clone(),
+    )
+    .await
+    .wrap_err("failed to connect to adora-coordinator")?;
     let coordinator_events = coordinator_events.map(
         |Timestamped {
              inner: event,

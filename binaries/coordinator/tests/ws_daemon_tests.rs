@@ -44,8 +44,10 @@ async fn connect_control(
 /// JSON text (`serde_json::from_str`), so this matches the real wire format.
 fn make_register_request() -> (Uuid, String) {
     let id = Uuid::new_v4();
-    let register =
-        CoordinatorRequest::Register(DaemonRegisterRequest::new(Some("test-machine".into())));
+    let register = CoordinatorRequest::Register(DaemonRegisterRequest::new(
+        Some("test-machine".into()),
+        Default::default(),
+    ));
     let timestamped = Timestamped {
         inner: register,
         timestamp: adora_message::uhlc::HLC::default().new_timestamp(),

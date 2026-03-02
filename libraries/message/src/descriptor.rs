@@ -124,6 +124,26 @@ pub struct Deploy {
     pub machine: Option<String>,
     /// Working directory for the deployment
     pub working_dir: Option<PathBuf>,
+    /// Labels for label-based scheduling (e.g. `gpu: "true"`, `arch: arm64`).
+    /// The coordinator matches these against daemon labels reported at registration.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub labels: BTreeMap<String, String>,
+    /// How built binaries are distributed to remote daemons.
+    #[serde(default)]
+    pub distribute: DistributeStrategy,
+}
+
+/// Strategy for distributing built binaries to daemons.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum DistributeStrategy {
+    /// Each daemon builds from source (current/default behavior).
+    #[default]
+    Local,
+    /// CLI pushes built binary via SSH/SCP before spawn.
+    Scp,
+    /// Daemon pulls binary from coordinator HTTP artifact store before spawn.
+    Http,
 }
 
 /// Debug options for dataflow development and troubleshooting.

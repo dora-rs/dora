@@ -7,6 +7,7 @@ use adora_core::topics::{
 use adora_daemon::LogDestination;
 use eyre::Context;
 use std::{
+    collections::BTreeMap,
     net::{IpAddr, SocketAddr},
     path::PathBuf,
 };
@@ -30,6 +31,10 @@ pub struct Daemon {
     coordinator_port: u16,
     #[clap(long, hide = true)]
     run_dataflow: Option<PathBuf>,
+    /// Labels for this daemon (e.g. `--labels gpu=true,arch=arm64`).
+    /// Used for label-based node scheduling.
+    #[clap(long, value_parser = parse_labels)]
+    labels: Option<BTreeMap<String, String>>,
     /// Suppresses all log output to stdout.
     #[clap(long)]
     quiet: bool,
@@ -100,10 +105,25 @@ impl Executable for Daemon {
                         handle_dataflow_result(result, None)
                     }
                     None => {
-                        adora_daemon::Daemon::run(SocketAddr::new(self.coordinator_addr, self.coordinator_port), self.machine_id, self.local_listen_port).await
+                        adora_daemon::Daemon::run(SocketAddr::new(self.coordinator_addr, self.coordinator_port), self.machine_id, self.labels.unwrap_or_default(), self.local_listen_port).await
                     }
                 }
             })
             .context("failed to run adora-daemon")
     }
+}
+
+fn parse_labels(s: &str) -> Result<BTreeMap<String, String>, String> {
+    let mut map = BTreeMap::new();
+    for pair in s.split(',') {
+        let pair = pair.trim();
+        if pair.is_empty() {
+            continue;
+        }
+        let (k, v) = pair
+            .split_once('=')
+            .ok_or_else(|| format!("invalid label `{pair}`, expected key=value"))?;
+        map.insert(k.to_string(), v.to_string());
+    }
+    Ok(map)
 }

@@ -36,6 +36,7 @@ use std::{
 };
 use tokio_stream::wrappers::ReceiverStream;
 
+pub(crate) mod artifacts;
 mod control;
 mod events;
 mod handlers;
@@ -123,6 +124,8 @@ async fn start_with_events(
     span_store: SpanStore,
 ) -> Result<(u16, impl Future<Output = eyre::Result<()>>), eyre::ErrReport> {
     let clock = Arc::new(HLC::default());
+    let artifact_store =
+        Arc::new(artifacts::ArtifactStore::new().wrap_err("failed to create artifact store")?);
 
     let mut tasks = FuturesUnordered::new();
 
@@ -131,10 +134,15 @@ async fn start_with_events(
     let ws_events = ReceiverStream::new(ws_event_rx);
 
     // Start WS server
-    let (port, ws_shutdown, ws_future) =
-        ws_server::serve(bind, ws_event_tx.clone(), clock.clone(), auth_token)
-            .await
-            .wrap_err("failed to start WS server")?;
+    let (port, ws_shutdown, ws_future) = ws_server::serve(
+        bind,
+        ws_event_tx.clone(),
+        clock.clone(),
+        auth_token,
+        artifact_store,
+    )
+    .await
+    .wrap_err("failed to start WS server")?;
     tracing::info!("WS server listening on port {port}");
     tasks.push(tokio::spawn(async move {
         if let Err(e) = ws_future.await {
@@ -250,6 +258,7 @@ async fn start_inner(
             Event::Daemon(event) => match event {
                 DaemonRequest::Register {
                     machine_id,
+                    labels,
                     mut connection,
                     version_check_result,
                     daemon_id_tx,
@@ -290,11 +299,13 @@ async fn start_inner(
                     {
                         Ok(()) => {
                             let _ = daemon_id_tx.send(daemon_id.clone());
+                            connection.labels = labels.clone();
                             daemon_connections.add(daemon_id.clone(), connection);
                             if let Err(e) =
                                 store.register_daemon(adora_coordinator_store::DaemonInfo {
                                     daemon_id: daemon_id.clone(),
                                     machine_id: daemon_id.machine_id().map(|s| s.to_owned()),
+                                    labels,
                                 })
                             {
                                 persist_failure_count += 1;
@@ -1217,6 +1228,61 @@ async fn start_inner(
                             tracing::warn!(
                                 "failed to look up dataflow {df_id} for reconciliation: {e}"
                             );
+                        }
+                    }
+                }
+
+                // Auto-recovery: find dataflows that should be running on this daemon
+                // but aren't reported. Only re-spawn for coordinator-managed dataflows
+                // (those with a build_id, i.e. started via `adora start`).
+                let reported_set: BTreeSet<DataflowId> =
+                    reported_dataflows.iter().copied().collect();
+                for (uuid, df) in &running_dataflows {
+                    if !df.daemons.contains(&daemon_id) {
+                        continue;
+                    }
+                    if reported_set.contains(uuid) {
+                        continue;
+                    }
+                    // Collect nodes assigned to this daemon
+                    let spawn_nodes: BTreeSet<_> = df
+                        .node_to_daemon
+                        .iter()
+                        .filter(|(_, did)| **did == daemon_id)
+                        .map(|(nid, _)| nid.clone())
+                        .collect();
+                    if spawn_nodes.is_empty() {
+                        continue;
+                    }
+                    tracing::info!(
+                        "auto-recovery: re-spawning {} node(s) for dataflow {uuid} on daemon {daemon_id}",
+                        spawn_nodes.len()
+                    );
+                    let spawn_command = adora_message::coordinator_to_daemon::SpawnDataflowNodes {
+                        build_id: None,
+                        session_id: adora_message::SessionId::generate(),
+                        dataflow_id: *uuid,
+                        local_working_dir: None,
+                        nodes: df.nodes.clone(),
+                        dataflow_descriptor: df.descriptor.clone(),
+                        spawn_nodes,
+                        uv: false,
+                        write_events_to: None,
+                        artifact_base_url: None,
+                    };
+                    let message = match serde_json::to_vec(&Timestamped {
+                        inner: DaemonCoordinatorEvent::Spawn(spawn_command),
+                        timestamp: clock.new_timestamp(),
+                    }) {
+                        Ok(m) => m,
+                        Err(e) => {
+                            tracing::warn!("failed to serialize re-spawn command: {e}");
+                            continue;
+                        }
+                    };
+                    if let Some(conn) = daemon_connections.get_mut(&daemon_id) {
+                        if let Err(e) = conn.send(&message).await {
+                            tracing::warn!("failed to send re-spawn to daemon {daemon_id}: {e}");
                         }
                     }
                 }
