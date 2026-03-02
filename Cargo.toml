@@ -76,19 +76,21 @@ dora-ros2-bridge-python = { path = "libraries/extensions/ros2-bridge/python" }
 # Stays at 0.7.0 for now to keep the rust-dataflow-git example working.
 # TODO: bump to 0.8.0 on the next dora release once downstream examples are updated.
 dora-message = { version = "0.7.0", path = "libraries/message" }
-arrow = { version = "54.2.1" }
-arrow-schema = { version = "54.2.1" }
-arrow-data = { version = "54.2.1" }
-arrow-array = { version = "54.2.1" }
-arrow-json = { version = "54.2.1" }
-parquet = { version = "54.2.1" }
-pyo3 = { version = "0.23", features = [
+arrow = { version = "58.0.0" }
+arrow-schema = { version = "58.0.0" }
+arrow-data = { version = "58.0.0" }
+arrow-array = { version = "58.0.0" }
+arrow-json = { version = "58.0.0" }
+parquet = { version = "58.0.0" }
+pyo3 = { version = "0.28", features = [
     "eyre",
-    "abi3-py37",
     "multiple-pymethods",
+    "abi3-py37"
 ] }
-pythonize = "0.23"
+pythonize = "0.28"
 git2 = { version = "0.20.4", features = ["vendored-openssl"] }
+pyo3_special_method_derive = { git = "https://github.com/drindr/pyo3-special-method-derive.git", branch = "bump-pyo3-to-0.28" }
+pyo3-build-config = "0.28"
 serde_yaml = "0.9.33"
 zenoh = "1.1.1"
 serde_json = "1.0.145"

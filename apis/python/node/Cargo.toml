@@ -21,7 +21,7 @@ telemetry = ["dora-runtime/telemetry"]
 [dependencies]
 dora-node-api = { workspace = true }
 dora-operator-api-python = { workspace = true }
-pyo3.workspace = true
+pyo3 = { workspace = true }
 eyre = "0.6"
 serde_yaml = { workspace = true }
 flume = "0.10.14"
@@ -32,12 +32,12 @@ arrow = { workspace = true, features = ["pyarrow"] }
 pythonize = { workspace = true }
 futures = "0.3.28"
 dora-ros2-bridge-python = { workspace = true }
-pyo3_special_method_derive = "0.4.3"
+pyo3_special_method_derive = { workspace = true }
 tokio = { version = "1.24.2", features = ["rt-multi-thread", "time", "macros"] }
 tracing = "0.1.36"
 
 [build-dependencies]
-pyo3-build-config = "0.23"
+pyo3-build-config = { workspace = true }
 
 [lib]
 name = "dora"
