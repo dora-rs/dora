@@ -126,16 +126,28 @@ sends a result with `goal_status = "canceled"`.
 | Yes | No | No | **Service** |
 | Yes | Yes | Optional | **Action** |
 
-## 5. Python compatibility
+## 5. Important details
+
+- **`goal_status` matching is case-sensitive.** Always use the exact lowercase
+  values: `"succeeded"`, `"aborted"`, `"canceled"`. The ROS2 bridge defaults
+  to `Aborted` for unrecognised values.
+
+## 6. Python compatibility
 
 Python nodes use the same metadata conventions. Parameters are plain dicts
 with string keys:
 
 ```python
-# Service client
-params = {"request_id": str(uuid.uuid4())}
+import uuid
+
+# Service client (uuid7 for time-ordered IDs, matching Rust API)
+params = {"request_id": str(uuid.uuid7())}
 node.send_output("request", data, metadata={"parameters": params})
 
 # Service server -- pass through parameters
 node.send_output("response", result, metadata=event["metadata"])
 ```
+
+> **Note**: `uuid.uuid7()` requires Python 3.13+. On older versions, use the
+> `uuid_utils` package or `uuid.uuid4()` (random v4 also works for correlation,
+> but loses time-ordering).

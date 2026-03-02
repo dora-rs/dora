@@ -93,6 +93,7 @@ pub use adora_message::{
     metadata::{
         self, GOAL_ID, GOAL_STATUS, GOAL_STATUS_ABORTED, GOAL_STATUS_CANCELED,
         GOAL_STATUS_SUCCEEDED, Metadata, MetadataParameters, Parameter, REQUEST_ID,
+        get_string_param,
     },
 };
 use adora_message::{

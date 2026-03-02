@@ -73,6 +73,15 @@ pub enum Parameter {
     Timestamp(DateTime<Utc>),
 }
 
+/// Extract a string parameter from metadata, returning `None` if missing or
+/// not a `Parameter::String`.
+pub fn get_string_param<'a>(params: &'a MetadataParameters, key: &str) -> Option<&'a str> {
+    params.get(key).and_then(|p| match p {
+        Parameter::String(s) => Some(s.as_str()),
+        _ => None,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Well-known metadata parameter keys for service and action patterns
 // ---------------------------------------------------------------------------
@@ -106,6 +115,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn well_known_keys_have_stable_values() {
+        // These string values are part of the cross-language protocol
+        // (Python nodes use the same literal strings). Do not change.
+        assert_eq!(REQUEST_ID, "request_id");
+        assert_eq!(GOAL_ID, "goal_id");
+        assert_eq!(GOAL_STATUS, "goal_status");
+        assert_eq!(GOAL_STATUS_SUCCEEDED, "succeeded");
+        assert_eq!(GOAL_STATUS_ABORTED, "aborted");
+        assert_eq!(GOAL_STATUS_CANCELED, "canceled");
+    }
+
+    #[test]
     fn well_known_keys_are_distinct() {
         let keys = [REQUEST_ID, GOAL_ID, GOAL_STATUS];
         for (i, a) in keys.iter().enumerate() {
@@ -127,5 +148,20 @@ mod tests {
                 assert_ne!(a, b);
             }
         }
+    }
+
+    #[test]
+    fn get_string_param_extracts_string() {
+        let mut params = MetadataParameters::default();
+        params.insert("key".to_string(), Parameter::String("value".to_string()));
+        assert_eq!(get_string_param(&params, "key"), Some("value"));
+        assert_eq!(get_string_param(&params, "missing"), None);
+    }
+
+    #[test]
+    fn get_string_param_returns_none_for_non_string() {
+        let mut params = MetadataParameters::default();
+        params.insert("num".to_string(), Parameter::Integer(42));
+        assert_eq!(get_string_param(&params, "num"), None);
     }
 }

@@ -844,8 +844,14 @@ impl AdoraNode {
     // -----------------------------------------------------------------
 
     /// Generate a new unique request/goal ID (UUID v7, time-ordered).
+    ///
+    /// Uses a per-thread monotonic counter context to guarantee uniqueness
+    /// even when multiple IDs are generated within the same clock tick.
     pub fn new_request_id() -> String {
-        uuid::Uuid::new_v7(uuid::Timestamp::now(uuid::NoContext)).to_string()
+        thread_local! {
+            static CTX: uuid::ContextV7 = const { uuid::ContextV7::new() };
+        }
+        CTX.with(|ctx| uuid::Uuid::new_v7(uuid::Timestamp::now(ctx)).to_string())
     }
 
     /// Generate a new unique goal ID (UUID v7, time-ordered).

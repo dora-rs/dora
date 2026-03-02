@@ -4,6 +4,7 @@ use adora_node_api::{
     AdoraNode, Event, GOAL_ID, GOAL_STATUS, GOAL_STATUS_CANCELED, GOAL_STATUS_SUCCEEDED,
     MetadataParameters, Parameter,
     arrow::array::{Array, Int64Array},
+    get_string_param,
 };
 
 const MAX_ACTIVE_GOALS: usize = 64;
@@ -20,7 +21,8 @@ fn main() -> eyre::Result<()> {
         match event {
             Event::Input { id, metadata, data } => match id.as_str() {
                 "goal" => {
-                    let goal_id = extract_string_param(&metadata.parameters, GOAL_ID);
+                    let goal_id =
+                        get_string_param(&metadata.parameters, GOAL_ID).map(str::to_owned);
                     let start = data
                         .as_any()
                         .downcast_ref::<Int64Array>()
@@ -36,7 +38,8 @@ fn main() -> eyre::Result<()> {
                     }
                 }
                 "cancel" => {
-                    let goal_id = extract_string_param(&metadata.parameters, GOAL_ID);
+                    let goal_id =
+                        get_string_param(&metadata.parameters, GOAL_ID).map(str::to_owned);
                     if let Some(goal_id) = goal_id {
                         if canceled.len() >= MAX_PENDING_CANCELS {
                             eprintln!("[server] cancel queue full, dropping cancel for {goal_id}");
@@ -54,7 +57,9 @@ fn main() -> eyre::Result<()> {
             _ => {}
         }
 
-        // Process one step for each active goal
+        // Process one step for each active goal on every input event.
+        // This sits outside the match so goals make progress regardless of
+        // which input triggered the event loop iteration.
         let goal_ids: Vec<String> = active_goals.keys().cloned().collect();
         for goal_id in goal_ids {
             if canceled.remove(&goal_id) {
@@ -96,11 +101,4 @@ fn send_result(node: &mut AdoraNode, goal_id: &str, status: &str) -> eyre::Resul
     node.send_output("result".into(), params, result_data)?;
     println!("[server] result {goal_id}: {status}");
     Ok(())
-}
-
-fn extract_string_param(params: &MetadataParameters, key: &str) -> Option<String> {
-    params.get(key).and_then(|p| match p {
-        Parameter::String(s) => Some(s.clone()),
-        _ => None,
-    })
 }

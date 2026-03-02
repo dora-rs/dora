@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use adora_node_api::{
     AdoraNode, Event, GOAL_ID, GOAL_STATUS, MetadataParameters, Parameter,
     arrow::array::{Array, Int64Array},
+    get_string_param,
 };
 
 fn main() -> eyre::Result<()> {
@@ -29,7 +30,7 @@ fn main() -> eyre::Result<()> {
                     active_goals.insert(goal_id, start_value);
                 }
                 "feedback" => {
-                    let gid = extract_string_param(&metadata.parameters, GOAL_ID);
+                    let gid = get_string_param(&metadata.parameters, GOAL_ID);
                     let fb_array = data
                         .as_any()
                         .downcast_ref::<Int64Array>()
@@ -40,13 +41,13 @@ fn main() -> eyre::Result<()> {
                     }
                 }
                 "result" => {
-                    let gid = extract_string_param(&metadata.parameters, GOAL_ID);
-                    let status = extract_string_param(&metadata.parameters, GOAL_STATUS);
+                    let gid = get_string_param(&metadata.parameters, GOAL_ID);
+                    let status = get_string_param(&metadata.parameters, GOAL_STATUS);
 
                     if let Some(gid) = gid {
-                        let status = status.unwrap_or_else(|| "unknown".to_string());
+                        let status = status.unwrap_or("unknown");
                         println!("[client] result {gid}: {status}");
-                        active_goals.remove(&gid);
+                        active_goals.remove(gid);
                     }
                 }
                 _ => {}
@@ -57,11 +58,4 @@ fn main() -> eyre::Result<()> {
     }
 
     Ok(())
-}
-
-fn extract_string_param(params: &MetadataParameters, key: &str) -> Option<String> {
-    params.get(key).and_then(|p| match p {
-        Parameter::String(s) => Some(s.clone()),
-        _ => None,
-    })
 }

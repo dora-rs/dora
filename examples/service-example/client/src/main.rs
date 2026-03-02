@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 
 use adora_node_api::{
-    AdoraNode, Event, MetadataParameters, Parameter, REQUEST_ID,
+    AdoraNode, Event, MetadataParameters, REQUEST_ID,
     arrow::array::{Array, Int64Array, StructArray},
+    get_string_param,
 };
 use eyre::Context;
 
@@ -48,10 +49,7 @@ fn main() -> eyre::Result<()> {
                     in_flight.insert(request_id, (a, b));
                 }
                 "response" => {
-                    let rid = metadata.parameters.get(REQUEST_ID).and_then(|p| match p {
-                        Parameter::String(s) => Some(s.clone()),
-                        _ => None,
-                    });
+                    let rid = get_string_param(&metadata.parameters, REQUEST_ID);
 
                     if let Some(rid) = rid {
                         let struct_array = StructArray::from(data.to_data());
@@ -60,7 +58,7 @@ fn main() -> eyre::Result<()> {
                             .and_then(|c| c.as_any().downcast_ref::<Int64Array>())
                             .map(|a| a.value(0));
 
-                        if let (Some((a, b)), Some(sum)) = (in_flight.remove(&rid), sum_col) {
+                        if let (Some((a, b)), Some(sum)) = (in_flight.remove(rid), sum_col) {
                             println!("[client] response {rid}: {a} + {b} = {sum}");
                             assert_eq!(sum, a + b, "sum mismatch");
                         }
