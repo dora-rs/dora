@@ -85,6 +85,12 @@ Dataflows are defined in YAML files. Nodes declare inputs (subscribing to other 
 
 ### Communication patterns
 
+User-facing patterns (see `docs/patterns.md`):
+- **Topic**: default pub/sub dataflow
+- **Service**: request/reply via `request_id` metadata key; helpers: `send_service_request()`, `send_service_response()`
+- **Action**: goal/feedback/result via `goal_id`/`goal_status` metadata keys; supports cancellation
+
+Internal transport:
 - **flume** channels: bounded MPSC for internal event routing
 - **tokio** async runtime with full features
 - **Zenoh**: pub-sub for remote/distributed nodes

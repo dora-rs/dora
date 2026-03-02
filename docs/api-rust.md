@@ -111,6 +111,57 @@ pub fn send_output_sample(
 pub fn close_outputs(&mut self, outputs_ids: Vec<DataId>) -> NodeResult<()>
 ```
 
+#### Service and Action Helpers
+
+Higher-level methods for the [service and action communication patterns](patterns.md). These use well-known metadata keys to correlate requests, goals, and responses.
+
+```rust
+// Generate a unique, time-ordered ID (UUID v7) for correlation.
+pub fn new_request_id() -> String
+pub fn new_goal_id() -> String   // alias for new_request_id
+
+// Send a service request. Injects a `request_id` into parameters and returns it.
+pub fn send_service_request(
+    &mut self,
+    output_id: DataId,
+    parameters: MetadataParameters,
+    data: impl Array,
+) -> NodeResult<String>
+
+// Send a service response. Semantic alias for send_output.
+// Caller must pass through the request_id from the incoming request's metadata.
+pub fn send_service_response(
+    &mut self,
+    output_id: DataId,
+    parameters: MetadataParameters,
+    data: impl Array,
+) -> NodeResult<()>
+```
+
+**Service example** (client sends request, server replies):
+```rust
+// Client: auto-generates and injects request_id
+let rid = node.send_service_request("request".into(), params, data)?;
+
+// Server: pass through metadata.parameters (includes request_id)
+node.send_service_response("response".into(), metadata.parameters, result)?;
+```
+
+**Action example** (client sends goal, server streams feedback + result):
+```rust
+use adora_node_api::{GOAL_ID, GOAL_STATUS, GOAL_STATUS_SUCCEEDED, Parameter};
+
+// Client: generate goal_id, attach to params
+let goal_id = AdoraNode::new_goal_id();
+params.insert(GOAL_ID.to_string(), Parameter::String(goal_id));
+node.send_output("goal".into(), params, data)?;
+
+// Server: extract goal_id, send feedback/result with goal_status
+let gid = get_string_param(&metadata.parameters, GOAL_ID);
+```
+
+See [patterns.md](patterns.md) for the full guide and [examples/service-example](../examples/service-example) and [examples/action-example](../examples/action-example) for working code.
+
 #### Data Allocation
 
 ```rust
@@ -269,13 +320,33 @@ pub struct Metadata {
 }
 
 // User-controlled metadata fields attached when sending outputs.
-pub struct MetadataParameters {
-    // Default is empty. Pass metadata.parameters from an input to forward metadata.
+// Type alias for BTreeMap<String, Parameter>.
+// Default is empty. Pass metadata.parameters from an input to forward metadata.
+pub type MetadataParameters = BTreeMap<String, Parameter>;
+
+// A single metadata parameter value.
+pub enum Parameter {
+    Bool(bool), Integer(i64), Float(f64), String(String),
+    ListInt(Vec<i64>), ListFloat(Vec<f64>), ListString(Vec<String>),
+    Timestamp(DateTime<Utc>),
 }
 
-// A single metadata parameter (key-value pair).
-pub struct Parameter { /* ... */ }
+// Extract a string parameter, returning None if missing or non-String.
+pub fn get_string_param<'a>(params: &'a MetadataParameters, key: &str) -> Option<&'a str>
 ```
+
+**Well-known metadata keys** (for [service and action patterns](patterns.md)):
+
+| Constant | Value | Used by |
+|----------|-------|---------|
+| `REQUEST_ID` | `"request_id"` | Service request/response correlation |
+| `GOAL_ID` | `"goal_id"` | Action goal identification |
+| `GOAL_STATUS` | `"goal_status"` | Action result status |
+| `GOAL_STATUS_SUCCEEDED` | `"succeeded"` | Goal completed successfully |
+| `GOAL_STATUS_ABORTED` | `"aborted"` | Goal aborted by server |
+| `GOAL_STATUS_CANCELED` | `"canceled"` | Goal canceled by client |
+
+All constants are re-exported from `adora_node_api`.
 
 #### Identity Types
 

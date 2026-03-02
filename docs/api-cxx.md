@@ -249,6 +249,28 @@ enum class MetadataValueType : uint8_t {
 };
 ```
 
+### Service and Action Patterns
+
+C++ nodes can implement [service and action patterns](patterns.md) using the metadata API. The well-known metadata keys are:
+
+| Key | Description |
+|-----|-------------|
+| `"request_id"` | Service request/response correlation (UUID v7) |
+| `"goal_id"` | Action goal identification (UUID v7) |
+| `"goal_status"` | Action result status: `"succeeded"`, `"aborted"`, or `"canceled"` |
+
+```cpp
+// Service server: pass through request_id from input metadata
+auto input_metadata = event_as_arrow_input_with_info(event);
+send_output_with_metadata(sender, "response", result, std::move(input_metadata.metadata));
+
+// Action server: set goal_id and goal_status on result
+auto meta = new_metadata();
+meta->set_string("goal_id", goal_id);
+meta->set_string("goal_status", "succeeded");
+send_output_with_metadata(sender, "result", result_data, std::move(meta));
+```
+
 ### CombinedEvents (ROS2 integration)
 
 When using the optional `ros2-bridge` feature, node events and ROS2 subscription events can be merged into a single stream.

@@ -156,6 +156,44 @@ node.send_output("image", pa.array(pixels), {"camera_id": "front"})
 
 **Raises:** `RuntimeError` if `data` is neither `bytes` nor a `pyarrow.Array`.
 
+##### Service and action patterns
+
+Python nodes use the same metadata key conventions as Rust for [service and action patterns](patterns.md). Parameters are plain dicts with string keys.
+
+**Well-known metadata keys:**
+
+| Key | Description |
+|-----|-------------|
+| `"request_id"` | Service request/response correlation (UUID v7) |
+| `"goal_id"` | Action goal identification (UUID v7) |
+| `"goal_status"` | Action result status: `"succeeded"`, `"aborted"`, or `"canceled"` |
+
+**Service client example:**
+
+```python
+import uuid
+
+# Send a request with a unique request_id
+request_id = str(uuid.uuid7())  # Python 3.13+; use uuid_utils or uuid.uuid4() on older versions
+node.send_output("request", data, {"request_id": request_id})
+```
+
+**Service server example:**
+
+```python
+# Pass through the metadata (includes request_id) from the incoming request
+node.send_output("response", result, event["metadata"])
+```
+
+**Action client example:**
+
+```python
+goal_id = str(uuid.uuid7())
+node.send_output("goal", data, {"goal_id": goal_id})
+```
+
+See [patterns.md](patterns.md) for the full guide.
+
 ---
 
 #### `log(level, message, target=None, fields=None)`

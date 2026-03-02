@@ -175,13 +175,23 @@ nodes:
       - result
 ```
 
-The bridge receives ROS2 service requests, forwards them as Arrow on the `request` output, and waits for the handler node to send a response back on the `response` input. The response is then returned to the ROS2 client.
+The bridge receives ROS2 service requests, assigns each a unique `request_id` (UUID v7), forwards the request data as Arrow on the `request` output with `request_id` in metadata, and waits for the handler node to send a response back on the `response` input with the same `request_id`. The response is then returned to the correct ROS2 client.
 
 See `examples/ros2-bridge/yaml-bridge-service/` for a working example.
 
-### FIFO Ordering Constraint
+### Request ID Correlation
 
-The service server uses a FIFO queue to match responses to requests. The handler node **must respond in the same order as requests arrive**. Out-of-order responses will be silently paired with the wrong ROS2 request ID. The maximum pending request queue is 64 -- additional requests are dropped when full.
+Each incoming ROS2 request is assigned a `request_id` metadata parameter. The handler node **must include the same `request_id`** in metadata when sending the response. The simplest approach is to pass through `metadata.parameters`:
+
+```rust
+Event::Input { id, metadata, data } => {
+    // metadata.parameters contains request_id
+    let result = compute(data);
+    node.send_service_response("response".into(), metadata.parameters, result)?;
+}
+```
+
+Responses can arrive in any order -- the bridge correlates them by `request_id`, not by arrival order. Stale pending requests are evicted after 30 seconds. The maximum pending request queue is 64 -- additional requests are dropped when full.
 
 ### Service Wait and Timeouts
 
@@ -313,11 +323,10 @@ Unrecognized `goal_status` values default to `Aborted` with a warning logged. Om
 
 Rust example:
 ```rust
-use std::collections::BTreeMap;
-use adora_message::metadata::Parameter;
+use adora_node_api::{GOAL_STATUS, GOAL_STATUS_ABORTED, Parameter};
 
 let mut params = metadata.parameters; // contains goal_id
-params.insert("goal_status".to_string(), Parameter::String("aborted".into()));
+params.insert(GOAL_STATUS.to_string(), Parameter::String(GOAL_STATUS_ABORTED.to_string()));
 node.send_output("result".into(), params, error_result)?;
 ```
 
@@ -841,7 +850,6 @@ ros2 action send_goal /fibonacci example_interfaces/action/Fibonacci "{order: 10
 
 - **Action server auto-accept**: All incoming goals are automatically accepted. The handler cannot reject goals before execution starts.
 - **No action cancel support**: Neither client nor server handles ROS2 cancel requests.
-- **Service server FIFO ordering**: The handler node must respond in the same order as requests arrive. Out-of-order responses are silently mismatched.
 - **No `wait_for_action_server`**: The `ros2_client` library does not provide this API. Start the action server before the dataflow. The first goal will time out (30s) if the server is unavailable.
 - **Single-flight service client**: The service client processes requests sequentially -- each request blocks until the response arrives (or times out at 30s).
 - **QoS uniform for service/action channels**: The `qos` config applies to all service/action sub-channels (goal, result, cancel, feedback, status). Per-channel QoS is not configurable.
@@ -866,4 +874,4 @@ ros2 action send_goal /fibonacci example_interfaces/action/Fibonacci "{order: 10
 
 **Set QoS to match the ROS2 publisher/subscriber.** QoS mismatches (e.g., reliable subscriber with best-effort publisher) cause silent communication failures. Check with `ros2 topic info -v /topic_name` to see the existing QoS settings.
 
-**Keep service handlers fast and in-order.** The FIFO constraint means a slow handler blocks all subsequent requests. If you need concurrent service handling, use multiple bridge instances on different service names.
+**Pass through `request_id` in service responses.** The bridge correlates responses to requests using the `request_id` metadata parameter. If the handler does not include `request_id` in the response metadata, the bridge cannot match the response to the original ROS2 request.

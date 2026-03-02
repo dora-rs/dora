@@ -52,6 +52,7 @@
 
 ### Ecosystem
 
+- **Communication patterns** -- built-in [service (request/reply)](docs/patterns.md#2-service-requestreply) and [action (goal/feedback/result)](docs/patterns.md#3-action-goalfeedbackresult) patterns via well-known metadata keys; no daemon or YAML changes required
 - **ROS2 bridge** -- bidirectional interop with ROS2 topics, services, and actions; QoS mapping; Arrow-native type conversion
 - **Pre-packaged nodes** -- [node hub](https://github.com/dora-rs/dora-hub/) with ready-made nodes for cameras, YOLO, LLMs, TTS, and more
 - **In-process operators** -- lightweight functions that run inside a shared runtime, avoiding per-node process overhead for simple transformations
@@ -350,6 +351,15 @@ examples/               # Example dataflows
 | [c++-dataflow](examples/c++-dataflow) | C++ | C++ node example |
 | [c++-arrow-dataflow](examples/c++-arrow-dataflow) | C++ | C++ with Arrow data |
 | [cmake-dataflow](examples/cmake-dataflow) | C/C++ | CMake-based build |
+
+### Communication patterns
+
+| Example | Language | Description |
+|---------|----------|-------------|
+| [service-example](examples/service-example) | Rust | Request/reply with `request_id` correlation |
+| [action-example](examples/action-example) | Rust | Goal/feedback/result with cancellation |
+
+See [docs/patterns.md](docs/patterns.md) for the full guide.
 
 ### Advanced patterns
 
