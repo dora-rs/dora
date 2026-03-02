@@ -34,6 +34,7 @@ const ENV_DENYLIST: &[&str] = &[
     "DYLD_LIBRARY_PATH",
     "LD_LIBRARY_PATH",
     "ADORA_AUTH_TOKEN",
+    "ADORA_ALLOW_SHELL_NODES",
 ];
 
 /// Returns true if the env var key is denied, logging a warning if so.

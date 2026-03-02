@@ -68,7 +68,7 @@ where
     file.sync_all().await.wrap_err("failed to `sync_all`")?;
 
     #[cfg(unix)]
-    file.set_permissions(std::fs::Permissions::from_mode(0o764))
+    file.set_permissions(std::fs::Permissions::from_mode(0o700))
         .await
         .wrap_err("failed to make downloaded file executable")?;
 

@@ -335,7 +335,7 @@ impl Listener {
 
     async fn run_inner<C: Connection>(&mut self, mut connection: C) -> eyre::Result<()> {
         loop {
-            let mut next_message = connection.receive_message();
+            let mut next_message = Box::pin(connection.receive_message());
             let message = loop {
                 let next_event = self.next_event();
                 let event = match future::select(next_event, next_message).await {
@@ -612,8 +612,10 @@ impl Listener {
     }
 }
 
-#[async_trait::async_trait]
 trait Connection {
-    async fn receive_message(&mut self) -> eyre::Result<Option<Timestamped<DaemonRequest>>>;
-    async fn send_reply(&mut self, message: DaemonReply) -> eyre::Result<()>;
+    fn receive_message(
+        &mut self,
+    ) -> impl Future<Output = eyre::Result<Option<Timestamped<DaemonRequest>>>> + Send;
+    fn send_reply(&mut self, message: DaemonReply)
+    -> impl Future<Output = eyre::Result<()>> + Send;
 }

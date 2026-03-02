@@ -57,14 +57,27 @@ pub async fn register(
     impl Stream<Item = Timestamped<CoordinatorEvent>>,
 )> {
     let display_url = format!("ws://{addr}/api/daemon");
-    let ws_url = match adora_message::auth::discover_token() {
-        Some(token) => format!("{display_url}?token={}", token.as_hex()),
-        None => display_url.clone(),
-    };
+    let auth_token = adora_message::auth::discover_token();
     let ws_stream = {
         let mut backoff = DAEMON_COORDINATOR_RETRY_INITIAL;
         loop {
-            match tokio_tungstenite::connect_async(&ws_url).await {
+            let request = {
+                let mut req = tokio_tungstenite::tungstenite::http::Request::builder()
+                    .uri(&display_url)
+                    .header("Host", addr.to_string())
+                    .header("Connection", "Upgrade")
+                    .header("Upgrade", "websocket")
+                    .header("Sec-WebSocket-Version", "13")
+                    .header(
+                        "Sec-WebSocket-Key",
+                        tokio_tungstenite::tungstenite::handshake::client::generate_key(),
+                    );
+                if let Some(ref token) = auth_token {
+                    req = req.header("Authorization", format!("Bearer {}", token.as_hex()));
+                }
+                req.body(()).expect("valid WS request")
+            };
+            match tokio_tungstenite::connect_async(request).await {
                 Ok((stream, _)) => break stream,
                 Err(err) => {
                     // Add jitter: +/- 25% of backoff to prevent thundering herd

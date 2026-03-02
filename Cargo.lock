@@ -170,7 +170,6 @@ dependencies = [
  "adora-node-api",
  "adora-tracing",
  "aligned-vec",
- "async-trait",
  "bincode 1.3.3",
  "chrono",
  "clonable-command",

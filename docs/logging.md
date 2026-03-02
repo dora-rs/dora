@@ -1045,7 +1045,7 @@ adora logs <dataflow-id> sensor --follow --coordinator-addr 192.168.1.10
 ```
 
 **How it works internally:**
-1. CLI connects to the coordinator (default `localhost:5555`, or `--coordinator-addr`)
+1. CLI connects to the coordinator (default `localhost:6013`, or `--coordinator-addr`)
 2. For historical logs: request-reply with filters applied client-side (`--since`, `--grep`, `--tail`)
 3. For `--follow`: opens a WebSocket subscription to the coordinator
 4. Coordinator filters by `--level` server-side before forwarding (reduces network traffic)

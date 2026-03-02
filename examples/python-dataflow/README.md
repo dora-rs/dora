@@ -1,39 +1,36 @@
 # Python Dataflow Example
 
-This examples shows how to create and connect adora nodes in Python.
+This example shows how to create and connect adora nodes in Python.
 
 ## Overview
 
-The [`dataflow.yml`](./dataflow.yml) defines a simple dataflow graph with the following three nodes:
+The [`dataflow.yml`](./dataflow.yml) defines a simple dataflow graph with three nodes:
 
-- a webcam node, that connects to your webcam and feed the dataflow with webcam frame as jpeg compressed bytearray.
-- a window plotting node, that will retrieve the webcam image and plot it.
+- **sender** (`sender.py`): Produces messages on the `message` output
+- **transformer** (`transformer.py`): Receives messages from the sender and outputs `transformed` data
+- **receiver** (`receiver.py`): Consumes both the original `message` from the sender and `transformed` data from the transformer
 
-The same dataflow is implemented for a `dynamic-node` in [`dataflow_dynamic.yml`](./dataflow_dynamic.yml). It contains
-the same nodes as the previous dataflow, but the plot node is a dynamic node. See the next section for more
-information on how to start such a dataflow.
+A dynamic node variant is available in [`dataflow_dynamic.yml`](./dataflow_dynamic.yml).
 
 ## Getting started
 
-After installing Rust, `adora-cli` and `uv` (if you installed the cli without pip), you will need to install the dependencies:
+After installing Rust, `adora-cli` and `uv` (if you installed the cli without pip), install the dependencies:
 
 ```bash
 cd examples/python-dataflow
 uv pip install -e ../../apis/python/node --reinstall
-adora build ./dataflow.yml --uv (or adora build ./dataflow_dynamic.yml --uv)
+adora build ./dataflow.yml --uv
 ```
 
-It will install the required dependencies for the Python nodes.
-
-Then you can run the dataflow:
+Then run the dataflow:
 
 ```bash
-adora run ./dataflow.yml --uv (or adora start ./dataflow_dynamic.yml --uv)
+adora run ./dataflow.yml --uv
 ```
 
-**Note**: if you're running the dynamic dataflow, you will need to start manually the opencv-plot node:
+For the dynamic dataflow variant:
 
 ```bash
-# activate your virtual environment in another terminal
-python opencv-plot --uv
+adora build ./dataflow_dynamic.yml --uv
+adora run ./dataflow_dynamic.yml --uv
 ```

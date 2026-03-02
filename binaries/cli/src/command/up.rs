@@ -42,12 +42,19 @@ pub(crate) fn up(config_path: Option<&Path>) -> eyre::Result<()> {
         Err(_) => {
             start_coordinator().wrap_err("failed to start adora-coordinator")?;
 
-            loop {
-                match connect_to_coordinator(coordinator_addr) {
-                    Ok(session) => break session,
-                    Err(_) => {
-                        // sleep a bit until the coordinator accepts connections
-                        std::thread::sleep(Duration::from_millis(50));
+            {
+                let deadline = std::time::Instant::now() + Duration::from_secs(10);
+                loop {
+                    match connect_to_coordinator(coordinator_addr) {
+                        Ok(session) => break session,
+                        Err(_) if std::time::Instant::now() < deadline => {
+                            std::thread::sleep(Duration::from_millis(50));
+                        }
+                        Err(err) => {
+                            bail!(
+                                "timed out waiting for coordinator to start at {coordinator_addr}: {err}"
+                            );
+                        }
                     }
                 }
             }
@@ -122,16 +129,21 @@ fn parse_adora_config(config_path: Option<&Path>) -> Result<UpConfig, eyre::ErrR
     Ok(config)
 }
 
-fn start_coordinator() -> eyre::Result<()> {
-    let path = if cfg!(feature = "python") {
+fn adora_executable_path() -> eyre::Result<std::ffi::OsString> {
+    if cfg!(feature = "python") {
+        // When invoked via Python wrapper, argv[1] is the real adora binary path
         std::env::args_os()
             .nth(1)
-            .context("Could not get first argument correspond to adora with python installation")?
+            .context("could not get adora path from Python wrapper arguments")
     } else {
-        std::env::args_os()
-            .next()
-            .context("Could not get adora path")?
-    };
+        std::env::current_exe()
+            .map(Into::into)
+            .wrap_err("could not determine adora executable path")
+    }
+}
+
+fn start_coordinator() -> eyre::Result<()> {
+    let path = adora_executable_path()?;
     let mut cmd = Command::new(path);
     cmd.arg("coordinator");
     cmd.arg("--quiet");
@@ -143,15 +155,7 @@ fn start_coordinator() -> eyre::Result<()> {
 }
 
 fn start_daemon() -> eyre::Result<()> {
-    let path = if cfg!(feature = "python") {
-        std::env::args_os()
-            .nth(1)
-            .context("Could not get first argument correspond to adora with python installation")?
-    } else {
-        std::env::args_os()
-            .next()
-            .context("Could not get adora path")?
-    };
+    let path = adora_executable_path()?;
     let mut cmd = Command::new(path);
     cmd.arg("daemon");
     cmd.arg("--quiet");

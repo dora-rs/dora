@@ -52,7 +52,25 @@ pub(super) async fn path_spawn_command(
                     .await
                     .wrap_err("failed to download custom node")?
             } else {
-                let source = shellexpand::env(source)?;
+                let source = shellexpand::env_with_context_no_errors(source, |var| {
+                    // Only expand a controlled allowlist of safe variables
+                    const ALLOWED_VARS: &[&str] = &[
+                        "HOME",
+                        "USER",
+                        "ADORA_WORKSPACE",
+                        "CARGO_MANIFEST_DIR",
+                        "PWD",
+                    ];
+                    if ALLOWED_VARS.contains(&var) {
+                        std::env::var(var).ok()
+                    } else {
+                        tracing::warn!(
+                            "skipping env expansion for '${var}' in node path \
+                             (only HOME, USER, ADORA_WORKSPACE, CARGO_MANIFEST_DIR, PWD are allowed)"
+                        );
+                        None
+                    }
+                });
                 resolve_path(source.as_ref(), working_dir)
                     .wrap_err_with(|| format!("failed to resolve node source `{source}`"))?
             };

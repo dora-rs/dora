@@ -57,7 +57,6 @@ enum Operation {
 
 struct ShmemConnection(flume::Sender<Operation>);
 
-#[async_trait::async_trait]
 impl Connection for ShmemConnection {
     async fn receive_message(&mut self) -> eyre::Result<Option<Timestamped<DaemonRequest>>> {
         let (tx, rx) = oneshot::channel();

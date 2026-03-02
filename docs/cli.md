@@ -13,6 +13,7 @@ Adora (AI-Dora, Dataflow-Oriented Robotic Architecture) is a 100% Rust framework
   - [Monitoring](#monitoring-commands)
   - [Setup](#setup-commands)
   - [Utility](#utility-commands)
+  - [Self-Management](#self-management-commands)
 - [Environment Variables](#environment-variables)
 - [Architecture Guide](#architecture-guide)
 - [Writing Nodes](#writing-nodes)
@@ -742,7 +743,7 @@ Currently provides `status` as a subcommand (equivalent to `adora status`).
 
 ---
 
-### Utility Commands
+### Self-Management Commands
 
 #### `adora self update`
 
@@ -1144,10 +1145,10 @@ class Operator:
 adora up
 
 # Machine B (daemon only, pointing to coordinator on Machine A)
-adora daemon --interface 0.0.0.0 --coordinator-addr 192.168.1.10
+adora daemon --interface 0.0.0.0 --coordinator-addr 192.168.1.10 --machine-id B
 
 # Machine C (same)
-adora daemon --interface 0.0.0.0 --coordinator-addr 192.168.1.10
+adora daemon --interface 0.0.0.0 --coordinator-addr 192.168.1.10 --machine-id C
 ```
 
 ### Dataflow with Machine Assignment

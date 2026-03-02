@@ -66,7 +66,6 @@ async fn handle_connection_loop(
 
 struct TcpConnection(TcpStream);
 
-#[async_trait::async_trait]
 impl Connection for TcpConnection {
     async fn receive_message(&mut self) -> eyre::Result<Option<Timestamped<DaemonRequest>>> {
         let raw = match socket_stream_receive(&mut self.0).await {

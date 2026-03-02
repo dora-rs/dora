@@ -33,37 +33,15 @@ fn get_version_info() -> clap::builder::Str {
 }
 
 fn build_version_string() -> String {
-    let cli_version = env!("CARGO_PKG_VERSION");
-
-    let mut version_output = format!("{}\n", cli_version);
-
-    // Add adora-message version
-    // TODO: Uncomment later after publishing adora-message crate
-    // version_output.push_str(&format!("adora-message: {}\n", adora_message::VERSION));
-
-    // Try to detect Python adora-rs version
-    match get_python_adora_version() {
-        Some(python_version) => {
-            version_output.push_str(&format!("adora-rs (Python): {}\n", python_version));
-
-            // Check for version mismatch
-            if python_version != cli_version {
-                version_output.push_str(&format!(
-                    "\nWARNING: Version mismatch detected!\n   CLI version ({}) differs from Python adora-rs version ({})\n",
-                    cli_version,
-                    python_version
-                ));
-            }
-        }
-        None => {
-            version_output.push_str("adora-rs (Python): not found\n");
-        }
-    }
-
-    version_output
+    // Only return the CLI version for fast --version output.
+    // Python version check moved to `adora self check` to avoid spawning
+    // external processes on every --version invocation.
+    env!("CARGO_PKG_VERSION").to_string()
 }
 
-fn get_python_adora_version() -> Option<String> {
+/// Check if a Python adora-rs package is installed and return its version.
+#[allow(dead_code)] // used in tests; intended for future `adora self check` command
+pub(crate) fn get_python_adora_version() -> Option<String> {
     // Try with uv first
     if let Ok(output) = std::process::Command::new("uv")
         .args(["pip", "show", "adora-rs"])
@@ -91,7 +69,8 @@ fn get_python_adora_version() -> Option<String> {
     None
 }
 
-fn parse_version_from_pip_show(output: &[u8]) -> Option<String> {
+#[allow(dead_code)]
+pub(crate) fn parse_version_from_pip_show(output: &[u8]) -> Option<String> {
     let output_str = String::from_utf8_lossy(output);
     for line in output_str.lines() {
         if line.starts_with("Version:") {

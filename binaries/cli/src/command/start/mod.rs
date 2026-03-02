@@ -61,10 +61,10 @@ impl Executable for Start {
             (false, true) => false,
             (false, false) => {
                 if std::io::stdin().is_terminal() {
-                    println!("attaching to dataflow (use `--detach` to run in background)");
+                    eprintln!("attaching to dataflow (use `--detach` to run in background)");
                     true
                 } else {
-                    println!("non-interactive mode: running in background");
+                    eprintln!("non-interactive mode: running in background");
                     false
                 }
             }

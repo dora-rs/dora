@@ -216,10 +216,11 @@ fn list(
                     DataflowStatus::Failed => "Failed",
                 };
 
+                let memory_str = format_memory_gb(entry.memory);
                 tw.write_all(
                     format!(
-                        "{}\t{}\t{}\t{}\t{:.1}%\t{:.1} GB\n",
-                        entry.uuid, entry.name, status, entry.nodes, entry.cpu, entry.memory
+                        "{}\t{}\t{}\t{}\t{:.1}%\t{}\n",
+                        entry.uuid, entry.name, status, entry.nodes, entry.cpu, memory_str
                     )
                     .as_bytes(),
                 )?;
@@ -234,4 +235,16 @@ fn list(
     }
 
     Ok(())
+}
+
+/// Format a memory value (in GB) with auto-selected unit.
+fn format_memory_gb(gb: f64) -> String {
+    let mb = gb * 1024.0;
+    if mb < 1.0 {
+        format!("{:.1} MB", mb)
+    } else if gb < 1.0 {
+        format!("{:.0} MB", mb)
+    } else {
+        format!("{:.1} GB", gb)
+    }
 }

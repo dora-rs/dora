@@ -311,7 +311,10 @@ pub(crate) async fn handle_control_ws(socket: WebSocket, event_tx: mpsc::Sender<
 
                 let reply = match reply_rx.await {
                     Ok(Ok(reply)) => reply,
-                    Ok(Err(err)) => ControlRequestReply::Error(format!("{err:?}")),
+                    Ok(Err(err)) => {
+                        tracing::error!("control request failed: {err:?}");
+                        ControlRequestReply::Error(format!("{err}"))
+                    }
                     Err(_) => ControlRequestReply::Error("coordinator dropped reply".to_string()),
                 };
 

@@ -18,7 +18,7 @@ path = "src/main.rs"
 [features]
 default = ["tracing"]
 tracing = ["dep:adora-tracing"]
-python = ["pyo3"]
+python = ["pyo3", "pyo3-build-config"]
 redb-backend = ["adora-coordinator/redb-backend", "dep:libc"]
 
 [dependencies]
@@ -83,12 +83,14 @@ which = "7"
 tempfile = "3.23.0"
 
 [build-dependencies]
-pyo3-build-config = "0.23"
+pyo3-build-config = { version = "0.23", optional = true }
 
 [lib]
 name = "adora_cli"
 path = "src/lib.rs"
-crate-type = ["lib", "cdylib"]
+# cdylib is only needed for the Python wrapper (PyO3 extension module).
+# Use: cargo build -p adora-cli --features python
+crate-type = ["lib"]
 
 [package.metadata.dist]
 # Enable adora-cli binary to be distributed

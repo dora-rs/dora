@@ -1108,7 +1108,8 @@ async fn start_inner(
                     match result {
                         Ok(()) => {}
                         Err(err) => {
-                            build.errors.push(format!("{err:?}"));
+                            tracing::error!("build error for {build_id}: {err:?}");
+                            build.errors.push(format!("{err}"));
                         }
                     };
                     if build.pending_build_results.is_empty() {

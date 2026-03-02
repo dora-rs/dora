@@ -905,11 +905,21 @@ impl AdoraNode {
     }
 
     fn add_to_cache(&mut self, memory: ShmemHandle) {
-        const MAX_CACHE_SIZE: usize = 20;
+        const MAX_CACHE_COUNT: usize = 20;
+        /// Maximum total bytes held in the shared memory cache (256 MB).
+        const MAX_CACHE_BYTES: usize = 256 * 1024 * 1024;
 
         self.cache.push_back(memory);
-        while self.cache.len() > MAX_CACHE_SIZE {
+
+        // Evict oldest entries if over count limit
+        while self.cache.len() > MAX_CACHE_COUNT {
             self.cache.pop_front();
+        }
+
+        // Evict oldest entries if over byte budget
+        let total_bytes: usize = self.cache.iter().map(|h| h.len()).sum();
+        if total_bytes > MAX_CACHE_BYTES {
+            self.cache.clear();
         }
     }
 
