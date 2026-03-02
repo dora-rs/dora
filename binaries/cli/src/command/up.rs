@@ -129,7 +129,7 @@ fn parse_adora_config(config_path: Option<&Path>) -> Result<UpConfig, eyre::ErrR
     Ok(config)
 }
 
-fn adora_executable_path() -> eyre::Result<std::ffi::OsString> {
+pub(crate) fn adora_executable_path() -> eyre::Result<std::ffi::OsString> {
     if cfg!(feature = "python") {
         // When invoked via Python wrapper, argv[1] is the real adora binary path
         std::env::args_os()

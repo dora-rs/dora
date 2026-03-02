@@ -1,4 +1,5 @@
 mod build;
+mod cluster;
 mod completion;
 mod coordinator;
 mod daemon;
@@ -26,6 +27,7 @@ pub use build::build;
 pub use run::{Run, run};
 
 use build::Build;
+use cluster::Cluster;
 use completion::Completion;
 use coordinator::Coordinator;
 use daemon::Daemon;
@@ -61,14 +63,17 @@ pub enum Command {
     /// Tear down coordinator and daemon. Stops any running dataflows first.
     #[clap(name = "down", alias = "destroy", display_order = 3)]
     Destroy(Destroy),
+    /// Manage a multi-machine cluster (up, status, down)
+    #[clap(subcommand, display_order = 4)]
+    Cluster(Cluster),
     /// Run build commands provided in the given dataflow
-    #[clap(display_order = 4)]
+    #[clap(display_order = 5)]
     Build(Build),
     /// Start a dataflow on a running coordinator
-    #[clap(display_order = 5)]
+    #[clap(display_order = 6)]
     Start(Start),
     /// Stop a running dataflow
-    #[clap(display_order = 6)]
+    #[clap(display_order = 7)]
     Stop(Stop),
 
     // -- Monitoring --
@@ -158,6 +163,7 @@ impl Executable for Command {
             Command::Run(args) => args.execute(),
             Command::Up(args) => args.execute(),
             Command::Destroy(args) => args.execute(),
+            Command::Cluster(args) => args.execute(),
             Command::Build(args) => args.execute(),
             Command::Start(args) => args.execute(),
             Command::Stop(args) => args.execute(),
@@ -369,6 +375,26 @@ mod tests {
     #[test]
     fn reject_trace_view_no_id() {
         parse_err(&["adora", "trace", "view"]);
+    }
+
+    #[test]
+    fn parse_cluster_up() {
+        parse_ok(&["adora", "cluster", "up", "cluster.yml"]);
+    }
+
+    #[test]
+    fn parse_cluster_status() {
+        parse_ok(&["adora", "cluster", "status"]);
+    }
+
+    #[test]
+    fn parse_cluster_down() {
+        parse_ok(&["adora", "cluster", "down"]);
+    }
+
+    #[test]
+    fn reject_cluster_up_no_file() {
+        parse_err(&["adora", "cluster", "up"]);
     }
 
     #[test]
