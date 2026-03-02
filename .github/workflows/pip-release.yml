@@ -89,7 +89,7 @@ jobs:
           args: --release --out dist
           manylinux: musllinux_1_2
           working-directory: ${{ matrix.repository.path }}
-          sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
+          sccache: false
       - name: Upload wheels
         uses: actions/upload-artifact@v5
         with:
@@ -104,9 +104,9 @@ jobs:
           - runner: windows-latest
             target: x64
             python_arch: x64
-          - runner: windows-latest
-            target: x86
-            python_arch: x86
+          # - runner: windows-latest
+          #   target: x86
+          #   python_arch: x86
           # - runner: windows-11-arm
           #   target: aarch64
           #   python_arch: arm64
