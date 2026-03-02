@@ -89,6 +89,8 @@ pub(crate) use running_dataflow::{
 use crate::{extract_err_from_stderr::extract_err_from_stderr, pending::DataflowStatus};
 
 const STDERR_LOG_LINES_MAX: usize = 500;
+const METRICS_INTERVAL: Duration = Duration::from_secs(2);
+const METRICS_INTERVAL_SECS: f64 = METRICS_INTERVAL.as_secs() as f64;
 
 pub struct Daemon {
     running: HashMap<DataflowId, RunningDataflow>,
@@ -407,7 +409,7 @@ impl Daemon {
 
         let metrics_clock = daemon.clock.clone();
         let metrics_interval = tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(
-            Duration::from_secs(2), // Collect metrics every 2 seconds
+            METRICS_INTERVAL, // Collect metrics every 2 seconds
         ))
         .map(|_| Timestamped {
             inner: Event::MetricsInterval,
@@ -1095,8 +1097,7 @@ impl Daemon {
         // Reuse system instance for metrics collection
         let system = &mut self.metrics_system;
 
-        // Metrics are collected every 2 seconds (metrics_interval)
-        const METRICS_INTERVAL_SECS: f64 = 2.0;
+        // Rate divisor derived from METRICS_INTERVAL
 
         // Collect metrics for all running dataflows
         for (dataflow_id, dataflow) in &self.running {
@@ -1177,6 +1178,38 @@ impl Daemon {
                             );
                         }
                     }
+                }
+            }
+
+            // Second pass: report nodes without a running process
+            for (node_id, running_node) in &dataflow.running_nodes {
+                if !metrics.contains_key(node_id) {
+                    let restart_count = running_node.node_config.restart_count;
+                    let status = if running_node.restarts_disabled() {
+                        adora_message::daemon_to_coordinator::NodeStatus::Failed
+                    } else if restart_count > 0 {
+                        adora_message::daemon_to_coordinator::NodeStatus::Restarting
+                    } else {
+                        continue;
+                    };
+                    metrics.insert(
+                        node_id.clone(),
+                        NodeMetrics {
+                            pid: 0,
+                            cpu_usage: 0.0,
+                            memory_bytes: 0,
+                            disk_read_bytes: None,
+                            disk_write_bytes: None,
+                            restart_count,
+                            broken_inputs: Vec::new(),
+                            status,
+                            pending_messages: dataflow
+                                .pending_messages
+                                .get(node_id)
+                                .map(|c| c.load(atomic::Ordering::Relaxed))
+                                .unwrap_or(0),
+                        },
+                    );
                 }
             }
 

@@ -93,7 +93,6 @@ pub async fn start(
 /// Like [`start`] but without registering a ctrl-c handler.
 /// Useful for tests that run multiple coordinators in the same process.
 #[doc(hidden)]
-#[doc(hidden)]
 /// Testing-only entry point. Starts coordinator without auth.
 /// Do NOT use in production.
 pub async fn start_testing(
@@ -1179,30 +1178,6 @@ async fn start_inner(
                         dataflow
                             .node_metrics
                             .insert(node_id.clone(), node_metrics.clone());
-
-                        #[cfg(feature = "prometheus")]
-                        {
-                            let m = prom_metrics.blocking_lock();
-                            let nid = node_id.as_ref();
-                            // Find daemon for this node
-                            let daemon = dataflow
-                                .node_to_daemon
-                                .get(node_id)
-                                .map(|d| d.to_string())
-                                .unwrap_or_default();
-                            m.node_cpu
-                                .with_label_values(&[&df_id, nid, &daemon])
-                                .set(node_metrics.cpu_usage as f64);
-                            m.node_memory
-                                .with_label_values(&[&df_id, nid, &daemon])
-                                .set(node_metrics.memory_bytes as i64);
-                            m.node_pending
-                                .with_label_values(&[&df_id, nid, &daemon])
-                                .set(node_metrics.pending_messages as i64);
-                            m.node_restarts
-                                .with_label_values(&[&df_id, nid, &daemon])
-                                .set(node_metrics.restart_count as i64);
-                        }
                     }
                     if let Some(net) = network {
                         dataflow.network_metrics = Some(net);
@@ -1210,9 +1185,33 @@ async fn start_inner(
 
                     #[cfg(feature = "prometheus")]
                     {
-                        let m = prom_metrics.blocking_lock();
+                        use crate::prometheus_metrics::sanitize_prom_label;
+                        let m = prom_metrics.lock().unwrap_or_else(|e| e.into_inner());
+                        for (node_id, node_metrics) in &metrics {
+                            let nid = sanitize_prom_label(node_id.as_ref());
+                            let daemon = sanitize_prom_label(
+                                &dataflow
+                                    .node_to_daemon
+                                    .get(node_id)
+                                    .map(|d| d.to_string())
+                                    .unwrap_or_default(),
+                            );
+                            m.node_cpu
+                                .with_label_values(&[&df_id, &nid, &daemon])
+                                .set(node_metrics.cpu_usage as f64);
+                            m.node_memory
+                                .with_label_values(&[&df_id, &nid, &daemon])
+                                .set(node_metrics.memory_bytes as i64);
+                            m.node_pending
+                                .with_label_values(&[&df_id, &nid, &daemon])
+                                .set(node_metrics.pending_messages as i64);
+                            m.node_restarts
+                                .with_label_values(&[&df_id, &nid, &daemon])
+                                .set(node_metrics.restart_count as i64);
+                        }
+                        let df_name_s = sanitize_prom_label(df_name);
                         m.dataflow_nodes
-                            .with_label_values(&[&df_id, df_name])
+                            .with_label_values(&[&df_id, &df_name_s])
                             .set(dataflow.nodes.len() as i64);
                     }
                 }
@@ -1540,28 +1539,27 @@ async fn restart_dataflow(
         (df.descriptor.clone(), df.name.clone(), df.uv)
     };
 
-    // 2. Stop the old dataflow
-    let dataflow = stop_dataflow(
-        running_dataflows,
-        dataflow_uuid,
-        daemon_connections,
-        clock.new_timestamp(),
-        grace_duration,
-        force,
-    )
-    .await?;
-
-    // Persist: dataflow stopping
-    if let Err(e) = dataflow
-        .make_record(StoreDataflowStatus::Stopping)
-        .and_then(|r| store.put_dataflow(&r))
+    // 2. Stop the old dataflow (scoped borrow so it drops before start_dataflow)
     {
-        *persist_failure_count += 1;
-        tracing::warn!("failed to persist dataflow stopping: {e}");
-    }
+        let dataflow = stop_dataflow(
+            running_dataflows,
+            dataflow_uuid,
+            daemon_connections,
+            clock.new_timestamp(),
+            grace_duration,
+            force,
+        )
+        .await?;
 
-    // Remove from running (it's been stopped)
-    running_dataflows.remove(&dataflow_uuid);
+        // Persist: dataflow stopping
+        if let Err(e) = dataflow
+            .make_record(StoreDataflowStatus::Stopping)
+            .and_then(|r| store.put_dataflow(&r))
+        {
+            *persist_failure_count += 1;
+            tracing::warn!("failed to persist dataflow stopping: {e}");
+        }
+    }
 
     // 3. Start a new dataflow with the stored descriptor
     let new_dataflow = start_dataflow(
@@ -1578,6 +1576,9 @@ async fn restart_dataflow(
     .await?;
 
     let new_uuid = new_dataflow.uuid;
+
+    // 4. Only now remove old dataflow (after new one started successfully)
+    running_dataflows.remove(&dataflow_uuid);
 
     // Persist: new dataflow started
     let mut new_df = new_dataflow;

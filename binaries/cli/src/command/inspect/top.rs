@@ -361,9 +361,7 @@ fn run_app<B: Backend>(
                         }
                         KeyCode::Char('r') => {
                             // Force refresh by resetting last_update
-                            last_update = Instant::now()
-                                .checked_sub(refresh_duration)
-                                .unwrap_or(Instant::now());
+                            last_update = Instant::now() - refresh_duration;
                         }
                         _ => {}
                     }

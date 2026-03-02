@@ -3,8 +3,7 @@
 //! Exposes `/metrics` in OpenMetrics text format when the `prometheus` feature is enabled.
 
 use prometheus::{Encoder, GaugeVec, IntGaugeVec, Opts, Registry, TextEncoder};
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 /// Holds all registered Prometheus metric families.
 pub(crate) struct Metrics {
@@ -72,8 +71,14 @@ impl Metrics {
         let encoder = TextEncoder::new();
         let metric_families = self.registry.gather();
         let mut buffer = Vec::new();
-        encoder.encode(&metric_families, &mut buffer).unwrap();
-        String::from_utf8(buffer).unwrap()
+        if let Err(e) = encoder.encode(&metric_families, &mut buffer) {
+            tracing::error!("failed to encode prometheus metrics: {e}");
+            return String::new();
+        }
+        String::from_utf8(buffer).unwrap_or_else(|e| {
+            tracing::error!("prometheus metrics output is not valid UTF-8: {e}");
+            String::new()
+        })
     }
 }
 
@@ -83,16 +88,32 @@ pub(crate) fn new_shared() -> SharedMetrics {
     Arc::new(Mutex::new(Metrics::new()))
 }
 
-/// Axum handler for GET /metrics.
+/// Sanitize a string for use as a Prometheus label value.
+/// Strips control characters and truncates to 128 chars.
+///
+/// Note: for filesystem-safe node IDs, see `artifacts::sanitize_node_id`.
+pub(crate) fn sanitize_prom_label(s: &str) -> String {
+    s.chars().filter(|c| !c.is_control()).take(128).collect()
+}
+
+/// Axum handler for GET /metrics (with auth).
 pub(crate) async fn metrics_handler(
-    axum::extract::State(metrics): axum::extract::State<SharedMetrics>,
-) -> impl axum::response::IntoResponse {
-    let m = metrics.lock().await;
-    (
+    axum::extract::State((metrics, auth_token)): axum::extract::State<(
+        SharedMetrics,
+        Option<adora_message::auth::AuthToken>,
+    )>,
+    headers: axum::http::HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<crate::ws_server::TokenQuery>,
+) -> Result<impl axum::response::IntoResponse, axum::http::StatusCode> {
+    let token = crate::ws_server::extract_token(&headers, &query);
+    crate::ws_server::validate_token(&auth_token, &token)?;
+
+    let m = metrics.lock().unwrap_or_else(|e| e.into_inner());
+    Ok((
         [(
             axum::http::header::CONTENT_TYPE,
             "text/plain; version=0.0.4; charset=utf-8",
         )],
         m.gather(),
-    )
+    ))
 }

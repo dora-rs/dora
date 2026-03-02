@@ -30,14 +30,14 @@ pub(crate) struct WsState {
 }
 
 #[derive(serde::Deserialize)]
-struct TokenQuery {
+pub(crate) struct TokenQuery {
     #[serde(default)]
     token: Option<String>,
 }
 
 /// Extract the auth token from the Authorization header ("Bearer <hex>")
 /// or fall back to the query parameter for backward compatibility.
-fn extract_token(headers: &HeaderMap, query: &TokenQuery) -> Option<String> {
+pub(crate) fn extract_token(headers: &HeaderMap, query: &TokenQuery) -> Option<String> {
     if let Some(auth_header) = headers.get("authorization") {
         if let Ok(value) = auth_header.to_str() {
             if let Some(token) = value.strip_prefix("Bearer ") {
@@ -50,7 +50,7 @@ fn extract_token(headers: &HeaderMap, query: &TokenQuery) -> Option<String> {
 
 /// Validate the provided token against the expected token.
 /// Returns `Ok(())` if auth is disabled or token matches.
-fn validate_token(
+pub(crate) fn validate_token(
     expected: &Option<AuthToken>,
     provided: &Option<String>,
 ) -> Result<(), StatusCode> {
@@ -78,6 +78,9 @@ pub(crate) fn router(
     state: WsState,
     #[cfg(feature = "prometheus")] prometheus: crate::prometheus_metrics::SharedMetrics,
 ) -> Router {
+    #[cfg(feature = "prometheus")]
+    let prom_auth = state.auth_token.clone();
+
     let app = Router::new()
         .route("/api/control", get(ws_control_handler))
         .route("/api/daemon", get(ws_daemon_handler))
@@ -89,7 +92,7 @@ pub(crate) fn router(
     #[cfg(feature = "prometheus")]
     let app = app.route(
         "/metrics",
-        get(crate::prometheus_metrics::metrics_handler).with_state(prometheus),
+        get(crate::prometheus_metrics::metrics_handler).with_state((prometheus, prom_auth)),
     );
 
     app
