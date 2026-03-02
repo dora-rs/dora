@@ -18,7 +18,7 @@ Adora (AI-Dora, Dataflow-Oriented Robotic Architecture) is a 100% Rust framework
 - [Architecture Guide](#architecture-guide)
 - [Writing Nodes](#writing-nodes)
 - [Writing Operators](#writing-operators)
-- [Distributed Deployments](#distributed-deployments)
+- [Distributed Deployments](#distributed-deployments) -- see also [Distributed Deployment Guide](distributed-deployment.md) for cluster management, scheduling, and operations
 - [Troubleshooting](#troubleshooting)
 - [Debugging and Observability](debugging.md) -- standalone guide covering record/replay, topic inspection, log analysis, and resource monitoring
 - **API References:** [Rust](api-rust.md) | [Python](api-python.md) | [C](api-c.md) | [C++](api-cxx.md)
@@ -1209,6 +1209,8 @@ adora coordinator --store redb
 ```
 
 State is persisted to `~/.adora/coordinator.redb`. On restart, stale dataflows are marked as failed and the coordinator resumes normal operation.
+
+> For managed cluster deployments (cluster.yml, SSH-based lifecycle, label scheduling, systemd services, rolling upgrades), see the [Distributed Deployment Guide](distributed-deployment.md).
 
 ---
 

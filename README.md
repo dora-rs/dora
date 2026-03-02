@@ -38,7 +38,7 @@
 ### Production readiness
 
 - **Fault tolerance** -- per-node restart policies (never/on-failure/always), exponential backoff, health monitoring, circuit breakers with configurable input timeouts
-- **Distributed by default** -- local shared memory between co-located nodes, automatic [Zenoh](https://zenoh.io/) pub-sub for cross-machine communication, machine-targeted deployment
+- **Distributed by default** -- local shared memory between co-located nodes, automatic [Zenoh](https://zenoh.io/) pub-sub for cross-machine communication, SSH-based [cluster management](docs/distributed-deployment.md) with label scheduling, rolling upgrades, and auto-recovery
 - **Coordinator persistence** -- optional redb-backed state store survives coordinator crashes and restarts
 - **OpenTelemetry** -- built-in structured logging with rotation/routing, metrics, distributed tracing, and zero-setup trace viewing via CLI
 
@@ -126,7 +126,7 @@ cd examples/rust-dataflow
 adora run dataflow.yml
 ```
 
-### 3. Distributed mode
+### 3. Distributed mode (ad-hoc)
 
 ```bash
 # Terminal 1: start coordinator + daemon
@@ -144,6 +144,24 @@ adora inspect top
 adora stop <dataflow-id>
 adora down
 ```
+
+### 4. Managed cluster
+
+```bash
+# Bring up a multi-machine cluster from a config file
+adora cluster up cluster.yml
+
+# Start a dataflow across the cluster
+adora start dataflow.yml --name my-app --attach
+
+# Check cluster health
+adora cluster status
+
+# Tear down
+adora cluster down
+```
+
+See the [Distributed Deployment Guide](docs/distributed-deployment.md) for cluster.yml configuration, label scheduling, systemd services, rolling upgrades, and operational runbooks.
 
 ## CLI Commands
 
@@ -175,6 +193,18 @@ adora down
 | `adora record <PATH>` | Record dataflow messages to `.adorec` file |
 | `adora replay <FILE>` | Replay recorded messages from `.adorec` file |
 
+### Cluster management
+
+| Command | Description |
+|---------|-------------|
+| `adora cluster up <PATH>` | Bring up a cluster from a cluster.yml file |
+| `adora cluster status` | Show connected daemons and active dataflows |
+| `adora cluster down` | Tear down the cluster |
+| `adora cluster install <PATH>` | Install daemons as systemd services |
+| `adora cluster uninstall <PATH>` | Remove systemd services |
+| `adora cluster upgrade <PATH>` | Rolling upgrade: SCP binary + restart per-machine |
+| `adora cluster restart <PATH> <ID>` | Stop a dataflow by name or UUID |
+
 ### Setup and utilities
 
 | Command | Description |
@@ -186,7 +216,7 @@ adora down
 | `adora completion <SHELL>` | Generate shell completions |
 | `adora self update` | Update adora CLI |
 
-For full CLI documentation, see [docs/cli.md](docs/cli.md).
+For full CLI documentation, see [docs/cli.md](docs/cli.md). For distributed deployment, see [docs/distributed-deployment.md](docs/distributed-deployment.md).
 
 ## Dataflow Configuration
 
