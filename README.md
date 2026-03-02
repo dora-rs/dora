@@ -46,7 +46,7 @@
 
 - **Record/replay** -- capture dataflow messages to `.adorec` files, replay offline at any speed with node substitution for regression testing
 - **Topic inspection** -- `topic echo` to print live data, `topic hz` TUI for frequency analysis, `topic info` for schema and bandwidth
-- **Resource monitoring** -- `inspect top` TUI showing per-node CPU, memory, and I/O across all machines
+- **Resource monitoring** -- `adora top` TUI showing per-node CPU, memory, queue depth, network I/O, restart count, and health status across all machines; `--once` flag for scriptable JSON snapshots
 - **Trace inspection** -- `trace list` and `trace view` for viewing coordinator spans without external infrastructure
 - **Dataflow visualization** -- generate interactive HTML or Mermaid graphs from YAML descriptors
 
@@ -102,6 +102,7 @@ powershell -ExecutionPolicy ByPass -c "irm https://github.com/adora-rs/adora/rel
 | `metrics` | OpenTelemetry metrics collection | No |
 | `python` | Python operator support (PyO3) | No |
 | `redb-backend` | Persistent coordinator state (redb) | No |
+| `prometheus` | Prometheus `/metrics` endpoint on coordinator | No |
 
 ```bash
 cargo install adora-cli --features redb-backend
@@ -132,16 +133,17 @@ adora run dataflow.yml
 # Terminal 1: start coordinator + daemon
 adora up
 
-# Terminal 2: start a dataflow
-adora start dataflow.yml --attach
+# Terminal 2: start a dataflow (--debug enables topic inspection)
+adora start dataflow.yml --attach --debug
 
 # Terminal 3: monitor
 adora list
 adora logs <dataflow-id>
-adora inspect top
+adora top
 
-# Stop
+# Stop or restart
 adora stop <dataflow-id>
+adora restart --name <name>
 adora down
 ```
 
@@ -175,6 +177,7 @@ See the [Distributed Deployment Guide](docs/distributed-deployment.md) for clust
 | `adora build <PATH>` | Run build commands from a dataflow descriptor |
 | `adora start <PATH>` | Start a dataflow on a running coordinator |
 | `adora stop <ID>` | Stop a running dataflow |
+| `adora restart <ID>` | Restart a running dataflow (stop + re-start) |
 
 ### Monitoring
 
@@ -182,7 +185,7 @@ See the [Distributed Deployment Guide](docs/distributed-deployment.md) for clust
 |---------|-------------|
 | `adora list` | List running dataflows (alias: `ps`) |
 | `adora logs <ID>` | Show logs for a dataflow or node |
-| `adora inspect top` | Real-time resource monitor (TUI) |
+| `adora top` | Real-time resource monitor (TUI); also `adora inspect top` |
 | `adora topic list` | List topics in a dataflow |
 | `adora topic hz <TOPIC>` | Measure topic publish frequency (TUI) |
 | `adora topic echo <TOPIC>` | Print topic messages to stdout |
@@ -203,7 +206,7 @@ See the [Distributed Deployment Guide](docs/distributed-deployment.md) for clust
 | `adora cluster install <PATH>` | Install daemons as systemd services |
 | `adora cluster uninstall <PATH>` | Remove systemd services |
 | `adora cluster upgrade <PATH>` | Rolling upgrade: SCP binary + restart per-machine |
-| `adora cluster restart <PATH> <ID>` | Stop a dataflow by name or UUID |
+| `adora cluster restart <NAME>` | Restart a dataflow by name or UUID |
 
 ### Setup and utilities
 

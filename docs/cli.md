@@ -275,6 +275,7 @@ adora run <PATH> [OPTIONS]
 | `<PATH>` | required | Path to dataflow descriptor YAML |
 | `--stop-after <DURATION>` | | Auto-stop after duration (e.g., `30s`, `5m`) |
 | `--uv` | false | Use `uv` for Python node management |
+| `--debug` | false | Enable debug topics (equivalent to `publish_all_messages_to_zenoh: true`) |
 | `--allow-shell-nodes` | false | Enable shell-based node execution |
 | `--log-level <LEVEL>` | `stdout` | Min display level: `error\|warn\|info\|debug\|trace\|stdout` |
 | `--log-format <FORMAT>` | `pretty` | Output format: `pretty\|json\|compact` |
@@ -354,6 +355,7 @@ adora start <PATH> [OPTIONS]
 | `--name <NAME>`, `-n` | | Assign a name to the dataflow |
 | `--attach` | auto | Attach to log stream and wait for completion |
 | `--detach` | auto | Return immediately after spawn |
+| `--debug` | false | Enable debug topics (equivalent to `publish_all_messages_to_zenoh: true`) |
 | `--hot-reload` | false | Watch Python files and reload on change |
 | `--uv` | false | Use `uv` for Python nodes |
 | `--coordinator-addr <IP>` | `127.0.0.1` | Coordinator address |
@@ -385,6 +387,33 @@ adora stop [UUID_OR_NAME] [OPTIONS]
 If no identifier is given and running in a TTY, presents an interactive picker.
 
 **Stop sequence:** Send Event::Stop -> wait grace duration -> SIGTERM -> hard kill.
+
+#### `adora restart`
+
+Restart a running dataflow (stop + re-start with stored descriptor). No YAML path needed -- the coordinator retains the original descriptor.
+
+```
+adora restart [UUID] [OPTIONS]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `[UUID]` | | Dataflow UUID |
+| `--name <NAME>`, `-n` | | Restart by name instead of UUID |
+| `--grace-duration <DURATION>` | | Graceful shutdown timeout for the stop phase |
+| `--force`, `-f` | false | Force kill before restart |
+| `--coordinator-addr <IP>` | `127.0.0.1` | Coordinator address |
+| `--coordinator-port <PORT>` | `6013` | Coordinator port |
+
+**Examples:**
+
+```bash
+# Restart by name
+adora restart --name my-app
+
+# Restart by UUID with forced stop
+adora restart a1b2c3d4-... --force
+```
 
 #### `adora record`
 
@@ -504,10 +533,11 @@ adora top [OPTIONS]
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--refresh-interval <SECONDS>` | `2` | Update interval (min: 1) |
+| `--once` | false | Print a single JSON snapshot and exit (for scripting/CI) |
 | `--coordinator-addr <IP>` | `127.0.0.1` | Coordinator address |
 | `--coordinator-port <PORT>` | `6013` | Coordinator port |
 
-**Requires an interactive terminal.**
+**Requires an interactive terminal** (unless `--once` is used).
 
 | Key | Action |
 |-----|--------|
@@ -519,9 +549,21 @@ adora top [OPTIONS]
 | `m` | Sort by memory |
 | `r` | Force refresh |
 
-**Columns:** NODE, DATAFLOW, PID, CPU%, MEMORY (MB), I/O READ (MB/s), I/O WRITE (MB/s)
+**Columns:** NODE, STATUS, DATAFLOW, PID, CPU%, MEMORY (MB), RESTARTS, QUEUE, NET TX, NET RX, I/O READ (MB/s), I/O WRITE (MB/s)
+
+- **STATUS**: Running, Restarting, Degraded (broken inputs), or Failed
+- **RESTARTS**: Current restart count per node
+- **QUEUE**: Pending messages in the node's input queue
+- **NET TX/RX**: Cumulative cross-daemon network bytes sent/received via Zenoh
 
 CPU values are per-core (can exceed 100% with multiple cores). Metrics come from daemons, so this works for distributed deployments.
+
+**Scripting example:**
+
+```bash
+# JSON snapshot for CI/monitoring pipelines
+adora top --once | jq '.[].cpu_usage'
+```
 
 #### `adora topic list`
 
@@ -592,7 +634,9 @@ Manage and inspect dataflow nodes.
 adora node list [OPTIONS]
 ```
 
-Lists nodes in a running dataflow with their status.
+Lists nodes in a running dataflow with their status, CPU, memory, and restart count.
+
+**Columns:** NODE, STATUS, PID, CPU%, MEMORY (MB), RESTARTS, DATAFLOW
 
 #### `adora trace list`
 
@@ -906,6 +950,9 @@ struct NodeMetrics {
     memory_mb: f64,
     disk_read_mb_s: Option<f64>,
     disk_write_mb_s: Option<f64>,
+    status: NodeStatus,  // Running | Restarting | Degraded | Failed
+    restart_count: u32,
+    pending_messages: u64,
 }
 ```
 
@@ -1225,7 +1272,8 @@ State is persisted to `~/.adora/coordinator.redb`. On restart, stale dataflows a
 - Verify with `adora status`
 
 **"publish_all_messages_to_zenoh not enabled"**
-- Add to your dataflow YAML:
+- Use `--debug` flag: `adora start dataflow.yml --debug` or `adora run dataflow.yml --debug`
+- Or add to your dataflow YAML:
   ```yaml
   _unstable_debug:
     publish_all_messages_to_zenoh: true
@@ -1257,8 +1305,8 @@ State is persisted to `~/.adora/coordinator.redb`. On restart, stale dataflows a
 # 1. Check infrastructure
 adora status
 
-# 2. Start with verbose logging
-adora run dataflow.yml --log-level trace
+# 2. Start with verbose logging and debug topics
+adora run dataflow.yml --log-level trace --debug
 
 # 3. Monitor specific node
 adora logs my-dataflow problem-node --follow --level debug

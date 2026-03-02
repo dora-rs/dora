@@ -140,8 +140,8 @@ pub enum Command {
     Runtime(Runtime),
     #[clap(hide = true)]
     Coordinator(Coordinator),
-    /// Alias for `inspect top`
-    #[clap(hide = true)]
+    /// Real-time resource monitor (shortcut for `inspect top`)
+    #[clap(display_order = 12)]
     Top(inspect::top::Top),
 }
 

@@ -35,7 +35,16 @@ This guide covers how to debug, record, replay, and monitor adora dataflows. It 
 
 ## Prerequisites
 
-Before using topic inspection commands (`topic echo`, `topic hz`, `topic info`), the dataflow descriptor must enable debug message publishing:
+Before using topic inspection commands (`topic echo`, `topic hz`, `topic info`), enable debug message publishing using either approach:
+
+**Option 1: CLI flag (recommended)**
+
+```bash
+adora start dataflow.yml --debug
+adora run dataflow.yml --debug
+```
+
+**Option 2: YAML descriptor**
 
 ```yaml
 _unstable_debug:
@@ -235,7 +244,7 @@ The `event_bytes` field contains the raw `Timestamped<InterDaemonEvent>` bincode
 
 ## Topic Inspection
 
-Topic inspection commands subscribe to live dataflow messages via the coordinator's WebSocket proxy. They require `publish_all_messages_to_zenoh: true`.
+Topic inspection commands subscribe to live dataflow messages via the coordinator's WebSocket proxy. They require `--debug` flag or `publish_all_messages_to_zenoh: true`.
 
 ### Listing Topics
 
@@ -373,14 +382,23 @@ adora top
 
 # Custom refresh interval
 adora top --refresh-interval 5
+
+# JSON snapshot for scripting/CI
+adora top --once | jq .
 ```
 
 Displays for each node:
 - CPU usage (% of a single core)
 - Memory (RSS)
-- Node status
+- Node status (Running, Restarting, Degraded, Failed)
+- Restart count
+- Queue depth (pending messages)
+- Network TX/RX (cross-daemon bytes via Zenoh)
+- Disk I/O read/write
 
 Metrics are collected by daemons and reported to the coordinator, so this works for distributed dataflows across multiple machines. Press `q` or Ctrl-C to exit.
+
+Use `--once` to print a single JSON snapshot and exit, useful for CI pipelines and monitoring integrations.
 
 Note: CPU percentages are per-core, so values can exceed 100% for multi-threaded nodes. Nodes on different machines may have different CPUs, so percentages are not directly comparable across machines.
 

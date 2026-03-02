@@ -105,7 +105,7 @@ adora cluster down
 | systemd services | `adora cluster install/uninstall` | Persistent daemon services that survive reboots |
 | Auto-recovery | Automatic | Re-spawn nodes when a daemon reconnects |
 | Rolling upgrade | `adora cluster upgrade` | SCP binary + restart per-machine sequentially |
-| Dataflow restart | `adora cluster restart` | Stop a running dataflow by name or UUID |
+| Dataflow restart | `adora cluster restart` | Restart a running dataflow by name or UUID |
 
 ---
 
@@ -357,24 +357,24 @@ Upgrading gpu-server (ubuntu@10.0.0.3)...
 
 ### adora cluster restart
 
-Stop a running dataflow by name or UUID. Use `adora start` afterwards to re-launch it.
+Restart a running dataflow by name or UUID. Stops the dataflow and immediately re-starts it using the stored descriptor (no YAML path needed).
 
 ```
-adora cluster restart <PATH> <DATAFLOW>
+adora cluster restart <DATAFLOW>
 ```
 
 **Arguments:**
 
 | Argument | Description |
 |----------|-------------|
-| `PATH` | Path to the cluster configuration file |
-| `DATAFLOW` | Name or UUID of the dataflow to stop |
+| `DATAFLOW` | Name or UUID of the dataflow to restart |
 
 **Example:**
 
 ```bash
-$ adora cluster restart cluster.yml my-app
-Stopped dataflow "my-app".
+$ adora cluster restart my-app
+Restarting dataflow `my-app`
+dataflow restarted: a1b2c3d4-... -> e5f6a7b8-...
 ```
 
 ---
