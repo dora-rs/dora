@@ -98,4 +98,8 @@ pub enum ControlRequest {
     TopicUnsubscribe {
         subscription_id: Uuid,
     },
+    GetTraces,
+    GetTraceSpans {
+        trace_id: String,
+    },
 }

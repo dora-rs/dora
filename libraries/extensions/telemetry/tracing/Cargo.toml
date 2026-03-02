@@ -24,3 +24,4 @@ opentelemetry-otlp = { version = "0.31.0", features = [
     "metrics",
     "grpc-tonic",
 ] }
+uuid = { version = "1", features = ["v4"] }

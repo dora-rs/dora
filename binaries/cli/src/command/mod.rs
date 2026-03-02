@@ -19,6 +19,7 @@ mod start;
 mod stop;
 mod system;
 mod topic;
+mod trace;
 mod up;
 
 pub use build::build;
@@ -44,6 +45,7 @@ use start::Start;
 use stop::Stop;
 use system::System;
 use topic::Topic;
+use trace::Trace;
 use up::Up;
 
 /// adora-rs cli client
@@ -92,6 +94,9 @@ pub enum Command {
     /// Replay a recorded dataflow from a `.adorec` file
     #[clap(display_order = 16)]
     Replay(Replay),
+    /// View coordinator tracing spans
+    #[clap(subcommand, display_order = 17)]
+    Trace(Trace),
 
     // -- Setup --
     /// Check system health
@@ -163,6 +168,7 @@ impl Executable for Command {
             Command::Node(args) => args.execute(),
             Command::Record(args) => args.execute(),
             Command::Replay(args) => args.execute(),
+            Command::Trace(args) => args.execute(),
             Command::Status(args) => args.execute(),
             Command::New(args) => args.execute(),
             Command::Graph(args) => args.execute(),
@@ -348,6 +354,21 @@ mod tests {
     #[test]
     fn reject_replay_no_file() {
         parse_err(&["adora", "replay"]);
+    }
+
+    #[test]
+    fn parse_trace_list() {
+        parse_ok(&["adora", "trace", "list"]);
+    }
+
+    #[test]
+    fn parse_trace_view() {
+        parse_ok(&["adora", "trace", "view", "abc123"]);
+    }
+
+    #[test]
+    fn reject_trace_view_no_id() {
+        parse_err(&["adora", "trace", "view"]);
     }
 
     #[test]

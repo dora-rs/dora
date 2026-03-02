@@ -47,6 +47,8 @@ pub enum ControlRequestReply {
     TopicSubscribed {
         subscription_id: Uuid,
     },
+    TraceList(Vec<TraceSummary>),
+    TraceSpans(Vec<TraceSpan>),
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -78,6 +80,28 @@ pub struct NodeMetricsInfo {
 pub struct DaemonInfo {
     pub daemon_id: DaemonId,
     pub last_heartbeat_ago_ms: u64,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct TraceSummary {
+    pub trace_id: String,
+    pub root_span_name: String,
+    pub span_count: usize,
+    pub start_time: u64,
+    pub total_duration_us: u64,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct TraceSpan {
+    pub trace_id: String,
+    pub span_id: u64,
+    pub parent_span_id: Option<u64>,
+    pub name: String,
+    pub target: String,
+    pub level: String,
+    pub start_time: u64,
+    pub duration_us: u64,
+    pub fields: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]

@@ -593,6 +593,64 @@ adora node list [OPTIONS]
 
 Lists nodes in a running dataflow with their status.
 
+#### `adora trace list`
+
+List recent traces captured by the coordinator. The coordinator captures spans from `adora_coordinator` and `adora_core` crates in-memory (up to 4096 spans). No external tracing infrastructure required.
+
+```
+adora trace list [OPTIONS]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--coordinator-addr <IP>` | `127.0.0.1` | Coordinator address |
+| `--coordinator-port <PORT>` | `6013` | Coordinator port |
+
+**Output columns:** TRACE ID (first 12 chars), ROOT SPAN, SPANS, STARTED, DURATION
+
+**Example:**
+
+```bash
+adora trace list
+```
+
+```
+TRACE ID      ROOT SPAN          SPANS  STARTED              DURATION
+a1b2c3d4e5f6  spawn_dataflow     12     2026-03-01 10:30:05  1.234s
+f8e7d6c5b4a3  build_dataflow     5      2026-03-01 10:29:58  0.500s
+```
+
+#### `adora trace view`
+
+View spans for a specific trace as an indented tree. Supports prefix matching on trace IDs.
+
+```
+adora trace view <TRACE_ID> [OPTIONS]
+```
+
+| Argument/Flag | Default | Description |
+|---------------|---------|-------------|
+| `<TRACE_ID>` | required | Full trace ID or unique prefix |
+| `--coordinator-addr <IP>` | `127.0.0.1` | Coordinator address |
+| `--coordinator-port <PORT>` | `6013` | Coordinator port |
+
+**Example:**
+
+```bash
+adora trace view a1b2c3d4
+```
+
+```
+spawn_dataflow [INFO 1.234s] {build_id="abc", session_id="def"}
+  build_dataflow [INFO 0.500s]
+    download_node [DEBUG 0.200s] {url="..."}
+  start_inner [INFO 0.734s]
+    spawn_node [INFO 0.100s] {node_id="camera"}
+    spawn_node [INFO 0.080s] {node_id="detector"}
+```
+
+Trace IDs are prefix-matched: if the prefix uniquely identifies a trace, it resolves automatically. If ambiguous, you'll be prompted to use a longer prefix.
+
 ---
 
 ### Setup Commands
@@ -1211,7 +1269,11 @@ adora topic echo -d my-dataflow problem-node/output
 # 6. Measure frequencies
 adora topic hz -d my-dataflow --window 5
 
-# 7. Visualize dataflow graph
+# 7. View coordinator traces (no external infra needed)
+adora trace list
+adora trace view <trace-id-prefix>
+
+# 8. Visualize dataflow graph
 adora graph dataflow.yml --open
 ```
 

@@ -46,10 +46,20 @@ mod ws_control;
 mod ws_daemon;
 mod ws_server;
 
+/// Type alias for the optional in-memory span store.
+///
+/// When `Some`, the coordinator will serve `GetTraces` / `GetTraceSpans`
+/// requests by reading captured spans from this store.
+#[cfg(feature = "tracing")]
+pub type SpanStore = Option<adora_tracing::span_store::SharedSpanStore>;
+#[cfg(not(feature = "tracing"))]
+pub type SpanStore = ();
+
 pub async fn start(
     bind: SocketAddr,
     external_events: impl Stream<Item = Event> + Unpin,
     store: Arc<dyn CoordinatorStore>,
+    span_store: SpanStore,
 ) -> Result<(u16, impl Future<Output = eyre::Result<()>>), eyre::ErrReport> {
     let ctrlc_events = set_up_ctrlc_handler()?;
 
@@ -66,7 +76,15 @@ pub async fn start(
         }
     }
 
-    start_with_events(bind, external_events, ctrlc_events, store, Some(token)).await
+    start_with_events(
+        bind,
+        external_events,
+        ctrlc_events,
+        store,
+        Some(token),
+        span_store,
+    )
+    .await
 }
 
 /// Like [`start`] but without registering a ctrl-c handler.
@@ -81,7 +99,19 @@ pub async fn start_testing(
 ) -> Result<(u16, impl Future<Output = eyre::Result<()>>), eyre::ErrReport> {
     let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
     // Tests run without auth by default
-    start_with_events(bind, external_events, futures::stream::empty(), store, None).await
+    #[cfg(feature = "tracing")]
+    let span_store: SpanStore = None;
+    #[cfg(not(feature = "tracing"))]
+    let span_store: SpanStore = ();
+    start_with_events(
+        bind,
+        external_events,
+        futures::stream::empty(),
+        store,
+        None,
+        span_store,
+    )
+    .await
 }
 
 async fn start_with_events(
@@ -90,6 +120,7 @@ async fn start_with_events(
     extra_events: impl Stream<Item = Event> + Unpin,
     store: Arc<dyn CoordinatorStore>,
     auth_token: Option<adora_message::auth::AuthToken>,
+    span_store: SpanStore,
 ) -> Result<(u16, impl Future<Output = eyre::Result<()>>), eyre::ErrReport> {
     let clock = Arc::new(HLC::default());
 
@@ -114,7 +145,7 @@ async fn start_with_events(
     let events = (external_events, extra_events, ws_events).merge();
 
     let future = async move {
-        start_inner(events, clock, store).await?;
+        start_inner(events, clock, store, span_store).await?;
 
         tracing::debug!("coordinator main loop finished, shutting down WS server");
         ws_shutdown.shutdown();
@@ -135,6 +166,7 @@ async fn start_inner(
     events: impl Stream<Item = Event> + Unpin,
     clock: Arc<HLC>,
     store: Arc<dyn CoordinatorStore>,
+    span_store: SpanStore,
 ) -> eyre::Result<()> {
     let daemon_heartbeat_interval =
         tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(Duration::from_secs(3)))
@@ -861,6 +893,18 @@ async fn start_inner(
                             let _ = reply_sender
                                 .send(Ok(ControlRequestReply::NodeInfoList(node_infos)));
                         }
+                        ControlRequest::GetTraces => {
+                            let reply = handle_get_traces(&span_store);
+                            let _ = reply_sender.send(Ok(reply));
+                        }
+                        ControlRequest::GetTraceSpans { trace_id } => {
+                            let reply = if trace_id.len() <= 36 && trace_id.is_ascii() {
+                                handle_get_trace_spans(&span_store, &trace_id)
+                            } else {
+                                ControlRequestReply::Error("invalid trace_id format".to_string())
+                            };
+                            let _ = reply_sender.send(Ok(reply));
+                        }
                     }
                 }
                 ControlEvent::Error(err) => tracing::error!("{err:?}"),
@@ -1191,4 +1235,101 @@ async fn start_inner(
     tracing::info!("stopped");
 
     Ok(())
+}
+
+#[cfg(feature = "tracing")]
+fn handle_get_traces(span_store: &SpanStore) -> ControlRequestReply {
+    use adora_message::coordinator_to_cli::TraceSummary;
+    use std::collections::HashMap;
+
+    let Some(store) = span_store else {
+        return ControlRequestReply::TraceList(Vec::new());
+    };
+
+    // Snapshot spans under the lock, then release immediately.
+    let records: Vec<_> = match store.lock() {
+        Ok(store) => store.spans().iter().cloned().collect(),
+        Err(e) => {
+            tracing::warn!("span store mutex poisoned: {e}");
+            return ControlRequestReply::TraceList(Vec::new());
+        }
+    };
+
+    // Group spans by trace_id.
+    let mut groups: HashMap<&str, Vec<&adora_tracing::span_store::SpanRecord>> = HashMap::new();
+    for span in &records {
+        groups.entry(&span.trace_id).or_default().push(span);
+    }
+
+    let mut summaries: Vec<TraceSummary> = groups
+        .into_iter()
+        .map(|(trace_id, spans)| {
+            let root = spans
+                .iter()
+                .find(|s| s.parent_span_id.is_none())
+                .unwrap_or(&spans[0]);
+            let start_time = spans.iter().map(|s| s.start_time).min().unwrap_or(0);
+            TraceSummary {
+                trace_id: trace_id.to_string(),
+                root_span_name: root.name.clone(),
+                span_count: spans.len(),
+                start_time,
+                total_duration_us: root.duration_us,
+            }
+        })
+        .collect();
+
+    // Newest first.
+    summaries.sort_by(|a, b| b.start_time.cmp(&a.start_time));
+    ControlRequestReply::TraceList(summaries)
+}
+
+#[cfg(not(feature = "tracing"))]
+fn handle_get_traces(_span_store: &SpanStore) -> ControlRequestReply {
+    ControlRequestReply::TraceList(Vec::new())
+}
+
+#[cfg(feature = "tracing")]
+fn handle_get_trace_spans(span_store: &SpanStore, trace_id: &str) -> ControlRequestReply {
+    use adora_message::coordinator_to_cli::TraceSpan;
+
+    let Some(store) = span_store else {
+        return ControlRequestReply::TraceSpans(Vec::new());
+    };
+
+    // Snapshot matching spans under the lock, then release immediately.
+    let records: Vec<_> = match store.lock() {
+        Ok(store) => store
+            .spans()
+            .iter()
+            .filter(|s| s.trace_id == trace_id)
+            .cloned()
+            .collect(),
+        Err(e) => {
+            tracing::warn!("span store mutex poisoned: {e}");
+            return ControlRequestReply::TraceSpans(Vec::new());
+        }
+    };
+
+    let spans: Vec<TraceSpan> = records
+        .into_iter()
+        .map(|s| TraceSpan {
+            trace_id: s.trace_id,
+            span_id: s.span_id,
+            parent_span_id: s.parent_span_id,
+            name: s.name,
+            target: s.target,
+            level: s.level,
+            start_time: s.start_time,
+            duration_us: s.duration_us,
+            fields: s.fields,
+        })
+        .collect();
+
+    ControlRequestReply::TraceSpans(spans)
+}
+
+#[cfg(not(feature = "tracing"))]
+fn handle_get_trace_spans(_span_store: &SpanStore, _trace_id: &str) -> ControlRequestReply {
+    ControlRequestReply::TraceSpans(Vec::new())
 }

@@ -40,13 +40,14 @@
 - **Fault tolerance** -- per-node restart policies (never/on-failure/always), exponential backoff, health monitoring, circuit breakers with configurable input timeouts
 - **Distributed by default** -- local shared memory between co-located nodes, automatic [Zenoh](https://zenoh.io/) pub-sub for cross-machine communication, machine-targeted deployment
 - **Coordinator persistence** -- optional redb-backed state store survives coordinator crashes and restarts
-- **OpenTelemetry** -- built-in structured logging with rotation/routing, metrics, and distributed tracing
+- **OpenTelemetry** -- built-in structured logging with rotation/routing, metrics, distributed tracing, and zero-setup trace viewing via CLI
 
 ### Debugging and observability
 
 - **Record/replay** -- capture dataflow messages to `.adorec` files, replay offline at any speed with node substitution for regression testing
 - **Topic inspection** -- `topic echo` to print live data, `topic hz` TUI for frequency analysis, `topic info` for schema and bandwidth
 - **Resource monitoring** -- `inspect top` TUI showing per-node CPU, memory, and I/O across all machines
+- **Trace inspection** -- `trace list` and `trace view` for viewing coordinator spans without external infrastructure
 - **Dataflow visualization** -- generate interactive HTML or Mermaid graphs from YAML descriptors
 
 ### Ecosystem
@@ -169,6 +170,8 @@ adora down
 | `adora topic echo <TOPIC>` | Print topic messages to stdout |
 | `adora topic info <TOPIC>` | Show topic type and metadata |
 | `adora node list` | List nodes in a dataflow |
+| `adora trace list` | List recent traces captured by the coordinator |
+| `adora trace view <ID>` | View spans for a specific trace (supports prefix matching) |
 | `adora record <PATH>` | Record dataflow messages to `.adorec` file |
 | `adora replay <FILE>` | Replay recorded messages from `.adorec` file |
 

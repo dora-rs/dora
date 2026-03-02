@@ -50,6 +50,7 @@ async fn main() -> eyre::Result<()> {
         coordinator_bind,
         ReceiverStream::new(coordinator_events_rx),
         store,
+        None,
     )
     .await?;
 

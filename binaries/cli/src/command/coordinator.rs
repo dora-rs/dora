@@ -35,9 +35,16 @@ pub struct Coordinator {
 impl Executable for Coordinator {
     fn execute(self) -> eyre::Result<()> {
         #[cfg(feature = "tracing")]
+        let span_store;
+        #[cfg(feature = "tracing")]
         {
+            use adora_tracing::span_store::new_shared_store;
+
             let name = "adora-coordinator";
+            let store = new_shared_store();
+            span_store = Some(store.clone());
             let mut builder = TracingBuilder::new(name);
+            builder = builder.with_span_capture(store);
             if !self.quiet {
                 builder = builder.with_stdout("info", false);
             }
@@ -46,6 +53,8 @@ impl Executable for Coordinator {
                 .build()
                 .wrap_err("failed to set up tracing subscriber")?;
         }
+        #[cfg(not(feature = "tracing"))]
+        let span_store = ();
 
         let store = create_store(&self.store)?;
 
@@ -55,8 +64,13 @@ impl Executable for Coordinator {
             .context("tokio runtime failed")?;
         rt.block_on(async {
             let bind = SocketAddr::new(self.interface, self.port);
-            let (port, task) =
-                adora_coordinator::start(bind, futures::stream::empty::<Event>(), store).await?;
+            let (port, task) = adora_coordinator::start(
+                bind,
+                futures::stream::empty::<Event>(),
+                store,
+                span_store,
+            )
+            .await?;
             if !self.quiet {
                 println!("Listening on port {port}");
             }

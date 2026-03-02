@@ -21,6 +21,7 @@ This guide covers how to debug, record, replay, and monitor adora dataflows. It 
   - [Echoing Topic Data](#echoing-topic-data)
   - [Measuring Frequency](#measuring-frequency)
   - [Topic Metadata and Stats](#topic-metadata-and-stats)
+- [Trace Inspection](#trace-inspection)
 - [Resource Monitoring](#resource-monitoring)
 - [Log Analysis](#log-analysis)
   - [Live Log Streaming](#live-log-streaming)
@@ -70,10 +71,14 @@ adora topic echo -d my-dataflow problem-node/output
 # 6. Is it publishing at the expected rate?
 adora topic hz -d my-dataflow --window 5
 
-# 7. Visualize the dataflow graph
+# 7. View coordinator traces (no external infra needed)
+adora trace list
+adora trace view <trace-id-prefix>
+
+# 8. Visualize the dataflow graph
 adora graph dataflow.yml --open
 
-# 8. Record for offline analysis
+# 9. Record for offline analysis
 adora record dataflow.yml -o debug-capture.adorec
 ```
 
@@ -306,6 +311,55 @@ Reports:
 - Subscriber nodes (from descriptor)
 - Message count and bandwidth
 - Publishing frequency
+
+---
+
+## Trace Inspection
+
+The coordinator captures tracing spans in-memory from `adora_coordinator` and `adora_core` crates (up to 4096 spans in a ring buffer). You can view these traces without any external tracing infrastructure (no Jaeger, Tempo, etc. required).
+
+### Listing Traces
+
+```bash
+adora trace list
+```
+
+Shows all captured traces with their root span name, span count, start time, and total duration:
+
+```
+TRACE ID      ROOT SPAN          SPANS  STARTED              DURATION
+a1b2c3d4e5f6  spawn_dataflow     12     2026-03-01 10:30:05  1.234s
+f8e7d6c5b4a3  build_dataflow     5      2026-03-01 10:29:58  0.500s
+```
+
+### Viewing a Trace
+
+```bash
+# Full trace ID
+adora trace view a1b2c3d4-e5f6-7890-abcd-1234567890ab
+
+# Or use a unique prefix
+adora trace view a1b2c3d4
+```
+
+Displays spans as an indented tree showing parent-child relationships, log levels, durations, and span fields:
+
+```
+spawn_dataflow [INFO 1.234s] {build_id="abc", session_id="def"}
+  build_dataflow [INFO 0.500s]
+    download_node [DEBUG 0.200s] {url="..."}
+  start_inner [INFO 0.734s]
+    spawn_node [INFO 0.100s] {node_id="camera"}
+    spawn_node [INFO 0.080s] {node_id="detector"}
+```
+
+### When to Use Trace Inspection
+
+- **Quick debugging** -- see what the coordinator did during a `start`, `stop`, or `build` without setting up Jaeger/Tempo
+- **Performance analysis** -- identify slow spans in dataflow lifecycle operations
+- **Deployment troubleshooting** -- understand the sequence and timing of coordinator operations
+
+For full distributed tracing across daemons and nodes, set `ADORA_OTLP_ENDPOINT` and use an OTLP-compatible backend.
 
 ---
 

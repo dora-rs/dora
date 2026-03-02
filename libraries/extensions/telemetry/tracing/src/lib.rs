@@ -19,6 +19,7 @@ use tracing_subscriber::{
 
 use tracing_subscriber::Registry;
 pub mod metrics;
+pub mod span_store;
 pub mod telemetry;
 
 /// Setup tracing with a default configuration.
@@ -171,6 +172,19 @@ impl TracingBuilder {
     #[deprecated(since = "0.4.0", note = "Use `with_otlp_tracing` instead")]
     pub fn with_jaeger_tracing(self) -> eyre::Result<Self> {
         self.with_otlp_tracing()
+    }
+
+    /// Add a layer that captures completed spans into the given store.
+    ///
+    /// Only captures spans from `adora_*` crates at info level to avoid noise
+    /// from third-party dependencies.
+    pub fn with_span_capture(mut self, store: span_store::SharedSpanStore) -> Self {
+        let filter = EnvFilter::new("off")
+            .add_directive("adora_coordinator=info".parse().expect("valid directive"))
+            .add_directive("adora_core=info".parse().expect("valid directive"));
+        let layer = span_store::SpanCaptureLayer::new(store).with_filter(filter);
+        self.layers.push(layer.boxed());
+        self
     }
 
     pub fn add_layer<L>(mut self, layer: L) -> Self
