@@ -60,6 +60,9 @@ fn main() -> eyre::Result<()> {
         // Process one step for each active goal on every input event.
         // This sits outside the match so goals make progress regardless of
         // which input triggered the event loop iteration.
+        if active_goals.is_empty() {
+            continue;
+        }
         let goal_ids: Vec<String> = active_goals.keys().cloned().collect();
         for goal_id in goal_ids {
             if canceled.remove(&goal_id) {

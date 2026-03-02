@@ -11,7 +11,7 @@ use std::{
 
 use adora_message::{
     descriptor::{Ros2BridgeConfig, Ros2Direction, Ros2QosConfig, Ros2Role, Ros2TopicConfig},
-    metadata::Parameter,
+    metadata::{Parameter, get_string_param},
 };
 use adora_node_api::{
     AdoraNode, Event,
@@ -308,6 +308,7 @@ fn run_service_server(
         String,
         (ros2_client::service::RmwRequestId, std::time::Instant),
     > = HashMap::new();
+    let mut oldest_insert: Option<std::time::Instant> = None;
 
     for event in futures::executor::block_on_stream(merged) {
         match event {
@@ -316,12 +317,9 @@ fn run_service_server(
                 metadata,
                 data,
             }) => {
-                let rid = metadata.parameters.get(REQUEST_ID).and_then(|p| match p {
-                    Parameter::String(s) => Some(s.clone()),
-                    _ => None,
-                });
+                let rid = get_string_param(&metadata.parameters, REQUEST_ID);
                 if let Some(rid) = rid {
-                    if let Some((rmw_id, _)) = pending_requests.remove(&rid) {
+                    if let Some((rmw_id, _)) = pending_requests.remove(rid) {
                         let array_data = data.to_data();
                         let _ser_guard = TypeInfoGuard::serialize(response_type_info.clone());
                         futures::executor::block_on(
@@ -340,15 +338,20 @@ fn run_service_server(
             MergedEvent::Adora(Event::Stop(_)) => break,
             MergedEvent::Adora(_) => {}
             MergedEvent::External((rmw_id, data)) => {
-                // Evict stale entries that never received a response
+                // Evict stale entries that never received a response.
+                // Skip the O(n) scan when no entry could have expired yet.
                 let now = std::time::Instant::now();
-                pending_requests.retain(|id, (_, t)| {
-                    let keep = now.duration_since(*t) < SERVICE_RESPONSE_TIMEOUT;
-                    if !keep {
-                        tracing::warn!("evicting timed-out pending request {id}");
-                    }
-                    keep
-                });
+                if oldest_insert.is_some_and(|t| now.duration_since(t) >= SERVICE_RESPONSE_TIMEOUT)
+                {
+                    pending_requests.retain(|id, (_, t)| {
+                        let keep = now.duration_since(*t) < SERVICE_RESPONSE_TIMEOUT;
+                        if !keep {
+                            tracing::warn!("evicting timed-out pending request {id}");
+                        }
+                        keep
+                    });
+                    oldest_insert = pending_requests.values().map(|(_, t)| *t).min();
+                }
 
                 if pending_requests.len() >= MAX_PENDING_REQUESTS {
                     tracing::warn!(
@@ -357,6 +360,9 @@ fn run_service_server(
                     continue;
                 }
                 let request_id = AdoraNode::new_request_id();
+                if oldest_insert.is_none() {
+                    oldest_insert = Some(now);
+                }
                 pending_requests.insert(request_id.clone(), (rmw_id, now));
                 let mut params = adora_message::metadata::MetadataParameters::default();
                 params.insert(REQUEST_ID.to_string(), Parameter::String(request_id));
@@ -701,9 +707,9 @@ fn run_action_server(
     for event in futures::executor::block_on_stream(merged) {
         match event {
             MergedEvent::Adora(Event::Input { id, metadata, data }) => {
-                let goal_id = match metadata.parameters.get(GOAL_ID) {
-                    Some(Parameter::String(s)) => s.clone(),
-                    _ => {
+                let goal_id = match get_string_param(&metadata.parameters, GOAL_ID) {
+                    Some(s) => s.to_owned(),
+                    None => {
                         tracing::warn!("action server input `{id}` missing goal_id in metadata");
                         continue;
                     }
@@ -729,8 +735,8 @@ fn run_action_server(
                     "result" => {
                         if let Some(handle) = executing_goals.remove(&goal_id) {
                             let array_data = data.to_data();
-                            let status = match metadata.parameters.get(GOAL_STATUS) {
-                                Some(Parameter::String(s)) => match s.as_str() {
+                            let status = match get_string_param(&metadata.parameters, GOAL_STATUS) {
+                                Some(s) => match s {
                                     GOAL_STATUS_SUCCEEDED => {
                                         ros2_client::action::GoalEndStatus::Succeeded
                                     }
@@ -748,7 +754,7 @@ fn run_action_server(
                                         ros2_client::action::GoalEndStatus::Aborted
                                     }
                                 },
-                                _ => ros2_client::action::GoalEndStatus::Succeeded,
+                                None => ros2_client::action::GoalEndStatus::Succeeded,
                             };
                             let _guard = TypeInfoGuard::serialize(result_type_info.clone());
                             let send_result = server.send_result_response(

@@ -872,10 +872,9 @@ impl AdoraNode {
         mut parameters: MetadataParameters,
         data: impl Array,
     ) -> NodeResult<String> {
-        debug_assert!(
-            !parameters.contains_key(adora_message::metadata::REQUEST_ID),
-            "send_service_request: caller-provided request_id will be overwritten"
-        );
+        if parameters.contains_key(adora_message::metadata::REQUEST_ID) {
+            tracing::warn!("send_service_request: caller-provided request_id will be overwritten");
+        }
         let request_id = Self::new_request_id();
         parameters.insert(
             adora_message::metadata::REQUEST_ID.to_string(),
