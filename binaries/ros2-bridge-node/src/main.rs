@@ -301,9 +301,13 @@ fn run_service_server(
     });
     let merged = adora_events.merge_external(Box::pin(request_stream));
 
-    // Map from request_id -> ROS2 RmwRequestId. Handler responses carry
-    // the request_id in metadata, allowing out-of-order replies.
-    let mut pending_requests: HashMap<String, ros2_client::service::RmwRequestId> = HashMap::new();
+    // Map from request_id -> (ROS2 RmwRequestId, insertion time).
+    // Handler responses carry the request_id in metadata, allowing out-of-order replies.
+    // Stale entries are evicted after SERVICE_RESPONSE_TIMEOUT.
+    let mut pending_requests: HashMap<
+        String,
+        (ros2_client::service::RmwRequestId, std::time::Instant),
+    > = HashMap::new();
 
     for event in futures::executor::block_on_stream(merged) {
         match event {
@@ -317,7 +321,7 @@ fn run_service_server(
                     _ => None,
                 });
                 if let Some(rid) = rid {
-                    if let Some(rmw_id) = pending_requests.remove(&rid) {
+                    if let Some((rmw_id, _)) = pending_requests.remove(&rid) {
                         let array_data = data.to_data();
                         let _ser_guard = TypeInfoGuard::serialize(response_type_info.clone());
                         futures::executor::block_on(
@@ -336,15 +340,24 @@ fn run_service_server(
             MergedEvent::Adora(Event::Stop(_)) => break,
             MergedEvent::Adora(_) => {}
             MergedEvent::External((rmw_id, data)) => {
+                // Evict stale entries that never received a response
+                let now = std::time::Instant::now();
+                pending_requests.retain(|id, (_, t)| {
+                    let keep = now.duration_since(*t) < SERVICE_RESPONSE_TIMEOUT;
+                    if !keep {
+                        tracing::warn!("evicting timed-out pending request {id}");
+                    }
+                    keep
+                });
+
                 if pending_requests.len() >= MAX_PENDING_REQUESTS {
                     tracing::warn!(
                         "pending requests queue full ({MAX_PENDING_REQUESTS}), dropping request"
                     );
                     continue;
                 }
-                let request_id =
-                    uuid::Uuid::new_v7(uuid::Timestamp::now(uuid::NoContext)).to_string();
-                pending_requests.insert(request_id.clone(), rmw_id);
+                let request_id = AdoraNode::new_request_id();
+                pending_requests.insert(request_id.clone(), (rmw_id, now));
                 let mut params = adora_message::metadata::MetadataParameters::default();
                 params.insert(REQUEST_ID.to_string(), Parameter::String(request_id));
                 node.send_output("request".into(), params, StructArray::from(data))?;

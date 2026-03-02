@@ -20,12 +20,12 @@ fn main() -> eyre::Result<()> {
                     .column_by_name("a")
                     .and_then(|c| c.as_any().downcast_ref::<Int64Array>())
                     .map(|arr| arr.value(0))
-                    .unwrap_or(0);
+                    .ok_or_else(|| eyre::eyre!("missing field 'a' in request"))?;
                 let b = struct_array
                     .column_by_name("b")
                     .and_then(|c| c.as_any().downcast_ref::<Int64Array>())
                     .map(|arr| arr.value(0))
-                    .unwrap_or(0);
+                    .ok_or_else(|| eyre::eyre!("missing field 'b' in request"))?;
 
                 let sum = a + b;
                 println!("[server] {a} + {b} = {sum}");

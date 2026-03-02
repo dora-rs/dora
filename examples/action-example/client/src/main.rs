@@ -18,7 +18,7 @@ fn main() -> eyre::Result<()> {
                     let start_value = 3 + tick_count;
                     tick_count += 1;
 
-                    let goal_id = AdoraNode::new_request_id();
+                    let goal_id = AdoraNode::new_goal_id();
                     let mut params = MetadataParameters::default();
                     params.insert(GOAL_ID.to_string(), Parameter::String(goal_id.clone()));
 

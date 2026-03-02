@@ -848,14 +848,28 @@ impl AdoraNode {
         uuid::Uuid::new_v7(uuid::Timestamp::now(uuid::NoContext)).to_string()
     }
 
+    /// Generate a new unique goal ID (UUID v7, time-ordered).
+    ///
+    /// This is an alias for [`new_request_id`](Self::new_request_id) that
+    /// reads more naturally in action (goal/feedback/result) contexts.
+    pub fn new_goal_id() -> String {
+        Self::new_request_id()
+    }
+
     /// Send a service request, automatically injecting a `request_id` into the
     /// metadata parameters. Returns the generated request ID.
+    ///
+    /// Any existing `request_id` key in `parameters` is replaced.
     pub fn send_service_request(
         &mut self,
         output_id: DataId,
         mut parameters: MetadataParameters,
         data: impl Array,
     ) -> NodeResult<String> {
+        debug_assert!(
+            !parameters.contains_key(adora_message::metadata::REQUEST_ID),
+            "send_service_request: caller-provided request_id will be overwritten"
+        );
         let request_id = Self::new_request_id();
         parameters.insert(
             adora_message::metadata::REQUEST_ID.to_string(),

@@ -6,6 +6,9 @@ use adora_node_api::{
     arrow::array::{Array, Int64Array},
 };
 
+const MAX_ACTIVE_GOALS: usize = 64;
+const MAX_PENDING_CANCELS: usize = 128;
+
 fn main() -> eyre::Result<()> {
     let (mut node, mut events) = AdoraNode::init_from_env()?;
 
@@ -24,6 +27,10 @@ fn main() -> eyre::Result<()> {
                         .map(|a| a.value(0));
 
                     if let (Some(goal_id), Some(start)) = (goal_id, start) {
+                        if active_goals.len() >= MAX_ACTIVE_GOALS {
+                            eprintln!("[server] max active goals reached, dropping {goal_id}");
+                            continue;
+                        }
                         println!("[server] new goal {goal_id}: countdown from {start}");
                         active_goals.insert(goal_id, start);
                     }
@@ -31,6 +38,10 @@ fn main() -> eyre::Result<()> {
                 "cancel" => {
                     let goal_id = extract_string_param(&metadata.parameters, GOAL_ID);
                     if let Some(goal_id) = goal_id {
+                        if canceled.len() >= MAX_PENDING_CANCELS {
+                            eprintln!("[server] cancel queue full, dropping cancel for {goal_id}");
+                            continue;
+                        }
                         println!("[server] cancel requested for {goal_id}");
                         canceled.insert(goal_id);
                     }
