@@ -1121,6 +1121,9 @@ pub fn init_tracing(
     let rt = Handle::try_current().context("failed to get tokio runtime handle")?;
     rt.spawn(tracing_monitor);
 
+    // dataflow_id is only used when metrics feature is enabled
+    let _ = &dataflow_id;
+
     #[cfg(feature = "metrics")]
     {
         let id = format!("{dataflow_id}/{node_id}");

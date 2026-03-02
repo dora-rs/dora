@@ -659,10 +659,11 @@ impl Daemon {
                 },
                 timestamp: self.clock.new_timestamp(),
             })?;
-            sender
-                .send_event(&msg)
-                .await
-                .wrap_err("failed to send Exit message to adora-coordinator")?;
+            // Best-effort: the coordinator may have already shut down (e.g. after
+            // a Destroy command), so a closed channel is not an error.
+            if let Err(e) = sender.send_event(&msg).await {
+                tracing::debug!("could not send Exit to coordinator (already gone?): {e}");
+            }
         }
 
         Ok(self.dataflow_node_results)
