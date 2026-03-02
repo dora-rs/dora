@@ -176,6 +176,9 @@ pub(crate) struct RunningDataflow {
     pub(crate) created_at: u64,
     /// Monotonically increasing version; bumped on every persist.
     pub(crate) store_generation: u64,
+
+    /// Per-daemon timestamp of last auto-recovery attempt (for backoff).
+    pub(crate) last_recovery_attempt: BTreeMap<DaemonId, Instant>,
 }
 
 pub(crate) fn now_millis() -> u64 {

@@ -1,16 +1,14 @@
-use eyre::{Context, eyre};
-use std::path::{Path, PathBuf};
+use eyre::Context;
+use std::path::PathBuf;
 use uuid::Uuid;
 
 /// Simple file-backed artifact store for HTTP binary distribution.
 ///
-/// Stores built binaries by `(build_id, node_id)` so daemons can
-/// pull them from the coordinator via HTTP before spawning.
+/// Daemons pull binaries from the coordinator via HTTP before spawning.
 pub(crate) struct ArtifactStore {
     base_dir: PathBuf,
 }
 
-#[allow(dead_code)]
 impl ArtifactStore {
     /// Create a new artifact store in a temp directory.
     pub fn new() -> eyre::Result<Self> {
@@ -20,37 +18,10 @@ impl ArtifactStore {
         Ok(Self { base_dir })
     }
 
-    /// Store binary data for a specific build/node pair. Returns the file path.
-    pub fn store(&self, build_id: Uuid, node_id: &str, data: &[u8]) -> eyre::Result<PathBuf> {
-        let dir = self.base_dir.join(build_id.to_string());
-        std::fs::create_dir_all(&dir)?;
-        let sanitized = sanitize_node_id(node_id)
-            .ok_or_else(|| eyre!("invalid node_id for artifact storage: {node_id}"))?;
-        let path = dir.join(sanitized);
-        std::fs::write(&path, data)
-            .with_context(|| format!("failed to write artifact to {}", path.display()))?;
-        Ok(path)
-    }
-
     /// Construct the path to a stored artifact (without checking existence).
     /// Returns `None` if the node_id fails sanitization.
     pub fn artifact_path(&self, build_id: &Uuid, node_id: &str) -> Option<PathBuf> {
         sanitize_node_id(node_id).map(|s| self.base_dir.join(build_id.to_string()).join(s))
-    }
-
-    /// Remove all artifacts for a given build.
-    pub fn cleanup_build(&self, build_id: &Uuid) {
-        let dir = self.base_dir.join(build_id.to_string());
-        if let Err(e) = std::fs::remove_dir_all(&dir) {
-            if e.kind() != std::io::ErrorKind::NotFound {
-                tracing::warn!("failed to clean up artifacts for build {build_id}: {e}");
-            }
-        }
-    }
-
-    /// Base directory for constructing artifact URLs.
-    pub fn base_dir(&self) -> &Path {
-        &self.base_dir
     }
 }
 
@@ -79,27 +50,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn store_and_get() {
+    fn artifact_path_constructs_correct_path() {
         let store = ArtifactStore::new().unwrap();
         let build_id = Uuid::new_v4();
-        let data = b"hello binary";
-
-        let path = store.store(build_id, "my-node", data).unwrap();
-        assert!(path.exists());
-
-        let got_path = store.artifact_path(&build_id, "my-node").unwrap();
-        assert_eq!(std::fs::read(&got_path).unwrap(), data);
-
-        store.cleanup_build(&build_id);
-        let cleaned_path = store.artifact_path(&build_id, "my-node").unwrap();
-        assert!(!cleaned_path.exists());
+        let path = store.artifact_path(&build_id, "my-node").unwrap();
+        assert!(path.ends_with("my-node"));
+        assert!(path.to_str().unwrap().contains(&build_id.to_string()));
     }
 
     #[test]
-    fn rejects_path_traversal() {
-        assert!(sanitize_node_id("../etc/passwd").is_none());
-        assert!(sanitize_node_id("foo/bar").is_none());
-        assert!(sanitize_node_id("").is_none());
+    fn artifact_path_rejects_traversal() {
+        let store = ArtifactStore::new().unwrap();
+        let build_id = Uuid::new_v4();
+        assert!(store.artifact_path(&build_id, "../etc/passwd").is_none());
+        assert!(store.artifact_path(&build_id, "foo/bar").is_none());
+        assert!(store.artifact_path(&build_id, "").is_none());
     }
 
     #[test]

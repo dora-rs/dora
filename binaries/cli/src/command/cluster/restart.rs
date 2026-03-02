@@ -12,10 +12,10 @@ use crate::{
 
 use super::config::ClusterConfig;
 
-/// Rolling restart: reload all nodes in a dataflow, one daemon at a time.
+/// Stop a running dataflow by name or UUID.
 ///
-/// Connects to the coordinator, resolves the dataflow, and sends a Reload
-/// for each node grouped by daemon, waiting between each daemon batch.
+/// Connects to the coordinator, resolves the dataflow, and sends a Stop.
+/// Use `adora start` afterwards to restart the dataflow.
 ///
 /// Examples:
 ///

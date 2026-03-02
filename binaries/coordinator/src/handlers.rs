@@ -455,6 +455,7 @@ pub(crate) async fn start_dataflow(
         pending_spawn_results: daemons,
         created_at: state::now_millis(),
         store_generation: 0,
+        last_recovery_attempt: BTreeMap::new(),
     })
 }
 

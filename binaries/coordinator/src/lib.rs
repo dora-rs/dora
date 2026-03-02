@@ -1232,16 +1232,26 @@ async fn start_inner(
                 }
 
                 // Auto-recovery: find dataflows that should be running on this daemon
-                // but aren't reported. Only re-spawn for coordinator-managed dataflows
-                // (those with a build_id, i.e. started via `adora start`).
+                // but aren't reported. Uses 30s backoff per daemon per dataflow to
+                // avoid infinite re-spawn loops for crash-looping nodes.
+                const RECOVERY_BACKOFF: Duration = Duration::from_secs(30);
                 let reported_set: BTreeSet<DataflowId> =
                     reported_dataflows.iter().copied().collect();
-                for (uuid, df) in &running_dataflows {
+                let now = Instant::now();
+                for (uuid, df) in &mut running_dataflows {
                     if !df.daemons.contains(&daemon_id) {
                         continue;
                     }
                     if reported_set.contains(uuid) {
+                        // Dataflow is running — clear any previous recovery timestamp
+                        df.last_recovery_attempt.remove(&daemon_id);
                         continue;
+                    }
+                    // Backoff: skip if we attempted recovery recently
+                    if let Some(last) = df.last_recovery_attempt.get(&daemon_id) {
+                        if now.duration_since(*last) < RECOVERY_BACKOFF {
+                            continue;
+                        }
                     }
                     // Collect nodes assigned to this daemon
                     let spawn_nodes: BTreeSet<_> = df
@@ -1253,6 +1263,7 @@ async fn start_inner(
                     if spawn_nodes.is_empty() {
                         continue;
                     }
+                    df.last_recovery_attempt.insert(daemon_id.clone(), now);
                     tracing::info!(
                         "auto-recovery: re-spawning {} node(s) for dataflow {uuid} on daemon {daemon_id}",
                         spawn_nodes.len()
