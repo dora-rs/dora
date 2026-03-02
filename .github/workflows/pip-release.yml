@@ -50,9 +50,9 @@ jobs:
         with:
           target: ${{ matrix.platform.target }}
           args: --release --out dist --zig
-          sccache: false
           manylinux: manylinux_2_28
           working-directory: ${{ matrix.repository.path }}
+          sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
       - name: Upload wheels
         uses: actions/upload-artifact@v5
         with:
@@ -87,9 +87,9 @@ jobs:
         with:
           target: ${{ matrix.platform.target }}
           args: --release --out dist
-          sccache: false
           manylinux: musllinux_1_2
           working-directory: ${{ matrix.repository.path }}
+          sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
       - name: Upload wheels
         uses: actions/upload-artifact@v5
         with:
@@ -107,9 +107,9 @@ jobs:
           - runner: windows-latest
             target: x86
             python_arch: x86
-          - runner: windows-11-arm
-            target: aarch64
-            python_arch: arm64
+          # - runner: windows-11-arm
+          #   target: aarch64
+          #   python_arch: arm64
         repository:
           - path: apis/python/node
             name: dora-node-api
@@ -126,7 +126,7 @@ jobs:
         with:
           target: ${{ matrix.platform.target }}
           args: --release --out dist
-          sccache: false
+          sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
           working-directory: ${{ matrix.repository.path }}
       - name: Upload wheels
         uses: actions/upload-artifact@v5
@@ -158,7 +158,7 @@ jobs:
         with:
           target: ${{ matrix.platform.target }}
           args: --release --out dist
-          sccache: false
+          sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
           working-directory: ${{ matrix.repository.path }}
       - name: Upload wheels
         uses: actions/upload-artifact@v5
