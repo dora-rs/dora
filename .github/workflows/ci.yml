@@ -49,6 +49,7 @@ jobs:
           --exclude adora-operator-api-python
           --exclude adora-ros2-bridge-python
           --exclude adora-examples
+          --exclude rust-dataflow-example-node
 
   e2e:
     name: E2E Tests

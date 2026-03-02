@@ -147,45 +147,25 @@ fn read_local_logs(args: &LogsArgs) -> Result<()> {
     let config = build_log_config(args)?;
     let now = Utc::now();
 
-    if args.all_nodes || args.node.is_none() {
-        // Read all log files and merge-sort
-        let log_files = find_log_files(&dataflow_dir)?;
-        if log_files.is_empty() {
-            bail!("no log files found in {}", dataflow_dir.display());
-        }
+    let log_files = match &args.node {
+        Some(node) if !args.all_nodes => find_node_log_files(&dataflow_dir, node)?,
+        _ => find_log_files(&dataflow_dir)?,
+    };
+    if log_files.is_empty() {
+        bail!("no log files found in {}", dataflow_dir.display());
+    }
 
-        let mut all_messages: Vec<LogMessage> = Vec::new();
-        for path in &log_files {
-            let messages = read_log_file(path)?;
-            all_messages.extend(messages);
-        }
+    let mut all_messages: Vec<LogMessage> = Vec::new();
+    for path in &log_files {
+        all_messages.extend(read_log_file(path)?);
+    }
+    all_messages.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+    let filtered = apply_time_filters(all_messages, args.since, args.until, now);
+    let grepped = apply_grep(filtered, args.grep.as_deref());
+    let display = apply_tail(grepped, args.tail);
 
-        // Sort by timestamp
-        all_messages.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
-
-        // Apply time filters, then grep, then tail
-        let filtered = apply_time_filters(all_messages, args.since, args.until, now);
-        let grepped = apply_grep(filtered, args.grep.as_deref());
-        let display = apply_tail(grepped, args.tail);
-
-        for msg in display {
-            print_log_message(msg, &config);
-        }
-    } else {
-        let node = args.node.as_ref().unwrap();
-        let log_files = find_node_log_files(&dataflow_dir, node)?;
-        let mut all_messages: Vec<LogMessage> = Vec::new();
-        for path in &log_files {
-            all_messages.extend(read_log_file(path)?);
-        }
-        all_messages.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
-        let filtered = apply_time_filters(all_messages, args.since, args.until, now);
-        let grepped = apply_grep(filtered, args.grep.as_deref());
-        let display = apply_tail(grepped, args.tail);
-
-        for msg in display {
-            print_log_message(msg, &config);
-        }
+    for msg in display {
+        print_log_message(msg, &config);
     }
 
     Ok(())
@@ -201,10 +181,9 @@ fn follow_local_logs(args: &LogsArgs) -> Result<()> {
     let config = build_log_config(args)?;
     let now = Utc::now();
 
-    let files = if args.all_nodes || args.node.is_none() {
-        find_log_files(&dataflow_dir)?
-    } else {
-        find_node_log_files(&dataflow_dir, args.node.as_ref().unwrap())?
+    let files = match &args.node {
+        Some(node) if !args.all_nodes => find_node_log_files(&dataflow_dir, node)?,
+        _ => find_log_files(&dataflow_dir)?,
     };
 
     if files.is_empty() {

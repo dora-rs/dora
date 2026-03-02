@@ -3,3 +3,10 @@
 DeviceNDArray = "DeviceNDArray"
 Feedforward_2nd_Gain = "Feedforward_2nd_Gain"
 clonable_command = "clonable_command"
+
+[default.extend-words]
+# ratatui is a Rust TUI crate name, not a misspelling of ratatouille
+ratatui = "ratatui"
+# valid English words flagged by typos
+criticals = "criticals"
+unparseable = "unparseable"
