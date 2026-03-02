@@ -1,23 +1,26 @@
 import os
 import time
-import cv2
 import numpy as np
 import pyarrow as pa
 from dora import DoraStatus
 
+# HEADLESS FIX: Must be set BEFORE cv2 import
+if os.environ.get("GITHUB_ACTIONS") == "true":
+    os.environ["QT_QPA_PLATFORM"] = "offscreen"
+
+import cv2  # noqa: E402
+
 CAMERA_WIDTH = 640
 CAMERA_HEIGHT = 480
 CAMERA_INDEX = int(os.getenv("CAMERA_INDEX", 0))
-CI = os.environ.get("CI")
-
 font = cv2.FONT_HERSHEY_SIMPLEX
+
 
 class Operator:
     """Captures and streams webcam frames."""
 
     def __init__(self):
         self.video_capture = cv2.VideoCapture(CAMERA_INDEX)
-        self.start_time = time.time()
         self.video_capture.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
         self.video_capture.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
         self.failure_count = 0
@@ -30,7 +33,9 @@ class Operator:
                 self.failure_count = 0
             elif self.failure_count > 10:
                 frame = np.zeros((CAMERA_HEIGHT, CAMERA_WIDTH, 3), dtype=np.uint8)
-                cv2.putText(frame, "No Webcam Found", (30, 30), font, 0.75, (255, 255, 255), 2)
+                cv2.putText(
+                    frame, "No Webcam Found", (30, 30), font, 0.75, (255, 255, 255), 2
+                )
             else:
                 self.failure_count += 1
                 return DoraStatus.CONTINUE

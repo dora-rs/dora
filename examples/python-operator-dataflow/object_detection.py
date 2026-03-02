@@ -7,8 +7,10 @@ from ultralytics import YOLO
 
 # Configuration
 YOLO_MODEL_PATH = os.getenv("YOLO_MODEL", "yolov8n.pt")
-# FIX 1: Ensure imgsz is a multiple of 32 (320 or 256 are great)
-IMGSZ = 320 
+CAMERA_WIDTH = 640
+# Must be a multiple of 32 for optimal YOLO performance
+IMGSZ = 320
+
 
 class Operator:
     def __init__(self):
@@ -16,33 +18,38 @@ class Operator:
 
     def on_event(self, dora_event, send_output) -> DoraStatus:
         if dora_event["type"] == "INPUT":
-            # FIX 2: We use a try/except or a check to ignore non-image metadata
             if dora_event["id"] != "image":
                 return DoraStatus.CONTINUE
 
             start_inference = time.perf_counter()
-            
-            # Convert Arrow array to numpy
-            frame = dora_event["value"].to_numpy().reshape((480, 640, 3)).copy()
-            frame = frame[:, :, ::-1] # BGR to RGB
 
-            # Run inference with the fixed IMGSZ
+            # Dynamic reshape — works on any camera resolution, not hardcoded to 480
+            frame = dora_event["value"].to_numpy().reshape((-1, CAMERA_WIDTH, 3)).copy()
+
+            # No BGR->RGB flip needed — Ultralytics handles color internally
             results = self.model(
-                frame, 
-                verbose=False, 
-                imgsz=IMGSZ, 
-                conf=0.25 # Lowered to see more objects like the mouse!
+                frame,
+                verbose=False,
+                imgsz=IMGSZ,
+                conf=0.25,
             )
 
             latency = (time.perf_counter() - start_inference) * 1000
-            
-            # Process results...
+
+            # Extract boxes, confidence scores, and class labels
             boxes = np.array(results[0].boxes.xyxy.cpu())
             conf = np.array(results[0].boxes.conf.cpu())
             label = np.array(results[0].boxes.cls.cpu())
-            arrays = np.concatenate((boxes, conf[:, None], label[:, None]), axis=1) if len(boxes) > 0 else np.array([], dtype=np.float32)
 
-            # Send outputs with CLEAN metadata
+            # FIXED: np.zeros((0,6)) so plot.py reshape(-1,6) never fails on empty
+            if len(boxes) > 0:
+                arrays = np.concatenate(
+                    (boxes, conf[:, None], label[:, None]), axis=1
+                ).astype(np.float32)
+            else:
+                arrays = np.zeros((0, 6), dtype=np.float32)
+
+            # Send outputs with clean metadata
             send_output("bbox", pa.array(arrays.ravel()), {})
             send_output("latency", pa.array([latency]), {})
 
