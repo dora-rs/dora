@@ -67,7 +67,6 @@ self_update = { version = "0.42.0", features = [
     "compression-flate2",
 ], default-features = false }
 pyo3 = { workspace = true, features = [
-    "extension-module",
     "abi3",
 ], optional = true }
 self-replace = "1.5.0"
