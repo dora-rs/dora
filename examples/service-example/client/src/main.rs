@@ -1,0 +1,77 @@
+use std::collections::HashMap;
+
+use adora_node_api::{
+    AdoraNode, Event, MetadataParameters, Parameter, REQUEST_ID,
+    arrow::array::{Array, Int64Array, StructArray},
+};
+use eyre::Context;
+
+fn main() -> eyre::Result<()> {
+    let (mut node, mut events) = AdoraNode::init_from_env()?;
+
+    let mut in_flight: HashMap<String, (i64, i64)> = HashMap::new();
+    let mut tick_count: i64 = 0;
+
+    while let Some(event) = events.recv() {
+        match event {
+            Event::Input { id, metadata, data } => match id.as_str() {
+                "tick" => {
+                    let a = tick_count;
+                    let b = tick_count + 10;
+                    tick_count += 1;
+
+                    let a_array = Int64Array::from(vec![a]);
+                    let b_array = Int64Array::from(vec![b]);
+                    let fields = vec![
+                        arrow::datatypes::Field::new("a", arrow::datatypes::DataType::Int64, false),
+                        arrow::datatypes::Field::new("b", arrow::datatypes::DataType::Int64, false),
+                    ];
+                    let struct_array = StructArray::try_new(
+                        fields.into(),
+                        vec![
+                            std::sync::Arc::new(a_array) as _,
+                            std::sync::Arc::new(b_array) as _,
+                        ],
+                        None,
+                    )
+                    .context("failed to create struct array")?;
+
+                    let request_id = node
+                        .send_service_request(
+                            "request".into(),
+                            MetadataParameters::default(),
+                            struct_array,
+                        )
+                        .context("failed to send request")?;
+
+                    println!("[client] sent request {request_id}: {a} + {b}");
+                    in_flight.insert(request_id, (a, b));
+                }
+                "response" => {
+                    let rid = metadata.parameters.get(REQUEST_ID).and_then(|p| match p {
+                        Parameter::String(s) => Some(s.clone()),
+                        _ => None,
+                    });
+
+                    if let Some(rid) = rid {
+                        let struct_array = StructArray::from(data.to_data());
+                        let sum_col = struct_array
+                            .column_by_name("sum")
+                            .and_then(|c| c.as_any().downcast_ref::<Int64Array>())
+                            .map(|a| a.value(0));
+
+                        if let (Some((a, b)), Some(sum)) = (in_flight.remove(&rid), sum_col) {
+                            println!("[client] response {rid}: {a} + {b} = {sum}");
+                            assert_eq!(sum, a + b, "sum mismatch");
+                        }
+                    }
+                }
+                _ => {}
+            },
+            Event::Stop(_) => break,
+            _ => {}
+        }
+    }
+
+    Ok(())
+}

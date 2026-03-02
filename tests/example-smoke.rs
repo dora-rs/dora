@@ -18,6 +18,8 @@ static BUILD_CLI: Once = Once::new();
 static BUILD_RUST_NODES: Once = Once::new();
 static BUILD_BENCHMARK_NODES: Once = Once::new();
 static BUILD_LOG_SINK_NODES: Once = Once::new();
+static BUILD_SERVICE_NODES: Once = Once::new();
+static BUILD_ACTION_NODES: Once = Once::new();
 
 fn adora_bin() -> String {
     let manifest = env!("CARGO_MANIFEST_DIR");
@@ -90,6 +92,38 @@ fn ensure_log_sink_nodes_built() {
             .status()
             .expect("failed to run cargo build for log sinks");
         assert!(status.success(), "failed to build log sink nodes");
+    });
+}
+
+fn ensure_service_nodes_built() {
+    BUILD_SERVICE_NODES.call_once(|| {
+        let status = Command::new("cargo")
+            .args([
+                "build",
+                "-p",
+                "service-example-client",
+                "-p",
+                "service-example-server",
+            ])
+            .status()
+            .expect("failed to run cargo build for service example");
+        assert!(status.success(), "failed to build service example nodes");
+    });
+}
+
+fn ensure_action_nodes_built() {
+    BUILD_ACTION_NODES.call_once(|| {
+        let status = Command::new("cargo")
+            .args([
+                "build",
+                "-p",
+                "action-example-client",
+                "-p",
+                "action-example-server",
+            ])
+            .status()
+            .expect("failed to run cargo build for action example");
+        assert!(status.success(), "failed to build action example nodes");
     });
 }
 
@@ -433,5 +467,53 @@ fn smoke_local_python_concurrent_rw() {
         "local-python-concurrent-rw",
         "examples/python-concurrent-rw/dataflow.yml",
         10,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Service example
+// ---------------------------------------------------------------------------
+
+#[test]
+fn smoke_service_example() {
+    ensure_service_nodes_built();
+    run_smoke_test(
+        "service-example",
+        "examples/service-example/dataflow.yml",
+        Duration::from_secs(30),
+    );
+}
+
+#[test]
+fn smoke_local_service_example() {
+    ensure_service_nodes_built();
+    run_smoke_test_local(
+        "local-service-example",
+        "examples/service-example/dataflow.yml",
+        10,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Action example
+// ---------------------------------------------------------------------------
+
+#[test]
+fn smoke_action_example() {
+    ensure_action_nodes_built();
+    run_smoke_test(
+        "action-example",
+        "examples/action-example/dataflow.yml",
+        Duration::from_secs(30),
+    );
+}
+
+#[test]
+fn smoke_local_action_example() {
+    ensure_action_nodes_built();
+    run_smoke_test_local(
+        "local-action-example",
+        "examples/action-example/dataflow.yml",
+        15,
     );
 }

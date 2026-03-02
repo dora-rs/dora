@@ -90,7 +90,10 @@ pub use adora_arrow_convert::*;
 pub use adora_core::{self, uhlc};
 pub use adora_message::{
     DataflowId,
-    metadata::{Metadata, MetadataParameters, Parameter},
+    metadata::{
+        self, GOAL_ID, GOAL_STATUS, GOAL_STATUS_ABORTED, GOAL_STATUS_CANCELED,
+        GOAL_STATUS_SUCCEEDED, Metadata, MetadataParameters, Parameter, REQUEST_ID,
+    },
 };
 use adora_message::{
     common::Timestamped,
@@ -109,6 +112,7 @@ pub use futures;
 #[cfg(feature = "tracing")]
 pub use node::init_tracing;
 pub use node::{AdoraNode, DataSample, ZERO_COPY_THRESHOLD, arrow_utils};
+pub use uuid;
 
 pub use serde_json;
 use tokio::sync::oneshot;

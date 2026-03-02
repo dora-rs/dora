@@ -839,6 +839,45 @@ impl AdoraNode {
         self.log("trace", message, None);
     }
 
+    // -----------------------------------------------------------------
+    // Service / Action helpers
+    // -----------------------------------------------------------------
+
+    /// Generate a new unique request/goal ID (UUID v7, time-ordered).
+    pub fn new_request_id() -> String {
+        uuid::Uuid::new_v7(uuid::Timestamp::now(uuid::NoContext)).to_string()
+    }
+
+    /// Send a service request, automatically injecting a `request_id` into the
+    /// metadata parameters. Returns the generated request ID.
+    pub fn send_service_request(
+        &mut self,
+        output_id: DataId,
+        mut parameters: MetadataParameters,
+        data: impl Array,
+    ) -> NodeResult<String> {
+        let request_id = Self::new_request_id();
+        parameters.insert(
+            adora_message::metadata::REQUEST_ID.to_string(),
+            adora_message::metadata::Parameter::String(request_id.clone()),
+        );
+        self.send_output(output_id, parameters, data)?;
+        Ok(request_id)
+    }
+
+    /// Send a service response. This is a semantic alias for [`send_output`](Self::send_output).
+    ///
+    /// The caller is expected to pass through the `request_id` parameter from
+    /// the incoming request's metadata.
+    pub fn send_service_response(
+        &mut self,
+        output_id: DataId,
+        parameters: MetadataParameters,
+        data: impl Array,
+    ) -> NodeResult<()> {
+        self.send_output(output_id, parameters, data)
+    }
+
     /// Allocates a [`DataSample`] of the specified size.
     ///
     /// The data sample will use shared memory when suitable to enable efficient data transfer

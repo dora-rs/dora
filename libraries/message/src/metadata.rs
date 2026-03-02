@@ -73,8 +73,59 @@ pub enum Parameter {
     Timestamp(DateTime<Utc>),
 }
 
+// ---------------------------------------------------------------------------
+// Well-known metadata parameter keys for service and action patterns
+// ---------------------------------------------------------------------------
+
+/// Metadata key for correlating a service request with its response.
+pub const REQUEST_ID: &str = "request_id";
+
+/// Metadata key for identifying an action goal across feedback/result messages.
+pub const GOAL_ID: &str = "goal_id";
+
+/// Metadata key for the completion status of an action goal.
+pub const GOAL_STATUS: &str = "goal_status";
+
+/// Goal completed successfully.
+pub const GOAL_STATUS_SUCCEEDED: &str = "succeeded";
+
+/// Goal was aborted by the server.
+pub const GOAL_STATUS_ABORTED: &str = "aborted";
+
+/// Goal was canceled by the client.
+pub const GOAL_STATUS_CANCELED: &str = "canceled";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BufferOffset {
     pub offset: usize,
     pub len: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn well_known_keys_are_distinct() {
+        let keys = [REQUEST_ID, GOAL_ID, GOAL_STATUS];
+        for (i, a) in keys.iter().enumerate() {
+            for b in &keys[i + 1..] {
+                assert_ne!(a, b);
+            }
+        }
+    }
+
+    #[test]
+    fn goal_status_values_are_distinct() {
+        let vals = [
+            GOAL_STATUS_SUCCEEDED,
+            GOAL_STATUS_ABORTED,
+            GOAL_STATUS_CANCELED,
+        ];
+        for (i, a) in vals.iter().enumerate() {
+            for b in &vals[i + 1..] {
+                assert_ne!(a, b);
+            }
+        }
+    }
 }

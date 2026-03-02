@@ -1,0 +1,21 @@
+nodes:
+  - id: action-client
+    build: cargo build -p action-example-client
+    path: ../../target/debug/action-example-client
+    inputs:
+      tick: adora/timer/millis/2000
+      feedback: action-server/feedback
+      result: action-server/result
+    outputs:
+      - goal
+      - cancel
+
+  - id: action-server
+    build: cargo build -p action-example-server
+    path: ../../target/debug/action-example-server
+    inputs:
+      goal: action-client/goal
+      cancel: action-client/cancel
+    outputs:
+      - feedback
+      - result

@@ -1,0 +1,11 @@
+[package]
+name = "action-example-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+adora-node-api = { workspace = true }
+eyre = "0.6.8"
+arrow = { workspace = true }

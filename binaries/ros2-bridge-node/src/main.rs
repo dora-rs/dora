@@ -1,6 +1,6 @@
 use std::{
     borrow::Cow,
-    collections::{BTreeMap, HashMap, VecDeque},
+    collections::{BTreeMap, HashMap},
     path::Path,
     sync::{
         Arc,
@@ -33,11 +33,10 @@ const MAX_CONCURRENT_GOALS: usize = 8;
 /// Maximum pending service requests before dropping new ones.
 const MAX_PENDING_REQUESTS: usize = 64;
 
-/// Metadata parameter key for goal identification.
-const PARAM_GOAL_ID: &str = "goal_id";
-
-/// Metadata parameter key for goal completion status.
-const PARAM_GOAL_STATUS: &str = "goal_status";
+use adora_message::metadata::{
+    GOAL_ID, GOAL_STATUS, GOAL_STATUS_ABORTED, GOAL_STATUS_CANCELED, GOAL_STATUS_SUCCEEDED,
+    REQUEST_ID,
+};
 
 fn main() -> eyre::Result<()> {
     tracing_subscriber::fmt::init();
@@ -302,45 +301,53 @@ fn run_service_server(
     });
     let merged = adora_events.merge_external(Box::pin(request_stream));
 
-    // Queue of pending request IDs, matched FIFO to handler responses.
-    // IMPORTANT: The handler node MUST respond in the same order as requests
-    // arrive. Out-of-order responses will be silently paired with the wrong
-    // ROS2 request ID.
-    let mut pending_requests: VecDeque<ros2_client::service::RmwRequestId> = VecDeque::new();
+    // Map from request_id -> ROS2 RmwRequestId. Handler responses carry
+    // the request_id in metadata, allowing out-of-order replies.
+    let mut pending_requests: HashMap<String, ros2_client::service::RmwRequestId> = HashMap::new();
 
     for event in futures::executor::block_on_stream(merged) {
         match event {
             MergedEvent::Adora(Event::Input {
                 id: _,
-                metadata: _,
+                metadata,
                 data,
             }) => {
-                if let Some(req_id) = pending_requests.pop_front() {
-                    let array_data = data.to_data();
-                    let _ser_guard = TypeInfoGuard::serialize(response_type_info.clone());
-                    futures::executor::block_on(
-                        server.async_send_response(req_id, BridgeMessage(Some(array_data))),
-                    )
-                    .map_err(|e| eyre!("failed to send service response: {e:?}"))?;
+                let rid = metadata.parameters.get(REQUEST_ID).and_then(|p| match p {
+                    Parameter::String(s) => Some(s.clone()),
+                    _ => None,
+                });
+                if let Some(rid) = rid {
+                    if let Some(rmw_id) = pending_requests.remove(&rid) {
+                        let array_data = data.to_data();
+                        let _ser_guard = TypeInfoGuard::serialize(response_type_info.clone());
+                        futures::executor::block_on(
+                            server.async_send_response(rmw_id, BridgeMessage(Some(array_data))),
+                        )
+                        .map_err(|e| eyre!("failed to send service response: {e:?}"))?;
+                    } else {
+                        tracing::warn!(
+                            "response has request_id={rid} but no matching pending request"
+                        );
+                    }
                 } else {
-                    tracing::warn!("received response input but no pending request");
+                    tracing::warn!("response input missing request_id metadata parameter");
                 }
             }
             MergedEvent::Adora(Event::Stop(_)) => break,
             MergedEvent::Adora(_) => {}
-            MergedEvent::External((req_id, data)) => {
+            MergedEvent::External((rmw_id, data)) => {
                 if pending_requests.len() >= MAX_PENDING_REQUESTS {
                     tracing::warn!(
                         "pending requests queue full ({MAX_PENDING_REQUESTS}), dropping request"
                     );
                     continue;
                 }
-                pending_requests.push_back(req_id);
-                node.send_output(
-                    "request".into(),
-                    Default::default(),
-                    StructArray::from(data),
-                )?;
+                let request_id =
+                    uuid::Uuid::new_v7(uuid::Timestamp::now(uuid::NoContext)).to_string();
+                pending_requests.insert(request_id.clone(), rmw_id);
+                let mut params = adora_message::metadata::MetadataParameters::default();
+                params.insert(REQUEST_ID.to_string(), Parameter::String(request_id));
+                node.send_output("request".into(), params, StructArray::from(data))?;
             }
         }
     }
@@ -681,7 +688,7 @@ fn run_action_server(
     for event in futures::executor::block_on_stream(merged) {
         match event {
             MergedEvent::Adora(Event::Input { id, metadata, data }) => {
-                let goal_id = match metadata.parameters.get(PARAM_GOAL_ID) {
+                let goal_id = match metadata.parameters.get(GOAL_ID) {
                     Some(Parameter::String(s)) => s.clone(),
                     _ => {
                         tracing::warn!("action server input `{id}` missing goal_id in metadata");
@@ -709,11 +716,17 @@ fn run_action_server(
                     "result" => {
                         if let Some(handle) = executing_goals.remove(&goal_id) {
                             let array_data = data.to_data();
-                            let status = match metadata.parameters.get(PARAM_GOAL_STATUS) {
+                            let status = match metadata.parameters.get(GOAL_STATUS) {
                                 Some(Parameter::String(s)) => match s.as_str() {
-                                    "succeeded" => ros2_client::action::GoalEndStatus::Succeeded,
-                                    "aborted" => ros2_client::action::GoalEndStatus::Aborted,
-                                    "canceled" => ros2_client::action::GoalEndStatus::Canceled,
+                                    GOAL_STATUS_SUCCEEDED => {
+                                        ros2_client::action::GoalEndStatus::Succeeded
+                                    }
+                                    GOAL_STATUS_ABORTED => {
+                                        ros2_client::action::GoalEndStatus::Aborted
+                                    }
+                                    GOAL_STATUS_CANCELED => {
+                                        ros2_client::action::GoalEndStatus::Canceled
+                                    }
                                     other => {
                                         tracing::warn!(
                                             "unknown goal_status `{other}` for goal {goal_id}, \
@@ -779,10 +792,7 @@ fn run_action_server(
                     }
 
                     let mut parameters = BTreeMap::new();
-                    parameters.insert(
-                        PARAM_GOAL_ID.to_string(),
-                        Parameter::String(goal_id.clone()),
-                    );
+                    parameters.insert(GOAL_ID.to_string(), Parameter::String(goal_id.clone()));
                     if let Err(e) =
                         node.send_output("goal".into(), parameters, StructArray::from(data))
                     {

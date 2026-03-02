@@ -1,0 +1,17 @@
+nodes:
+  - id: service-client
+    build: cargo build -p service-example-client
+    path: ../../target/debug/service-example-client
+    inputs:
+      tick: adora/timer/millis/500
+      response: service-server/response
+    outputs:
+      - request
+
+  - id: service-server
+    build: cargo build -p service-example-server
+    path: ../../target/debug/service-example-server
+    inputs:
+      request: service-client/request
+    outputs:
+      - response

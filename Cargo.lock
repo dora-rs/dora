@@ -3,6 +3,24 @@
 version = 4
 
 [[package]]
+name = "action-example-client"
+version = "0.4.1"
+dependencies = [
+ "adora-node-api",
+ "arrow",
+ "eyre",
+]
+
+[[package]]
+name = "action-example-server"
+version = "0.4.1"
+dependencies = [
+ "adora-node-api",
+ "arrow",
+ "eyre",
+]
+
+[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -318,6 +336,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -538,6 +557,7 @@ dependencies = [
  "serde_json",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
@@ -6053,6 +6073,24 @@ dependencies = [
  "ryu",
  "serde",
  "unsafe-libyaml",
+]
+
+[[package]]
+name = "service-example-client"
+version = "0.4.1"
+dependencies = [
+ "adora-node-api",
+ "arrow",
+ "eyre",
+]
+
+[[package]]
+name = "service-example-server"
+version = "0.4.1"
+dependencies = [
+ "adora-node-api",
+ "arrow",
+ "eyre",
 ]
 
 [[package]]

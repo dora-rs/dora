@@ -130,6 +130,18 @@ if [ "$RUN_RUST" = true ]; then
         -p log-sink-alert \
         -p log-sink-tcp \
         2>&1 | tail -1
+
+    echo "Building service example nodes..."
+    cargo build \
+        -p service-example-client \
+        -p service-example-server \
+        2>&1 | tail -1
+
+    echo "Building action example nodes..."
+    cargo build \
+        -p action-example-client \
+        -p action-example-server \
+        2>&1 | tail -1
 fi
 
 # ---------------------------------------------------------------------------
@@ -150,6 +162,16 @@ if [ "$RUN_RUST" = true ]; then
     run_networked "log-sink-file"  "examples/log-sink-file/dataflow.yml"
     run_networked "log-sink-alert" "examples/log-sink-alert/dataflow.yml"
     run_networked "log-sink-tcp"   "examples/log-sink-tcp/dataflow.yml"
+
+    echo ""
+    echo "=== Service/Action examples (networked) ==="
+    run_networked "service-example" "examples/service-example/dataflow.yml"
+    run_networked "action-example"  "examples/action-example/dataflow.yml"
+
+    echo ""
+    echo "=== Service/Action examples (local) ==="
+    run_local "local-service-example" "examples/service-example/dataflow.yml" 10
+    run_local "local-action-example"  "examples/action-example/dataflow.yml" 15
 fi
 
 # ---------------------------------------------------------------------------
