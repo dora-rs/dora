@@ -68,6 +68,18 @@ pub enum ControlRequest {
         #[serde(default)]
         force: bool,
     },
+    Restart {
+        dataflow_uuid: Uuid,
+        grace_duration: Option<Duration>,
+        #[serde(default)]
+        force: bool,
+    },
+    RestartByName {
+        name: String,
+        grace_duration: Option<Duration>,
+        #[serde(default)]
+        force: bool,
+    },
     Logs {
         uuid: Option<Uuid>,
         name: Option<String>,

@@ -41,6 +41,8 @@ mod control;
 mod events;
 mod handlers;
 mod log_subscriber;
+#[cfg(feature = "prometheus")]
+mod prometheus_metrics;
 mod run;
 mod state;
 mod ws_control;
@@ -134,12 +136,17 @@ async fn start_with_events(
     let ws_events = ReceiverStream::new(ws_event_rx);
 
     // Start WS server
+    #[cfg(feature = "prometheus")]
+    let prom_metrics = prometheus_metrics::new_shared();
+
     let (port, ws_shutdown, ws_future) = ws_server::serve(
         bind,
         ws_event_tx.clone(),
         clock.clone(),
         auth_token,
         artifact_store,
+        #[cfg(feature = "prometheus")]
+        prom_metrics.clone(),
     )
     .await
     .wrap_err("failed to start WS server")?;
@@ -153,7 +160,15 @@ async fn start_with_events(
     let events = (external_events, extra_events, ws_events).merge();
 
     let future = async move {
-        start_inner(events, clock, store, span_store).await?;
+        start_inner(
+            events,
+            clock,
+            store,
+            span_store,
+            #[cfg(feature = "prometheus")]
+            prom_metrics,
+        )
+        .await?;
 
         tracing::debug!("coordinator main loop finished, shutting down WS server");
         ws_shutdown.shutdown();
@@ -175,6 +190,7 @@ async fn start_inner(
     clock: Arc<HLC>,
     store: Arc<dyn CoordinatorStore>,
     span_store: SpanStore,
+    #[cfg(feature = "prometheus")] prom_metrics: prometheus_metrics::SharedMetrics,
 ) -> eyre::Result<()> {
     let daemon_heartbeat_interval =
         tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(Duration::from_secs(3)))
@@ -722,6 +738,47 @@ async fn start_inner(
                                 let _ = reply_sender.send(Err(err));
                             }
                         },
+                        ControlRequest::Restart {
+                            dataflow_uuid,
+                            grace_duration,
+                            force,
+                        } => {
+                            let result = restart_dataflow(
+                                dataflow_uuid,
+                                grace_duration,
+                                force,
+                                &mut running_dataflows,
+                                &mut daemon_connections,
+                                &clock,
+                                store.as_ref(),
+                                &mut persist_failure_count,
+                            )
+                            .await;
+                            let _ = reply_sender.send(result);
+                        }
+                        ControlRequest::RestartByName {
+                            name,
+                            grace_duration,
+                            force,
+                        } => match resolve_name(name, &running_dataflows, &archived_dataflows) {
+                            Ok(dataflow_uuid) => {
+                                let result = restart_dataflow(
+                                    dataflow_uuid,
+                                    grace_duration,
+                                    force,
+                                    &mut running_dataflows,
+                                    &mut daemon_connections,
+                                    &clock,
+                                    store.as_ref(),
+                                    &mut persist_failure_count,
+                                )
+                                .await;
+                                let _ = reply_sender.send(result);
+                            }
+                            Err(err) => {
+                                let _ = reply_sender.send(Err(err));
+                            }
+                        },
                         ControlRequest::Logs {
                             uuid,
                             name,
@@ -824,6 +881,7 @@ async fn start_inner(
                                     daemon_id: id.clone(),
                                     last_heartbeat_ago_ms: conn.last_heartbeat.elapsed().as_millis()
                                         as u64,
+                                    ft_stats: conn.ft_stats.clone(),
                                 })
                                 .collect();
                             let reply = Ok(ControlRequestReply::ConnectedDaemons(daemon_infos));
@@ -887,6 +945,10 @@ async fn start_inner(
                                                 disk_write_mb_s: m
                                                     .disk_write_bytes
                                                     .map(|b| b as f64 / 1000.0 / 1000.0),
+                                                restart_count: m.restart_count,
+                                                broken_inputs: m.broken_inputs.clone(),
+                                                status: m.status.clone(),
+                                                pending_messages: m.pending_messages,
                                             }
                                         });
 
@@ -896,6 +958,7 @@ async fn start_inner(
                                             node_id: node_id.clone(),
                                             daemon_id: daemon_id.clone(),
                                             metrics,
+                                            network: dataflow.network_metrics.clone(),
                                         });
                                     }
                                 }
@@ -1049,9 +1112,13 @@ async fn start_inner(
             }
             Event::DaemonHeartbeat {
                 daemon_id: machine_id,
+                ft_stats,
             } => {
                 if let Some(connection) = daemon_connections.get_mut(&machine_id) {
                     connection.last_heartbeat = Instant::now();
+                    if let Some(stats) = ft_stats {
+                        connection.ft_stats = Some(stats);
+                    }
                 }
             }
             Event::Log(message) => {
@@ -1100,11 +1167,53 @@ async fn start_inner(
             Event::NodeMetrics {
                 dataflow_id,
                 metrics,
+                network,
             } => {
                 // Store metrics for this dataflow
                 if let Some(dataflow) = running_dataflows.get_mut(&dataflow_id) {
-                    for (node_id, node_metrics) in metrics {
-                        dataflow.node_metrics.insert(node_id, node_metrics);
+                    #[cfg(feature = "prometheus")]
+                    let df_name = dataflow.name.as_deref().unwrap_or("");
+                    #[cfg(feature = "prometheus")]
+                    let df_id = dataflow_id.to_string();
+                    for (node_id, node_metrics) in &metrics {
+                        dataflow
+                            .node_metrics
+                            .insert(node_id.clone(), node_metrics.clone());
+
+                        #[cfg(feature = "prometheus")]
+                        {
+                            let m = prom_metrics.blocking_lock();
+                            let nid = node_id.as_ref();
+                            // Find daemon for this node
+                            let daemon = dataflow
+                                .node_to_daemon
+                                .get(node_id)
+                                .map(|d| d.to_string())
+                                .unwrap_or_default();
+                            m.node_cpu
+                                .with_label_values(&[&df_id, nid, &daemon])
+                                .set(node_metrics.cpu_usage as f64);
+                            m.node_memory
+                                .with_label_values(&[&df_id, nid, &daemon])
+                                .set(node_metrics.memory_bytes as i64);
+                            m.node_pending
+                                .with_label_values(&[&df_id, nid, &daemon])
+                                .set(node_metrics.pending_messages as i64);
+                            m.node_restarts
+                                .with_label_values(&[&df_id, nid, &daemon])
+                                .set(node_metrics.restart_count as i64);
+                        }
+                    }
+                    if let Some(net) = network {
+                        dataflow.network_metrics = Some(net);
+                    }
+
+                    #[cfg(feature = "prometheus")]
+                    {
+                        let m = prom_metrics.blocking_lock();
+                        m.dataflow_nodes
+                            .with_label_values(&[&df_id, df_name])
+                            .set(dataflow.nodes.len() as i64);
                     }
                 }
             }
@@ -1409,4 +1518,80 @@ fn handle_get_trace_spans(span_store: &SpanStore, trace_id: &str) -> ControlRequ
 #[cfg(not(feature = "tracing"))]
 fn handle_get_trace_spans(_span_store: &SpanStore, _trace_id: &str) -> ControlRequestReply {
     ControlRequestReply::TraceSpans(Vec::new())
+}
+
+/// Restart a running dataflow: stop it, then re-start with the stored descriptor.
+#[allow(clippy::too_many_arguments)]
+async fn restart_dataflow(
+    dataflow_uuid: uuid::Uuid,
+    grace_duration: Option<Duration>,
+    force: bool,
+    running_dataflows: &mut HashMap<uuid::Uuid, RunningDataflow>,
+    daemon_connections: &mut DaemonConnections,
+    clock: &HLC,
+    store: &dyn CoordinatorStore,
+    persist_failure_count: &mut u64,
+) -> eyre::Result<ControlRequestReply> {
+    // 1. Extract descriptor, name, and uv from the running dataflow
+    let (descriptor, name, uv) = {
+        let df = running_dataflows
+            .get(&dataflow_uuid)
+            .ok_or_else(|| eyre!("no running dataflow with UUID `{dataflow_uuid}`"))?;
+        (df.descriptor.clone(), df.name.clone(), df.uv)
+    };
+
+    // 2. Stop the old dataflow
+    let dataflow = stop_dataflow(
+        running_dataflows,
+        dataflow_uuid,
+        daemon_connections,
+        clock.new_timestamp(),
+        grace_duration,
+        force,
+    )
+    .await?;
+
+    // Persist: dataflow stopping
+    if let Err(e) = dataflow
+        .make_record(StoreDataflowStatus::Stopping)
+        .and_then(|r| store.put_dataflow(&r))
+    {
+        *persist_failure_count += 1;
+        tracing::warn!("failed to persist dataflow stopping: {e}");
+    }
+
+    // Remove from running (it's been stopped)
+    running_dataflows.remove(&dataflow_uuid);
+
+    // 3. Start a new dataflow with the stored descriptor
+    let new_dataflow = start_dataflow(
+        None, // no build_id for restart
+        adora_message::SessionId::generate(),
+        descriptor,
+        None, // no local_working_dir for restart
+        name,
+        daemon_connections,
+        clock,
+        uv,
+        None, // no write_events_to
+    )
+    .await?;
+
+    let new_uuid = new_dataflow.uuid;
+
+    // Persist: new dataflow started
+    let mut new_df = new_dataflow;
+    if let Err(e) = new_df
+        .make_record(StoreDataflowStatus::Pending)
+        .and_then(|r| store.put_dataflow(&r))
+    {
+        *persist_failure_count += 1;
+        tracing::warn!("failed to persist restarted dataflow: {e}");
+    }
+    running_dataflows.insert(new_uuid, new_df);
+
+    Ok(ControlRequestReply::DataflowRestarted {
+        old_uuid: dataflow_uuid,
+        new_uuid,
+    })
 }

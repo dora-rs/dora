@@ -4,7 +4,7 @@ use adora_core::config::NodeId;
 use adora_message::{
     common::DaemonId,
     coordinator_to_cli::{ControlRequestReply, LogMessage},
-    daemon_to_coordinator::NodeMetrics,
+    daemon_to_coordinator::{FaultToleranceSnapshot, NodeMetrics},
     descriptor::{Descriptor, ResolvedNode},
 };
 use eyre::eyre;
@@ -75,6 +75,8 @@ pub(crate) struct DaemonConnection {
     pub(crate) pending_replies: Arc<Mutex<HashMap<Uuid, oneshot::Sender<String>>>>,
     pub(crate) last_heartbeat: Instant,
     pub(crate) labels: BTreeMap<String, String>,
+    /// Latest fault tolerance stats from this daemon (updated on each heartbeat).
+    pub(crate) ft_stats: Option<FaultToleranceSnapshot>,
 }
 
 impl DaemonConnection {
@@ -88,6 +90,7 @@ impl DaemonConnection {
             pending_replies,
             last_heartbeat: Instant::now(),
             labels,
+            ft_stats: None,
         }
     }
 
@@ -162,6 +165,7 @@ pub(crate) struct RunningDataflow {
     pub(crate) node_to_daemon: BTreeMap<NodeId, DaemonId>,
     /// Latest metrics for each node (from daemons)
     pub(crate) node_metrics: BTreeMap<NodeId, NodeMetrics>,
+    pub(crate) network_metrics: Option<adora_message::daemon_to_coordinator::NetworkMetrics>,
 
     pub(crate) spawn_result: CachedResult,
     pub(crate) stop_reply_senders: Vec<oneshot::Sender<eyre::Result<ControlRequestReply>>>,
@@ -179,6 +183,9 @@ pub(crate) struct RunningDataflow {
 
     /// Per-daemon timestamp of last auto-recovery attempt (for backoff).
     pub(crate) last_recovery_attempt: BTreeMap<DaemonId, Instant>,
+
+    /// Whether UV was used for this dataflow (needed for restart).
+    pub(crate) uv: bool,
 }
 
 pub(crate) fn now_millis() -> u64 {

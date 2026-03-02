@@ -5,7 +5,9 @@ use adora_message::{
     BuildId,
     common::DaemonId,
     coordinator_to_cli::LogMessage,
-    daemon_to_coordinator::{DataflowDaemonResult, NodeMetrics},
+    daemon_to_coordinator::{
+        DataflowDaemonResult, FaultToleranceSnapshot, NetworkMetrics, NodeMetrics,
+    },
 };
 use eyre::WrapErr;
 use futures::Stream;
@@ -18,6 +20,7 @@ use uuid::Uuid;
 pub enum Event {
     DaemonHeartbeat {
         daemon_id: DaemonId,
+        ft_stats: Option<FaultToleranceSnapshot>,
     },
     Dataflow {
         uuid: Uuid,
@@ -44,6 +47,7 @@ pub enum Event {
     NodeMetrics {
         dataflow_id: Uuid,
         metrics: BTreeMap<NodeId, NodeMetrics>,
+        network: Option<NetworkMetrics>,
     },
     DaemonStatusReport {
         daemon_id: DaemonId,

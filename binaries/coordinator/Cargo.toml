@@ -14,6 +14,7 @@ repository.workspace = true
 default = ["tracing"]
 tracing = ["dep:adora-tracing"]
 redb-backend = ["adora-coordinator-store/redb-backend"]
+prometheus = ["dep:prometheus"]
 
 [dependencies]
 eyre = "0.6.7"
@@ -38,6 +39,7 @@ tower-http = { version = "0.6", features = ["cors"] }
 itertools = "0.14.0"
 zenoh = { workspace = true }
 bincode = "1"
+prometheus = { version = "0.13", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

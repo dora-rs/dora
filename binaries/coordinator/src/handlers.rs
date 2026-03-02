@@ -448,6 +448,7 @@ pub(crate) async fn start_dataflow(
         nodes,
         node_to_daemon,
         node_metrics: BTreeMap::new(),
+        network_metrics: None,
         spawn_result: CachedResult::default(),
         stop_reply_senders: Vec::new(),
         buffered_log_messages: Vec::new(),
@@ -456,6 +457,7 @@ pub(crate) async fn start_dataflow(
         created_at: state::now_millis(),
         store_generation: 0,
         last_recovery_attempt: BTreeMap::new(),
+        uv,
     })
 }
 

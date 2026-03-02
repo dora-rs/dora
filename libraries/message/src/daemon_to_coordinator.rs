@@ -68,7 +68,10 @@ pub enum DaemonEvent {
         dataflow_id: DataflowId,
         result: DataflowDaemonResult,
     },
-    Heartbeat,
+    Heartbeat {
+        #[serde(default)]
+        ft_stats: Option<FaultToleranceSnapshot>,
+    },
     /// Sent by the daemon after registration to report its current state.
     /// Enables coordinator-daemon reconciliation on reconnect.
     StatusReport {
@@ -79,7 +82,41 @@ pub enum DaemonEvent {
     NodeMetrics {
         dataflow_id: DataflowId,
         metrics: BTreeMap<NodeId, NodeMetrics>,
+        #[serde(default)]
+        network: Option<NetworkMetrics>,
     },
+}
+
+/// Health status of a node
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum NodeStatus {
+    #[default]
+    Running,
+    Restarting,
+    /// One or more inputs have timed out (circuit breaker open)
+    Degraded,
+    Failed,
+}
+
+impl std::fmt::Display for NodeStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NodeStatus::Running => write!(f, "Running"),
+            NodeStatus::Restarting => write!(f, "Restarting"),
+            NodeStatus::Degraded => write!(f, "Degraded"),
+            NodeStatus::Failed => write!(f, "Failed"),
+        }
+    }
+}
+
+/// Snapshot of daemon-level fault tolerance counters
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct FaultToleranceSnapshot {
+    pub restarts: u64,
+    pub health_check_kills: u64,
+    pub input_timeouts: u64,
+    pub circuit_breaker_recoveries: u64,
 }
 
 /// Resource metrics for a node process
@@ -95,6 +132,27 @@ pub struct NodeMetrics {
     pub disk_read_bytes: Option<u64>,
     /// Disk write bytes per second (if available)
     pub disk_write_bytes: Option<u64>,
+    /// Number of times this node has been restarted
+    #[serde(default)]
+    pub restart_count: u32,
+    /// Input IDs that have timed out (circuit breaker open)
+    #[serde(default)]
+    pub broken_inputs: Vec<String>,
+    /// Current health status
+    #[serde(default)]
+    pub status: NodeStatus,
+    /// Number of pending messages in the node's input queue
+    #[serde(default)]
+    pub pending_messages: u64,
+}
+
+/// Per-dataflow network I/O counters for cross-daemon Zenoh traffic.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct NetworkMetrics {
+    pub bytes_sent: u64,
+    pub bytes_received: u64,
+    pub messages_sent: u64,
+    pub messages_received: u64,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]

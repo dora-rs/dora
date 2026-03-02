@@ -29,6 +29,10 @@ pub enum ControlRequestReply {
         uuid: Uuid,
         result: DataflowResult,
     },
+    DataflowRestarted {
+        old_uuid: Uuid,
+        new_uuid: Uuid,
+    },
     DataflowList(DataflowList),
     DataflowInfo {
         uuid: Uuid,
@@ -58,6 +62,9 @@ pub struct NodeInfo {
     pub node_id: NodeId,
     pub daemon_id: DaemonId,
     pub metrics: Option<NodeMetricsInfo>,
+    /// Per-dataflow cross-daemon network I/O counters (shared across nodes in same dataflow)
+    #[serde(default)]
+    pub network: Option<crate::daemon_to_coordinator::NetworkMetrics>,
 }
 
 /// Resource metrics for a node (from daemon)
@@ -73,6 +80,18 @@ pub struct NodeMetricsInfo {
     pub disk_read_mb_s: Option<f64>,
     /// Disk write MB/s (if available)
     pub disk_write_mb_s: Option<f64>,
+    /// Number of times this node has been restarted
+    #[serde(default)]
+    pub restart_count: u32,
+    /// Input IDs that have timed out (circuit breaker open)
+    #[serde(default)]
+    pub broken_inputs: Vec<String>,
+    /// Current health status
+    #[serde(default)]
+    pub status: crate::daemon_to_coordinator::NodeStatus,
+    /// Number of pending messages in the node's input queue
+    #[serde(default)]
+    pub pending_messages: u64,
 }
 
 /// Health information about a connected daemon.
@@ -80,6 +99,9 @@ pub struct NodeMetricsInfo {
 pub struct DaemonInfo {
     pub daemon_id: DaemonId,
     pub last_heartbeat_ago_ms: u64,
+    /// Fault tolerance stats from the daemon (if available).
+    #[serde(default)]
+    pub ft_stats: Option<crate::daemon_to_coordinator::FaultToleranceSnapshot>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]

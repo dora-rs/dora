@@ -74,14 +74,25 @@ fn validate_token(
 }
 
 /// Build the axum router with WS routes.
-pub(crate) fn router(state: WsState) -> Router {
-    Router::new()
+pub(crate) fn router(
+    state: WsState,
+    #[cfg(feature = "prometheus")] prometheus: crate::prometheus_metrics::SharedMetrics,
+) -> Router {
+    let app = Router::new()
         .route("/api/control", get(ws_control_handler))
         .route("/api/daemon", get(ws_daemon_handler))
         .route("/api/artifacts/{build_id}/{node_id}", get(artifact_handler))
         .route("/health", get(health))
         .with_state(Arc::new(state))
-        .layer(ServiceBuilder::new().layer(ConcurrencyLimitLayer::new(MAX_WS_CONNECTIONS)))
+        .layer(ServiceBuilder::new().layer(ConcurrencyLimitLayer::new(MAX_WS_CONNECTIONS)));
+
+    #[cfg(feature = "prometheus")]
+    let app = app.route(
+        "/metrics",
+        get(crate::prometheus_metrics::metrics_handler).with_state(prometheus),
+    );
+
+    app
 }
 
 async fn health() -> &'static str {
@@ -153,6 +164,7 @@ pub(crate) async fn serve(
     clock: Arc<HLC>,
     auth_token: Option<AuthToken>,
     artifact_store: Arc<ArtifactStore>,
+    #[cfg(feature = "prometheus")] prometheus: crate::prometheus_metrics::SharedMetrics,
 ) -> eyre::Result<(
     u16,
     ShutdownTrigger,
@@ -166,7 +178,11 @@ pub(crate) async fn serve(
         auth_token,
         artifact_store,
     };
-    let app = router(state);
+    let app = router(
+        state,
+        #[cfg(feature = "prometheus")]
+        prometheus,
+    );
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
     let future = async move {

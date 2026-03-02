@@ -58,28 +58,13 @@ impl Executable for List {
 }
 
 #[derive(Serialize)]
-#[serde(rename_all = "lowercase")]
-enum NodeStatus {
-    Running,
-    Unknown,
-}
-
-impl std::fmt::Display for NodeStatus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            NodeStatus::Running => f.write_str("Running"),
-            NodeStatus::Unknown => f.write_str("Unknown"),
-        }
-    }
-}
-
-#[derive(Serialize)]
 struct OutputEntry {
     node: String,
-    status: NodeStatus,
+    status: String,
     pid: String,
     cpu: String,
     memory: String,
+    restarts: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     dataflow: Option<String>,
 }
@@ -128,17 +113,18 @@ fn list(
     let entries: Vec<OutputEntry> = filtered_nodes
         .into_iter()
         .map(|node| {
-            let (status, pid, cpu, memory) = if let Some(metrics) = node.metrics {
+            let (status, pid, cpu, memory, restarts) = if let Some(metrics) = &node.metrics {
                 (
-                    NodeStatus::Running,
+                    metrics.status.to_string(),
                     metrics.pid.to_string(),
                     format!("{:.1}%", metrics.cpu_usage),
                     format!("{:.0} MB", metrics.memory_mb),
+                    metrics.restart_count.to_string(),
                 )
             } else {
-                // Node exists but no metrics available (might be starting or error state)
                 (
-                    NodeStatus::Unknown,
+                    "Unknown".to_string(),
+                    "-".to_string(),
                     "-".to_string(),
                     "-".to_string(),
                     "-".to_string(),
@@ -151,6 +137,7 @@ fn list(
                 pid,
                 cpu,
                 memory,
+                restarts,
                 dataflow: if dataflow_filter.is_none() {
                     Some(
                         node.dataflow_name
@@ -176,9 +163,9 @@ fn list(
 
             // Write header
             if dataflow_filter.is_none() {
-                tw.write_all(b"NODE\tSTATUS\tPID\tCPU\tMEMORY\tDATAFLOW\n")?;
+                tw.write_all(b"NODE\tSTATUS\tPID\tCPU\tMEMORY\tRESTARTS\tDATAFLOW\n")?;
             } else {
-                tw.write_all(b"NODE\tSTATUS\tPID\tCPU\tMEMORY\n")?;
+                tw.write_all(b"NODE\tSTATUS\tPID\tCPU\tMEMORY\tRESTARTS\n")?;
             }
 
             // Write entries
@@ -186,16 +173,27 @@ fn list(
                 if let Some(ref dataflow) = entry.dataflow {
                     tw.write_all(
                         format!(
-                            "{}\t{}\t{}\t{}\t{}\t{}\n",
-                            entry.node, entry.status, entry.pid, entry.cpu, entry.memory, dataflow
+                            "{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                            entry.node,
+                            entry.status,
+                            entry.pid,
+                            entry.cpu,
+                            entry.memory,
+                            entry.restarts,
+                            dataflow
                         )
                         .as_bytes(),
                     )?;
                 } else {
                     tw.write_all(
                         format!(
-                            "{}\t{}\t{}\t{}\t{}\n",
-                            entry.node, entry.status, entry.pid, entry.cpu, entry.memory
+                            "{}\t{}\t{}\t{}\t{}\t{}\n",
+                            entry.node,
+                            entry.status,
+                            entry.pid,
+                            entry.cpu,
+                            entry.memory,
+                            entry.restarts
                         )
                         .as_bytes(),
                     )?;

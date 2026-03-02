@@ -13,6 +13,7 @@ mod node;
 mod node_binary;
 mod record;
 mod replay;
+mod restart;
 mod run;
 mod runtime;
 mod self_;
@@ -41,6 +42,7 @@ use new::NewArgs;
 use node::Node;
 use record::Record;
 use replay::Replay;
+use restart::Restart;
 use runtime::Runtime;
 use self_::SelfSubCommand;
 use start::Start;
@@ -75,6 +77,9 @@ pub enum Command {
     /// Stop a running dataflow
     #[clap(display_order = 7)]
     Stop(Stop),
+    /// Restart a running dataflow (stop + re-start with stored descriptor)
+    #[clap(display_order = 8)]
+    Restart(Restart),
 
     // -- Monitoring --
     /// List running dataflows
@@ -167,6 +172,7 @@ impl Executable for Command {
             Command::Build(args) => args.execute(),
             Command::Start(args) => args.execute(),
             Command::Stop(args) => args.execute(),
+            Command::Restart(args) => args.execute(),
             Command::List(args) => args.execute(),
             Command::Logs(args) => args.execute(),
             Command::Inspect(args) => args.execute(),

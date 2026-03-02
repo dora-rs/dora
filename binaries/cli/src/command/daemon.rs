@@ -100,7 +100,7 @@ impl Executable for Daemon {
 
                         let result = adora_daemon::Daemon::run_dataflow(&dataflow_path,
                             dataflow_session.build_id, dataflow_session.local_build, dataflow_session.session_id, false,
-                            LogDestination::Tracing, None, None,
+                            LogDestination::Tracing, None, None, false,
                         ).await?;
                         handle_dataflow_result(result, None)
                     }

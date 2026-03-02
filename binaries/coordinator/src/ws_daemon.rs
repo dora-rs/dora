@@ -205,15 +205,20 @@ fn translate_daemon_event(daemon_id: DaemonId, event: DaemonEvent) -> Option<Eve
             uuid: dataflow_id,
             event: DataflowEvent::DataflowFinishedOnDaemon { daemon_id, result },
         }),
-        DaemonEvent::Heartbeat => Some(Event::DaemonHeartbeat { daemon_id }),
+        DaemonEvent::Heartbeat { ft_stats } => Some(Event::DaemonHeartbeat {
+            daemon_id,
+            ft_stats,
+        }),
         DaemonEvent::Log(message) => Some(Event::Log(message)),
         DaemonEvent::Exit => Some(Event::DaemonExit { daemon_id }),
         DaemonEvent::NodeMetrics {
             dataflow_id,
             metrics,
+            network,
         } => Some(Event::NodeMetrics {
             dataflow_id,
             metrics,
+            network,
         }),
         DaemonEvent::BuildResult { build_id, result } => Some(Event::DataflowBuildResult {
             build_id,

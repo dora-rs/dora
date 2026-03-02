@@ -144,6 +144,8 @@ pub struct RunningDataflow {
     pub(crate) pending_nodes: PendingNodes,
     pub(crate) dataflow_started: bool,
     pub(crate) subscribe_channels: HashMap<NodeId, UnboundedSender<Timestamped<NodeEvent>>>,
+    /// Per-node pending message counters (incremented on send, decremented on recv)
+    pub(crate) pending_messages: HashMap<NodeId, Arc<AtomicU64>>,
     pub(crate) drop_channels: HashMap<NodeId, UnboundedSender<Timestamped<NodeDropEvent>>>,
     pub(crate) mappings: HashMap<OutputId, BTreeSet<(NodeId, DataId)>>,
     pub(crate) timers: BTreeMap<Duration, BTreeSet<(NodeId, DataId)>>,
@@ -163,6 +165,11 @@ pub struct RunningDataflow {
     pub(crate) publishers: BTreeMap<OutputId, zenoh::pubsub::Publisher<'static>>,
     pub(crate) finished_tx: broadcast::Sender<()>,
     pub(crate) publish_all_messages_to_zenoh: bool,
+    /// Cross-daemon Zenoh network counters
+    pub(crate) net_bytes_sent: Arc<AtomicU64>,
+    pub(crate) net_bytes_received: Arc<AtomicU64>,
+    pub(crate) net_messages_sent: Arc<AtomicU64>,
+    pub(crate) net_messages_received: Arc<AtomicU64>,
 }
 
 /// Indicates whether a dataflow should be finished immediately after stop_all()
@@ -187,6 +194,7 @@ impl RunningDataflow {
             pending_nodes: PendingNodes::new(dataflow_id, daemon_id),
             dataflow_started: false,
             subscribe_channels: HashMap::new(),
+            pending_messages: HashMap::new(),
             drop_channels: HashMap::new(),
             mappings: HashMap::new(),
             timers: BTreeMap::new(),
@@ -207,6 +215,10 @@ impl RunningDataflow {
             finished_tx,
             publish_all_messages_to_zenoh: dataflow_descriptor.debug.publish_all_messages_to_zenoh,
             descriptor: dataflow_descriptor,
+            net_bytes_sent: Default::default(),
+            net_bytes_received: Default::default(),
+            net_messages_sent: Default::default(),
+            net_messages_received: Default::default(),
         }
     }
 
@@ -292,8 +304,12 @@ impl RunningDataflow {
             node.disable_restart();
         }
 
-        for (_node_id, channel) in self.subscribe_channels.drain() {
-            let _ = send_with_timestamp(&channel, NodeEvent::Stop, clock);
+        for (node_id, channel) in self.subscribe_channels.drain() {
+            if send_with_timestamp(&channel, NodeEvent::Stop, clock).is_ok() {
+                if let Some(counter) = self.pending_messages.get(&node_id) {
+                    counter.fetch_add(1, atomic::Ordering::Relaxed);
+                }
+            }
         }
 
         let running_processes: Vec<_> = self
@@ -353,6 +369,13 @@ impl RunningDataflow {
             FinishDataflowWhen::Now
         } else {
             FinishDataflowWhen::WaitForNodes
+        }
+    }
+
+    /// Increment the pending message counter for a node after a successful send.
+    pub(crate) fn inc_pending(&self, node_id: &NodeId) {
+        if let Some(counter) = self.pending_messages.get(node_id) {
+            counter.fetch_add(1, atomic::Ordering::Relaxed);
         }
     }
 

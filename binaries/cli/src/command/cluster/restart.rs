@@ -12,10 +12,9 @@ use crate::{
 
 use super::config::ClusterConfig;
 
-/// Stop a running dataflow by name or UUID.
+/// Restart a running dataflow by name or UUID.
 ///
-/// Connects to the coordinator, resolves the dataflow, and sends a Stop.
-/// Use `adora start` afterwards to restart the dataflow.
+/// Stops the dataflow and immediately re-starts it with the stored descriptor.
 ///
 /// Examples:
 ///
@@ -40,59 +39,24 @@ impl Executable for Restart {
             (config.coordinator.addr, config.coordinator.port).into();
         let session = connect_to_coordinator(coordinator_addr)?;
 
-        // Resolve dataflow by name/UUID via List
-        let list_raw = session
-            .request(&serde_json::to_vec(&ControlRequest::List).unwrap())
-            .wrap_err("failed to send List request")?;
-        let list_reply: ControlRequestReply =
-            serde_json::from_slice(&list_raw).wrap_err("failed to parse List reply")?;
+        println!("Restarting dataflow `{}`", self.dataflow);
 
-        let dataflow_uuid = match list_reply {
-            ControlRequestReply::DataflowList(list) => {
-                let matching: Vec<_> = list
-                    .0
-                    .iter()
-                    .filter(|e| {
-                        e.id.name.as_deref() == Some(&*self.dataflow)
-                            || e.id.uuid.to_string() == self.dataflow
-                    })
-                    .collect();
-                match matching.as_slice() {
-                    [entry] => entry.id.uuid,
-                    [] => bail!("no running dataflow matching `{}`", self.dataflow),
-                    _ => bail!(
-                        "multiple running dataflows matching `{}`, use UUID",
-                        self.dataflow
-                    ),
-                }
-            }
-            ControlRequestReply::Error(err) => bail!("{err}"),
-            _ => bail!("unexpected reply to List request"),
-        };
-
-        println!(
-            "Restarting dataflow `{}` ({})",
-            self.dataflow, dataflow_uuid
-        );
-
-        // Stop the dataflow. A full per-daemon rolling reload would require
-        // the coordinator to expose the node-to-daemon mapping to CLI.
-        let request = ControlRequest::StopByName {
+        let request = ControlRequest::RestartByName {
             name: self.dataflow.clone(),
             grace_duration: None,
             force: false,
         };
-        let stop_raw = session
+        let reply_raw = session
             .request(&serde_json::to_vec(&request).unwrap())
-            .wrap_err("failed to send Stop request")?;
-        let stop_reply: ControlRequestReply =
-            serde_json::from_slice(&stop_raw).wrap_err("failed to parse Stop reply")?;
+            .wrap_err("failed to send Restart request")?;
+        let reply: ControlRequestReply =
+            serde_json::from_slice(&reply_raw).wrap_err("failed to parse Restart reply")?;
 
-        match stop_reply {
-            ControlRequestReply::DataflowStopped { uuid, .. } => {
-                println!("Dataflow {uuid} stopped. Use `adora start` to restart it.");
+        match reply {
+            ControlRequestReply::DataflowRestarted { old_uuid, new_uuid } => {
+                println!("dataflow restarted: {old_uuid} -> {new_uuid}");
             }
-            ControlRequestReply::Error(err) => bail!("failed to stop dataflow: {err}"),
+            ControlRequestReply::Error(err) => bail!("failed to restart dataflow: {err}"),
             other => bail!("unexpected reply: {other:?}"),
         }
 

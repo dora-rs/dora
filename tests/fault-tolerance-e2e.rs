@@ -45,6 +45,7 @@ async fn restart_recovers_from_failure() {
         LogDestination::Tracing,
         None,
         Some(Duration::from_secs(15)),
+        false,
     )
     .await;
 
@@ -90,6 +91,7 @@ async fn max_restarts_limit_reached() {
         LogDestination::Tracing,
         None,
         Some(Duration::from_secs(15)),
+        false,
     )
     .await;
 
@@ -137,6 +139,7 @@ async fn input_timeout_closes_stale_input() {
         LogDestination::Tracing,
         None,
         Some(Duration::from_secs(10)),
+        false,
     )
     .await;
 

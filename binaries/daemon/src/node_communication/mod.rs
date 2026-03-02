@@ -246,6 +246,7 @@ struct Listener {
     daemon_tx: mpsc::Sender<Timestamped<Event>>,
     subscribed_events: Option<UnboundedReceiver<Timestamped<NodeEvent>>>,
     subscribed_drop_events: Option<UnboundedReceiver<Timestamped<NodeDropEvent>>>,
+    pending_counter: Option<Arc<AtomicU64>>,
     queue: VecDeque<Box<Option<Timestamped<NodeEvent>>>>,
     clock: Arc<uhlc::HLC>,
     last_activity: Arc<AtomicU64>,
@@ -296,6 +297,7 @@ impl Listener {
                             daemon_tx,
                             subscribed_events: None,
                             subscribed_drop_events: None,
+                            pending_counter: None,
                             queue: VecDeque::new(),
                             clock: hlc.clone(),
                             last_activity,
@@ -370,6 +372,9 @@ impl Listener {
     async fn handle_events(&mut self) -> eyre::Result<()> {
         if let Some(events) = &mut self.subscribed_events {
             while let Ok(event) = events.try_recv() {
+                if let Some(counter) = &self.pending_counter {
+                    counter.fetch_sub(1, Ordering::Relaxed);
+                }
                 self.queue.push_back(Box::new(Some(event)));
             }
         }
@@ -436,10 +441,12 @@ impl Listener {
             }
             DaemonRequest::Subscribe => {
                 let (tx, rx) = mpsc::unbounded_channel();
+                let pending_counter = Arc::new(AtomicU64::new(0));
                 let (reply_sender, reply) = oneshot::channel();
                 self.process_daemon_event(
                     DaemonNodeEvent::Subscribe {
                         event_sender: tx,
+                        pending_counter: pending_counter.clone(),
                         reply_sender,
                     },
                     Some(reply),
@@ -447,6 +454,7 @@ impl Listener {
                 )
                 .await?;
                 self.subscribed_events = Some(rx);
+                self.pending_counter = Some(pending_counter);
             }
             DaemonRequest::SubscribeDrop => {
                 let (tx, rx) = mpsc::unbounded_channel();
@@ -474,7 +482,12 @@ impl Listener {
                     match self.subscribed_events.as_mut() {
                         // wait for next event
                         Some(events) => match events.recv().await {
-                            Some(event) => DaemonReply::NextEvents(vec![event]),
+                            Some(event) => {
+                                if let Some(counter) = &self.pending_counter {
+                                    counter.fetch_sub(1, Ordering::Relaxed);
+                                }
+                                DaemonReply::NextEvents(vec![event])
+                            }
                             None => DaemonReply::NextEvents(vec![]),
                         },
                         None => {
@@ -601,7 +614,12 @@ impl Listener {
         let poll = |cx: &mut task::Context<'_>| {
             if let Some(events) = &mut self.subscribed_events {
                 match events.poll_recv(cx) {
-                    Poll::Ready(Some(event)) => Poll::Ready(event),
+                    Poll::Ready(Some(event)) => {
+                        if let Some(counter) = &self.pending_counter {
+                            counter.fetch_sub(1, Ordering::Relaxed);
+                        }
+                        Poll::Ready(event)
+                    }
                     Poll::Ready(None) | Poll::Pending => Poll::Pending,
                 }
             } else {

@@ -49,7 +49,7 @@ use std::{
     pin::pin,
     sync::{
         Arc,
-        atomic::{self},
+        atomic::{self, AtomicU64},
     },
     time::{Duration, Instant},
 };
@@ -191,6 +191,7 @@ impl Daemon {
         log_destination: LogDestination,
         write_events_to: Option<PathBuf>,
         stop_after: Option<Duration>,
+        debug: bool,
     ) -> eyre::Result<DataflowResult> {
         let working_dir = dataflow_path
             .canonicalize()
@@ -199,7 +200,10 @@ impl Daemon {
             .ok_or_else(|| eyre::eyre!("canonicalized dataflow path has no parent"))?
             .to_owned();
 
-        let descriptor = read_as_descriptor(dataflow_path).await?;
+        let mut descriptor = read_as_descriptor(dataflow_path).await?;
+        if debug {
+            descriptor.debug.publish_all_messages_to_zenoh = true;
+        }
         if let Some(node) = descriptor.nodes.iter().find(|n| n.deploy.is_some()) {
             eyre::bail!(
                 "node {} has a `deploy` section, which is not supported in `adora run`\n\n
@@ -489,7 +493,14 @@ impl Daemon {
                         let msg = serde_json::to_vec(&Timestamped {
                             inner: CoordinatorRequest::Event {
                                 daemon_id: self.daemon_id.clone(),
-                                event: DaemonEvent::Heartbeat,
+                                event: DaemonEvent::Heartbeat {
+                                    ft_stats: Some(adora_message::daemon_to_coordinator::FaultToleranceSnapshot {
+                                        restarts: self.ft_stats.restarts.load(atomic::Ordering::Relaxed),
+                                        health_check_kills: self.ft_stats.health_check_kills.load(atomic::Ordering::Relaxed),
+                                        input_timeouts: self.ft_stats.input_timeouts.load(atomic::Ordering::Relaxed),
+                                        circuit_breaker_recoveries: self.ft_stats.circuit_breaker_recoveries.load(atomic::Ordering::Relaxed),
+                                    }),
+                                },
                             },
                             timestamp: self.clock.new_timestamp(),
                         })?;
@@ -1121,6 +1132,24 @@ impl Daemon {
                         let sys_pid = Pid::from_u32(pid);
                         if let Some(process) = system.process(sys_pid) {
                             let disk_usage = process.disk_usage();
+
+                            // Collect broken inputs for this node
+                            let broken_inputs: Vec<String> = dataflow
+                                .broken_inputs
+                                .keys()
+                                .filter(|(nid, _)| nid == node_id)
+                                .map(|(_, data_id)| data_id.to_string())
+                                .collect();
+
+                            let restart_count = running_node.node_config.restart_count;
+
+                            // Derive status from current state
+                            let status = if !broken_inputs.is_empty() {
+                                adora_message::daemon_to_coordinator::NodeStatus::Degraded
+                            } else {
+                                adora_message::daemon_to_coordinator::NodeStatus::Running
+                            };
+
                             // Divide by metrics_interval to get per-second averages
                             metrics.insert(
                                 node_id.clone(),
@@ -1136,6 +1165,14 @@ impl Daemon {
                                         (disk_usage.written_bytes as f64 / METRICS_INTERVAL_SECS)
                                             as u64,
                                     ),
+                                    restart_count,
+                                    broken_inputs,
+                                    status,
+                                    pending_messages: dataflow
+                                        .pending_messages
+                                        .get(node_id)
+                                        .map(|c| c.load(atomic::Ordering::Relaxed))
+                                        .unwrap_or(0),
                                 },
                             );
                         }
@@ -1146,12 +1183,31 @@ impl Daemon {
             // Send metrics to coordinator if we have any
             if !metrics.is_empty() {
                 if let Some(sender) = &self.coordinator_sender {
+                    let network = {
+                        let bs = dataflow.net_bytes_sent.load(atomic::Ordering::Relaxed);
+                        let br = dataflow.net_bytes_received.load(atomic::Ordering::Relaxed);
+                        let ms = dataflow.net_messages_sent.load(atomic::Ordering::Relaxed);
+                        let mr = dataflow
+                            .net_messages_received
+                            .load(atomic::Ordering::Relaxed);
+                        if bs > 0 || br > 0 {
+                            Some(adora_message::daemon_to_coordinator::NetworkMetrics {
+                                bytes_sent: bs,
+                                bytes_received: br,
+                                messages_sent: ms,
+                                messages_received: mr,
+                            })
+                        } else {
+                            None
+                        }
+                    };
                     let msg = serde_json::to_vec(&Timestamped {
                         inner: CoordinatorRequest::Event {
                             daemon_id: self.daemon_id.clone(),
                             event: DaemonEvent::NodeMetrics {
                                 dataflow_id: *dataflow_id,
                                 metrics,
+                                network,
                             },
                         },
                         timestamp: self.clock.new_timestamp(),
@@ -1545,6 +1601,8 @@ impl Daemon {
                         .await
                         .map_err(|e| eyre!(e))
                         .wrap_err_with(|| format!("failed to subscribe to {output_id:?}"))?;
+                    let net_bytes_rx = dataflow.net_bytes_received.clone();
+                    let net_msgs_rx = dataflow.net_messages_received.clone();
                     tokio::spawn(async move {
                         let mut finished = pin!(finished_rx.recv());
                         loop {
@@ -1568,9 +1626,14 @@ impl Daemon {
                                 future::Either::Right((sample, f)) => {
                                     finished = f;
                                     let event = sample.map_err(|e| eyre!(e)).and_then(|s| {
-                                        Timestamped::deserialize_inter_daemon_event(
-                                            &s.payload().to_bytes(),
-                                        )
+                                        let bytes = s.payload().to_bytes();
+                                        net_bytes_rx.fetch_add(
+                                            bytes.len() as u64,
+                                            std::sync::atomic::Ordering::Relaxed,
+                                        );
+                                        net_msgs_rx
+                                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                        Timestamped::deserialize_inter_daemon_event(&bytes)
                                     });
                                     if tx.send_async(event).await.is_err() {
                                         // daemon finished
@@ -1796,6 +1859,7 @@ impl Daemon {
         match event {
             DaemonNodeEvent::Subscribe {
                 event_sender,
+                pending_counter,
                 reply_sender,
             } => {
                 let mut logger = self.logger.for_dataflow(dataflow_id);
@@ -1817,6 +1881,9 @@ impl Daemon {
                         let _ = reply_sender.send(DaemonReply::Result(Err(err)));
                     }
                     Ok(dataflow) => {
+                        dataflow
+                            .pending_messages
+                            .insert(node_id.clone(), pending_counter);
                         Self::subscribe(dataflow, node_id.clone(), event_sender, &self.clock).await;
 
                         let status = dataflow
@@ -1963,7 +2030,9 @@ impl Daemon {
         })?;
         if let Some(channel) = dataflow.subscribe_channels.get(&node_id) {
             match send_with_timestamp(channel, NodeEvent::Reload { operator_id }, &self.clock) {
-                Ok(()) => {}
+                Ok(()) => {
+                    dataflow.inc_pending(&node_id);
+                }
                 Err(_) => {
                     dataflow.subscribe_channels.remove(&node_id);
                 }
@@ -2046,11 +2115,18 @@ impl Daemon {
         }
         .serialize()
         .wrap_err("failed to serialize inter-daemon event")?;
+        let payload_len = serialized_event.len() as u64;
         publisher
             .put(serialized_event)
             .await
             .map_err(|e| eyre!(e))
             .context("zenoh put failed")?;
+        dataflow
+            .net_bytes_sent
+            .fetch_add(payload_len, atomic::Ordering::Relaxed);
+        dataflow
+            .net_messages_sent
+            .fetch_add(1, atomic::Ordering::Relaxed);
         Ok(())
     }
 
@@ -2116,13 +2192,17 @@ impl Daemon {
                     .unwrap_or(true)
             });
         for input_id in closed_inputs {
-            let _ = send_with_timestamp(
+            if send_with_timestamp(
                 &event_sender,
                 NodeEvent::InputClosed {
                     id: input_id.clone(),
                 },
                 clock,
-            );
+            )
+            .is_ok()
+            {
+                dataflow.inc_pending(&node_id);
+            }
         }
         if dataflow.open_inputs(&node_id).is_empty() {
             if let Some(node) = dataflow.running_nodes.get_mut(&node_id) {
@@ -2131,8 +2211,10 @@ impl Daemon {
             if let Some(node) = dataflow.descriptor.nodes.iter().find(|n| n.id == node_id) {
                 if node.inputs.is_empty() {
                     // do not send AllInputsClosed for source nodes
-                } else {
-                    let _ = send_with_timestamp(&event_sender, NodeEvent::AllInputsClosed, clock);
+                } else if send_with_timestamp(&event_sender, NodeEvent::AllInputsClosed, clock)
+                    .is_ok()
+                {
+                    dataflow.inc_pending(&node_id);
                 }
             }
         }
@@ -2143,7 +2225,9 @@ impl Daemon {
             if let Some(node) = dataflow.running_nodes.get_mut(&node_id) {
                 node.disable_restart();
             }
-            let _ = send_with_timestamp(&event_sender, NodeEvent::Stop, clock);
+            if send_with_timestamp(&event_sender, NodeEvent::Stop, clock).is_ok() {
+                dataflow.inc_pending(&node_id);
+            }
         }
 
         dataflow.subscribe_channels.insert(node_id, event_sender);
@@ -2362,7 +2446,9 @@ impl Daemon {
                         &self.clock,
                     );
                     match send_result {
-                        Ok(()) => {}
+                        Ok(()) => {
+                            dataflow.inc_pending(receiver_id);
+                        }
                         Err(_) => {
                             closed.push(receiver_id);
                         }
@@ -2409,7 +2495,9 @@ impl Daemon {
                         &self.clock,
                     );
                     match send_result {
-                        Ok(()) => {}
+                        Ok(()) => {
+                            dataflow.inc_pending(receiver_id);
+                        }
                         Err(_) => {
                             closed.push(receiver_id);
                         }
@@ -2527,18 +2615,21 @@ impl Daemon {
                             .collect();
                         for receiver_id in &downstream {
                             if let Some(channel) = dataflow.subscribe_channels.get(receiver_id) {
-                                if send_with_timestamp(
+                                match send_with_timestamp(
                                     channel,
                                     NodeEvent::NodeRestarted {
                                         id: node_id.clone(),
                                     },
                                     &self.clock,
-                                )
-                                .is_err()
-                                {
-                                    tracing::warn!(
-                                        "failed to send NodeRestarted to `{receiver_id}`"
-                                    );
+                                ) {
+                                    Ok(()) => {
+                                        dataflow.inc_pending(receiver_id);
+                                    }
+                                    Err(_) => {
+                                        tracing::warn!(
+                                            "failed to send NodeRestarted to `{receiver_id}`"
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -2722,6 +2813,7 @@ async fn send_output_to_local_receivers(
                 timestamp,
             }) {
                 Ok(()) => {
+                    dataflow.inc_pending(receiver_id);
                     if let Some(deadline) = dataflow
                         .input_deadlines
                         .get_mut(&(receiver_id.clone(), input_id.clone()))
@@ -2754,18 +2846,21 @@ async fn send_output_to_local_receivers(
                                 last_received: Instant::now(),
                             },
                         );
-                        if send_with_timestamp(
+                        match send_with_timestamp(
                             channel,
                             NodeEvent::InputRecovered {
                                 id: input_id.clone(),
                             },
                             clock,
-                        )
-                        .is_err()
-                        {
-                            tracing::warn!(
-                                "failed to send InputRecovered for `{receiver_id}/{input_id}`"
-                            );
+                        ) {
+                            Ok(()) => {
+                                dataflow.inc_pending(receiver_id);
+                            }
+                            Err(_) => {
+                                tracing::warn!(
+                                    "failed to send InputRecovered for `{receiver_id}/{input_id}`"
+                                );
+                            }
                         }
                     }
                     if let Some(token) = data.as_ref().and_then(|d| d.drop_token()) {
@@ -2850,14 +2945,17 @@ fn close_input(
     }
 
     if let Some(channel) = dataflow.subscribe_channels.get(receiver_id) {
-        if was_open {
-            let _ = send_with_timestamp(
+        if was_open
+            && send_with_timestamp(
                 channel,
                 NodeEvent::InputClosed {
                     id: input_id.clone(),
                 },
                 clock,
-            );
+            )
+            .is_ok()
+        {
+            dataflow.inc_pending(receiver_id);
         }
 
         let has_broken = dataflow
@@ -2868,7 +2966,9 @@ fn close_input(
             if let Some(node) = dataflow.running_nodes.get_mut(receiver_id) {
                 node.disable_restart();
             }
-            let _ = send_with_timestamp(channel, NodeEvent::AllInputsClosed, clock);
+            if send_with_timestamp(channel, NodeEvent::AllInputsClosed, clock).is_ok() {
+                dataflow.inc_pending(receiver_id);
+            }
         }
     }
 }
@@ -2887,13 +2987,17 @@ fn break_input(
         }
     }
     if let Some(channel) = dataflow.subscribe_channels.get(receiver_id) {
-        let _ = send_with_timestamp(
+        if send_with_timestamp(
             channel,
             NodeEvent::InputClosed {
                 id: input_id.clone(),
             },
             clock,
-        );
+        )
+        .is_ok()
+        {
+            dataflow.inc_pending(receiver_id);
+        }
 
         let has_broken = dataflow
             .broken_inputs
@@ -2903,7 +3007,9 @@ fn break_input(
             if let Some(node) = dataflow.running_nodes.get_mut(receiver_id) {
                 node.disable_restart();
             }
-            let _ = send_with_timestamp(channel, NodeEvent::AllInputsClosed, clock);
+            if send_with_timestamp(channel, NodeEvent::AllInputsClosed, clock).is_ok() {
+                dataflow.inc_pending(receiver_id);
+            }
         }
     }
 }
@@ -3002,6 +3108,7 @@ pub enum DaemonNodeEvent {
     },
     Subscribe {
         event_sender: UnboundedSender<Timestamped<NodeEvent>>,
+        pending_counter: Arc<AtomicU64>,
         reply_sender: oneshot::Sender<DaemonReply>,
     },
     SubscribeDrop {

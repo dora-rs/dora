@@ -38,11 +38,27 @@ impl Executable for Status {
             println!("No daemons connected.");
         } else {
             let mut tw = TabWriter::new(std::io::stdout().lock());
-            tw.write_all(b"DAEMON ID\tLAST HEARTBEAT\n")
+            tw.write_all(b"DAEMON ID\tLAST HEARTBEAT\tRESTARTS\tHEALTH KILLS\tINPUT TIMEOUTS\tCB RECOVERIES\n")
                 .context("write")?;
             for d in &daemons {
+                let (restarts, kills, timeouts, recoveries) = d
+                    .ft_stats
+                    .as_ref()
+                    .map(|s| {
+                        (
+                            s.restarts.to_string(),
+                            s.health_check_kills.to_string(),
+                            s.input_timeouts.to_string(),
+                            s.circuit_breaker_recoveries.to_string(),
+                        )
+                    })
+                    .unwrap_or_else(|| ("-".into(), "-".into(), "-".into(), "-".into()));
                 tw.write_all(
-                    format!("{}\t{}ms ago\n", d.daemon_id, d.last_heartbeat_ago_ms).as_bytes(),
+                    format!(
+                        "{}\t{}ms ago\t{}\t{}\t{}\t{}\n",
+                        d.daemon_id, d.last_heartbeat_ago_ms, restarts, kills, timeouts, recoveries,
+                    )
+                    .as_bytes(),
                 )
                 .context("write")?;
             }

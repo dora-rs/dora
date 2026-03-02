@@ -73,6 +73,9 @@ pub struct Run {
     /// sets the ADORA_ALLOW_SHELL_NODES environment variable.
     #[clap(long)]
     pub allow_shell_nodes: bool,
+    /// Enable debug mode (publishes all messages to Zenoh for topic echo/hz/info)
+    #[clap(long, action)]
+    pub debug: bool,
 }
 
 impl Run {
@@ -85,6 +88,7 @@ impl Run {
             log_format: LogFormat::Pretty,
             log_filter: None,
             allow_shell_nodes: false,
+            debug: false,
         }
     }
 }
@@ -155,6 +159,7 @@ impl Executable for Run {
             LogDestination::Channel { sender: log_tx },
             write_events_to(),
             self.stop_after,
+            self.debug,
         ))?;
         handle_dataflow_result(result, None)
     }

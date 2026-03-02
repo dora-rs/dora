@@ -46,6 +46,9 @@ pub struct Start {
     // Use UV to run nodes.
     #[clap(long, action)]
     uv: bool,
+    /// Enable debug mode (publishes all messages to Zenoh for topic echo/hz/info)
+    #[clap(long, action)]
+    debug: bool,
 }
 
 impl Executable for Start {
@@ -53,8 +56,13 @@ impl Executable for Start {
         default_tracing()?;
         let coordinator_socket = self.coordinator.socket_addr();
 
-        let (dataflow, dataflow_descriptor, session, dataflow_id) =
-            start_dataflow(self.dataflow, self.name, coordinator_socket, self.uv)?;
+        let (dataflow, dataflow_descriptor, session, dataflow_id) = start_dataflow(
+            self.dataflow,
+            self.name,
+            coordinator_socket,
+            self.uv,
+            self.debug,
+        )?;
 
         let attach = match (self.attach, self.detach) {
             (true, _) => true,
@@ -103,12 +111,17 @@ fn start_dataflow(
     name: Option<String>,
     coordinator_socket: SocketAddr,
     uv: bool,
+    debug: bool,
 ) -> Result<(PathBuf, Descriptor, WsSession, Uuid), eyre::Error> {
     let dataflow = resolve_dataflow(dataflow).context("could not resolve dataflow")?;
-    let dataflow_descriptor =
+    let mut dataflow_descriptor =
         Descriptor::blocking_read(&dataflow).wrap_err("Failed to read yaml dataflow")?;
     let dataflow_session =
         DataflowSession::read_session(&dataflow).context("failed to read DataflowSession")?;
+
+    if debug {
+        dataflow_descriptor.debug.publish_all_messages_to_zenoh = true;
+    }
 
     let session = connect_to_coordinator(coordinator_socket)
         .wrap_err("failed to connect to adora coordinator")?;
