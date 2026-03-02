@@ -32,6 +32,7 @@ use eyre::{WrapErr, bail};
 use is_terminal::IsTerminal;
 use shared_memory_extended::{Shmem, ShmemConf};
 
+#[cfg(feature = "tracing")]
 use std::sync::Mutex;
 use std::{
     collections::{BTreeSet, HashMap, VecDeque},
@@ -40,6 +41,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
+#[cfg(feature = "tracing")]
 use tokio::runtime::Handle;
 
 #[cfg(feature = "tracing")]

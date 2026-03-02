@@ -3,7 +3,7 @@ use std::collections::{HashMap, VecDeque};
 use adora_message::{daemon_to_node::NodeEvent, id::DataId};
 
 use super::thread::EventItem;
-pub(crate) const NON_INPUT_EVENT: &str = "adora/non_input_event";
+pub(crate) const NON_INPUT_EVENT: &str = "adora.non_input_event";
 
 /// This scheduler will make sure that there is fairness between inputs.
 ///
