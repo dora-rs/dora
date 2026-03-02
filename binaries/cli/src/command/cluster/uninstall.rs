@@ -5,7 +5,7 @@ use clap::Args;
 use crate::command::{Executable, default_tracing};
 
 use super::config::ClusterConfig;
-use super::{run_ssh, ssh_target};
+use super::{print_summary, record_ssh_result, run_ssh, ssh_target};
 
 /// Uninstall adora-daemon systemd services from each machine.
 ///
@@ -41,35 +41,16 @@ impl Executable for Uninstall {
             );
 
             println!("Uninstalling {service_name} from {} ({target})", machine.id);
-            match run_ssh(&target, &cmd) {
-                Ok(true) => {
-                    println!("  OK: {service_name} removed");
-                }
-                Ok(false) => {
-                    let msg = "ssh command failed".to_string();
-                    eprintln!("  FAILED: {msg}");
-                    failures.push((machine.id.clone(), msg));
-                }
-                Err(err) => {
-                    let msg = format!("{err}");
-                    eprintln!("  FAILED: {msg}");
-                    failures.push((machine.id.clone(), msg));
-                }
-            }
+            let result = run_ssh(&target, &cmd);
+            record_ssh_result(
+                &mut failures,
+                &machine.id,
+                result,
+                &format!("{service_name} removed"),
+            );
         }
 
-        if failures.is_empty() {
-            println!("All {} daemon(s) uninstalled", config.machines.len());
-        } else {
-            println!(
-                "Uninstalled {}/{} daemon(s)",
-                config.machines.len() - failures.len(),
-                config.machines.len()
-            );
-            for (id, reason) in &failures {
-                eprintln!("  {id}: {reason}");
-            }
-        }
+        print_summary("daemon(s) uninstalled", config.machines.len(), &failures);
 
         Ok(())
     }

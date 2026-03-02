@@ -40,14 +40,7 @@ impl Executable for Restart {
             (config.coordinator.addr, config.coordinator.port).into();
         let session = connect_to_coordinator(coordinator_addr)?;
 
-        // Resolve dataflow by name
-        let request = ControlRequest::StopByName {
-            name: self.dataflow.clone(),
-            grace_duration: None,
-            force: false,
-        };
-
-        // We use the List request to find the UUID, then reload each node.
+        // Resolve dataflow by name/UUID via List
         let list_raw = session
             .request(&serde_json::to_vec(&ControlRequest::List).unwrap())
             .wrap_err("failed to send List request")?;
@@ -77,25 +70,18 @@ impl Executable for Restart {
             _ => bail!("unexpected reply to List request"),
         };
 
-        // Get dataflow nodes via Check
-        let check_raw = session
-            .request(&serde_json::to_vec(&ControlRequest::Check { dataflow_uuid }).unwrap())
-            .wrap_err("failed to send Check request")?;
-        let _check_reply: ControlRequestReply =
-            serde_json::from_slice(&check_raw).wrap_err("failed to parse Check reply")?;
-
-        // Send reload for the entire dataflow using a wildcard node approach.
-        // The coordinator's Reload handler sends to all daemons anyway.
-        // We reload each node individually but the coordinator fans out.
-        // For simplicity, send a single reload with the dataflow name.
         println!(
             "Restarting dataflow `{}` ({})",
             self.dataflow, dataflow_uuid
         );
 
-        // Use the existing Stop + Start approach for rolling restart.
-        // A full per-daemon rolling reload would require the coordinator to
-        // expose the node-to-daemon mapping to CLI. For now, stop + start.
+        // Stop the dataflow. A full per-daemon rolling reload would require
+        // the coordinator to expose the node-to-daemon mapping to CLI.
+        let request = ControlRequest::StopByName {
+            name: self.dataflow.clone(),
+            grace_duration: None,
+            force: false,
+        };
         let stop_raw = session
             .request(&serde_json::to_vec(&request).unwrap())
             .wrap_err("failed to send Stop request")?;

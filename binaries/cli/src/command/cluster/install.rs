@@ -5,7 +5,7 @@ use clap::Args;
 use crate::command::{Executable, default_tracing};
 
 use super::config::ClusterConfig;
-use super::{format_labels_arg, run_ssh, ssh_target};
+use super::{format_labels_arg, print_summary, record_ssh_result, run_ssh, ssh_target};
 
 /// Install adora-daemon as a systemd service on each machine.
 ///
@@ -62,38 +62,20 @@ WantedBy=multi-user.target
             );
 
             println!("Installing {service_name} on {} ({target})", machine.id);
-            match run_ssh(&target, &cmd) {
-                Ok(true) => {
-                    println!("  OK: {service_name} installed and started");
-                }
-                Ok(false) => {
-                    let msg = "ssh command failed".to_string();
-                    eprintln!("  FAILED: {msg}");
-                    failures.push((machine.id.clone(), msg));
-                }
-                Err(err) => {
-                    let msg = format!("{err}");
-                    eprintln!("  FAILED: {msg}");
-                    failures.push((machine.id.clone(), msg));
-                }
-            }
+            let result = run_ssh(&target, &cmd);
+            record_ssh_result(
+                &mut failures,
+                &machine.id,
+                result,
+                &format!("{service_name} installed and started"),
+            );
         }
 
-        if failures.is_empty() {
-            println!(
-                "All {} daemon(s) installed as systemd services",
-                config.machines.len()
-            );
-        } else {
-            println!(
-                "Installed {}/{} daemon(s)",
-                config.machines.len() - failures.len(),
-                config.machines.len()
-            );
-            for (id, reason) in &failures {
-                eprintln!("  {id}: {reason}");
-            }
-        }
+        print_summary(
+            "daemon(s) installed as systemd services",
+            config.machines.len(),
+            &failures,
+        );
 
         Ok(())
     }

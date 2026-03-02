@@ -96,3 +96,37 @@ pub(super) fn run_ssh(target: &str, cmd: &str) -> eyre::Result<bool> {
         .with_context(|| format!("failed to run ssh to {target}"))?;
     Ok(status.success())
 }
+
+/// Record an SSH result into a failure list. Prints OK on success, FAILED on error.
+pub(super) fn record_ssh_result(
+    failures: &mut Vec<(String, String)>,
+    machine_id: &str,
+    result: eyre::Result<bool>,
+    ok_msg: &str,
+) {
+    match result {
+        Ok(true) => println!("  OK: {ok_msg}"),
+        Ok(false) => {
+            let msg = "ssh command failed".to_string();
+            eprintln!("  FAILED: {msg}");
+            failures.push((machine_id.to_owned(), msg));
+        }
+        Err(err) => {
+            let msg = format!("{err}");
+            eprintln!("  FAILED: {msg}");
+            failures.push((machine_id.to_owned(), msg));
+        }
+    }
+}
+
+/// Print a summary of successes and failures after a batch SSH operation.
+pub(super) fn print_summary(action: &str, total: usize, failures: &[(String, String)]) {
+    if failures.is_empty() {
+        println!("All {total} {action}");
+    } else {
+        println!("{}/{total} {action}", total - failures.len());
+        for (id, reason) in failures {
+            eprintln!("  {id}: {reason}");
+        }
+    }
+}

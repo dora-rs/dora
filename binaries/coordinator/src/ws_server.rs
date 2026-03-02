@@ -129,12 +129,16 @@ async fn artifact_handler(
 
     let path = state
         .artifact_store
-        .get_path(&build_uuid, &node_id)
-        .ok_or(StatusCode::NOT_FOUND)?;
+        .artifact_path(&build_uuid, &node_id)
+        .ok_or(StatusCode::BAD_REQUEST)?;
 
-    let data = tokio::fs::read(&path)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let data = tokio::fs::read(&path).await.map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            StatusCode::NOT_FOUND
+        } else {
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+    })?;
 
     Ok((
         [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],

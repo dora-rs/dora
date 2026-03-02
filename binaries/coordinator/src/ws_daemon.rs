@@ -145,13 +145,17 @@ async fn handle_daemon_request(
                     return false;
                 }
             }
-            let connection = DaemonConnection::new(cmd_tx.clone(), pending_replies.clone());
+            let version_check_result = register_request.check_version();
+            let labels = register_request.labels;
+            let machine_id = register_request.machine_id;
+            let connection =
+                DaemonConnection::new(cmd_tx.clone(), pending_replies.clone(), labels.clone());
             let (daemon_id_tx, daemon_id_rx) = oneshot::channel();
             let event = DaemonRequest::Register {
                 connection,
-                version_check_result: register_request.check_version(),
-                machine_id: register_request.machine_id,
-                labels: register_request.labels,
+                version_check_result,
+                machine_id,
+                labels,
                 daemon_id_tx,
             };
             if event_tx.send(Event::Daemon(event)).await.is_err() {

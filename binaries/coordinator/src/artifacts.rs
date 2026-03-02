@@ -32,18 +32,17 @@ impl ArtifactStore {
         Ok(path)
     }
 
-    /// Get the path to a stored artifact, if it exists.
-    pub fn get_path(&self, build_id: &Uuid, node_id: &str) -> Option<PathBuf> {
-        let sanitized = sanitize_node_id(node_id)?;
-        let path = self.base_dir.join(build_id.to_string()).join(sanitized);
-        if path.exists() { Some(path) } else { None }
+    /// Construct the path to a stored artifact (without checking existence).
+    /// Returns `None` if the node_id fails sanitization.
+    pub fn artifact_path(&self, build_id: &Uuid, node_id: &str) -> Option<PathBuf> {
+        sanitize_node_id(node_id).map(|s| self.base_dir.join(build_id.to_string()).join(s))
     }
 
     /// Remove all artifacts for a given build.
     pub fn cleanup_build(&self, build_id: &Uuid) {
         let dir = self.base_dir.join(build_id.to_string());
-        if dir.exists() {
-            if let Err(e) = std::fs::remove_dir_all(&dir) {
+        if let Err(e) = std::fs::remove_dir_all(&dir) {
+            if e.kind() != std::io::ErrorKind::NotFound {
                 tracing::warn!("failed to clean up artifacts for build {build_id}: {e}");
             }
         }
@@ -88,11 +87,12 @@ mod tests {
         let path = store.store(build_id, "my-node", data).unwrap();
         assert!(path.exists());
 
-        let got_path = store.get_path(&build_id, "my-node").unwrap();
+        let got_path = store.artifact_path(&build_id, "my-node").unwrap();
         assert_eq!(std::fs::read(&got_path).unwrap(), data);
 
         store.cleanup_build(&build_id);
-        assert!(store.get_path(&build_id, "my-node").is_none());
+        let cleaned_path = store.artifact_path(&build_id, "my-node").unwrap();
+        assert!(!cleaned_path.exists());
     }
 
     #[test]

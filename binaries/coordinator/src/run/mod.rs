@@ -104,13 +104,13 @@ pub(super) fn resolve_daemon(
     deploy: Option<&Deploy>,
 ) -> eyre::Result<DaemonId> {
     match deploy {
-        Some(d) if d.machine.is_some() => {
-            let machine = d.machine.as_deref().unwrap();
-            connections
-                .get_matching_daemon_id(machine)
-                .cloned()
-                .wrap_err_with(|| format!("no matching daemon for machine id `{machine}`"))
-        }
+        Some(Deploy {
+            machine: Some(machine),
+            ..
+        }) => connections
+            .get_matching_daemon_id(machine)
+            .cloned()
+            .wrap_err_with(|| format!("no matching daemon for machine id `{machine}`")),
         Some(d) if !d.labels.is_empty() => connections
             .get_matching_daemon_by_labels(&d.labels)
             .cloned()

@@ -55,7 +55,9 @@ impl Executable for Upgrade {
                     "BatchMode=yes",
                     "-o",
                     "ConnectTimeout=10",
-                    local_binary.to_str().unwrap_or("adora"),
+                    local_binary
+                        .to_str()
+                        .ok_or_else(|| eyre::eyre!("local binary path is not valid UTF-8"))?,
                     &format!("{target}:/usr/local/bin/adora"),
                 ])
                 .status();

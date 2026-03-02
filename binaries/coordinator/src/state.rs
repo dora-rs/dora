@@ -81,12 +81,13 @@ impl DaemonConnection {
     pub(crate) fn new(
         sender: mpsc::Sender<String>,
         pending_replies: Arc<Mutex<HashMap<Uuid, oneshot::Sender<String>>>>,
+        labels: BTreeMap<String, String>,
     ) -> Self {
         Self {
             sender,
             pending_replies,
             last_heartbeat: Instant::now(),
-            labels: BTreeMap::new(),
+            labels,
         }
     }
 

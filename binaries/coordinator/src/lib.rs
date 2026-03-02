@@ -299,7 +299,6 @@ async fn start_inner(
                     {
                         Ok(()) => {
                             let _ = daemon_id_tx.send(daemon_id.clone());
-                            connection.labels = labels.clone();
                             daemon_connections.add(daemon_id.clone(), connection);
                             if let Err(e) =
                                 store.register_daemon(adora_coordinator_store::DaemonInfo {
