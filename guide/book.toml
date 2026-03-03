@@ -12,5 +12,5 @@ create-missing = false
 after = ["links"]
 
 [output.html]
-git-repository-url = "https://github.com/adora-rs/adora"
-edit-url-template = "https://github.com/adora-rs/adora/edit/main/guide/{path}"
+git-repository-url = "https://github.com/dora-rs/adora"
+edit-url-template = "https://github.com/dora-rs/adora/edit/main/guide/{path}"

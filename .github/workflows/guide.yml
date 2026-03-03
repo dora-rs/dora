@@ -37,9 +37,6 @@ jobs:
         working-directory: guide
         run: MDBOOK_BOOK__LANGUAGE=zh-CN mdbook build -d book/zh-CN
 
-      - name: Move Chinese into English output
-        run: mv guide/book/zh-CN guide/book/zh-CN
-
       - name: Setup Pages
         uses: actions/configure-pages@v5
 
