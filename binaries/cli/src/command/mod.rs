@@ -3,7 +3,7 @@ mod cluster;
 mod completion;
 mod coordinator;
 mod daemon;
-mod destroy;
+mod down;
 mod graph;
 pub mod inspect;
 mod list;
@@ -32,7 +32,7 @@ use cluster::Cluster;
 use completion::Completion;
 use coordinator::Coordinator;
 use daemon::Daemon;
-use destroy::Destroy;
+use down::Down;
 use eyre::Context;
 use graph::Graph;
 use inspect::Inspect;
@@ -64,7 +64,7 @@ pub enum Command {
     Up(Up),
     /// Tear down coordinator and daemon. Stops any running dataflows first.
     #[clap(name = "down", alias = "destroy", display_order = 3)]
-    Destroy(Destroy),
+    Down(Down),
     /// Manage a multi-machine cluster (up, status, down)
     #[clap(subcommand, display_order = 4)]
     Cluster(Cluster),
@@ -167,7 +167,7 @@ impl Executable for Command {
         match self {
             Command::Run(args) => args.execute(),
             Command::Up(args) => args.execute(),
-            Command::Destroy(args) => args.execute(),
+            Command::Down(args) => args.execute(),
             Command::Cluster(args) => args.execute(),
             Command::Build(args) => args.execute(),
             Command::Start(args) => args.execute(),

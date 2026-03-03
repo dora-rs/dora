@@ -20,6 +20,6 @@ pub struct Down {
 impl Executable for Down {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
-        up::destroy(None, self.coordinator.socket_addr())
+        up::down(None, self.coordinator.socket_addr())
     }
 }

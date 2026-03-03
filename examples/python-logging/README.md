@@ -80,7 +80,7 @@ When done:
 
 ```bash
 adora stop
-adora destroy
+adora down
 ```
 
 ## Post-Run Analysis

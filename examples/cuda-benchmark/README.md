@@ -40,5 +40,5 @@ cat benchmark_data.csv
 adora up
 adora start demo_bench.yml --detach
 python demo_receiver.py
-adora destroy
+adora down
 ```

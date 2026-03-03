@@ -149,7 +149,7 @@ cargo test --test example-smoke -- --test-threads=1
 
 Two helpers are available in `tests/example-smoke.rs`:
 
-- `run_smoke_test(name, yaml, timeout)` -- networked: `adora up` + `adora start --detach` + poll + `adora stop` + `adora destroy`
+- `run_smoke_test(name, yaml, timeout)` -- networked: `adora up` + `adora start --detach` + poll + `adora stop` + `adora down`
 - `run_smoke_test_local(name, yaml, stop_after_secs)` -- local: `adora run --stop-after`
 
 New example dataflows should have tests in both modes. Use `Once` guards to share build steps across tests.

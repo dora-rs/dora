@@ -191,7 +191,7 @@ mod real_dataflow {
             .status();
         std::thread::sleep(Duration::from_millis(500));
         let _ = Command::new(adora)
-            .arg("destroy")
+            .arg("down")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();

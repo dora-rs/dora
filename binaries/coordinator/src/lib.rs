@@ -196,7 +196,7 @@ async fn start_inner(
         tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(Duration::from_secs(3)))
             .map(|_| Event::DaemonHeartbeatInterval);
 
-    // events that should be aborted on `adora destroy`
+    // events that should be aborted on `adora down`
     let (abortable_events, abort_handle) =
         futures::stream::abortable((events, daemon_heartbeat_interval).merge());
 

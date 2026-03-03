@@ -82,7 +82,7 @@ pub(crate) fn up(config_path: Option<&Path>) -> eyre::Result<()> {
     Ok(())
 }
 
-pub(crate) fn destroy(
+pub(crate) fn down(
     config_path: Option<&Path>,
     coordinator_addr: SocketAddr,
 ) -> Result<(), eyre::ErrReport> {

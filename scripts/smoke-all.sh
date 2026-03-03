@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Smoke-test all safe example dataflows using the networked lifecycle:
-#   adora up -> adora start --detach -> poll adora list -> adora stop -> adora destroy
+#   adora up -> adora start --detach -> poll adora list -> adora stop -> adora down
 #
 # Usage:
 #   ./scripts/smoke-all.sh              # Run all examples
@@ -46,13 +46,13 @@ log_pass() { echo "  PASS: $1"; PASS=$((PASS + 1)); }
 log_fail() { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); FAILURES+=("$1"); }
 log_skip() { echo "  SKIP: $1 ($2)"; SKIP=$((SKIP + 1)); }
 
-# Run a dataflow through the full up/start/stop/destroy lifecycle (networked).
+# Run a dataflow through the full up/start/stop/down lifecycle (networked).
 run_networked() {
     local name="$1" yaml="$2" timeout="${3:-30}"
     echo "=> $name (networked, ${timeout}s)"
 
     # Clean up any stale processes
-    "$ADORA" destroy > /dev/null 2>&1 || true
+    "$ADORA" down > /dev/null 2>&1 || true
     sleep 0.5
 
     if ! "$ADORA" up > /dev/null 2>&1; then
@@ -62,7 +62,7 @@ run_networked() {
 
     if ! "$ADORA" start "$ROOT/$yaml" --detach > /dev/null 2>&1; then
         log_fail "$name (adora start failed)"
-        "$ADORA" destroy > /dev/null 2>&1 || true
+        "$ADORA" down > /dev/null 2>&1 || true
         return
     fi
 
@@ -82,7 +82,7 @@ run_networked() {
     # Cleanup
     "$ADORA" stop --all > /dev/null 2>&1 || true
     sleep 0.5
-    "$ADORA" destroy > /dev/null 2>&1 || true
+    "$ADORA" down > /dev/null 2>&1 || true
 
     log_pass "$name"
 }

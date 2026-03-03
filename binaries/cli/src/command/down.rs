@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 #[derive(Debug, clap::Args)]
 /// Tear down coordinator and daemon. Stops any running dataflows first.
-pub struct Destroy {
+pub struct Down {
     /// Use a custom configuration
     #[clap(long, hide = true)]
     config: Option<PathBuf>,
@@ -12,9 +12,9 @@ pub struct Destroy {
     coordinator: CoordinatorOptions,
 }
 
-impl Executable for Destroy {
+impl Executable for Down {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
-        up::destroy(self.config.as_deref(), self.coordinator.socket_addr())
+        up::down(self.config.as_deref(), self.coordinator.socket_addr())
     }
 }

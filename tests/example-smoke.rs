@@ -3,7 +3,7 @@
 //! Two modes are exercised:
 //!
 //! - **Networked** (`adora up` + `adora start --detach` + poll + `adora stop` +
-//!   `adora destroy`): exercises the full coordinator/daemon WS control plane.
+//!   `adora down`): exercises the full coordinator/daemon WS control plane.
 //! - **Local** (`adora run --stop-after`): runs everything in-process, testing
 //!   the single-process dataflow path.
 //!
@@ -130,7 +130,7 @@ fn ensure_action_nodes_built() {
 /// Ensure no leftover coordinator/daemon from a previous test or manual run.
 fn cleanup_stale(adora: &str) {
     let _ = Command::new(adora)
-        .arg("destroy")
+        .arg("down")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
@@ -142,7 +142,7 @@ fn cleanup_stale(adora: &str) {
 /// 1. `adora up` -- start coordinator + daemon
 /// 2. `adora start <yaml> --detach` -- launch the dataflow
 /// 3. Poll `adora list --json` until "Running" disappears or timeout
-/// 4. `adora stop --all` + `adora destroy` -- clean up
+/// 4. `adora stop --all` + `adora down` -- clean up
 fn run_smoke_test(name: &str, yaml_path: &str, timeout: Duration) {
     ensure_cli_built();
 
@@ -206,7 +206,7 @@ fn run_smoke_test(name: &str, yaml_path: &str, timeout: Duration) {
         .status();
     std::thread::sleep(Duration::from_millis(500));
     let _ = Command::new(&adora)
-        .arg("destroy")
+        .arg("down")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();

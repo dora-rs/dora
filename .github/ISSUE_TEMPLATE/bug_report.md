@@ -15,7 +15,7 @@ Steps to reproduce the behavior:
 1. Adora start daemon: `adora up` 
 2. Start a new dataflow: `adora start dataflow.yaml`
 3. Stop dataflow: `adora stop`
-4. Destroy dataflow: `adora destroy`
+4. Tear down: `adora down`
 
 **Expected behavior**
 A clear and concise description of what you expected to happen.
