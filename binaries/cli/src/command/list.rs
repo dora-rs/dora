@@ -12,10 +12,10 @@ use dora_message::{
     cli_to_coordinator::CliControlClient, coordinator_to_cli::DataflowStatus, tarpc,
 };
 use eyre::{Context, eyre};
+use indicatif::{ProgressBar, ProgressStyle};
 use serde::Serialize;
 use tabwriter::TabWriter;
 use uuid::Uuid;
-
 #[derive(Debug, Args)]
 /// List running dataflows.
 pub struct ListArgs {
@@ -75,15 +75,17 @@ async fn list(
     name_filter: Option<String>,
     sort_by: Option<String>,
 ) -> Result<(), eyre::ErrReport> {
+    let sp = spinner("Fetching running dataflows...");
     let list = query_running_dataflows(client).await?;
-
+    sp.finish_with_message("Dataflows fetched ✓");
+    let sp = spinner("Fetching node metrics...");
     // Get node information via tarpc
     let node_infos = rpc(
         "get node info",
         client.get_node_info(tarpc::context::current()),
     )
     .await?;
-
+    sp.finish_with_message("Node metrics fetched ✓");
     // Aggregate metrics by dataflow UUID
     let mut dataflow_metrics: std::collections::BTreeMap<Uuid, DataflowMetrics> =
         std::collections::BTreeMap::new();
@@ -213,4 +215,15 @@ async fn list(
     }
 
     Ok(())
+}
+fn spinner(message: &str) -> ProgressBar {
+    let sp = ProgressBar::new_spinner();
+    sp.set_style(
+        ProgressStyle::default_spinner()
+            .template("{spinner:.green} {msg}")
+            .unwrap(),
+    );
+    sp.set_message(message.to_string());
+    sp.enable_steady_tick(std::time::Duration::from_millis(100));
+    sp
 }
