@@ -16,6 +16,8 @@ use uuid::Uuid;
 
 const DAEMON_COORDINATOR_RETRY_INITIAL: Duration = Duration::from_secs(1);
 const DAEMON_COORDINATOR_RETRY_MAX: Duration = Duration::from_secs(30);
+/// Maximum number of consecutive failed connection attempts before giving up.
+const DAEMON_COORDINATOR_RETRY_LIMIT: u32 = 50;
 const REGISTER_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug)]
@@ -61,6 +63,7 @@ pub async fn register(
     let auth_token = adora_message::auth::discover_token();
     let ws_stream = {
         let mut backoff = DAEMON_COORDINATOR_RETRY_INITIAL;
+        let mut attempts: u32 = 0;
         loop {
             let request = {
                 let mut req = tokio_tungstenite::tungstenite::http::Request::builder()
@@ -81,6 +84,12 @@ pub async fn register(
             match tokio_tungstenite::connect_async(request).await {
                 Ok((stream, _)) => break stream,
                 Err(err) => {
+                    attempts += 1;
+                    if attempts >= DAEMON_COORDINATOR_RETRY_LIMIT {
+                        return Err(eyre::eyre!(
+                            "failed to connect to coordinator at {display_url} after {attempts} attempts: {err}"
+                        ));
+                    }
                     // Add jitter: +/- 25% of backoff to prevent thundering herd
                     let jitter_range = backoff / 4;
                     let jitter = Duration::from_millis(
@@ -89,7 +98,7 @@ pub async fn register(
                     );
                     let sleep_duration = backoff.saturating_add(jitter);
                     tracing::warn!(
-                        "Could not connect to WS at {display_url}: {err}. Retrying in {sleep_duration:#?}.."
+                        "Could not connect to WS at {display_url}: {err}. Retrying in {sleep_duration:#?} ({attempts}/{DAEMON_COORDINATOR_RETRY_LIMIT}).."
                     );
                     tokio::time::sleep(sleep_duration).await;
                     backoff = (backoff * 2).min(DAEMON_COORDINATOR_RETRY_MAX);

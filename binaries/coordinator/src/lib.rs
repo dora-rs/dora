@@ -1233,7 +1233,10 @@ async fn start_inner(
                     };
                     if build.pending_build_results.is_empty() {
                         tracing::info!("dataflow build finished: `{build_id}`");
-                        let mut build = running_builds.remove(&build_id).unwrap();
+                        let Some(mut build) = running_builds.remove(&build_id) else {
+                            tracing::error!("build {build_id} disappeared from running_builds");
+                            continue;
+                        };
                         let result = if build.errors.is_empty() {
                             Ok(())
                         } else {

@@ -106,7 +106,7 @@ impl HzStats {
     }
 
     fn record(&self, now: Instant) {
-        let mut timestamps = self.timestamps.lock().unwrap();
+        let mut timestamps = self.timestamps.lock().unwrap_or_else(|e| e.into_inner());
         timestamps.push_back(now);
         let cutoff = now - self.window_duration;
         while let Some(&first) = timestamps.front() {
@@ -244,7 +244,7 @@ fn run_hz(
         for (i, (_topic, s)) in stats.iter().enumerate() {
             let cutoff = now - sub_window;
             let mut count = 0usize;
-            let ts = s.timestamps.lock().unwrap();
+            let ts = s.timestamps.lock().unwrap_or_else(|e| e.into_inner());
             for &t in ts.iter().rev() {
                 if t < cutoff {
                     break;

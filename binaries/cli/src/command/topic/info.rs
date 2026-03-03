@@ -68,9 +68,9 @@ const MAX_TIMESTAMPS: usize = 10_000;
 
 impl TopicStats {
     fn record(&self, data_size: usize, type_info: &ArrowTypeInfo, now: Instant) {
-        *self.message_count.lock().unwrap() += 1;
-        *self.total_bytes.lock().unwrap() += data_size as u64;
-        let mut ts = self.timestamps.lock().unwrap();
+        *self.message_count.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+        *self.total_bytes.lock().unwrap_or_else(|e| e.into_inner()) += data_size as u64;
+        let mut ts = self.timestamps.lock().unwrap_or_else(|e| e.into_inner());
         if ts.len() >= MAX_TIMESTAMPS {
             // Keep the recent half
             let drain_to = ts.len() / 2;
@@ -78,11 +78,11 @@ impl TopicStats {
         }
         ts.push(now);
         drop(ts);
-        *self.data_type.lock().unwrap() = Some(type_info.clone());
+        *self.data_type.lock().unwrap_or_else(|e| e.into_inner()) = Some(type_info.clone());
     }
 
     fn calculate_hz(&self, window: Duration) -> Option<f64> {
-        let timestamps = self.timestamps.lock().unwrap();
+        let timestamps = self.timestamps.lock().unwrap_or_else(|e| e.into_inner());
         if timestamps.len() < 2 {
             return None;
         }
@@ -183,9 +183,9 @@ fn info(
     .map_err(|_| eyre::eyre!("stats collection thread panicked"))?;
 
     // Display the information
-    let message_count = *stats.message_count.lock().unwrap();
-    let total_bytes = *stats.total_bytes.lock().unwrap();
-    let data_type = stats.data_type.lock().unwrap().clone();
+    let message_count = *stats.message_count.lock().unwrap_or_else(|e| e.into_inner());
+    let total_bytes = *stats.total_bytes.lock().unwrap_or_else(|e| e.into_inner());
+    let data_type = stats.data_type.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let hz = stats.calculate_hz(Duration::from_secs(duration_secs));
 
     println!("Topic: {}/{}", topic.node_id, topic.data_id);
