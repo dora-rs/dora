@@ -92,18 +92,18 @@ adora-ros2-bridge-msg-gen = { version = "0.4.1", path = "libraries/extensions/ro
 adora-ros2-bridge-python = { path = "libraries/extensions/ros2-bridge/python" }
 # versioned independently from the other adora crates
 adora-message = { version = "0.7.0", path = "libraries/message" }
-arrow = { version = "54.2.1" }
-arrow-schema = { version = "54.2.1" }
-arrow-data = { version = "54.2.1" }
-arrow-array = { version = "54.2.1" }
-arrow-json = { version = "54.2.1" }
-parquet = { version = "54.2.1" }
-pyo3 = { version = "0.23", features = [
+arrow = { version = "58" }
+arrow-schema = { version = "58" }
+arrow-data = { version = "58" }
+arrow-array = { version = "58" }
+arrow-json = { version = "58" }
+parquet = { version = "58" }
+pyo3 = { version = "0.28", features = [
     "eyre",
     "abi3-py37",
     "multiple-pymethods",
 ] }
-pythonize = "0.23"
+pythonize = "0.28"
 git2 = { version = "0.20.4", features = ["vendored-openssl"] }
 serde_yaml = "0.9.33"
 zenoh = "1.1.1"

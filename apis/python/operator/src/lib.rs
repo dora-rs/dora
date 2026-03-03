@@ -20,12 +20,12 @@ use std::time::UNIX_EPOCH;
 
 /// Adora Event
 pub struct PyEvent {
-    pub event: MergedEvent<PyObject>,
+    pub event: MergedEvent<Py<PyAny>>,
 }
 
 /// Keeps the adora node alive until all event objects have been dropped.
 #[derive(Clone)]
-#[pyclass]
+#[pyclass(skip_from_py_object)]
 pub struct NodeCleanupHandle {
     pub _handles: Arc<CleanupHandle<AdoraNode>>,
 }
@@ -170,18 +170,18 @@ impl PyEvent {
     }
 
     /// Returns the payload of an input event as an arrow array (if any).
-    fn value(&self, py: Python<'_>) -> PyResult<Option<PyObject>> {
+    fn value(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
         match &self.event {
             MergedEvent::Adora(Event::Input { data, .. }) => {
                 // TODO: Does this call leak data?&
-                let array_data = data.to_data().to_pyarrow(py)?;
+                let array_data = data.to_data().to_pyarrow(py)?.unbind();
                 Ok(Some(array_data))
             }
             _ => Ok(None),
         }
     }
 
-    fn metadata(event: &Event, py: Python<'_>) -> Result<Option<PyObject>> {
+    fn metadata(event: &Event, py: Python<'_>) -> Result<Option<Py<PyAny>>> {
         match event {
             Event::Input { metadata, .. } => Ok(Some(
                 metadata_to_pydict(metadata, py)

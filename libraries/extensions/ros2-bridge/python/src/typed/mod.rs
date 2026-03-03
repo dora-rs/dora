@@ -42,7 +42,7 @@ mod tests {
         let messages = context.messages.clone();
         let serializer = Serializer::builder().build();
 
-        Python::with_gil(|py| -> Result<()> {
+        Python::attach(|py| -> Result<()> {
             let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")); //.join("test_utils.py"); // Adjust this path as needed
 
             // Add the Python module's directory to sys.path

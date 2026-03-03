@@ -15,7 +15,6 @@ use eyre::{Context, ContextCompat};
 use futures::{Stream, StreamExt};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
-use pyo3_special_method_derive::{Dict, Dir, Repr, Str};
 use tokio::runtime::{Builder, Runtime};
 use tracing::{Level, span};
 static RUNTIME: LazyLock<Runtime> = LazyLock::new(|| {
@@ -126,7 +125,6 @@ def basicConfig(*pargs, **kwargs):
 ///
 /// :type node_id: str, optional
 #[pyclass]
-#[derive(Dir, Dict, Str, Repr)]
 pub struct Node {
     events: Events,
     node: DelayedCleanup<AdoraNode>,
@@ -163,7 +161,7 @@ impl Node {
             _handles: Arc::new(node.handle()),
         };
 
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             // Extend the `logging` module to interact with tracing
             setup_logging(py)
         })?;
@@ -203,7 +201,7 @@ impl Node {
     #[pyo3(signature = (timeout=None))]
     #[allow(clippy::should_implement_trait)]
     pub fn next(&self, py: Python, timeout: Option<f32>) -> PyResult<Option<Py<PyDict>>> {
-        let event = py.allow_threads(|| self.events.recv(timeout.map(Duration::from_secs_f32)));
+        let event = py.detach(|| self.events.recv(timeout.map(Duration::from_secs_f32)));
         if let Some(event) = event {
             let dict = event
                 .to_py_dict(py)
@@ -295,7 +293,7 @@ impl Node {
             .await;
         if let Some(event) = event {
             // Get python
-            Python::with_gil(|py| {
+            Python::attach(|py| {
                 let dict = event
                     .to_py_dict(py)
                     .context("Could not convert event into a dict")?;
@@ -362,13 +360,13 @@ impl Node {
     pub fn send_output(
         &self,
         output_id: String,
-        data: PyObject,
+        data: Py<PyAny>,
         metadata: Option<Bound<'_, PyDict>>,
         py: Python,
     ) -> eyre::Result<()> {
         let parameters = pydict_to_metadata(metadata)?;
 
-        if let Ok(py_bytes) = data.downcast_bound::<PyBytes>(py) {
+        if let Ok(py_bytes) = data.cast_bound::<PyBytes>(py) {
             let data = py_bytes.as_bytes();
             self.node
                 .get_mut()
@@ -411,7 +409,7 @@ impl Node {
     ) {
         let ordered = fields.map(|f| f.into_iter().collect::<std::collections::BTreeMap<_, _>>());
         self.node
-            .get()
+            .get_mut()
             .log_with_fields(level, message, target, ordered.as_ref());
     }
 
@@ -420,7 +418,7 @@ impl Node {
     /// This method returns the parsed dataflow YAML file.
     ///
     /// :rtype: dict
-    pub fn dataflow_descriptor(&self, py: Python) -> eyre::Result<PyObject> {
+    pub fn dataflow_descriptor(&self, py: Python) -> eyre::Result<Py<PyAny>> {
         Ok(
             pythonize::pythonize(py, &self.node.get_mut().dataflow_descriptor()?)
                 .map(|x| x.unbind())?,
@@ -430,7 +428,7 @@ impl Node {
     /// Returns the node configuration.
     ///
     /// :rtype: dict
-    pub fn node_config(&self, py: Python) -> eyre::Result<PyObject> {
+    pub fn node_config(&self, py: Python) -> eyre::Result<Py<PyAny>> {
         Ok(pythonize::pythonize(py, &self.node.get_mut().node_config()).map(|x| x.unbind())?)
     }
 
@@ -469,13 +467,14 @@ impl Node {
         let stream = futures::stream::poll_fn(move |cx| {
             let s = subscription.as_stream().map(|item| {
                 match item.context("failed to read ROS2 message") {
-                    Ok((value, _info)) => Python::with_gil(|py| {
+                    Ok((value, _info)) => Python::attach(|py| {
                         value
                             .to_pyarrow(py)
+                            .map(|b| b.unbind())
                             .context("failed to convert value to pyarrow")
                             .unwrap_or_else(|err| err_to_pyany(err, py))
                     }),
-                    Err(err) => Python::with_gil(|py| err_to_pyany(err, py)),
+                    Err(err) => Python::attach(|py| err_to_pyany(err, py)),
                 }
             });
             futures::pin_mut!(s);
@@ -582,15 +581,15 @@ impl Events {
 #[allow(clippy::large_enum_variant)]
 enum EventsInner {
     Adora(EventStream),
-    Merged(Box<dyn Stream<Item = MergedEvent<PyObject>> + Unpin + Send + Sync>),
+    Merged(Box<dyn Stream<Item = MergedEvent<Py<PyAny>>> + Unpin + Send + Sync>),
 }
 
-impl<'a> MergeExternalSend<'a, PyObject> for EventsInner {
-    type Item = MergedEvent<PyObject>;
+impl<'a> MergeExternalSend<'a, Py<PyAny>> for EventsInner {
+    type Item = MergedEvent<Py<PyAny>>;
 
     fn merge_external_send(
         self,
-        external_events: impl Stream<Item = PyObject> + Unpin + Send + Sync + 'a,
+        external_events: impl Stream<Item = Py<PyAny>> + Unpin + Send + Sync + 'a,
     ) -> Box<dyn Stream<Item = Self::Item> + Unpin + Send + Sync + 'a> {
         match self {
             EventsInner::Adora(events) => events.merge_external_send(external_events),

@@ -183,9 +183,16 @@ fn info(
     .map_err(|_| eyre::eyre!("stats collection thread panicked"))?;
 
     // Display the information
-    let message_count = *stats.message_count.lock().unwrap_or_else(|e| e.into_inner());
+    let message_count = *stats
+        .message_count
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let total_bytes = *stats.total_bytes.lock().unwrap_or_else(|e| e.into_inner());
-    let data_type = stats.data_type.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let data_type = stats
+        .data_type
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     let hz = stats.calculate_hz(Duration::from_secs(duration_secs));
 
     println!("Topic: {}/{}", topic.node_id, topic.data_id);
