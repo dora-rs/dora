@@ -98,6 +98,22 @@ mod tests {
     }
 
     #[test]
+    fn drop_cleans_up_temp_dir() {
+        let dir = {
+            let store = ArtifactStore::new().unwrap();
+            let dir = store.base_dir.clone();
+            // Write a file so the dir is non-empty
+            let build_dir = dir.join("test-build");
+            std::fs::create_dir_all(&build_dir).unwrap();
+            std::fs::write(build_dir.join("artifact.bin"), b"data").unwrap();
+            assert!(dir.exists());
+            dir
+            // store dropped here
+        };
+        assert!(!dir.exists(), "artifact dir should be removed on drop");
+    }
+
+    #[test]
     fn artifact_path_rejects_backslash() {
         let store = ArtifactStore::new().unwrap();
         let build_id = Uuid::new_v4();

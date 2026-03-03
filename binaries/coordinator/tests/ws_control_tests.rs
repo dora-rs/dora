@@ -256,6 +256,33 @@ async fn log_subscribe_nonexistent() {
 }
 
 #[tokio::test]
+async fn control_error_does_not_leak_internal_chain() {
+    let (port, _handle) = common::start_test_coordinator().await;
+    let mut ws = connect_control(port).await;
+
+    // LogSubscribe with a fake dataflow_id triggers an eyre error internally.
+    // The sanitized error should NOT contain eyre chain markers.
+    let fake_id = Uuid::new_v4();
+    let params = serde_json::to_value(&ControlRequest::LogSubscribe {
+        dataflow_id: fake_id,
+        level: log::LevelFilter::Info,
+    })
+    .unwrap();
+    let resp = request_reply(&mut ws, "control", params).await;
+
+    let err = resp.error.expect("should be an error");
+    // Sanitized errors should not contain eyre chain separators or newlines
+    assert!(
+        !err.contains('\n'),
+        "error should not contain newlines (eyre chain): {err}"
+    );
+    assert!(
+        !err.contains("Caused by:"),
+        "error should not expose internal cause chain: {err}"
+    );
+}
+
+#[tokio::test]
 async fn build_log_subscribe_nonexistent() {
     let (port, _handle) = common::start_test_coordinator().await;
     let mut ws = connect_control(port).await;

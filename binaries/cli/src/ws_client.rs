@@ -591,6 +591,18 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn connect_rejects_from_async_context() {
+        let addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+        match WsSession::connect(addr) {
+            Err(err) => assert!(
+                format!("{err}").contains("async context"),
+                "expected 'async context' in error, got: {err}"
+            ),
+            Ok(_) => panic!("expected error from async context"),
+        }
+    }
+
+    #[tokio::test]
     async fn sender_drop_signals_receiver_error() {
         // Verify that dropping the oneshot sender (simulating session close)
         // causes the receiver to get a RecvError.

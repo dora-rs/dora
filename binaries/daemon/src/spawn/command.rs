@@ -131,3 +131,19 @@ pub(super) async fn path_spawn_command(
 
     Ok(Some(cmd))
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn shlex_splits_quoted_args() {
+        let input = "--foo 'hello world' --bar";
+        let result = shlex::split(input).unwrap();
+        assert_eq!(result, vec!["--foo", "hello world", "--bar"]);
+    }
+
+    #[test]
+    fn shlex_rejects_unmatched_quote() {
+        let input = "--foo 'unclosed";
+        assert!(shlex::split(input).is_none());
+    }
+}

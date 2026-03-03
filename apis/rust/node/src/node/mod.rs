@@ -369,7 +369,9 @@ impl AdoraNode {
 
         let node_config = NodeConfig {
             dataflow_id: DataflowId::new_v4(),
-            node_id: "".parse().map_err(|e| NodeError::Init(format!("{e}")))?,
+            node_id: "test-node"
+                .parse()
+                .map_err(|e| NodeError::Init(format!("{e}")))?,
             run_config: NodeRunConfig {
                 inputs: Default::default(),
                 outputs: Default::default(),
@@ -399,7 +401,9 @@ impl AdoraNode {
     ) -> NodeResult<(Self, EventStream)> {
         let node_config = NodeConfig {
             dataflow_id: DataflowId::new_v4(),
-            node_id: "".parse().map_err(|e| NodeError::Init(format!("{e}")))?,
+            node_id: "test-node"
+                .parse()
+                .map_err(|e| NodeError::Init(format!("{e}")))?,
             run_config: NodeRunConfig {
                 inputs: Default::default(),
                 outputs: Default::default(),
@@ -1201,4 +1205,112 @@ pub fn init_tracing(
         rt.spawn(monitor_task);
     };
     Ok(guard)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::integration_testing::{
+        IntegrationTestInput, TestingInput, TestingOptions, TestingOutput,
+        integration_testing_format::{IncomingEvent, TimedIncomingEvent},
+    };
+    use arrow::array::NullArray;
+
+    #[test]
+    fn new_request_id_returns_valid_uuid() {
+        let id = AdoraNode::new_request_id();
+        uuid::Uuid::parse_str(&id).expect("should be valid UUID");
+    }
+
+    #[test]
+    fn new_request_id_is_unique() {
+        let ids: Vec<String> = (0..100).map(|_| AdoraNode::new_request_id()).collect();
+        let unique: std::collections::HashSet<_> = ids.iter().collect();
+        assert_eq!(ids.len(), unique.len(), "all IDs should be unique");
+    }
+
+    #[test]
+    fn new_goal_id_returns_valid_uuid() {
+        let id = AdoraNode::new_goal_id();
+        uuid::Uuid::parse_str(&id).expect("should be valid UUID");
+    }
+
+    /// Helper: create a minimal test node with a channel output.
+    fn test_node() -> (
+        AdoraNode,
+        crate::EventStream,
+        flume::Receiver<serde_json::Map<String, serde_json::Value>>,
+    ) {
+        let events = vec![TimedIncomingEvent {
+            time_offset_secs: 0.1,
+            event: IncomingEvent::Stop,
+        }];
+        let inputs = TestingInput::Input(IntegrationTestInput::new(
+            "test-node".parse().unwrap(),
+            events,
+        ));
+        let (tx, rx) = flume::unbounded();
+        let outputs = TestingOutput::ToChannel(tx);
+        let options = TestingOptions {
+            skip_output_time_offsets: true,
+        };
+        let (node, event_stream) = AdoraNode::init_testing(inputs, outputs, options).unwrap();
+        (node, event_stream, rx)
+    }
+
+    #[test]
+    fn send_service_request_returns_valid_id_and_sends_output() {
+        let (mut node, events, rx) = test_node();
+
+        let request_id = node
+            .send_service_request("request".into(), Default::default(), NullArray::new(0))
+            .unwrap();
+
+        // Returned ID should be a valid UUID
+        uuid::Uuid::parse_str(&request_id).expect("returned request_id should be valid UUID");
+
+        // Output should have been sent to the channel
+        drop(node);
+        drop(events);
+        let outputs: Vec<_> = rx.try_iter().collect();
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0]["id"], "request");
+    }
+
+    #[test]
+    fn send_service_request_returns_unique_ids() {
+        let (mut node, events, _rx) = test_node();
+
+        let id1 = node
+            .send_service_request("out".into(), Default::default(), NullArray::new(0))
+            .unwrap();
+        let id2 = node
+            .send_service_request("out".into(), Default::default(), NullArray::new(0))
+            .unwrap();
+
+        assert_ne!(id1, id2, "successive request IDs should differ");
+
+        drop(node);
+        drop(events);
+    }
+
+    #[test]
+    fn send_service_response_sends_output() {
+        let (mut node, events, rx) = test_node();
+
+        // Simulate passing through a request_id from the incoming request
+        let mut params = MetadataParameters::default();
+        params.insert(
+            adora_message::metadata::REQUEST_ID.to_string(),
+            adora_message::metadata::Parameter::String("test-req-id".into()),
+        );
+        node.send_service_response("response".into(), params, NullArray::new(0))
+            .unwrap();
+
+        drop(node);
+        drop(events);
+        let outputs: Vec<_> = rx.try_iter().collect();
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0]["id"], "response");
+    }
 }

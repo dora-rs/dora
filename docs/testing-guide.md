@@ -49,11 +49,14 @@ Unit tests live alongside the code they test using `#[cfg(test)]` modules. Key c
 | Crate | Test count | What's tested |
 |-------|-----------|---------------|
 | adora-arrow-convert | ~26 | Round-trip Arrow type conversions |
-| adora-cli | ~45 | Command parsing, value parsers, log grep/filtering, JSON parsing, WebSocket client |
-| adora-coordinator | ~15 | WS control/daemon plane, health check, concurrent requests |
+| adora-cli | ~96 | Command parsing, value parsers, log grep/filtering, JSON parsing, WebSocket client, cluster config |
+| adora-coordinator | ~24 | WS control/daemon plane, health check, concurrent requests, artifact store, rate limiter, error sanitization |
 | adora-coordinator-store | ~10 | In-memory and redb CRUD, schema versioning, persistence |
 | adora-core | ~8 | Dataflow descriptor validation |
+| adora-daemon | ~2 | Shlex argument parsing |
+| adora-node-api | ~10 | Input tracking, service/action helpers (ID generation, send_service_request/response) |
 | adora-log-utils | ~11 | Log parsing utilities |
+| adora-message | ~36 | Common types, WS protocol, node/data IDs, metadata, auth tokens |
 | ros2-bridge | ~30 | ROS2 message/service/action parsing |
 
 Run a single crate's tests:
@@ -110,7 +113,7 @@ File: `tests/example-smoke.rs`
 
 Two execution modes are tested for each applicable example:
 
-- **Networked** (`adora up` + `adora start --detach` + poll + `adora stop` + `adora destroy`): exercises the full coordinator/daemon WS control plane.
+- **Networked** (`adora up` + `adora start --detach` + poll + `adora stop` + `adora down`): exercises the full coordinator/daemon WS control plane.
 - **Local** (`adora run --stop-after`): runs everything in-process, testing the single-process dataflow path.
 
 ```bash
@@ -130,7 +133,7 @@ A bash script is also available for quick local validation:
 ./scripts/smoke-all.sh --python-only # Python examples only
 ```
 
-**Networked tests (15):**
+**Networked tests (17):**
 
 | Test | Example | Timeout |
 |------|---------|---------|
@@ -149,8 +152,10 @@ A bash script is also available for quick local validation:
 | `smoke_python_logging` | python-logging/dataflow.yml | 15s |
 | `smoke_python_multiple_arrays` | python-multiple-arrays/dataflow.yml | 15s |
 | `smoke_python_concurrent_rw` | python-concurrent-rw/dataflow.yml | 15s |
+| `smoke_service_example` | service-example/dataflow.yml | 30s |
+| `smoke_action_example` | action-example/dataflow.yml | 30s |
 
-**Local tests (7):**
+**Local tests (9):**
 
 | Test | Example | stop-after |
 |------|---------|------------|
@@ -161,6 +166,8 @@ A bash script is also available for quick local validation:
 | `smoke_local_python_logging` | python-logging/dataflow.yml | 10s |
 | `smoke_local_python_multiple_arrays` | python-multiple-arrays/dataflow.yml | 10s |
 | `smoke_local_python_concurrent_rw` | python-concurrent-rw/dataflow.yml | 10s |
+| `smoke_local_service_example` | service-example/dataflow.yml | 10s |
+| `smoke_local_action_example` | action-example/dataflow.yml | 10s |
 
 Examples requiring special dependencies (webcam, CUDA, ROS2, C/C++ toolchain, multi-machine deploy) are not included in smoke tests.
 
@@ -213,7 +220,7 @@ These start an in-process coordinator and test the WebSocket control/daemon plan
 cargo test -p adora-coordinator
 ```
 
-Topics covered: health check, list/stop/destroy requests, invalid JSON/params, concurrent requests, ping/pong, daemon registration, disconnect cleanup.
+Topics covered: health check, list/stop/destroy requests, invalid JSON/params, concurrent requests, ping/pong, daemon registration, disconnect cleanup, error sanitization (no internal chain leaks), artifact store cleanup on drop.
 
 ## CI Pipeline
 
@@ -333,11 +340,11 @@ Add new test files in the `tests/` directory. For tests that need the full CLI s
 
 **Networked pattern** (exercises coordinator + daemon):
 1. Build nodes with `Once` guards (avoid rebuilding per test)
-2. Clean up stale processes with `adora destroy`
+2. Clean up stale processes with `adora down`
 3. Start cluster with `adora up`
 4. Run dataflow with `adora start --detach`
 5. Poll `adora list --json` for completion
-6. Clean up with `adora stop --all` and `adora destroy`
+6. Clean up with `adora stop --all` and `adora down`
 
 **Local pattern** (single-process, in-process coordinator):
 1. Build CLI with `Once` guard
@@ -369,7 +376,7 @@ cargo test --all \
 
 A stale coordinator or daemon is still running. Clean up:
 ```bash
-adora destroy
+adora down
 # or kill processes manually:
 pkill -f adora-coordinator
 pkill -f adora-daemon
