@@ -344,7 +344,9 @@ impl CliControl for ControlServer {
                 DataflowListEntry { id, status }
             })
             .collect();
-        self.state.dataflow_results.clear();
+        for entry in &finished_failed {
+            self.state.dataflow_results.remove(&entry.id.uuid);
+        }
         self.state.finished_builds.clear();
 
         let sort_key = |e: &DataflowListEntry| (e.id.name.clone(), e.id.uuid);
