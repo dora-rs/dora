@@ -324,7 +324,7 @@ impl Listener {
                 if let Err(err) = connection
                     .send_reply(reply)
                     .await
-                    .wrap_err("failed to send  reply")
+                    .wrap_err("failed to send reply")
                 {
                     tracing::warn!("{err:?}");
                 }

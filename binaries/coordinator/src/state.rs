@@ -98,6 +98,9 @@ impl DaemonConnection {
     ///
     /// Embeds raw JSON bytes directly to preserve u128 fidelity
     /// for uhlc::ID inside timestamps.
+    /// Maximum number of in-flight requests per daemon connection.
+    const MAX_PENDING_REPLIES: usize = 256;
+
     pub(crate) async fn send_and_receive(&mut self, message: &[u8]) -> eyre::Result<Vec<u8>> {
         let id = Uuid::new_v4();
         let params_str =
@@ -105,7 +108,16 @@ impl DaemonConnection {
         let json = format!(r#"{{"id":"{id}","method":"daemon_command","params":{params_str}}}"#);
 
         let (reply_tx, reply_rx) = oneshot::channel();
-        self.pending_replies.lock().await.insert(id, reply_tx);
+        {
+            let mut pending = self.pending_replies.lock().await;
+            if pending.len() >= Self::MAX_PENDING_REPLIES {
+                return Err(eyre!(
+                    "too many pending daemon replies ({}), refusing new request",
+                    pending.len()
+                ));
+            }
+            pending.insert(id, reply_tx);
+        }
 
         self.sender
             .send(json)
