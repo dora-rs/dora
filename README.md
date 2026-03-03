@@ -62,7 +62,8 @@
 ### From PyPI (recommended)
 
 ```bash
-pip install adora-rs-cli
+pip install adora-rs-cli          # CLI (adora command)
+pip install adora-rs              # Python node/operator API
 ```
 
 ### From crates.io
@@ -78,6 +79,10 @@ git clone https://github.com/adora-rs/adora.git
 cd adora
 cargo build --release -p adora-cli
 PATH=$PATH:$(pwd)/target/release
+
+# Python API (requires maturin: pip install maturin)
+maturin develop -m apis/python/node/Cargo.toml
+maturin develop -m apis/python/operator/Cargo.toml
 ```
 
 ### Platform installers
@@ -114,12 +119,36 @@ cargo install adora-cli --features redb-backend
 ### 1. Run a Python dataflow
 
 ```bash
-uv venv --seed -p 3.11
-adora build https://raw.githubusercontent.com/adora-rs/adora/refs/heads/main/examples/python-dataflow/dataflow.yml --uv
-adora run dataflow.yml --uv
+pip install adora-rs-cli adora-rs
+git clone https://github.com/adora-rs/adora.git && cd adora
+adora run examples/python-dataflow/dataflow.yml
 ```
 
-Press `Ctrl+C` to stop.
+This runs a sender -> transformer -> receiver pipeline. Here's what the Python node code looks like:
+
+```python
+# sender.py -- sends 100 messages
+from adora import Node
+import pyarrow as pa
+
+node = Node()
+for i in range(100):
+    node.send_output("message", pa.array([i]))
+```
+
+```python
+# receiver.py -- receives and prints messages
+from adora import Node
+
+node = Node()
+for event in node:
+    if event["type"] == "INPUT":
+        print(f"Got {event['id']}: {event['value'].to_pylist()}")
+    elif event["type"] == "STOP":
+        break
+```
+
+See the [Python Getting Started Guide](docs/python-guide.md) for a full tutorial, or the [Python API Reference](docs/api-python.md) for complete API docs.
 
 ### 2. Run a Rust dataflow
 
@@ -323,7 +352,7 @@ examples/               # Example dataflows
 | Language | Node API | Operator API | Docs | Status |
 |----------|----------|--------------|------|--------|
 | Rust | `adora-node-api` | `adora-operator-api` | [API Reference](docs/api-rust.md) | First-class |
-| Python >= 3.8 | `adora-node-api-python` | `adora-operator-api-python` | [API Reference](docs/api-python.md) | First-class |
+| Python >= 3.8 | `pip install adora-rs` | included | [Getting Started](docs/python-guide.md), [API Reference](docs/api-python.md) | First-class |
 | C | `adora-node-api-c` | `adora-operator-api-c` | [API Reference](docs/api-c.md) | Supported |
 | C++ | `adora-node-api-cxx` | `adora-operator-api-cxx` | [API Reference](docs/api-cxx.md) | Supported |
 | ROS2 >= Foxy | `adora-ros2-bridge` | -- | [Bridge Guide](docs/ros2-bridge.md) | Experimental |
