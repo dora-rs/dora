@@ -175,6 +175,9 @@ dmypy.json
 # Cython debug symbols
 cython_debug/
 
+# mdBook build output
+guide/book/
+
 # log output file
 out/
 

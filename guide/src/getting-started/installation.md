@@ -1,0 +1,63 @@
+# Installation
+
+## From PyPI (recommended)
+
+```bash
+pip install adora-rs-cli          # CLI (adora command)
+pip install adora-rs              # Python node/operator API
+```
+
+## From crates.io
+
+```bash
+cargo install adora-cli
+```
+
+## From source
+
+```bash
+git clone https://github.com/adora-rs/adora.git
+cd adora
+cargo build --release -p adora-cli
+PATH=$PATH:$(pwd)/target/release
+
+# Python API (requires maturin: pip install maturin)
+maturin develop -m apis/python/node/Cargo.toml
+maturin develop -m apis/python/operator/Cargo.toml
+```
+
+## Platform installers
+
+**macOS / Linux:**
+
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/adora-rs/adora/releases/latest/download/adora-cli-installer.sh | sh
+```
+
+**Windows:**
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://github.com/adora-rs/adora/releases/latest/download/adora-cli-installer.ps1 | iex"
+```
+
+## Build features
+
+| Feature | Description | Default |
+|---------|-------------|---------|
+| `tracing` | OpenTelemetry tracing support | Yes |
+| `metrics` | OpenTelemetry metrics collection | No |
+| `python` | Python operator support (PyO3) | No |
+| `redb-backend` | Persistent coordinator state (redb) | No |
+| `prometheus` | Prometheus `/metrics` endpoint on coordinator | No |
+
+```bash
+cargo install adora-cli --features redb-backend
+```
+
+## Verify
+
+```bash
+adora --version
+adora status
+```

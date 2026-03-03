@@ -1,0 +1,13 @@
+[book]
+title = "Adora User Guide"
+authors = ["Adora Contributors"]
+language = "en"
+src = "src"
+
+[build]
+build-dir = "book"
+create-missing = false
+
+[output.html]
+git-repository-url = "https://github.com/adora-rs/adora"
+edit-url-template = "https://github.com/adora-rs/adora/edit/main/guide/{path}"
