@@ -4,7 +4,7 @@
 
 **智能体数据流导向的机器人架构（Agentic Dataflow-Oriented Robotic Architecture）** -- 一个 100% Rust 编写的实时机器人与 AI 应用框架。
 
-[**User Guide**](https://dora-rs.github.io/adora/) | [**用户指南 (中文)**](https://dora-rs.github.io/adora/zh-CN/)
+[**User Guide**](https://dora-rs.ai/adora/) | [**用户指南 (中文)**](https://dora-rs.ai/adora/zh-CN/)
 
 > 通过**智能体工程（agentic engineering）**方式构建和维护 -- 代码生成、审查、重构、测试和提交均由自主 AI 智能体驱动。
 
