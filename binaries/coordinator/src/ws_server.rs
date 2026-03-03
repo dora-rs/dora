@@ -6,12 +6,17 @@ use adora_core::uhlc::HLC;
 use adora_message::auth::AuthToken;
 use axum::{
     Router,
-    extract::{Path, Query, State, ws::WebSocketUpgrade},
+    extract::{ConnectInfo, Path, Query, State, ws::WebSocketUpgrade},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::get,
 };
-use std::{net::SocketAddr, sync::Arc};
+use std::{
+    collections::HashMap,
+    net::{IpAddr, SocketAddr},
+    sync::{Arc, Mutex},
+    time::Instant,
+};
 use tokio::{net::TcpListener, sync::mpsc};
 use tower::{ServiceBuilder, limit::ConcurrencyLimitLayer};
 
@@ -21,12 +26,52 @@ const MAX_CONTROL_MESSAGE_BYTES: usize = 1024 * 1024;
 /// Maximum concurrent WebSocket connections.
 const MAX_WS_CONNECTIONS: usize = 256;
 
+/// Maximum new connections per IP within the rate window.
+const MAX_CONNECTIONS_PER_IP: u32 = 20;
+
+/// Rate-limiting window duration (60 seconds).
+const RATE_WINDOW_SECS: u64 = 60;
+
+/// Fixed-window per-IP rate limiter for WebSocket connections.
+#[derive(Clone)]
+pub(crate) struct IpRateLimiter {
+    windows: Arc<Mutex<HashMap<IpAddr, (u32, Instant)>>>,
+}
+
+impl IpRateLimiter {
+    pub fn new() -> Self {
+        Self {
+            windows: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// Returns `true` if the connection should be allowed.
+    pub fn check(&self, ip: IpAddr) -> bool {
+        let mut map = self.windows.lock().unwrap_or_else(|e| e.into_inner());
+        let now = Instant::now();
+        let window = std::time::Duration::from_secs(RATE_WINDOW_SECS);
+
+        let entry = map.entry(ip).or_insert((0, now));
+        if now.duration_since(entry.1) >= window {
+            // Reset window
+            *entry = (1, now);
+            true
+        } else if entry.0 < MAX_CONNECTIONS_PER_IP {
+            entry.0 += 1;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct WsState {
     pub event_tx: mpsc::Sender<Event>,
     pub clock: Arc<HLC>,
     pub auth_token: Option<AuthToken>,
     pub artifact_store: Arc<ArtifactStore>,
+    pub rate_limiter: IpRateLimiter,
 }
 
 /// Query parameters for backward compatibility — old clients may send `?token=...`.
@@ -106,10 +151,15 @@ async fn health() -> &'static str {
 
 async fn ws_control_handler(
     State(state): State<Arc<WsState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Query(_query): Query<TokenQuery>,
     ws: WebSocketUpgrade,
 ) -> Result<impl IntoResponse, StatusCode> {
+    if !state.rate_limiter.check(addr.ip()) {
+        tracing::warn!("rate-limited WS control connection from {}", addr.ip());
+        return Err(StatusCode::TOO_MANY_REQUESTS);
+    }
     let token = extract_token(&headers);
     validate_token(&state.auth_token, &token)?;
     Ok(ws
@@ -119,10 +169,15 @@ async fn ws_control_handler(
 
 async fn ws_daemon_handler(
     State(state): State<Arc<WsState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Query(_query): Query<TokenQuery>,
     ws: WebSocketUpgrade,
 ) -> Result<impl IntoResponse, StatusCode> {
+    if !state.rate_limiter.check(addr.ip()) {
+        tracing::warn!("rate-limited WS daemon connection from {}", addr.ip());
+        return Err(StatusCode::TOO_MANY_REQUESTS);
+    }
     let token = extract_token(&headers);
     validate_token(&state.auth_token, &token)?;
     Ok(ws
@@ -134,10 +189,14 @@ async fn ws_daemon_handler(
 
 async fn artifact_handler(
     State(state): State<Arc<WsState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Query(_query): Query<TokenQuery>,
     Path((build_id, node_id)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, StatusCode> {
+    if !state.rate_limiter.check(addr.ip()) {
+        return Err(StatusCode::TOO_MANY_REQUESTS);
+    }
     let token = extract_token(&headers);
     validate_token(&state.auth_token, &token)?;
 
@@ -182,6 +241,7 @@ pub(crate) async fn serve(
         clock,
         auth_token,
         artifact_store,
+        rate_limiter: IpRateLimiter::new(),
     };
     let app = router(
         state,
@@ -191,12 +251,15 @@ pub(crate) async fn serve(
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
     let future = async move {
-        axum::serve(listener, app)
-            .with_graceful_shutdown(async {
-                let _ = shutdown_rx.await;
-            })
-            .await
-            .map_err(|e| eyre::eyre!("axum server error: {e}"))?;
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(async {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .map_err(|e| eyre::eyre!("axum server error: {e}"))?;
         Ok(())
     };
 
@@ -209,5 +272,41 @@ pub(crate) struct ShutdownTrigger(tokio::sync::oneshot::Sender<()>);
 impl ShutdownTrigger {
     pub(crate) fn shutdown(self) {
         let _ = self.0.send(());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rate_limiter_allows_within_limit() {
+        let rl = IpRateLimiter::new();
+        let ip: IpAddr = "10.0.0.1".parse().unwrap();
+        for _ in 0..MAX_CONNECTIONS_PER_IP {
+            assert!(rl.check(ip));
+        }
+    }
+
+    #[test]
+    fn rate_limiter_rejects_over_limit() {
+        let rl = IpRateLimiter::new();
+        let ip: IpAddr = "10.0.0.2".parse().unwrap();
+        for _ in 0..MAX_CONNECTIONS_PER_IP {
+            rl.check(ip);
+        }
+        assert!(!rl.check(ip));
+    }
+
+    #[test]
+    fn rate_limiter_isolates_ips() {
+        let rl = IpRateLimiter::new();
+        let ip1: IpAddr = "10.0.0.3".parse().unwrap();
+        let ip2: IpAddr = "10.0.0.4".parse().unwrap();
+        for _ in 0..MAX_CONNECTIONS_PER_IP {
+            rl.check(ip1);
+        }
+        assert!(!rl.check(ip1));
+        assert!(rl.check(ip2));
     }
 }
