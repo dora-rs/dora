@@ -8,6 +8,9 @@ src = "src"
 build-dir = "book"
 create-missing = false
 
+[preprocessor.gettext]
+after = ["links"]
+
 [output.html]
 git-repository-url = "https://github.com/adora-rs/adora"
 edit-url-template = "https://github.com/adora-rs/adora/edit/main/guide/{path}"
