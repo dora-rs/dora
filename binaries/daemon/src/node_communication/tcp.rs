@@ -34,7 +34,7 @@ pub async fn listener_loop(
             .wrap_err("failed to accept new connection")
         {
             Err(err) => {
-                tracing::info!("{err}");
+                tracing::warn!("{err}");
             }
             Ok((connection, _)) => {
                 tokio::spawn(handle_connection_loop(

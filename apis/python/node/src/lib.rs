@@ -141,7 +141,7 @@ impl Node {
     #[pyo3(signature = (node_id=None))]
     pub fn new(node_id: Option<String>) -> eyre::Result<Self> {
         let (node, events) = if let Some(node_id) = node_id {
-            AdoraNode::init_flexible(NodeId::from(node_id))
+            AdoraNode::init_flexible(node_id.parse::<NodeId>().map_err(|e| eyre::eyre!("{e}"))?)
                 .context("Could not setup node from node id. Make sure to have a running dataflow with this dynamic node")?
         } else {
             AdoraNode::init_from_env().context("Could not initiate node from environment variable. For dynamic node, please add a node id in the initialization function.")?

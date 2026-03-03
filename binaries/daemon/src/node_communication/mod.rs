@@ -78,51 +78,48 @@ pub async fn spawn_listener_loop(
             Ok(DaemonCommunication::Tcp { socket_addr })
         }
         LocalCommunicationConfig::Shmem => {
-            let daemon_control_region = ShmemConf::new()
-                .size(4096)
-                .create()
-                .wrap_err("failed to allocate daemon_control_region")?;
-            let daemon_events_region = ShmemConf::new()
-                .size(4096)
-                .create()
-                .wrap_err("failed to allocate daemon_events_region")?;
-            let daemon_drop_region = ShmemConf::new()
-                .size(4096)
-                .create()
-                .wrap_err("failed to allocate daemon_drop_region")?;
-            let daemon_events_close_region = ShmemConf::new()
-                .size(4096)
-                .create()
-                .wrap_err("failed to allocate daemon_drop_region")?;
+            // Set restrictive umask before creating shmem regions to avoid a
+            // TOCTOU window where the region is briefly world-readable.
+            #[cfg(unix)]
+            let old_umask = unsafe { libc::umask(0o077) };
 
-            // Restrict shared memory regions to owner-only access.
-            // `/dev/shm` is Linux-specific; macOS/BSD use different shmem paths.
-            #[cfg(target_os = "linux")]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let owner_only = std::fs::Permissions::from_mode(0o600);
-                for region in [
-                    &daemon_control_region,
-                    &daemon_events_region,
-                    &daemon_drop_region,
-                    &daemon_events_close_region,
-                ] {
-                    let os_id = region.get_os_id();
-                    let shmem_path = std::path::Path::new("/dev/shm").join(os_id);
-                    if shmem_path.exists() {
-                        if let Err(e) = std::fs::set_permissions(&shmem_path, owner_only.clone()) {
-                            tracing::warn!(
-                                "failed to set shmem permissions on {}: {e}",
-                                shmem_path.display()
-                            );
-                        }
-                    }
-                }
+            let shmem_result = (|| -> eyre::Result<_> {
+                let daemon_control_region = ShmemConf::new()
+                    .size(4096)
+                    .create()
+                    .wrap_err("failed to allocate daemon_control_region")?;
+                let daemon_events_region = ShmemConf::new()
+                    .size(4096)
+                    .create()
+                    .wrap_err("failed to allocate daemon_events_region")?;
+                let daemon_drop_region = ShmemConf::new()
+                    .size(4096)
+                    .create()
+                    .wrap_err("failed to allocate daemon_drop_region")?;
+                let daemon_events_close_region = ShmemConf::new()
+                    .size(4096)
+                    .create()
+                    .wrap_err("failed to allocate daemon_drop_region")?;
+                Ok((
+                    daemon_control_region,
+                    daemon_events_region,
+                    daemon_drop_region,
+                    daemon_events_close_region,
+                ))
+            })();
+
+            // Restore umask immediately, regardless of success or failure.
+            #[cfg(unix)]
+            unsafe {
+                libc::umask(old_umask);
             }
-            #[cfg(all(unix, not(target_os = "linux")))]
-            {
-                tracing::debug!("shmem permission hardening skipped: /dev/shm is Linux-specific");
-            }
+
+            let (
+                daemon_control_region,
+                daemon_events_region,
+                daemon_drop_region,
+                daemon_events_close_region,
+            ) = shmem_result?;
             let daemon_control_region_id = daemon_control_region.get_os_id().to_owned();
             let daemon_events_region_id = daemon_events_region.get_os_id().to_owned();
             let daemon_drop_region_id = daemon_drop_region.get_os_id().to_owned();

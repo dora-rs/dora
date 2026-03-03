@@ -28,7 +28,11 @@ impl ArtifactStore {
 /// Sanitize a node_id for safe use as a filename.
 /// Returns None if the id is empty or contains path traversal sequences.
 fn sanitize_node_id(node_id: &str) -> Option<String> {
-    if node_id.is_empty() || node_id.contains("..") || node_id.contains('/') {
+    if node_id.is_empty()
+        || node_id.contains("..")
+        || node_id.contains('/')
+        || node_id.contains('\\')
+    {
         return None;
     }
     // Replace any non-alphanumeric/dash/underscore chars with underscore
@@ -71,5 +75,13 @@ mod tests {
     fn sanitizes_special_chars() {
         assert_eq!(sanitize_node_id("my node!"), Some("my_node_".into()));
         assert_eq!(sanitize_node_id("ok-node_1"), Some("ok-node_1".into()));
+    }
+
+    #[test]
+    fn artifact_path_rejects_backslash() {
+        let store = ArtifactStore::new().unwrap();
+        let build_id = Uuid::new_v4();
+        assert!(store.artifact_path(&build_id, r"foo\..\bar").is_none());
+        assert!(store.artifact_path(&build_id, r"foo\bar").is_none());
     }
 }

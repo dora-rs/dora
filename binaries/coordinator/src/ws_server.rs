@@ -29,15 +29,17 @@ pub(crate) struct WsState {
     pub artifact_store: Arc<ArtifactStore>,
 }
 
+/// Query parameters for backward compatibility — old clients may send `?token=...`.
+/// The token field is deserialized but intentionally ignored; auth is via Bearer header only.
 #[derive(serde::Deserialize)]
 pub(crate) struct TokenQuery {
     #[serde(default)]
+    #[allow(dead_code)]
     token: Option<String>,
 }
 
-/// Extract the auth token from the Authorization header ("Bearer <hex>")
-/// or fall back to the query parameter for backward compatibility.
-pub(crate) fn extract_token(headers: &HeaderMap, query: &TokenQuery) -> Option<String> {
+/// Extract the auth token from the Authorization header ("Bearer <hex>").
+pub(crate) fn extract_token(headers: &HeaderMap) -> Option<String> {
     if let Some(auth_header) = headers.get("authorization") {
         if let Ok(value) = auth_header.to_str() {
             if let Some(token) = value.strip_prefix("Bearer ") {
@@ -45,7 +47,7 @@ pub(crate) fn extract_token(headers: &HeaderMap, query: &TokenQuery) -> Option<S
             }
         }
     }
-    query.token.clone()
+    None
 }
 
 /// Validate the provided token against the expected token.
@@ -105,10 +107,10 @@ async fn health() -> &'static str {
 async fn ws_control_handler(
     State(state): State<Arc<WsState>>,
     headers: HeaderMap,
-    Query(query): Query<TokenQuery>,
+    Query(_query): Query<TokenQuery>,
     ws: WebSocketUpgrade,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let token = extract_token(&headers, &query);
+    let token = extract_token(&headers);
     validate_token(&state.auth_token, &token)?;
     Ok(ws
         .max_message_size(MAX_CONTROL_MESSAGE_BYTES)
@@ -118,10 +120,10 @@ async fn ws_control_handler(
 async fn ws_daemon_handler(
     State(state): State<Arc<WsState>>,
     headers: HeaderMap,
-    Query(query): Query<TokenQuery>,
+    Query(_query): Query<TokenQuery>,
     ws: WebSocketUpgrade,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let token = extract_token(&headers, &query);
+    let token = extract_token(&headers);
     validate_token(&state.auth_token, &token)?;
     Ok(ws
         .max_message_size(MAX_CONTROL_MESSAGE_BYTES)
@@ -133,10 +135,10 @@ async fn ws_daemon_handler(
 async fn artifact_handler(
     State(state): State<Arc<WsState>>,
     headers: HeaderMap,
-    Query(query): Query<TokenQuery>,
+    Query(_query): Query<TokenQuery>,
     Path((build_id, node_id)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let token = extract_token(&headers, &query);
+    let token = extract_token(&headers);
     validate_token(&state.auth_token, &token)?;
 
     let build_uuid: uuid::Uuid = build_id.parse().map_err(|_| StatusCode::BAD_REQUEST)?;

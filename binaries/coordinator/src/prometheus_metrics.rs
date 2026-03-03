@@ -103,9 +103,9 @@ pub(crate) async fn metrics_handler(
         Option<adora_message::auth::AuthToken>,
     )>,
     headers: axum::http::HeaderMap,
-    axum::extract::Query(query): axum::extract::Query<crate::ws_server::TokenQuery>,
+    axum::extract::Query(_query): axum::extract::Query<crate::ws_server::TokenQuery>,
 ) -> Result<impl axum::response::IntoResponse, axum::http::StatusCode> {
-    let token = crate::ws_server::extract_token(&headers, &query);
+    let token = crate::ws_server::extract_token(&headers);
     crate::ws_server::validate_token(&auth_token, &token)?;
 
     let m = metrics.lock().unwrap_or_else(|e| e.into_inner());

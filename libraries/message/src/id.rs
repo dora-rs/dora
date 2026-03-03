@@ -53,6 +53,10 @@ impl FromStr for NodeId {
     }
 }
 
+/// # Panics
+///
+/// Panics if `id` contains invalid characters. Use `NodeId::from_str()` or
+/// `id.parse::<NodeId>()` for a fallible alternative when handling untrusted input.
 impl From<String> for NodeId {
     fn from(id: String) -> Self {
         if let Err(e) = validate_id(&id) {
@@ -119,12 +123,25 @@ impl<'de> Deserialize<'de> for DataId {
     }
 }
 
+impl FromStr for DataId {
+    type Err = InvalidId;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        validate_id(s)?;
+        Ok(Self(s.to_owned()))
+    }
+}
+
 impl From<DataId> for String {
     fn from(id: DataId) -> Self {
         id.0
     }
 }
 
+/// # Panics
+///
+/// Panics if `id` contains invalid characters. Use `DataId::from_str()` or
+/// `id.parse::<DataId>()` for a fallible alternative when handling untrusted input.
 impl From<String> for DataId {
     fn from(id: String) -> Self {
         if let Err(e) = validate_id(&id) {
