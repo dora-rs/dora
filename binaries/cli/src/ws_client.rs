@@ -59,7 +59,16 @@ enum SessionCommand {
 
 impl WsSession {
     /// Connect to the coordinator via WebSocket.
+    ///
+    /// If called from within an existing tokio runtime, uses that runtime.
+    /// Otherwise creates a new single-threaded runtime.
     pub fn connect(addr: SocketAddr) -> eyre::Result<Self> {
+        if tokio::runtime::Handle::try_current().is_ok() {
+            eyre::bail!(
+                "WsSession::connect must not be called from within an async context; \
+                 use an async-native client instead"
+            );
+        }
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()

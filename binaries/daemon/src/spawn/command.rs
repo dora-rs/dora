@@ -121,7 +121,9 @@ pub(super) async fn path_spawn_command(
             };
 
             if let Some(args) = &node.args {
-                cmd = cmd.args(args.split_ascii_whitespace());
+                let parsed = shlex::split(args)
+                    .ok_or_else(|| eyre::eyre!("invalid quoting in node args: {args}"))?;
+                cmd = cmd.args(parsed);
             }
             cmd
         }

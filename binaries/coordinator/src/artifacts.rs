@@ -23,6 +23,26 @@ impl ArtifactStore {
     pub fn artifact_path(&self, build_id: &Uuid, node_id: &str) -> Option<PathBuf> {
         sanitize_node_id(node_id).map(|s| self.base_dir.join(build_id.to_string()).join(s))
     }
+
+    /// Remove all stored artifacts.
+    pub fn cleanup(&self) {
+        if self.base_dir.exists() {
+            if let Err(err) = std::fs::remove_dir_all(&self.base_dir) {
+                tracing::warn!(
+                    "failed to clean up artifact store at {}: {err}",
+                    self.base_dir.display()
+                );
+            } else {
+                tracing::debug!("cleaned up artifact store at {}", self.base_dir.display());
+            }
+        }
+    }
+}
+
+impl Drop for ArtifactStore {
+    fn drop(&mut self) {
+        self.cleanup();
+    }
 }
 
 /// Sanitize a node_id for safe use as a filename.

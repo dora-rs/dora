@@ -313,9 +313,12 @@ pub(crate) async fn handle_control_ws(socket: WebSocket, event_tx: mpsc::Sender<
                     Ok(Ok(reply)) => reply,
                     Ok(Err(err)) => {
                         tracing::error!("control request failed: {err:?}");
-                        ControlRequestReply::Error(format!("{err}"))
+                        // Send only the root error message to the client, not the
+                        // full internal chain (which may leak implementation details).
+                        let root = err.root_cause().to_string();
+                        ControlRequestReply::Error(root)
                     }
-                    Err(_) => ControlRequestReply::Error("coordinator dropped reply".to_string()),
+                    Err(_) => ControlRequestReply::Error("request failed".to_string()),
                 };
 
                 let stop = matches!(reply, ControlRequestReply::CoordinatorStopped);
