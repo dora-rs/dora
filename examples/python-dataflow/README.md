@@ -1,36 +1,60 @@
-# Python Dataflow Example
+# Python Dataflow
 
-This example shows how to create and connect adora nodes in Python.
+Basic three-node Python pipeline: sender produces messages, transformer enriches them, receiver consumes both streams.
 
-## Overview
+## Architecture
 
-The [`dataflow.yml`](./dataflow.yml) defines a simple dataflow graph with three nodes:
-
-- **sender** (`sender.py`): Produces messages on the `message` output
-- **transformer** (`transformer.py`): Receives messages from the sender and outputs `transformed` data
-- **receiver** (`receiver.py`): Consumes both the original `message` from the sender and `transformed` data from the transformer
-
-A dynamic node variant is available in [`dataflow_dynamic.yml`](./dataflow_dynamic.yml).
-
-## Getting started
-
-After installing Rust, `adora-cli` and `uv` (if you installed the cli without pip), install the dependencies:
-
-```bash
-cd examples/python-dataflow
-uv pip install -e ../../apis/python/node --reinstall
-adora build ./dataflow.yml --uv
+```
+sender --> message     --> receiver
+        -> message     --> transformer --> transformed --> receiver
 ```
 
-Then run the dataflow:
+The receiver has two inputs: raw `message` from sender and `transformed` from transformer.
+
+## Nodes
+
+**sender** (`sender.py`) -- Sends 100 numbered messages as `pa.array([i])` with 100ms delays. Exits after the loop completes.
+
+**transformer** (`transformer.py`) -- Receives each message number and creates a `StructArray` with three fields:
+- `doubled`: the value times 2
+- `description`: a formatted string (`"Message #N"`)
+- `is_even`: boolean flag
+
+**receiver** (`receiver.py`) -- Iterates over events, distinguishing inputs by `event["id"]`:
+- `"message"`: prints the raw integer array
+- `"transformed"`: prints the struct fields
+- Breaks on `STOP` event
+
+## Variants
+
+| File | Description |
+|------|-------------|
+| `dataflow.yml` | Standard sender/transformer/receiver pipeline |
+| `dataflow_dynamic.yml` | Separate example: camera + opencv-plot vision pipeline with dynamic node loading |
+
+## Run
 
 ```bash
-adora run ./dataflow.yml --uv
+adora run dataflow.yml
 ```
 
-For the dynamic dataflow variant:
+Expected output (receiver logs):
 
-```bash
-adora build ./dataflow_dynamic.yml --uv
-adora run ./dataflow_dynamic.yml --uv
 ```
+Received message: [0]
+Received transformed: [{'doubled': 0, 'description': 'Message #0', 'is_even': True}]
+Received message: [1]
+Received transformed: [{'doubled': 2, 'description': 'Message #1', 'is_even': False}]
+...
+```
+
+## What This Demonstrates
+
+| Feature | Where |
+|---------|-------|
+| `pa.array()` for simple values | Sender |
+| `pa.StructArray` for structured data | Transformer |
+| Multiple inputs on one node | Receiver (message + transformed) |
+| Event type handling (INPUT, STOP) | Receiver |
+| `event["id"]` to distinguish inputs | Receiver |
+| `event["value"].to_pylist()` for reading | Receiver |

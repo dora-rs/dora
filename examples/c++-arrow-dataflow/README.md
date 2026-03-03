@@ -49,10 +49,9 @@ sudo apt-get install -y -V libarrow-dev libarrow-glib-dev
 ```bash
 brew update
 brew install apache-arrow
-fi
 ```
 
 ## Compile and Run
 
-To try it out, you can use the [`run.rs`](./run.rs) binary. It performs all required build steps and then starts the dataflow. Use the following command to run it: `cargo run --example cxx-arow-dataflow`. For manual build, check build system for
+To try it out, you can use the [`run.rs`](./run.rs) binary. It performs all required build steps and then starts the dataflow. Use the following command to run it: `cargo run --example cxx-arrow-dataflow`. For manual build, check build system for
 `cxx-dataflow` example.

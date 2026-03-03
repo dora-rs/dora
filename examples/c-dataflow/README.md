@@ -7,11 +7,11 @@ This examples shows how to create and connect adora operators and custom nodes i
 The [`dataflow.yml`](./dataflow.yml) defines a simple dataflow graph with the following three nodes:
 
 - [`node.c`](./node.c) is a custom node, i.e., it has its own main function and runs as a separate process. It uses the [`adora-node-api-c` crate](../../apis/c/node/) to interact with the adora dataflow.
-  - The node has a single input named `timer` that is mapped to a adora-provided periodic timer (`adora/timer/secs/1`).
-  - Whenever the node receives a timer tick, it sends out a message with ID `tick` and a counter value as data (just a single byte).
-  - After receiving 10 timer inputs, the node exits.
+  - The node has a single input named `timer` that is mapped to a adora-provided periodic timer (`adora/timer/millis/50`).
+  - Whenever the node receives a timer tick, it sends out a message with ID `message` and a counter value as data (just a single byte).
+  - After receiving 100 timer inputs, the node exits.
 - The [`operator.c`](./operator.c) file defines a adora _operator_ that is plugged as a shared library into a adora runtime. Instead of defining a `main` function, it implements a template of `adora_*` functions, which are invoked by the adora runtime, e.g. when new input is available.
-  - The operator takes the `tick` messages created by the `node.c` node as input. For each input value, it checks the ID and then prints the received message to `stdout`.
+  - The operator takes the `message` output created by the `node.c` node as input. For each input value, it checks the ID and then prints the received message to `stdout`.
   - It counts the received values and outputs a string of the format _"The current counter value is ..."_.
 - The [`sink.c`](./sink.c) file defines a custom node again, which takes the output string of the operator as input. It prints each received input to stdout and exits as soon as the input stream is closed.
 

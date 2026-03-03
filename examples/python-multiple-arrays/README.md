@@ -1,30 +1,46 @@
-# Fast Multi-Array Messaging with Adora
+# Python Multiple Arrays
 
-Hi there! This example shows you how to send multiple numpy arrays (like several sensor readings or images) in a single Adora message with lightning-fast performance.
+Demonstrates efficient multi-array messaging -- sending multiple numpy arrays (e.g., images, sensor readings) in a single adora message with near-zero-copy performance.
 
-## Why this matters
-You might have noticed that using `numpy_array.tolist()` to package data is... well, pretty slow. That's because it converts every single pixel or number into a Python object, which is heavy work for the CPU.
+## Architecture
 
-## The Secret Sauce
-The trick is to keep things in binary format! We use `numpy_array.ravel()` to flatten the arrays efficiently and pass them straight to `pyarrow`. This lets us achieve near zero-copy performance.
+```
+timer (1s) --> sender --> multi_array_msg --> receiver
+```
 
-On the receiving end, we simply convert back to numpy and reshape. Easy peasy!
+## The Problem
 
-## Give it a spin
+Using `numpy_array.tolist()` to package data is slow because it converts every element into a Python object. For large arrays (images, point clouds), this dominates processing time.
 
-1.  **Get Set Up**: Make sure you have `adora` installed and the binary in your PATH.
-2.  **Install the goods**:
-    ```bash
-    pip install numpy pyarrow
-    ```
-3.  **Run it**:
-    ```bash
-    adora up
-    adora start dataflow.yml
-    ```
+## The Solution
 
-You should see something awesome like this in your terminal:
+Keep data in binary format using `numpy.ravel()` to flatten arrays, then pass directly to `pyarrow`. On the receiving end, convert back to numpy and reshape.
+
+## Nodes
+
+**sender** (`sender.py`) -- Creates three numpy arrays (simulating two 480x640x3 images and a 1x6 state vector), flattens them with `ravel()`, and packs them into a single Arrow `StructArray`.
+
+**receiver** (`receiver.py`) -- Extracts the binary data, converts back to numpy arrays, and reshapes using hardcoded dimensions (shapes are known by convention between sender and receiver). Prints timing for encode/decode.
+
+## Run
+
+```bash
+pip install numpy pyarrow
+adora run dataflow.yml
+```
+
+Expected output:
+
 ```
 Sent message with 3 arrays. Encoding time: 0.000345s
 Received and decoded. Shape1: (480, 640, 3), Shape2: (480, 640, 3), State: (1, 6). Time: 0.000210s
 ```
+
+## What This Demonstrates
+
+| Feature | Where |
+|---------|-------|
+| `numpy.ravel()` for zero-copy flattening | Sender |
+| Binary Arrow arrays for large payloads | Both nodes |
+| Hardcoded shape reconstruction | Receiver reshapes with known dimensions |
+| Sub-millisecond encode/decode | Timing output |

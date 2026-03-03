@@ -19,4 +19,7 @@ make install
 cd ..
 adora up
 adora start dataflow.yml
+# When done:
+adora stop --all
+adora down
 ```
