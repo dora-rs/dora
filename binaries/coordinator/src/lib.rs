@@ -92,9 +92,10 @@ pub async fn start(
 
 /// Like [`start`] but without registering a ctrl-c handler.
 /// Useful for tests that run multiple coordinators in the same process.
-#[doc(hidden)]
 /// Testing-only entry point. Starts coordinator without auth.
-/// Do NOT use in production.
+/// Do NOT use in production — stripped from release builds.
+#[doc(hidden)]
+#[cfg(debug_assertions)]
 pub async fn start_testing(
     bind: SocketAddr,
     external_events: impl Stream<Item = Event> + Unpin,

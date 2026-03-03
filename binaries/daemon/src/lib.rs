@@ -2125,9 +2125,9 @@ impl Daemon {
         })?;
 
         // publish via zenoh
-        let publisher = match dataflow.publishers.get(output_id) {
-            Some(publisher) => publisher,
-            None => {
+        let publisher = match dataflow.publishers.entry(output_id.clone()) {
+            std::collections::btree_map::Entry::Occupied(e) => e.into_mut(),
+            std::collections::btree_map::Entry::Vacant(e) => {
                 let publish_topic =
                     zenoh_output_publish_topic(dataflow.id, &output_id.0, &output_id.1);
                 tracing::debug!("declaring publisher on {publish_topic}");
@@ -2135,10 +2135,9 @@ impl Daemon {
                     .zenoh_session
                     .declare_publisher(publish_topic)
                     .await
-                    .map_err(|e| eyre!(e))
+                    .map_err(|err| eyre!(err))
                     .context("failed to create zenoh publisher")?;
-                dataflow.publishers.insert(output_id.clone(), publisher);
-                dataflow.publishers.get(output_id).unwrap()
+                e.insert(publisher)
             }
         };
 

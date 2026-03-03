@@ -355,6 +355,12 @@ async fn fetch_changes(
 }
 
 fn checkout_tree(repository: &git2::Repository, commit_hash: &str) -> eyre::Result<()> {
+    // Reject arbitrary rev-spec expressions; only allow hex commit hashes and branch/tag names.
+    if commit_hash.contains("..") || commit_hash.contains(':') || commit_hash.contains('^') {
+        eyre::bail!(
+            "invalid commit reference '{commit_hash}': rev-spec expressions are not allowed"
+        );
+    }
     let (object, reference) = repository
         .revparse_ext(commit_hash)
         .context("failed to parse ref")?;

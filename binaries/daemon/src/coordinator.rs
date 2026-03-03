@@ -273,10 +273,10 @@ struct CoordinatorCommandRaw {
     params: Timestamped<DaemonCoordinatorEvent>,
 }
 
-/// Simple jitter: uses system time nanos as a cheap pseudo-random source.
+/// Jitter for reconnect backoff using a properly seeded random source.
 fn rand_jitter_millis() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .subsec_nanos() as u64
+    use std::hash::{BuildHasher, Hasher};
+    std::collections::hash_map::RandomState::new()
+        .build_hasher()
+        .finish()
 }
