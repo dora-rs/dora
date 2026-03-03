@@ -4,6 +4,8 @@
 
 **Agentic Dataflow-Oriented Robotic Architecture** -- a 100% Rust framework for building real-time robotics and AI applications.
 
+[**User Guide**](https://heyong4725.github.io/adora/) | [**用户指南 (中文)**](https://heyong4725.github.io/adora/zh-CN/)
+
 > Built and maintained with **agentic engineering** -- code generation, reviews, refactoring, testing, and commits are driven by autonomous AI agents.
 
 ---

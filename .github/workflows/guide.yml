@@ -1,0 +1,53 @@
+name: Deploy Guide
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "guide/**"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mdBook
+        run: |
+          cargo install mdbook --locked
+          cargo install mdbook-i18n-helpers --locked
+
+      - name: Build English
+        working-directory: guide
+        run: mdbook build
+
+      - name: Build Chinese
+        working-directory: guide
+        run: MDBOOK_BOOK__LANGUAGE=zh-CN mdbook build -d book/zh-CN
+
+      - name: Move Chinese into English output
+        run: mv guide/book/zh-CN guide/book/zh-CN
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: guide/book
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
