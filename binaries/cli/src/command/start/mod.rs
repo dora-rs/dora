@@ -9,7 +9,7 @@ use crate::{
         connect_and_check_version, local_working_dir, long_context, resolve_dataflow, rpc,
         write_events_to,
     },
-    output::{print_log_message, should_display},
+    output::{abort_log_task_with_grace, subscribe_and_print_logs},
     session::DataflowSession,
 };
 use dora_core::{
@@ -20,7 +20,6 @@ use dora_core::{
 };
 use dora_message::{
     cli_to_coordinator::{CoordinatorControlClient, StartRequest},
-    common::LogMessage,
     tarpc,
 };
 use eyre::Context;
@@ -164,40 +163,21 @@ async fn wait_until_dataflow_started(
         .await
         .wrap_err("failed to open zenoh session for log subscription")?;
     let log_topic = zenoh_log_subscribe_all_for_dataflow(dataflow_id);
-    let subscriber = zenoh_session
-        .declare_subscriber(&log_topic)
-        .await
-        .map_err(|e| eyre::eyre!(e))
-        .wrap_err("failed to subscribe to log topic")?;
-    let log_task = tokio::spawn(async move {
-        loop {
-            match subscriber.recv_async().await {
-                Ok(sample) => {
-                    let payload = sample.payload().to_bytes();
-                    let parsed: eyre::Result<LogMessage> = serde_json::from_slice(&payload)
-                        .context("failed to parse log message from zenoh");
-                    match parsed {
-                        Ok(log_message) => {
-                            if should_display(&log_message, log_level) {
-                                print_log_message(log_message, false, print_daemon_id);
-                            }
-                        }
-                        Err(err) => {
-                            tracing::warn!("failed to parse log message: {err:?}")
-                        }
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-    });
+    let log_task = subscribe_and_print_logs(
+        &zenoh_session,
+        &log_topic,
+        log_level,
+        false,
+        print_daemon_id,
+    )
+    .await?;
 
     let result = rpc(
         "wait for dataflow spawn",
         client.wait_for_spawn(long_context(), dataflow_id),
     )
     .await;
-    log_task.abort();
+    abort_log_task_with_grace(log_task).await;
     result?;
     eprintln!("dataflow started: {dataflow_id}");
 

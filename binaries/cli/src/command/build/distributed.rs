@@ -2,7 +2,7 @@ use dora_core::{descriptor::Descriptor, topics::zenoh_log_subscribe_all_for_buil
 use dora_message::{
     BuildId,
     cli_to_coordinator::{BuildRequest, CoordinatorControlClient},
-    common::{GitSource, LogMessage},
+    common::GitSource,
     id::NodeId,
     tarpc,
 };
@@ -10,7 +10,7 @@ use eyre::Context;
 use std::{collections::BTreeMap, net::IpAddr};
 
 use crate::common::{long_context, rpc};
-use crate::output::{print_log_message, should_display};
+use crate::output::{abort_log_task_with_grace, subscribe_and_print_logs};
 use crate::session::DataflowSession;
 
 /// Trigger a distributed build and wait for it to complete.
@@ -36,33 +36,8 @@ pub async fn build_distributed_dataflow(
         .await
         .wrap_err("failed to open zenoh session for build log subscription")?;
     let log_topic = zenoh_log_subscribe_all_for_build(&build_id);
-    let subscriber = zenoh_session
-        .declare_subscriber(&log_topic)
-        .await
-        .map_err(|e| eyre::eyre!(e))
-        .wrap_err("failed to subscribe to build log topic")?;
-    let log_task = tokio::spawn(async move {
-        loop {
-            match subscriber.recv_async().await {
-                Ok(sample) => {
-                    let payload = sample.payload().to_bytes();
-                    let parsed: eyre::Result<LogMessage> = serde_json::from_slice(&payload)
-                        .context("failed to parse log message from zenoh");
-                    match parsed {
-                        Ok(log_message) => {
-                            if should_display(&log_message, log_level) {
-                                print_log_message(log_message, false, true);
-                            }
-                        }
-                        Err(err) => {
-                            tracing::warn!("failed to parse log message: {err:?}")
-                        }
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-    });
+    let log_task =
+        subscribe_and_print_logs(&zenoh_session, &log_topic, log_level, false, true).await?;
 
     // Now trigger the build — the daemon may start publishing logs
     // immediately, but our subscriber is already active.
@@ -90,7 +65,7 @@ pub async fn build_distributed_dataflow(
         client.wait_for_build(long_context(), build_id),
     )
     .await;
-    log_task.abort();
+    abort_log_task_with_grace(log_task).await;
     result?;
     eprintln!("dataflow build finished successfully");
     Ok(build_id)

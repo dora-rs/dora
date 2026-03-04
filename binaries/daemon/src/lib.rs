@@ -162,12 +162,16 @@ impl Daemon {
         daemon_state.set_daemon_id(daemon_id.clone());
         daemon_state.set_coordinator_client(coordinator_client);
 
-        let log_destination = LogDestination::Zenoh {
-            session: daemon_state
-                .zenoh_session
-                .as_ref()
-                .expect("zenoh session required for logging")
-                .clone(),
+        let log_destination = match daemon_state.zenoh_session.as_ref() {
+            Some(session) => LogDestination::Zenoh {
+                session: session.clone(),
+            },
+            None => {
+                tracing::warn!(
+                    "no zenoh session available; log messages will only be printed locally"
+                );
+                LogDestination::Tracing
+            }
         };
 
         Self::run_general(

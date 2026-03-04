@@ -835,7 +835,7 @@ async fn build_dataflow(
     daemon_connections: &DaemonConnections,
 ) -> eyre::Result<RunningBuild> {
     let BuildRequest {
-        build_id: _, // used by caller before dispatching
+        build_id: _, // already extracted by the RPC handler above
         session_id,
         dataflow,
         git_sources,

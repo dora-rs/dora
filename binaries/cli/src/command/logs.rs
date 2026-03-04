@@ -5,13 +5,13 @@ use crate::{
     common::{
         connect_and_check_version, long_context, resolve_dataflow_identifier_interactive, rpc,
     },
-    output::{print_log_message, should_display},
+    output::subscribe_and_print_logs,
 };
 use clap::Args;
 use dora_core::topics::{
     DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST, zenoh_log_topic_for_dataflow_node,
 };
-use dora_message::{cli_to_coordinator::CoordinatorControlClient, common::LogMessage};
+use dora_message::cli_to_coordinator::CoordinatorControlClient;
 use eyre::{Context, Result};
 use uuid::Uuid;
 
@@ -91,31 +91,11 @@ pub async fn logs(
         .await
         .wrap_err("failed to open zenoh session for log subscription")?;
     let log_topic = zenoh_log_topic_for_dataflow_node(uuid, &node);
-    let subscriber = zenoh_session
-        .declare_subscriber(&log_topic)
-        .await
-        .map_err(|e| eyre::eyre!(e))
-        .wrap_err("failed to subscribe to log topic")?;
-    loop {
-        match subscriber.recv_async().await {
-            Ok(sample) => {
-                let payload = sample.payload().to_bytes();
-                let parsed: eyre::Result<LogMessage> = serde_json::from_slice(&payload)
-                    .context("failed to parse log message from zenoh");
-                match parsed {
-                    Ok(log_message) => {
-                        if should_display(&log_message, log_level) {
-                            print_log_message(log_message, false, false);
-                        }
-                    }
-                    Err(err) => {
-                        tracing::warn!("failed to parse log message: {err:?}")
-                    }
-                }
-            }
-            Err(_) => break,
-        }
-    }
+    let log_task =
+        subscribe_and_print_logs(&zenoh_session, &log_topic, log_level, false, false).await?;
+
+    // Block until the task ends (subscriber closes).
+    let _ = log_task.await;
 
     Ok(())
 }

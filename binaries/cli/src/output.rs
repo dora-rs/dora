@@ -1,9 +1,13 @@
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::time::Duration;
 
 use chrono::Local;
 use colored::{Color, Colorize};
 use dora_core::build::LogLevelOrStdout;
 use dora_message::common::LogMessage;
+use eyre::Context;
+use tokio::task::JoinHandle;
+
 /// Check whether a log message should be displayed given the log level filter.
 pub fn should_display(message: &LogMessage, filter: log::LevelFilter) -> bool {
     match &message.level {
@@ -15,6 +19,45 @@ pub fn should_display(message: &LogMessage, filter: log::LevelFilter) -> bool {
             msg_filter <= filter
         }
     }
+}
+
+/// Subscribe to a zenoh log topic and spawn a background task that prints
+/// received messages filtered by level.
+pub async fn subscribe_and_print_logs(
+    zenoh_session: &zenoh::Session,
+    log_topic: &str,
+    log_level: log::LevelFilter,
+    print_dataflow_id: bool,
+    print_daemon_name: bool,
+) -> eyre::Result<JoinHandle<()>> {
+    let subscriber = zenoh_session
+        .declare_subscriber(log_topic)
+        .await
+        .map_err(|e| eyre::eyre!(e))
+        .wrap_err("failed to subscribe to log topic")?;
+    Ok(tokio::spawn(async move {
+        while let Ok(sample) = subscriber.recv_async().await {
+            let payload = sample.payload().to_bytes();
+            match serde_json::from_slice::<LogMessage>(&payload) {
+                Ok(log_message) => {
+                    if should_display(&log_message, log_level) {
+                        print_log_message(log_message, print_dataflow_id, print_daemon_name);
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!("failed to parse log message: {err:?}")
+                }
+            }
+        }
+    }))
+}
+
+/// Abort a log printer task with a short grace period to allow in-flight
+/// messages to be printed before cancellation.
+pub async fn abort_log_task_with_grace(task: JoinHandle<()>) {
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    task.abort();
+    let _ = task.await;
 }
 
 pub fn print_log_message(

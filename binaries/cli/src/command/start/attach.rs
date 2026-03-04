@@ -121,7 +121,7 @@ pub async fn attach_dataflow(
     })
     .wrap_err("failed to set ctrl-c handler")?;
 
-    // Subscribe to log messages via zenoh
+    // Subscribe to log messages via zenoh and forward to the event channel.
     let zenoh_session = dora_core::topics::open_zenoh_session(Some(coordinator_addr))
         .await
         .wrap_err("failed to open zenoh session for log subscription")?;

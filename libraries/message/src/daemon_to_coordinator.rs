@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 pub use crate::common::{
-    DataMessage, LogLevel, LogMessage, NodeError, NodeErrorCause, NodeExitStatus, Timestamped,
+    DataMessage, LogLevel, NodeError, NodeErrorCause, NodeExitStatus, Timestamped,
 };
 use crate::{
     BuildId, DataflowId, common::DaemonId, current_crate_version, id::NodeId, versions_compatible,
@@ -90,8 +90,6 @@ pub trait CoordinatorNotify {
     async fn all_nodes_finished(dataflow_id: DataflowId, result: DataflowDaemonResult);
     /// Daemon heartbeat.
     async fn heartbeat();
-    /// Forward a log message to the coordinator.
-    async fn log(message: LogMessage);
     /// Notify the coordinator that this daemon is exiting.
     async fn daemon_exit();
     /// Report resource metrics for running nodes.

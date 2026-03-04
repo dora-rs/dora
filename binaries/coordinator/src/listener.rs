@@ -229,12 +229,6 @@ impl CoordinatorNotify for CoordinatorNotifyServer {
         }
     }
 
-    async fn log(self, _ctx: tarpc::context::Context, message: dora_message::common::LogMessage) {
-        // Log messages are now published directly by daemons via zenoh.
-        // This RPC method is kept for backward compatibility but is a no-op.
-        let _ = message;
-    }
-
     async fn daemon_exit(self, _ctx: tarpc::context::Context) {
         tracing::info!("Daemon `{}` exited", self.daemon_id);
         self.coordinator_state
