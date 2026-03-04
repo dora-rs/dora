@@ -156,13 +156,15 @@ pub async fn build_async(
     let session = || connect_to_coordinator_rpc_with_defaults(coordinator_addr, coordinator_port);
 
     let build_kind = if force_local {
-        log::info!("Building locally, as requested through `--force-local`");
+        tracing::info!("Building locally, as requested through `--force-local`");
         BuildKind::Local
     } else if dataflow_descriptor.nodes.iter().all(|n| n.deploy.is_none()) {
-        log::info!("Building locally because dataflow does not contain any `deploy` sections");
+        tracing::info!("Building locally because dataflow does not contain any `deploy` sections");
         BuildKind::Local
     } else if coordinator_addr.is_some() || coordinator_port.is_some() {
-        log::info!("Building through coordinator, using the given coordinator socket information");
+        tracing::info!(
+            "Building through coordinator, using the given coordinator socket information"
+        );
         // explicit coordinator address or port set -> there should be a coordinator running
         BuildKind::ThroughCoordinator {
             coordinator_client: session()
@@ -173,11 +175,13 @@ pub async fn build_async(
         match session().await {
             Ok(coordinator_client) => {
                 // we found a local coordinator instance at default port -> use it for building
-                log::info!("Found local dora coordinator instance -> building through coordinator");
+                tracing::info!(
+                    "Found local dora coordinator instance -> building through coordinator"
+                );
                 BuildKind::ThroughCoordinator { coordinator_client }
             }
             Err(_) => {
-                log::warn!("No dora coordinator instance found -> trying a local build");
+                tracing::warn!("No dora coordinator instance found -> trying a local build");
                 // no coordinator instance found -> do a local build
                 BuildKind::Local
             }
@@ -186,7 +190,7 @@ pub async fn build_async(
 
     match build_kind {
         BuildKind::Local => {
-            log::info!("running local build");
+            tracing::info!("running local build");
             // use dataflow dir as base working dir
             let local_working_dir = dunce::canonicalize(&dataflow_path)
                 .context("failed to canonicalize dataflow path")?
