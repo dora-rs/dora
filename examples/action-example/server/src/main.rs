@@ -20,7 +20,7 @@ fn main() -> eyre::Result<()> {
     while let Some(event) = events.recv() {
         match event {
             Event::Input { id, metadata, data } => match id.as_str() {
-                "goal" => {
+                _id if _id.starts_with("goal") => {
                     let goal_id =
                         get_string_param(&metadata.parameters, GOAL_ID).map(str::to_owned);
                     let start = data
@@ -37,7 +37,7 @@ fn main() -> eyre::Result<()> {
                         active_goals.insert(goal_id, start);
                     }
                 }
-                "cancel" => {
+                _id if _id.starts_with("cancel") => {
                     let goal_id =
                         get_string_param(&metadata.parameters, GOAL_ID).map(str::to_owned);
                     if let Some(goal_id) = goal_id {
