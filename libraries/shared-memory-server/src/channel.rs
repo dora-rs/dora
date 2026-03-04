@@ -108,11 +108,12 @@ impl ShmemChannel {
     }
 
     fn send_raw(&mut self, msg: &[u8]) -> Result<(), eyre::ErrReport> {
-        if msg.len() > self.memory.len() - self.data_offset {
+        let capacity = self.memory.len().saturating_sub(self.data_offset);
+        if msg.len() > capacity {
             bail!(
                 "message too large for shared memory: {} > {}",
                 msg.len(),
-                self.memory.len() - self.data_offset
+                capacity
             );
         }
         // write data first
