@@ -10,6 +10,7 @@ use eyre::Context;
 fn main() -> eyre::Result<()> {
     let (mut node, mut events) = AdoraNode::init_from_env()?;
 
+    let node_id = std::env::var("ADORA_NODE_ID").unwrap_or_else(|_| "client".into());
     let mut in_flight: HashMap<String, (i64, i64)> = HashMap::new();
     let mut tick_count: i64 = 0;
 
@@ -45,7 +46,7 @@ fn main() -> eyre::Result<()> {
                         )
                         .context("failed to send request")?;
 
-                    println!("[client] sent request {request_id}: {a} + {b}");
+                    println!("[{node_id}] sent request {request_id}: {a} + {b}");
                     in_flight.insert(request_id, (a, b));
                 }
                 "response" => {
@@ -59,7 +60,7 @@ fn main() -> eyre::Result<()> {
                             .map(|a| a.value(0));
 
                         if let (Some((a, b)), Some(sum)) = (in_flight.remove(rid), sum_col) {
-                            println!("[client] response {rid}: {a} + {b} = {sum}");
+                            println!("[{node_id}] response {rid}: {a} + {b} = {sum}");
                             assert_eq!(sum, a + b, "sum mismatch");
                         }
                     }

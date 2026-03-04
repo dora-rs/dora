@@ -9,6 +9,7 @@ use adora_node_api::{
 fn main() -> eyre::Result<()> {
     let (mut node, mut events) = AdoraNode::init_from_env()?;
 
+    let node_id = std::env::var("ADORA_NODE_ID").unwrap_or_else(|_| "client".into());
     let mut active_goals: HashMap<String, i64> = HashMap::new();
     let mut tick_count: i64 = 0;
 
@@ -26,7 +27,7 @@ fn main() -> eyre::Result<()> {
                     let data = Int64Array::from(vec![start_value]);
                     node.send_output("goal".into(), params, data)?;
 
-                    println!("[client] sent goal {goal_id}: countdown from {start_value}");
+                    println!("[{node_id}] sent goal {goal_id}: countdown from {start_value}");
                     active_goals.insert(goal_id, start_value);
                 }
                 "feedback" => {
@@ -37,7 +38,7 @@ fn main() -> eyre::Result<()> {
                         .map(|a| a.value(0));
 
                     if let (Some(gid), Some(val)) = (gid, fb_array) {
-                        println!("[client] feedback {gid}: {val}");
+                        println!("[{node_id}] feedback {gid}: {val}");
                     }
                 }
                 "result" => {
@@ -46,7 +47,7 @@ fn main() -> eyre::Result<()> {
 
                     if let Some(gid) = gid {
                         let status = status.unwrap_or("unknown");
-                        println!("[client] result {gid}: {status}");
+                        println!("[{node_id}] result {gid}: {status}");
                         active_goals.remove(gid);
                     }
                 }
