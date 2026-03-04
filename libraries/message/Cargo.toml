@@ -33,3 +33,4 @@ bincode = "1.3.3"
 serde_json = { workspace = true }
 chrono = { version = "0.4", features = ["serde"] }
 tarpc = { version = "0.37.0", features = ["serde-transport-json", "tcp"] }
+machine-uid = "0.5.4"
