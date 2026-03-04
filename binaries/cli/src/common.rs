@@ -5,7 +5,7 @@ use dora_core::{
 };
 use dora_download::download_file;
 use dora_message::{
-    cli_to_coordinator::CliControlClient,
+    cli_to_coordinator::CoordinatorControlClient,
     coordinator_to_cli::{DataflowList, DataflowResult},
     tarpc::{self, client, tokio_serde},
 };
@@ -63,13 +63,13 @@ pub(crate) fn handle_dataflow_result(
 }
 
 pub(crate) async fn query_running_dataflows(
-    client: &CliControlClient,
+    client: &CoordinatorControlClient,
 ) -> eyre::Result<DataflowList> {
     rpc("list dataflows", client.list(tarpc::context::current())).await
 }
 
 pub(crate) async fn resolve_dataflow_identifier_interactive(
-    client: &CliControlClient,
+    client: &CoordinatorControlClient,
     name_or_uuid: Option<&str>,
 ) -> eyre::Result<Uuid> {
     if let Some(uuid) = name_or_uuid.and_then(|s| Uuid::parse_str(s).ok()) {
@@ -108,7 +108,7 @@ pub(crate) struct CoordinatorOptions {
 }
 
 impl CoordinatorOptions {
-    pub async fn connect_rpc(&self) -> eyre::Result<CliControlClient> {
+    pub async fn connect_rpc(&self) -> eyre::Result<CoordinatorControlClient> {
         connect_and_check_version(self.coordinator_addr, self.coordinator_port).await
     }
 }
@@ -117,13 +117,13 @@ impl CoordinatorOptions {
 pub(crate) async fn connect_to_coordinator_rpc(
     addr: IpAddr,
     control_port: u16,
-) -> eyre::Result<CliControlClient> {
+) -> eyre::Result<CoordinatorControlClient> {
     let rpc_port = dora_coordinator_port_rpc(control_port);
     let transport =
         tarpc::serde_transport::tcp::connect((addr, rpc_port), tokio_serde::formats::Json::default)
             .await
             .context("failed to connect tarpc client to coordinator")?;
-    let client = CliControlClient::new(client::Config::default(), transport).spawn();
+    let client = CoordinatorControlClient::new(client::Config::default(), transport).spawn();
     Ok(client)
 }
 
@@ -143,7 +143,7 @@ pub(crate) async fn resolve_dataflow(dataflow: String) -> eyre::Result<PathBuf> 
 pub(crate) async fn local_working_dir(
     dataflow_path: &Path,
     dataflow_descriptor: &Descriptor,
-    client: &CliControlClient,
+    client: &CoordinatorControlClient,
 ) -> eyre::Result<Option<PathBuf>> {
     Ok(
         if dataflow_descriptor
@@ -166,7 +166,7 @@ pub(crate) async fn local_working_dir(
 }
 
 pub(crate) async fn cli_and_daemon_on_same_machine(
-    client: &CliControlClient,
+    client: &CoordinatorControlClient,
 ) -> eyre::Result<bool> {
     rpc(
         "check if CLI and daemon on same machine",
@@ -185,14 +185,16 @@ pub(crate) fn write_events_to() -> Option<PathBuf> {
 pub(crate) async fn connect_and_check_version(
     addr: IpAddr,
     control_port: u16,
-) -> eyre::Result<CliControlClient> {
+) -> eyre::Result<CoordinatorControlClient> {
     let client = connect_to_coordinator_rpc(addr, control_port).await?;
     check_coordinator_version(&client).await?;
     Ok(client)
 }
 
 /// Check that the coordinator's message format version matches this CLI's.
-pub(crate) async fn check_coordinator_version(client: &CliControlClient) -> eyre::Result<()> {
+pub(crate) async fn check_coordinator_version(
+    client: &CoordinatorControlClient,
+) -> eyre::Result<()> {
     let version_info = match client.get_version(tarpc::context::current()).await {
         Ok(v) => v,
         Err(_) => {

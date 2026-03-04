@@ -12,7 +12,7 @@ use dora_core::{
 use dora_message::{
     BuildId,
     common::{DaemonId, LogLevel, LogMessage, Timestamped},
-    daemon_to_coordinator::{CoordinatorRequest, DaemonEvent},
+    daemon_to_coordinator::CoordinatorRequest,
 };
 use eyre::Context;
 use flume::Sender;
@@ -267,9 +267,9 @@ impl Logger {
                 coordinator_connection,
             } => {
                 let message = Timestamped {
-                    inner: CoordinatorRequest::Event {
+                    inner: CoordinatorRequest::Log {
                         daemon_id: self.daemon_id.clone(),
-                        event: DaemonEvent::Log(message.clone()),
+                        message: message.clone(),
                     },
                     timestamp: self.clock.new_timestamp(),
                 };

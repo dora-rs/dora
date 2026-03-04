@@ -19,6 +19,7 @@ tracing = ["dep:dora-tracing"]
 telemetry = ["dep:tracing-opentelemetry"]
 
 [dependencies]
+dashmap = "6.1.0"
 eyre = "0.6.8"
 tokio = { version = "1.20.1", features = ["full"] }
 tokio-stream = { version = "0.1.11", features = ["net"] }

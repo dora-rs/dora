@@ -4,7 +4,7 @@ use dora_core::{
     topics::DORA_COORDINATOR_PORT_DEFAULT,
 };
 use dora_message::{
-    cli_to_coordinator::{CliControlClient, StartRequest},
+    cli_to_coordinator::{CoordinatorControlClient, StartRequest},
     common::DaemonId,
     coordinator_to_cli::DataflowIdAndName,
     tarpc,
@@ -121,7 +121,7 @@ fn long_context() -> tarpc::context::Context {
     ctx
 }
 
-async fn start_dataflow(dataflow: &Path, client: &CliControlClient) -> eyre::Result<Uuid> {
+async fn start_dataflow(dataflow: &Path, client: &CoordinatorControlClient) -> eyre::Result<Uuid> {
     let dataflow_descriptor = read_as_descriptor(dataflow)
         .await
         .wrap_err("failed to read yaml dataflow")?;
@@ -164,7 +164,7 @@ async fn start_dataflow(dataflow: &Path, client: &CliControlClient) -> eyre::Res
     Ok(uuid)
 }
 
-async fn connected_machines(client: &CliControlClient) -> eyre::Result<BTreeSet<DaemonId>> {
+async fn connected_machines(client: &CoordinatorControlClient) -> eyre::Result<BTreeSet<DaemonId>> {
     let machines = client
         .connected_machines(tarpc::context::current())
         .await
@@ -173,7 +173,9 @@ async fn connected_machines(client: &CliControlClient) -> eyre::Result<BTreeSet<
     Ok(machines)
 }
 
-async fn running_dataflows(client: &CliControlClient) -> eyre::Result<Vec<DataflowIdAndName>> {
+async fn running_dataflows(
+    client: &CoordinatorControlClient,
+) -> eyre::Result<Vec<DataflowIdAndName>> {
     let list = client
         .list(tarpc::context::current())
         .await
@@ -182,7 +184,7 @@ async fn running_dataflows(client: &CliControlClient) -> eyre::Result<Vec<Datafl
     Ok(list.get_active())
 }
 
-async fn destroy(client: &CliControlClient) -> eyre::Result<()> {
+async fn destroy(client: &CoordinatorControlClient) -> eyre::Result<()> {
     client
         .destroy(long_context())
         .await

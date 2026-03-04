@@ -1,9 +1,9 @@
-use crate::{
-    server::ControlServer,
-    tcp_utils::{tcp_receive, tcp_send},
-};
+use crate::{server::CoordinatorControlServer, tcp_utils::tcp_send};
 pub use control::ControlEvent;
-use dashmap::{DashMap, mapref::one::RefMut};
+use dashmap::{
+    DashMap,
+    mapref::one::{Ref, RefMut},
+};
 use dora_core::{
     config::{NodeId, OperatorId},
     descriptor::DescriptorExt,
@@ -12,14 +12,16 @@ use dora_core::{
 use dora_message::{
     BuildId, SessionId,
     cli_to_coordinator::{
-        BuildRequest, CliControl, CliControlClient, CliControlRequest, CliControlResponse,
+        BuildRequest, CoordinatorControl, CoordinatorControlClient, CoordinatorControlRequest,
+        CoordinatorControlResponse,
     },
     common::DaemonId,
-    coordinator_to_cli::{DataflowResult, LogLevel, LogMessage, StopDataflowReply},
+    coordinator_to_cli::{DataflowResult, LogMessage, StopDataflowReply},
     coordinator_to_daemon::{
-        BuildDataflowNodes, DaemonCoordinatorEvent, RegisterResult, Timestamped,
+        BuildDataflowNodes, DaemonControlClient, DaemonControlRequest, DaemonControlResponse,
+        RegisterResult, Timestamped,
     },
-    daemon_to_coordinator::{DaemonCoordinatorReply, DataflowDaemonResult},
+    daemon_to_coordinator::DataflowDaemonResult,
     descriptor::{Descriptor, ResolvedNode},
     tarpc::{
         self, ClientMessage, Response, Transport, client,
@@ -97,13 +99,19 @@ pub async fn start(
 
 /// Start the coordinator with an in-process RPC server instead of a TCP listener.
 ///
-/// Returns the `CliControlClient` to communicate with the RPC server.
+/// Returns the `CoordinatorControlClient` to communicate with the RPC server.
 ///
 /// This function is mainly useful for testing.
 pub async fn start_with_channel_rpc(
     bind: SocketAddr,
     external_events: impl Stream<Item = Event> + Unpin,
-) -> Result<(CliControlClient, impl Future<Output = eyre::Result<()>>), eyre::ErrReport> {
+) -> Result<
+    (
+        CoordinatorControlClient,
+        impl Future<Output = eyre::Result<()>>,
+    ),
+    eyre::ErrReport,
+> {
     let tasks = FuturesUnordered::new();
 
     let (_daemon_port, coordinator_state, future) =
@@ -116,7 +124,8 @@ pub async fn start_with_channel_rpc(
         coordinator_state,
         None,
     ));
-    let control_client = CliControlClient::new(client::Config::default(), client_transport).spawn();
+    let control_client =
+        CoordinatorControlClient::new(client::Config::default(), client_transport).spawn();
 
     Ok((control_client, future))
 }
@@ -194,18 +203,20 @@ async fn init_coordinator(
     Ok((daemon_port, state_for_caller, future))
 }
 
-/// Serve [`CliControl`] RPC requests from the given transport.
+/// Serve [`CoordinatorControl`] RPC requests from the given transport.
 fn serve_control_requests<T>(
     transport: T,
     state: Arc<state::CoordinatorState>,
     client_ip: Option<std::net::IpAddr>,
 ) -> impl Future<Output = ()>
 where
-    T: Transport<Response<CliControlResponse>, ClientMessage<CliControlRequest>> + Send + 'static,
+    T: Transport<Response<CoordinatorControlResponse>, ClientMessage<CoordinatorControlRequest>>
+        + Send
+        + 'static,
     T::Error: std::error::Error + Send + Sync + 'static,
 {
     let channel = BaseChannel::with_defaults(transport);
-    let server = ControlServer { state, client_ip };
+    let server = CoordinatorControlServer { state, client_ip };
     channel.execute(server.serve()).for_each(|fut| async {
         tokio::spawn(fut);
     })
@@ -247,7 +258,7 @@ fn resolve_name(
 }
 
 #[derive(Default)]
-struct DaemonConnections {
+pub(crate) struct DaemonConnections {
     daemons: DashMap<DaemonId, DaemonConnection>,
 }
 
@@ -259,16 +270,12 @@ impl DaemonConnections {
         }
     }
 
-    fn get_mut(&self, id: &DaemonId) -> Option<RefMut<'_, DaemonId, DaemonConnection>> {
-        self.daemons.get_mut(id)
+    fn get(&self, id: &DaemonId) -> Option<Ref<'_, DaemonId, DaemonConnection>> {
+        self.daemons.get(id)
     }
 
-    /// Get a cloned `Arc<Mutex<TcpStream>>` for the given daemon.
-    ///
-    /// The DashMap lock is only held long enough to clone the Arc, so this is
-    /// safe to use before `.await` points.
-    fn get_stream(&self, id: &DaemonId) -> Option<Arc<tokio::sync::Mutex<TcpStream>>> {
-        self.daemons.get(id).map(|r| r.stream.clone())
+    pub(crate) fn get_mut(&self, id: &DaemonId) -> Option<RefMut<'_, DaemonId, DaemonConnection>> {
+        self.daemons.get_mut(id)
     }
 
     fn get_matching_daemon_id(&self, machine_id: &str) -> Option<DaemonId> {
@@ -297,7 +304,7 @@ impl DaemonConnections {
         self.daemons.iter()
     }
 
-    fn remove(&self, daemon_id: &DaemonId) -> Option<DaemonConnection> {
+    pub(crate) fn remove(&self, daemon_id: &DaemonId) -> Option<DaemonConnection> {
         self.daemons
             .remove(daemon_id)
             .map(|(_, connection)| connection)
@@ -391,13 +398,31 @@ async fn start_inner(
                     let send_result = tcp_send(&mut connection, &serde_json::to_vec(&reply)?)
                         .await
                         .context("tcp send failed");
-                    match version_check_result.map_err(|e| eyre!(e)).and(send_result) {
+                    match version_check_result
+                        .map_err(|e| eyre!(e))
+                        .and(existing_result.map_err(|e| eyre!(e)))
+                        .and(send_result)
+                    {
                         Ok(()) => {
+                            // Set up tarpc client on the registered stream.
+                            // The daemon runs a tarpc server on its end.
+                            let peer_addr = connection.peer_addr().ok();
+                            let codec = tokio_serde::formats::Json::<
+                                Response<DaemonControlResponse>,
+                                ClientMessage<DaemonControlRequest>,
+                            >::default();
+                            let transport =
+                                tarpc::serde_transport::Transport::from((connection, codec));
+                            let daemon_client =
+                                DaemonControlClient::new(client::Config::default(), transport)
+                                    .spawn();
+
                             coordinator_state.daemon_connections.add(
                                 daemon_id.clone(),
                                 DaemonConnection {
-                                    stream: Arc::new(tokio::sync::Mutex::new(connection)),
+                                    client: daemon_client,
                                     last_heartbeat: Instant::now(),
+                                    peer_addr,
                                 },
                             );
                         }
@@ -408,142 +433,38 @@ async fn start_inner(
                         }
                     }
                 }
-            },
-            Event::Dataflow { uuid, event } => match event {
-                DataflowEvent::ReadyOnDaemon {
+                DaemonRequest::RegisterNotificationChannel {
                     daemon_id,
-                    exited_before_subscribe,
+                    connection,
                 } => {
-                    // Collect what we need from the DashMap entry, then drop
-                    // the lock before doing any async I/O.
-                    let send_info = match coordinator_state.running_dataflows.entry(uuid) {
-                        dashmap::Entry::Occupied(mut entry) => {
-                            let dataflow = entry.get_mut();
-                            dataflow.pending_daemons.remove(&daemon_id);
-                            dataflow
-                                .exited_before_subscribe
-                                .extend(exited_before_subscribe);
-                            if dataflow.pending_daemons.is_empty() {
-                                let exited = dataflow.exited_before_subscribe.clone();
-                                let daemons: Vec<DaemonId> =
-                                    dataflow.daemons.iter().cloned().collect();
-                                Some((exited, daemons))
-                            } else {
-                                None
-                            }
-                        }
-                        dashmap::Entry::Vacant(_) => {
-                            tracing::warn!("dataflow not running on ReadyOnMachine");
-                            None
-                        }
+                    // Set up a tarpc server for daemon→coordinator RPC on this
+                    // second TCP connection.
+                    use dora_message::daemon_to_coordinator::{
+                        CoordinatorNotify, CoordinatorNotifyRequest, CoordinatorNotifyResponse,
                     };
-                    // DashMap lock is now dropped — safe to do async I/O.
-                    if let Some((exited_before_subscribe, daemons)) = send_info {
-                        tracing::debug!("sending all nodes ready message to daemons");
-                        let message = serde_json::to_vec(&Timestamped {
-                            inner: DaemonCoordinatorEvent::AllNodesReady {
-                                dataflow_id: uuid,
-                                exited_before_subscribe,
-                            },
-                            timestamp: clock.new_timestamp(),
-                        })
-                        .wrap_err("failed to serialize AllNodesReady message")?;
+                    use tarpc::server::{BaseChannel, Channel};
 
-                        for daemon_id in &daemons {
-                            let stream = coordinator_state.daemon_connections.get_stream(daemon_id);
-                            let Some(stream) = stream else {
-                                tracing::warn!(
-                                    "no daemon connection found for machine `{daemon_id}`"
-                                );
-                                continue;
-                            };
-                            let mut stream = stream.lock().await;
-                            tcp_send(&mut stream, &message).await.wrap_err_with(|| {
-                                format!(
-                                    "failed to send AllNodesReady({uuid}) message \
-                                    to machine {daemon_id}"
-                                )
-                            })?;
-                        }
-                    }
-                }
-                DataflowEvent::DataflowFinishedOnDaemon { daemon_id, result } => {
-                    tracing::debug!(
-                        "coordinator received DataflowFinishedOnDaemon ({daemon_id:?}, result: {result:?})"
+                    let codec = tokio_serde::formats::Json::<
+                        ClientMessage<CoordinatorNotifyRequest>,
+                        Response<CoordinatorNotifyResponse>,
+                    >::default();
+                    let transport = tarpc::serde_transport::Transport::from((connection, codec));
+
+                    let server = listener::CoordinatorNotifyServer {
+                        daemon_id: daemon_id.clone(),
+                        coordinator_state: coordinator_state.clone(),
+                    };
+
+                    let channel = BaseChannel::with_defaults(transport);
+                    tokio::spawn(channel.execute(server.serve()).for_each(|fut| async {
+                        tokio::spawn(fut);
+                    }));
+
+                    tracing::info!(
+                        "reverse-channel RPC server established for daemon `{daemon_id}`"
                     );
-                    match coordinator_state.running_dataflows.entry(uuid) {
-                        dashmap::Entry::Occupied(mut entry) => {
-                            let dataflow = entry.get_mut();
-                            dataflow.daemons.remove(&daemon_id);
-                            tracing::info!(
-                                "removed machine id: {daemon_id} from dataflow: {:#?}",
-                                dataflow.uuid
-                            );
-                            coordinator_state
-                                .dataflow_results
-                                .entry(uuid)
-                                .or_default()
-                                .insert(daemon_id, result);
-
-                            if dataflow.daemons.is_empty() {
-                                // Archive finished dataflow
-                                coordinator_state
-                                    .archived_dataflows
-                                    .entry(uuid)
-                                    .or_insert_with(|| ArchivedDataflow::from(entry.get()));
-                                let mut finished_dataflow = entry.remove();
-                                let dataflow_id = finished_dataflow.uuid;
-                                send_log_message(
-                                    &mut finished_dataflow.log_subscribers,
-                                    &LogMessage {
-                                        build_id: None,
-                                        dataflow_id: Some(dataflow_id),
-                                        node_id: None,
-                                        daemon_id: None,
-                                        level: LogLevel::Info.into(),
-                                        target: Some("coordinator".into()),
-                                        module_path: None,
-                                        file: None,
-                                        line: None,
-                                        message: "dataflow finished".into(),
-                                        timestamp: clock
-                                            .new_timestamp()
-                                            .get_time()
-                                            .to_system_time()
-                                            .into(),
-                                        fields: None,
-                                    },
-                                )
-                                .await;
-
-                                let reply = StopDataflowReply {
-                                    uuid,
-                                    result: coordinator_state
-                                        .dataflow_results
-                                        .get(&uuid)
-                                        .map(|r| dataflow_result(r.value(), uuid, &clock))
-                                        .unwrap_or_else(|| {
-                                            DataflowResult::ok_empty(uuid, clock.new_timestamp())
-                                        }),
-                                };
-                                for sender in finished_dataflow.stop_reply_senders {
-                                    let _ = sender.send(Ok(reply.clone()));
-                                }
-                                if !matches!(
-                                    finished_dataflow.spawn_result,
-                                    CachedResult::Cached { .. }
-                                ) {
-                                    log::error!("pending spawn result on dataflow finish");
-                                }
-                            }
-                        }
-                        dashmap::Entry::Vacant(_) => {
-                            tracing::warn!("dataflow not running on DataflowFinishedOnDaemon");
-                        }
-                    }
                 }
             },
-
             Event::Control(event) => match event {
                 ControlEvent::Error(err) => tracing::error!("{err:?}"),
                 ControlEvent::LogSubscribe {
@@ -580,27 +501,25 @@ async fn start_inner(
                 }
             },
             Event::DaemonHeartbeatInterval => {
-                // Collect daemon info and stream handles while briefly holding
-                // the DashMap lock.  Drop the lock before doing any async I/O.
-                let daemons_to_check: Vec<(
-                    DaemonId,
-                    Duration,
-                    Arc<tokio::sync::Mutex<TcpStream>>,
-                )> = coordinator_state
-                    .daemon_connections
-                    .iter()
-                    .map(|r| {
-                        (
-                            r.key().clone(),
-                            r.value().last_heartbeat.elapsed(),
-                            r.value().stream.clone(),
-                        )
-                    })
-                    .collect();
+                // Collect daemon IDs, elapsed times, and clients while briefly
+                // holding the DashMap lock.  Drop the lock before doing any
+                // async I/O.
+                let daemons_to_check: Vec<(DaemonId, Duration, DaemonControlClient)> =
+                    coordinator_state
+                        .daemon_connections
+                        .iter()
+                        .map(|r| {
+                            (
+                                r.key().clone(),
+                                r.value().last_heartbeat.elapsed(),
+                                r.value().client.clone(),
+                            )
+                        })
+                        .collect();
                 // DashMap lock is now dropped.
 
                 let mut disconnected = BTreeSet::new();
-                for (machine_id, elapsed, stream) in daemons_to_check {
+                for (machine_id, elapsed, client) in daemons_to_check {
                     if elapsed > Duration::from_secs(15) {
                         tracing::warn!(
                             "no heartbeat message from machine `{machine_id}` since {elapsed:?}",
@@ -610,21 +529,18 @@ async fn start_inner(
                         disconnected.insert(machine_id);
                         continue;
                     }
-                    let result: eyre::Result<()> =
-                        tokio::time::timeout(Duration::from_millis(500), async {
-                            let mut stream = stream.lock().await;
-                            send_heartbeat_message(&mut stream, clock.new_timestamp()).await
-                        })
-                        .await
-                        .wrap_err("timeout")
-                        .and_then(|r| r)
-                        .wrap_err_with(|| {
-                            format!("failed to send heartbeat message to daemon at `{machine_id}`")
-                        });
-                    if let Err(err) = result {
-                        tracing::warn!("{err:?}");
-                        disconnected.insert(machine_id);
-                    }
+                    // Send a heartbeat ping to the daemon so it knows the
+                    // coordinator is still alive.  This is fire-and-forget:
+                    // the daemon independently sends its own heartbeat to the
+                    // coordinator (updating `last_heartbeat`), so a failed
+                    // ping here does not mean the daemon is gone.
+                    tokio::spawn(async move {
+                        if let Err(err) = client.heartbeat(tarpc::context::current()).await {
+                            tracing::warn!(
+                                "failed to send heartbeat to daemon `{machine_id}`: {err}"
+                            );
+                        }
+                    });
                 }
                 if !disconnected.is_empty() {
                     tracing::error!("Disconnecting daemons that failed watchdog: {disconnected:?}");
@@ -636,16 +552,6 @@ async fn start_inner(
             Event::CtrlC => {
                 tracing::info!("Destroying coordinator after receiving Ctrl-C signal");
                 handle_destroy(&coordinator_state).await?;
-            }
-            Event::DaemonHeartbeat {
-                daemon_id: machine_id,
-            } => {
-                if let Some(mut connection_ref) =
-                    coordinator_state.daemon_connections.get_mut(&machine_id)
-                {
-                    let connection = connection_ref.value_mut();
-                    connection.last_heartbeat = Instant::now();
-                }
             }
             Event::Log(message) => {
                 if let Some(dataflow_id) = &message.dataflow_id {
@@ -670,87 +576,6 @@ async fn start_inner(
                     }
                 }
             }
-            Event::DaemonExit { daemon_id } => {
-                tracing::info!("Daemon `{daemon_id}` exited");
-                coordinator_state.daemon_connections.remove(&daemon_id);
-            }
-            Event::NodeMetrics {
-                dataflow_id,
-                metrics,
-            } => {
-                // Store metrics for this dataflow
-                if let Some(mut dataflow) =
-                    coordinator_state.running_dataflows.get_mut(&dataflow_id)
-                {
-                    for (node_id, node_metrics) in metrics {
-                        dataflow.node_metrics.insert(node_id, node_metrics);
-                    }
-                }
-            }
-            Event::DataflowBuildResult {
-                build_id,
-                daemon_id,
-                result,
-            } => match coordinator_state.running_builds.entry(build_id) {
-                dashmap::Entry::Occupied(mut entry) => {
-                    let build = entry.get_mut();
-                    build.pending_build_results.remove(&daemon_id);
-                    match result {
-                        Ok(()) => {}
-                        Err(err) => {
-                            build.errors.push(format!("{err:?}"));
-                        }
-                    };
-                    if build.pending_build_results.is_empty() {
-                        tracing::info!("dataflow build finished: `{build_id}`");
-                        let (build_id, mut build) = entry.remove_entry();
-                        let result = if build.errors.is_empty() {
-                            Ok(())
-                        } else {
-                            Err(format!("build failed: {}", build.errors.join("\n\n")))
-                        };
-
-                        build
-                            .build_result
-                            .set_result(Ok(BuildFinishedResult { build_id, result }));
-
-                        coordinator_state
-                            .finished_builds
-                            .insert(build_id, build.build_result);
-                    }
-                }
-                dashmap::Entry::Vacant(_) => {
-                    tracing::warn!(
-                        "received DataflowSpawnResult, but no matching dataflow in `running_dataflows` map"
-                    );
-                }
-            },
-            Event::DataflowSpawnResult {
-                dataflow_id,
-                daemon_id,
-                result,
-            } => match coordinator_state.running_dataflows.get_mut(&dataflow_id) {
-                Some(mut dataflow) => {
-                    dataflow.pending_spawn_results.remove(&daemon_id);
-                    match result {
-                        Ok(()) => {
-                            if dataflow.pending_spawn_results.is_empty() {
-                                tracing::info!("successfully spawned dataflow `{dataflow_id}`",);
-                                dataflow.spawn_result.set_result(Ok(dataflow_id));
-                            }
-                        }
-                        Err(err) => {
-                            tracing::warn!("error while spawning dataflow `{dataflow_id}`");
-                            dataflow.spawn_result.set_result(Err(err));
-                        }
-                    };
-                }
-                None => {
-                    tracing::warn!(
-                        "received DataflowSpawnResult, but no matching dataflow in `running_dataflows` map"
-                    );
-                }
-            },
         }
 
         // warn if event handling took too long -> the main loop should never be blocked for too long
@@ -768,7 +593,10 @@ async fn start_inner(
     Ok(())
 }
 
-async fn send_log_message(log_subscribers: &mut Vec<LogSubscriber>, message: &LogMessage) {
+pub(crate) async fn send_log_message(
+    log_subscribers: &mut Vec<LogSubscriber>,
+    message: &LogMessage,
+) {
     for subscriber in log_subscribers.iter_mut() {
         let send_result =
             tokio::time::timeout(Duration::from_millis(100), subscriber.send_message(message));
@@ -780,7 +608,7 @@ async fn send_log_message(log_subscribers: &mut Vec<LogSubscriber>, message: &Lo
     log_subscribers.retain(|s| !s.is_closed());
 }
 
-fn dataflow_result(
+pub(crate) fn dataflow_result(
     results: &BTreeMap<DaemonId, DataflowDaemonResult>,
     dataflow_uuid: Uuid,
     clock: &uhlc::HLC,
@@ -800,9 +628,10 @@ fn dataflow_result(
     }
 }
 
-struct DaemonConnection {
-    stream: Arc<tokio::sync::Mutex<TcpStream>>,
-    last_heartbeat: Instant,
+pub(crate) struct DaemonConnection {
+    client: DaemonControlClient,
+    pub(crate) last_heartbeat: Instant,
+    peer_addr: Option<SocketAddr>,
 }
 
 async fn handle_destroy(
@@ -819,36 +648,16 @@ async fn handle_destroy(
             &coordinator_state.running_dataflows,
             dataflow_uuid,
             &coordinator_state.daemon_connections,
-            coordinator_state.clock.new_timestamp(),
             None,
             false,
         )
         .await?;
     }
 
-    let result = destroy_daemons(
-        &coordinator_state.daemon_connections,
-        coordinator_state.clock.new_timestamp(),
-    )
-    .await;
+    let result = destroy_daemons(&coordinator_state.daemon_connections).await;
 
     let _ = coordinator_state.daemon_events_tx.send(Event::Close).await;
     result
-}
-
-async fn send_heartbeat_message(
-    connection: &mut TcpStream,
-    timestamp: uhlc::Timestamp,
-) -> eyre::Result<()> {
-    let message = serde_json::to_vec(&Timestamped {
-        inner: DaemonCoordinatorEvent::Heartbeat,
-        timestamp,
-    })
-    .context("Could not serialize heartbeat message")?;
-
-    tcp_send(connection, &message)
-        .await
-        .wrap_err("failed to send heartbeat message to daemon")
 }
 
 /// Result of a completed dataflow build.
@@ -858,40 +667,41 @@ pub struct BuildFinishedResult {
     pub result: Result<(), String>,
 }
 
-struct RunningBuild {
-    errors: Vec<String>,
-    build_result: CachedResult<BuildFinishedResult>,
+pub(crate) struct RunningBuild {
+    pub(crate) errors: Vec<String>,
+    pub(crate) build_result: CachedResult<BuildFinishedResult>,
 
     /// Buffer for log messages that were sent before there were any subscribers.
-    buffered_log_messages: Vec<LogMessage>,
-    log_subscribers: Vec<LogSubscriber>,
+    pub(crate) buffered_log_messages: Vec<LogMessage>,
+    pub(crate) log_subscribers: Vec<LogSubscriber>,
 
-    pending_build_results: BTreeSet<DaemonId>,
+    pub(crate) pending_build_results: BTreeSet<DaemonId>,
 }
 
-struct RunningDataflow {
+pub(crate) struct RunningDataflow {
     name: Option<String>,
-    uuid: Uuid,
+    pub(crate) uuid: Uuid,
     descriptor: Descriptor,
     /// The IDs of the daemons that the dataflow is running on.
-    daemons: BTreeSet<DaemonId>,
+    pub(crate) daemons: BTreeSet<DaemonId>,
     /// IDs of daemons that are waiting until all nodes are started.
-    pending_daemons: BTreeSet<DaemonId>,
-    exited_before_subscribe: Vec<NodeId>,
+    pub(crate) pending_daemons: BTreeSet<DaemonId>,
+    pub(crate) exited_before_subscribe: Vec<NodeId>,
     nodes: BTreeMap<NodeId, ResolvedNode>,
     /// Maps each node to the daemon it's running on
     node_to_daemon: BTreeMap<NodeId, DaemonId>,
     /// Latest metrics for each node (from daemons)
     node_metrics: BTreeMap<NodeId, dora_message::daemon_to_coordinator::NodeMetrics>,
 
-    spawn_result: CachedResult<Uuid>,
-    stop_reply_senders: Vec<tokio::sync::oneshot::Sender<eyre::Result<StopDataflowReply>>>,
+    pub(crate) spawn_result: CachedResult<Uuid>,
+    pub(crate) stop_reply_senders:
+        Vec<tokio::sync::oneshot::Sender<eyre::Result<StopDataflowReply>>>,
 
     /// Buffer for log messages that were sent before there were any subscribers.
-    buffered_log_messages: Vec<LogMessage>,
-    log_subscribers: Vec<LogSubscriber>,
+    pub(crate) buffered_log_messages: Vec<LogMessage>,
+    pub(crate) log_subscribers: Vec<LogSubscriber>,
 
-    pending_spawn_results: BTreeSet<DaemonId>,
+    pub(crate) pending_spawn_results: BTreeSet<DaemonId>,
 }
 
 pub enum CachedResult<T> {
@@ -942,7 +752,7 @@ impl<T: Clone> CachedResult<T> {
     }
 }
 
-struct ArchivedDataflow {
+pub(crate) struct ArchivedDataflow {
     name: Option<String>,
     nodes: BTreeMap<NodeId, ResolvedNode>,
 }
@@ -968,53 +778,36 @@ async fn stop_dataflow<'a>(
     running_dataflows: &'a DashMap<Uuid, RunningDataflow>,
     dataflow_uuid: Uuid,
     daemon_connections: &DaemonConnections,
-    timestamp: uhlc::Timestamp,
     grace_duration: Option<Duration>,
     force: bool,
 ) -> eyre::Result<RefMut<'a, Uuid, RunningDataflow>> {
-    // Collect daemon list and stream handles while briefly holding the lock.
-    let daemon_streams: Vec<(DaemonId, Arc<tokio::sync::Mutex<TcpStream>>)> = {
+    // Collect daemon IDs while briefly holding the lock.
+    let daemon_ids: Vec<DaemonId> = {
         let Some(dataflow) = running_dataflows.get(&dataflow_uuid) else {
             bail!("no known running dataflow found with UUID `{dataflow_uuid}`")
         };
-        dataflow
-            .daemons
-            .iter()
-            .filter_map(|daemon_id| {
-                daemon_connections
-                    .get_stream(daemon_id)
-                    .map(|s| (daemon_id.clone(), s))
-            })
-            .collect()
+        dataflow.daemons.iter().cloned().collect()
     };
+    // DashMap lock is now dropped — safe to do async I/O.
 
-    let message = serde_json::to_vec(&Timestamped {
-        inner: DaemonCoordinatorEvent::StopDataflow {
-            dataflow_id: dataflow_uuid,
-            grace_duration,
-            force,
-        },
-        timestamp,
-    })?;
-
-    // Send stop commands without holding any DashMap locks.
-    for (_daemon_id, stream) in &daemon_streams {
-        let mut stream = stream.lock().await;
-        tcp_send(&mut stream, &message)
+    for daemon_id in &daemon_ids {
+        let client = daemon_connections
+            .get(daemon_id)
+            .wrap_err("no daemon connection")?
+            .client
+            .clone();
+        // DashMap lock is dropped — safe to do async I/O.
+        client
+            .stop_dataflow(
+                tarpc::context::current(),
+                dataflow_uuid,
+                grace_duration,
+                force,
+            )
             .await
-            .wrap_err("failed to send stop message to daemon")?;
-
-        let reply_raw = tcp_receive(&mut stream)
-            .await
-            .wrap_err("failed to receive stop reply from daemon")?;
-        match serde_json::from_slice(&reply_raw)
-            .wrap_err("failed to deserialize stop reply from daemon")?
-        {
-            DaemonCoordinatorReply::StopResult(result) => result
-                .map_err(|e| eyre!(e))
-                .wrap_err("failed to stop dataflow")?,
-            other => bail!("unexpected reply after sending stop: {other:?}"),
-        }
+            .context("RPC transport error")?
+            .map_err(|e: String| eyre!(e))
+            .wrap_err("failed to stop dataflow")?;
     }
 
     tracing::info!("successfully send stop dataflow `{dataflow_uuid}` to all daemons");
@@ -1031,50 +824,33 @@ async fn reload_dataflow(
     node_id: NodeId,
     operator_id: Option<OperatorId>,
     daemon_connections: &DaemonConnections,
-    timestamp: uhlc::Timestamp,
 ) -> eyre::Result<()> {
-    // Collect daemon streams while briefly holding the lock.
-    let daemon_streams: Vec<(DaemonId, Arc<tokio::sync::Mutex<TcpStream>>)> = {
+    // Collect daemon IDs while briefly holding the lock.
+    let daemon_ids: Vec<DaemonId> = {
         let Some(dataflow) = running_dataflows.get(&dataflow_id) else {
             bail!("No running dataflow found with UUID `{dataflow_id}`")
         };
-        dataflow
-            .daemons
-            .iter()
-            .filter_map(|daemon_id| {
-                daemon_connections
-                    .get_stream(daemon_id)
-                    .map(|s| (daemon_id.clone(), s))
-            })
-            .collect()
+        dataflow.daemons.iter().cloned().collect()
     };
+    // DashMap lock is now dropped — safe to do async I/O.
 
-    let message = serde_json::to_vec(&Timestamped {
-        inner: DaemonCoordinatorEvent::ReloadDataflow {
-            dataflow_id,
-            node_id,
-            operator_id,
-        },
-        timestamp,
-    })?;
-
-    for (_machine_id, stream) in &daemon_streams {
-        let mut stream = stream.lock().await;
-        tcp_send(&mut stream, &message)
+    for machine_id in &daemon_ids {
+        let client = daemon_connections
+            .get(machine_id)
+            .wrap_err("no daemon connection")?
+            .client
+            .clone();
+        client
+            .reload_dataflow(
+                tarpc::context::current(),
+                dataflow_id,
+                node_id.clone(),
+                operator_id.clone(),
+            )
             .await
-            .wrap_err("failed to send reload message to daemon")?;
-
-        let reply_raw = tcp_receive(&mut stream)
-            .await
-            .wrap_err("failed to receive reload reply from daemon")?;
-        match serde_json::from_slice(&reply_raw)
-            .wrap_err("failed to deserialize reload reply from daemon")?
-        {
-            DaemonCoordinatorReply::ReloadResult(result) => result
-                .map_err(|e| eyre!(e))
-                .wrap_err("failed to reload dataflow")?,
-            other => bail!("unexpected reply after sending reload: {other:?}"),
-        }
+            .context("RPC transport error")?
+            .map_err(|e: String| eyre!(e))
+            .wrap_err("failed to reload dataflow")?;
     }
     tracing::info!("successfully reloaded dataflow `{dataflow_id}`");
 
@@ -1087,7 +863,6 @@ async fn retrieve_logs(
     dataflow_id: Uuid,
     node_id: NodeId,
     daemon_connections: &DaemonConnections,
-    timestamp: uhlc::Timestamp,
     tail: Option<usize>,
 ) -> eyre::Result<Vec<u8>> {
     let nodes = if let Some(dataflow) = archived_dataflows.get(&dataflow_id) {
@@ -1097,15 +872,6 @@ async fn retrieve_logs(
     } else {
         bail!("No dataflow found with UUID `{dataflow_id}`")
     };
-
-    let message = serde_json::to_vec(&Timestamped {
-        inner: DaemonCoordinatorEvent::Logs {
-            dataflow_id,
-            node_id: node_id.clone(),
-            tail,
-        },
-        timestamp,
-    })?;
 
     let machine_ids: Vec<Option<String>> = nodes
         .values()
@@ -1137,34 +903,30 @@ async fn retrieve_logs(
         [] => eyre::bail!("no matching daemon connections for machine ID `{machine_id:?}`"),
         _ => eyre::bail!("multiple matching daemon connections for machine ID `{machine_id:?}`"),
     };
-    let stream = daemon_connections
-        .get_stream(&daemon_id)
-        .wrap_err_with(|| format!("no daemon connection to `{daemon_id}`"))?;
-    let mut stream = stream.lock().await;
-    tcp_send(&mut stream, &message)
+    let client = daemon_connections
+        .get(&daemon_id)
+        .wrap_err_with(|| format!("no daemon connection to `{daemon_id}`"))?
+        .client
+        .clone();
+    // DashMap lock is dropped — safe to do async I/O.
+    let reply_logs = client
+        .logs(
+            tarpc::context::current(),
+            dataflow_id,
+            node_id.clone(),
+            tail,
+        )
         .await
-        .wrap_err("failed to send logs message to daemon")?;
-
-    // wait for reply
-    let reply_raw = tcp_receive(&mut stream)
-        .await
-        .wrap_err("failed to retrieve logs reply from daemon")?;
-    let reply_logs = match serde_json::from_slice(&reply_raw)
-        .wrap_err("failed to deserialize logs reply from daemon")?
-    {
-        DaemonCoordinatorReply::Logs(logs) => logs,
-        other => bail!("unexpected reply after sending logs: {other:?}"),
-    };
+        .context("RPC transport error")?;
     tracing::info!("successfully retrieved logs for `{dataflow_id}/{node_id}`");
 
-    reply_logs.map_err(|err| eyre!(err))
+    reply_logs.map_err(|err: String| eyre!(err))
 }
 
-#[tracing::instrument(skip(daemon_connections, clock))]
+#[tracing::instrument(skip(daemon_connections))]
 async fn build_dataflow(
     build_request: BuildRequest,
     build_id: BuildId,
-    clock: &HLC,
     daemon_connections: &DaemonConnections,
 ) -> eyre::Result<RunningBuild> {
     let BuildRequest {
@@ -1218,15 +980,14 @@ async fn build_dataflow(
             nodes_on_machine,
             uv,
         };
-        let message = serde_json::to_vec(&Timestamped {
-            inner: DaemonCoordinatorEvent::Build(build_command),
-            timestamp: clock.new_timestamp(),
-        })?;
 
-        let daemon_id =
-            build_dataflow_on_machine(daemon_connections, machine.map(|s| s.as_str()), &message)
-                .await
-                .wrap_err_with(|| format!("failed to build dataflow on machine `{machine:?}`"))?;
+        let daemon_id = build_dataflow_on_machine(
+            daemon_connections,
+            machine.map(|s| s.as_str()),
+            build_command,
+        )
+        .await
+        .wrap_err_with(|| format!("failed to build dataflow on machine `{machine:?}`"))?;
         daemons.insert(daemon_id);
     }
 
@@ -1244,7 +1005,7 @@ async fn build_dataflow(
 async fn build_dataflow_on_machine(
     daemon_connections: &DaemonConnections,
     machine: Option<&str>,
-    message: &[u8],
+    build_command: BuildDataflowNodes,
 ) -> Result<DaemonId, eyre::ErrReport> {
     let daemon_id = match machine {
         Some(machine) => daemon_connections
@@ -1258,25 +1019,18 @@ async fn build_dataflow_on_machine(
             .clone(),
     };
 
-    let stream = daemon_connections
-        .get_stream(&daemon_id)
-        .wrap_err_with(|| format!("no daemon connection for daemon `{daemon_id}`"))?;
-    let mut stream = stream.lock().await;
-    tcp_send(&mut stream, message)
+    let client = daemon_connections
+        .get(&daemon_id)
+        .wrap_err_with(|| format!("no daemon connection for daemon `{daemon_id}`"))?
+        .client
+        .clone();
+    // DashMap lock is dropped — safe to do async I/O.
+    client
+        .build(tarpc::context::current(), build_command)
         .await
-        .wrap_err("failed to send build message to daemon")?;
-
-    let reply_raw = tcp_receive(&mut stream)
-        .await
-        .wrap_err("failed to receive build reply from daemon")?;
-    match serde_json::from_slice(&reply_raw)
-        .wrap_err("failed to deserialize build reply from daemon")?
-    {
-        DaemonCoordinatorReply::TriggerBuildResult(result) => result
-            .map_err(|e| eyre!(e))
-            .wrap_err("daemon returned an error")?,
-        _ => bail!("unexpected reply"),
-    }
+        .context("RPC transport error")?
+        .map_err(|e: String| eyre!(e))
+        .wrap_err("daemon returned an error")?;
     Ok(daemon_id)
 }
 
@@ -1288,7 +1042,6 @@ async fn start_dataflow(
     local_working_dir: Option<PathBuf>,
     name: Option<String>,
     daemon_connections: &DaemonConnections,
-    clock: &HLC,
     running_dataflows: &DashMap<Uuid, RunningDataflow>,
     uv: bool,
     write_events_to: Option<PathBuf>,
@@ -1299,7 +1052,6 @@ async fn start_dataflow(
         &dataflow,
         local_working_dir,
         daemon_connections,
-        clock,
         uv,
         write_events_to,
     )?;
@@ -1312,7 +1064,7 @@ async fn start_dataflow(
         daemons: _,
         nodes,
         node_to_daemon,
-        daemon_messages,
+        daemon_spawn_commands,
     } = plan;
 
     // Insert the RunningDataflow into the map BEFORE sending spawn commands to
@@ -1346,7 +1098,9 @@ async fn start_dataflow(
 
     // Now send the spawn commands.  If a result arrives quickly, the entry is
     // already in the map so the event loop won't discard it.
-    if let Err(err) = run::execute_dataflow_plan(uuid, &daemon_messages, daemon_connections).await {
+    if let Err(err) =
+        run::execute_dataflow_plan(uuid, daemon_spawn_commands, daemon_connections).await
+    {
         running_dataflows.remove(&uuid);
         return Err(err);
     }
@@ -1354,51 +1108,31 @@ async fn start_dataflow(
     Ok(uuid)
 }
 
-async fn destroy_daemon(
-    daemon_id: DaemonId,
-    stream: &Arc<tokio::sync::Mutex<TcpStream>>,
-    timestamp: uhlc::Timestamp,
-) -> Result<()> {
-    let message = serde_json::to_vec(&Timestamped {
-        inner: DaemonCoordinatorEvent::Destroy,
-        timestamp,
-    })?;
-
-    let mut stream = stream.lock().await;
-    tcp_send(&mut stream, &message)
+async fn destroy_daemon(daemon_id: DaemonId, client: DaemonControlClient) -> Result<()> {
+    client
+        .destroy(tarpc::context::current())
         .await
-        .wrap_err_with(|| format!("failed to send destroy message to daemon `{daemon_id}`"))?;
-
-    // wait for reply
-    let reply_raw = tcp_receive(&mut stream)
-        .await
-        .wrap_err("failed to receive destroy reply from daemon")?;
-    match serde_json::from_slice(&reply_raw)
-        .wrap_err("failed to deserialize destroy reply from daemon")?
-    {
-        DaemonCoordinatorReply::DestroyResult { result, .. } => result
-            .map_err(|e| eyre!(e))
-            .wrap_err("failed to destroy dataflow")?,
-        other => bail!("unexpected reply after sending `destroy`: {other:?}"),
-    }
+        .wrap_err(format!(
+            "failed to send destroy message to daemon `{daemon_id}`"
+        ))?
+        .map_err(|e: String| eyre!(e))
+        .wrap_err("failed to destroy daemon")?;
 
     tracing::info!("successfully destroyed daemon `{daemon_id}`");
     Ok(())
 }
 
-async fn destroy_daemons(
-    daemon_connections: &DaemonConnections,
-    timestamp: uhlc::Timestamp,
-) -> eyre::Result<()> {
-    // Collect daemon IDs and stream handles, then drop the DashMap lock.
-    let daemons: Vec<(DaemonId, Arc<tokio::sync::Mutex<TcpStream>>)> = daemon_connections
+async fn destroy_daemons(daemon_connections: &DaemonConnections) -> eyre::Result<()> {
+    // Collect daemon IDs and cloned clients, then drop the DashMap lock.
+    let daemons: Vec<(DaemonId, DaemonControlClient)> = daemon_connections
         .iter()
-        .map(|r| (r.key().clone(), r.value().stream.clone()))
+        .map(|r| (r.key().clone(), r.value().client.clone()))
         .collect();
+    // DashMap lock is now dropped — safe to do concurrent async I/O.
 
-    let results = futures::future::join_all(daemons.iter().map(|(daemon_id, stream)| {
+    let results = futures::future::join_all(daemons.into_iter().map(|(daemon_id, client)| {
         tracing::info!("Destroying daemon connection for `{daemon_id}`");
-        destroy_daemon(daemon_id.clone(), stream, timestamp)
+        destroy_daemon(daemon_id, client)
     }))
     .await;
     daemon_connections.clear();
@@ -1413,35 +1147,11 @@ async fn destroy_daemons(
 pub enum Event {
     NewDaemonConnection(TcpStream),
     DaemonConnectError(eyre::Report),
-    DaemonHeartbeat {
-        daemon_id: DaemonId,
-    },
-    Dataflow {
-        uuid: Uuid,
-        event: DataflowEvent,
-    },
     Control(ControlEvent),
     Daemon(DaemonRequest),
     DaemonHeartbeatInterval,
     CtrlC,
     Log(LogMessage),
-    DaemonExit {
-        daemon_id: dora_message::common::DaemonId,
-    },
-    DataflowBuildResult {
-        build_id: BuildId,
-        daemon_id: DaemonId,
-        result: eyre::Result<()>,
-    },
-    DataflowSpawnResult {
-        dataflow_id: uuid::Uuid,
-        daemon_id: DaemonId,
-        result: eyre::Result<()>,
-    },
-    NodeMetrics {
-        dataflow_id: uuid::Uuid,
-        metrics: BTreeMap<NodeId, dora_message::daemon_to_coordinator::NodeMetrics>,
-    },
     Close,
 }
 
@@ -1459,39 +1169,25 @@ impl Event {
         match self {
             Event::NewDaemonConnection(_) => "NewDaemonConnection",
             Event::DaemonConnectError(_) => "DaemonConnectError",
-            Event::DaemonHeartbeat { .. } => "DaemonHeartbeat",
-            Event::Dataflow { .. } => "Dataflow",
             Event::Control(_) => "Control",
             Event::Daemon(_) => "Daemon",
             Event::DaemonHeartbeatInterval => "DaemonHeartbeatInterval",
             Event::CtrlC => "CtrlC",
             Event::Log(_) => "Log",
-            Event::DaemonExit { .. } => "DaemonExit",
-            Event::DataflowBuildResult { .. } => "DataflowBuildResult",
-            Event::DataflowSpawnResult { .. } => "DataflowSpawnResult",
-            Event::NodeMetrics { .. } => "NodeMetrics",
             Event::Close => "Close",
         }
     }
 }
 
 #[derive(Debug)]
-pub enum DataflowEvent {
-    DataflowFinishedOnDaemon {
-        daemon_id: DaemonId,
-        result: DataflowDaemonResult,
-    },
-    ReadyOnDaemon {
-        daemon_id: DaemonId,
-        exited_before_subscribe: Vec<NodeId>,
-    },
-}
-
-#[derive(Debug)]
 pub enum DaemonRequest {
     Register {
-        version_check_result: Result<(), String>,
         machine_id: Option<String>,
+        connection: TcpStream,
+        version_check_result: Result<(), String>,
+    },
+    RegisterNotificationChannel {
+        daemon_id: DaemonId,
         connection: TcpStream,
     },
 }

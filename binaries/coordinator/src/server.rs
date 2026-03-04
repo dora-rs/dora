@@ -3,7 +3,7 @@ use std::{collections::BTreeSet, sync::Arc, time::Duration};
 use dora_core::config::{NodeId, OperatorId};
 use dora_message::{
     BuildId,
-    cli_to_coordinator::{BuildRequest, CliControl, StartRequest},
+    cli_to_coordinator::{BuildRequest, CoordinatorControl, StartRequest},
     common::DaemonId,
     coordinator_to_cli::{
         CheckDataflowReply, DataflowIdAndName, DataflowInfo, DataflowList, DataflowListEntry,
@@ -46,7 +46,6 @@ async fn stop_dataflow_impl(
         &state.running_dataflows,
         dataflow_uuid,
         &state.daemon_connections,
-        state.clock.new_timestamp(),
         grace_duration,
         force,
     )
@@ -65,23 +64,17 @@ async fn stop_dataflow_impl(
 }
 
 #[derive(Clone)]
-pub(crate) struct ControlServer {
+pub(crate) struct CoordinatorControlServer {
     pub(crate) state: Arc<CoordinatorState>,
     pub(crate) client_ip: Option<std::net::IpAddr>,
 }
 
-impl CliControl for ControlServer {
+impl CoordinatorControl for CoordinatorControlServer {
     async fn build(self, _context: Context, request: BuildRequest) -> Result<BuildId, String> {
         // assign a random build id
         let build_id = BuildId::generate();
 
-        let result = build_dataflow(
-            request,
-            build_id,
-            &self.state.clock,
-            &self.state.daemon_connections,
-        )
-        .await;
+        let result = build_dataflow(request, build_id, &self.state.daemon_connections).await;
         match result {
             Ok(build) => {
                 self.state.running_builds.insert(build_id, build);
@@ -141,7 +134,6 @@ impl CliControl for ControlServer {
             local_working_dir,
             name,
             &self.state.daemon_connections,
-            &self.state.clock,
             &self.state.running_dataflows,
             uv,
             write_events_to,
@@ -180,7 +172,6 @@ impl CliControl for ControlServer {
             node_id,
             operator_id,
             &self.state.daemon_connections,
-            self.state.clock.new_timestamp(),
         )
         .await
         .map_err(err_to_string)?;
@@ -265,7 +256,6 @@ impl CliControl for ControlServer {
             dataflow_uuid,
             node.into(),
             &self.state.daemon_connections,
-            self.state.clock.new_timestamp(),
             tail,
         )
         .await
@@ -353,13 +343,11 @@ impl CliControl for ControlServer {
         let Some(default_id) = self.state.daemon_connections.unnamed().next() else {
             return Ok(false);
         };
-        let Some(stream) = self.state.daemon_connections.get_stream(&default_id) else {
+        let Some(connection) = self.state.daemon_connections.get(&default_id) else {
             return Ok(false);
         };
-        let stream = stream.lock().await;
-        let same = stream
-            .peer_addr()
-            .ok()
+        let same = connection
+            .peer_addr
             .map(|addr| addr.ip() == cli_ip)
             .unwrap_or(false);
         Ok(same)

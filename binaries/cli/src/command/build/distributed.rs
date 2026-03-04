@@ -2,7 +2,7 @@ use crate::tcp::AsyncTcpConnection;
 use dora_core::descriptor::Descriptor;
 use dora_message::{
     BuildId,
-    cli_to_coordinator::{BuildRequest, CliControlClient, LegacyControlRequest},
+    cli_to_coordinator::{BuildRequest, CoordinatorControlClient, LegacyControlRequest},
     common::{GitSource, LogMessage},
     id::NodeId,
     tarpc,
@@ -15,7 +15,7 @@ use crate::output::print_log_message;
 use crate::session::DataflowSession;
 
 pub async fn build_distributed_dataflow(
-    client: &CliControlClient,
+    client: &CoordinatorControlClient,
     dataflow: Descriptor,
     git_sources: &BTreeMap<NodeId, GitSource>,
     dataflow_session: &DataflowSession,
@@ -43,7 +43,7 @@ pub async fn build_distributed_dataflow(
 
 pub async fn wait_until_dataflow_built(
     build_id: BuildId,
-    client: &CliControlClient,
+    client: &CoordinatorControlClient,
     coordinator_socket: SocketAddr,
     log_level: log::LevelFilter,
 ) -> eyre::Result<BuildId> {

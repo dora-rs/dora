@@ -51,7 +51,7 @@ use dora_core::{
     descriptor::{CoreNodeKind, CustomNode, Descriptor, DescriptorExt},
     topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST},
 };
-use dora_message::{BuildId, cli_to_coordinator::CliControlClient, descriptor::NodeSource};
+use dora_message::{BuildId, cli_to_coordinator::CoordinatorControlClient, descriptor::NodeSource};
 use eyre::Context;
 use std::{collections::BTreeMap, net::IpAddr};
 
@@ -254,14 +254,14 @@ pub async fn build_async(
 enum BuildKind {
     Local,
     ThroughCoordinator {
-        coordinator_client: CliControlClient,
+        coordinator_client: CoordinatorControlClient,
     },
 }
 
 async fn connect_to_coordinator_rpc_with_defaults(
     coordinator_addr: Option<std::net::IpAddr>,
     coordinator_port: Option<u16>,
-) -> eyre::Result<CliControlClient> {
+) -> eyre::Result<CoordinatorControlClient> {
     let addr = coordinator_addr.unwrap_or(LOCALHOST);
     let control_port = coordinator_port.unwrap_or(DORA_COORDINATOR_PORT_CONTROL_DEFAULT);
     connect_and_check_version(addr, control_port).await

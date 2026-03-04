@@ -1599,6 +1599,7 @@ dependencies = [
  "crossbeam",
  "crossbeam-skiplist",
  "ctrlc",
+ "dashmap",
  "dora-arrow-convert",
  "dora-core",
  "dora-download",

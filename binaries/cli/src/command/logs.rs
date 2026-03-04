@@ -11,7 +11,7 @@ use crate::{
 use clap::Args;
 use dora_core::topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST};
 use dora_message::{
-    cli_to_coordinator::{CliControlClient, LegacyControlRequest},
+    cli_to_coordinator::{CoordinatorControlClient, LegacyControlRequest},
     common::LogMessage,
 };
 use eyre::{Context, Result};
@@ -62,7 +62,7 @@ impl Executable for LogsArgs {
 }
 
 pub async fn logs(
-    client: &CliControlClient,
+    client: &CoordinatorControlClient,
     uuid: Uuid,
     node: dora_message::id::NodeId,
     tail: Option<usize>,

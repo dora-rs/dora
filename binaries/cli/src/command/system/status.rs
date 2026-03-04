@@ -6,7 +6,7 @@ use crate::{
 use dora_core::descriptor::DescriptorExt;
 use dora_core::{descriptor::Descriptor, topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT};
 use dora_message::{
-    cli_to_coordinator::CliControlClient, coordinator_to_cli::DataflowStatus, tarpc,
+    cli_to_coordinator::CoordinatorControlClient, coordinator_to_cli::DataflowStatus, tarpc,
 };
 use eyre::{Context, bail};
 use std::{
@@ -91,7 +91,7 @@ pub async fn check_environment(coordinator_addr: SocketAddr) -> eyre::Result<()>
     Ok(())
 }
 
-pub async fn daemon_running(client: &CliControlClient) -> Result<bool, eyre::ErrReport> {
+pub async fn daemon_running(client: &CoordinatorControlClient) -> Result<bool, eyre::ErrReport> {
     rpc(
         "check daemon connection",
         client.daemon_connected(tarpc::context::current()),
@@ -99,7 +99,9 @@ pub async fn daemon_running(client: &CliControlClient) -> Result<bool, eyre::Err
     .await
 }
 
-async fn query_running_dataflow_count(client: &CliControlClient) -> Result<usize, eyre::ErrReport> {
+async fn query_running_dataflow_count(
+    client: &CoordinatorControlClient,
+) -> Result<usize, eyre::ErrReport> {
     let list = rpc("list dataflows", client.list(tarpc::context::current())).await?;
     Ok(list
         .0

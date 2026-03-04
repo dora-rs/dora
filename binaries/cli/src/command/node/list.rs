@@ -10,7 +10,9 @@ use crate::{
     common::{CoordinatorOptions, rpc},
     formatting::OutputFormat,
 };
-use dora_message::{cli_to_coordinator::CliControlClient, coordinator_to_cli::NodeInfo, tarpc};
+use dora_message::{
+    cli_to_coordinator::CoordinatorControlClient, coordinator_to_cli::NodeInfo, tarpc,
+};
 
 /// List all currently running nodes and their status.
 ///
@@ -60,7 +62,7 @@ struct OutputEntry {
 }
 
 async fn list(
-    client: &CliControlClient,
+    client: &CoordinatorControlClient,
     dataflow_filter: Option<String>,
     format: OutputFormat,
 ) -> eyre::Result<()> {
