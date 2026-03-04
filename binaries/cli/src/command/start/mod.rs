@@ -3,23 +3,23 @@
 //! The `dora start` command does not run any build commands, nor update git dependencies or similar. Use `dora build` for that.
 
 use super::{Executable, default_tracing};
-use crate::tcp::AsyncTcpConnection;
 use crate::{
     command::start::attach::attach_dataflow,
     common::{
         connect_and_check_version, local_working_dir, long_context, resolve_dataflow, rpc,
         write_events_to,
     },
-    output::print_log_message,
+    output::{abort_log_task_with_grace, subscribe_and_print_logs},
     session::DataflowSession,
 };
 use dora_core::{
     descriptor::{Descriptor, DescriptorExt},
-    topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST},
+    topics::{
+        DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST, zenoh_log_subscribe_all_for_dataflow,
+    },
 };
 use dora_message::{
-    cli_to_coordinator::{CoordinatorControlClient, LegacyControlRequest, StartRequest},
-    common::LogMessage,
+    cli_to_coordinator::{CoordinatorControlClient, StartRequest},
     tarpc,
 };
 use eyre::Context;
@@ -91,7 +91,7 @@ impl Executable for Start {
                 dataflow_id,
                 &client,
                 self.hot_reload,
-                coordinator_socket,
+                self.coordinator_addr,
                 log_level,
             )
             .await
@@ -101,7 +101,7 @@ impl Executable for Start {
             wait_until_dataflow_started(
                 dataflow_id,
                 &client,
-                coordinator_socket,
+                self.coordinator_addr,
                 log::LevelFilter::Info,
                 print_daemon_name,
             )
@@ -154,46 +154,31 @@ async fn start_dataflow(
 async fn wait_until_dataflow_started(
     dataflow_id: Uuid,
     client: &CoordinatorControlClient,
-    coordinator_addr: SocketAddr,
+    coordinator_addr: IpAddr,
     log_level: log::LevelFilter,
     print_daemon_id: bool,
 ) -> eyre::Result<()> {
-    // subscribe to log messages (TCP streaming)
-    let mut log_session = AsyncTcpConnection {
-        stream: tokio::net::TcpStream::connect(coordinator_addr)
-            .await
-            .wrap_err("failed to connect to dora coordinator")?,
-    };
-    log_session
-        .send(
-            &serde_json::to_vec(&LegacyControlRequest::LogSubscribe {
-                dataflow_id,
-                level: log_level,
-            })
-            .wrap_err("failed to serialize message")?,
-        )
+    // Subscribe to log messages via zenoh
+    let zenoh_session = dora_core::topics::open_zenoh_session(Some(coordinator_addr))
         .await
-        .wrap_err("failed to send log subscribe request to coordinator")?;
-    tokio::spawn(async move {
-        while let Ok(raw) = log_session.receive().await {
-            let parsed: eyre::Result<LogMessage> =
-                serde_json::from_slice(&raw).context("failed to parse log message");
-            match parsed {
-                Ok(log_message) => {
-                    print_log_message(log_message, false, print_daemon_id);
-                }
-                Err(err) => {
-                    tracing::warn!("failed to parse log message: {err:?}")
-                }
-            }
-        }
-    });
+        .wrap_err("failed to open zenoh session for log subscription")?;
+    let log_topic = zenoh_log_subscribe_all_for_dataflow(dataflow_id);
+    let log_task = subscribe_and_print_logs(
+        &zenoh_session,
+        &log_topic,
+        log_level,
+        false,
+        print_daemon_id,
+    )
+    .await?;
 
-    rpc(
+    let result = rpc(
         "wait for dataflow spawn",
         client.wait_for_spawn(long_context(), dataflow_id),
     )
-    .await?;
+    .await;
+    abort_log_task_with_grace(log_task).await;
+    result?;
     eprintln!("dataflow started: {dataflow_id}");
 
     Ok(())

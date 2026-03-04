@@ -16,6 +16,13 @@ use crate::{
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct BuildRequest {
+    /// Client-generated build ID. When provided, the CLI can subscribe
+    /// to the log topic *before* sending this RPC, avoiding a race
+    /// where early log messages are missed.
+    ///
+    /// When `None`, the coordinator generates the ID (backwards compat).
+    #[serde(default)]
+    pub build_id: Option<BuildId>,
     pub session_id: SessionId,
     pub dataflow: Descriptor,
     pub git_sources: BTreeMap<NodeId, GitSource>,
@@ -47,18 +54,6 @@ pub struct StartRequest {
     pub local_working_dir: Option<PathBuf>,
     pub uv: bool,
     pub write_events_to: Option<PathBuf>,
-}
-
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-pub enum LegacyControlRequest {
-    LogSubscribe {
-        dataflow_id: Uuid,
-        level: log::LevelFilter,
-    },
-    BuildLogSubscribe {
-        build_id: BuildId,
-        level: log::LevelFilter,
-    },
 }
 
 type Result<T> = std::result::Result<T, String>;

@@ -162,16 +162,15 @@ impl Daemon {
         daemon_state.set_daemon_id(daemon_id.clone());
         daemon_state.set_coordinator_client(coordinator_client);
 
-        let log_destination = {
-            // additional connection for logging
-            let stream = TcpStream::connect(coordinator_addr)
-                .await
-                .wrap_err("failed to connect log to dora-coordinator")?;
-            stream
-                .set_nodelay(true)
-                .wrap_err("failed to set TCP_NODELAY")?;
-            LogDestination::Coordinator {
-                coordinator_connection: stream,
+        let log_destination = match daemon_state.zenoh_session.as_ref() {
+            Some(session) => LogDestination::Zenoh {
+                session: session.clone(),
+            },
+            None => {
+                tracing::warn!(
+                    "no zenoh session available; log messages will only be printed locally"
+                );
+                LogDestination::Tracing
             }
         };
 
@@ -381,7 +380,6 @@ impl Daemon {
         let daemon = Self {
             logger: Logger {
                 destination: log_destination,
-                daemon_id: daemon_id.clone(),
                 clock: clock.clone(),
             }
             .for_daemon(daemon_id.clone()),
