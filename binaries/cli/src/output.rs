@@ -4,6 +4,19 @@ use chrono::Local;
 use colored::{Color, Colorize};
 use dora_core::build::LogLevelOrStdout;
 use dora_message::common::LogMessage;
+/// Check whether a log message should be displayed given the log level filter.
+pub fn should_display(message: &LogMessage, filter: log::LevelFilter) -> bool {
+    match &message.level {
+        LogLevelOrStdout::Stdout => true,
+        LogLevelOrStdout::LogLevel(level) => {
+            // Convert log::Level to log::LevelFilter for a safe same-type comparison
+            // rather than relying on cross-type PartialOrd between Level and LevelFilter.
+            let msg_filter = level.to_level_filter();
+            msg_filter <= filter
+        }
+    }
+}
+
 pub fn print_log_message(
     log_message: LogMessage,
     print_dataflow_id: bool,

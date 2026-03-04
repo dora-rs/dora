@@ -376,7 +376,6 @@ impl Daemon {
         let daemon = Self {
             logger: Logger {
                 destination: log_destination,
-                daemon_id: daemon_id.clone(),
                 clock: clock.clone(),
             }
             .for_daemon(daemon_id.clone()),

@@ -5,11 +5,11 @@ use crate::{
     common::{
         connect_and_check_version, long_context, resolve_dataflow_identifier_interactive, rpc,
     },
-    output::print_log_message,
+    output::{print_log_message, should_display},
 };
 use clap::Args;
 use dora_core::topics::{
-    DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST, zenoh_log_subscribe_all_for_dataflow,
+    DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST, zenoh_log_topic_for_dataflow_node,
 };
 use dora_message::{cli_to_coordinator::CoordinatorControlClient, common::LogMessage};
 use eyre::{Context, Result};
@@ -90,7 +90,7 @@ pub async fn logs(
     let zenoh_session = dora_core::topics::open_zenoh_session(Some(coordinator_addr))
         .await
         .wrap_err("failed to open zenoh session for log subscription")?;
-    let log_topic = zenoh_log_subscribe_all_for_dataflow(uuid);
+    let log_topic = zenoh_log_topic_for_dataflow_node(uuid, &node);
     let subscriber = zenoh_session
         .declare_subscriber(&log_topic)
         .await
@@ -118,12 +118,4 @@ pub async fn logs(
     }
 
     Ok(())
-}
-
-/// Check whether a log message should be displayed given the log level filter.
-fn should_display(message: &LogMessage, filter: log::LevelFilter) -> bool {
-    match &message.level {
-        dora_core::build::LogLevelOrStdout::Stdout => true,
-        dora_core::build::LogLevelOrStdout::LogLevel(level) => *level <= filter,
-    }
 }

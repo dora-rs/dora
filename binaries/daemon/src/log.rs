@@ -200,7 +200,7 @@ impl DaemonLogger {
 
             fields: None,
         };
-        self.logger.log(message).await
+        self.logger.log(message, &self.daemon_id).await
     }
 
     pub async fn log_build(
@@ -231,7 +231,7 @@ impl DaemonLogger {
                 .into(),
             fields: None,
         };
-        self.logger.log(message).await
+        self.logger.log(message, &self.daemon_id).await
     }
 
     pub(crate) fn daemon_id(&self) -> &DaemonId {
@@ -248,7 +248,6 @@ impl DaemonLogger {
 
 pub struct Logger {
     pub(super) destination: LogDestination,
-    pub(super) daemon_id: DaemonId,
     pub(super) clock: Arc<uhlc::HLC>,
 }
 
@@ -260,20 +259,20 @@ impl Logger {
         }
     }
 
-    pub async fn log(&mut self, message: LogMessage) {
+    pub async fn log(&mut self, message: LogMessage, daemon_id: &DaemonId) {
         match &self.destination {
             LogDestination::Zenoh { session } => {
                 let topic = if let Some(dataflow_id) = &message.dataflow_id {
                     if let Some(node_id) = &message.node_id {
                         zenoh_log_topic_for_dataflow_node(*dataflow_id, node_id)
                     } else {
-                        zenoh_log_topic_for_dataflow_daemon(*dataflow_id, &self.daemon_id)
+                        zenoh_log_topic_for_dataflow_daemon(*dataflow_id, daemon_id)
                     }
                 } else if let Some(build_id) = &message.build_id {
                     if let Some(node_id) = &message.node_id {
                         zenoh_log_topic_for_build_node(build_id, node_id)
                     } else {
-                        zenoh_log_topic_for_build_daemon(build_id, &self.daemon_id)
+                        zenoh_log_topic_for_build_daemon(build_id, daemon_id)
                     }
                 } else {
                     // No dataflow or build context; fall back to tracing.
@@ -308,7 +307,6 @@ impl Logger {
 
         Ok(Self {
             destination,
-            daemon_id: self.daemon_id.clone(),
             clock: self.clock.clone(),
         })
     }

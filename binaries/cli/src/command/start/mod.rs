@@ -9,7 +9,7 @@ use crate::{
         connect_and_check_version, local_working_dir, long_context, resolve_dataflow, rpc,
         write_events_to,
     },
-    output::print_log_message,
+    output::{print_log_message, should_display},
     session::DataflowSession,
 };
 use dora_core::{
@@ -169,7 +169,7 @@ async fn wait_until_dataflow_started(
         .await
         .map_err(|e| eyre::eyre!(e))
         .wrap_err("failed to subscribe to log topic")?;
-    tokio::spawn(async move {
+    let log_task = tokio::spawn(async move {
         loop {
             match subscriber.recv_async().await {
                 Ok(sample) => {
@@ -192,20 +192,14 @@ async fn wait_until_dataflow_started(
         }
     });
 
-    rpc(
+    let result = rpc(
         "wait for dataflow spawn",
         client.wait_for_spawn(long_context(), dataflow_id),
     )
-    .await?;
+    .await;
+    log_task.abort();
+    result?;
     eprintln!("dataflow started: {dataflow_id}");
 
     Ok(())
-}
-
-/// Check whether a log message should be displayed given the log level filter.
-fn should_display(message: &LogMessage, filter: log::LevelFilter) -> bool {
-    match &message.level {
-        dora_core::build::LogLevelOrStdout::Stdout => true,
-        dora_core::build::LogLevelOrStdout::LogLevel(level) => *level <= filter,
-    }
 }

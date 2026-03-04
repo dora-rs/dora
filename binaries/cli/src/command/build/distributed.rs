@@ -10,7 +10,7 @@ use eyre::Context;
 use std::{collections::BTreeMap, net::IpAddr};
 
 use crate::common::{long_context, rpc};
-use crate::output::print_log_message;
+use crate::output::{print_log_message, should_display};
 use crate::session::DataflowSession;
 
 pub async fn build_distributed_dataflow(
@@ -56,7 +56,7 @@ pub async fn wait_until_dataflow_built(
         .await
         .map_err(|e| eyre::eyre!(e))
         .wrap_err("failed to subscribe to build log topic")?;
-    tokio::spawn(async move {
+    let log_task = tokio::spawn(async move {
         loop {
             match subscriber.recv_async().await {
                 Ok(sample) => {
@@ -79,19 +79,13 @@ pub async fn wait_until_dataflow_built(
         }
     });
 
-    rpc(
+    let result = rpc(
         "wait for build",
         client.wait_for_build(long_context(), build_id),
     )
-    .await?;
+    .await;
+    log_task.abort();
+    result?;
     eprintln!("dataflow build finished successfully");
     Ok(build_id)
-}
-
-/// Check whether a log message should be displayed given the log level filter.
-fn should_display(message: &LogMessage, filter: log::LevelFilter) -> bool {
-    match &message.level {
-        dora_core::build::LogLevelOrStdout::Stdout => true,
-        dora_core::build::LogLevelOrStdout::LogLevel(level) => *level <= filter,
-    }
 }

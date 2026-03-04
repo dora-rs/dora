@@ -14,7 +14,7 @@ use tracing::info;
 use uuid::Uuid;
 
 use crate::common::{handle_dataflow_result, long_context, rpc};
-use crate::output::print_log_message;
+use crate::output::{print_log_message, should_display};
 
 pub async fn attach_dataflow(
     dataflow: Descriptor,
@@ -218,14 +218,6 @@ pub async fn attach_dataflow(
                 info!("dataflow {uuid} reloaded")
             }
         };
-    }
-}
-
-/// Check whether a log message should be displayed given the log level filter.
-fn should_display(message: &LogMessage, filter: log::LevelFilter) -> bool {
-    match &message.level {
-        dora_core::build::LogLevelOrStdout::Stdout => true,
-        dora_core::build::LogLevelOrStdout::LogLevel(level) => *level <= filter,
     }
 }
 
