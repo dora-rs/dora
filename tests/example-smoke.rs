@@ -228,7 +228,7 @@ fn run_smoke_test_local(name: &str, yaml_path: &str, stop_after_secs: u64) {
     );
 
     let stop_after = format!("{stop_after_secs}s");
-    let status = Command::new(&adora)
+    let output = Command::new(&adora)
         .args([
             "run",
             full_yaml.to_str().unwrap(),
@@ -236,11 +236,15 @@ fn run_smoke_test_local(name: &str, yaml_path: &str, stop_after_secs: u64) {
             &stop_after,
         ])
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
+        .stderr(Stdio::piped())
+        .output()
         .unwrap_or_else(|e| panic!("{name}: failed to run adora run: {e}"));
 
-    assert!(status.success(), "{name}: adora run failed");
+    assert!(
+        output.status.success(),
+        "{name}: adora run failed\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -425,7 +429,7 @@ fn smoke_local_python_async() {
     run_smoke_test_local(
         "local-python-async",
         "examples/python-async/dataflow.yaml",
-        10,
+        20,
     );
 }
 

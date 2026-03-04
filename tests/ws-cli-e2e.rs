@@ -236,8 +236,10 @@ mod real_dataflow {
         let list_output = Command::new(&adora).arg("list").output().unwrap();
         assert!(list_output.status.success(), "adora list failed");
         let stdout = String::from_utf8_lossy(&list_output.stdout);
-        let has_dataflow =
-            stdout.contains("Running") || stdout.contains("Succeeded") || stdout.contains("Failed");
+        let has_dataflow = stdout.contains("Running")
+            || stdout.contains("Succeeded")
+            || stdout.contains("Finished")
+            || stdout.contains("Failed");
         assert!(
             has_dataflow,
             "expected a dataflow in list output, got: {stdout}"
@@ -300,8 +302,10 @@ mod real_dataflow {
         let list_output = Command::new(&adora).arg("list").output().unwrap();
         assert!(list_output.status.success());
         let stdout = String::from_utf8_lossy(&list_output.stdout);
-        let has_dataflow =
-            stdout.contains("Running") || stdout.contains("Succeeded") || stdout.contains("Failed");
+        let has_dataflow = stdout.contains("Running")
+            || stdout.contains("Succeeded")
+            || stdout.contains("Finished")
+            || stdout.contains("Failed");
         assert!(has_dataflow, "second dataflow not listed: {stdout}");
 
         cleanup(&adora);

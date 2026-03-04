@@ -24,8 +24,15 @@ from .adora import (
     Ros2Topic,
     __author__,
     __version__,
-    start_runtime,
 )
+
+# start_runtime is provided by the adora-cli package, not the node API.
+# Import it conditionally so that `from adora import Node` works without
+# requiring the full CLI to be installed.
+try:
+    from .adora import start_runtime
+except ImportError:
+    pass
 
 
 class AdoraStatus(Enum):
