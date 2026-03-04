@@ -61,7 +61,7 @@ use crate::{
     session::DataflowSession,
 };
 
-use distributed::{build_distributed_dataflow, wait_until_dataflow_built};
+use distributed::build_distributed_dataflow;
 use local::build_dataflow_locally;
 
 mod distributed;
@@ -221,24 +221,12 @@ pub async fn build_async(
                 &dataflow_session,
                 local_working_dir,
                 uv,
-            )
-            .await?;
-
-            dataflow_session.git_sources = git_sources;
-            dataflow_session
-                .write_out_for_dataflow(&dataflow_path)
-                .context("failed to write out dataflow session file")?;
-
-            // wait until dataflow build is finished
-
-            wait_until_dataflow_built(
-                build_id,
-                &coordinator_client,
                 coordinator_addr.unwrap_or(LOCALHOST),
                 log::LevelFilter::Info,
             )
             .await?;
 
+            dataflow_session.git_sources = git_sources;
             dataflow_session.build_id = Some(build_id);
             dataflow_session.local_build = None;
             dataflow_session

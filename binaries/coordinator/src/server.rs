@@ -71,8 +71,14 @@ pub(crate) struct CoordinatorControlServer {
 
 impl CoordinatorControl for CoordinatorControlServer {
     async fn build(self, _context: Context, request: BuildRequest) -> Result<BuildId, String> {
-        // assign a random build id
-        let build_id = BuildId::generate();
+        let build_id = request.build_id.unwrap_or_else(BuildId::generate);
+
+        // Reject duplicate build IDs.
+        if self.state.running_builds.contains_key(&build_id)
+            || self.state.finished_builds.contains_key(&build_id)
+        {
+            return Err(format!("duplicate build id {build_id}"));
+        }
 
         let result = build_dataflow(request, build_id, &self.state.daemon_connections).await;
         match result {

@@ -16,6 +16,13 @@ use crate::{
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct BuildRequest {
+    /// Client-generated build ID. When provided, the CLI can subscribe
+    /// to the log topic *before* sending this RPC, avoiding a race
+    /// where early log messages are missed.
+    ///
+    /// When `None`, the coordinator generates the ID (backwards compat).
+    #[serde(default)]
+    pub build_id: Option<BuildId>,
     pub session_id: SessionId,
     pub dataflow: Descriptor,
     pub git_sources: BTreeMap<NodeId, GitSource>,
