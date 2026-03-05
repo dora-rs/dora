@@ -185,6 +185,9 @@ out/
 # MacOS DS_Store
 .DS_Store
 
+# macOS debug symbol bundles
+*.dSYM/
+
 # Adora auth token (generated at runtime)
 .adora-token
 .daemon-id
