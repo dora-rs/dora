@@ -12,11 +12,12 @@ nodes:
     operator:
       build: pip install -r requirements.txt
       python: object_detection.py
+      send_stdout_as: stdout
       inputs:
         image: webcam/image
       outputs:
         - bbox
-        - latency
+        - stdout
 
   - id: plot
     operator:
@@ -25,4 +26,4 @@ nodes:
       inputs:
         image: webcam/image
         bbox: object_detection/bbox
-        latency: object_detection/latency
+        assistant_message: object_detection/stdout
