@@ -91,6 +91,31 @@ pub async fn start(
 }
 
 /// Like [`start`] but without registering a ctrl-c handler.
+/// For embedding the coordinator in another process (e.g., `adora run`).
+pub async fn start_embedded(
+    bind: SocketAddr,
+    external_events: impl Stream<Item = Event> + Unpin,
+    store: Arc<dyn CoordinatorStore>,
+    span_store: SpanStore,
+) -> Result<(u16, impl Future<Output = eyre::Result<()>>), eyre::ErrReport> {
+    let token = adora_message::auth::generate_token();
+    if let Ok(cwd) = std::env::current_dir() {
+        if let Err(e) = adora_message::auth::write_token(&cwd, &token) {
+            tracing::warn!("failed to write auth token: {e}");
+        }
+    }
+    start_with_events(
+        bind,
+        external_events,
+        futures::stream::empty(),
+        store,
+        Some(token),
+        span_store,
+    )
+    .await
+}
+
+/// Like [`start`] but without registering a ctrl-c handler.
 /// Useful for tests that run multiple coordinators in the same process.
 /// Testing-only entry point. Starts coordinator without auth.
 /// Do NOT use in production — stripped from release builds.

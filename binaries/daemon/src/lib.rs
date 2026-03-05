@@ -3236,6 +3236,12 @@ fn set_up_ctrlc_handler(
 
     if let Err(e) = handler_result {
         tracing::warn!("ctrl-c handler already registered, skipping: {e}");
+        // The closure (and ctrlc_tx) was dropped since the handler wasn't registered.
+        // Create a new channel whose receiver pends indefinitely so the daemon
+        // doesn't interpret a closed channel as a ctrl-c event.
+        let (tx, rx) = mpsc::channel(1);
+        std::mem::forget(tx);
+        return Ok(rx);
     }
 
     Ok(ctrlc_rx)

@@ -56,7 +56,7 @@ use up::Up;
 #[derive(Debug, clap::Subcommand)]
 pub enum Command {
     // -- Lifecycle --
-    /// Run a dataflow locally without coordinator or daemon
+    /// Run a dataflow locally with embedded coordinator and daemon
     #[clap(display_order = 1)]
     Run(Run),
     /// Start coordinator and daemon in local mode
