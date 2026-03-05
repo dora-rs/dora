@@ -21,9 +21,9 @@ cd adora
 cargo build --release -p adora-cli
 PATH=$PATH:$(pwd)/target/release
 
-# Python API (requires maturin: pip install maturin)
-maturin develop -m apis/python/node/Cargo.toml
-maturin develop -m apis/python/operator/Cargo.toml
+# Python API (requires maturin >= 1.8: pip install maturin)
+# Must run from the package directory for dependency resolution
+cd apis/python/node && maturin develop --uv && cd ../../..
 ```
 
 ## Platform installers
