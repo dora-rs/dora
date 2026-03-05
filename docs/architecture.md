@@ -71,8 +71,8 @@ Adora is built on four core principles:
 | `apis/rust/operator` | adora-operator-api | Rust |
 | `apis/rust/operator/macros` | adora-operator-api-macros | Rust (proc-macro) |
 | `apis/rust/operator/types` | adora-operator-api-types | Rust (FFI-safe types) |
-| `apis/python/node` | adora-node-api-python | Python (PyO3) |
-| `apis/python/operator` | adora-operator-api-python | Python (PyO3) |
+| `apis/python/node` | adora-node-api-python | Python (PyO3) -- builds the `adora` module |
+| `apis/python/operator` | adora-operator-api-python | Python (PyO3) -- compiled into adora-node-api-python |
 | `apis/c/node` | adora-node-api-c | C |
 | `apis/c/operator` | adora-operator-api-c | C/C++ |
 

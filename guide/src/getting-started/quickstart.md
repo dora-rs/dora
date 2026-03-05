@@ -14,9 +14,8 @@ The `adora-rs` package includes `pyarrow` as a dependency.
 **Building from source** (instead of `pip install adora-rs`):
 
 ```bash
-pip install maturin
-maturin develop -m apis/python/node/Cargo.toml
-maturin develop -m apis/python/operator/Cargo.toml
+pip install maturin  # requires >= 1.8
+cd apis/python/node && maturin develop --uv && cd ../../..
 ```
 
 ## Hello World: Sender and Receiver
