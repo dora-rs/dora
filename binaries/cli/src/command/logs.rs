@@ -33,8 +33,7 @@ pub struct LogsArgs {
     #[clap(value_name = "NAME")]
     pub node: Option<NodeId>,
     /// Show logs from all nodes merged by timestamp.
-    /// Without --follow, reads from local out/ directory.
-    /// With --follow, streams live from the coordinator.
+    /// Streams from coordinator by default, falls back to local out/ directory.
     #[clap(long)]
     pub all_nodes: bool,
     /// Number of lines to show from the end of the logs
@@ -103,35 +102,51 @@ impl Executable for LogsArgs {
             return read_local_logs(&self);
         }
 
-        // --all-nodes without --local: local for static, coordinator for follow
-        if self.all_nodes {
-            if self.follow {
-                return follow_all_nodes_coordinator(&self);
+        // Single node via coordinator (unchanged)
+        if let Some(ref _node) = self.node {
+            if !self.all_nodes {
+                let node = self.node.clone().unwrap();
+                let config = build_log_config(&self)?;
+                let session = self.coordinator.connect()?;
+                let uuid =
+                    resolve_dataflow_identifier_interactive(&session, self.dataflow.as_deref())?;
+                return logs(
+                    &session,
+                    uuid,
+                    node,
+                    self.tail,
+                    self.follow,
+                    self.grep.as_deref(),
+                    &self.level,
+                    self.since,
+                    self.until,
+                    &config,
+                );
             }
-            return read_local_logs(&self);
         }
 
-        // Single node via coordinator
-        let node = match self.node {
-            Some(ref n) => n.clone(),
-            None => bail!("node name is required (or use --all-nodes)"),
-        };
-
-        let config = build_log_config(&self)?;
-        let session = self.coordinator.connect()?;
-        let uuid = resolve_dataflow_identifier_interactive(&session, self.dataflow.as_deref())?;
-        logs(
-            &session,
-            uuid,
-            node,
-            self.tail,
-            self.follow,
-            self.grep.as_deref(),
-            &self.level,
-            self.since,
-            self.until,
-            &config,
-        )
+        // All nodes (explicit --all-nodes or no node specified):
+        // Try coordinator first, fall back to local
+        match self.coordinator.connect() {
+            Ok(session) => {
+                let uuid =
+                    resolve_dataflow_identifier_interactive(&session, self.dataflow.as_deref())?;
+                let config = build_log_config(&self)?;
+                stream_logs_from_coordinator(
+                    &session,
+                    uuid,
+                    &self.level,
+                    self.since,
+                    self.until,
+                    self.grep.as_deref(),
+                    &config,
+                )
+            }
+            Err(_) => {
+                // Coordinator unavailable, fall back to local
+                read_local_logs(&self)
+            }
+        }
     }
 }
 
@@ -687,24 +702,7 @@ mod tests {
     }
 }
 
-/// Follow all nodes' logs via coordinator's LogSubscribe (dataflow-level).
-fn follow_all_nodes_coordinator(args: &LogsArgs) -> Result<()> {
-    let config = build_log_config(args)?;
-    let session = args.coordinator.connect()?;
-    let uuid = resolve_dataflow_identifier_interactive(&session, args.dataflow.as_deref())?;
-
-    stream_logs_from_coordinator(
-        &session,
-        uuid,
-        &args.level,
-        args.since,
-        args.until,
-        args.grep.as_deref(),
-        &config,
-    )
-}
-
-/// Shared helper: subscribe to coordinator log stream with time/grep filtering.
+/// Subscribe to coordinator log stream with time/grep filtering.
 fn stream_logs_from_coordinator(
     session: &WsSession,
     uuid: Uuid,
