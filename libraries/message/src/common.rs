@@ -337,6 +337,68 @@ impl std::fmt::Display for DaemonId {
     }
 }
 
+/// Returns a system-level unique machine identifier.
+///
+/// This is used to reliably determine whether two processes (e.g. CLI and
+/// daemon) are running on the same physical/virtual machine, even when a
+/// NAT maps multiple machines to the same public IP address.
+///
+/// - **Linux**: reads `/etc/machine-id`
+/// - **macOS**: queries `IOPlatformUUID` via `ioreg`
+/// - **Windows**: reads `MachineGuid` from the registry
+pub fn machine_uid() -> Option<String> {
+    sys_machine_uid()
+}
+
+#[cfg(target_os = "linux")]
+fn sys_machine_uid() -> Option<String> {
+    std::fs::read_to_string("/etc/machine-id")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+#[cfg(target_os = "macos")]
+fn sys_machine_uid() -> Option<String> {
+    let output = std::process::Command::new("ioreg")
+        .args(["-rd1", "-c", "IOPlatformExpertDevice"])
+        .output()
+        .ok()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout
+        .lines()
+        .find(|line| line.contains("IOPlatformUUID"))
+        .and_then(|line| {
+            // Format: "IOPlatformUUID" = "XXXXXXXX-..."
+            line.split('"').nth(3)
+        })
+        .map(|s| s.to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn sys_machine_uid() -> Option<String> {
+    let output = std::process::Command::new("reg")
+        .args([
+            "query",
+            r"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Cryptography",
+            "/v",
+            "MachineGuid",
+        ])
+        .output()
+        .ok()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout
+        .lines()
+        .find(|line| line.contains("MachineGuid"))
+        .and_then(|line| line.split_whitespace().last())
+        .map(|s| s.to_string())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+fn sys_machine_uid() -> Option<String> {
+    None
+}
+
 #[derive(Debug, serde::Deserialize, serde::Serialize, Clone, PartialEq, Eq)]
 pub struct GitSource {
     pub repo: String,

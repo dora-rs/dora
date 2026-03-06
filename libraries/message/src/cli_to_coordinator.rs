@@ -96,7 +96,7 @@ pub trait CoordinatorControl {
     async fn info(dataflow_uuid: Uuid) -> Result<DataflowInfo>;
     async fn daemon_connected() -> Result<bool>;
     async fn connected_machines() -> Result<BTreeSet<DaemonId>>;
-    async fn cli_and_default_daemon_on_same_machine() -> Result<bool>;
+    async fn cli_and_default_daemon_on_same_machine(machine_uid: Option<String>) -> Result<bool>;
     async fn get_node_info() -> Result<Vec<NodeInfo>>;
     async fn get_version() -> VersionInfo;
 }
