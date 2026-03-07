@@ -24,12 +24,19 @@ impl<T, U> ShmemServer<T, U> {
         })
     }
 
+    /// Poll interval used by [`listen`] to avoid blocking indefinitely inside
+    /// `pthread_cond_wait` when a node crashes without signalling disconnect.
+    const LISTEN_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+    /// Wait for the next client request, returning `Ok(None)` on clean client
+    /// disconnect.  Returns `Err` after [`LISTEN_POLL_INTERVAL`] with no
+    /// activity so the caller can check whether it should stop.
     pub fn listen(&mut self) -> eyre::Result<Option<T>>
     where
         T: for<'a> Deserialize<'a> + std::fmt::Debug,
     {
         assert!(!self.reply_expected);
-        let result = self.channel.receive(None);
+        let result = self.channel.receive(Some(Self::LISTEN_POLL_INTERVAL));
         if matches!(result, Ok(Some(_))) {
             self.reply_expected = true;
         }
