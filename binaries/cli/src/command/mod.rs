@@ -4,6 +4,7 @@ mod completion;
 mod coordinator;
 mod daemon;
 mod down;
+mod expand;
 mod graph;
 pub mod inspect;
 mod list;
@@ -33,6 +34,7 @@ use completion::Completion;
 use coordinator::Coordinator;
 use daemon::Daemon;
 use down::Down;
+use expand::Expand;
 use eyre::Context;
 use graph::Graph;
 use inspect::Inspect;
@@ -118,8 +120,11 @@ pub enum Command {
     /// Visualize a dataflow as a graph
     #[clap(display_order = 22)]
     Graph(Graph),
+    /// Expand module references and print the flat dataflow YAML
+    #[clap(display_order = 23)]
+    Expand(Expand),
     /// System management commands
-    #[clap(subcommand, display_order = 23)]
+    #[clap(subcommand, display_order = 24)]
     System(System),
 
     // -- Utility --
@@ -184,6 +189,7 @@ impl Executable for Command {
             Command::Status(args) => args.execute(),
             Command::New(args) => args.execute(),
             Command::Graph(args) => args.execute(),
+            Command::Expand(args) => args.execute(),
             Command::System(args) => args.execute(),
             Command::Completion(args) => args.execute(),
             Command::Self_ { command } => command.execute(),
@@ -259,6 +265,16 @@ mod tests {
     #[test]
     fn parse_graph() {
         parse_ok(&["adora", "graph", "foo.yml"]);
+    }
+
+    #[test]
+    fn parse_expand() {
+        parse_ok(&["adora", "expand", "foo.yml"]);
+    }
+
+    #[test]
+    fn parse_expand_module() {
+        parse_ok(&["adora", "expand", "--module", "module.yml"]);
     }
 
     #[test]

@@ -475,6 +475,28 @@ fn smoke_local_python_concurrent_rw() {
 }
 
 // ---------------------------------------------------------------------------
+// Module dataflow example
+// ---------------------------------------------------------------------------
+
+#[test]
+fn smoke_module_dataflow() {
+    run_smoke_test(
+        "module-dataflow",
+        "examples/module-dataflow/dataflow.yml",
+        Duration::from_secs(30),
+    );
+}
+
+#[test]
+fn smoke_local_module_dataflow() {
+    run_smoke_test_local(
+        "local-module-dataflow",
+        "examples/module-dataflow/dataflow.yml",
+        10,
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Service example
 // ---------------------------------------------------------------------------
 

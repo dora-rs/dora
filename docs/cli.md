@@ -724,6 +724,31 @@ adora new <NAME> [OPTIONS]
 | `--kind <KIND>` | `dataflow` | `dataflow\|node` |
 | `--lang <LANG>` | `rust` | `rust\|python\|c\|cxx` |
 
+#### `adora expand`
+
+Expand module references in a dataflow and print the resulting flat YAML. Useful for debugging module composition.
+
+```
+adora expand <PATH> [OPTIONS]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `<PATH>` | required | Dataflow descriptor (or module file with `--module`) |
+| `--module` | false | Validate a standalone module file instead of a full dataflow |
+
+**Examples:**
+
+```bash
+# Expand a dataflow with modules
+adora expand dataflow.yml
+
+# Validate a module file
+adora expand --module modules/navigation.module.yml
+```
+
+See the [Modules Guide](modules.md) for full documentation on module composition.
+
 #### `adora graph`
 
 Visualize a dataflow as a graph.

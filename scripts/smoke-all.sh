@@ -180,6 +180,11 @@ fi
 
 if [ "$RUN_PYTHON" = true ]; then
     echo ""
+    echo "=== Module example (networked + local, Python) ==="
+    run_networked "module-dataflow" "examples/module-dataflow/dataflow.yml" 30
+    run_local "local-module-dataflow" "examples/module-dataflow/dataflow.yml" 10
+
+    echo ""
     echo "=== Python examples (networked) ==="
     run_networked "python-dataflow"        "examples/python-dataflow/dataflow.yml" 30
     run_networked "python-async"           "examples/python-async/dataflow.yaml" 15

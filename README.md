@@ -36,6 +36,7 @@
 - **Single CLI, full lifecycle** -- `adora run` for local dev, `adora up/start` for distributed prod, plus build, logs, monitoring, record/replay all from one tool
 - **Declarative YAML dataflows** -- define pipelines as directed graphs, connect nodes through typed inputs/outputs, override with environment variables
 - **Multi-language nodes** -- write nodes in Rust, Python, C, or C++ with native APIs (not wrappers); mix languages freely in one dataflow
+- **[Reusable modules](docs/modules.md)** -- compose sub-graphs as standalone YAML files with typed inputs/outputs, parameters, optional ports, and nested composition (compile-time expansion, zero runtime overhead)
 - **Hot reload** -- live-reload Python operators without restarting the dataflow
 - **Programmatic builder** -- construct dataflows in Python code as an alternative to YAML
 
@@ -249,6 +250,7 @@ See the [Distributed Deployment Guide](docs/distributed-deployment.md) for clust
 | `adora status` | Check system health (alias: `check`) |
 | `adora new` | Generate a new project or node |
 | `adora graph <PATH>` | Visualize a dataflow (Mermaid or HTML) |
+| `adora expand <PATH>` | Expand module references and print flat YAML |
 | `adora system` | System management (daemon/coordinator control) |
 | `adora completion <SHELL>` | Generate shell completions |
 | `adora self update` | Update adora CLI |
@@ -292,6 +294,16 @@ nodes:
 **Built-in timer nodes:** `adora/timer/millis/<N>` and `adora/timer/hz/<N>`.
 
 **Input format:** `<node-id>/<output-name>` to subscribe to another node's output.
+
+**Modules:** Extract reusable sub-graphs into separate files with `module:` instead of `path:`. See the [Modules Guide](docs/modules.md) for details.
+
+```yaml
+nodes:
+  - id: nav_stack
+    module: modules/navigation.module.yml
+    inputs:
+      goal_pose: localization/goal
+```
 
 ## Architecture
 
@@ -384,6 +396,12 @@ examples/               # Example dataflows
 | [c++-dataflow](examples/c++-dataflow) | C++ | C++ node example |
 | [c++-arrow-dataflow](examples/c++-arrow-dataflow) | C++ | C++ with Arrow data |
 | [cmake-dataflow](examples/cmake-dataflow) | C/C++ | CMake-based build |
+
+### Composition
+
+| Example | Language | Description |
+|---------|----------|-------------|
+| [module-dataflow](examples/module-dataflow) | Python | Reusable module composition |
 
 ### Communication patterns
 

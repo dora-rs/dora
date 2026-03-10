@@ -1,0 +1,17 @@
+nodes:
+  - id: sender
+    path: sender.py
+    outputs:
+      - value
+
+  # Use the transform module -- internally expands to
+  # pipeline.doubler and pipeline.filter
+  - id: pipeline
+    module: modules/transform_module.yml
+    inputs:
+      raw_data: sender/value
+
+  - id: receiver
+    path: receiver.py
+    inputs:
+      filtered: pipeline/filtered
