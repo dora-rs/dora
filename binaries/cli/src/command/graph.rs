@@ -85,10 +85,16 @@ pub fn visualize_as_html(dataflow: &Path) -> eyre::Result<String> {
 }
 
 pub fn visualize_as_mermaid(dataflow: &Path) -> eyre::Result<String> {
-    let descriptor = Descriptor::blocking_read(dataflow)
+    let working_dir = dataflow
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let raw = Descriptor::blocking_read(dataflow)
         .with_context(|| format!("failed to read dataflow at `{}`", dataflow.display()))?;
+    let (descriptor, boundaries) = raw
+        .expand_with_boundaries(working_dir)
+        .context("failed to expand modules")?;
     let visualized = descriptor
-        .visualize_as_mermaid()
+        .visualize_as_mermaid_with_boundaries(&boundaries)
         .context("failed to visualize descriptor")?;
 
     Ok(visualized)

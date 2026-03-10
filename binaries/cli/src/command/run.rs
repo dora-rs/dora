@@ -150,8 +150,13 @@ impl Executable for Run {
         let dataflow_session = DataflowSession::read_session(&dataflow_path)
             .context("failed to read DataflowSession")?;
 
-        let mut dataflow_descriptor =
-            Descriptor::blocking_read(&dataflow_path).context("Failed to read yaml dataflow")?;
+        let working_dir = dataflow_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."));
+        let mut dataflow_descriptor = Descriptor::blocking_read(&dataflow_path)
+            .context("Failed to read yaml dataflow")?
+            .expand(working_dir)
+            .context("Failed to expand modules")?;
         if self.debug {
             dataflow_descriptor.debug.publish_all_messages_to_zenoh = true;
         }

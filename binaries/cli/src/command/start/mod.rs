@@ -114,8 +114,13 @@ fn start_dataflow(
     debug: bool,
 ) -> Result<(PathBuf, Descriptor, WsSession, Uuid), eyre::Error> {
     let dataflow = resolve_dataflow(dataflow).context("could not resolve dataflow")?;
-    let mut dataflow_descriptor =
-        Descriptor::blocking_read(&dataflow).wrap_err("Failed to read yaml dataflow")?;
+    let working_dir = dataflow
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let mut dataflow_descriptor = Descriptor::blocking_read(&dataflow)
+        .wrap_err("Failed to read yaml dataflow")?
+        .expand(working_dir)
+        .wrap_err("Failed to expand modules")?;
     let dataflow_session =
         DataflowSession::read_session(&dataflow).context("failed to read DataflowSession")?;
 

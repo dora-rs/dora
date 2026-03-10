@@ -21,16 +21,38 @@ pub use adora_message::descriptor::{
 pub use validate::ResolvedNodeExt;
 pub use visualize::collect_adora_timers;
 
+mod expand;
 mod validate;
 mod visualize;
+
+pub use expand::{
+    ExpandedDescriptor, ModuleBoundaries, check_module_file, expand_modules,
+    expand_modules_with_boundaries,
+};
 
 pub trait DescriptorExt {
     fn resolve_aliases_and_set_defaults(&self) -> eyre::Result<BTreeMap<NodeId, ResolvedNode>>;
     fn visualize_as_mermaid(&self) -> eyre::Result<String>;
+    fn visualize_as_mermaid_with_boundaries(
+        &self,
+        boundaries: &ModuleBoundaries,
+    ) -> eyre::Result<String>;
     fn blocking_read(path: &Path) -> eyre::Result<Descriptor>;
     fn parse(buf: Vec<u8>) -> eyre::Result<Descriptor>;
     fn check(&self, working_dir: &Path) -> eyre::Result<()>;
     fn check_in_daemon(&self, working_dir: &Path, coordinator_is_remote: bool) -> eyre::Result<()>;
+    /// Expand all module references into flat nodes.
+    ///
+    /// Module nodes are replaced by the inner nodes defined in their module
+    /// file. Internal IDs are prefixed with `{module_id}.` and input/output
+    /// wiring is rewritten accordingly.
+    fn expand(&self, working_dir: &Path) -> eyre::Result<Descriptor>;
+    /// Like [`expand`](Self::expand) but also returns module boundary metadata
+    /// for visualization.
+    fn expand_with_boundaries(
+        &self,
+        working_dir: &Path,
+    ) -> eyre::Result<(Descriptor, ModuleBoundaries)>;
 }
 
 pub const SINGLE_OPERATOR_DEFAULT_ID: &str = "op";
@@ -177,7 +199,15 @@ impl DescriptorExt for Descriptor {
     fn visualize_as_mermaid(&self) -> eyre::Result<String> {
         let resolved = self.resolve_aliases_and_set_defaults()?;
         let flowchart = visualize::visualize_nodes(&resolved);
+        Ok(flowchart)
+    }
 
+    fn visualize_as_mermaid_with_boundaries(
+        &self,
+        boundaries: &ModuleBoundaries,
+    ) -> eyre::Result<String> {
+        let resolved = self.resolve_aliases_and_set_defaults()?;
+        let flowchart = visualize::visualize_nodes_with_boundaries(&resolved, boundaries);
         Ok(flowchart)
     }
 
@@ -191,13 +221,27 @@ impl DescriptorExt for Descriptor {
     }
 
     fn check(&self, working_dir: &Path) -> eyre::Result<()> {
-        validate::check_dataflow(self, working_dir, None, false)
+        let expanded = self.expand(working_dir)?;
+        validate::check_dataflow(&expanded, working_dir, None, false)
             .wrap_err("Dataflow could not be validated.")
     }
 
     fn check_in_daemon(&self, working_dir: &Path, coordinator_is_remote: bool) -> eyre::Result<()> {
-        validate::check_dataflow(self, working_dir, None, coordinator_is_remote)
+        let expanded = self.expand(working_dir)?;
+        validate::check_dataflow(&expanded, working_dir, None, coordinator_is_remote)
             .wrap_err("Dataflow could not be validated.")
+    }
+
+    fn expand(&self, working_dir: &Path) -> eyre::Result<Descriptor> {
+        expand::expand_modules(self, working_dir)
+    }
+
+    fn expand_with_boundaries(
+        &self,
+        working_dir: &Path,
+    ) -> eyre::Result<(Descriptor, ModuleBoundaries)> {
+        let expanded = expand::expand_modules_with_boundaries(self, working_dir)?;
+        Ok((expanded.descriptor, expanded.boundaries))
     }
 }
 
@@ -210,6 +254,13 @@ pub async fn read_as_descriptor(path: &Path) -> eyre::Result<Descriptor> {
 
 fn node_kind_mut(node: &mut Node) -> eyre::Result<NodeKindMut<'_>> {
     match node.kind()? {
+        NodeKind::Module(_) => {
+            eyre::bail!(
+                "module node `{}` must be expanded before resolution — \
+                 call expand_modules() first",
+                node.id
+            )
+        }
         NodeKind::Standard(_) => {
             let source = match (&node.git, &node.branch, &node.tag, &node.rev) {
                 (None, None, None, None) => NodeSource::Local,
@@ -310,21 +361,23 @@ impl NodeExt for Node {
             &self.custom,
             &self.operator,
             &self.ros2,
+            &self.module,
         ) {
-            (None, None, None, None, None) => {
+            (None, None, None, None, None, None) => {
                 eyre::bail!(
-                    "node `{}` requires a `path`, `custom`, `operators`, or `ros2` field",
+                    "node `{}` requires a `path`, `custom`, `operators`, `ros2`, or `module` field",
                     self.id
                 )
             }
-            (None, None, None, Some(operator), None) => Ok(NodeKind::Operator(operator)),
-            (None, None, Some(custom), None, None) => Ok(NodeKind::Custom(custom)),
-            (None, Some(runtime), None, None, None) => Ok(NodeKind::Runtime(runtime)),
-            (Some(path), None, None, None, None) => Ok(NodeKind::Standard(path)),
-            (None, None, None, None, Some(ros2)) => Ok(NodeKind::Ros2Bridge(ros2)),
+            (None, None, None, Some(operator), None, None) => Ok(NodeKind::Operator(operator)),
+            (None, None, Some(custom), None, None, None) => Ok(NodeKind::Custom(custom)),
+            (None, Some(runtime), None, None, None, None) => Ok(NodeKind::Runtime(runtime)),
+            (Some(path), None, None, None, None, None) => Ok(NodeKind::Standard(path)),
+            (None, None, None, None, Some(ros2), None) => Ok(NodeKind::Ros2Bridge(ros2)),
+            (None, None, None, None, None, Some(module)) => Ok(NodeKind::Module(module)),
             _ => {
                 eyre::bail!(
-                    "node `{}` has multiple exclusive fields set, only one of `path`, `custom`, `operators`, `operator`, and `ros2` is allowed",
+                    "node `{}` has multiple exclusive fields set, only one of `path`, `custom`, `operators`, `operator`, `ros2`, and `module` is allowed",
                     self.id
                 )
             }
@@ -341,6 +394,8 @@ pub enum NodeKind<'a> {
     Operator(&'a SingleOperatorDefinition),
     /// ROS2 bridge node
     Ros2Bridge(&'a Ros2BridgeConfig),
+    /// Module (sub-dataflow) reference — must be expanded before resolution
+    Module(&'a String),
 }
 
 #[derive(Debug)]

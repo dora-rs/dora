@@ -111,8 +111,13 @@ pub fn build(
     force_local: bool,
 ) -> eyre::Result<()> {
     let dataflow_path = resolve_dataflow(dataflow).context("could not resolve dataflow")?;
-    let dataflow_descriptor =
-        Descriptor::blocking_read(&dataflow_path).wrap_err("Failed to read yaml dataflow")?;
+    let working_dir = dataflow_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let dataflow_descriptor = Descriptor::blocking_read(&dataflow_path)
+        .wrap_err("Failed to read yaml dataflow")?
+        .expand(working_dir)
+        .wrap_err("Failed to expand modules")?;
     let mut dataflow_session =
         DataflowSession::read_session(&dataflow_path).context("failed to read DataflowSession")?;
 

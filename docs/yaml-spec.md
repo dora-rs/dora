@@ -55,11 +55,12 @@ Every node requires an `id`. All other fields are optional (though most nodes ne
 
 ### Source
 
-A node's executable comes from a local path, a git repository, or is implicit (operator/ROS2 nodes).
+A node's executable comes from a local path, a git repository, a module reference, or is implicit (operator/ROS2 nodes).
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `path` | string | Path to executable or script. Can also be a URL (legacy) |
+| `module` | string | Path to a module definition file (mutually exclusive with `path`). See [Modules Guide](modules.md) |
 | `git` | string | Git repo URL. `adora build` clones it and uses the clone dir as working directory |
 | `branch` | string | Branch to checkout (requires `git`, mutually exclusive with `tag`/`rev`) |
 | `tag` | string | Tag to checkout (requires `git`, mutually exclusive with `branch`/`rev`) |
@@ -122,6 +123,22 @@ outputs:
   - processed_image
   - metadata
 ```
+
+### Module Parameters
+
+When using `module:`, pass configuration values via `params:`:
+
+```yaml
+- id: fast_pipeline
+  module: modules/transform.module.yml
+  inputs:
+    data: sender/value
+  params:
+    speed: "2.0"
+    mode: turbo
+```
+
+Inside the module, params are available as `$PARAM_<UPPERCASE_KEY>` in `args:` and as environment variables. See the [Modules Guide](modules.md) for full documentation.
 
 ### Environment
 

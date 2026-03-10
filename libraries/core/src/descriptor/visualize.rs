@@ -4,20 +4,54 @@ use adora_message::{
     id::{DataId, NodeId},
 };
 
-use super::{CustomNode, ResolvedNode, RuntimeNode};
+use super::{CustomNode, ModuleBoundaries, ResolvedNode, RuntimeNode};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fmt::Write as _,
     time::Duration,
 };
 
 pub fn visualize_nodes(nodes: &BTreeMap<NodeId, ResolvedNode>) -> String {
+    visualize_nodes_with_boundaries(nodes, &ModuleBoundaries::default())
+}
+
+pub fn visualize_nodes_with_boundaries(
+    nodes: &BTreeMap<NodeId, ResolvedNode>,
+    boundaries: &ModuleBoundaries,
+) -> String {
     let mut flowchart = "flowchart TB\n".to_owned();
     let mut all_nodes = HashMap::new();
 
+    // Track which nodes are inside a module subgraph
+    let mut module_nodes: HashSet<&str> = HashSet::new();
+    for members in boundaries.modules.values() {
+        for m in members {
+            module_nodes.insert(m.as_str());
+        }
+    }
+
+    // Render module subgraphs first
+    for (module_id, members) in &boundaries.modules {
+        // Sanitize ID for Mermaid (dots are invalid in subgraph IDs)
+        let safe_id = module_id.replace('.', "_");
+        writeln!(flowchart, "subgraph {safe_id} [{module_id}]").unwrap();
+        for node in nodes.values() {
+            let node_id_str: &str = node.id.as_ref();
+            if members.iter().any(|m| m == node_id_str) {
+                visualize_node(node, &mut flowchart);
+                all_nodes.insert(&node.id, node);
+            }
+        }
+        flowchart.push_str("end\n");
+    }
+
+    // Render non-module nodes
     for node in nodes.values() {
-        visualize_node(node, &mut flowchart);
-        all_nodes.insert(&node.id, node);
+        let node_id_str: &str = node.id.as_ref();
+        if !module_nodes.contains(node_id_str) {
+            visualize_node(node, &mut flowchart);
+            all_nodes.insert(&node.id, node);
+        }
     }
 
     let adora_timers = collect_adora_timers(nodes);
