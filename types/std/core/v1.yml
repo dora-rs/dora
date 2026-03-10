@@ -1,0 +1,21 @@
+types:
+  Float32:
+    arrow: Float32
+  Float64:
+    arrow: Float64
+  Int32:
+    arrow: Int32
+  Int64:
+    arrow: Int64
+  UInt8:
+    arrow: UInt8
+  UInt32:
+    arrow: UInt32
+  UInt64:
+    arrow: UInt64
+  String:
+    arrow: Utf8
+  Bytes:
+    arrow: LargeBinary
+  Bool:
+    arrow: Boolean

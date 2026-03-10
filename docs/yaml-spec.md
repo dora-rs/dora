@@ -124,6 +124,48 @@ outputs:
   - metadata
 ```
 
+### Type Annotations
+
+Optional type annotations for inputs and outputs. Types are never required -- unannotated ports remain fully dynamic.
+
+```yaml
+- id: camera
+  path: camera.py
+  outputs:
+    - image
+    - depth
+  output_types:
+    image: std/media/v1/Image
+    depth: std/media/v1/Image
+
+- id: detector
+  path: detect.py
+  inputs:
+    image: camera/image
+  input_types:
+    image: std/media/v1/Image
+  outputs:
+    - bbox
+  output_types:
+    bbox: std/vision/v1/BoundingBox
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `output_types` | object | `{}` | Maps output IDs to type URNs. Keys must match entries in `outputs` |
+| `input_types` | object | `{}` | Maps input IDs to expected type URNs. Keys must match entries in `inputs` |
+
+Type URNs use the format `std/<category>/v<version>/<TypeName>`. See the [Type Annotations Guide](types.md) for the full standard type library.
+
+Run `adora validate <file>` to check type annotations statically. For runtime checking, set `ADORA_RUNTIME_TYPE_CHECK=warn` or `error`:
+
+```bash
+adora validate dataflow.yml
+ADORA_RUNTIME_TYPE_CHECK=warn adora run dataflow.yml
+```
+
+Types also appear on `adora graph` edge labels when annotated.
+
 ### Module Parameters
 
 When using `module:`, pass configuration values via `params:`:

@@ -22,7 +22,7 @@ pub use validate::ResolvedNodeExt;
 pub use visualize::collect_adora_timers;
 
 mod expand;
-mod validate;
+pub mod validate;
 mod visualize;
 
 pub use expand::{
@@ -128,6 +128,8 @@ impl DescriptorExt for Descriptor {
                     run_config: NodeRunConfig {
                         inputs: node.inputs,
                         outputs: node.outputs,
+                        output_types: node.output_types,
+                        input_types: node.input_types,
                     },
                     envs: None,
                     restart_policy: node.restart_policy,
@@ -168,6 +170,8 @@ impl DescriptorExt for Descriptor {
                         run_config: NodeRunConfig {
                             inputs: node.inputs,
                             outputs: node.outputs,
+                            output_types: node.output_types,
+                            input_types: node.input_types,
                         },
                         envs: Some(envs),
                         restart_policy: node.restart_policy,

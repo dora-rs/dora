@@ -35,6 +35,12 @@ pub struct NodeRunConfig {
     ///  - output_2
     #[serde(default)]
     pub outputs: BTreeSet<DataId>,
+    /// Optional type annotations for outputs
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub output_types: BTreeMap<DataId, String>,
+    /// Optional type annotations for inputs
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub input_types: BTreeMap<DataId, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

@@ -17,6 +17,7 @@ use adora_core::{
     descriptor::Descriptor,
     metadata::ArrowTypeInfoExt,
     topics::{ADORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, LOCALHOST},
+    types::TypeRegistry,
     uhlc,
 };
 use adora_message::{
@@ -51,6 +52,34 @@ use tracing::{info, warn};
 pub mod arrow_utils;
 mod control_channel;
 mod drop_stream;
+
+/// Runtime type checking mode, controlled by `ADORA_RUNTIME_TYPE_CHECK` env var.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimeTypeCheck {
+    /// No runtime type checking (default).
+    Off,
+    /// Log warnings on type mismatches.
+    Warn,
+    /// Return errors on type mismatches.
+    Error,
+}
+
+impl RuntimeTypeCheck {
+    fn from_env() -> Self {
+        match std::env::var("ADORA_RUNTIME_TYPE_CHECK").as_deref() {
+            Ok("error") => Self::Error,
+            Ok("1" | "warn" | "true") => Self::Warn,
+            Ok("") | Err(_) => Self::Off,
+            Ok(other) => {
+                tracing::warn!(
+                    "unknown ADORA_RUNTIME_TYPE_CHECK value \"{other}\", \
+                     expected \"warn\" or \"error\"; disabling runtime type check"
+                );
+                Self::Off
+            }
+        }
+    }
+}
 
 /// The data size threshold at which we start using shared memory.
 ///
@@ -87,6 +116,10 @@ pub struct AdoraNode {
     warned_unknown_output: BTreeSet<DataId>,
     interactive: bool,
     restart_count: u32,
+
+    /// Runtime type checking state. `None` when off (zero overhead).
+    /// When `Some`, holds the mode (Warn/Error) and a map of output DataId -> expected Arrow DataType.
+    runtime_type_checks: Option<(RuntimeTypeCheck, HashMap<DataId, arrow_schema::DataType>)>,
 }
 
 impl AdoraNode {
@@ -375,6 +408,8 @@ impl AdoraNode {
             run_config: NodeRunConfig {
                 inputs: Default::default(),
                 outputs: Default::default(),
+                output_types: Default::default(),
+                input_types: Default::default(),
             },
             daemon_communication: Some(DaemonCommunication::Interactive),
             dataflow_descriptor: serde_yaml::Value::Null,
@@ -407,6 +442,8 @@ impl AdoraNode {
             run_config: NodeRunConfig {
                 inputs: Default::default(),
                 outputs: Default::default(),
+                output_types: Default::default(),
+                input_types: Default::default(),
             },
             daemon_communication: None,
             dataflow_descriptor: serde_yaml::Value::Null,
@@ -499,6 +536,33 @@ impl AdoraNode {
         let control_channel =
             ControlChannel::init(dataflow_id, &node_id, &daemon_communication, clock.clone())
                 .wrap_err("failed to init control channel")?;
+        let runtime_type_checks = match RuntimeTypeCheck::from_env() {
+            RuntimeTypeCheck::Off => None,
+            mode => {
+                let registry = TypeRegistry::new();
+                let mut checks = HashMap::new();
+                for (id, urn) in &run_config.output_types {
+                    match registry.resolve_arrow_type(urn) {
+                        Some(dt) => {
+                            checks.insert(id.clone(), dt);
+                        }
+                        None => {
+                            if registry.resolve(urn).is_some() {
+                                info!(
+                                    "runtime type check: skipping complex type \"{urn}\" on output \"{id}\""
+                                );
+                            } else {
+                                warn!(
+                                    "runtime type check: unknown type URN \"{urn}\" on output \"{id}\""
+                                );
+                            }
+                        }
+                    }
+                }
+                Some((mode, checks))
+            }
+        };
+
         let node = Self {
             id: node_id,
             dataflow_id,
@@ -512,6 +576,7 @@ impl AdoraNode {
             warned_unknown_output: BTreeSet::new(),
             interactive: false,
             restart_count,
+            runtime_type_checks,
         };
 
         if dynamic {
@@ -619,6 +684,27 @@ impl AdoraNode {
         };
 
         let arrow_array = data.to_data();
+
+        // Runtime type check (only when ADORA_RUNTIME_TYPE_CHECK is set)
+        if let Some((mode, checks)) = &self.runtime_type_checks {
+            if let Some(expected) = checks.get(&output_id) {
+                let actual = arrow_array.data_type();
+                if actual != expected {
+                    let msg = format!(
+                        "output \"{output_id}\": expected Arrow type {expected:?}, got {actual:?}"
+                    );
+                    match mode {
+                        RuntimeTypeCheck::Error => {
+                            return Err(NodeError::Output(msg));
+                        }
+                        RuntimeTypeCheck::Warn => {
+                            warn!("type mismatch: {msg}");
+                        }
+                        RuntimeTypeCheck::Off => unreachable!(),
+                    }
+                }
+            }
+        }
 
         let total_len = required_data_size(&arrow_array);
 

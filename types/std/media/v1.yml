@@ -1,0 +1,13 @@
+types:
+  Image:
+    arrow: Struct
+    description: "Raw image with width, height, encoding, data fields"
+  CompressedImage:
+    arrow: LargeBinary
+    description: "JPEG/PNG compressed image bytes"
+  PointCloud:
+    arrow: Struct
+    description: "3D point cloud with XYZ coordinates and optional fields"
+  AudioFrame:
+    arrow: Struct
+    description: "Audio samples with sample_rate, channels, data fields"

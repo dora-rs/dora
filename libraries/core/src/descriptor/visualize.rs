@@ -230,10 +230,16 @@ fn visualize_user_mapping(
         match &source_node.kind {
             CoreNodeKind::Custom(custom_node) => {
                 if custom_node.run_config.outputs.contains(output) {
+                    let type_label = custom_node
+                        .run_config
+                        .output_types
+                        .get(output)
+                        .map(|t| format_type_label(t))
+                        .unwrap_or_default();
                     let data = if output == input_id {
-                        format!("{output}")
+                        format!("{output}{type_label}")
                     } else {
-                        format!("{output} as {input_id}")
+                        format!("{output} as {input_id}{type_label}")
                     };
                     writeln!(flowchart, "  {source} -- {data} --> {target}").unwrap();
                     source_found = true;
@@ -243,10 +249,16 @@ fn visualize_user_mapping(
                 let (operator_id, output) = output.split_once('/').unwrap_or(("", output));
                 if let Some(operator) = operators.iter().find(|o| o.id.as_ref() == operator_id) {
                     if operator.config.outputs.contains(output) {
+                        let type_label = operator
+                            .config
+                            .output_types
+                            .get(&DataId::from(output.to_owned()))
+                            .map(|t| format_type_label(t))
+                            .unwrap_or_default();
                         let data = if output == input_id.as_str() {
-                            output.to_string()
+                            format!("{output}{type_label}")
                         } else {
-                            format!("{output} as {input_id}")
+                            format!("{output} as {input_id}{type_label}")
                         };
                         writeln!(flowchart, "  {source}/{operator_id} -- {data} --> {target}")
                             .unwrap();
@@ -259,4 +271,11 @@ fn visualize_user_mapping(
     if !source_found {
         writeln!(flowchart, "  missing>missing] -- {input_id} --> {target}").unwrap();
     }
+}
+
+/// Format a type URN as a short label for graph edges.
+/// Extracts the type name from the URN (e.g. `std/media/v1/Image` -> ` [Image]`).
+fn format_type_label(urn: &str) -> String {
+    let short = crate::types::urn_short_name(urn);
+    format!(" [{short}]")
 }

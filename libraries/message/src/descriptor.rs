@@ -360,6 +360,13 @@ pub struct Node {
     #[serde(default)]
     pub outputs: BTreeSet<DataId>,
 
+    /// Optional type annotations for outputs.
+    ///
+    /// Maps output identifiers to type URNs (e.g. `std/media/v1/Image`).
+    /// Only annotated outputs are type-checked; unannotated outputs remain dynamic.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub output_types: BTreeMap<DataId, String>,
+
     /// Input data connections from other nodes.
     ///
     /// Defines the inputs that this node is subscribing to.
@@ -394,6 +401,13 @@ pub struct Node {
     /// ```
     #[serde(default)]
     pub inputs: BTreeMap<DataId, Input>,
+
+    /// Optional type annotations for inputs.
+    ///
+    /// Maps input identifiers to expected type URNs. Used by `adora validate`
+    /// to check that upstream output types match expectations.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub input_types: BTreeMap<DataId, String>,
 
     /// Redirect stdout/stderr to a data output.
     ///
@@ -763,6 +777,13 @@ pub struct OperatorConfig {
     /// Output data identifiers
     #[serde(default)]
     pub outputs: BTreeSet<DataId>,
+    /// Optional type annotations for outputs
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub output_types: BTreeMap<DataId, String>,
+
+    /// Optional type annotations for inputs
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub input_types: BTreeMap<DataId, String>,
 
     /// Operator source configuration (Python, shared library, etc.)
     #[serde(flatten)]

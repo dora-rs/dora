@@ -1,0 +1,10 @@
+types:
+  Twist:
+    arrow: Struct
+    description: "Linear and angular velocity (2x Vector3)"
+  JointState:
+    arrow: Struct
+    description: "Joint positions, velocities, efforts as Float64 lists"
+  Odometry:
+    arrow: Struct
+    description: "Pose + Twist in a reference frame"

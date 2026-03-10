@@ -83,6 +83,16 @@
           "items": { "type": "string" },
           "uniqueItems": true
         },
+        "output_types": {
+          "description": "Optional type annotations for outputs. Maps output IDs to type URNs (e.g. `std/media/v1/Image`).",
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "input_types": {
+          "description": "Optional type annotations for inputs. Maps input IDs to expected type URNs for validation.",
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
         "env": {
           "description": "Environment variables for build and execution. Values can be strings, numbers, or booleans. Use `__adora_env` to read from host environment.",
           "type": "object",
@@ -247,6 +257,16 @@
           "items": { "type": "string" },
           "uniqueItems": true
         },
+        "output_types": {
+          "description": "Optional type annotations for outputs.",
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "input_types": {
+          "description": "Optional type annotations for inputs.",
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
         "shared-library": {
           "description": "Path to a shared library (.so/.dylib/.dll) implementing the operator.",
           "type": "string"
@@ -314,6 +334,16 @@
           "type": "array",
           "items": { "type": "string" },
           "uniqueItems": true
+        },
+        "output_types": {
+          "description": "Optional type annotations for outputs.",
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "input_types": {
+          "description": "Optional type annotations for inputs.",
+          "type": "object",
+          "additionalProperties": { "type": "string" }
         },
         "shared-library": {
           "description": "Path to a shared library implementing the operator.",

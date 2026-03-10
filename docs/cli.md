@@ -763,7 +763,7 @@ adora graph <PATH> [OPTIONS]
 | `--mermaid` | false | Output Mermaid diagram text |
 | `--open` | false | Open HTML in browser |
 
-Without `--mermaid`, generates an interactive HTML file using mermaid.js.
+Without `--mermaid`, generates an interactive HTML file using mermaid.js. When outputs have type annotations, edge labels include the type name (e.g. `image [Image]`).
 
 ```bash
 # Generate HTML
@@ -772,6 +772,34 @@ adora graph dataflow.yml --open
 # Generate Mermaid for GitHub markdown
 adora graph dataflow.yml --mermaid
 ```
+
+#### `adora validate`
+
+Validate a dataflow YAML file and check type annotations.
+
+```
+adora validate <PATH> [OPTIONS]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `<PATH>` | required | Dataflow descriptor path |
+| `--strict` | false | Treat warnings as errors (non-zero exit code for CI) |
+
+Checks:
+1. `output_types`/`input_types` keys exist in the corresponding `outputs`/`inputs` lists
+2. All type URNs resolve in the standard type library
+3. Connected edges have matching types when both sides are annotated
+
+```bash
+# Validate with warnings
+adora validate dataflow.yml
+
+# Strict mode for CI (exit 1 on warnings)
+adora validate --strict dataflow.yml
+```
+
+See the [Type Annotations Guide](types.md) for the full type library and usage details.
 
 ---
 
@@ -848,6 +876,7 @@ All environment variables serve as fallbacks. CLI flags always take precedence.
 | `ADORA_LOG_FORMAT` | `pretty` | `run`, `logs` | Default output format |
 | `ADORA_LOG_FILTER` | | `run`, `logs` | Default per-node level overrides |
 | `ADORA_ALLOW_SHELL_NODES` | | `run` | Enable shell node execution |
+| `ADORA_RUNTIME_TYPE_CHECK` | | `run`, `start` | Runtime type checking: `warn` (log mismatches) or `error` (fail on mismatch). See [Type Annotations](types.md#runtime-type-checking) |
 
 ```bash
 # Set defaults for a development session

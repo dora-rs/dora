@@ -12,6 +12,7 @@ pub mod build;
 pub mod descriptor;
 pub mod metadata;
 pub mod topics;
+pub mod types;
 
 pub fn adjust_shared_library_path(path: &Path) -> Result<std::path::PathBuf, eyre::ErrReport> {
     let file_name = path

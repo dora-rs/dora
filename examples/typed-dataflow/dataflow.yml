@@ -1,0 +1,31 @@
+# Typed dataflow example -- same as python-dataflow but with type annotations.
+#
+# Validate types:   adora validate dataflow.yml
+# Strict (for CI):  adora validate --strict dataflow.yml
+# Visualize:        adora graph dataflow.yml --open
+# Run:              adora run dataflow.yml --uv
+nodes:
+  - id: sensor
+    path: sensor.py
+    outputs:
+      - reading
+    output_types:
+      reading: std/core/v1/Float64
+
+  - id: processor
+    path: processor.py
+    inputs:
+      reading: sensor/reading
+    input_types:
+      reading: std/core/v1/Float64
+    outputs:
+      - result
+    output_types:
+      result: std/core/v1/String
+
+  - id: sink
+    path: sink.py
+    inputs:
+      result: processor/result
+    input_types:
+      result: std/core/v1/String

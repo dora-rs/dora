@@ -24,6 +24,7 @@ mod system;
 mod topic;
 mod trace;
 mod up;
+mod validate;
 
 pub use build::build;
 pub use run::{Run, run};
@@ -53,6 +54,7 @@ use system::System;
 use topic::Topic;
 use trace::Trace;
 use up::Up;
+use validate::Validate;
 
 /// adora-rs cli client
 #[derive(Debug, clap::Subcommand)]
@@ -123,8 +125,11 @@ pub enum Command {
     /// Expand module references and print the flat dataflow YAML
     #[clap(display_order = 23)]
     Expand(Expand),
+    /// Validate a dataflow YAML file and check type annotations
+    #[clap(display_order = 24)]
+    Validate(Validate),
     /// System management commands
-    #[clap(subcommand, display_order = 24)]
+    #[clap(subcommand, display_order = 25)]
     System(System),
 
     // -- Utility --
@@ -190,6 +195,7 @@ impl Executable for Command {
             Command::New(args) => args.execute(),
             Command::Graph(args) => args.execute(),
             Command::Expand(args) => args.execute(),
+            Command::Validate(args) => args.execute(),
             Command::System(args) => args.execute(),
             Command::Completion(args) => args.execute(),
             Command::Self_ { command } => command.execute(),
@@ -275,6 +281,16 @@ mod tests {
     #[test]
     fn parse_expand_module() {
         parse_ok(&["adora", "expand", "--module", "module.yml"]);
+    }
+
+    #[test]
+    fn parse_validate() {
+        parse_ok(&["adora", "validate", "dataflow.yml"]);
+    }
+
+    #[test]
+    fn parse_validate_strict() {
+        parse_ok(&["adora", "validate", "--strict", "dataflow.yml"]);
     }
 
     #[test]

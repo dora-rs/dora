@@ -34,7 +34,7 @@
 ### Developer experience
 
 - **Single CLI, full lifecycle** -- `adora run` for local dev, `adora up/start` for distributed prod, plus build, logs, monitoring, record/replay all from one tool
-- **Declarative YAML dataflows** -- define pipelines as directed graphs, connect nodes through typed inputs/outputs, override with environment variables
+- **Declarative YAML dataflows** -- define pipelines as directed graphs, connect nodes through typed inputs/outputs, optional [type annotations](docs/types.md) with static validation, override with environment variables
 - **Multi-language nodes** -- write nodes in Rust, Python, C, or C++ with native APIs (not wrappers); mix languages freely in one dataflow
 - **[Reusable modules](docs/modules.md)** -- compose sub-graphs as standalone YAML files with typed inputs/outputs, parameters, optional ports, and nested composition (compile-time expansion, zero runtime overhead)
 - **Hot reload** -- live-reload Python operators without restarting the dataflow
@@ -251,6 +251,7 @@ See the [Distributed Deployment Guide](docs/distributed-deployment.md) for clust
 | `adora new` | Generate a new project or node |
 | `adora graph <PATH>` | Visualize a dataflow (Mermaid or HTML) |
 | `adora expand <PATH>` | Expand module references and print flat YAML |
+| `adora validate <PATH>` | Validate dataflow YAML and check [type annotations](docs/types.md) |
 | `adora system` | System management (daemon/coordinator control) |
 | `adora completion <SHELL>` | Generate shell completions |
 | `adora self update` | Update adora CLI |
@@ -294,6 +295,24 @@ nodes:
 **Built-in timer nodes:** `adora/timer/millis/<N>` and `adora/timer/hz/<N>`.
 
 **Input format:** `<node-id>/<output-name>` to subscribe to another node's output.
+
+**Type annotations:** Optionally annotate ports with type URNs for static and runtime validation. See the [Type Annotations Guide](docs/types.md) for the full type library.
+
+```yaml
+nodes:
+  - id: camera
+    path: camera.py
+    outputs:
+      - image
+    output_types:
+      image: std/media/v1/Image
+```
+
+```bash
+adora validate dataflow.yml                        # static check (warnings)
+adora validate --strict dataflow.yml               # fail on warnings (CI)
+ADORA_RUNTIME_TYPE_CHECK=warn adora run dataflow.yml  # runtime check
+```
 
 **Modules:** Extract reusable sub-graphs into separate files with `module:` instead of `path:`. See the [Modules Guide](docs/modules.md) for details.
 
@@ -402,6 +421,7 @@ examples/               # Example dataflows
 | Example | Language | Description |
 |---------|----------|-------------|
 | [module-dataflow](examples/module-dataflow) | Python | Reusable module composition |
+| [typed-dataflow](examples/typed-dataflow) | Python | Type annotations with `adora validate` |
 
 ### Communication patterns
 

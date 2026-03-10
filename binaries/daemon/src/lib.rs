@@ -3304,6 +3304,8 @@ mod fault_tolerance_tests {
                 run_config: NodeRunConfig {
                     inputs: BTreeMap::new(),
                     outputs: BTreeSet::new(),
+                    output_types: BTreeMap::new(),
+                    input_types: BTreeMap::new(),
                 },
                 daemon_communication: None,
                 dataflow_descriptor: serde_yaml::Value::Null,
@@ -3721,6 +3723,8 @@ impl CoreNodeKindExt for CoreNodeKind {
             CoreNodeKind::Runtime(n) => NodeRunConfig {
                 inputs: runtime_node_inputs(n),
                 outputs: runtime_node_outputs(n),
+                output_types: BTreeMap::new(),
+                input_types: BTreeMap::new(),
             },
             CoreNodeKind::Custom(n) => n.run_config.clone(),
         }

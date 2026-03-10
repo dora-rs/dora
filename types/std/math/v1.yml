@@ -1,0 +1,13 @@
+types:
+  Vector3:
+    arrow: Struct
+    description: "3D vector with x, y, z Float64 fields"
+  Quaternion:
+    arrow: Struct
+    description: "Quaternion with x, y, z, w Float64 fields"
+  Pose:
+    arrow: Struct
+    description: "6-DOF pose (position Vector3 + orientation Quaternion)"
+  Transform:
+    arrow: Struct
+    description: "Coordinate transform (translation Vector3 + rotation Quaternion)"

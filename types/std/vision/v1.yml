@@ -1,0 +1,10 @@
+types:
+  BoundingBox:
+    arrow: Struct
+    description: "2D bounding box with x, y, width, height, confidence, label"
+  Detection:
+    arrow: Struct
+    description: "Object detection result (list of BoundingBox)"
+  Segmentation:
+    arrow: Struct
+    description: "Pixel-level segmentation mask with class labels"

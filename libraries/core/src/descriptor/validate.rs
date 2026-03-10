@@ -653,6 +653,226 @@ fn validate_ros2_name(node_id: &NodeId, field: &str, name: &str) -> eyre::Result
     Ok(())
 }
 
+/// A non-fatal warning about type annotations in the dataflow.
+#[derive(Debug)]
+pub struct TypeWarning {
+    /// Node that produced the warning.
+    pub node_id: String,
+    /// Human-readable warning message.
+    pub message: String,
+}
+
+impl std::fmt::Display for TypeWarning {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "node \"{}\": {}", self.node_id, self.message)
+    }
+}
+
+/// Check type annotations in a dataflow. Returns warnings (never errors).
+///
+/// Checks:
+/// 1. `output_types` keys exist in `outputs`
+/// 2. `input_types` keys exist in `inputs`
+/// 3. All type URNs resolve in the registry
+/// 4. Connected edges have matching types (when both sides are annotated)
+pub fn check_type_annotations(
+    dataflow: &super::Descriptor,
+    registry: &crate::types::TypeRegistry,
+) -> Vec<TypeWarning> {
+    let mut warnings = Vec::new();
+
+    // Map of (source_node_id, output_ref) -> type_urn for cross-edge checking.
+    // For custom nodes: ("node_id", "output_id")
+    // For operators: ("node_id", "op_id/output_id") — matches InputMapping::User format
+    let mut output_type_map: BTreeMap<(String, String), String> = BTreeMap::new();
+
+    for node in &dataflow.nodes {
+        let nid = node.id.to_string();
+
+        // Check node-level output_types
+        check_port_types(
+            &nid,
+            &node.output_types,
+            |id| node.outputs.contains(id),
+            "output",
+            registry,
+            &mut warnings,
+        );
+        // Register node outputs for cross-edge checking (only known URNs)
+        for (output_id, urn) in &node.output_types {
+            if registry.resolve(urn).is_some() {
+                output_type_map.insert((nid.clone(), output_id.to_string()), urn.clone());
+            }
+        }
+
+        // Check node-level input_types
+        check_port_types(
+            &nid,
+            &node.input_types,
+            |id| node.inputs.contains_key(id),
+            "input",
+            registry,
+            &mut warnings,
+        );
+
+        // Check operator output/input types
+        if let Some(op) = &node.operator {
+            let op_id = op
+                .id
+                .as_ref()
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| super::SINGLE_OPERATOR_DEFAULT_ID.to_string());
+            check_port_types(
+                &nid,
+                &op.config.output_types,
+                |id| op.config.outputs.contains(id),
+                "output",
+                registry,
+                &mut warnings,
+            );
+            // Operator outputs are referenced as "op_id/output_id" from the node
+            for (output_id, urn) in &op.config.output_types {
+                if registry.resolve(urn).is_some() {
+                    output_type_map
+                        .insert((nid.clone(), format!("{op_id}/{output_id}")), urn.clone());
+                }
+            }
+            check_port_types(
+                &nid,
+                &op.config.input_types,
+                |id| op.config.inputs.contains_key(id),
+                "input",
+                registry,
+                &mut warnings,
+            );
+        }
+        if let Some(runtime) = &node.operators {
+            for op in &runtime.operators {
+                let label = format!("{nid}/{}", op.id);
+                check_port_types(
+                    &label,
+                    &op.config.output_types,
+                    |id| op.config.outputs.contains(id),
+                    "output",
+                    registry,
+                    &mut warnings,
+                );
+                for (output_id, urn) in &op.config.output_types {
+                    if registry.resolve(urn).is_some() {
+                        output_type_map
+                            .insert((nid.clone(), format!("{}/{output_id}", op.id)), urn.clone());
+                    }
+                }
+                check_port_types(
+                    &label,
+                    &op.config.input_types,
+                    |id| op.config.inputs.contains_key(id),
+                    "input",
+                    registry,
+                    &mut warnings,
+                );
+            }
+        }
+    }
+
+    // Cross-edge type mismatch check (nodes + operators)
+    for node in &dataflow.nodes {
+        let nid = node.id.to_string();
+        check_edge_mismatches(
+            &nid,
+            &node.input_types,
+            &node.inputs,
+            &output_type_map,
+            &mut warnings,
+        );
+
+        if let Some(op) = &node.operator {
+            check_edge_mismatches(
+                &nid,
+                &op.config.input_types,
+                &op.config.inputs,
+                &output_type_map,
+                &mut warnings,
+            );
+        }
+        if let Some(runtime) = &node.operators {
+            for op in &runtime.operators {
+                let label = format!("{nid}/{}", op.id);
+                check_edge_mismatches(
+                    &label,
+                    &op.config.input_types,
+                    &op.config.inputs,
+                    &output_type_map,
+                    &mut warnings,
+                );
+            }
+        }
+    }
+
+    warnings
+}
+
+/// Validate that port type keys exist in the port list and URNs resolve.
+fn check_port_types(
+    node_id: &str,
+    type_map: &BTreeMap<DataId, String>,
+    contains: impl Fn(&DataId) -> bool,
+    port_kind: &str,
+    registry: &crate::types::TypeRegistry,
+    warnings: &mut Vec<TypeWarning>,
+) {
+    for (port_id, urn) in type_map {
+        if !contains(port_id) {
+            warnings.push(TypeWarning {
+                node_id: node_id.to_string(),
+                message: format!(
+                    "{port_kind}_types key \"{port_id}\" not found in {port_kind}s list"
+                ),
+            });
+        }
+        if registry.resolve(urn).is_none() {
+            let hint = registry
+                .suggest(urn)
+                .map(|s| format!(" (did you mean \"{s}\"?)"))
+                .unwrap_or_default();
+            warnings.push(TypeWarning {
+                node_id: node_id.to_string(),
+                message: format!("unknown type \"{urn}\" on {port_kind} \"{port_id}\"{hint}"),
+            });
+        }
+    }
+}
+
+/// Check cross-edge type mismatches for a set of inputs.
+fn check_edge_mismatches(
+    node_id: &str,
+    input_types: &BTreeMap<DataId, String>,
+    inputs: &BTreeMap<DataId, Input>,
+    output_type_map: &BTreeMap<(String, String), String>,
+    warnings: &mut Vec<TypeWarning>,
+) {
+    for (input_id, input_urn) in input_types {
+        if let Some(input) = inputs.get(input_id) {
+            if let InputMapping::User(ref mapping) = input.mapping {
+                let key = (mapping.source.to_string(), mapping.output.to_string());
+                if let Some(output_urn) = output_type_map.get(&key) {
+                    if output_urn != input_urn {
+                        warnings.push(TypeWarning {
+                            node_id: node_id.to_string(),
+                            message: format!(
+                                "type mismatch on input \"{input_id}\": \
+                                 upstream {}/{} declares \"{output_urn}\", \
+                                 but expected \"{input_urn}\"",
+                                mapping.source, mapping.output,
+                            ),
+                        });
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn validate_ros2_type_format(node_id: &NodeId, name: &str, type_str: &str) -> eyre::Result<()> {
     // type must be "package/TypeName" format with alphanumeric+underscore parts
     let parts: Vec<&str> = type_str.split('/').collect();
@@ -676,8 +896,9 @@ fn validate_ros2_type_format(node_id: &NodeId, name: &str, type_str: &str) -> ey
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::TypeRegistry;
     use adora_message::config::{Input, InputMapping};
-    use adora_message::descriptor::{Ros2BridgeConfig, Ros2Role};
+    use adora_message::descriptor::{Descriptor, Ros2BridgeConfig, Ros2Role};
     use std::time::Duration;
 
     fn dummy_input() -> Input {
@@ -1024,6 +1245,100 @@ mod tests {
         let err = validate_ros2_config(&NodeId::from("n".to_owned()), &config, &inputs, &outputs)
             .unwrap_err();
         assert!(err.to_string().contains("keep_last"));
+    }
+
+    // --- Type annotation tests ---
+
+    fn parse_dataflow(yaml: &str) -> Descriptor {
+        serde_yaml::from_str(yaml).expect("test YAML should parse")
+    }
+
+    #[test]
+    fn type_check_no_annotations_no_warnings() {
+        let dataflow = parse_dataflow("nodes:\n  - id: a\n");
+        let reg = TypeRegistry::new();
+        let warnings = check_type_annotations(&dataflow, &reg);
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn type_check_valid_output_type() {
+        let dataflow = parse_dataflow(
+            "nodes:\n  - id: camera\n    outputs:\n      - image\n    output_types:\n      image: std/media/v1/Image\n",
+        );
+        let reg = TypeRegistry::new();
+        let warnings = check_type_annotations(&dataflow, &reg);
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn type_check_output_types_key_not_in_outputs() {
+        let dataflow = parse_dataflow(
+            "nodes:\n  - id: camera\n    output_types:\n      image: std/media/v1/Image\n",
+        );
+        let reg = TypeRegistry::new();
+        let warnings = check_type_annotations(&dataflow, &reg);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].message.contains("not found in outputs"));
+    }
+
+    #[test]
+    fn type_check_unknown_urn_with_suggestion() {
+        let dataflow = parse_dataflow(
+            "nodes:\n  - id: camera\n    outputs:\n      - image\n    output_types:\n      image: std/media/v1/Imag\n",
+        );
+        let reg = TypeRegistry::new();
+        let warnings = check_type_annotations(&dataflow, &reg);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].message.contains("unknown type"));
+        assert!(warnings[0].message.contains("did you mean"));
+    }
+
+    #[test]
+    fn type_check_matching_edge_types() {
+        let dataflow = parse_dataflow(
+            "\
+nodes:
+  - id: sender
+    outputs:
+      - data
+    output_types:
+      data: std/core/v1/Float32
+  - id: receiver
+    inputs:
+      data: sender/data
+    input_types:
+      data: std/core/v1/Float32
+",
+        );
+        let reg = TypeRegistry::new();
+        let warnings = check_type_annotations(&dataflow, &reg);
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn type_check_mismatched_edge_types() {
+        let dataflow = parse_dataflow(
+            "\
+nodes:
+  - id: sender
+    outputs:
+      - data
+    output_types:
+      data: std/core/v1/Bytes
+  - id: receiver
+    inputs:
+      data: sender/data
+    input_types:
+      data: std/media/v1/Image
+",
+        );
+        let reg = TypeRegistry::new();
+        let warnings = check_type_annotations(&dataflow, &reg);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].message.contains("type mismatch"));
+        assert!(warnings[0].message.contains("Bytes"));
+        assert!(warnings[0].message.contains("Image"));
     }
 
     #[test]
