@@ -99,8 +99,14 @@ mod tests {
 
     #[test]
     fn drop_cleans_up_temp_dir() {
+        // Use a unique directory to avoid races with parallel tests that
+        // also create/drop ArtifactStore (they share the same base path).
         let dir = {
-            let store = ArtifactStore::new().unwrap();
+            let store = ArtifactStore {
+                base_dir: std::env::temp_dir()
+                    .join(format!("adora-artifacts-test-{}", Uuid::new_v4())),
+            };
+            std::fs::create_dir_all(&store.base_dir).unwrap();
             let dir = store.base_dir.clone();
             // Write a file so the dir is non-empty
             let build_dir = dir.join("test-build");
