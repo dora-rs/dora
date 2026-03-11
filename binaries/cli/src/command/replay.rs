@@ -9,7 +9,7 @@ use adora_recording::RecordingReader;
 use clap::Args;
 use eyre::{Context, bail};
 
-use crate::command::{Executable, Run, default_tracing};
+use crate::command::{Executable, Run};
 
 /// Replay a recorded dataflow from an `.adorec` file.
 ///
@@ -59,7 +59,7 @@ pub struct Replay {
 
 impl Executable for Replay {
     fn execute(self) -> eyre::Result<()> {
-        default_tracing()?;
+        // Run::execute() sets up its own tracing subscriber.
         run_replay(self)
     }
 }

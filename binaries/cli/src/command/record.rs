@@ -58,10 +58,13 @@ pub struct Record {
 
 impl Executable for Record {
     fn execute(self) -> eyre::Result<()> {
-        default_tracing()?;
         if self.proxy {
+            // Proxy mode handles recording directly without delegating to Run,
+            // so it needs its own tracing subscriber.
+            default_tracing()?;
             run_record_proxy(self)
         } else {
+            // Run::execute() sets up its own tracing subscriber.
             run_record(self)
         }
     }
