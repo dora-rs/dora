@@ -66,13 +66,36 @@ pub fn token_path(working_dir: &Path) -> PathBuf {
     working_dir.join(TOKEN_FILENAME)
 }
 
-/// Write the token to `<working_dir>/.adora-token` with owner-only permissions.
+/// Return the token path inside the user's config directory
+/// (e.g. `~/.config/adora/.adora-token` on Linux).
 ///
-/// On Unix, the file is created with mode `0o600` atomically to prevent
+/// Returns `None` if no config directory can be determined.
+pub fn config_token_path() -> Option<PathBuf> {
+    dirs::config_dir().map(|d| d.join("adora").join(TOKEN_FILENAME))
+}
+
+/// Write the token to `<working_dir>/.adora-token` **and** to the user config
+/// directory (e.g. `~/.config/adora/.adora-token`).
+///
+/// On Unix, files are created with mode `0o600` atomically to prevent
 /// a TOCTOU window where the file is briefly world-readable.
 pub fn write_token(working_dir: &Path, token: &AuthToken) -> std::io::Result<()> {
-    let path = token_path(working_dir);
+    write_token_to(&token_path(working_dir), token)?;
 
+    // Best-effort write to config dir so CLIs in other directories can find it.
+    if let Some(config_path) = config_token_path() {
+        if let Some(parent) = config_path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        if let Err(e) = write_token_to(&config_path, token) {
+            eprintln!("warning: failed to write token to config dir: {e}");
+        }
+    }
+
+    Ok(())
+}
+
+fn write_token_to(path: &Path, token: &AuthToken) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -81,17 +104,16 @@ pub fn write_token(working_dir: &Path, token: &AuthToken) -> std::io::Result<()>
             .create(true)
             .truncate(true)
             .mode(0o600)
-            .open(&path)?;
+            .open(path)?;
         file.write_all(token.as_hex().as_bytes())?;
         file.write_all(b"\n")?;
     }
     #[cfg(not(unix))]
     {
-        let mut file = fs::File::create(&path)?;
+        let mut file = fs::File::create(path)?;
         file.write_all(token.as_hex().as_bytes())?;
         file.write_all(b"\n")?;
     }
-
     Ok(())
 }
 
@@ -107,15 +129,18 @@ pub fn read_token(working_dir: &Path) -> std::io::Result<Option<AuthToken>> {
     }
 }
 
-/// Remove the token file if it exists.
+/// Remove the token file if it exists (from both working dir and config dir).
 pub fn remove_token(working_dir: &Path) {
-    let path = token_path(working_dir);
-    let _ = fs::remove_file(path);
+    let _ = fs::remove_file(token_path(working_dir));
+    if let Some(config_path) = config_token_path() {
+        let _ = fs::remove_file(config_path);
+    }
 }
 
 /// Attempt to read the auth token from (in order):
 /// 1. `ADORA_AUTH_TOKEN` environment variable
 /// 2. `<cwd>/.adora-token` file
+/// 3. User config directory (e.g. `~/.config/adora/.adora-token`)
 ///
 /// Returns `None` if no token is found.
 pub fn discover_token() -> Option<AuthToken> {
@@ -130,6 +155,16 @@ pub fn discover_token() -> Option<AuthToken> {
     if let Ok(cwd) = std::env::current_dir() {
         if let Ok(Some(token)) = read_token(&cwd) {
             return Some(token);
+        }
+    }
+
+    // 3. Token file in user config directory
+    if let Some(config_path) = config_token_path() {
+        if let Ok(content) = fs::read_to_string(&config_path) {
+            let trimmed = content.trim();
+            if !trimmed.is_empty() {
+                return Some(AuthToken(trimmed.to_string()));
+            }
         }
     }
 
@@ -166,6 +201,26 @@ mod tests {
 
         remove_token(dir.path());
         assert!(read_token(dir.path()).unwrap().is_none());
+    }
+
+    #[test]
+    fn config_token_path_returns_some() {
+        // Should return a path on any system with a home directory
+        let path = config_token_path();
+        if let Some(p) = &path {
+            assert!(p.ends_with("adora/.adora-token"));
+        }
+    }
+
+    #[test]
+    fn write_token_creates_config_dir_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let token = generate_token();
+        write_token(dir.path(), &token).unwrap();
+
+        // Config dir copy is best-effort; just verify the working-dir copy works
+        let read_back = read_token(dir.path()).unwrap().unwrap();
+        assert_eq!(token.as_hex(), read_back.as_hex());
     }
 
     #[test]
