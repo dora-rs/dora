@@ -5,6 +5,7 @@ use ratatui::{DefaultTerminal, prelude::*, widgets::*};
 use std::{
     borrow::Cow,
     collections::{BTreeMap, BTreeSet, VecDeque},
+    fmt,
     io::{self, IsTerminal},
     iter,
     sync::{Arc, Mutex},
@@ -168,29 +169,43 @@ struct Stats {
     std_ms: f64,
 }
 
+/// Label for hz stats entries. Avoids creating a fake `TopicIdentifier` for the
+/// aggregate row, which could collide with a real node name.
+enum HzLabel<'a> {
+    /// Aggregate of all topics.
+    Aggregate,
+    /// A specific topic.
+    Topic(&'a TopicIdentifier),
+}
+
+impl fmt::Display for HzLabel<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            HzLabel::Aggregate => write!(f, "ALL"),
+            HzLabel::Topic(t) => write!(f, "{t}"),
+        }
+    }
+}
+
 fn run_hz(
     mut terminal: DefaultTerminal,
     window: usize,
     outputs: BTreeSet<TopicIdentifier>,
     data_rx: std::sync::mpsc::Receiver<eyre::Result<Vec<u8>>>,
 ) -> eyre::Result<()> {
-    // Add a synthetic aggregate entry ("_ALL_") that merges all outputs
-    let mut topics_with_all = Vec::with_capacity(outputs.len() + 1);
-    topics_with_all.push(TopicIdentifier {
-        node_id: "_ALL_".to_string().into(),
-        data_id: "_".to_string().into(),
-    });
-    topics_with_all.extend(outputs);
+    // Build stats vec: index 0 is the aggregate, rest are per-topic
+    let mut stats: Vec<(HzLabel<'_>, Arc<HzStats>)> = Vec::with_capacity(outputs.len() + 1);
+    stats.push((HzLabel::Aggregate, Arc::new(HzStats::new(window))));
+    for topic in &outputs {
+        stats.push((HzLabel::Topic(topic), Arc::new(HzStats::new(window))));
+    }
 
-    let stats: Vec<_> = topics_with_all
-        .iter()
-        .map(|topic| (topic, Arc::new(HzStats::new(window))))
-        .collect();
-
-    // Build lookup map: (node_id, data_id) -> index in stats (skip index 0 = ALL)
+    // Build lookup map: (node_id, data_id) -> index in stats (skip index 0 = aggregate)
     let mut topic_index: BTreeMap<(String, String), usize> = BTreeMap::new();
-    for (i, (topic, _)) in stats.iter().enumerate().skip(1) {
-        topic_index.insert((topic.node_id.to_string(), topic.data_id.to_string()), i);
+    for (i, (label, _)) in stats.iter().enumerate().skip(1) {
+        if let HzLabel::Topic(topic) = label {
+            topic_index.insert((topic.node_id.to_string(), topic.data_id.to_string()), i);
+        }
     }
 
     let mut selected: usize = 0;
@@ -306,7 +321,7 @@ fn run_hz(
 
 fn ui(
     f: &mut Frame<'_>,
-    stats: &[(&TopicIdentifier, Arc<HzStats>)],
+    stats: &[(HzLabel<'_>, Arc<HzStats>)],
     selected: usize,
     rate_series: &[VecDeque<u64>],
     start: Instant,

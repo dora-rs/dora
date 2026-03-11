@@ -70,35 +70,46 @@ impl Executable for Record {
     }
 }
 
+/// Discover all `(node_id, output_id)` pairs from a parsed descriptor YAML.
+fn discover_descriptor_outputs(
+    descriptor: &serde_yaml::Value,
+) -> eyre::Result<Vec<(String, String)>> {
+    let nodes = descriptor
+        .get("nodes")
+        .and_then(|v| v.as_sequence())
+        .ok_or_else(|| eyre::eyre!("descriptor has no nodes array"))?;
+
+    let mut outputs = Vec::new();
+    for node in nodes {
+        let node_id = node.get("id").and_then(|v| v.as_str()).unwrap_or_default();
+        if let Some(node_outputs) = node.get("outputs").and_then(|v| v.as_sequence()) {
+            for output in node_outputs {
+                if let Some(output_id) = output.as_str() {
+                    outputs.push((node_id.to_string(), output_id.to_string()));
+                }
+            }
+        }
+    }
+
+    if outputs.is_empty() {
+        bail!("no outputs found in descriptor");
+    }
+    Ok(outputs)
+}
+
 fn run_record(args: Record) -> eyre::Result<()> {
     let yaml_bytes =
         std::fs::read(&args.file).wrap_err_with(|| format!("failed to read {}", args.file))?;
     let mut descriptor: serde_yaml::Value =
         serde_yaml::from_slice(&yaml_bytes).wrap_err("failed to parse descriptor YAML")?;
 
-    // Discover all node outputs from the YAML
-    let nodes = descriptor
-        .get("nodes")
-        .and_then(|v| v.as_sequence())
-        .ok_or_else(|| eyre::eyre!("descriptor has no nodes array"))?;
-
+    let all_outputs = discover_descriptor_outputs(&descriptor)?;
     let mut all_topics: BTreeMap<String, String> = BTreeMap::new();
-    for node in nodes {
-        let node_id = node.get("id").and_then(|v| v.as_str()).unwrap_or_default();
-        if let Some(outputs) = node.get("outputs").and_then(|v| v.as_sequence()) {
-            for output in outputs {
-                if let Some(output_id) = output.as_str() {
-                    let topic = format!("{node_id}/{output_id}");
-                    // input_id on record node: sanitized to avoid / in IDs
-                    let input_id = format!("{node_id}___{output_id}");
-                    all_topics.insert(topic, input_id);
-                }
-            }
-        }
-    }
-
-    if all_topics.is_empty() {
-        bail!("no outputs found in descriptor");
+    for (node_id, output_id) in &all_outputs {
+        let topic = format!("{node_id}/{output_id}");
+        // input_id on record node: sanitized to avoid / in IDs
+        let input_id = format!("{node_id}___{output_id}");
+        all_topics.insert(topic, input_id);
     }
 
     // Filter topics if --topics specified
@@ -224,30 +235,10 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
     let yaml_bytes =
         std::fs::read(&args.file).wrap_err_with(|| format!("failed to read {}", args.file))?;
 
-    // Parse descriptor to discover topics
     let descriptor: serde_yaml::Value =
         serde_yaml::from_slice(&yaml_bytes).wrap_err("failed to parse descriptor YAML")?;
 
-    let nodes = descriptor
-        .get("nodes")
-        .and_then(|v| v.as_sequence())
-        .ok_or_else(|| eyre::eyre!("descriptor has no nodes array"))?;
-
-    let mut all_topics: Vec<(String, String)> = Vec::new();
-    for node in nodes {
-        let node_id = node.get("id").and_then(|v| v.as_str()).unwrap_or_default();
-        if let Some(outputs) = node.get("outputs").and_then(|v| v.as_sequence()) {
-            for output in outputs {
-                if let Some(output_id) = output.as_str() {
-                    all_topics.push((node_id.to_string(), output_id.to_string()));
-                }
-            }
-        }
-    }
-
-    if all_topics.is_empty() {
-        bail!("no outputs found in descriptor");
-    }
+    let all_topics = discover_descriptor_outputs(&descriptor)?;
 
     // Filter topics if --topics specified
     let topics: Vec<(String, String)> = if args.topics.is_empty() {

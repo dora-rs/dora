@@ -287,6 +287,7 @@ dependencies = [
  "dirs 6.0.0",
  "eyre",
  "getrandom 0.2.17",
+ "libc",
  "log",
  "once_cell",
  "schemars 1.2.1",

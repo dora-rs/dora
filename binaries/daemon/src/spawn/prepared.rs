@@ -278,6 +278,9 @@ impl PreparedNode {
                 }
 
                 restart_count += 1;
+                // `node_config.restart_count` is serialized into ADORA_NODE_CONFIG
+                // for the restarted child process. `shared_restart_count` is read by
+                // the daemon's metrics reporting path in lib.rs. Both must stay in sync.
                 self.node_config.restart_count = restart_count;
                 shared_restart_count.store(restart_count, atomic::Ordering::Release);
                 self.ft_stats

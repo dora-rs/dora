@@ -49,6 +49,16 @@ fn is_denied_env(key: &str) -> bool {
     }
 }
 
+/// Strip all denied env vars from the inherited process environment.
+/// This prevents the daemon's own env (e.g. `ADORA_AUTH_TOKEN`) from leaking
+/// to child nodes via `/proc/<pid>/environ`.
+fn strip_denied_env(mut command: Command) -> Command {
+    for key in ENV_DENYLIST {
+        command = command.env_remove(key);
+    }
+    command
+}
+
 #[derive(Clone)]
 pub struct Spawner {
     pub dataflow_id: DataflowId,
@@ -147,6 +157,7 @@ impl Spawner {
                 let command = if let Some(mut command) = command {
                     command = command.current_dir(&node_working_dir);
                     command = command.stdin(Stdio::Null);
+                    command = strip_denied_env(command);
 
                     command = command.env(
                         "ADORA_NODE_CONFIG",
@@ -309,6 +320,7 @@ impl Spawner {
 
                 let command = if let Some(mut command) = command {
                     command = command.current_dir(&node_working_dir);
+                    command = strip_denied_env(command);
 
                     command = command.env(
                         "ADORA_RUNTIME_CONFIG",
