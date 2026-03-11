@@ -1,7 +1,6 @@
 use dora_core::descriptor::{CoreNodeKind, Descriptor, DescriptorExt, resolve_path};
 use dora_core::topics::zenoh_log_subscribe_all_for_dataflow;
 use dora_message::cli_to_coordinator::CoordinatorControlClient;
-use dora_message::common::LogMessage;
 use dora_message::coordinator_to_cli::{CheckDataflowReply, DataflowResult, StopDataflowReply};
 use dora_message::id::{NodeId, OperatorId};
 use dora_message::tarpc;
@@ -14,7 +13,7 @@ use tracing::info;
 use uuid::Uuid;
 
 use crate::common::{handle_dataflow_result, long_context, rpc};
-use crate::output::{print_log_message, should_display};
+use crate::output::subscribe_and_print_logs;
 
 pub async fn attach_dataflow(
     dataflow: Descriptor,
@@ -121,42 +120,20 @@ pub async fn attach_dataflow(
     })
     .wrap_err("failed to set ctrl-c handler")?;
 
-    // Subscribe to log messages via zenoh and forward to the event channel.
+    // Subscribe to log messages via zenoh — prints directly without routing
+    // through the event channel, since log display is fire-and-forget.
     let zenoh_session = dora_core::topics::open_zenoh_session(Some(coordinator_addr))
         .await
         .wrap_err("failed to open zenoh session for log subscription")?;
     let log_topic = zenoh_log_subscribe_all_for_dataflow(dataflow_id);
-    let subscriber = zenoh_session
-        .declare_subscriber(&log_topic)
-        .await
-        .map_err(|e| eyre::eyre!(e))
-        .wrap_err("failed to subscribe to log topic")?;
-    tokio::spawn(async move {
-        loop {
-            match subscriber.recv_async().await {
-                Ok(sample) => {
-                    let payload = sample.payload().to_bytes();
-                    let parsed: eyre::Result<LogMessage> = serde_json::from_slice(&payload)
-                        .context("failed to parse log message from zenoh");
-                    match parsed {
-                        Ok(log_message) => {
-                            if should_display(&log_message, log_level) {
-                                if tx.send(AttachEvent::Log(Ok(log_message))).is_err() {
-                                    break;
-                                }
-                            }
-                        }
-                        Err(err) => {
-                            if tx.send(AttachEvent::Log(Err(err))).is_err() {
-                                break;
-                            }
-                        }
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-    });
+    let _log_task = subscribe_and_print_logs(
+        &zenoh_session,
+        &log_topic,
+        log_level,
+        false,
+        print_daemon_name,
+    )
+    .await?;
 
     loop {
         let event: AttachLoopEvent =
@@ -195,14 +172,6 @@ pub async fn attach_dataflow(
                     .await?;
                     AttachLoopEvent::Stopped { uuid, result }
                 }
-                Ok(Some(AttachEvent::Log(Ok(log_message)))) => {
-                    print_log_message(log_message, false, print_daemon_name);
-                    continue;
-                }
-                Ok(Some(AttachEvent::Log(Err(err)))) => {
-                    tracing::warn!("failed to parse log message: {:#?}", err);
-                    continue;
-                }
                 Ok(None) => {
                     // all senders dropped, channel closed
                     break Ok(());
@@ -230,7 +199,6 @@ enum AttachEvent {
     Stop {
         force: bool,
     },
-    Log(eyre::Result<LogMessage>),
 }
 
 enum AttachLoopEvent {
