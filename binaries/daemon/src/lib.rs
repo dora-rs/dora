@@ -1283,11 +1283,7 @@ impl Daemon {
                     .with_disk_usage();
                 // Refresh all processes so we can discover descendant
                 // processes (e.g. Python child spawned by uv).
-                system.refresh_processes_specifics(
-                    ProcessesToUpdate::All,
-                    true,
-                    refresh_kind,
-                );
+                system.refresh_processes_specifics(ProcessesToUpdate::All, true, refresh_kind);
 
                 // Collect metrics for each node
                 for (node_id, running_node) in &dataflow.running_nodes {
