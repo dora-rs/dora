@@ -48,9 +48,9 @@ impl Metadata {
     }
 
     /// Returns the parameter for `key` converted to `T`, or `default` if missing or wrong type.
-    pub fn get_or<T>(&self, key: &str, default: T) -> T
+    pub fn get_or<'a, T>(&'a self, key: &str, default: T) -> T
     where
-        for<'a> T: TryFrom<&'a Parameter>,
+        T: TryFrom<&'a Parameter>,
     {
         self.parameters
             .get(key)
@@ -458,7 +458,7 @@ mod tests {
     }
 
     #[test]
-        fn get_or_missing_key_returns_default() {
+    fn get_or_missing_key_returns_default() {
         let ts = uhlc::HLC::default().new_timestamp();
         let type_info = ArrowTypeInfo {
             data_type: arrow_schema::DataType::Null,
@@ -471,5 +471,23 @@ mod tests {
         };
         let m = Metadata::new(ts, type_info);
         assert_eq!(m.get_or("timeout", 42_i64), 42);
+    }
+
+    #[test]
+    fn get_or_type_mismatch_returns_default() {
+        let ts = uhlc::HLC::default().new_timestamp();
+        let type_info = ArrowTypeInfo {
+            data_type: arrow_schema::DataType::Null,
+            len: 0,
+            null_count: 0,
+            validity: None,
+            offset: 0,
+            buffer_offsets: vec![],
+            child_data: vec![],
+        };
+        let mut params = MetadataParameters::new();
+        params.insert("count".into(), Parameter::Integer(5));
+        let m = Metadata::from_parameters(ts, type_info, params);
+        assert_eq!(m.get_or("count", true), true);
     }
 }
