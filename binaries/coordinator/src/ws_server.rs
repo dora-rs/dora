@@ -46,7 +46,11 @@ impl IpRateLimiter {
     }
 
     /// Returns `true` if the connection should be allowed.
+    /// Loopback addresses are always allowed (localhost has machine-level access).
     pub fn check(&self, ip: IpAddr) -> bool {
+        if ip.is_loopback() {
+            return true;
+        }
         let mut map = self.windows.lock().unwrap_or_else(|e| e.into_inner());
         let now = Instant::now();
         let window = std::time::Duration::from_secs(RATE_WINDOW_SECS);
@@ -298,6 +302,18 @@ mod tests {
             rl.check(ip);
         }
         assert!(!rl.check(ip));
+    }
+
+    #[test]
+    fn rate_limiter_allows_localhost_unlimited() {
+        let rl = IpRateLimiter::new();
+        let ipv4_lo: IpAddr = std::net::Ipv4Addr::LOCALHOST.into();
+        let ipv6_lo: IpAddr = std::net::Ipv6Addr::LOCALHOST.into();
+        // Should never be rejected, even well past the limit
+        for _ in 0..(MAX_CONNECTIONS_PER_IP * 5) {
+            assert!(rl.check(ipv4_lo));
+            assert!(rl.check(ipv6_lo));
+        }
     }
 
     #[test]
