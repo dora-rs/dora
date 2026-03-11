@@ -34,3 +34,8 @@ getrandom = "0.2"
 
 [dev-dependencies]
 tempfile = "3.23.0"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "message_serde"
+harness = false

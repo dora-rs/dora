@@ -14,6 +14,7 @@ repository.workspace = true
 [features]
 default = ["tracing", "telemetry"]
 tracing = ["dep:adora-tracing"]
+bench = []
 # telemetry flag enables to trace adora-daemon as well as send ticks with opentelemetry context
 # for distributed tracing.
 telemetry = ["dep:tracing-opentelemetry"]
@@ -63,6 +64,12 @@ libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "routing"
+harness = false
+required-features = ["bench"]
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61.3", features = [

@@ -1,0 +1,15 @@
+nodes:
+  - id: python-node
+    path: python-sender/sender.py
+    outputs:
+      - latency
+      - throughput
+
+  - id: rust-sink
+    build: cargo build -p benchmark-example-sink --release
+    path: ../../target/release/benchmark-example-sink
+    inputs:
+      latency: python-node/latency
+      throughput:
+        source: python-node/throughput
+        queue_size: 1000

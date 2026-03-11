@@ -69,6 +69,97 @@ use uuid::{NoContext, Timestamp, Uuid};
 pub use flume;
 pub use log::LogDestination;
 
+/// Benchmark support: exposes internal routing functions for criterion benchmarks.
+/// Not part of the public API.
+#[cfg(feature = "bench")]
+#[doc(hidden)]
+pub mod bench_support {
+    use super::*;
+
+    /// Create a minimal `RunningDataflow` with the given sender->receiver mapping.
+    /// Returns the dataflow and a vec of receivers (one per subscriber).
+    pub fn setup_routing(
+        fan_out: usize,
+    ) -> (
+        RunningDataflow,
+        HLC,
+        Vec<mpsc::UnboundedReceiver<Timestamped<NodeEvent>>>,
+    ) {
+        let descriptor = adora_message::descriptor::Descriptor {
+            nodes: vec![],
+            communication: adora_message::config::CommunicationConfig::default(),
+            deploy: None,
+            debug: adora_message::descriptor::Debug::default(),
+            health_check_interval: None,
+        };
+        let mut df = RunningDataflow::new(Uuid::nil(), DaemonId::new(None), descriptor);
+
+        let sender_id: NodeId = "sender".to_string().into();
+        let output_id: DataId = "output".to_string().into();
+
+        let mut receivers = Vec::new();
+        let mut mapping = BTreeSet::new();
+
+        let input_id: DataId = "input".to_string().into();
+        for i in 0..fan_out {
+            let receiver_id: NodeId = format!("receiver_{i}").into();
+            let (tx, rx) = mpsc::unbounded_channel();
+            df.subscribe_channels.insert(receiver_id.clone(), tx);
+            df.pending_messages
+                .insert(receiver_id.clone(), Arc::new(AtomicU64::new(0)));
+            mapping.insert((receiver_id, input_id.clone()));
+            receivers.push(rx);
+        }
+
+        df.mappings.insert(OutputId(sender_id, output_id), mapping);
+
+        let clock = HLC::default();
+        (df, clock, receivers)
+    }
+
+    /// Pre-built message components for benchmark iterations.
+    pub struct RoutingFixture {
+        pub sender_id: NodeId,
+        pub output_id: DataId,
+        pub data_msg: DataMessage,
+        pub metadata: metadata::Metadata,
+    }
+
+    /// Create a reusable fixture for the routing hot path (call once per config).
+    pub fn make_fixture(clock: &HLC, payload_size: usize) -> RoutingFixture {
+        let data = vec![0u8; payload_size];
+        let type_info = ArrowTypeInfo {
+            data_type: adora_node_api::arrow::datatypes::DataType::UInt8,
+            len: payload_size,
+            null_count: 0,
+            validity: None,
+            offset: 0,
+            buffer_offsets: vec![],
+            child_data: vec![],
+        };
+        RoutingFixture {
+            sender_id: "sender".to_string().into(),
+            output_id: "output".to_string().into(),
+            data_msg: DataMessage::Vec(AVec::from_slice(128, &data)),
+            metadata: metadata::Metadata::new(clock.new_timestamp(), type_info),
+        }
+    }
+
+    /// Run one iteration of the routing hot path using pre-built fixture.
+    pub async fn route_message(df: &mut RunningDataflow, fixture: &RoutingFixture, clock: &HLC) {
+        let _ = send_output_to_local_receivers(
+            fixture.sender_id.clone(),
+            fixture.output_id.clone(),
+            df,
+            &fixture.metadata,
+            Some(fixture.data_msg.clone()),
+            clock,
+            None,
+        )
+        .await;
+    }
+}
+
 mod coordinator;
 mod extract_err_from_stderr;
 pub(crate) mod fault_tolerance;

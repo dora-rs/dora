@@ -1,0 +1,14 @@
+nodes:
+  - id: adora-sender
+    path: adora_sender.py
+    outputs:
+      - latency
+      - throughput
+
+  - id: adora-receiver
+    path: adora_receiver.py
+    inputs:
+      latency: adora-sender/latency
+      throughput:
+        source: adora-sender/throughput
+        queue_size: 1000

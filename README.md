@@ -467,7 +467,8 @@ See [docs/patterns.md](docs/patterns.md) for the full guide.
 
 | Example | Language | Description |
 |---------|----------|-------------|
-| [benchmark](examples/benchmark) | Rust | CPU latency benchmark |
+| [benchmark](examples/benchmark) | Rust/Python | Latency and throughput benchmark |
+| [ros2-comparison](examples/ros2-comparison) | Python | Adora vs ROS2 comparison |
 | [cuda-benchmark](examples/cuda-benchmark) | Rust/CUDA | GPU zero-copy benchmark |
 
 ### ROS2 integration
