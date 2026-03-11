@@ -1270,25 +1270,21 @@ impl Daemon {
         for (dataflow_id, dataflow) in &self.running {
             let mut metrics = BTreeMap::new();
 
-            // Collect all PIDs for this dataflow
-            let pids: Vec<Pid> = dataflow
+            let has_running_nodes = dataflow
                 .running_nodes
                 .values()
-                .filter_map(|node| {
-                    node.pid
-                        .as_ref()
-                        .map(|pid| Pid::from_u32(pid.load(atomic::Ordering::Acquire)))
-                })
-                .collect();
+                .any(|node| node.pid.is_some());
 
-            if !pids.is_empty() {
+            if has_running_nodes {
                 // Refresh process metrics (cpu, memory, disk)
                 let refresh_kind = ProcessRefreshKind::nothing()
                     .with_cpu()
                     .with_memory()
                     .with_disk_usage();
+                // Refresh all processes so we can discover descendant
+                // processes (e.g. Python child spawned by uv).
                 system.refresh_processes_specifics(
-                    ProcessesToUpdate::Some(&pids),
+                    ProcessesToUpdate::All,
                     true,
                     refresh_kind,
                 );
@@ -1299,7 +1295,23 @@ impl Daemon {
                         let pid = pid.load(atomic::Ordering::Acquire);
                         let sys_pid = Pid::from_u32(pid);
                         if let Some(process) = system.process(sys_pid) {
+                            // Aggregate metrics across the process and all
+                            // its descendants (e.g. uv -> python).
+                            let mut cpu_usage = process.cpu_usage();
+                            let mut memory_bytes = process.memory();
                             let disk_usage = process.disk_usage();
+                            let mut disk_read = disk_usage.read_bytes;
+                            let mut disk_written = disk_usage.written_bytes;
+
+                            for child in system.processes().values() {
+                                if child.parent() == Some(sys_pid) {
+                                    cpu_usage += child.cpu_usage();
+                                    memory_bytes += child.memory();
+                                    let child_disk = child.disk_usage();
+                                    disk_read += child_disk.read_bytes;
+                                    disk_written += child_disk.written_bytes;
+                                }
+                            }
 
                             // Collect broken inputs for this node
                             let broken_inputs: Vec<String> = dataflow
@@ -1323,15 +1335,13 @@ impl Daemon {
                                 node_id.clone(),
                                 NodeMetrics {
                                     pid,
-                                    cpu_usage: process.cpu_usage(),
-                                    memory_bytes: process.memory(),
+                                    cpu_usage,
+                                    memory_bytes,
                                     disk_read_bytes: Some(
-                                        (disk_usage.read_bytes as f64 / METRICS_INTERVAL_SECS)
-                                            as u64,
+                                        (disk_read as f64 / METRICS_INTERVAL_SECS) as u64,
                                     ),
                                     disk_write_bytes: Some(
-                                        (disk_usage.written_bytes as f64 / METRICS_INTERVAL_SECS)
-                                            as u64,
+                                        (disk_written as f64 / METRICS_INTERVAL_SECS) as u64,
                                     ),
                                     restart_count,
                                     broken_inputs,
