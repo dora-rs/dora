@@ -494,7 +494,7 @@ impl DoraNode {
                         .ok()
                         .and_then(|s| s.parse().ok())
                 })
-                .unwrap_or(64 * 1024 * 1024); // 64MB default
+                .unwrap_or(8 * 1024 * 1024); // 8MB default
 
             let provider = {
                 use zenoh::shm::*;
@@ -718,8 +718,10 @@ impl DoraNode {
     ) -> eyre::Result<()> {
         let metadata = Metadata::from_parameters(self.clock.new_timestamp(), type_info, parameters);
 
-        // If we have a zenoh publisher for this output, publish via zenoh
-        if let Some(publisher) = self.publishers.get(&output_id) {
+        // If we have a zenoh publisher for this output, publish via zenoh and
+        // notify the daemon with a data-less control message. Otherwise fall back
+        // to sending the full payload through the control channel.
+        let data = if let Some(publisher) = self.publishers.get(&output_id) {
             if let Some(sample) = sample {
                 use zenoh::Wait;
 
@@ -730,7 +732,6 @@ impl DoraNode {
 
                 match sample.inner {
                     DataSampleInner::ZenohShm(sbuf) => {
-                        // Publish the SHM buffer directly for zero-copy transfer
                         publisher
                             .put(sbuf)
                             .attachment(&metadata_bytes[..])
@@ -747,27 +748,17 @@ impl DoraNode {
                             .wrap_err("zenoh publish failed")?;
                     }
                 }
-                // Still notify daemon of output via control channel (with no data,
-                // since data was sent via zenoh)
-                self.control_channel
-                    .send_message(output_id.clone(), metadata, None)
-                    .wrap_err_with(|| format!("failed to send output {output_id}"))?;
-            } else {
-                // No data to publish
-                self.control_channel
-                    .send_message(output_id.clone(), metadata, None)
-                    .wrap_err_with(|| format!("failed to send output {output_id}"))?;
             }
+            // Data was (or would have been) sent via zenoh; daemon only needs the notification.
+            None
         } else {
             // Fallback: send via control channel only (interactive/testing mode)
-            let data = match sample {
-                Some(sample) => Some(sample.finalize()),
-                None => None,
-            };
-            self.control_channel
-                .send_message(output_id.clone(), metadata, data)
-                .wrap_err_with(|| format!("failed to send output {output_id}"))?;
-        }
+            sample.map(|s| s.finalize())
+        };
+
+        self.control_channel
+            .send_message(output_id.clone(), metadata, data)
+            .wrap_err_with(|| format!("failed to send output {output_id}"))?;
 
         Ok(())
     }
@@ -819,25 +810,38 @@ impl DoraNode {
     /// SHM allocation uses `BlockOn<GarbageCollect>`: if the pool is full, it triggers
     /// garbage collection of released buffers and blocks until space is available. This
     /// can stall the sender if receivers hold onto buffers for a long time. Increase the
-    /// pool size via the `DORA_NODE_SHM_POOL_SIZE` environment variable (default: 64 MB)
-    /// if you observe send stalls.
+    /// pool size via the `DORA_NODE_SHM_POOL_SIZE` environment variable or
+    /// `shared_memory_pool_size` in the dataflow YAML (default: 8 MB) if you observe
+    /// send stalls.
     pub fn allocate_data_sample(&mut self, data_len: usize) -> eyre::Result<DataSample> {
+        // Zero-length allocations are not supported by zenoh SHM; use a plain Vec.
+        if data_len == 0 {
+            let avec: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, 0);
+            return Ok(avec.into());
+        }
+
         if let Some(provider) = &self.shm_provider {
             use zenoh::Wait;
             use zenoh::shm::{BlockOn, GarbageCollect};
-            let sbuf = provider
+            match provider
                 .alloc(data_len)
                 .with_policy::<BlockOn<GarbageCollect>>()
                 .wait()
-                .map_err(|e| eyre::eyre!("failed to allocate zenoh SHM buffer: {e}"))?;
-            Ok(DataSample {
-                len: data_len,
-                inner: DataSampleInner::ZenohShm(sbuf),
-            })
-        } else {
-            let avec: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, data_len);
-            Ok(avec.into())
+            {
+                Ok(sbuf) => {
+                    return Ok(DataSample {
+                        len: data_len,
+                        inner: DataSampleInner::ZenohShm(sbuf),
+                    });
+                }
+                Err(e) => {
+                    tracing::warn!("SHM allocation failed ({e}), falling back to heap buffer");
+                }
+            }
         }
+
+        let avec: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, data_len);
+        Ok(avec.into())
     }
 
     /// Returns the full dataflow descriptor that this node is part of.

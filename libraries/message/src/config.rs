@@ -39,7 +39,7 @@ pub struct NodeRunConfig {
     /// Size of the zenoh shared memory pool for zero-copy output publishing.
     ///
     /// Accepts an integer (raw bytes) or a string with a unit suffix
-    /// (`KB`, `MB`, `GB`, case-insensitive). Defaults to 64 MB if not set.
+    /// (`KB`, `MB`, `GB`, case-insensitive). Defaults to 8 MB if not set.
     ///
     /// e.g.
     ///
