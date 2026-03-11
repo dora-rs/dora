@@ -5,6 +5,7 @@ use adora_core::topics::ADORA_COORDINATOR_PORT_WS_DEFAULT;
 use adora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply};
 use eyre::{Context, ContextCompat, bail};
 use std::path::PathBuf;
+use std::process::Stdio;
 use std::{fs, net::SocketAddr, path::Path, process::Command, time::Duration};
 
 #[derive(Debug, clap::Args)]
@@ -94,31 +95,39 @@ pub(crate) fn down(
     coordinator_addr: SocketAddr,
 ) -> Result<(), eyre::ErrReport> {
     let UpConfig {} = parse_adora_config(config_path)?;
-    match connect_to_coordinator(coordinator_addr) {
-        Ok(session) => {
-            // send destroy command to adora-coordinator
-            let reply_raw = session
-                .request(&serde_json::to_vec(&ControlRequest::Destroy).unwrap())
-                .wrap_err("failed to send destroy message")?;
-            let result: ControlRequestReply =
-                serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-            match result {
-                ControlRequestReply::DestroyOk => {
-                    println!("Coordinator and daemons destroyed successfully");
+    // Retry connection briefly — the coordinator may still be initializing after `adora up`.
+    let session = {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            match connect_to_coordinator(coordinator_addr) {
+                Ok(s) => break s,
+                Err(_) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(100));
                 }
-                ControlRequestReply::Error(err) => {
-                    bail!("Destroy command failed with error: {}", err);
-                }
-                _ => {
-                    bail!("Unexpected reply from adora-coordinator");
+                Err(_) => {
+                    bail!(
+                        "could not connect to coordinator at {coordinator_addr}\n\n  \
+                         hint: is it running? Start it with `adora up`"
+                    );
                 }
             }
         }
-        Err(_) => {
-            bail!(
-                "could not connect to coordinator at {coordinator_addr}\n\n  \
-                 hint: is it running? Start it with `adora up`"
-            );
+    };
+    // send destroy command to adora-coordinator
+    let reply_raw = session
+        .request(&serde_json::to_vec(&ControlRequest::Destroy).unwrap())
+        .wrap_err("failed to send destroy message")?;
+    let result: ControlRequestReply =
+        serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
+    match result {
+        ControlRequestReply::DestroyOk => {
+            println!("Coordinator and daemons destroyed successfully");
+        }
+        ControlRequestReply::Error(err) => {
+            bail!("Destroy command failed with error: {}", err);
+        }
+        _ => {
+            bail!("Unexpected reply from adora-coordinator");
         }
     }
 
@@ -160,6 +169,17 @@ fn start_coordinator(auth: bool) -> eyre::Result<()> {
     if auth {
         cmd.arg("--auth");
     }
+    // Detach the child so it survives after `adora up` exits:
+    // - null stdio prevents broken-pipe crashes when the parent's terminal closes
+    // - new process group prevents terminal signals (SIGHUP/SIGINT) from propagating
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::null());
+    cmd.stderr(Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
     cmd.spawn().wrap_err(
         "failed to run `adora coordinator`\n\n  \
          hint: ensure the `adora` binary is in your PATH",
@@ -175,6 +195,14 @@ fn start_daemon() -> eyre::Result<()> {
     let mut cmd = Command::new(path);
     cmd.arg("daemon");
     cmd.arg("--quiet");
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::null());
+    cmd.stderr(Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
     cmd.spawn().wrap_err(
         "failed to run `adora daemon`\n\n  \
          hint: ensure the `adora` binary is in your PATH",

@@ -1,7 +1,7 @@
 use std::{
     net::SocketAddr,
     path::PathBuf,
-    process::Command,
+    process::{Command, Stdio},
     time::{Duration, Instant},
 };
 
@@ -170,6 +170,14 @@ fn start_coordinator(port: u16) -> eyre::Result<()> {
         &port.to_string(),
         "--quiet",
     ]);
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::null());
+    cmd.stderr(Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
     cmd.spawn().wrap_err("failed to start adora coordinator")?;
     println!("Started coordinator on 0.0.0.0:{port}");
     Ok(())
