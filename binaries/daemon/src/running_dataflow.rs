@@ -54,6 +54,7 @@ pub struct RunningNode {
     pub(crate) process: Option<ProcessHandle>,
     pub(crate) node_config: NodeConfig,
     pub(crate) pid: Option<Arc<AtomicU32>>,
+    pub(crate) restart_count: Arc<AtomicU32>,
     pub(crate) restart_policy: RestartPolicy,
     pub(crate) disable_restart: Arc<AtomicBool>,
     pub(crate) last_activity: Arc<AtomicU64>,

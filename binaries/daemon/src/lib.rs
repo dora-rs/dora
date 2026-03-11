@@ -1317,7 +1317,8 @@ impl Daemon {
                                 .map(|(_, data_id)| data_id.to_string())
                                 .collect();
 
-                            let restart_count = running_node.node_config.restart_count;
+                            let restart_count =
+                                running_node.restart_count.load(atomic::Ordering::Acquire);
 
                             // Derive status from current state
                             let status = if !broken_inputs.is_empty() {
@@ -1357,7 +1358,7 @@ impl Daemon {
             // Second pass: report nodes without a running process
             for (node_id, running_node) in &dataflow.running_nodes {
                 if !metrics.contains_key(node_id) {
-                    let restart_count = running_node.node_config.restart_count;
+                    let restart_count = running_node.restart_count.load(atomic::Ordering::Acquire);
                     let status = if running_node.restarts_disabled() {
                         adora_message::daemon_to_coordinator::NodeStatus::Failed
                     } else if restart_count > 0 {
@@ -3450,6 +3451,8 @@ fn runtime_node_outputs(n: &RuntimeNode) -> BTreeSet<DataId> {
 #[cfg(test)]
 mod fault_tolerance_tests {
     use super::*;
+    use std::sync::atomic::AtomicU32;
+
     use adora_message::{
         config::CommunicationConfig,
         daemon_to_node::NodeEvent,
@@ -3487,6 +3490,7 @@ mod fault_tolerance_tests {
                 restart_count: 0,
             },
             pid: None,
+            restart_count: Arc::new(AtomicU32::new(0)),
             restart_policy: RestartPolicy::Never,
             disable_restart: Arc::new(AtomicBool::new(false)),
             last_activity: Arc::new(AtomicU64::new(0)),

@@ -92,6 +92,7 @@ impl PreparedNode {
 
         let disable_restart = Arc::new(AtomicBool::new(false));
         let pid = Arc::new(AtomicU32::new(0));
+        let restart_count = Arc::new(AtomicU32::new(0));
         let running_node = RunningNode {
             process: match &kind {
                 NodeKind::Dynamic => None,
@@ -100,6 +101,7 @@ impl PreparedNode {
             node_config: self.node_config.clone(),
             restart_policy: self.restart_policy(),
             disable_restart: disable_restart.clone(),
+            restart_count: restart_count.clone(),
             pid: match kind {
                 NodeKind::Dynamic => None,
                 NodeKind::Spawned { pid: new_pid } => {
@@ -111,7 +113,7 @@ impl PreparedNode {
             health_check_timeout: self.health_check_timeout(),
         };
 
-        tokio::spawn(self.restart_loop(logger, finished_rx, disable_restart, pid));
+        tokio::spawn(self.restart_loop(logger, finished_rx, disable_restart, pid, restart_count));
 
         Ok(running_node)
     }
@@ -150,6 +152,7 @@ impl PreparedNode {
         mut finished_rx: oneshot::Receiver<NodeProcessFinished>,
         disable_restart: Arc<AtomicBool>,
         pid: Arc<AtomicU32>,
+        shared_restart_count: Arc<AtomicU32>,
     ) {
         let config = self.restart_config();
         let mut restart_count: u32 = 0;
@@ -276,6 +279,7 @@ impl PreparedNode {
 
                 restart_count += 1;
                 self.node_config.restart_count = restart_count;
+                shared_restart_count.store(restart_count, atomic::Ordering::Release);
                 self.ft_stats
                     .restarts
                     .fetch_add(1, atomic::Ordering::Relaxed);
