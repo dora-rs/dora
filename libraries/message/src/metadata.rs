@@ -47,6 +47,17 @@ impl Metadata {
         self.parameters.get(key)
     }
 
+    /// Returns the parameter for `key` converted to `T`, or `default` if missing or wrong type.
+    pub fn get_or<T>(&self, key: &str, default: T) -> T
+    where
+        for<'a> T: TryFrom<&'a Parameter>,
+    {
+        self.parameters
+            .get(key)
+            .and_then(|p| T::try_from(p).ok())
+            .unwrap_or(default)
+    }
+
     pub fn open_telemetry_context(&self) -> String {
         self.get("open_telemetry_context")
             .and_then(|p| String::try_from(p).ok())
@@ -425,5 +436,40 @@ mod tests {
         let p = Parameter::String("x".into());
         let err = <&[String]>::try_from(&p).unwrap_err();
         assert!(err.to_string().contains("&[String]"));
+    }
+
+    #[test]
+    fn get_or_existing_key() {
+        let p = Parameter::Bool(false);
+        let mut params = MetadataParameters::new();
+        params.insert("wait".into(), p);
+        let ts = uhlc::HLC::default().new_timestamp();
+        let type_info = ArrowTypeInfo {
+            data_type: arrow_schema::DataType::Null,
+            len: 0,
+            null_count: 0,
+            validity: None,
+            offset: 0,
+            buffer_offsets: vec![],
+            child_data: vec![],
+        };
+        let m = Metadata::from_parameters(ts, type_info, params);
+        assert_eq!(m.get_or("wait", true), false);
+    }
+
+    #[test]
+        fn get_or_missing_key_returns_default() {
+        let ts = uhlc::HLC::default().new_timestamp();
+        let type_info = ArrowTypeInfo {
+            data_type: arrow_schema::DataType::Null,
+            len: 0,
+            null_count: 0,
+            validity: None,
+            offset: 0,
+            buffer_offsets: vec![],
+            child_data: vec![],
+        };
+        let m = Metadata::new(ts, type_info);
+        assert_eq!(m.get_or("timeout", 42_i64), 42);
     }
 }
