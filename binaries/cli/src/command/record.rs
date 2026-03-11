@@ -92,7 +92,10 @@ fn discover_descriptor_outputs(
     }
 
     if outputs.is_empty() {
-        bail!("no outputs found in descriptor");
+        bail!(
+            "no outputs found in descriptor\n\n  \
+             hint: ensure nodes in the dataflow declare `outputs` in their YAML definition"
+        );
     }
     Ok(outputs)
 }

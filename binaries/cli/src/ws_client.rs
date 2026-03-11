@@ -94,7 +94,23 @@ impl WsSession {
                 let request = request.body(()).expect("failed to build WS request");
                 tokio_tungstenite::connect_async(request).await
             })
-            .map_err(|e| eyre!("failed to connect to coordinator at {}: {e}", addr))?
+            .map_err(|e| {
+                let msg = e.to_string();
+                if msg.contains("onnection refused") || msg.contains("No connection could be made")
+                {
+                    eyre!(
+                        "cannot connect to coordinator at {addr}: {e}\n\n  \
+                         hint: is the coordinator running? Start it with `adora up`"
+                    )
+                } else if msg.contains("401") || msg.contains("Unauthorized") {
+                    eyre!(
+                        "authentication failed connecting to coordinator at {addr}: {e}\n\n  \
+                         hint: the auth token may be stale. Try `adora down && adora up`"
+                    )
+                } else {
+                    eyre!("failed to connect to coordinator at {addr}: {e}")
+                }
+            })?
             .0;
 
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();

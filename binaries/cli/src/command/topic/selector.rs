@@ -97,9 +97,18 @@ impl TopicSelector {
             }
             match s.parse() {
                 Ok(InputMapping::User(user)) => {
-                    let node = *node_map
-                        .get(&user.source)
-                        .with_context(|| format!("Unknown node: `{}`", user.source))?;
+                    let node = *node_map.get(&user.source).with_context(|| {
+                        format!(
+                            "unknown node `{}`\n\n  \
+                             hint: available nodes: {}",
+                            user.source,
+                            node_map
+                                .keys()
+                                .map(|k| k.to_string())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
+                    })?;
                     if user.output.is_empty() {
                         data.extend(node.outputs.iter().map(|output| TopicIdentifier {
                             node_id: user.source.clone(),
@@ -112,9 +121,15 @@ impl TopicSelector {
                         });
                     } else {
                         bail!(
-                            "Node `{}` does not have output `{}`",
+                            "node `{}` does not have output `{}`\n\n  \
+                             hint: available outputs: {}",
                             user.source,
-                            user.output
+                            user.output,
+                            node.outputs
+                                .iter()
+                                .map(|o| o.to_string())
+                                .collect::<Vec<_>>()
+                                .join(", ")
                         );
                     }
                 }
@@ -126,7 +141,10 @@ impl TopicSelector {
         }
 
         if data.is_empty() {
-            bail!("no outputs found in this dataflow");
+            bail!(
+                "no outputs found in this dataflow\n\n  \
+                 hint: ensure nodes in the dataflow declare `outputs` in their YAML definition"
+            );
         }
 
         Ok((dataflow_id, data))

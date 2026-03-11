@@ -138,7 +138,14 @@ fn info(
         .nodes
         .iter()
         .find(|n| n.id == node_id)
-        .ok_or_else(|| eyre::eyre!("Node `{node_name}` not found in dataflow"))?;
+        .ok_or_else(|| {
+            let available: Vec<_> = descriptor.nodes.iter().map(|n| n.id.to_string()).collect();
+            eyre::eyre!(
+                "node `{node_name}` not found in dataflow\n\n  \
+                 hint: available nodes: {}",
+                available.join(", ")
+            )
+        })?;
 
     // Get runtime metrics
     let metrics = fetch_node_metrics(session, dataflow_uuid, &node_id)?;

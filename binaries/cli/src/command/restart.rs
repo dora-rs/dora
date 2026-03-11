@@ -38,10 +38,7 @@ pub struct Restart {
 impl Executable for Restart {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
-        let session = self
-            .coordinator
-            .connect()
-            .wrap_err("could not connect to adora coordinator")?;
+        let session = self.coordinator.connect()?;
         match (self.uuid, self.name) {
             (Some(uuid), _) => restart_dataflow(uuid, self.grace_duration, self.force, &session),
             (None, Some(name)) => {

@@ -118,9 +118,15 @@ fn start_dataflow(
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."));
     let mut dataflow_descriptor = Descriptor::blocking_read(&dataflow)
-        .wrap_err("Failed to read yaml dataflow")?
+        .wrap_err_with(|| {
+            format!(
+                "failed to read dataflow at `{}`\n\n  \
+                 hint: check the file exists and is valid YAML",
+                dataflow.display()
+            )
+        })?
         .expand(working_dir)
-        .wrap_err("Failed to expand modules")?;
+        .wrap_err("failed to expand modules in dataflow descriptor")?;
     let dataflow_session =
         DataflowSession::read_session(&dataflow).context("failed to read DataflowSession")?;
 
@@ -128,8 +134,7 @@ fn start_dataflow(
         dataflow_descriptor.debug.publish_all_messages_to_zenoh = true;
     }
 
-    let session = connect_to_coordinator(coordinator_socket)
-        .wrap_err("failed to connect to adora coordinator")?;
+    let session = connect_to_coordinator(coordinator_socket)?;
 
     let local_working_dir = local_working_dir(&dataflow, &dataflow_descriptor, &session)?;
 

@@ -89,8 +89,8 @@ fn inspect(
 
         let event = match Timestamped::deserialize_inter_daemon_event(&payload) {
             Ok(event) => event,
-            Err(_) => {
-                eprintln!("Received invalid event");
+            Err(e) => {
+                eprintln!("Received invalid event ({} bytes): {e}", payload.len());
                 continue;
             }
         };

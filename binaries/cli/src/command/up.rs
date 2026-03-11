@@ -108,7 +108,10 @@ pub(crate) fn down(
             }
         }
         Err(_) => {
-            bail!("Could not connect to adora-coordinator");
+            bail!(
+                "could not connect to coordinator at {coordinator_addr}\n\n  \
+                 hint: is it running? Start it with `adora up`"
+            );
         }
     }
 
@@ -147,7 +150,10 @@ fn start_coordinator() -> eyre::Result<()> {
     let mut cmd = Command::new(path);
     cmd.arg("coordinator");
     cmd.arg("--quiet");
-    cmd.spawn().wrap_err("failed to run `adora coordinator`")?;
+    cmd.spawn().wrap_err(
+        "failed to run `adora coordinator`\n\n  \
+         hint: ensure the `adora` binary is in your PATH",
+    )?;
 
     println!("started adora coordinator");
 
@@ -159,7 +165,10 @@ fn start_daemon() -> eyre::Result<()> {
     let mut cmd = Command::new(path);
     cmd.arg("daemon");
     cmd.arg("--quiet");
-    cmd.spawn().wrap_err("failed to run `adora daemon`")?;
+    cmd.spawn().wrap_err(
+        "failed to run `adora daemon`\n\n  \
+         hint: ensure the `adora` binary is in your PATH",
+    )?;
 
     println!("started adora daemon");
 

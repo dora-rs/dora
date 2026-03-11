@@ -65,7 +65,13 @@ impl Executable for Replay {
 }
 
 fn run_replay(args: Replay) -> eyre::Result<()> {
-    let file = File::open(&args.file).wrap_err_with(|| format!("failed to open {}", args.file))?;
+    let file = File::open(&args.file).wrap_err_with(|| {
+        format!(
+            "failed to open recording file `{}`\n\n  \
+             hint: check the path is correct. Recording files have the `.adorec` extension",
+            args.file
+        )
+    })?;
     let mut reader = RecordingReader::open(file).wrap_err("failed to read recording header")?;
 
     let header = reader.header().clone();
@@ -85,7 +91,12 @@ fn run_replay(args: Replay) -> eyre::Result<()> {
     }
 
     if recorded_nodes.is_empty() {
-        bail!("recording contains no messages");
+        bail!(
+            "recording `{}` contains no messages\n\n  \
+             hint: the recording may be empty or corrupted. \
+             Try re-recording with `adora record`",
+            args.file
+        );
     }
 
     // Determine which nodes to replace

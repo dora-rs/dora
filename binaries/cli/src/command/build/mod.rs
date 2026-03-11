@@ -115,9 +115,15 @@ pub fn build(
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."));
     let dataflow_descriptor = Descriptor::blocking_read(&dataflow_path)
-        .wrap_err("Failed to read yaml dataflow")?
+        .wrap_err_with(|| {
+            format!(
+                "failed to read dataflow at `{}`\n\n  \
+                 hint: check the file exists and is valid YAML",
+                dataflow_path.display()
+            )
+        })?
         .expand(working_dir)
-        .wrap_err("Failed to expand modules")?;
+        .wrap_err("failed to expand modules in dataflow descriptor")?;
     let mut dataflow_session =
         DataflowSession::read_session(&dataflow_path).context("failed to read DataflowSession")?;
 

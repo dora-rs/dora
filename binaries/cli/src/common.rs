@@ -74,12 +74,27 @@ pub(crate) fn resolve_dataflow_identifier_interactive(
     let active: Vec<adora_message::coordinator_to_cli::DataflowIdAndName> = list.get_active();
     if let Some(name) = name_or_uuid {
         let Some(dataflow) = active.iter().find(|it| it.name.as_deref() == Some(name)) else {
-            bail!("No dataflow with name `{name}` is running");
+            let available: Vec<_> = active.iter().filter_map(|d| d.name.as_deref()).collect();
+            if available.is_empty() {
+                bail!(
+                    "no dataflow with name `{name}` is running\n\n  \
+                     hint: use `adora list` to see running dataflows"
+                );
+            } else {
+                bail!(
+                    "no dataflow with name `{name}` is running\n\n  \
+                     hint: running dataflows: {}",
+                    available.join(", ")
+                );
+            }
         };
         return Ok(dataflow.uuid);
     }
     Ok(match &active[..] {
-        [] => bail!("No dataflows are running"),
+        [] => bail!(
+            "no dataflows are running\n\n  \
+             hint: start a dataflow with `adora start` or `adora run`"
+        ),
         [entry] => entry.uuid,
         _ => {
             if !std::io::stdin().is_terminal() {
@@ -109,7 +124,6 @@ impl CoordinatorOptions {
 
     pub fn connect(&self) -> eyre::Result<WsSession> {
         connect_to_coordinator(self.socket_addr())
-            .wrap_err("failed to connect to adora coordinator")
     }
 }
 

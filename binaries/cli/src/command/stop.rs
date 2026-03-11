@@ -43,10 +43,7 @@ pub struct Stop {
 impl Executable for Stop {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
-        let session = self
-            .coordinator
-            .connect()
-            .wrap_err("could not connect to adora coordinator")?;
+        let session = self.coordinator.connect()?;
         match (self.uuid, self.name) {
             (Some(uuid), _) => stop_dataflow(uuid, self.grace_duration, self.force, &session),
             (None, Some(name)) => {
@@ -65,7 +62,7 @@ fn stop_dataflow_interactive(
     let list = query_running_dataflows(session).wrap_err("failed to query running dataflows")?;
     let active = list.get_active();
     if active.is_empty() {
-        println!("No dataflows are running");
+        println!("No dataflows are running. Use `adora list` to check dataflow status.");
     } else if active.len() == 1 {
         stop_dataflow(active[0].uuid, grace_duration, force, session)?;
     } else if !std::io::stdin().is_terminal() {

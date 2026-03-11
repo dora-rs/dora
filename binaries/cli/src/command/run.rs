@@ -154,9 +154,15 @@ impl Executable for Run {
             .parent()
             .unwrap_or_else(|| std::path::Path::new("."));
         let mut dataflow_descriptor = Descriptor::blocking_read(&dataflow_path)
-            .context("Failed to read yaml dataflow")?
+            .wrap_err_with(|| {
+                format!(
+                    "failed to read dataflow at `{}`\n\n  \
+                     hint: check the file exists and is valid YAML",
+                    dataflow_path.display()
+                )
+            })?
             .expand(working_dir)
-            .context("Failed to expand modules")?;
+            .wrap_err("failed to expand modules in dataflow descriptor")?;
         if self.debug {
             dataflow_descriptor.debug.publish_all_messages_to_zenoh = true;
         }

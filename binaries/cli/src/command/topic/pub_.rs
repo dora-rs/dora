@@ -81,7 +81,10 @@ impl Executable for Pub {
         };
 
         // Validate JSON
-        serde_json::from_str::<serde_json::Value>(&data_json).wrap_err("invalid JSON data")?;
+        serde_json::from_str::<serde_json::Value>(&data_json).wrap_err(
+            "invalid JSON data\n\n  \
+             hint: data must be valid JSON, e.g. '{\"key\": 42}' or '\"hello\"'",
+        )?;
 
         for i in 0..self.count {
             publish(&session, dataflow_id, &node_id, &output_id, &data_json)?;

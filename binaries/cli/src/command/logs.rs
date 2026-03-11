@@ -153,7 +153,11 @@ impl Executable for LogsArgs {
 fn read_local_logs(args: &LogsArgs) -> Result<()> {
     let out_dir = Path::new("out");
     if !out_dir.exists() {
-        bail!("no out/ directory found in current directory");
+        bail!(
+            "no out/ directory found in current directory\n\n  \
+             hint: local logs are stored in ./out/ when running with `adora run`.\n  \
+             For remote dataflows, connect to the coordinator with `adora logs -d <DATAFLOW>`"
+        );
     }
 
     // Find the dataflow directory (most recent if not specified)
@@ -167,7 +171,12 @@ fn read_local_logs(args: &LogsArgs) -> Result<()> {
         _ => find_log_files(&dataflow_dir)?,
     };
     if log_files.is_empty() {
-        bail!("no log files found in {}", dataflow_dir.display());
+        bail!(
+            "no log files found in {}\n\n  \
+             hint: the dataflow may not have produced any logs yet, \
+             or node logging may be disabled",
+            dataflow_dir.display()
+        );
     }
 
     let mut all_messages: Vec<LogMessage> = Vec::new();
@@ -189,7 +198,11 @@ fn read_local_logs(args: &LogsArgs) -> Result<()> {
 fn follow_local_logs(args: &LogsArgs) -> Result<()> {
     let out_dir = Path::new("out");
     if !out_dir.exists() {
-        bail!("no out/ directory found in current directory");
+        bail!(
+            "no out/ directory found in current directory\n\n  \
+             hint: local logs are stored in ./out/ when running with `adora run`.\n  \
+             For remote dataflows, connect to the coordinator with `adora logs -d <DATAFLOW>`"
+        );
     }
 
     let dataflow_dir = find_dataflow_dir(out_dir, args.dataflow.as_deref())?;
@@ -202,7 +215,12 @@ fn follow_local_logs(args: &LogsArgs) -> Result<()> {
     };
 
     if files.is_empty() {
-        bail!("no log files found in {}", dataflow_dir.display());
+        bail!(
+            "no log files found in {}\n\n  \
+             hint: the dataflow may not have produced any logs yet, \
+             or node logging may be disabled",
+            dataflow_dir.display()
+        );
     }
 
     // Print existing content with filters
@@ -262,8 +280,13 @@ fn find_dataflow_dir(out_dir: &Path, dataflow_id: Option<&str>) -> Result<PathBu
     if let Some(id) = dataflow_id {
         let dir = out_dir.join(id);
         // Validate the resolved path stays within out_dir
-        let canonical = dunce::canonicalize(&dir)
-            .wrap_err_with(|| format!("dataflow directory not found: {}", dir.display()))?;
+        let canonical = dunce::canonicalize(&dir).wrap_err_with(|| {
+            format!(
+                "dataflow directory not found: {}\n\n  \
+                     hint: use `adora list` to see running dataflows and their IDs",
+                dir.display()
+            )
+        })?;
         let canonical_base =
             dunce::canonicalize(out_dir).wrap_err("failed to canonicalize out/ directory")?;
         if !canonical.starts_with(&canonical_base) {
@@ -280,7 +303,10 @@ fn find_dataflow_dir(out_dir: &Path, dataflow_id: Option<&str>) -> Result<PathBu
         .collect();
 
     if entries.is_empty() {
-        bail!("no dataflow directories found in out/");
+        bail!(
+            "no dataflow directories found in out/\n\n  \
+             hint: run a dataflow first with `adora run <DATAFLOW.yml>`"
+        );
     }
 
     entries.sort_by(|a, b| {
@@ -356,7 +382,9 @@ fn find_node_log_files(dataflow_dir: &Path, node: &NodeId) -> Result<Vec<PathBuf
 
     if files.is_empty() {
         bail!(
-            "no log file found for node '{node}' in {}",
+            "no log file found for node '{node}' in {}\n\n  \
+             hint: check the node name is correct. \
+             Use `adora node list` to see available nodes",
             dataflow_dir.display()
         );
     }

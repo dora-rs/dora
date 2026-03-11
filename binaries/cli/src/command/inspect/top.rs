@@ -277,8 +277,7 @@ impl App {
 }
 
 fn query_once(coordinator_addr: std::net::SocketAddr) -> eyre::Result<()> {
-    let session =
-        connect_to_coordinator(coordinator_addr).wrap_err("Failed to connect to coordinator")?;
+    let session = connect_to_coordinator(coordinator_addr)?;
 
     let request = ControlRequest::GetNodeInfo;
     let reply_raw = session
@@ -307,8 +306,7 @@ fn run_app<B: Backend>(
     let mut last_update = Instant::now();
 
     // Reuse coordinator connection
-    let session =
-        connect_to_coordinator(coordinator_addr).wrap_err("Failed to connect to coordinator")?;
+    let session = connect_to_coordinator(coordinator_addr)?;
 
     // Query node info once initially
     let request = ControlRequest::GetNodeInfo;

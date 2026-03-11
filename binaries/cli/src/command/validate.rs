@@ -28,9 +28,15 @@ impl Executable for Validate {
 
         // Parse and expand modules (no runtime needed)
         let descriptor = Descriptor::blocking_read(&self.dataflow)
-            .with_context(|| format!("failed to read dataflow at `{}`", self.dataflow.display()))?
+            .with_context(|| {
+                format!(
+                    "failed to read dataflow at `{}`\n\n  \
+                     hint: check the file exists and is valid YAML",
+                    self.dataflow.display()
+                )
+            })?
             .expand(working_dir)
-            .context("failed to expand modules")?;
+            .context("failed to expand modules in dataflow descriptor")?;
 
         // Run type annotation checks
         let registry = TypeRegistry::new();
