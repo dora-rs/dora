@@ -59,8 +59,8 @@ jobs:
       - name: Free disk Space (Windows)
         if: runner.os == 'Windows'
         run: |
-          docker system prune --all -f
-          docker builder prune -af
+          docker system prune --all -f 2>$null; $true
+          docker builder prune -af 2>$null; $true
           Remove-Item "C:\Android" -Force -Recurse -ErrorAction SilentlyContinue
           Remove-Item "C:\hostedtoolcache\windows\Ruby" -Force -Recurse -ErrorAction SilentlyContinue
           Remove-Item "C:\hostedtoolcache\windows\go" -Force -Recurse -ErrorAction SilentlyContinue
@@ -128,8 +128,8 @@ jobs:
       - name: Free disk Space (Windows)
         if: runner.os == 'Windows'
         run: |
-          docker system prune --all -f
-          docker builder prune -af
+          docker system prune --all -f 2>$null; $true
+          docker builder prune -af 2>$null; $true
           Remove-Item "C:\Android" -Force -Recurse -ErrorAction SilentlyContinue
           Remove-Item "C:\hostedtoolcache\windows\Ruby" -Force -Recurse -ErrorAction SilentlyContinue
           Remove-Item "C:\hostedtoolcache\windows\go" -Force -Recurse -ErrorAction SilentlyContinue
