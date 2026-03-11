@@ -88,7 +88,7 @@ pub fn write_token(working_dir: &Path, token: &AuthToken) -> std::io::Result<()>
             let _ = fs::create_dir_all(parent);
         }
         if let Err(e) = write_token_to(&config_path, token) {
-            eprintln!("warning: failed to write token to config dir: {e}");
+            log::warn!("failed to write token to config dir: {e}");
         }
     }
 
@@ -121,9 +121,19 @@ fn write_token_to(path: &Path, token: &AuthToken) -> std::io::Result<()> {
 ///
 /// Returns `None` if the file does not exist.
 pub fn read_token(working_dir: &Path) -> std::io::Result<Option<AuthToken>> {
-    let path = token_path(working_dir);
-    match fs::read_to_string(&path) {
-        Ok(content) => Ok(Some(AuthToken(content.trim().to_string()))),
+    read_token_from_path(&token_path(working_dir))
+}
+
+fn read_token_from_path(path: &Path) -> std::io::Result<Option<AuthToken>> {
+    match fs::read_to_string(path) {
+        Ok(content) => {
+            let trimmed = content.trim();
+            if trimmed.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(AuthToken(trimmed.to_string())))
+            }
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e),
     }
@@ -160,11 +170,8 @@ pub fn discover_token() -> Option<AuthToken> {
 
     // 3. Token file in user config directory
     if let Some(config_path) = config_token_path() {
-        if let Ok(content) = fs::read_to_string(&config_path) {
-            let trimmed = content.trim();
-            if !trimmed.is_empty() {
-                return Some(AuthToken(trimmed.to_string()));
-            }
+        if let Ok(Some(token)) = read_token_from_path(&config_path) {
+            return Some(token);
         }
     }
 

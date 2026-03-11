@@ -312,7 +312,7 @@ fn ui(
     start: Instant,
     window_dur: Duration,
 ) {
-    let _chunks = Layout::default()
+    let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Percentage(55),
@@ -371,11 +371,6 @@ fn ui(
         ],
     )
     .header(header);
-
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(3), Constraint::Length(1)])
-        .split(f.area());
 
     f.render_widget(table, chunks[0]);
 
