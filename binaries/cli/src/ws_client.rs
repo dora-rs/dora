@@ -105,7 +105,13 @@ impl WsSession {
                 } else if msg.contains("401") || msg.contains("Unauthorized") {
                     eyre!(
                         "authentication failed connecting to coordinator at {addr}: {e}\n\n  \
-                         hint: the auth token may be stale. Try `adora down && adora up`"
+                         The coordinator was started with --auth and requires a valid token.\n  \
+                         The token is stored in ~/.config/adora/.adora-token\n\n  \
+                         Possible fixes:\n  \
+                         - Run `adora down && adora up` to regenerate the token\n  \
+                         - Ensure you're using the same user that started the coordinator\n  \
+                         - Set ADORA_AUTH_TOKEN env var to match the coordinator's token\n  \
+                         - Restart without --auth to disable authentication"
                     )
                 } else {
                     eyre!("failed to connect to coordinator at {addr}: {e}")

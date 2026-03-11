@@ -13,12 +13,19 @@ pub struct Up {
     /// Use a custom configuration
     #[clap(long, hide = true, value_name = "PATH", value_hint = clap::ValueHint::FilePath)]
     config: Option<PathBuf>,
+    /// Enable token authentication for the coordinator.
+    ///
+    /// When enabled, the coordinator generates a random token on startup
+    /// and writes it to ~/.config/adora/.adora-token. Clients must present
+    /// this token to connect.
+    #[clap(long)]
+    auth: bool,
 }
 
 impl Executable for Up {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
-        up(self.config.as_deref())
+        up(self.config.as_deref(), self.auth)
     }
 }
 
@@ -26,7 +33,7 @@ impl Executable for Up {
 #[serde(deny_unknown_fields)]
 struct UpConfig {}
 
-pub(crate) fn up(config_path: Option<&Path>) -> eyre::Result<()> {
+pub(crate) fn up(config_path: Option<&Path>, auth: bool) -> eyre::Result<()> {
     let UpConfig {} = parse_adora_config(config_path)?;
     let addr: std::net::IpAddr = std::env::var("ADORA_COORDINATOR_ADDR")
         .ok()
@@ -40,7 +47,7 @@ pub(crate) fn up(config_path: Option<&Path>) -> eyre::Result<()> {
     let session = match connect_to_coordinator(coordinator_addr) {
         Ok(session) => session,
         Err(_) => {
-            start_coordinator().wrap_err("failed to start adora-coordinator")?;
+            start_coordinator(auth).wrap_err("failed to start adora-coordinator")?;
 
             {
                 let deadline = std::time::Instant::now() + Duration::from_secs(10);
@@ -145,11 +152,14 @@ pub(crate) fn adora_executable_path() -> eyre::Result<std::ffi::OsString> {
     }
 }
 
-fn start_coordinator() -> eyre::Result<()> {
+fn start_coordinator(auth: bool) -> eyre::Result<()> {
     let path = adora_executable_path()?;
     let mut cmd = Command::new(path);
     cmd.arg("coordinator");
     cmd.arg("--quiet");
+    if auth {
+        cmd.arg("--auth");
+    }
     cmd.spawn().wrap_err(
         "failed to run `adora coordinator`\n\n  \
          hint: ensure the `adora` binary is in your PATH",

@@ -59,33 +59,53 @@ pub type SpanStore = Option<adora_tracing::span_store::SharedSpanStore>;
 #[cfg(not(feature = "tracing"))]
 pub type SpanStore = ();
 
+/// Start the coordinator without authentication (default).
 pub async fn start(
     bind: SocketAddr,
     external_events: impl Stream<Item = Event> + Unpin,
     store: Arc<dyn CoordinatorStore>,
     span_store: SpanStore,
 ) -> Result<(u16, impl Future<Output = eyre::Result<()>>), eyre::ErrReport> {
+    start_with_auth(bind, external_events, store, span_store, false).await
+}
+
+/// Like [`start`] but allows enabling token authentication.
+///
+/// When `auth` is `true`, the coordinator generates a random token on startup,
+/// writes it to `~/.config/adora/.adora-token`, and requires all clients to
+/// present it via the `Authorization: Bearer <token>` header.
+pub async fn start_with_auth(
+    bind: SocketAddr,
+    external_events: impl Stream<Item = Event> + Unpin,
+    store: Arc<dyn CoordinatorStore>,
+    span_store: SpanStore,
+    auth: bool,
+) -> Result<(u16, impl Future<Output = eyre::Result<()>>), eyre::ErrReport> {
     let ctrlc_events = set_up_ctrlc_handler()?;
 
-    // Generate auth token and write to CWD
-    let token = adora_message::auth::generate_token();
-    if let Ok(cwd) = std::env::current_dir() {
-        if let Err(e) = adora_message::auth::write_token(&cwd, &token) {
-            tracing::warn!("failed to write auth token: {e}");
-        } else {
-            tracing::info!(
-                "auth token written to {}",
-                adora_message::auth::token_path(&cwd).display()
-            );
+    let token = if auth {
+        let token = adora_message::auth::generate_token();
+        if let Ok(cwd) = std::env::current_dir() {
+            if let Err(e) = adora_message::auth::write_token(&cwd, &token) {
+                tracing::warn!("failed to write auth token: {e}");
+            } else {
+                tracing::info!(
+                    "auth token written to {}",
+                    adora_message::auth::token_path(&cwd).display()
+                );
+            }
         }
-    }
+        Some(token)
+    } else {
+        None
+    };
 
     start_with_events(
         bind,
         external_events,
         ctrlc_events,
         store,
-        Some(token),
+        token,
         span_store,
     )
     .await
@@ -99,18 +119,12 @@ pub async fn start_embedded(
     store: Arc<dyn CoordinatorStore>,
     span_store: SpanStore,
 ) -> Result<(u16, impl Future<Output = eyre::Result<()>>), eyre::ErrReport> {
-    let token = adora_message::auth::generate_token();
-    if let Ok(cwd) = std::env::current_dir() {
-        if let Err(e) = adora_message::auth::write_token(&cwd, &token) {
-            tracing::warn!("failed to write auth token: {e}");
-        }
-    }
     start_with_events(
         bind,
         external_events,
         futures::stream::empty(),
         store,
-        Some(token),
+        None,
         span_store,
     )
     .await

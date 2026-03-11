@@ -30,6 +30,13 @@ pub struct Coordinator {
     /// Requires the `redb-backend` feature.
     #[clap(long, default_value = "memory", value_parser = parse_store_spec)]
     store: String,
+    /// Enable token authentication.
+    ///
+    /// When enabled, the coordinator generates a random token on startup
+    /// and writes it to ~/.config/adora/.adora-token. Clients must present
+    /// this token to connect.
+    #[clap(long)]
+    auth: bool,
 }
 
 impl Executable for Coordinator {
@@ -62,13 +69,15 @@ impl Executable for Coordinator {
             .enable_all()
             .build()
             .context("tokio runtime failed")?;
+        let auth = self.auth;
         rt.block_on(async {
             let bind = SocketAddr::new(self.interface, self.port);
-            let (port, task) = adora_coordinator::start(
+            let (port, task) = adora_coordinator::start_with_auth(
                 bind,
                 futures::stream::empty::<Event>(),
                 store,
                 span_store,
+                auth,
             )
             .await?;
             if !self.quiet {
