@@ -53,6 +53,24 @@ pub enum ControlRequestReply {
     },
     TraceList(Vec<TraceSummary>),
     TraceSpans(Vec<TraceSpan>),
+    NodeRestarted {
+        dataflow_id: Uuid,
+        node_id: NodeId,
+    },
+    NodeStopped {
+        dataflow_id: Uuid,
+        node_id: NodeId,
+    },
+    TopicPublished,
+    ParamList {
+        params: Vec<(String, serde_json::Value)>,
+    },
+    ParamValue {
+        key: String,
+        value: serde_json::Value,
+    },
+    ParamSet,
+    ParamDeleted,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]

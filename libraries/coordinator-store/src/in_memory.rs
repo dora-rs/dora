@@ -5,16 +5,22 @@ use adora_message::common::DaemonId;
 use eyre::{Result, eyre};
 use uuid::Uuid;
 
-use crate::{BuildRecord, CoordinatorStore, DaemonInfo, DataflowRecord};
+use adora_message::id::NodeId;
+
+use crate::{BuildRecord, CoordinatorStore, DaemonInfo, DataflowRecord, validate_param_limits};
 
 /// In-memory implementation of [`CoordinatorStore`].
 ///
 /// State lives only in-process and is lost on restart.
 /// This is the default store used by the coordinator.
+/// Composite key for node parameter storage: (dataflow_id, node_id, param_key).
+type ParamKey = (Uuid, NodeId, String);
+
 pub struct InMemoryStore {
     daemons: RwLock<BTreeMap<DaemonId, DaemonInfo>>,
     dataflows: RwLock<BTreeMap<Uuid, DataflowRecord>>,
     builds: RwLock<BTreeMap<Uuid, BuildRecord>>,
+    params: RwLock<BTreeMap<ParamKey, Vec<u8>>>,
 }
 
 impl InMemoryStore {
@@ -23,6 +29,7 @@ impl InMemoryStore {
             daemons: RwLock::new(BTreeMap::new()),
             dataflows: RwLock::new(BTreeMap::new()),
             builds: RwLock::new(BTreeMap::new()),
+            params: RwLock::new(BTreeMap::new()),
         }
     }
 }
@@ -152,6 +159,70 @@ impl CoordinatorStore for InMemoryStore {
         builds.remove(build_id);
         Ok(())
     }
+
+    // -- Node parameters --
+
+    fn put_node_param(
+        &self,
+        dataflow_id: &Uuid,
+        node_id: &NodeId,
+        key: &str,
+        value: &[u8],
+    ) -> Result<()> {
+        validate_param_limits(key, value)?;
+        let mut params = self
+            .params
+            .write()
+            .map_err(|e| eyre!("lock poisoned: {e}"))?;
+        params.insert(
+            (*dataflow_id, node_id.clone(), key.to_string()),
+            value.to_vec(),
+        );
+        Ok(())
+    }
+
+    fn get_node_param(
+        &self,
+        dataflow_id: &Uuid,
+        node_id: &NodeId,
+        key: &str,
+    ) -> Result<Option<Vec<u8>>> {
+        let params = self
+            .params
+            .read()
+            .map_err(|e| eyre!("lock poisoned: {e}"))?;
+        Ok(params
+            .get(&(*dataflow_id, node_id.clone(), key.to_string()))
+            .cloned())
+    }
+
+    fn list_node_params(
+        &self,
+        dataflow_id: &Uuid,
+        node_id: &NodeId,
+    ) -> Result<Vec<(String, Vec<u8>)>> {
+        let params = self
+            .params
+            .read()
+            .map_err(|e| eyre!("lock poisoned: {e}"))?;
+        // Use range scan: BTreeMap keys are ordered by (Uuid, NodeId, String).
+        // Start at (dataflow_id, node_id, "") and take while the prefix matches.
+        let start = (*dataflow_id, node_id.clone(), String::new());
+        Ok(params
+            .range(start..)
+            .take_while(|((df, nid, _), _)| df == dataflow_id && nid == node_id)
+            .map(|((_, _, key), value)| (key.clone(), value.clone()))
+            .collect())
+    }
+
+    fn delete_node_param(&self, dataflow_id: &Uuid, node_id: &NodeId, key: &str) -> Result<()> {
+        let mut params = self
+            .params
+            .write()
+            .map_err(|e| eyre!("lock poisoned: {e}"))?;
+        params.remove(&(*dataflow_id, node_id.clone(), key.to_string()));
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -220,5 +291,36 @@ mod tests {
 
         store.delete_build(&id).unwrap();
         assert!(store.get_build(&id).unwrap().is_none());
+    }
+
+    #[test]
+    fn param_crud() {
+        let store = InMemoryStore::new();
+        let df = Uuid::new_v4();
+        let node: NodeId = "sensor".to_string().into();
+
+        // Put + get
+        store
+            .put_node_param(&df, &node, "threshold", b"42")
+            .unwrap();
+        assert_eq!(
+            store.get_node_param(&df, &node, "threshold").unwrap(),
+            Some(b"42".to_vec())
+        );
+
+        // List
+        store.put_node_param(&df, &node, "rate", b"10").unwrap();
+        let params = store.list_node_params(&df, &node).unwrap();
+        assert_eq!(params.len(), 2);
+
+        // Delete
+        store.delete_node_param(&df, &node, "threshold").unwrap();
+        assert!(
+            store
+                .get_node_param(&df, &node, "threshold")
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(store.list_node_params(&df, &node).unwrap().len(), 1);
     }
 }

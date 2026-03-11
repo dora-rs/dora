@@ -76,6 +76,16 @@ pub enum Event {
         /// There is currently no case where `operator_id` is `None`.
         operator_id: Option<OperatorId>,
     },
+    /// A runtime parameter has been updated via `adora param set`.
+    ///
+    /// Nodes can use this to dynamically adjust behavior (e.g., thresholds,
+    /// rates) without restarting.
+    ParamUpdate {
+        /// The parameter key that was set.
+        key: String,
+        /// The new JSON value.
+        value: serde_json::Value,
+    },
     /// Notifies the node about an unexpected error that happened inside Adora.
     ///
     /// It's a good idea to output or log this error for debugging.

@@ -16,6 +16,11 @@ use adora_message::{
     metadata::{self},
     node_to_daemon::Timestamped,
 };
+/// Default grace period before force-killing a stopped node.
+const DEFAULT_STOP_GRACE: Duration = Duration::from_millis(10_000);
+/// Default grace period before force-killing a restarting node.
+const DEFAULT_RESTART_GRACE: Duration = Duration::from_millis(5_000);
+
 use crossbeam::queue::ArrayQueue;
 use eyre::{Context, eyre};
 use futures::FutureExt;
@@ -369,6 +374,82 @@ impl RunningDataflow {
             FinishDataflowWhen::Now
         } else {
             FinishDataflowWhen::WaitForNodes
+        }
+    }
+
+    /// Stop a single node. Sets `disable_restart` so it won't auto-restart.
+    pub(crate) fn stop_single_node(
+        &mut self,
+        node_id: &NodeId,
+        clock: &HLC,
+        grace_duration: Option<Duration>,
+    ) -> eyre::Result<()> {
+        let node = self
+            .running_nodes
+            .get_mut(node_id)
+            .ok_or_else(|| eyre!("node `{node_id}` not found in running dataflow"))?;
+        node.disable_restart();
+        let process = node.process.take();
+        self.send_stop_and_schedule_kill(
+            node_id,
+            process,
+            clock,
+            grace_duration,
+            DEFAULT_STOP_GRACE,
+        );
+        Ok(())
+    }
+
+    /// Restart a single node. Re-enables restart so `restart_loop` picks it up.
+    pub(crate) fn restart_single_node(
+        &mut self,
+        node_id: &NodeId,
+        clock: &HLC,
+        grace_duration: Option<Duration>,
+    ) -> eyre::Result<()> {
+        let node = self
+            .running_nodes
+            .get_mut(node_id)
+            .ok_or_else(|| eyre!("node `{node_id}` not found in running dataflow"))?;
+        let process = node.process.take();
+        // Re-enable restart only after the process handle is taken, so the
+        // restart loop cannot fire before the grace timer has a chance to run.
+        node.disable_restart.store(false, atomic::Ordering::Release);
+        self.send_stop_and_schedule_kill(
+            node_id,
+            process,
+            clock,
+            grace_duration,
+            DEFAULT_RESTART_GRACE,
+        );
+        Ok(())
+    }
+
+    /// Send a Stop event to a node and schedule a grace-period kill.
+    fn send_stop_and_schedule_kill(
+        &self,
+        node_id: &NodeId,
+        process: Option<ProcessHandle>,
+        clock: &HLC,
+        grace_duration: Option<Duration>,
+        default_grace: Duration,
+    ) {
+        if let Some(channel) = self.subscribe_channels.get(node_id) {
+            if send_with_timestamp(channel, NodeEvent::Stop, clock).is_ok() {
+                if let Some(counter) = self.pending_messages.get(node_id) {
+                    counter.fetch_add(1, atomic::Ordering::Relaxed);
+                }
+            }
+        }
+
+        if let Some(proc) = process {
+            let duration = grace_duration.unwrap_or(default_grace);
+            tokio::spawn(async move {
+                tokio::time::sleep(duration).await;
+                proc.submit(ProcessOperation::SoftKill);
+                tokio::time::sleep(duration / 2).await;
+                proc.submit(ProcessOperation::Kill);
+            });
         }
     }
 

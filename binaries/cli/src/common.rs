@@ -36,6 +36,17 @@ pub(crate) fn handle_dataflow_result(
     }
 }
 
+/// Send a control request and deserialize the reply.
+pub(crate) fn send_control_request(
+    session: &WsSession,
+    request: &ControlRequest,
+) -> eyre::Result<ControlRequestReply> {
+    let reply_raw = session
+        .request(&serde_json::to_vec(request).unwrap())
+        .wrap_err("failed to send control request")?;
+    serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")
+}
+
 pub(crate) fn query_running_dataflows(session: &WsSession) -> eyre::Result<DataflowList> {
     let reply_raw = session
         .request(&serde_json::to_vec(&ControlRequest::List).unwrap())

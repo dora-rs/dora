@@ -41,6 +41,7 @@ pub mod ws_protocol;
 
 pub mod integration_testing_format;
 
+pub use aligned_vec;
 pub use arrow_data;
 pub use arrow_schema;
 use uuid::{Timestamp, Uuid};

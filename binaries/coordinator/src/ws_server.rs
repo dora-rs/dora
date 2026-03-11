@@ -164,7 +164,9 @@ async fn ws_control_handler(
     validate_token(&state.auth_token, &token)?;
     Ok(ws
         .max_message_size(MAX_CONTROL_MESSAGE_BYTES)
-        .on_upgrade(move |socket| handle_control_ws(socket, state.event_tx.clone())))
+        .on_upgrade(move |socket| {
+            handle_control_ws(socket, state.event_tx.clone(), state.clock.clone())
+        }))
 }
 
 async fn ws_daemon_handler(

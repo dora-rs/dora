@@ -2,12 +2,16 @@ use crate::{Event, control::ControlEvent};
 use adora_core::topics::zenoh_output_publish_topic;
 use adora_message::{
     cli_to_coordinator::ControlRequest,
+    common::Timestamped,
     coordinator_to_cli::ControlRequestReply,
+    daemon_to_daemon::InterDaemonEvent,
+    metadata::{ArrowTypeInfo, BufferOffset, Metadata},
     ws_protocol::{WsRequest, WsResponse},
 };
 use axum::extract::ws::{Message, WebSocket};
 use futures::{SinkExt, StreamExt};
 use std::collections::HashMap;
+use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
@@ -80,7 +84,11 @@ async fn get_or_init_zenoh(
 ///
 /// For TopicSubscribe: validate via coordinator, open Zenoh subscribers, forward as binary
 /// WS frames with `subscription_id ++ payload` format.
-pub(crate) async fn handle_control_ws(socket: WebSocket, event_tx: mpsc::Sender<Event>) {
+pub(crate) async fn handle_control_ws(
+    socket: WebSocket,
+    event_tx: mpsc::Sender<Event>,
+    clock: Arc<adora_core::uhlc::HLC>,
+) {
     let (mut ws_tx, mut ws_rx) = socket.split();
     // Channel for log events to push back on same WS connection
     let (log_tx, mut log_rx) = mpsc::channel::<String>(64);
@@ -293,6 +301,55 @@ pub(crate) async fn handle_control_ws(socket: WebSocket, event_tx: mpsc::Sender<
                         let _ = send_ws_response(&mut ws_tx, &resp).await;
                         continue;
                     }
+                    ControlRequest::TopicPublish {
+                        dataflow_id,
+                        node_id,
+                        output_id,
+                        data_json,
+                    } => {
+                        // Validate that the dataflow has debug publishing enabled
+                        let (found_tx, found_rx) = oneshot::channel();
+                        let _ = event_tx.send(Event::Control(ControlEvent::TopicSubscribe {
+                            dataflow_id: *dataflow_id,
+                            topics: vec![(node_id.clone(), output_id.clone())],
+                            found_tx,
+                        })).await;
+                        let found = found_rx.await.unwrap_or(false);
+                        if !found {
+                            let resp = WsResponse::err(
+                                req.id,
+                                format!(
+                                    "dataflow {dataflow_id} not found or publish_all_messages_to_zenoh not enabled"
+                                ),
+                            );
+                            let _ = send_ws_response(&mut ws_tx, &resp).await;
+                            continue;
+                        }
+
+                        let resp = match publish_topic(
+                            &mut zenoh_session,
+                            *dataflow_id,
+                            node_id,
+                            output_id,
+                            data_json,
+                            &clock,
+                        )
+                        .await
+                        {
+                            Ok(()) => {
+                                let reply = ControlRequestReply::TopicPublished;
+                                format_response_json(req.id, &reply)
+                            }
+                            Err(e) => {
+                                let reply = ControlRequestReply::Error(e);
+                                format_response_json(req.id, &reply)
+                            }
+                        };
+                        if ws_tx.send(Message::Text(resp.into())).await.is_err() {
+                            break;
+                        }
+                        continue;
+                    }
                     _ => {}
                 }
 
@@ -351,4 +408,61 @@ pub(crate) async fn handle_control_ws(socket: WebSocket, event_tx: mpsc::Sender<
             h.abort();
         }
     }
+}
+
+/// Publish JSON data to a Zenoh topic as a serialized `InterDaemonEvent::Output`.
+///
+/// The JSON string is stored as raw UTF-8 bytes in a UInt8 Arrow array.
+async fn publish_topic(
+    zenoh_session: &mut Option<zenoh::Session>,
+    dataflow_id: Uuid,
+    node_id: &adora_message::id::NodeId,
+    output_id: &adora_message::id::DataId,
+    data_json: &str,
+    clock: &adora_core::uhlc::HLC,
+) -> Result<(), String> {
+    let session = get_or_init_zenoh(zenoh_session).await?;
+    let topic = zenoh_output_publish_topic(dataflow_id, node_id, output_id);
+
+    // Store JSON as raw UTF-8 bytes in a UInt8 array
+    let data_bytes = data_json.as_bytes();
+    let data = adora_message::aligned_vec::AVec::from_slice(128, data_bytes);
+
+    let type_info = ArrowTypeInfo {
+        data_type: adora_message::arrow_schema::DataType::UInt8,
+        len: data_bytes.len(),
+        null_count: 0,
+        validity: None,
+        offset: 0,
+        buffer_offsets: vec![BufferOffset {
+            offset: 0,
+            len: data_bytes.len(),
+        }],
+        child_data: vec![],
+    };
+
+    let timestamp = clock.new_timestamp();
+    let metadata = Metadata::new(timestamp, type_info);
+
+    let event = Timestamped {
+        inner: InterDaemonEvent::Output {
+            dataflow_id,
+            node_id: node_id.clone(),
+            output_id: output_id.clone(),
+            metadata,
+            data: Some(data),
+        },
+        timestamp,
+    };
+
+    let payload = event
+        .serialize()
+        .map_err(|e| format!("failed to serialize event: {e}"))?;
+
+    session
+        .put(&topic, payload)
+        .await
+        .map_err(|e| format!("failed to publish to zenoh: {e}"))?;
+
+    Ok(())
 }

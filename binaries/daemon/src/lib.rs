@@ -947,6 +947,82 @@ impl Daemon {
                     .map_err(|_| error!("could not send reload reply from daemon to coordinator"));
                 RunStatus::Continue
             }
+            DaemonCoordinatorEvent::RestartNode {
+                dataflow_id,
+                node_id,
+                grace_duration,
+            } => {
+                let result = match self.running.get_mut(&dataflow_id) {
+                    Some(dataflow) => {
+                        dataflow.restart_single_node(&node_id, &self.clock, grace_duration)
+                    }
+                    None => Err(eyre::eyre!("no running dataflow with ID `{dataflow_id}`")),
+                };
+                let reply = DaemonCoordinatorReply::RestartNodeResult(
+                    result.map_err(|err| format!("{err:?}")),
+                );
+                let _ = reply_tx.send(Some(reply)).map_err(|_| {
+                    error!("could not send restart node reply from daemon to coordinator")
+                });
+                RunStatus::Continue
+            }
+            DaemonCoordinatorEvent::StopNode {
+                dataflow_id,
+                node_id,
+                grace_duration,
+            } => {
+                let result = match self.running.get_mut(&dataflow_id) {
+                    Some(dataflow) => {
+                        dataflow.stop_single_node(&node_id, &self.clock, grace_duration)
+                    }
+                    None => Err(eyre::eyre!("no running dataflow with ID `{dataflow_id}`")),
+                };
+                let reply = DaemonCoordinatorReply::StopNodeResult(
+                    result.map_err(|err| format!("{err:?}")),
+                );
+                let _ = reply_tx.send(Some(reply)).map_err(|_| {
+                    error!("could not send stop node reply from daemon to coordinator")
+                });
+                RunStatus::Continue
+            }
+            DaemonCoordinatorEvent::SetParam {
+                dataflow_id,
+                node_id,
+                key,
+                value,
+            } => {
+                let result = match self.running.get(&dataflow_id) {
+                    Some(dataflow) => {
+                        if let Some(channel) = dataflow.subscribe_channels.get(&node_id) {
+                            match send_with_timestamp(
+                                channel,
+                                NodeEvent::ParamUpdate { key, value },
+                                &self.clock,
+                            ) {
+                                Ok(()) => {
+                                    dataflow.inc_pending(&node_id);
+                                    Ok(())
+                                }
+                                Err(_) => Err(eyre::eyre!("node `{node_id}` channel closed")),
+                            }
+                        } else {
+                            tracing::debug!(
+                                %node_id,
+                                "param update not deliverable: node not yet connected"
+                            );
+                            Ok(())
+                        }
+                    }
+                    None => Err(eyre::eyre!("no running dataflow with ID `{dataflow_id}`")),
+                };
+                let reply = DaemonCoordinatorReply::SetParamResult(
+                    result.map_err(|err| format!("{err:?}")),
+                );
+                let _ = reply_tx.send(Some(reply)).map_err(|_| {
+                    error!("could not send set param reply from daemon to coordinator")
+                });
+                RunStatus::Continue
+            }
             DaemonCoordinatorEvent::StopDataflow {
                 dataflow_id,
                 grace_duration,
@@ -3709,6 +3785,55 @@ mod fault_tolerance_tests {
         assert_eq!(events.len(), 2);
         assert!(matches_event(&events[0], "Input"));
         assert!(matches_event(&events[1], "InputRecovered"));
+    }
+
+    // -- Test: send_with_timestamp delivers ParamUpdate to subscribed node --
+
+    #[test]
+    fn param_update_delivered_to_node() {
+        let _df = test_dataflow();
+        let clock = test_clock();
+        let _node_id: NodeId = "node_a".to_string().into();
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        // Simulate sending a ParamUpdate
+        let result = send_with_timestamp(
+            &tx,
+            NodeEvent::ParamUpdate {
+                key: "threshold".into(),
+                value: serde_json::json!(42),
+            },
+            &clock,
+        );
+        assert!(result.is_ok());
+
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            NodeEvent::ParamUpdate { key, value } => {
+                assert_eq!(key, "threshold");
+                assert_eq!(value, &serde_json::json!(42));
+            }
+            other => panic!("expected ParamUpdate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn param_update_fails_on_closed_channel() {
+        let clock = test_clock();
+        let (tx, rx) = mpsc::unbounded_channel::<Timestamped<NodeEvent>>();
+        drop(rx); // close the receiver
+
+        let result = send_with_timestamp(
+            &tx,
+            NodeEvent::ParamUpdate {
+                key: "rate".into(),
+                value: serde_json::json!(10),
+            },
+            &clock,
+        );
+        assert!(result.is_err());
     }
 }
 

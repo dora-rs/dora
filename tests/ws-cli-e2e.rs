@@ -141,6 +141,222 @@ fn cli_multiple_requests_same_session() {
     }
 }
 
+// -- Phase 2: Node control error paths via WsSession --
+
+#[test]
+fn cli_restart_node_nonexistent() {
+    let port = start_coordinator_background();
+    let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+    let session = WsSession::connect(addr).expect("failed to connect WsSession");
+
+    let reply = send_request(
+        &session,
+        &ControlRequest::RestartNode {
+            dataflow_id: uuid::Uuid::new_v4(),
+            node_id: "camera".to_string().into(),
+            grace_duration: None,
+        },
+    )
+    .unwrap();
+
+    assert!(
+        matches!(reply, ControlRequestReply::Error(_)),
+        "expected Error, got {reply:?}"
+    );
+}
+
+#[test]
+fn cli_stop_node_nonexistent() {
+    let port = start_coordinator_background();
+    let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+    let session = WsSession::connect(addr).expect("failed to connect WsSession");
+
+    let reply = send_request(
+        &session,
+        &ControlRequest::StopNode {
+            dataflow_id: uuid::Uuid::new_v4(),
+            node_id: "sensor".to_string().into(),
+            grace_duration: None,
+        },
+    )
+    .unwrap();
+
+    assert!(
+        matches!(reply, ControlRequestReply::Error(_)),
+        "expected Error, got {reply:?}"
+    );
+}
+
+// -- Phase 3: Parameter operations via WsSession (E2E) --
+
+#[test]
+fn cli_param_set_get_list_delete() {
+    let port = start_coordinator_background();
+    let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+    let session = WsSession::connect(addr).expect("failed to connect WsSession");
+
+    let df_id = uuid::Uuid::new_v4();
+    let node_id: adora_message::id::NodeId = "sensor".to_string().into();
+
+    // Set
+    let reply = send_request(
+        &session,
+        &ControlRequest::SetParam {
+            dataflow_id: df_id,
+            node_id: node_id.clone(),
+            key: "rate".into(),
+            value: serde_json::json!(100),
+        },
+    )
+    .unwrap();
+    assert!(
+        matches!(reply, ControlRequestReply::ParamSet),
+        "expected ParamSet, got {reply:?}"
+    );
+
+    // Get
+    let reply = send_request(
+        &session,
+        &ControlRequest::GetParam {
+            dataflow_id: df_id,
+            node_id: node_id.clone(),
+            key: "rate".into(),
+        },
+    )
+    .unwrap();
+    match reply {
+        ControlRequestReply::ParamValue { key, value } => {
+            assert_eq!(key, "rate");
+            assert_eq!(value, serde_json::json!(100));
+        }
+        other => panic!("expected ParamValue, got {other:?}"),
+    }
+
+    // List
+    let reply = send_request(
+        &session,
+        &ControlRequest::GetParams {
+            dataflow_id: df_id,
+            node_id: node_id.clone(),
+        },
+    )
+    .unwrap();
+    match reply {
+        ControlRequestReply::ParamList { params } => {
+            assert_eq!(params.len(), 1);
+            assert_eq!(params[0].0, "rate");
+            assert_eq!(params[0].1, serde_json::json!(100));
+        }
+        other => panic!("expected ParamList, got {other:?}"),
+    }
+
+    // Delete
+    let reply = send_request(
+        &session,
+        &ControlRequest::DeleteParam {
+            dataflow_id: df_id,
+            node_id: node_id.clone(),
+            key: "rate".into(),
+        },
+    )
+    .unwrap();
+    assert!(
+        matches!(reply, ControlRequestReply::ParamDeleted),
+        "expected ParamDeleted, got {reply:?}"
+    );
+
+    // Get after delete → Error
+    let reply = send_request(
+        &session,
+        &ControlRequest::GetParam {
+            dataflow_id: df_id,
+            node_id: node_id.clone(),
+            key: "rate".into(),
+        },
+    )
+    .unwrap();
+    assert!(
+        matches!(reply, ControlRequestReply::Error(_)),
+        "param should be gone after delete, got {reply:?}"
+    );
+}
+
+#[test]
+fn cli_param_get_nonexistent() {
+    let port = start_coordinator_background();
+    let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+    let session = WsSession::connect(addr).expect("failed to connect WsSession");
+
+    let reply = send_request(
+        &session,
+        &ControlRequest::GetParam {
+            dataflow_id: uuid::Uuid::new_v4(),
+            node_id: "ghost".to_string().into(),
+            key: "missing".into(),
+        },
+    )
+    .unwrap();
+
+    assert!(
+        matches!(reply, ControlRequestReply::Error(_)),
+        "expected Error for missing param, got {reply:?}"
+    );
+}
+
+#[test]
+fn cli_param_set_json_types() {
+    let port = start_coordinator_background();
+    let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+    let session = WsSession::connect(addr).expect("failed to connect WsSession");
+
+    let df_id = uuid::Uuid::new_v4();
+    let node_id: adora_message::id::NodeId = "node".to_string().into();
+
+    // Test various JSON types
+    let test_cases: Vec<(&str, serde_json::Value)> = vec![
+        ("int", serde_json::json!(42)),
+        ("float", serde_json::json!(3.14)),
+        ("string", serde_json::json!("hello")),
+        ("bool", serde_json::json!(true)),
+        ("null", serde_json::json!(null)),
+        ("array", serde_json::json!([1, 2, 3])),
+        ("object", serde_json::json!({"a": 1})),
+    ];
+
+    for (key, value) in &test_cases {
+        let reply = send_request(
+            &session,
+            &ControlRequest::SetParam {
+                dataflow_id: df_id,
+                node_id: node_id.clone(),
+                key: key.to_string(),
+                value: value.clone(),
+            },
+        )
+        .unwrap();
+        assert!(matches!(reply, ControlRequestReply::ParamSet), "set {key}");
+    }
+
+    // Verify all values roundtrip
+    for (key, expected) in &test_cases {
+        let reply = send_request(
+            &session,
+            &ControlRequest::GetParam {
+                dataflow_id: df_id,
+                node_id: node_id.clone(),
+                key: key.to_string(),
+            },
+        )
+        .unwrap();
+        match reply {
+            ControlRequestReply::ParamValue { value, .. } => {
+                assert_eq!(&value, expected, "roundtrip failed for {key}");
+            }
+            other => panic!("expected ParamValue for {key}, got {other:?}"),
+        }
+    }
+}
+
 /// Full-stack E2E tests using coordinator + daemon + real nodes.
 ///
 /// These tests use the `adora` CLI binary via `adora up` / `adora start` etc.

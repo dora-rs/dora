@@ -419,6 +419,7 @@ impl EventStream {
                         });
                         Some(event_json)
                     }
+                    _ => None,
                 },
                 _ => None,
             };
@@ -525,6 +526,11 @@ impl EventStream {
                     }
                 }
                 NodeEvent::AllInputsClosed => Event::Stop(event::StopCause::AllInputsClosed),
+                NodeEvent::ParamUpdate { key, value } => Event::ParamUpdate { key, value },
+                other => {
+                    tracing::warn!("ignoring unrecognized NodeEvent variant: {other:?}");
+                    Event::Error(format!("unrecognized node event: {other:?}"))
+                }
             },
 
             EventItem::FatalError(err) => {
@@ -640,5 +646,85 @@ impl WriteEventsTo {
         serde_json::to_writer_pretty(file, &inputs_file)
             .context("failed to write events to file")?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Create a dummy ack channel for testing event conversion.
+    fn dummy_ack() -> flume::Sender<()> {
+        let (tx, _rx) = flume::bounded(1);
+        tx
+    }
+
+    #[test]
+    fn convert_param_update() {
+        let item = EventItem::NodeEvent {
+            event: NodeEvent::ParamUpdate {
+                key: "fps".into(),
+                value: serde_json::json!(60),
+            },
+            ack_channel: dummy_ack(),
+        };
+        let event = EventStream::convert_event_item(item);
+        match event {
+            Event::ParamUpdate { key, value } => {
+                assert_eq!(key, "fps");
+                assert_eq!(value, serde_json::json!(60));
+            }
+            other => panic!("expected ParamUpdate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn convert_stop_event() {
+        let item = EventItem::NodeEvent {
+            event: NodeEvent::Stop,
+            ack_channel: dummy_ack(),
+        };
+        let event = EventStream::convert_event_item(item);
+        assert!(matches!(event, Event::Stop(StopCause::Manual)));
+    }
+
+    #[test]
+    fn convert_all_inputs_closed() {
+        let item = EventItem::NodeEvent {
+            event: NodeEvent::AllInputsClosed,
+            ack_channel: dummy_ack(),
+        };
+        let event = EventStream::convert_event_item(item);
+        assert!(matches!(event, Event::Stop(StopCause::AllInputsClosed)));
+    }
+
+    #[test]
+    fn convert_input_closed() {
+        let item = EventItem::NodeEvent {
+            event: NodeEvent::InputClosed {
+                id: "input_1".to_string().into(),
+            },
+            ack_channel: dummy_ack(),
+        };
+        let event = EventStream::convert_event_item(item);
+        match event {
+            Event::InputClosed { id } => assert_eq!(AsRef::<str>::as_ref(&id), "input_1"),
+            other => panic!("expected InputClosed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn convert_node_restarted() {
+        let item = EventItem::NodeEvent {
+            event: NodeEvent::NodeRestarted {
+                id: "upstream".to_string().into(),
+            },
+            ack_channel: dummy_ack(),
+        };
+        let event = EventStream::convert_event_item(item);
+        match event {
+            Event::NodeRestarted { id } => assert_eq!(AsRef::<str>::as_ref(&id), "upstream"),
+            other => panic!("expected NodeRestarted, got {other:?}"),
+        }
     }
 }

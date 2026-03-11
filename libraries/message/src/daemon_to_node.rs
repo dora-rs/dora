@@ -62,6 +62,7 @@ pub enum DaemonReply {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 #[allow(clippy::large_enum_variant)]
 pub enum NodeEvent {
     Stop,
@@ -91,6 +92,13 @@ pub enum NodeEvent {
     ///
     /// This event is only sent to nodes that have at least one input.
     AllInputsClosed,
+    /// A runtime parameter has been updated.
+    ///
+    /// Sent when `adora param set` changes a parameter for this node.
+    ParamUpdate {
+        key: String,
+        value: serde_json::Value,
+    },
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

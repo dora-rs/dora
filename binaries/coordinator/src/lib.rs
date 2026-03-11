@@ -2,7 +2,8 @@ use crate::{
     events::set_up_ctrlc_handler,
     handlers::{
         build_dataflow, dataflow_result, handle_destroy, reload_dataflow, resolve_name,
-        retrieve_logs, send_heartbeat_message, send_log_message, start_dataflow, stop_dataflow,
+        restart_node, retrieve_logs, send_heartbeat_message, send_log_message, start_dataflow,
+        stop_dataflow, stop_node,
     },
     state::{ArchivedDataflow, CachedResult, RunningBuild, RunningDataflow},
 };
@@ -672,6 +673,46 @@ async fn start_inner(
                                     });
                             let _ = reply_sender.send(reply);
                         }
+                        ControlRequest::RestartNode {
+                            dataflow_id,
+                            node_id,
+                            grace_duration,
+                        } => {
+                            let result = restart_node(
+                                &running_dataflows,
+                                dataflow_id,
+                                node_id.clone(),
+                                grace_duration,
+                                &mut daemon_connections,
+                                clock.new_timestamp(),
+                            )
+                            .await;
+                            let reply = result.map(|()| ControlRequestReply::NodeRestarted {
+                                dataflow_id,
+                                node_id,
+                            });
+                            let _ = reply_sender.send(reply);
+                        }
+                        ControlRequest::StopNode {
+                            dataflow_id,
+                            node_id,
+                            grace_duration,
+                        } => {
+                            let result = stop_node(
+                                &running_dataflows,
+                                dataflow_id,
+                                node_id.clone(),
+                                grace_duration,
+                                &mut daemon_connections,
+                                clock.new_timestamp(),
+                            )
+                            .await;
+                            let reply = result.map(|()| ControlRequestReply::NodeStopped {
+                                dataflow_id,
+                                node_id,
+                            });
+                            let _ = reply_sender.send(reply);
+                        }
                         ControlRequest::Stop {
                             dataflow_uuid,
                             grace_duration,
@@ -932,6 +973,11 @@ async fn start_inner(
                                 "TopicUnsubscribe request should be handled separately"
                             )));
                         }
+                        ControlRequest::TopicPublish { .. } => {
+                            let _ = reply_sender.send(Err(eyre::eyre!(
+                                "TopicPublish request should be handled separately"
+                            )));
+                        }
                         ControlRequest::CliAndDefaultDaemonOnSameMachine => {
                             // With WS we can't inspect peer addresses.
                             // If an unnamed (local) daemon is connected, assume same
@@ -1002,6 +1048,97 @@ async fn start_inner(
                                 ControlRequestReply::Error("invalid trace_id format".to_string())
                             };
                             let _ = reply_sender.send(Ok(reply));
+                        }
+                        ControlRequest::GetParams {
+                            dataflow_id,
+                            node_id,
+                        } => {
+                            let reply = match store.list_node_params(&dataflow_id, &node_id) {
+                                Ok(params) => {
+                                    let params: Vec<_> = params
+                                        .into_iter()
+                                        .filter_map(|(k, v)| {
+                                            serde_json::from_slice(&v).ok().map(|val| (k, val))
+                                        })
+                                        .collect();
+                                    Ok(ControlRequestReply::ParamList { params })
+                                }
+                                Err(e) => Err(e),
+                            };
+                            let _ = reply_sender.send(reply);
+                        }
+                        ControlRequest::GetParam {
+                            dataflow_id,
+                            node_id,
+                            key,
+                        } => {
+                            let reply = match store.get_node_param(&dataflow_id, &node_id, &key) {
+                                Ok(Some(bytes)) => match serde_json::from_slice(&bytes) {
+                                    Ok(value) => Ok(ControlRequestReply::ParamValue { key, value }),
+                                    Err(e) => Err(eyre::eyre!("corrupt param value: {e}")),
+                                },
+                                Ok(None) => Err(eyre::eyre!("param not found: {key}")),
+                                Err(e) => Err(e),
+                            };
+                            let _ = reply_sender.send(reply);
+                        }
+                        ControlRequest::SetParam {
+                            dataflow_id,
+                            node_id,
+                            key,
+                            value,
+                        } => {
+                            let reply = match serde_json::to_vec(&value) {
+                                Ok(bytes) => {
+                                    match store.put_node_param(&dataflow_id, &node_id, &key, &bytes)
+                                    {
+                                        Ok(()) => {
+                                            // Best-effort forward to daemon if the node is running
+                                            if let Some(daemon_id) = running_dataflows
+                                                .get(&dataflow_id)
+                                                .and_then(|df| df.node_to_daemon.get(&node_id))
+                                            {
+                                                if let Ok(msg) = serde_json::to_vec(&Timestamped {
+                                                    inner: DaemonCoordinatorEvent::SetParam {
+                                                        dataflow_id,
+                                                        node_id: node_id.clone(),
+                                                        key: key.clone(),
+                                                        value: value.clone(),
+                                                    },
+                                                    timestamp: clock.new_timestamp(),
+                                                }) {
+                                                    if let Some(conn) =
+                                                        daemon_connections.get_mut(daemon_id)
+                                                    {
+                                                        if let Err(e) =
+                                                            conn.send_and_receive(&msg).await
+                                                        {
+                                                            tracing::warn!(
+                                                                %node_id,
+                                                                "param stored but daemon delivery failed: {e}"
+                                                            );
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            Ok(ControlRequestReply::ParamSet)
+                                        }
+                                        Err(e) => Err(e),
+                                    }
+                                }
+                                Err(e) => Err(eyre!("failed to serialize param value: {e}")),
+                            };
+                            let _ = reply_sender.send(reply);
+                        }
+                        ControlRequest::DeleteParam {
+                            dataflow_id,
+                            node_id,
+                            key,
+                        } => {
+                            let reply = store
+                                .delete_node_param(&dataflow_id, &node_id, &key)
+                                .map(|()| ControlRequestReply::ParamDeleted);
+                            let _ = reply_sender.send(reply);
                         }
                     }
                 }

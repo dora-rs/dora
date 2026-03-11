@@ -226,6 +226,14 @@ See the [Distributed Deployment Guide](docs/distributed-deployment.md) for clust
 | `adora topic echo <TOPIC>` | Print topic messages to stdout |
 | `adora topic info <TOPIC>` | Show topic type and metadata |
 | `adora node list` | List nodes in a dataflow |
+| `adora node info <NODE>` | Show detailed node status, inputs, outputs, and metrics |
+| `adora node restart <NODE>` | Restart a single node within a running dataflow |
+| `adora node stop <NODE>` | Stop a single node within a running dataflow |
+| `adora topic pub <TOPIC> <DATA>` | Publish JSON data to a topic |
+| `adora param list <NODE>` | List runtime parameters for a node |
+| `adora param get <NODE> <KEY>` | Get a runtime parameter value |
+| `adora param set <NODE> <KEY> <VALUE>` | Set a runtime parameter (JSON value) |
+| `adora param delete <NODE> <KEY>` | Delete a runtime parameter |
 | `adora trace list` | List recent traces captured by the coordinator |
 | `adora trace view <ID>` | View spans for a specific trace (supports prefix matching) |
 | `adora record <PATH>` | Record dataflow messages to `.adorec` file |
@@ -247,6 +255,7 @@ See the [Distributed Deployment Guide](docs/distributed-deployment.md) for clust
 
 | Command | Description |
 |---------|-------------|
+| `adora doctor` | Diagnose environment, connectivity, and dataflow health |
 | `adora status` | Check system health (alias: `check`) |
 | `adora new` | Generate a new project or node |
 | `adora graph <PATH>` | Visualize a dataflow (Mermaid or HTML) |

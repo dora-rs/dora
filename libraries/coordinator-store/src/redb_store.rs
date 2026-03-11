@@ -5,12 +5,16 @@ use eyre::{Result, WrapErr, eyre};
 use redb::{Database, ReadableTable, TableDefinition};
 use uuid::Uuid;
 
-use crate::{BuildRecord, CoordinatorStore, DaemonInfo, DataflowRecord};
+use adora_message::id::NodeId;
+
+use crate::{BuildRecord, CoordinatorStore, DaemonInfo, DataflowRecord, validate_param_limits};
 
 const META: TableDefinition<&str, u32> = TableDefinition::new("meta");
 const DAEMONS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("daemons");
 const DATAFLOWS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("dataflows");
 const BUILDS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("builds");
+/// Node params table. Key: "{uuid}/{node_id}/{param_key}", Value: JSON bytes.
+const NODE_PARAMS: TableDefinition<&str, &[u8]> = TableDefinition::new("node_params");
 
 /// Bump this when the serialization format of any stored record changes.
 const SCHEMA_VERSION: u32 = 1;
@@ -93,6 +97,8 @@ impl RedbStore {
             .wrap_err("failed to create dataflows table")?;
         txn.open_table(BUILDS)
             .wrap_err("failed to create builds table")?;
+        txn.open_table(NODE_PARAMS)
+            .wrap_err("failed to create node_params table")?;
         txn.commit().wrap_err("failed to commit table creation")?;
 
         Ok(Self { db })
@@ -271,6 +277,109 @@ impl CoordinatorStore for RedbStore {
         txn.commit()?;
         Ok(())
     }
+
+    // -- Node parameters --
+
+    fn put_node_param(
+        &self,
+        dataflow_id: &Uuid,
+        node_id: &NodeId,
+        key: &str,
+        value: &[u8],
+    ) -> Result<()> {
+        validate_param_limits(key, value)?;
+        let param_key = make_param_key(dataflow_id, node_id, key)?;
+        let txn = self.db.begin_write()?;
+        {
+            let mut table = txn.open_table(NODE_PARAMS)?;
+            table.insert(param_key.as_str(), value)?;
+        }
+        txn.commit()?;
+        Ok(())
+    }
+
+    fn get_node_param(
+        &self,
+        dataflow_id: &Uuid,
+        node_id: &NodeId,
+        key: &str,
+    ) -> Result<Option<Vec<u8>>> {
+        let param_key = make_param_key(dataflow_id, node_id, key)?;
+        let txn = self.db.begin_read()?;
+        let table = txn.open_table(NODE_PARAMS)?;
+        match table.get(param_key.as_str())? {
+            Some(value) => Ok(Some(value.value().to_vec())),
+            None => Ok(None),
+        }
+    }
+
+    fn list_node_params(
+        &self,
+        dataflow_id: &Uuid,
+        node_id: &NodeId,
+    ) -> Result<Vec<(String, Vec<u8>)>> {
+        let prefix = make_param_prefix(dataflow_id, node_id)?;
+        let txn = self.db.begin_read()?;
+        let table = txn.open_table(NODE_PARAMS)?;
+        let mut result = Vec::new();
+        // Range scan: keys are sorted, so we start at the prefix and stop
+        // when keys no longer match.
+        for entry in table.range(prefix.as_str()..)? {
+            let (key, value) = entry?;
+            let key_str = key.value();
+            match key_str.strip_prefix(&prefix) {
+                Some(param_key) => {
+                    result.push((param_key.to_string(), value.value().to_vec()));
+                }
+                None => break,
+            }
+        }
+        Ok(result)
+    }
+
+    fn delete_node_param(&self, dataflow_id: &Uuid, node_id: &NodeId, key: &str) -> Result<()> {
+        let param_key = make_param_key(dataflow_id, node_id, key)?;
+        let txn = self.db.begin_write()?;
+        {
+            let mut table = txn.open_table(NODE_PARAMS)?;
+            table.remove(param_key.as_str())?;
+        }
+        txn.commit()?;
+        Ok(())
+    }
+}
+
+/// Separator used in redb composite keys. Node IDs and param keys must not
+/// contain this character to prevent key collisions.
+const KEY_SEPARATOR: char = '\0';
+
+/// Check that a string component does not contain the key separator.
+fn check_no_separator(s: &str, label: &str) -> Result<()> {
+    if s.contains(KEY_SEPARATOR) {
+        eyre::bail!("{label} must not contain null bytes");
+    }
+    Ok(())
+}
+
+/// Build a composite redb key: `"{dataflow_id}\0{node_id}\0{key}"`.
+fn make_param_key(dataflow_id: &Uuid, node_id: &NodeId, key: &str) -> Result<String> {
+    let node_str: &str = AsRef::<str>::as_ref(node_id);
+    check_no_separator(node_str, "node_id")?;
+    check_no_separator(key, "param key")?;
+    Ok(format!(
+        "{dataflow_id}{sep}{node_str}{sep}{key}",
+        sep = KEY_SEPARATOR
+    ))
+}
+
+/// Build the prefix for listing params: `"{dataflow_id}\0{node_id}\0"`.
+fn make_param_prefix(dataflow_id: &Uuid, node_id: &NodeId) -> Result<String> {
+    let node_str: &str = AsRef::<str>::as_ref(node_id);
+    check_no_separator(node_str, "node_id")?;
+    Ok(format!(
+        "{dataflow_id}{sep}{node_str}{sep}",
+        sep = KEY_SEPARATOR
+    ))
 }
 
 #[cfg(test)]
@@ -415,6 +524,29 @@ mod tests {
         RedbStore::open(&path).unwrap();
         // Reopening with the same SCHEMA_VERSION should succeed.
         RedbStore::open(&path).unwrap();
+    }
+
+    #[test]
+    fn param_crud() {
+        let (store, _dir) = temp_store();
+        let df = Uuid::new_v4();
+        let node: NodeId = "camera".to_string().into();
+
+        store.put_node_param(&df, &node, "fps", b"30").unwrap();
+        assert_eq!(
+            store.get_node_param(&df, &node, "fps").unwrap(),
+            Some(b"30".to_vec())
+        );
+
+        store
+            .put_node_param(&df, &node, "resolution", b"1080")
+            .unwrap();
+        let params = store.list_node_params(&df, &node).unwrap();
+        assert_eq!(params.len(), 2);
+
+        store.delete_node_param(&df, &node, "fps").unwrap();
+        assert!(store.get_node_param(&df, &node, "fps").unwrap().is_none());
+        assert_eq!(store.list_node_params(&df, &node).unwrap().len(), 1);
     }
 
     #[test]

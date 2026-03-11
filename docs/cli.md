@@ -11,6 +11,7 @@ Adora (AI-Dora, Dataflow-Oriented Robotic Architecture) is a 100% Rust framework
 - [Command Reference](#command-reference)
   - [Lifecycle](#lifecycle-commands)
   - [Monitoring](#monitoring-commands)
+  - [Debugging](#debugging-commands)
   - [Setup](#setup-commands)
   - [Utility](#utility-commands)
   - [Self-Management](#self-management-commands)
@@ -630,6 +631,8 @@ Subscribes to the topic for the specified duration and reports: type (Arrow sche
 
 Manage and inspect dataflow nodes.
 
+##### `adora node list`
+
 ```
 adora node list [OPTIONS]
 ```
@@ -637,6 +640,176 @@ adora node list [OPTIONS]
 Lists nodes in a running dataflow with their status, CPU, memory, and restart count.
 
 **Columns:** NODE, STATUS, PID, CPU%, MEMORY (MB), RESTARTS, DATAFLOW
+
+##### `adora node info`
+
+Show detailed information about a specific node including status, inputs, outputs, and metrics.
+
+```
+adora node info <NODE> [OPTIONS]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `<NODE>` | required | Node ID to inspect |
+| `-d <DATAFLOW>`, `--dataflow` | interactive | Dataflow UUID or name |
+| `-f <FORMAT>`, `--format` | `table` | Output format: `table\|json` |
+
+##### `adora node restart`
+
+Restart a single node within a running dataflow. The daemon stops the node process and respawns it.
+
+```
+adora node restart <NODE> [OPTIONS]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `<NODE>` | required | Node ID to restart |
+| `-d <DATAFLOW>`, `--dataflow` | interactive | Dataflow UUID or name |
+| `--grace <DURATION>` | | Grace period before force-killing the node |
+
+##### `adora node stop`
+
+Stop a single node within a running dataflow without stopping the entire dataflow.
+
+```
+adora node stop <NODE> [OPTIONS]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `<NODE>` | required | Node ID to stop |
+| `-d <DATAFLOW>`, `--dataflow` | interactive | Dataflow UUID or name |
+| `--grace <DURATION>` | | Grace period before force-killing the node |
+
+#### `adora topic pub`
+
+Publish JSON data to a topic in a running dataflow. Requires `publish_all_messages_to_zenoh: true`.
+
+```
+adora topic pub <TOPIC> [DATA] [OPTIONS]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `<TOPIC>` | required | Topic to publish to (format: `node_id/output_id`) |
+| `[DATA]` | | JSON data to publish (required unless `--file`) |
+| `--file <PATH>` | | Read data from a JSON file instead of command line |
+| `--count <N>` | `1` | Number of messages to publish |
+| `-d <DATAFLOW>`, `--dataflow` | required | Dataflow UUID or name |
+
+**Examples:**
+
+```bash
+# Publish a single value
+adora topic pub -d my-app sensor/threshold '[42]'
+
+# Publish from file, 10 times
+adora topic pub -d my-app sensor/config --file config.json --count 10
+```
+
+#### `adora param`
+
+Manage runtime parameters for nodes. Parameters are persisted in the coordinator store and optionally forwarded to running nodes.
+
+##### `adora param list`
+
+List all runtime parameters for a node.
+
+```
+adora param list <NODE> [OPTIONS]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `<NODE>` | required | Node ID |
+| `-d <DATAFLOW>`, `--dataflow` | interactive | Dataflow UUID or name |
+| `--format <FMT>` | `table` | Output format: `table\|json` |
+
+##### `adora param get`
+
+Get a single runtime parameter value.
+
+```
+adora param get <NODE> <KEY> [OPTIONS]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `<NODE>` | required | Node ID |
+| `<KEY>` | required | Parameter key |
+| `-d <DATAFLOW>`, `--dataflow` | interactive | Dataflow UUID or name |
+
+##### `adora param set`
+
+Set a runtime parameter. The value is JSON. The parameter is stored in the coordinator and forwarded to the node if it is running.
+
+```
+adora param set <NODE> <KEY> <VALUE> [OPTIONS]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `<NODE>` | required | Node ID |
+| `<KEY>` | required | Parameter key (max 256 bytes) |
+| `<VALUE>` | required | Parameter value as JSON (max 64KB serialized) |
+| `-d <DATAFLOW>`, `--dataflow` | interactive | Dataflow UUID or name |
+
+**Examples:**
+
+```bash
+# Set a numeric parameter
+adora param set -d my-app sensor threshold 42
+
+# Set a string parameter
+adora param set -d my-app camera resolution '"1080p"'
+
+# Set a complex parameter
+adora param set -d my-app detector config '{"confidence": 0.8, "nms": 0.5}'
+```
+
+##### `adora param delete`
+
+Delete a runtime parameter.
+
+```
+adora param delete <NODE> <KEY> [OPTIONS]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `<NODE>` | required | Node ID |
+| `<KEY>` | required | Parameter key |
+| `-d <DATAFLOW>`, `--dataflow` | interactive | Dataflow UUID or name |
+
+#### `adora doctor`
+
+Diagnose environment, coordinator/daemon connectivity, and optionally validate a dataflow YAML.
+
+```
+adora doctor [OPTIONS]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--dataflow <PATH>` | | Path to a dataflow YAML to validate |
+
+Checks performed:
+1. Coordinator reachability
+2. Daemon connectivity
+3. Active dataflow status
+4. Dataflow YAML validation (if `--dataflow` provided)
+
+**Examples:**
+
+```bash
+# Basic health check
+adora doctor
+
+# Check environment + validate a dataflow
+adora doctor --dataflow dataflow.yml
+```
 
 #### `adora trace list`
 
@@ -1356,29 +1529,42 @@ State is persisted to `~/.adora/coordinator.redb`. On restart, stale dataflows a
 ### Debug Workflow
 
 ```bash
-# 1. Check infrastructure
-adora status
+# 1. Full environment diagnosis
+adora doctor --dataflow dataflow.yml
 
 # 2. Start with verbose logging and debug topics
 adora run dataflow.yml --log-level trace --debug
 
-# 3. Monitor specific node
+# 3. Inspect a specific node
+adora node info -d my-dataflow problem-node
+
+# 4. Monitor specific node logs
 adora logs my-dataflow problem-node --follow --level debug
 
-# 4. Check resource usage
+# 5. Check resource usage
 adora top
 
-# 5. Inspect topic data
+# 6. Inspect topic data
 adora topic echo -d my-dataflow problem-node/output
 
-# 6. Measure frequencies
+# 7. Publish test data to a topic
+adora topic pub -d my-dataflow problem-node/input '[1, 2, 3]'
+
+# 8. Measure frequencies
 adora topic hz -d my-dataflow --window 5
 
-# 7. View coordinator traces (no external infra needed)
+# 9. View/modify runtime parameters
+adora param list -d my-dataflow problem-node
+adora param set -d my-dataflow problem-node threshold 42
+
+# 10. Restart a misbehaving node without stopping the dataflow
+adora node restart -d my-dataflow problem-node
+
+# 11. View coordinator traces (no external infra needed)
 adora trace list
 adora trace view <trace-id-prefix>
 
-# 8. Visualize dataflow graph
+# 12. Visualize dataflow graph
 adora graph dataflow.yml --open
 ```
 

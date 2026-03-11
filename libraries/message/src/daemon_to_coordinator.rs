@@ -179,4 +179,7 @@ pub enum DaemonCoordinatorReply {
         notify: Option<tokio::sync::oneshot::Sender<()>>,
     },
     Logs(Result<Vec<u8>, String>),
+    RestartNodeResult(Result<(), String>),
+    StopNodeResult(Result<(), String>),
+    SetParamResult(Result<(), String>),
 }

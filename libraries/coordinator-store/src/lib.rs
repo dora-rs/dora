@@ -4,10 +4,27 @@ mod in_memory;
 mod redb_store;
 
 pub use in_memory::InMemoryStore;
+
+/// Maximum allowed length for a param key (bytes).
+pub const MAX_PARAM_KEY_BYTES: usize = 256;
+/// Maximum allowed size for a serialized param value (bytes).
+pub const MAX_PARAM_VALUE_BYTES: usize = 65_536;
+
+/// Validate param key and value size limits.
+pub fn validate_param_limits(key: &str, value: &[u8]) -> Result<()> {
+    if key.len() > MAX_PARAM_KEY_BYTES {
+        eyre::bail!("param key too long (max {MAX_PARAM_KEY_BYTES} bytes)");
+    }
+    if value.len() > MAX_PARAM_VALUE_BYTES {
+        eyre::bail!("param value too large (max {MAX_PARAM_VALUE_BYTES} bytes)");
+    }
+    Ok(())
+}
 #[cfg(feature = "redb-backend")]
 pub use redb_store::RedbStore;
 
 use adora_message::common::DaemonId;
+use adora_message::id::NodeId;
 use eyre::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -104,4 +121,35 @@ pub trait CoordinatorStore: Send + Sync {
     fn get_build(&self, build_id: &Uuid) -> Result<Option<BuildRecord>>;
     fn list_builds(&self) -> Result<Vec<BuildRecord>>;
     fn delete_build(&self, build_id: &Uuid) -> Result<()>;
+
+    // -- Node parameters --
+
+    /// Set a runtime parameter for a node in a dataflow.
+    ///
+    /// Enforces `MAX_PARAM_KEY_BYTES` and `MAX_PARAM_VALUE_BYTES` limits.
+    fn put_node_param(
+        &self,
+        dataflow_id: &Uuid,
+        node_id: &NodeId,
+        key: &str,
+        value: &[u8],
+    ) -> Result<()>;
+
+    /// Get a single runtime parameter.
+    fn get_node_param(
+        &self,
+        dataflow_id: &Uuid,
+        node_id: &NodeId,
+        key: &str,
+    ) -> Result<Option<Vec<u8>>>;
+
+    /// List all runtime parameters for a node.
+    fn list_node_params(
+        &self,
+        dataflow_id: &Uuid,
+        node_id: &NodeId,
+    ) -> Result<Vec<(String, Vec<u8>)>>;
+
+    /// Delete a single runtime parameter.
+    fn delete_node_param(&self, dataflow_id: &Uuid, node_id: &NodeId, key: &str) -> Result<()>;
 }

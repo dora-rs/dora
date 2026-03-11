@@ -1,12 +1,13 @@
 use crate::command::{
     Executable,
-    topic::{echo::Echo, hz::Hz, info::Info, list::List},
+    topic::{echo::Echo, hz::Hz, info::Info, list::List, pub_::Pub},
 };
 
 mod echo;
 mod hz;
 mod info;
 mod list;
+mod pub_;
 pub(crate) mod selector;
 
 /// Manage and inspect dataflow topics.
@@ -16,6 +17,7 @@ pub enum Topic {
     Echo(Echo),
     Hz(Hz),
     Info(Info),
+    Pub(Pub),
 }
 
 impl Executable for Topic {
@@ -25,6 +27,7 @@ impl Executable for Topic {
             Topic::Echo(cmd) => cmd.execute(),
             Topic::Hz(cmd) => cmd.execute(),
             Topic::Info(cmd) => cmd.execute(),
+            Topic::Pub(cmd) => cmd.execute(),
         }
     }
 }

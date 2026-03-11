@@ -235,6 +235,104 @@ pub(crate) async fn reload_dataflow(
     Ok(())
 }
 
+/// Send a single-node command (restart or stop) to the appropriate daemon.
+async fn dispatch_node_command(
+    running_dataflows: &HashMap<Uuid, RunningDataflow>,
+    dataflow_id: Uuid,
+    node_id: &NodeId,
+    event: DaemonCoordinatorEvent,
+    daemon_connections: &mut DaemonConnections,
+    timestamp: uhlc::Timestamp,
+    action: &str,
+) -> eyre::Result<DaemonCoordinatorReply> {
+    let Some(dataflow) = running_dataflows.get(&dataflow_id) else {
+        bail!("No running dataflow found with UUID `{dataflow_id}`")
+    };
+    let daemon_id = dataflow
+        .node_to_daemon
+        .get(node_id)
+        .with_context(|| format!("node `{node_id}` not found in dataflow `{dataflow_id}`"))?;
+
+    let message = serde_json::to_vec(&Timestamped {
+        inner: event,
+        timestamp,
+    })?;
+
+    let daemon_connection = daemon_connections
+        .get_mut(daemon_id)
+        .wrap_err("no daemon connection")?;
+    let reply_raw = daemon_connection
+        .send_and_receive(&message)
+        .await
+        .wrap_err_with(|| format!("failed to send/receive {action} node message"))?;
+    serde_json::from_slice(&reply_raw)
+        .wrap_err_with(|| format!("failed to deserialize {action} node reply"))
+}
+
+pub(crate) async fn restart_node(
+    running_dataflows: &HashMap<Uuid, RunningDataflow>,
+    dataflow_id: Uuid,
+    node_id: NodeId,
+    grace_duration: Option<Duration>,
+    daemon_connections: &mut DaemonConnections,
+    timestamp: uhlc::Timestamp,
+) -> eyre::Result<()> {
+    let reply = dispatch_node_command(
+        running_dataflows,
+        dataflow_id,
+        &node_id,
+        DaemonCoordinatorEvent::RestartNode {
+            dataflow_id,
+            node_id: node_id.clone(),
+            grace_duration,
+        },
+        daemon_connections,
+        timestamp,
+        "restart",
+    )
+    .await?;
+    match reply {
+        DaemonCoordinatorReply::RestartNodeResult(result) => result
+            .map_err(|e| eyre!(e))
+            .wrap_err("failed to restart node")?,
+        other => bail!("unexpected reply after sending restart node: {other:?}"),
+    }
+    tracing::info!("successfully restarted node `{node_id}` in dataflow `{dataflow_id}`");
+    Ok(())
+}
+
+pub(crate) async fn stop_node(
+    running_dataflows: &HashMap<Uuid, RunningDataflow>,
+    dataflow_id: Uuid,
+    node_id: NodeId,
+    grace_duration: Option<Duration>,
+    daemon_connections: &mut DaemonConnections,
+    timestamp: uhlc::Timestamp,
+) -> eyre::Result<()> {
+    let reply = dispatch_node_command(
+        running_dataflows,
+        dataflow_id,
+        &node_id,
+        DaemonCoordinatorEvent::StopNode {
+            dataflow_id,
+            node_id: node_id.clone(),
+            grace_duration,
+        },
+        daemon_connections,
+        timestamp,
+        "stop",
+    )
+    .await?;
+    match reply {
+        DaemonCoordinatorReply::StopNodeResult(result) => result
+            .map_err(|e| eyre!(e))
+            .wrap_err("failed to stop node")?,
+        other => bail!("unexpected reply after sending stop node: {other:?}"),
+    }
+    tracing::info!("successfully stopped node `{node_id}` in dataflow `{dataflow_id}`");
+    Ok(())
+}
+
 pub(crate) async fn retrieve_logs(
     running_dataflows: &HashMap<Uuid, RunningDataflow>,
     archived_dataflows: &HashMap<Uuid, ArchivedDataflow>,

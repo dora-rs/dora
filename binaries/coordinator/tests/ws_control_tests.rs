@@ -299,3 +299,196 @@ async fn build_log_subscribe_nonexistent() {
     let err = resp.error.unwrap();
     assert!(!err.is_empty(), "error should be descriptive: {err}");
 }
+
+// -- Phase 2: Node restart/stop error paths --
+
+#[tokio::test]
+async fn restart_node_nonexistent_dataflow() {
+    let (port, _handle) = common::start_test_coordinator().await;
+    let mut ws = connect_control(port).await;
+
+    let fake_id = Uuid::new_v4();
+    let params = serde_json::to_value(&ControlRequest::RestartNode {
+        dataflow_id: fake_id,
+        node_id: "camera".to_string().into(),
+        grace_duration: None,
+    })
+    .unwrap();
+    let resp = request_reply(&mut ws, "control", params).await;
+
+    // Error comes back as ControlRequestReply::Error in the `result` field
+    // (not WsResponse `error`), because the coordinator wraps eyre errors
+    // into ControlRequestReply::Error via format_response_json.
+    let result = resp.result.expect("expected a result");
+    let err = result
+        .get("Error")
+        .expect("expected Error variant in result");
+    assert!(
+        err.as_str().unwrap().contains(&fake_id.to_string())
+            || err.as_str().unwrap().to_lowercase().contains("not found"),
+        "error should mention the dataflow: {err}"
+    );
+}
+
+#[tokio::test]
+async fn stop_node_nonexistent_dataflow() {
+    let (port, _handle) = common::start_test_coordinator().await;
+    let mut ws = connect_control(port).await;
+
+    let fake_id = Uuid::new_v4();
+    let params = serde_json::to_value(&ControlRequest::StopNode {
+        dataflow_id: fake_id,
+        node_id: "sensor".to_string().into(),
+        grace_duration: None,
+    })
+    .unwrap();
+    let resp = request_reply(&mut ws, "control", params).await;
+
+    let result = resp.result.expect("expected a result");
+    assert!(result.get("Error").is_some(), "expected Error variant");
+}
+
+// -- Phase 3: Parameter CRUD via coordinator --
+
+#[tokio::test]
+async fn param_list_empty() {
+    let (port, _handle) = common::start_test_coordinator().await;
+    let mut ws = connect_control(port).await;
+
+    let fake_df = Uuid::new_v4();
+    let params = serde_json::to_value(&ControlRequest::GetParams {
+        dataflow_id: fake_df,
+        node_id: "camera".to_string().into(),
+    })
+    .unwrap();
+    let resp = request_reply(&mut ws, "control", params).await;
+
+    assert!(resp.error.is_none(), "expected ok: {:?}", resp.error);
+    let result = resp.result.unwrap();
+    let param_list = result.get("ParamList").expect("expected ParamList key");
+    let params_arr = param_list.get("params").unwrap().as_array().unwrap();
+    assert!(params_arr.is_empty());
+}
+
+#[tokio::test]
+async fn param_set_then_get() {
+    let (port, _handle) = common::start_test_coordinator().await;
+    let mut ws = connect_control(port).await;
+
+    let df_id = Uuid::new_v4();
+    let node_id: adora_message::id::NodeId = "sensor".to_string().into();
+
+    // Set a param
+    let params = serde_json::to_value(&ControlRequest::SetParam {
+        dataflow_id: df_id,
+        node_id: node_id.clone(),
+        key: "threshold".into(),
+        value: json!(42),
+    })
+    .unwrap();
+    let resp = request_reply(&mut ws, "control", params).await;
+    assert!(resp.error.is_none(), "set failed: {:?}", resp.error);
+    assert_eq!(resp.result.unwrap(), json!("ParamSet"));
+
+    // Get the param back
+    let params = serde_json::to_value(&ControlRequest::GetParam {
+        dataflow_id: df_id,
+        node_id: node_id.clone(),
+        key: "threshold".into(),
+    })
+    .unwrap();
+    let resp = request_reply(&mut ws, "control", params).await;
+    assert!(resp.error.is_none(), "get failed: {:?}", resp.error);
+    let result = resp.result.unwrap();
+    let pv = result.get("ParamValue").expect("expected ParamValue key");
+    assert_eq!(pv.get("key").unwrap(), "threshold");
+    assert_eq!(pv.get("value").unwrap(), &json!(42));
+}
+
+#[tokio::test]
+async fn param_set_list_delete() {
+    let (port, _handle) = common::start_test_coordinator().await;
+    let mut ws = connect_control(port).await;
+
+    let df_id = Uuid::new_v4();
+    let node_id: adora_message::id::NodeId = "camera".to_string().into();
+
+    // Set two params
+    for (key, value) in [("fps", json!(30)), ("resolution", json!("1080p"))] {
+        let params = serde_json::to_value(&ControlRequest::SetParam {
+            dataflow_id: df_id,
+            node_id: node_id.clone(),
+            key: key.into(),
+            value,
+        })
+        .unwrap();
+        let resp = request_reply(&mut ws, "control", params).await;
+        assert!(resp.error.is_none());
+    }
+
+    // List should have 2
+    let params = serde_json::to_value(&ControlRequest::GetParams {
+        dataflow_id: df_id,
+        node_id: node_id.clone(),
+    })
+    .unwrap();
+    let resp = request_reply(&mut ws, "control", params).await;
+    assert!(resp.error.is_none());
+    let result = resp.result.unwrap();
+    let param_list = result.get("ParamList").unwrap();
+    let arr = param_list.get("params").unwrap().as_array().unwrap();
+    assert_eq!(arr.len(), 2);
+
+    // Delete one
+    let params = serde_json::to_value(&ControlRequest::DeleteParam {
+        dataflow_id: df_id,
+        node_id: node_id.clone(),
+        key: "fps".into(),
+    })
+    .unwrap();
+    let resp = request_reply(&mut ws, "control", params).await;
+    assert!(resp.error.is_none());
+    assert_eq!(resp.result.unwrap(), json!("ParamDeleted"));
+
+    // List should have 1
+    let params = serde_json::to_value(&ControlRequest::GetParams {
+        dataflow_id: df_id,
+        node_id: node_id.clone(),
+    })
+    .unwrap();
+    let resp = request_reply(&mut ws, "control", params).await;
+    let result = resp.result.unwrap();
+    let arr = result
+        .get("ParamList")
+        .unwrap()
+        .get("params")
+        .unwrap()
+        .as_array()
+        .unwrap();
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0].as_array().unwrap()[0], "resolution");
+}
+
+#[tokio::test]
+async fn param_get_nonexistent() {
+    let (port, _handle) = common::start_test_coordinator().await;
+    let mut ws = connect_control(port).await;
+
+    let params = serde_json::to_value(&ControlRequest::GetParam {
+        dataflow_id: Uuid::new_v4(),
+        node_id: "node".to_string().into(),
+        key: "missing".into(),
+    })
+    .unwrap();
+    let resp = request_reply(&mut ws, "control", params).await;
+    assert!(resp.error.is_none());
+    let result = resp.result.unwrap();
+    assert!(
+        result.get("Error").is_some(),
+        "expected Error for missing param, got {result:?}"
+    );
+}
+
+// NOTE: TopicPublish integration testing requires Zenoh with a multi-thread
+// tokio runtime, which is incompatible with the test coordinator's current
+// thread runtime. TopicPublish is tested via the ws-cli-e2e tests instead.

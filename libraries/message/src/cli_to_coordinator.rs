@@ -114,4 +114,51 @@ pub enum ControlRequest {
     GetTraceSpans {
         trace_id: String,
     },
+    /// Restart a specific node without stopping the entire dataflow.
+    RestartNode {
+        dataflow_id: Uuid,
+        node_id: NodeId,
+        grace_duration: Option<Duration>,
+    },
+    /// Stop a specific node without stopping the entire dataflow.
+    StopNode {
+        dataflow_id: Uuid,
+        node_id: NodeId,
+        grace_duration: Option<Duration>,
+    },
+    /// Publish a message to a topic (for debugging/testing).
+    ///
+    /// The coordinator serializes the JSON data into Arrow format and
+    /// publishes it to Zenoh on the appropriate topic key.
+    TopicPublish {
+        dataflow_id: Uuid,
+        node_id: NodeId,
+        output_id: DataId,
+        /// JSON data to publish (will be converted to Arrow UInt8 array)
+        data_json: String,
+    },
+    /// List runtime parameters for a node.
+    GetParams {
+        dataflow_id: Uuid,
+        node_id: NodeId,
+    },
+    /// Get a single runtime parameter value.
+    GetParam {
+        dataflow_id: Uuid,
+        node_id: NodeId,
+        key: String,
+    },
+    /// Set a runtime parameter on a node.
+    SetParam {
+        dataflow_id: Uuid,
+        node_id: NodeId,
+        key: String,
+        value: serde_json::Value,
+    },
+    /// Delete a runtime parameter from a node.
+    DeleteParam {
+        dataflow_id: Uuid,
+        node_id: NodeId,
+        key: String,
+    },
 }

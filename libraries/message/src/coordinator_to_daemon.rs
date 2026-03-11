@@ -55,6 +55,22 @@ pub enum DaemonCoordinatorEvent {
         node_id: NodeId,
         tail: Option<usize>,
     },
+    RestartNode {
+        dataflow_id: DataflowId,
+        node_id: NodeId,
+        grace_duration: Option<Duration>,
+    },
+    StopNode {
+        dataflow_id: DataflowId,
+        node_id: NodeId,
+        grace_duration: Option<Duration>,
+    },
+    SetParam {
+        dataflow_id: DataflowId,
+        node_id: NodeId,
+        key: String,
+        value: serde_json::Value,
+    },
     Destroy,
     Heartbeat,
     PeerDaemonDisconnected {
