@@ -498,10 +498,20 @@ impl DoraNode {
 
             let provider = {
                 use zenoh::shm::*;
-                ShmProviderBuilder::default_backend(pool_size)
-                    .wait()
-                    .map_err(|e| eyre::eyre!("{e}"))
-                    .wrap_err("failed to create zenoh SHM provider")?
+                match ShmProviderBuilder::default_backend(pool_size).wait() {
+                    Ok(p) => Some(p),
+                    Err(e) => {
+                        if std::env::var("DORA_SHM_REQUIRED").is_ok() {
+                            return Err(eyre::eyre!("{e}")).wrap_err(
+                                "failed to create zenoh SHM provider (DORA_SHM_REQUIRED is set)",
+                            );
+                        }
+                        tracing::warn!(
+                            "failed to create zenoh SHM provider ({e}), falling back to heap buffers"
+                        );
+                        None
+                    }
+                }
             };
 
             // Declare publishers for each output
@@ -519,7 +529,7 @@ impl DoraNode {
                 pubs.insert(output_id.clone(), publisher);
             }
 
-            (Some(provider), pubs)
+            (provider, pubs)
         } else {
             (None, HashMap::new())
         };
