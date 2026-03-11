@@ -123,6 +123,10 @@ cargo install adora-cli --features redb-backend
 
 ### 1. Run a Python dataflow
 
+> **Important:** The PyPI package is **`adora-rs`**, not `adora`. The import name
+> is `adora` (`from adora import Node`), but `pip install adora` installs an
+> unrelated package.
+
 ```bash
 pip install adora-rs-cli adora-rs
 git clone https://github.com/adora-rs/adora.git && cd adora

@@ -32,10 +32,28 @@ The receiver has two inputs: raw `message` from sender and `transformed` from tr
 | `dataflow.yml` | Standard sender/transformer/receiver pipeline |
 | `dataflow_dynamic.yml` | Separate example: camera + opencv-plot vision pipeline with dynamic node loading |
 
+## Prerequisites
+
+Install the Python node API (the PyPI package is `adora-rs`, **not** `adora`):
+
+```bash
+pip install adora-rs
+```
+
+> **Note:** The Python import name is `adora` (`from adora import Node`), but the
+> PyPI package name is **`adora-rs`**. Running `pip install adora` installs an
+> unrelated package and will cause `ImportError: cannot import name 'Node'`.
+
 ## Run
 
 ```bash
 adora run dataflow.yml
+```
+
+Or use `uv` to manage the Python environment automatically:
+
+```bash
+adora run dataflow.yml --uv
 ```
 
 Expected output (receiver logs):
