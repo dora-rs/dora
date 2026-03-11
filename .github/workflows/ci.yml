@@ -105,6 +105,8 @@ jobs:
       fail-fast: false
     runs-on: ${{ matrix.platform }}
     timeout-minutes: 60
+    env:
+      DORA_SHM_REQUIRED: "1"
     steps:
       - uses: actions/checkout@v3
       - uses: r7kamura/rust-problem-matchers@v1.1.0
@@ -168,19 +170,34 @@ jobs:
         run: cargo build --examples
       - name: "Rust Dataflow example"
         timeout-minutes: 30
-        run: cargo run --example rust-dataflow
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" != "Windows" ]; then sudo prlimit --memlock=unlimited --pid $$; fi
+          cargo run --example rust-dataflow
       - name: "Rust Git Dataflow example"
         timeout-minutes: 30
-        run: cargo run --example rust-dataflow-git
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" != "Windows" ]; then sudo prlimit --memlock=unlimited --pid $$; fi
+          cargo run --example rust-dataflow-git
       - name: "Multiple Daemons example"
         timeout-minutes: 30
-        run: cargo run --example multiple-daemons
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" != "Windows" ]; then sudo prlimit --memlock=unlimited --pid $$; fi
+          cargo run --example multiple-daemons
       - name: "C Dataflow example"
         timeout-minutes: 15
-        run: cargo run --example c-dataflow
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" != "Windows" ]; then sudo prlimit --memlock=unlimited --pid $$; fi
+          cargo run --example c-dataflow
       - name: "C++ Dataflow example"
         timeout-minutes: 15
-        run: cargo run --example cxx-dataflow
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" != "Windows" ]; then sudo prlimit --memlock=unlimited --pid $$; fi
+          cargo run --example cxx-dataflow
       - name: "Install Arrow C++ Library"
         timeout-minutes: 10
         shell: bash
@@ -200,20 +217,29 @@ jobs:
           fi
       - name: "C++ Dataflow2 example"
         timeout-minutes: 15
-        run: cargo run --example cxx-arrow-dataflow
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" != "Windows" ]; then sudo prlimit --memlock=unlimited --pid $$; fi
+          cargo run --example cxx-arrow-dataflow
       - name: "Cmake example"
         if: runner.os == 'Linux'
         timeout-minutes: 30
-        run: cargo run --example cmake-dataflow
+        run: |
+          sudo prlimit --memlock=unlimited --pid $$
+          cargo run --example cmake-dataflow
       - name: "Unix Domain Socket example"
         if: runner.os == 'Linux'
-        run: cargo run --example rust-dataflow -- dataflow_socket.yml
+        run: |
+          sudo prlimit --memlock=unlimited --pid $$
+          cargo run --example rust-dataflow -- dataflow_socket.yml
 
   # ROS2 bridge examples
   ros2-bridge-examples:
     name: "ROS2 Bridge Examples"
     runs-on: ubuntu-22.04
     timeout-minutes: 45
+    env:
+      DORA_SHM_REQUIRED: "1"
     steps:
       - uses: actions/checkout@v3
       - uses: r7kamura/rust-problem-matchers@v1.1.0
@@ -260,6 +286,7 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
+          sudo prlimit --memlock=unlimited --pid $$
           source /opt/ros/humble/setup.bash &&
           cargo run -p dora-ros2-bridge --example rust-ros2-dataflow
       - uses: actions/setup-python@v5
@@ -275,6 +302,7 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
+          sudo prlimit --memlock=unlimited --pid $$
           source /opt/ros/humble/setup.bash &&
           uv venv --seed -p 3.12
           ## If not Windows
@@ -291,6 +319,7 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
+          sudo prlimit --memlock=unlimited --pid $$
           source /opt/ros/humble/setup.bash &&
           cargo run -p dora-ros2-bridge --example cxx-ros2-dataflow
 
@@ -302,6 +331,8 @@ jobs:
       fail-fast: false
     runs-on: ${{ matrix.platform }}
     timeout-minutes: 60
+    env:
+      DORA_SHM_REQUIRED: "1"
     steps:
       - uses: actions/checkout@v3
       - uses: r7kamura/rust-problem-matchers@v1.1.0
@@ -315,7 +346,10 @@ jobs:
 
       - name: "Benchmark example"
         timeout-minutes: 30
-        run: cargo run --example benchmark --release
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" != "Windows" ]; then sudo prlimit --memlock=unlimited --pid $$; fi
+          cargo run --example benchmark --release
 
   CLI:
     name: "CLI Test"
@@ -325,6 +359,8 @@ jobs:
       fail-fast: false
     runs-on: ${{ matrix.platform }}
     timeout-minutes: 60
+    env:
+      DORA_SHM_REQUIRED: "1"
     steps:
       - uses: actions/checkout@v3
       - uses: r7kamura/rust-problem-matchers@v1.1.0
@@ -364,6 +400,7 @@ jobs:
         # fail-fast by using bash shell explicitly
         shell: bash
         run: |
+          if [ "$RUNNER_OS" != "Windows" ]; then sudo prlimit --memlock=unlimited --pid $$; fi
           # Test Rust template Project
           dora new test_rust_project --internal-create-with-path-dependencies
           cd test_rust_project
@@ -375,6 +412,7 @@ jobs:
         # fail-fast by using bash shell explicitly
         shell: bash
         run: |
+          if [ "$RUNNER_OS" != "Windows" ]; then sudo prlimit --memlock=unlimited --pid $$; fi
           dora up
           dora list
           dora build examples/rust-dataflow/dataflow_dynamic.yml
@@ -388,6 +426,7 @@ jobs:
         timeout-minutes: 10
         shell: bash
         run: |
+          if [ "$RUNNER_OS" != "Windows" ]; then sudo prlimit --memlock=unlimited --pid $$; fi
           dora build examples/error-propagation/dataflow.yml
           # The producer exits with code 1 on purpose; dora run reflects that exit code.
           # Capture output and verify the consumer received the NodeFailed event.
@@ -429,6 +468,7 @@ jobs:
         # fail-fast by using bash shell explicitly
         shell: bash
         run: |
+          if [ "$RUNNER_OS" != "Windows" ]; then sudo prlimit --memlock=unlimited --pid $$; fi
           # Test Python template Project
           dora new test_python_project --lang python --internal-create-with-path-dependencies
           cd test_python_project
@@ -453,6 +493,7 @@ jobs:
         env:
           RUST_LOG: info
         run: |
+          if [ "$RUNNER_OS" != "Windows" ]; then sudo prlimit --memlock=unlimited --pid $$; fi
           echo "Running Python Node Example"
           dora build examples/python-dataflow/dataflow.yml --uv
           dora run examples/python-dataflow/dataflow.yml --uv --stop-after 10s
@@ -461,6 +502,7 @@ jobs:
         # fail-fast by using bash shell explicitly
         shell: bash
         run: |
+          if [ "$RUNNER_OS" != "Windows" ]; then sudo prlimit --memlock=unlimited --pid $$; fi
           echo "Running Python Node Dynamic Example"
           dora build examples/python-dataflow/dataflow_dynamic.yml --uv
           dora up
@@ -476,13 +518,16 @@ jobs:
         # fail-fast by using bash shell explicitly
         shell: bash
         run: |
+          if [ "$RUNNER_OS" != "Windows" ]; then sudo prlimit --memlock=unlimited --pid $$; fi
           echo "Running CI Operator Test"
           dora build examples/python-operator-dataflow/dataflow.yml --uv
           dora run examples/python-operator-dataflow/dataflow.yml --uv --stop-after 20s
 
       - name: "Test Python Example: Multiple Arrays"
         timeout-minutes: 30
+        shell: bash
         run: |
+          if [ "$RUNNER_OS" != "Windows" ]; then sudo prlimit --memlock=unlimited --pid $$; fi
           dora build examples/python-multiple-arrays/dataflow.yml --uv
           dora run examples/python-multiple-arrays/dataflow.yml --uv --stop-after 30s
 
@@ -492,23 +537,36 @@ jobs:
         if: runner.os != 'Windows'
         env:
           RUST_LOG: debug
-        run: dora run examples/python-async/dataflow.yaml --uv --stop-after 5m
+        run: |
+          sudo prlimit --memlock=unlimited --pid $$
+          dora run examples/python-async/dataflow.yaml --uv --stop-after 5m
       - name: "Test Python Example: Drain"
         timeout-minutes: 30
-        run: dora run examples/python-drain/dataflow.yaml --uv
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" != "Windows" ]; then sudo prlimit --memlock=unlimited --pid $$; fi
+          dora run examples/python-drain/dataflow.yaml --uv
       - name: "Test Python Example: Dataflow Builder"
         timeout-minutes: 30
         run: uv run examples/python-dataflow-builder/simple_example.py
       - name: "Python Queue Latency Test"
         timeout-minutes: 30
-        run: dora run tests/queue_size_latest_data_python/dataflow.yaml --uv
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" != "Windows" ]; then sudo prlimit --memlock=unlimited --pid $$; fi
+          dora run tests/queue_size_latest_data_python/dataflow.yaml --uv
       - name: "Python Queue Latency + Timeout Test"
         timeout-minutes: 30
-        run: dora run tests/queue_size_and_timeout_python/dataflow.yaml --uv
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" != "Windows" ]; then sudo prlimit --memlock=unlimited --pid $$; fi
+          dora run tests/queue_size_and_timeout_python/dataflow.yaml --uv
 
       - name: "Rust Queue Latency Test"
         timeout-minutes: 30
+        shell: bash
         run: |
+          if [ "$RUNNER_OS" != "Windows" ]; then sudo prlimit --memlock=unlimited --pid $$; fi
           # Run Rust queue latency test
           echo "Running CI Queue Size Latest Data Rust Test"
           dora build tests/queue_size_latest_data_rust/dataflow.yaml --uv
@@ -520,6 +578,7 @@ jobs:
         shell: bash
         if: runner.os == 'Linux'
         run: |
+          sudo prlimit --memlock=unlimited --pid $$
           # Test C template Project
           dora new test_c_project --lang c --internal-create-with-path-dependencies
           cd test_c_project
@@ -534,6 +593,7 @@ jobs:
         shell: bash
         if: runner.os == 'Linux'
         run: |
+          sudo prlimit --memlock=unlimited --pid $$
           # Test C++ template Project
           dora new test_cxx_project --lang cxx --internal-create-with-path-dependencies
           cd test_cxx_project
