@@ -1,14 +1,11 @@
 use dora_core::{config::NodeId, uhlc};
 use dora_message::{
     daemon_to_node::{DaemonReply, NodeEvent},
-    id::DataId,
-    metadata::Metadata,
     node_to_daemon::{DaemonRequest, Timestamped},
 };
 use eyre::eyre;
 use flume::RecvTimeoutError;
-use std::{collections::BTreeSet, sync::Arc, time::Duration};
-use zenoh::shm::ZShm;
+use std::{sync::Arc, time::Duration};
 
 use crate::daemon_connection::DaemonChannel;
 
@@ -17,12 +14,10 @@ pub fn init(
     tx: flume::Sender<EventItem>,
     channel: DaemonChannel,
     clock: Arc<uhlc::HLC>,
-    zenoh_input_ids: Arc<BTreeSet<DataId>>,
 ) -> eyre::Result<EventStreamThreadHandle> {
     let node_id_cloned = node_id.clone();
-    let join_handle = std::thread::spawn(move || {
-        event_stream_loop(node_id_cloned, tx, channel, clock, zenoh_input_ids)
-    });
+    let join_handle =
+        std::thread::spawn(move || event_stream_loop(node_id_cloned, tx, channel, clock));
     Ok(EventStreamThreadHandle::new(node_id, join_handle))
 }
 
@@ -32,13 +27,6 @@ pub enum EventItem {
     NodeEvent {
         event: NodeEvent,
         ack_channel: flume::Sender<()>,
-    },
-    /// Zero-copy input delivered via zenoh SHM. The ZShm buffer references
-    /// shared memory directly without copying the payload.
-    ZenohShmInput {
-        id: DataId,
-        metadata: Metadata,
-        shm: ZShm,
     },
     FatalError(eyre::Report),
     TimeoutError(eyre::Report),
@@ -91,13 +79,12 @@ impl Drop for EventStreamThreadHandle {
     }
 }
 
-#[tracing::instrument(skip(tx, channel, clock, zenoh_input_ids))]
+#[tracing::instrument(skip(tx, channel, clock))]
 fn event_stream_loop(
     node_id: NodeId,
     tx: flume::Sender<EventItem>,
     mut channel: DaemonChannel,
     clock: Arc<uhlc::HLC>,
-    zenoh_input_ids: Arc<BTreeSet<DataId>>,
 ) {
     let mut tx = Some(tx);
     let mut close_tx = false;
@@ -136,22 +123,6 @@ fn event_stream_loop(
         for Timestamped { inner, timestamp } in events {
             if let Err(err) = clock.update_with_timestamp(&timestamp) {
                 tracing::warn!("failed to update HLC: {err}");
-            }
-
-            // Skip daemon Input events with data: None for zenoh-subscribed inputs,
-            // because the data will arrive via zenoh subscribers instead.
-            if let NodeEvent::Input {
-                id: ref input_id,
-                data: None,
-                ..
-            } = inner
-            {
-                if zenoh_input_ids.contains(input_id) {
-                    tracing::trace!(
-                        "skipping daemon Input event with data: None for zenoh-subscribed input `{input_id}`"
-                    );
-                    continue;
-                }
             }
 
             if matches!(&inner, NodeEvent::AllInputsClosed) {

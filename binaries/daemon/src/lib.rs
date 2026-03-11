@@ -1,7 +1,7 @@
 use aligned_vec::{AVec, ConstAlign};
 use crossbeam::queue::ArrayQueue;
 use dora_core::{
-    build::{self, BuildInfo, PrevGitSource, TracingBuildLogger},
+    build::{self, BuildInfo, PrevGitSource},
     config::{DataId, Input, InputMapping, NodeId, NodeRunConfig, OperatorId},
     descriptor::{
         CoreNodeKind, DYNAMIC_SOURCE, Descriptor, DescriptorExt, ResolvedNode, RuntimeNode,

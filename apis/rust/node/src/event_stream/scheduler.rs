@@ -109,7 +109,6 @@ impl Scheduler {
                     },
                 ack_channel: _,
             } => id,
-            EventItem::ZenohShmInput { id, .. } => id,
             _ => &DataId::from(NON_INPUT_EVENT.to_string()),
         };
 

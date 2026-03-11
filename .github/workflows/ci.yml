@@ -105,8 +105,7 @@ jobs:
       fail-fast: false
     runs-on: ${{ matrix.platform }}
     timeout-minutes: 60
-    env:
-      DORA_SHM_REQUIRED: "1"
+    env: {}
     steps:
       - uses: actions/checkout@v3
       - uses: r7kamura/rust-problem-matchers@v1.1.0
@@ -238,8 +237,7 @@ jobs:
     name: "ROS2 Bridge Examples"
     runs-on: ubuntu-22.04
     timeout-minutes: 45
-    env:
-      DORA_SHM_REQUIRED: "1"
+    env: {}
     steps:
       - uses: actions/checkout@v3
       - uses: r7kamura/rust-problem-matchers@v1.1.0
@@ -331,8 +329,7 @@ jobs:
       fail-fast: false
     runs-on: ${{ matrix.platform }}
     timeout-minutes: 60
-    env:
-      DORA_SHM_REQUIRED: "1"
+    env: {}
     steps:
       - uses: actions/checkout@v3
       - uses: r7kamura/rust-problem-matchers@v1.1.0
@@ -359,8 +356,7 @@ jobs:
       fail-fast: false
     runs-on: ${{ matrix.platform }}
     timeout-minutes: 60
-    env:
-      DORA_SHM_REQUIRED: "1"
+    env: {}
     steps:
       - uses: actions/checkout@v3
       - uses: r7kamura/rust-problem-matchers@v1.1.0
