@@ -163,7 +163,10 @@ fn info(
                 Ok(Ok(payload)) => {
                     let event = match Timestamped::deserialize_inter_daemon_event(&payload) {
                         Ok(e) => e,
-                        Err(_) => continue,
+                        Err(e) => {
+                            eprintln!("warning: failed to deserialize event: {e}");
+                            continue;
+                        }
                     };
                     match event.inner {
                         InterDaemonEvent::Output { metadata, data, .. } => {
