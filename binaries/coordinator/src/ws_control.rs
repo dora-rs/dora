@@ -375,7 +375,11 @@ pub(crate) async fn handle_control_ws(
                         let root = err.root_cause().to_string();
                         ControlRequestReply::Error(root)
                     }
-                    Err(_) => ControlRequestReply::Error("request failed".to_string()),
+                    Err(_) => ControlRequestReply::Error(
+                        "coordinator dropped the request without a reply \
+                         (it may have shut down or the dataflow exited unexpectedly)"
+                            .to_string(),
+                    ),
                 };
 
                 let stop = matches!(reply, ControlRequestReply::CoordinatorStopped);

@@ -212,7 +212,10 @@ fn wait_until_dataflow_started(
         ControlRequestReply::DataflowSpawned { uuid } => {
             println!("dataflow started: {uuid}");
         }
-        ControlRequestReply::Error(err) => bail!("{err}"),
+        ControlRequestReply::Error(err) => bail!(
+            "dataflow failed to start: {err}\n\n  \
+             hint: if nodes require building, run `adora build <dataflow.yml>` first"
+        ),
         other => bail!("unexpected start dataflow reply: {other:?}"),
     }
     Ok(())

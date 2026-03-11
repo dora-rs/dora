@@ -510,11 +510,31 @@ async fn start_inner(
                                 for sender in finished_dataflow.stop_reply_senders {
                                     let _ = sender.send(Ok(reply.clone()));
                                 }
+                                // If WaitForSpawn waiters are still pending, notify them
+                                // that the dataflow finished before spawn completed (e.g.,
+                                // a node crashed at startup or the build failed).
                                 if !matches!(
                                     finished_dataflow.spawn_result,
                                     CachedResult::Cached { .. }
                                 ) {
-                                    tracing::error!("pending spawn result on dataflow finish");
+                                    let node_errors: Vec<String> = dataflow_results
+                                        .get(&uuid)
+                                        .into_iter()
+                                        .flat_map(|r| r.values())
+                                        .flat_map(|dr| dr.node_results.iter())
+                                        .filter_map(|(node_id, r)| {
+                                            r.as_ref().err().map(|e| format!("{node_id}: {e}"))
+                                        })
+                                        .collect();
+                                    let msg = if node_errors.is_empty() {
+                                        "dataflow exited before spawn completed".to_string()
+                                    } else {
+                                        format!(
+                                            "dataflow failed to start:\n  {}",
+                                            node_errors.join("\n  ")
+                                        )
+                                    };
+                                    finished_dataflow.spawn_result.set_result(Err(eyre!(msg)));
                                 }
                             }
                         }
