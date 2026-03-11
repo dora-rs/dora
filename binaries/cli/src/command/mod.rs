@@ -316,6 +316,16 @@ mod tests {
     }
 
     #[test]
+    fn parse_status_json() {
+        parse_ok(&["adora", "status", "--format", "json"]);
+    }
+
+    #[test]
+    fn parse_status_json_short() {
+        parse_ok(&["adora", "status", "-f", "json"]);
+    }
+
+    #[test]
     fn parse_inspect_top() {
         parse_ok(&["adora", "inspect", "top"]);
     }
