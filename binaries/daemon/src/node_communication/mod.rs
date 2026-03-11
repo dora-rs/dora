@@ -89,54 +89,52 @@ pub async fn spawn_listener_loop(
             let daemon_drop_region_id = daemon_drop_region.get_os_id().to_owned();
             let daemon_events_close_region_id = daemon_events_close_region.get_os_id().to_owned();
 
-            {
-                let server = unsafe { ShmemServer::new(daemon_control_region) }
-                    .wrap_err("failed to create control server")?;
+            let s_control = unsafe { ShmemServer::new(daemon_control_region) }
+                .wrap_err("failed to create control server")?;
+            let s_events = unsafe { ShmemServer::new(daemon_events_region) }
+                .wrap_err("failed to create events server")?;
+            let s_drop = unsafe { ShmemServer::new(daemon_drop_region) }
+                .wrap_err("failed to create drop server")?;
+            let s_events_close = unsafe { ShmemServer::new(daemon_events_close_region) }
+                .wrap_err("failed to create events close server")?;
+
+            // Run all four shmem listener loops inside a single task so that
+            // a single AbortHandle can stop all of them when the dataflow
+            // finishes.  Previously each was a separate fire-and-forget spawn
+            // with no way to cancel them, causing task + blocking-thread leaks
+            // on every dataflow run (and blocking-thread exhaustion after node
+            // crashes, because `pthread_cond_wait` blocked indefinitely).
+            let event_loop_node_id = format!("{dataflow_id}/{node_id}");
+            let handle = tokio::spawn({
                 let daemon_tx = daemon_tx.clone();
                 let queue_sizes = queue_sizes.clone();
                 let clock = clock.clone();
-                tokio::spawn(shmem::listener_loop(server, daemon_tx, queue_sizes, clock));
-            }
-
-            {
-                let server = unsafe { ShmemServer::new(daemon_events_region) }
-                    .wrap_err("failed to create events server")?;
-                let event_loop_node_id = format!("{dataflow_id}/{node_id}");
-                let daemon_tx = daemon_tx.clone();
-                let queue_sizes = queue_sizes.clone();
-                let clock = clock.clone();
-                tokio::task::spawn(async move {
-                    shmem::listener_loop(server, daemon_tx, queue_sizes, clock).await;
-                    tracing::debug!("event listener loop finished for `{event_loop_node_id}`");
-                });
-            }
-
-            {
-                let server = unsafe { ShmemServer::new(daemon_drop_region) }
-                    .wrap_err("failed to create drop server")?;
-                let drop_loop_node_id = format!("{dataflow_id}/{node_id}");
-                let daemon_tx = daemon_tx.clone();
-                let queue_sizes = queue_sizes.clone();
-                let clock = clock.clone();
-                tokio::task::spawn(async move {
-                    shmem::listener_loop(server, daemon_tx, queue_sizes, clock).await;
-                    tracing::debug!("drop listener loop finished for `{drop_loop_node_id}`");
-                });
-            }
-
-            {
-                let server = unsafe { ShmemServer::new(daemon_events_close_region) }
-                    .wrap_err("failed to create events close server")?;
-                let drop_loop_node_id = format!("{dataflow_id}/{node_id}");
-                let daemon_tx = daemon_tx.clone();
-                let clock = clock.clone();
-                tokio::task::spawn(async move {
-                    shmem::listener_loop(server, daemon_tx, queue_sizes, clock).await;
-                    tracing::debug!(
-                        "events close listener loop finished for `{drop_loop_node_id}`"
+                async move {
+                    tokio::join!(
+                        shmem::listener_loop(
+                            s_control,
+                            daemon_tx.clone(),
+                            queue_sizes.clone(),
+                            clock.clone(),
+                        ),
+                        shmem::listener_loop(
+                            s_events,
+                            daemon_tx.clone(),
+                            queue_sizes.clone(),
+                            clock.clone(),
+                        ),
+                        shmem::listener_loop(
+                            s_drop,
+                            daemon_tx.clone(),
+                            queue_sizes.clone(),
+                            clock.clone(),
+                        ),
+                        shmem::listener_loop(s_events_close, daemon_tx, queue_sizes, clock),
                     );
-                });
-            }
+                    tracing::debug!("all shmem listener loops finished for `{event_loop_node_id}`");
+                }
+            });
+            let abort_handle = handle.abort_handle();
 
             Ok((
                 DaemonCommunication::Shmem {
@@ -145,7 +143,7 @@ pub async fn spawn_listener_loop(
                     daemon_drop_region_id,
                     daemon_events_close_region_id,
                 },
-                None,
+                Some(abort_handle),
             ))
         }
         #[cfg(unix)]
