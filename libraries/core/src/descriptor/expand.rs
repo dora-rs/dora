@@ -10,6 +10,13 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// Check if a path string is absolute on any platform.
+/// On Windows, `Path::is_absolute()` returns false for Unix-style `/foo` paths,
+/// so we also check for a leading `/` to catch cross-platform absolute paths.
+fn is_absolute_any_platform(path: &str) -> bool {
+    Path::new(path).is_absolute() || path.starts_with('/')
+}
+
 /// Maximum nesting depth for recursive module expansion. Prevents unbounded
 /// recursion from deeply nested or circular module graphs that evade the
 /// path-based cycle check. 8 levels covers realistic robotics pipelines
@@ -193,7 +200,7 @@ pub fn check_module_file(module_path: &Path) -> eyre::Result<()> {
     // Check nested module files exist and collect their declared outputs
     for node in &module_file.nodes {
         if let Some(ref mod_path) = node.module {
-            if Path::new(mod_path).is_absolute() {
+            if is_absolute_any_platform(mod_path) {
                 bail!(
                     "module `{}`: nested module path `{}` must be relative (node `{}`)",
                     module_file.module.name,
@@ -263,7 +270,7 @@ fn expand_module_node(
         .expect("expand_module_node called on non-module node");
 
     // Security: reject absolute paths and path traversal
-    if Path::new(module_path_str).is_absolute() {
+    if is_absolute_any_platform(module_path_str) {
         bail!(
             "module path `{}` must be relative (node `{}`)",
             module_path_str,
