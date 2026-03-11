@@ -10,9 +10,9 @@ pub(crate) struct ArtifactStore {
 }
 
 impl ArtifactStore {
-    /// Create a new artifact store in a temp directory.
+    /// Create a new artifact store in a unique temp directory.
     pub fn new() -> eyre::Result<Self> {
-        let base_dir = std::env::temp_dir().join("adora-artifacts");
+        let base_dir = std::env::temp_dir().join(format!("adora-artifacts-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&base_dir)
             .with_context(|| format!("failed to create artifact dir {}", base_dir.display()))?;
         Ok(Self { base_dir })
