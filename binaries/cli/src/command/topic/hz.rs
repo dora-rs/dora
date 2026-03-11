@@ -174,11 +174,11 @@ fn run_hz(
     outputs: BTreeSet<TopicIdentifier>,
     data_rx: std::sync::mpsc::Receiver<eyre::Result<Vec<u8>>>,
 ) -> eyre::Result<()> {
-    // Add a synthetic aggregate entry ("<ALL>") that merges all outputs
+    // Add a synthetic aggregate entry ("_ALL_") that merges all outputs
     let mut topics_with_all = Vec::with_capacity(outputs.len() + 1);
     topics_with_all.push(TopicIdentifier {
-        node_id: "<ALL>".to_string().into(),
-        data_id: "*".to_string().into(),
+        node_id: "_ALL_".to_string().into(),
+        data_id: "_".to_string().into(),
     });
     topics_with_all.extend(outputs);
 
