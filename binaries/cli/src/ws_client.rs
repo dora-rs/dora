@@ -96,7 +96,8 @@ impl WsSession {
             })
             .map_err(|e| {
                 let msg = e.to_string();
-                if msg.to_lowercase().contains("connection refused") || msg.contains("No connection could be made")
+                if msg.to_lowercase().contains("connection refused")
+                    || msg.contains("No connection could be made")
                 {
                     eyre!(
                         "cannot connect to coordinator at {addr}: {msg}\n\n  \
