@@ -46,7 +46,10 @@ pub(crate) fn up(config_path: Option<&Path>, auth: bool) -> eyre::Result<()> {
         .unwrap_or(ADORA_COORDINATOR_PORT_WS_DEFAULT);
     let coordinator_addr = (addr, port).into();
     let session = match connect_to_coordinator(coordinator_addr) {
-        Ok(session) => session,
+        Ok(session) => {
+            println!("coordinator already running on {coordinator_addr}");
+            session
+        }
         Err(_) => {
             start_coordinator(auth).wrap_err("failed to start adora-coordinator")?;
 
@@ -60,7 +63,9 @@ pub(crate) fn up(config_path: Option<&Path>, auth: bool) -> eyre::Result<()> {
                         }
                         Err(err) => {
                             bail!(
-                                "timed out waiting for coordinator to start at {coordinator_addr}: {err}"
+                                "timed out waiting for coordinator to start at {coordinator_addr}: {err}\n\n  \
+                                 hint: is port {port} already in use? Check with `adora status`\n  \
+                                 or stop the existing coordinator with `adora down`"
                             );
                         }
                     }
@@ -85,6 +90,8 @@ pub(crate) fn up(config_path: Option<&Path>, auth: bool) -> eyre::Result<()> {
             }
             std::thread::sleep(Duration::from_secs_f32(WAIT_S));
         }
+    } else {
+        println!("daemon already running");
     }
 
     Ok(())
