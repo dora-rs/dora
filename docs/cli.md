@@ -337,6 +337,9 @@ adora build <PATH> [OPTIONS]
 | `<PATH>` | required | Dataflow descriptor path |
 | `--uv` | false | Use `uv` for Python builds |
 | `--local` | false | Force local build (skip coordinator) |
+| `--strict-types` | false | Treat type warnings as errors (non-zero exit code) |
+
+**Type checking:** After expanding modules, `build` runs the same type checks as `validate`. Warnings are printed by default; use `--strict-types` (or set `strict_types: true` in the YAML) to fail the build on type mismatches. User-defined types in a `types/` directory next to the dataflow are loaded automatically.
 
 **Build strategy:** If nodes have `_unstable_deploy` sections and a coordinator is reachable, builds are distributed to target machines. Otherwise, builds run locally.
 
@@ -957,19 +960,26 @@ adora validate <PATH> [OPTIONS]
 | Flag | Default | Description |
 |------|---------|-------------|
 | `<PATH>` | required | Dataflow descriptor path |
-| `--strict` | false | Treat warnings as errors (non-zero exit code for CI) |
+| `--strict-types` | false | Treat warnings as errors (non-zero exit code for CI) |
 
 Checks:
-1. `output_types`/`input_types` keys exist in the corresponding `outputs`/`inputs` lists
-2. All type URNs resolve in the standard type library
-3. Connected edges have matching types when both sides are annotated
+1. **Key existence**: `output_types`/`input_types` keys exist in the corresponding `outputs`/`inputs` lists
+2. **URN resolution**: All type URNs resolve in the standard or user-defined type library
+3. **Edge compatibility**: Connected edges have compatible types (exact match, widening, or user-defined rules)
+4. **Parameterized types**: Parameter mismatches (e.g. `AudioFrame[sample_type=f32]` vs `AudioFrame[sample_type=i16]`)
+5. **Timer auto-typing**: Timer inputs are automatically typed as `std/core/v1/UInt64`
+6. **Type inference**: When only upstream annotates a type, it is inferred on the downstream input
+7. **Metadata patterns**: `output_metadata` keys and `pattern` shorthands are validated
+8. **Schema compatibility**: Struct types are checked at the field level (missing/wrong fields)
+
+User-defined types in a `types/` directory next to the dataflow are loaded automatically.
 
 ```bash
 # Validate with warnings
 adora validate dataflow.yml
 
 # Strict mode for CI (exit 1 on warnings)
-adora validate --strict dataflow.yml
+adora validate --strict-types dataflow.yml
 ```
 
 See the [Type Annotations Guide](types.md) for the full type library and usage details.

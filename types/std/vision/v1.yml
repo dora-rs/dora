@@ -2,6 +2,19 @@ types:
   BoundingBox:
     arrow: Struct
     description: "2D bounding box with x, y, width, height, confidence, label"
+    fields:
+      - name: x
+        type: Float32
+      - name: "y"
+        type: Float32
+      - name: width
+        type: Float32
+      - name: height
+        type: Float32
+      - name: confidence
+        type: Float32
+      - name: label
+        type: Utf8
   Detection:
     arrow: Struct
     description: "Object detection result (list of BoundingBox)"

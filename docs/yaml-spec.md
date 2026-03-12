@@ -37,6 +37,8 @@ nodes:
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `nodes` | list | **required** | List of node configurations |
+| `strict_types` | bool | `false` | Treat type warnings as errors in `validate` and `build` |
+| `type_rules` | list | `[]` | User-defined type compatibility rules (see [Type Annotations](types.md#user-defined-compatibility-rules)) |
 | `health_check_interval` | float | `5.0` | Seconds between daemon health check sweeps. For each node with `health_check_timeout` set, the daemon checks whether the node has communicated within its timeout; if not, the node is killed and its `restart_policy` is evaluated |
 | `_unstable_deploy` | object | -- | Root-level deployment config (see [Deployment](#deployment)) |
 | `_unstable_debug` | object | -- | Debug options (see [Debug](#debug)) |
@@ -154,8 +156,10 @@ Optional type annotations for inputs and outputs. Types are never required -- un
 |-------|------|---------|-------------|
 | `output_types` | object | `{}` | Maps output IDs to type URNs. Keys must match entries in `outputs` |
 | `input_types` | object | `{}` | Maps input IDs to expected type URNs. Keys must match entries in `inputs` |
+| `output_metadata` | object | `{}` | Maps output IDs to lists of required metadata keys |
+| `pattern` | string | -- | Communication pattern shorthand: `service-server`, `service-client`, `action-server`, `action-client` |
 
-Type URNs use the format `std/<category>/v<version>/<TypeName>`. See the [Type Annotations Guide](types.md) for the full standard type library.
+Type URNs use the format `std/<category>/v<version>/<TypeName>` and support parameters (e.g. `std/media/v1/AudioFrame[sample_type=f32]`). See the [Type Annotations Guide](types.md) for the full standard type library, parameterized types, compatibility rules, and user-defined types.
 
 Run `adora validate <file>` to check type annotations statically. For runtime checking, set `ADORA_RUNTIME_TYPE_CHECK=warn` or `error`:
 

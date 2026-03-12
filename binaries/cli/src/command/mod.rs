@@ -302,7 +302,7 @@ mod tests {
 
     #[test]
     fn parse_validate_strict() {
-        parse_ok(&["adora", "validate", "--strict", "dataflow.yml"]);
+        parse_ok(&["adora", "validate", "--strict-types", "dataflow.yml"]);
     }
 
     #[test]

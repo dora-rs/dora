@@ -171,6 +171,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "splitty",
+ "syn 2.0.114",
  "tempfile",
  "tokio",
  "tracing",

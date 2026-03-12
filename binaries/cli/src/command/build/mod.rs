@@ -50,6 +50,7 @@
 use adora_core::{
     descriptor::{CoreNodeKind, CustomNode, Descriptor, DescriptorExt},
     topics::{ADORA_COORDINATOR_PORT_WS_DEFAULT, LOCALHOST},
+    types::TypeRegistry,
 };
 use adora_message::{BuildId, descriptor::NodeSource};
 use eyre::Context;
@@ -88,6 +89,9 @@ pub struct Build {
     // Run build on local machine
     #[clap(long, action)]
     local: bool,
+    /// Treat type warnings as errors
+    #[clap(long, action)]
+    strict_types: bool,
 }
 
 impl Executable for Build {
@@ -99,6 +103,7 @@ impl Executable for Build {
             self.coordinator_port,
             self.uv,
             self.local,
+            self.strict_types,
         )
     }
 }
@@ -109,6 +114,7 @@ pub fn build(
     coordinator_port: Option<u16>,
     uv: bool,
     force_local: bool,
+    strict_types: bool,
 ) -> eyre::Result<()> {
     let dataflow_path = resolve_dataflow(dataflow).context("could not resolve dataflow")?;
     let working_dir = dataflow_path
@@ -124,6 +130,45 @@ pub fn build(
         })?
         .expand(working_dir)
         .wrap_err("failed to expand modules in dataflow descriptor")?;
+
+    // --- Type checking (Phase 1) ---
+    let strict = strict_types || dataflow_descriptor.strict_types.unwrap_or(false);
+    let mut registry = TypeRegistry::new();
+    let types_dir = working_dir.join("types");
+    if types_dir.is_dir() {
+        match registry.load_from_dir(&types_dir) {
+            Ok(count) if count > 0 => {
+                log::info!("Loaded {count} user-defined type(s) from types/");
+            }
+            Err(e) => {
+                eyre::bail!("failed to load user types: {e}");
+            }
+            _ => {}
+        }
+    }
+    let type_result = adora_core::descriptor::validate::check_type_annotations_full(
+        &dataflow_descriptor,
+        &registry,
+        strict,
+    );
+    for inf in &type_result.inferences {
+        println!("  {inf}");
+    }
+    if !type_result.warnings.is_empty() {
+        for w in &type_result.warnings {
+            eprintln!("  warning: {w}");
+        }
+        let count = type_result.warnings.len();
+        if strict {
+            eyre::bail!("{count} type error(s) found (strict mode)");
+        } else {
+            eprintln!(
+                "{count} type warning(s) found.\n  \
+                 hint: use --strict-types to fail on type warnings"
+            );
+        }
+    }
+
     let mut dataflow_session =
         DataflowSession::read_session(&dataflow_path).context("failed to read DataflowSession")?;
 

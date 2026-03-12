@@ -1,6 +1,6 @@
 use super::Executable;
 use adora_core::{
-    descriptor::{Descriptor, DescriptorExt, validate::check_type_annotations},
+    descriptor::{Descriptor, DescriptorExt, validate::check_type_annotations_full},
     types::TypeRegistry,
 };
 use eyre::{Context, bail};
@@ -12,9 +12,9 @@ pub struct Validate {
     /// Path to the dataflow descriptor file
     #[clap(value_name = "PATH", value_hint = clap::ValueHint::FilePath)]
     dataflow: PathBuf,
-    /// Treat warnings as errors (non-zero exit code)
+    /// Treat type warnings as errors (non-zero exit code)
     #[clap(long, action)]
-    strict: bool,
+    strict_types: bool,
 }
 
 impl Executable for Validate {
@@ -38,20 +38,41 @@ impl Executable for Validate {
             .expand(working_dir)
             .context("failed to expand modules in dataflow descriptor")?;
 
-        // Run type annotation checks
-        let registry = TypeRegistry::new();
-        let warnings = check_type_annotations(&descriptor, &registry);
+        let strict = self.strict_types || descriptor.strict_types.unwrap_or(false);
 
-        if warnings.is_empty() {
+        // Load user types if a types/ directory exists
+        let mut registry = TypeRegistry::new();
+        let types_dir = working_dir.join("types");
+        if types_dir.is_dir() {
+            match registry.load_from_dir(&types_dir) {
+                Ok(count) if count > 0 => {
+                    println!("Loaded {count} user-defined type(s) from types/");
+                }
+                Err(e) => {
+                    bail!("failed to load user types: {e}");
+                }
+                _ => {}
+            }
+        }
+
+        // Run type annotation checks
+        let result = check_type_annotations_full(&descriptor, &registry, strict);
+
+        // Print inferences
+        for inf in &result.inferences {
+            println!("  {inf}");
+        }
+
+        if result.warnings.is_empty() {
             println!("All type annotations OK.");
         } else {
             println!("Type warnings:");
-            for w in &warnings {
+            for w in &result.warnings {
                 println!("  - {w}");
             }
-            let count = warnings.len();
+            let count = result.warnings.len();
             println!("{count} type warning(s) found.");
-            if self.strict {
+            if strict {
                 bail!("{count} type warning(s) found (--strict mode)");
             }
         }

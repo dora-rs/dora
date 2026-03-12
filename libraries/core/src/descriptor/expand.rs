@@ -134,6 +134,8 @@ pub fn expand_modules_with_boundaries(
             deploy: descriptor.deploy.clone(),
             debug: descriptor.debug.clone(),
             health_check_interval: descriptor.health_check_interval,
+            strict_types: descriptor.strict_types,
+            type_rules: descriptor.type_rules.clone(),
         },
         boundaries,
     })

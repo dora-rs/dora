@@ -10,6 +10,8 @@ pub use adora_message::{config, uhlc};
 #[cfg(feature = "build")]
 pub mod build;
 pub mod descriptor;
+#[cfg(feature = "type-inference")]
+pub mod inference;
 pub mod metadata;
 pub mod topics;
 pub mod types;
