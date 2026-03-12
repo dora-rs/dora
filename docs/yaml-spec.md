@@ -96,13 +96,21 @@ inputs:
   sensor_data:
     source: sensor/frames
     queue_size: 10
+    queue_policy: drop_oldest
     input_timeout: 5.0
+
+  # Lossless input (blocks sender when full)
+  commands:
+    source: controller/cmd
+    queue_size: 100
+    queue_policy: backpressure
 ```
 
 | Input option | Type | Default | Description |
 |-------------|------|---------|-------------|
 | `source` | string | **required** | `<node-id>/<output-id>` or timer path |
-| `queue_size` | integer | `10` | Input buffer size. When full, the **oldest message is dropped** to make room for the newest |
+| `queue_size` | integer | `10` | Input buffer size |
+| `queue_policy` | string | `drop_oldest` | `drop_oldest`: drops oldest message when full. `backpressure`: buffers up to 10x `queue_size` without dropping (drops with ERROR log at hard cap) |
 | `input_timeout` | float | -- | Circuit breaker timeout in seconds. If no message arrives within this period, the daemon closes the input and the node receives an `InputClosed` event for graceful degradation |
 
 #### Built-in Timers

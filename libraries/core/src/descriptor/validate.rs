@@ -1135,6 +1135,7 @@ mod tests {
             },
             queue_size: None,
             input_timeout: None,
+            queue_policy: None,
         }
     }
 

@@ -1,6 +1,10 @@
 use std::collections::{HashMap, VecDeque};
 
-use adora_message::{daemon_to_node::NodeEvent, id::DataId};
+use adora_message::{
+    config::{DEFAULT_QUEUE_SIZE, QueuePolicy},
+    daemon_to_node::NodeEvent,
+    id::DataId,
+};
 
 use super::thread::EventItem;
 pub(crate) const NON_INPUT_EVENT: &str = "adora.non_input_event";
@@ -82,10 +86,17 @@ pub struct Scheduler {
     last_used: VecDeque<DataId>,
     /// Tracks events per ID
     event_queues: HashMap<DataId, (usize, VecDeque<EventItem>)>,
+    /// Queue policies per input ID
+    queue_policies: HashMap<DataId, QueuePolicy>,
+    /// Drop counters per input ID
+    dropped: HashMap<DataId, u64>,
 }
 
 impl Scheduler {
-    pub(crate) fn new(event_queues: HashMap<DataId, (usize, VecDeque<EventItem>)>) -> Self {
+    pub(crate) fn with_policies(
+        event_queues: HashMap<DataId, (usize, VecDeque<EventItem>)>,
+        queue_policies: HashMap<DataId, QueuePolicy>,
+    ) -> Self {
         let topic = VecDeque::from_iter(
             event_queues
                 .keys()
@@ -95,7 +106,14 @@ impl Scheduler {
         Self {
             last_used: topic,
             event_queues,
+            queue_policies,
+            dropped: HashMap::new(),
         }
+    }
+
+    /// Returns and resets the accumulated drop counts per input ID.
+    pub fn drain_drop_counts(&mut self) -> HashMap<DataId, u64> {
+        std::mem::take(&mut self.dropped)
     }
 
     pub(crate) fn add_event(&mut self, event: EventItem) {
@@ -131,13 +149,30 @@ impl Scheduler {
             .event_queues
             .entry(event_id.clone())
             .or_insert_with(|| {
+                tracing::warn!(
+                    "no queue config for input `{event_id}`, using default size {DEFAULT_QUEUE_SIZE}"
+                );
                 self.last_used.push_back(event_id.clone());
-                (1, Default::default())
+                (DEFAULT_QUEUE_SIZE, Default::default())
             });
 
-        // Remove the oldest event if at limit
-        if &queue.len() >= size {
-            tracing::debug!("Discarding event for input `{event_id}` due to queue size limit");
+        let policy = self
+            .queue_policies
+            .get(event_id)
+            .copied()
+            .unwrap_or_default();
+
+        let cap = policy.effective_cap(*size);
+        if queue.len() >= cap {
+            if policy == QueuePolicy::Backpressure {
+                tracing::error!(
+                    "Backpressure input `{event_id}` hit hard cap ({cap}), \
+                     dropping oldest to prevent OOM"
+                );
+            } else {
+                tracing::warn!("Discarding event for input `{event_id}` due to queue size limit");
+            }
+            *self.dropped.entry(event_id.clone()).or_insert(0) += 1;
             queue.pop_front();
         }
         queue.push_back(event);
@@ -217,7 +252,7 @@ mod tests {
             DataId::from(NON_INPUT_EVENT.to_string()),
             (10, VecDeque::new()),
         );
-        (Scheduler::new(queues), id)
+        (Scheduler::with_policies(queues, HashMap::new()), id)
     }
 
     #[test]
@@ -275,5 +310,57 @@ mod tests {
 
         // The flush message should survive (queue was cleared to 0, then inserted)
         assert_eq!(sched.event_queues[&id].1.len(), 1);
+    }
+
+    #[test]
+    fn drop_oldest_tracks_drop_count() {
+        let (mut sched, id) = make_scheduler(2);
+
+        // Fill to capacity
+        sched.add_event(make_input("audio", MetadataParameters::new()));
+        sched.add_event(make_input("audio", MetadataParameters::new()));
+        assert_eq!(sched.event_queues[&id].1.len(), 2);
+
+        // Overflow by 3 more
+        sched.add_event(make_input("audio", MetadataParameters::new()));
+        sched.add_event(make_input("audio", MetadataParameters::new()));
+        sched.add_event(make_input("audio", MetadataParameters::new()));
+
+        // Queue stays at capacity
+        assert_eq!(sched.event_queues[&id].1.len(), 2);
+
+        // 3 drops counted
+        let counts = sched.drain_drop_counts();
+        assert_eq!(counts.get(&id), Some(&3));
+
+        // After drain, counts reset
+        let counts = sched.drain_drop_counts();
+        assert!(counts.is_empty());
+    }
+
+    #[test]
+    fn backpressure_policy_prevents_drops() {
+        let id = DataId::from("commands".to_string());
+        let mut queues = HashMap::new();
+        queues.insert(id.clone(), (2, VecDeque::new()));
+        queues.insert(
+            DataId::from(NON_INPUT_EVENT.to_string()),
+            (10, VecDeque::new()),
+        );
+        let policies = HashMap::from([(id.clone(), QueuePolicy::Backpressure)]);
+        let mut sched = Scheduler::with_policies(queues, policies);
+
+        // Fill past capacity — backpressure should let queue grow
+        sched.add_event(make_input("commands", MetadataParameters::new()));
+        sched.add_event(make_input("commands", MetadataParameters::new()));
+        sched.add_event(make_input("commands", MetadataParameters::new()));
+        sched.add_event(make_input("commands", MetadataParameters::new()));
+
+        // Queue grew beyond configured size (no drops)
+        assert_eq!(sched.event_queues[&id].1.len(), 4);
+
+        // Zero drops
+        let counts = sched.drain_drop_counts();
+        assert!(counts.is_empty());
     }
 }

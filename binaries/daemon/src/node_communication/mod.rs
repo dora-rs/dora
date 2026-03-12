@@ -1,6 +1,6 @@
 use crate::{DaemonNodeEvent, Event};
 use adora_core::{
-    config::{DataId, LocalCommunicationConfig, NodeId},
+    config::{LocalCommunicationConfig, NodeId},
     topics::LOCALHOST,
     uhlc,
 };
@@ -14,7 +14,7 @@ use eyre::{Context, eyre};
 use futures::{Future, future, task};
 use shared_memory_server::{ShmemConf, ShmemServer};
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::VecDeque,
     mem,
     sync::{
         Arc,
@@ -50,7 +50,6 @@ pub async fn spawn_listener_loop(
     node_id: &NodeId,
     daemon_tx: &mpsc::Sender<Timestamped<Event>>,
     config: LocalCommunicationConfig,
-    queue_sizes: BTreeMap<DataId, usize>,
     clock: Arc<uhlc::HLC>,
     last_activity: Arc<AtomicU64>,
 ) -> eyre::Result<DaemonCommunication> {
@@ -71,7 +70,7 @@ pub async fn spawn_listener_loop(
             let event_loop_node_id = format!("{dataflow_id}/{node_id}");
             let daemon_tx = daemon_tx.clone();
             tokio::spawn(async move {
-                tcp::listener_loop(socket, daemon_tx, queue_sizes, clock, last_activity).await;
+                tcp::listener_loop(socket, daemon_tx, clock, last_activity).await;
                 tracing::debug!("event listener loop finished for `{event_loop_node_id}`");
             });
 
@@ -129,13 +128,11 @@ pub async fn spawn_listener_loop(
                 let server = unsafe { ShmemServer::new(daemon_control_region) }
                     .wrap_err("failed to create control server")?;
                 let daemon_tx = daemon_tx.clone();
-                let queue_sizes = queue_sizes.clone();
                 let clock = clock.clone();
                 let last_activity = last_activity.clone();
                 tokio::spawn(shmem::listener_loop(
                     server,
                     daemon_tx,
-                    queue_sizes,
                     clock,
                     last_activity,
                 ));
@@ -146,12 +143,10 @@ pub async fn spawn_listener_loop(
                     .wrap_err("failed to create events server")?;
                 let event_loop_node_id = format!("{dataflow_id}/{node_id}");
                 let daemon_tx = daemon_tx.clone();
-                let queue_sizes = queue_sizes.clone();
                 let clock = clock.clone();
                 let last_activity = last_activity.clone();
                 tokio::task::spawn(async move {
-                    shmem::listener_loop(server, daemon_tx, queue_sizes, clock, last_activity)
-                        .await;
+                    shmem::listener_loop(server, daemon_tx, clock, last_activity).await;
                     tracing::debug!("event listener loop finished for `{event_loop_node_id}`");
                 });
             }
@@ -161,12 +156,10 @@ pub async fn spawn_listener_loop(
                     .wrap_err("failed to create drop server")?;
                 let drop_loop_node_id = format!("{dataflow_id}/{node_id}");
                 let daemon_tx = daemon_tx.clone();
-                let queue_sizes = queue_sizes.clone();
                 let clock = clock.clone();
                 let last_activity = last_activity.clone();
                 tokio::task::spawn(async move {
-                    shmem::listener_loop(server, daemon_tx, queue_sizes, clock, last_activity)
-                        .await;
+                    shmem::listener_loop(server, daemon_tx, clock, last_activity).await;
                     tracing::debug!("drop listener loop finished for `{drop_loop_node_id}`");
                 });
             }
@@ -178,8 +171,7 @@ pub async fn spawn_listener_loop(
                 let daemon_tx = daemon_tx.clone();
                 let clock = clock.clone();
                 tokio::task::spawn(async move {
-                    shmem::listener_loop(server, daemon_tx, queue_sizes, clock, last_activity)
-                        .await;
+                    shmem::listener_loop(server, daemon_tx, clock, last_activity).await;
                     tracing::debug!(
                         "events close listener loop finished for `{drop_loop_node_id}`"
                     );
@@ -223,8 +215,7 @@ pub async fn spawn_listener_loop(
             let event_loop_node_id = format!("{dataflow_id}/{node_id}");
             let daemon_tx = daemon_tx.clone();
             tokio::spawn(async move {
-                unix_domain::listener_loop(socket, daemon_tx, queue_sizes, clock, last_activity)
-                    .await;
+                unix_domain::listener_loop(socket, daemon_tx, clock, last_activity).await;
                 tracing::debug!("event listener loop finished for `{event_loop_node_id}`");
             });
 

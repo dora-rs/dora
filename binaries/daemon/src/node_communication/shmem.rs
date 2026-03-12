@@ -1,11 +1,8 @@
-use std::{
-    collections::BTreeMap,
-    sync::{Arc, atomic::AtomicU64},
-};
+use std::sync::{Arc, atomic::AtomicU64};
 
 use super::{Connection, Listener};
 use crate::Event;
-use adora_core::{config::DataId, uhlc::HLC};
+use adora_core::uhlc::HLC;
 use adora_message::{
     common::Timestamped, daemon_to_node::DaemonReply, node_to_daemon::DaemonRequest,
 };
@@ -17,7 +14,6 @@ use tokio::sync::{mpsc, oneshot};
 pub async fn listener_loop(
     mut server: ShmemServer<Timestamped<DaemonRequest>, DaemonReply>,
     daemon_tx: mpsc::Sender<Timestamped<Event>>,
-    queue_sizes: BTreeMap<DataId, usize>,
     clock: Arc<HLC>,
     last_activity: Arc<AtomicU64>,
 ) {

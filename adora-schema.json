@@ -176,7 +176,7 @@
       "additionalProperties": false
     },
     "Input": {
-      "description": "An input subscription. Either a short-form string (`node-id/output-id` or `adora/timer/millis/N`) or an object with `source`, `queue_size`, and `input_timeout`.",
+      "description": "An input subscription. Either a short-form string (`node-id/output-id` or `adora/timer/millis/N`) or an object with `source`, `queue_size`, `queue_policy`, and `input_timeout`.",
       "anyOf": [
         {
           "type": "string",
@@ -190,9 +190,14 @@
               "type": "string"
             },
             "queue_size": {
-              "description": "Input buffer size. When full, the oldest message is dropped. Default: 10.",
+              "description": "Input buffer size. Default: 10.",
               "type": "integer",
               "minimum": 0
+            },
+            "queue_policy": {
+              "description": "Queue overflow policy. 'drop_oldest' (default) drops the oldest message when full. 'backpressure' buffers up to 10x queue_size without dropping (drops with ERROR log at hard cap).",
+              "type": "string",
+              "enum": ["drop_oldest", "backpressure"]
             },
             "input_timeout": {
               "description": "Circuit breaker timeout in seconds. If no message arrives within this period, the daemon closes the input and the node receives an InputClosed event for graceful degradation.",

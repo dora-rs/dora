@@ -621,7 +621,7 @@ Declare an output on this node and return an `Output` reference for use as an in
 output = sender.add_output("data")
 ```
 
-#### `add_input(input_id, source, queue_size=None) -> Node`
+#### `add_input(input_id, source, queue_size=None, queue_policy=None) -> Node`
 
 Subscribe this node to an output from another node.
 
@@ -635,12 +635,16 @@ receiver.add_input("tick", "adora/timer/millis/100")
 
 # With a custom queue size
 receiver.add_input("images", camera_output, queue_size=2)
+
+# Lossless input (blocks sender when full)
+receiver.add_input("commands", cmd_output, queue_size=100, queue_policy="backpressure")
 ```
 
 **Parameters:**
 - `input_id` (str) -- Name of the input on this node.
 - `source` (str | Output) -- Either a string (`"node_id/output_id"`) or an `Output` object.
 - `queue_size` (int, optional) -- Maximum number of buffered messages for this input.
+- `queue_policy` (str, optional) -- `"drop_oldest"` (default) or `"backpressure"` (buffers up to 10x `queue_size` before dropping).
 
 #### `to_dict() -> dict`
 
