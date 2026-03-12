@@ -668,22 +668,83 @@ impl std::fmt::Display for TypeWarning {
     }
 }
 
-/// Check type annotations in a dataflow. Returns warnings (never errors).
+/// A type inferred from an upstream annotated output (Phase 3).
+#[derive(Debug)]
+pub struct TypeInference {
+    /// Node that received the inferred type.
+    pub node_id: String,
+    /// Port that received the inferred type.
+    pub port_id: String,
+    /// The inferred type URN.
+    pub inferred_urn: String,
+    /// Source of the inference (e.g. "sensor/reading").
+    pub source: String,
+}
+
+impl std::fmt::Display for TypeInference {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "inferred {} on {}/{} (from {})",
+            self.inferred_urn, self.node_id, self.port_id, self.source
+        )
+    }
+}
+
+/// Result of type checking a dataflow.
+pub struct TypeCheckResult {
+    /// Type warnings found.
+    pub warnings: Vec<TypeWarning>,
+    /// Types inferred from upstream annotations (Phase 3).
+    pub inferences: Vec<TypeInference>,
+}
+
+/// Timer node URN prefix.
+const TIMER_PREFIX: &str = "adora/timer/";
+/// Timer nodes auto-inject this type.
+const TIMER_TYPE: &str = "std/core/v1/UInt64";
+
+/// Check type annotations in a dataflow.
 ///
 /// Checks:
 /// 1. `output_types` keys exist in `outputs`
 /// 2. `input_types` keys exist in `inputs`
 /// 3. All type URNs resolve in the registry
-/// 4. Connected edges have matching types (when both sides are annotated)
+/// 4. Connected edges have compatible types (using compatibility graph)
+/// 5. Type inference across edges (Phase 3)
+/// 6. Metadata annotation validation (Phase 5)
+/// 7. Arrow schema validation (Phase 6)
+/// 8. Strict mode: warn on unannotated ports connected to annotated ports
 pub fn check_type_annotations(
     dataflow: &super::Descriptor,
     registry: &crate::types::TypeRegistry,
 ) -> Vec<TypeWarning> {
+    check_type_annotations_full(dataflow, registry, false).warnings
+}
+
+/// Full type checking with strict mode support. Returns warnings + inferences.
+pub fn check_type_annotations_full(
+    dataflow: &super::Descriptor,
+    registry: &crate::types::TypeRegistry,
+    strict: bool,
+) -> TypeCheckResult {
+    use crate::types::{CompatibilityGraph, TypeRule};
+
     let mut warnings = Vec::new();
+    let mut inferences = Vec::new();
+
+    // Build compatibility graph from user rules
+    let user_rules: Vec<TypeRule> = dataflow
+        .type_rules
+        .iter()
+        .map(|r| TypeRule {
+            from: r.from.clone(),
+            to: r.to.clone(),
+        })
+        .collect();
+    let compat = CompatibilityGraph::new(&user_rules);
 
     // Map of (source_node_id, output_ref) -> type_urn for cross-edge checking.
-    // For custom nodes: ("node_id", "output_id")
-    // For operators: ("node_id", "op_id/output_id") — matches InputMapping::User format
     let mut output_type_map: BTreeMap<(String, String), String> = BTreeMap::new();
 
     for node in &dataflow.nodes {
@@ -698,7 +759,7 @@ pub fn check_type_annotations(
             registry,
             &mut warnings,
         );
-        // Register node outputs for cross-edge checking (only known URNs)
+        // Register node outputs for cross-edge checking
         for (output_id, urn) in &node.output_types {
             if registry.resolve(urn).is_some() {
                 output_type_map.insert((nid.clone(), output_id.to_string()), urn.clone());
@@ -712,6 +773,15 @@ pub fn check_type_annotations(
             |id| node.inputs.contains_key(id),
             "input",
             registry,
+            &mut warnings,
+        );
+
+        // Check metadata annotations (Phase 5)
+        check_metadata_annotations(
+            &nid,
+            &node.output_metadata,
+            &node.pattern,
+            &node.outputs,
             &mut warnings,
         );
 
@@ -730,7 +800,6 @@ pub fn check_type_annotations(
                 registry,
                 &mut warnings,
             );
-            // Operator outputs are referenced as "op_id/output_id" from the node
             for (output_id, urn) in &op.config.output_types {
                 if registry.resolve(urn).is_some() {
                     output_type_map
@@ -743,6 +812,13 @@ pub fn check_type_annotations(
                 |id| op.config.inputs.contains_key(id),
                 "input",
                 registry,
+                &mut warnings,
+            );
+            check_metadata_annotations(
+                &nid,
+                &op.config.output_metadata,
+                &op.config.pattern,
+                &op.config.outputs,
                 &mut warnings,
             );
         }
@@ -771,45 +847,92 @@ pub fn check_type_annotations(
                     registry,
                     &mut warnings,
                 );
-            }
-        }
-    }
-
-    // Cross-edge type mismatch check (nodes + operators)
-    for node in &dataflow.nodes {
-        let nid = node.id.to_string();
-        check_edge_mismatches(
-            &nid,
-            &node.input_types,
-            &node.inputs,
-            &output_type_map,
-            &mut warnings,
-        );
-
-        if let Some(op) = &node.operator {
-            check_edge_mismatches(
-                &nid,
-                &op.config.input_types,
-                &op.config.inputs,
-                &output_type_map,
-                &mut warnings,
-            );
-        }
-        if let Some(runtime) = &node.operators {
-            for op in &runtime.operators {
-                let label = format!("{nid}/{}", op.id);
-                check_edge_mismatches(
+                check_metadata_annotations(
                     &label,
-                    &op.config.input_types,
-                    &op.config.inputs,
-                    &output_type_map,
+                    &op.config.output_metadata,
+                    &op.config.pattern,
+                    &op.config.outputs,
                     &mut warnings,
                 );
             }
         }
     }
 
-    warnings
+    // Cross-edge type checking + inference (Phase 3 + 4)
+    // Also check timer inputs against input_types annotations.
+    for node in &dataflow.nodes {
+        let nid = node.id.to_string();
+        let timer_types = timer_input_types(&node.inputs);
+        check_edge_mismatches_with_compat(
+            &nid,
+            &node.input_types,
+            &node.inputs,
+            &output_type_map,
+            &timer_types,
+            &compat,
+            registry,
+            strict,
+            &mut warnings,
+            &mut inferences,
+        );
+
+        if let Some(op) = &node.operator {
+            let op_timer = timer_input_types(&op.config.inputs);
+            check_edge_mismatches_with_compat(
+                &nid,
+                &op.config.input_types,
+                &op.config.inputs,
+                &output_type_map,
+                &op_timer,
+                &compat,
+                registry,
+                strict,
+                &mut warnings,
+                &mut inferences,
+            );
+        }
+        if let Some(runtime) = &node.operators {
+            for op in &runtime.operators {
+                let label = format!("{nid}/{}", op.id);
+                let op_timer = timer_input_types(&op.config.inputs);
+                check_edge_mismatches_with_compat(
+                    &label,
+                    &op.config.input_types,
+                    &op.config.inputs,
+                    &output_type_map,
+                    &op_timer,
+                    &compat,
+                    registry,
+                    strict,
+                    &mut warnings,
+                    &mut inferences,
+                );
+            }
+        }
+    }
+
+    TypeCheckResult {
+        warnings,
+        inferences,
+    }
+}
+
+/// Build a map of (input_id -> timer_type) for Timer-mapped inputs.
+fn timer_input_types(inputs: &BTreeMap<DataId, Input>) -> BTreeMap<DataId, String> {
+    // Quick check: skip allocation if no timer inputs
+    if !inputs
+        .values()
+        .any(|i| matches!(i.mapping, InputMapping::Timer { .. }))
+    {
+        return BTreeMap::new();
+    }
+    let mut result = BTreeMap::new();
+    for (input_id, input) in inputs {
+        if matches!(input.mapping, InputMapping::Timer { .. }) {
+            result.insert(input_id.clone(), TIMER_TYPE.to_string());
+        }
+    }
+    result
 }
 
 /// Validate that port type keys exist in the port list and URNs resolve.
@@ -843,33 +966,137 @@ fn check_port_types(
     }
 }
 
-/// Check cross-edge type mismatches for a set of inputs.
-fn check_edge_mismatches(
+/// Check metadata annotations on outputs (Phase 5).
+fn check_metadata_annotations(
+    node_id: &str,
+    output_metadata: &BTreeMap<DataId, Vec<String>>,
+    pattern: &Option<String>,
+    outputs: &BTreeSet<DataId>,
+    warnings: &mut Vec<TypeWarning>,
+) {
+    // Check explicit output_metadata keys exist in outputs
+    for (output_id, _) in output_metadata {
+        if !outputs.contains(output_id) {
+            warnings.push(TypeWarning {
+                node_id: node_id.to_string(),
+                message: format!("output_metadata key \"{output_id}\" not found in outputs list"),
+            });
+        }
+    }
+
+    // Validate pattern shorthand
+    if let Some(pat) = pattern {
+        if crate::types::pattern_metadata_keys(pat).is_none() {
+            warnings.push(TypeWarning {
+                node_id: node_id.to_string(),
+                message: format!(
+                    "unknown pattern \"{pat}\", expected one of: \
+                     service-server, service-client, action-server, action-client"
+                ),
+            });
+        }
+    }
+}
+
+/// Check cross-edge type mismatches using compatibility graph.
+///
+/// Also performs type inference (Phase 3) and strict-mode unannotated checks.
+/// `timer_types` maps input IDs to auto-injected timer type URNs.
+fn check_edge_mismatches_with_compat(
     node_id: &str,
     input_types: &BTreeMap<DataId, String>,
     inputs: &BTreeMap<DataId, Input>,
     output_type_map: &BTreeMap<(String, String), String>,
+    timer_types: &BTreeMap<DataId, String>,
+    compat: &crate::types::CompatibilityGraph,
+    registry: &crate::types::TypeRegistry,
+    strict: bool,
     warnings: &mut Vec<TypeWarning>,
+    inferences: &mut Vec<TypeInference>,
 ) {
-    for (input_id, input_urn) in input_types {
-        if let Some(input) = inputs.get(input_id) {
-            if let InputMapping::User(ref mapping) = input.mapping {
+    for (input_id, input) in inputs {
+        match &input.mapping {
+            InputMapping::User(mapping) => {
                 let key = (mapping.source.to_string(), mapping.output.to_string());
-                if let Some(output_urn) = output_type_map.get(&key) {
-                    if output_urn != input_urn {
+                let upstream_urn = output_type_map.get(&key);
+                let downstream_urn = input_types.get(input_id);
+
+                match (upstream_urn, downstream_urn) {
+                    (Some(out_urn), Some(in_urn)) => {
+                        if !compat.is_compatible(out_urn, in_urn) {
+                            let schema_detail = check_schema_compat(out_urn, in_urn, registry);
+                            let detail =
+                                schema_detail.map(|d| format!(" ({d})")).unwrap_or_default();
+                            warnings.push(TypeWarning {
+                                node_id: node_id.to_string(),
+                                message: format!(
+                                    "type mismatch on input \"{input_id}\": \
+                                     upstream {}/{} declares \"{out_urn}\", \
+                                     but expected \"{in_urn}\"{detail}",
+                                    mapping.source, mapping.output,
+                                ),
+                            });
+                        }
+                    }
+                    (Some(out_urn), None) => {
+                        inferences.push(TypeInference {
+                            node_id: node_id.to_string(),
+                            port_id: input_id.to_string(),
+                            inferred_urn: out_urn.clone(),
+                            source: format!("{}/{}", mapping.source, mapping.output),
+                        });
+                    }
+                    (None, Some(in_urn)) if strict => {
+                        warnings.push(TypeWarning {
+                            node_id: node_id.to_string(),
+                            message: format!(
+                                "input \"{input_id}\" expects type \"{in_urn}\" but upstream \
+                                 {}/{} has no type annotation",
+                                mapping.source, mapping.output,
+                            ),
+                        });
+                    }
+                    _ => {}
+                }
+            }
+            InputMapping::Timer { .. } => {
+                // Timer inputs auto-inject std/core/v1/UInt64
+                if let Some(expected_urn) = input_types.get(input_id) {
+                    let timer_urn = timer_types
+                        .get(input_id)
+                        .map(|s| s.as_str())
+                        .unwrap_or(TIMER_TYPE);
+                    if !compat.is_compatible(timer_urn, expected_urn) {
                         warnings.push(TypeWarning {
                             node_id: node_id.to_string(),
                             message: format!(
                                 "type mismatch on input \"{input_id}\": \
-                                 upstream {}/{} declares \"{output_urn}\", \
-                                 but expected \"{input_urn}\"",
-                                mapping.source, mapping.output,
+                                 timer provides \"{timer_urn}\", \
+                                 but expected \"{expected_urn}\"",
                             ),
                         });
                     }
                 }
             }
         }
+    }
+}
+
+/// Check schema-level compatibility for struct types (Phase 6).
+/// Returns an optional detail string for the error message.
+fn check_schema_compat(
+    out_urn: &str,
+    in_urn: &str,
+    registry: &crate::types::TypeRegistry,
+) -> Option<String> {
+    let out_def = registry.resolve(out_urn)?;
+    let in_def = registry.resolve(in_urn)?;
+    let out_schema = out_def.to_arrow_schema()?;
+    let in_schema = in_def.to_arrow_schema()?;
+    // in_schema = expected (consumer), out_schema = actual (producer)
+    match crate::types::schema_compatible(&in_schema, &out_schema) {
+        Ok(()) => None,
+        Err(e) => Some(e.to_string()),
     }
 }
 
@@ -1325,7 +1552,7 @@ nodes:
     outputs:
       - data
     output_types:
-      data: std/core/v1/Bytes
+      data: std/core/v1/Float32
   - id: receiver
     inputs:
       data: sender/data
@@ -1337,8 +1564,272 @@ nodes:
         let warnings = check_type_annotations(&dataflow, &reg);
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].message.contains("type mismatch"));
-        assert!(warnings[0].message.contains("Bytes"));
+        assert!(warnings[0].message.contains("Float32"));
         assert!(warnings[0].message.contains("Image"));
+    }
+
+    // --- Phase 1: strict mode tests ---
+
+    #[test]
+    fn strict_types_parses_in_yaml() {
+        let dataflow = parse_dataflow("nodes:\n  - id: a\nstrict_types: true\n");
+        assert_eq!(dataflow.strict_types, Some(true));
+    }
+
+    #[test]
+    fn strict_mode_warns_on_unannotated_upstream() {
+        let dataflow = parse_dataflow(
+            "\
+nodes:
+  - id: sender
+    outputs:
+      - data
+  - id: receiver
+    inputs:
+      data: sender/data
+    input_types:
+      data: std/core/v1/Float32
+",
+        );
+        let reg = TypeRegistry::new();
+        let result = check_type_annotations_full(&dataflow, &reg, true);
+        assert!(!result.warnings.is_empty());
+        assert!(result.warnings[0].message.contains("no type annotation"));
+    }
+
+    #[test]
+    fn non_strict_no_warning_on_unannotated_upstream() {
+        let dataflow = parse_dataflow(
+            "\
+nodes:
+  - id: sender
+    outputs:
+      - data
+  - id: receiver
+    inputs:
+      data: sender/data
+    input_types:
+      data: std/core/v1/Float32
+",
+        );
+        let reg = TypeRegistry::new();
+        let result = check_type_annotations_full(&dataflow, &reg, false);
+        assert!(result.warnings.is_empty());
+    }
+
+    // --- Phase 3: type inference tests ---
+
+    #[test]
+    fn inference_from_annotated_upstream() {
+        let dataflow = parse_dataflow(
+            "\
+nodes:
+  - id: sensor
+    outputs:
+      - reading
+    output_types:
+      reading: std/core/v1/Float64
+  - id: processor
+    inputs:
+      reading: sensor/reading
+",
+        );
+        let reg = TypeRegistry::new();
+        let result = check_type_annotations_full(&dataflow, &reg, false);
+        assert!(result.warnings.is_empty());
+        assert_eq!(result.inferences.len(), 1);
+        assert_eq!(result.inferences[0].inferred_urn, "std/core/v1/Float64");
+        assert_eq!(result.inferences[0].port_id, "reading");
+    }
+
+    #[test]
+    fn no_inference_when_both_annotated() {
+        let dataflow = parse_dataflow(
+            "\
+nodes:
+  - id: sender
+    outputs:
+      - data
+    output_types:
+      data: std/core/v1/Float32
+  - id: receiver
+    inputs:
+      data: sender/data
+    input_types:
+      data: std/core/v1/Float32
+",
+        );
+        let reg = TypeRegistry::new();
+        let result = check_type_annotations_full(&dataflow, &reg, false);
+        assert!(result.inferences.is_empty());
+    }
+
+    #[test]
+    fn no_inference_when_neither_annotated() {
+        let dataflow = parse_dataflow(
+            "\
+nodes:
+  - id: sender
+    outputs:
+      - data
+  - id: receiver
+    inputs:
+      data: sender/data
+",
+        );
+        let reg = TypeRegistry::new();
+        let result = check_type_annotations_full(&dataflow, &reg, false);
+        assert!(result.inferences.is_empty());
+    }
+
+    // --- Phase 4: compatibility tests ---
+
+    #[test]
+    fn compat_uint8_to_uint32_edge() {
+        let dataflow = parse_dataflow(
+            "\
+nodes:
+  - id: sender
+    outputs:
+      - data
+    output_types:
+      data: std/core/v1/UInt8
+  - id: receiver
+    inputs:
+      data: sender/data
+    input_types:
+      data: std/core/v1/UInt32
+",
+        );
+        let reg = TypeRegistry::new();
+        let warnings = check_type_annotations(&dataflow, &reg);
+        assert!(warnings.is_empty(), "UInt8 -> UInt32 should be compatible");
+    }
+
+    #[test]
+    fn compat_any_to_bytes_edge() {
+        let dataflow = parse_dataflow(
+            "\
+nodes:
+  - id: sender
+    outputs:
+      - data
+    output_types:
+      data: std/media/v1/Image
+  - id: receiver
+    inputs:
+      data: sender/data
+    input_types:
+      data: std/core/v1/Bytes
+",
+        );
+        let reg = TypeRegistry::new();
+        let warnings = check_type_annotations(&dataflow, &reg);
+        assert!(
+            warnings.is_empty(),
+            "anything -> Bytes should be compatible"
+        );
+    }
+
+    #[test]
+    fn compat_user_defined_rule_in_yaml() {
+        let dataflow = parse_dataflow(
+            "\
+type_rules:
+  - from: std/core/v1/UInt8
+    to: std/core/v1/String
+nodes:
+  - id: sender
+    outputs:
+      - data
+    output_types:
+      data: std/core/v1/UInt8
+  - id: receiver
+    inputs:
+      data: sender/data
+    input_types:
+      data: std/core/v1/String
+",
+        );
+        let reg = TypeRegistry::new();
+        let warnings = check_type_annotations(&dataflow, &reg);
+        assert!(
+            warnings.is_empty(),
+            "user-defined rule should make this compatible"
+        );
+    }
+
+    // --- Phase 5: metadata tests ---
+
+    #[test]
+    fn metadata_pattern_resolves() {
+        let dataflow = parse_dataflow(
+            "\
+nodes:
+  - id: srv
+    pattern: service-server
+    outputs:
+      - response
+",
+        );
+        let reg = TypeRegistry::new();
+        let warnings = check_type_annotations(&dataflow, &reg);
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn metadata_unknown_pattern() {
+        let dataflow = parse_dataflow(
+            "\
+nodes:
+  - id: srv
+    pattern: unknown-pattern
+    outputs:
+      - response
+",
+        );
+        let reg = TypeRegistry::new();
+        let warnings = check_type_annotations(&dataflow, &reg);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].message.contains("unknown pattern"));
+    }
+
+    #[test]
+    fn metadata_output_key_not_in_outputs() {
+        let dataflow = parse_dataflow(
+            "\
+nodes:
+  - id: srv
+    output_metadata:
+      missing_port: [request_id]
+    outputs:
+      - response
+",
+        );
+        let reg = TypeRegistry::new();
+        let warnings = check_type_annotations(&dataflow, &reg);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].message.contains("output_metadata key"));
+    }
+
+    // --- Timer auto-inject test ---
+
+    #[test]
+    fn timer_input_type_mismatch() {
+        let dataflow = parse_dataflow(
+            "\
+nodes:
+  - id: node
+    inputs:
+      tick: adora/timer/millis/100
+    input_types:
+      tick: std/media/v1/Image
+",
+        );
+        let reg = TypeRegistry::new();
+        let warnings = check_type_annotations(&dataflow, &reg);
+        assert!(!warnings.is_empty());
+        assert!(warnings[0].message.contains("type mismatch"));
     }
 
     #[test]

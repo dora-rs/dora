@@ -323,7 +323,8 @@ nodes:
 
 ```bash
 adora validate dataflow.yml                        # static check (warnings)
-adora validate --strict dataflow.yml               # fail on warnings (CI)
+adora validate --strict-types dataflow.yml         # fail on warnings (CI)
+adora build dataflow.yml --strict-types            # type check during build
 ADORA_RUNTIME_TYPE_CHECK=warn adora run dataflow.yml  # runtime check
 ```
 

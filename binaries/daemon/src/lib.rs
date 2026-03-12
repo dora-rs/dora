@@ -91,6 +91,8 @@ pub mod bench_support {
             deploy: None,
             debug: adora_message::descriptor::Debug::default(),
             health_check_interval: None,
+            strict_types: None,
+            type_rules: vec![],
         };
         let mut df = RunningDataflow::new(Uuid::nil(), DaemonId::new(None), descriptor);
 
@@ -3467,6 +3469,8 @@ mod fault_tolerance_tests {
             deploy: None,
             debug: DescriptorDebug::default(),
             health_check_interval: None,
+            strict_types: None,
+            type_rules: vec![],
         };
         RunningDataflow::new(Uuid::nil(), DaemonId::new(None), descriptor)
     }

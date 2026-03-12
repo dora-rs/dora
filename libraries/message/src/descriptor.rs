@@ -96,6 +96,37 @@ pub struct Descriptor {
     /// faster but add more overhead.
     #[serde(default)]
     pub health_check_interval: Option<f64>,
+
+    /// Enable strict type checking: type warnings become errors during build.
+    ///
+    /// Can also be enabled via `--strict-types` CLI flag on `adora build`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strict_types: Option<bool>,
+
+    /// Custom type compatibility rules.
+    ///
+    /// Each rule declares that a source type can be implicitly converted to
+    /// a target type. These supplement the built-in widening rules.
+    ///
+    /// ## Example
+    ///
+    /// ```yaml
+    /// type_rules:
+    ///   - from: myproject/SensorV1
+    ///     to: myproject/SensorV2
+    /// ```
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub type_rules: Vec<TypeRuleDef>,
+}
+
+/// A type compatibility rule declared in the dataflow YAML.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TypeRuleDef {
+    /// Source type URN
+    pub from: String,
+    /// Target type URN
+    pub to: String,
 }
 
 /// Specifies when a node should be restarted.
@@ -408,6 +439,27 @@ pub struct Node {
     /// to check that upstream output types match expectations.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub input_types: BTreeMap<DataId, String>,
+
+    /// Required metadata keys per output.
+    ///
+    /// Maps output identifiers to lists of required metadata key names.
+    /// These are checked at build/validate time.
+    ///
+    /// ## Example
+    ///
+    /// ```yaml
+    /// output_metadata:
+    ///   response: [request_id]
+    /// ```
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub output_metadata: BTreeMap<DataId, Vec<String>>,
+
+    /// Communication pattern shorthand (e.g. `service-server`).
+    ///
+    /// Automatically implies required metadata keys on all outputs.
+    /// See `pattern_metadata_keys()` for supported patterns.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pattern: Option<String>,
 
     /// Redirect stdout/stderr to a data output.
     ///
@@ -784,6 +836,14 @@ pub struct OperatorConfig {
     /// Optional type annotations for inputs
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub input_types: BTreeMap<DataId, String>,
+
+    /// Required metadata keys per output
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub output_metadata: BTreeMap<DataId, Vec<String>>,
+
+    /// Communication pattern shorthand (e.g. `service-server`)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pattern: Option<String>,
 
     /// Operator source configuration (Python, shared library, etc.)
     #[serde(flatten)]

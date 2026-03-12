@@ -2,9 +2,25 @@ types:
   Vector3:
     arrow: Struct
     description: "3D vector with x, y, z Float64 fields"
+    fields:
+      - name: x
+        type: Float64
+      - name: "y"
+        type: Float64
+      - name: z
+        type: Float64
   Quaternion:
     arrow: Struct
     description: "Quaternion with x, y, z, w Float64 fields"
+    fields:
+      - name: x
+        type: Float64
+      - name: "y"
+        type: Float64
+      - name: z
+        type: Float64
+      - name: w
+        type: Float64
   Pose:
     arrow: Struct
     description: "6-DOF pose (position Vector3 + orientation Quaternion)"
