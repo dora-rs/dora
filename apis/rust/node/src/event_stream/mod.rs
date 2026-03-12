@@ -76,6 +76,9 @@ pub struct EventStream {
     /// When a daemon event arrives with `data: None` for one of these inputs,
     /// we skip it because the data will arrive via zenoh.
     zenoh_input_ids: Arc<std::collections::BTreeSet<DataId>>,
+    /// Dropping this sender disconnects the channel, causing zenoh subscriber
+    /// threads to exit via the async select on the shutdown receiver.
+    _zenoh_shutdown_tx: flume::Sender<()>,
 }
 
 impl EventStream {
@@ -251,6 +254,7 @@ impl EventStream {
 
         // Set up zenoh subscribers for user inputs
         let mut zenoh_input_ids = std::collections::BTreeSet::new();
+        let (zenoh_shutdown_tx, zenoh_shutdown_rx) = flume::bounded::<()>(0);
         if let Some(session) = zenoh_session {
             use zenoh::Wait;
 
@@ -276,16 +280,19 @@ impl EventStream {
                     let tx_clone = tx.clone();
                     let input_id_clone = input_id.clone();
                     let clock_clone = clock.clone();
+                    let shutdown_rx = zenoh_shutdown_rx.clone();
 
                     // Spawn a background thread to receive zenoh samples and feed them
-                    // into the event channel. Uses blocking recv() so no tokio runtime needed.
-                    std::thread::spawn({
-                        let input_id_for_panic = input_id_clone.clone();
-                        let tx_for_panic = tx_clone.clone();
-                        move || {
-                            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
-                                || {
-                                    while let Ok(sample) = subscriber.recv() {
+                    // into the event channel. Uses async select to wait on both the
+                    // subscriber and a shutdown signal, ensuring clean exit on drop.
+                    std::thread::spawn(move || {
+                        futures::executor::block_on(async {
+                            loop {
+                                let recv_fut = subscriber.recv_async();
+                                let shutdown_fut = shutdown_rx.recv_async();
+
+                                match select(pin!(recv_fut), pin!(shutdown_fut)).await {
+                                    Either::Left((Ok(sample), _)) => {
                                         let payload = sample.payload();
                                         let payload_len = payload.len();
 
@@ -352,20 +359,11 @@ impl EventStream {
                                             break;
                                         }
                                     }
-                                },
-                            ));
-
-                            if result.is_err() {
-                                tracing::error!(
-                                    "zenoh subscriber task for input {} panicked",
-                                    input_id_for_panic
-                                );
-                                let _ = tx_for_panic.send(EventItem::FatalError(eyre::eyre!(
-                                    "zenoh subscriber task for input {} panicked",
-                                    input_id_for_panic
-                                )));
+                                    // Subscriber closed or shutdown signal received
+                                    _ => break,
+                                }
                             }
-                        }
+                        });
                     });
                 }
             }
@@ -392,6 +390,7 @@ impl EventStream {
             write_events_to,
             use_scheduler,
             zenoh_input_ids,
+            _zenoh_shutdown_tx: zenoh_shutdown_tx,
         })
     }
 
