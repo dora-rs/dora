@@ -14,6 +14,27 @@ pub mod metadata;
 pub mod topics;
 pub mod types;
 
+/// Adjusts a shared library path by adding the platform-specific prefix and suffix.
+///
+/// Takes a base path (without platform-specific prefix and extension) and returns
+/// a path with the appropriate shared library naming conventions using
+/// [`DLL_PREFIX`](std::env::consts::DLL_PREFIX) and [`DLL_SUFFIX`](std::env::consts::DLL_SUFFIX).
+///
+/// # Errors
+///
+/// Returns an error if the path has no file name, contains invalid UTF-8,
+/// already starts with `lib`, or already has an extension.
+///
+/// # Example
+///
+/// ```
+/// use std::path::Path;
+/// use adora_core::adjust_shared_library_path;
+///
+/// let adjusted = adjust_shared_library_path(Path::new("mylib")).unwrap();
+/// let expected = format!("{}mylib{}", std::env::consts::DLL_PREFIX, std::env::consts::DLL_SUFFIX);
+/// assert_eq!(adjusted.file_name().unwrap().to_str().unwrap(), expected);
+/// ```
 pub fn adjust_shared_library_path(path: &Path) -> Result<std::path::PathBuf, eyre::ErrReport> {
     let file_name = path
         .file_name()
