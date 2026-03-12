@@ -99,18 +99,32 @@ impl Scheduler {
     }
 
     pub(crate) fn add_event(&mut self, event: EventItem) {
-        let event_id = match &event {
+        let (event_id, should_flush) = match &event {
             EventItem::NodeEvent {
-                event:
-                    NodeEvent::Input {
-                        id,
-                        metadata: _,
-                        data: _,
-                    },
-                ack_channel: _,
-            } => id,
-            _ => &DataId::from(NON_INPUT_EVENT.to_string()),
+                event: NodeEvent::Input { id, metadata, .. },
+                ..
+            } => {
+                let flush = adora_message::metadata::get_bool_param(
+                    &metadata.parameters,
+                    adora_message::metadata::FLUSH,
+                ) == Some(true);
+                (id, flush)
+            }
+            _ => (&DataId::from(NON_INPUT_EVENT.to_string()), false),
         };
+
+        // Flush older queued messages when flush=true is present
+        if should_flush {
+            if let Some((_size, queue)) = self.event_queues.get_mut(event_id) {
+                let drained = queue.len();
+                queue.clear();
+                if drained > 0 {
+                    tracing::debug!(
+                        "Flushed {drained} queued event(s) for input `{event_id}` (flush signal)"
+                    );
+                }
+            }
+        }
 
         // Enforce queue size limit
         let (size, queue) = self
@@ -159,5 +173,107 @@ impl Scheduler {
         self.event_queues
             .iter()
             .all(|(_id, (_size, queue))| queue.is_empty())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::uhlc;
+    use adora_message::{
+        daemon_to_node::NodeEvent,
+        metadata::{ArrowTypeInfo, FLUSH, Metadata, MetadataParameters, Parameter},
+    };
+    use arrow_schema::DataType;
+
+    fn make_input(id: &str, params: MetadataParameters) -> EventItem {
+        let type_info = ArrowTypeInfo {
+            data_type: DataType::Null,
+            len: 0,
+            null_count: 0,
+            validity: None,
+            offset: 0,
+            buffer_offsets: vec![],
+            child_data: vec![],
+        };
+        let ts = uhlc::HLC::default().new_timestamp();
+        let metadata = Metadata::from_parameters(ts, type_info, params);
+        let (tx, _rx) = flume::bounded(1);
+        EventItem::NodeEvent {
+            event: NodeEvent::Input {
+                id: DataId::from(id.to_string()),
+                metadata,
+                data: None,
+            },
+            ack_channel: tx,
+        }
+    }
+
+    fn make_scheduler(audio_capacity: usize) -> (Scheduler, DataId) {
+        let id = DataId::from("audio".to_string());
+        let mut queues = HashMap::new();
+        queues.insert(id.clone(), (audio_capacity, VecDeque::new()));
+        queues.insert(
+            DataId::from(NON_INPUT_EVENT.to_string()),
+            (10, VecDeque::new()),
+        );
+        (Scheduler::new(queues), id)
+    }
+
+    #[test]
+    fn flush_clears_older_queued_events() {
+        let (mut sched, id) = make_scheduler(10);
+
+        sched.add_event(make_input("audio", MetadataParameters::new()));
+        sched.add_event(make_input("audio", MetadataParameters::new()));
+        sched.add_event(make_input("audio", MetadataParameters::new()));
+        assert_eq!(sched.event_queues[&id].1.len(), 3);
+
+        // Flush should clear the 3 older events, then insert itself
+        let mut flush_params = MetadataParameters::new();
+        flush_params.insert(FLUSH.into(), Parameter::Bool(true));
+        sched.add_event(make_input("audio", flush_params));
+
+        assert_eq!(sched.event_queues[&id].1.len(), 1);
+    }
+
+    #[test]
+    fn non_flush_does_not_clear_queue() {
+        let (mut sched, id) = make_scheduler(10);
+
+        sched.add_event(make_input("audio", MetadataParameters::new()));
+        sched.add_event(make_input("audio", MetadataParameters::new()));
+        sched.add_event(make_input("audio", MetadataParameters::new()));
+        assert_eq!(sched.event_queues[&id].1.len(), 3);
+    }
+
+    #[test]
+    fn flush_false_does_not_clear_queue() {
+        let (mut sched, id) = make_scheduler(10);
+
+        sched.add_event(make_input("audio", MetadataParameters::new()));
+        sched.add_event(make_input("audio", MetadataParameters::new()));
+
+        let mut params = MetadataParameters::new();
+        params.insert(FLUSH.into(), Parameter::Bool(false));
+        sched.add_event(make_input("audio", params));
+
+        assert_eq!(sched.event_queues[&id].1.len(), 3);
+    }
+
+    #[test]
+    fn flush_with_queue_size_one_retains_flush_message() {
+        let (mut sched, id) = make_scheduler(1);
+
+        sched.add_event(make_input("audio", MetadataParameters::new()));
+        assert_eq!(sched.event_queues[&id].1.len(), 1);
+
+        // Flush clears the queue, then the flush message itself is inserted
+        let mut flush_params = MetadataParameters::new();
+        flush_params.insert(FLUSH.into(), Parameter::Bool(true));
+        sched.add_event(make_input("audio", flush_params));
+
+        // The flush message should survive (queue was cleared to 0, then inserted)
+        assert_eq!(sched.event_queues[&id].1.len(), 1);
     }
 }

@@ -227,6 +227,6 @@ Also available: `adora/timer/hz/30` for 30 Hz.
 ## Next Steps
 
 - [Python API Reference](api-python.md) -- full API docs for Node, Operator, DataflowBuilder, CUDA
-- [Communication Patterns](patterns.md) -- service (request/reply) and action (goal/feedback/result) patterns
+- [Communication Patterns](patterns.md) -- service (request/reply), action (goal/feedback/result), and streaming (session/segment/chunk) patterns
 - [Examples](../examples/) -- python-dataflow, python-async, python-drain, python-concurrent-rw, python-multiple-arrays
 - [Distributed Deployment](distributed-deployment.md) -- running across multiple machines with `adora up`

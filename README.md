@@ -57,7 +57,7 @@
 
 ### Ecosystem
 
-- **Communication patterns** -- built-in [service (request/reply)](docs/patterns.md#2-service-requestreply) and [action (goal/feedback/result)](docs/patterns.md#3-action-goalfeedbackresult) patterns via well-known metadata keys; no daemon or YAML changes required
+- **Communication patterns** -- built-in [service (request/reply)](docs/patterns.md#2-service-requestreply), [action (goal/feedback/result)](docs/patterns.md#3-action-goalfeedbackresult), and [streaming (session/segment/chunk)](docs/patterns.md#4-streaming-sessionsegmentchunk) patterns via well-known metadata keys; no daemon or YAML changes required
 - **ROS2 bridge** -- bidirectional interop with ROS2 topics, services, and actions; QoS mapping; Arrow-native type conversion
 - **Pre-packaged nodes** -- [node hub](https://github.com/dora-rs/dora-hub/) with ready-made nodes for cameras, YOLO, LLMs, TTS, and more
 - **In-process operators** -- lightweight functions that run inside a shared runtime, avoiding per-node process overhead for simple transformations

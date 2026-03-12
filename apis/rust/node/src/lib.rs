@@ -91,9 +91,9 @@ pub use adora_core::{self, uhlc};
 pub use adora_message::{
     DataflowId,
     metadata::{
-        self, GOAL_ID, GOAL_STATUS, GOAL_STATUS_ABORTED, GOAL_STATUS_CANCELED,
-        GOAL_STATUS_SUCCEEDED, Metadata, MetadataParameters, Parameter, REQUEST_ID,
-        get_string_param,
+        self, FIN, FLUSH, GOAL_ID, GOAL_STATUS, GOAL_STATUS_ABORTED, GOAL_STATUS_CANCELED,
+        GOAL_STATUS_SUCCEEDED, Metadata, MetadataParameters, Parameter, REQUEST_ID, SEGMENT_ID,
+        SEQ, SESSION_ID, get_bool_param, get_integer_param, get_string_param,
     },
 };
 use adora_message::{
@@ -112,7 +112,7 @@ pub use flume::Receiver;
 pub use futures;
 #[cfg(feature = "tracing")]
 pub use node::init_tracing;
-pub use node::{AdoraNode, DataSample, ZERO_COPY_THRESHOLD, arrow_utils};
+pub use node::{AdoraNode, DataSample, StreamSegment, ZERO_COPY_THRESHOLD, arrow_utils};
 pub use uuid;
 
 pub use serde_json;
