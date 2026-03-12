@@ -111,9 +111,9 @@ pub fn send_output_sample(
 pub fn close_outputs(&mut self, outputs_ids: Vec<DataId>) -> NodeResult<()>
 ```
 
-#### Service and Action Helpers
+#### Service, Action, and Streaming Helpers
 
-Higher-level methods for the [service and action communication patterns](patterns.md). These use well-known metadata keys to correlate requests, goals, and responses.
+Higher-level methods for the [communication patterns](patterns.md). These use well-known metadata keys to correlate requests, goals, responses, and streaming segments.
 
 ```rust
 // Generate a unique, time-ordered ID (UUID v7) for correlation.
@@ -158,6 +158,23 @@ node.send_output("goal".into(), params, data)?;
 
 // Server: extract goal_id, send feedback/result with goal_status
 let gid = get_string_param(&metadata.parameters, GOAL_ID);
+```
+
+**Streaming example** (real-time voice/video pipeline with interruption):
+```rust
+use adora_node_api::StreamSegment;
+
+// Create a streaming segment builder (auto-generates session_id)
+let mut seg = StreamSegment::new();
+
+// Send chunks with auto-incrementing seq
+node.send_stream_chunk("text".into(), &mut seg, false, chunk_data)?;
+// Mark final chunk of a segment
+node.send_stream_chunk("text".into(), &mut seg, true, last_chunk)?;
+
+// On user interruption: flush downstream queues and start a new segment
+let flush_params = seg.flush();
+node.send_output("text".into(), flush_params, empty_data)?;
 ```
 
 See [patterns.md](patterns.md) for the full guide and [examples/service-example](../examples/service-example) and [examples/action-example](../examples/action-example) for working code.
@@ -331,11 +348,13 @@ pub enum Parameter {
     Timestamp(DateTime<Utc>),
 }
 
-// Extract a string parameter, returning None if missing or non-String.
+// Extract typed parameters, returning None if missing or wrong type.
 pub fn get_string_param<'a>(params: &'a MetadataParameters, key: &str) -> Option<&'a str>
+pub fn get_integer_param(params: &MetadataParameters, key: &str) -> Option<i64>
+pub fn get_bool_param(params: &MetadataParameters, key: &str) -> Option<bool>
 ```
 
-**Well-known metadata keys** (for [service and action patterns](patterns.md)):
+**Well-known metadata keys** (for [communication patterns](patterns.md)):
 
 | Constant | Value | Used by |
 |----------|-------|---------|
@@ -345,6 +364,11 @@ pub fn get_string_param<'a>(params: &'a MetadataParameters, key: &str) -> Option
 | `GOAL_STATUS_SUCCEEDED` | `"succeeded"` | Goal completed successfully |
 | `GOAL_STATUS_ABORTED` | `"aborted"` | Goal aborted by server |
 | `GOAL_STATUS_CANCELED` | `"canceled"` | Goal canceled by client |
+| `SESSION_ID` | `"session_id"` | Streaming session identifier |
+| `SEGMENT_ID` | `"segment_id"` | Streaming segment within a session |
+| `SEQ` | `"seq"` | Streaming chunk sequence number |
+| `FIN` | `"fin"` | Last chunk of a streaming segment |
+| `FLUSH` | `"flush"` | Discard older queued messages on input |
 
 All constants are re-exported from `adora_node_api`.
 

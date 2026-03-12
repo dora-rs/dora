@@ -23,7 +23,10 @@ use adora_core::{
 use adora_message::{
     DataflowId,
     daemon_to_node::{DaemonCommunication, DaemonReply, NodeConfig},
-    metadata::{ArrowTypeInfo, Metadata, MetadataParameters},
+    metadata::{
+        ArrowTypeInfo, FIN, FLUSH, Metadata, MetadataParameters, Parameter, SEGMENT_ID, SEQ,
+        SESSION_ID,
+    },
     node_to_daemon::{DaemonRequest, DataMessage, DropToken, Timestamped},
 };
 use aligned_vec::{AVec, ConstAlign};
@@ -989,6 +992,23 @@ impl AdoraNode {
         self.send_output(output_id, parameters, data)
     }
 
+    // -----------------------------------------------------------------
+    // Streaming helpers
+    // -----------------------------------------------------------------
+
+    /// Send a streaming segment chunk. Convenience wrapper around
+    /// [`send_output`](Self::send_output) that builds metadata from the
+    /// [`StreamSegment`] builder.
+    pub fn send_stream_chunk(
+        &mut self,
+        output_id: DataId,
+        segment: &mut StreamSegment,
+        fin: bool,
+        data: impl Array,
+    ) -> NodeResult<()> {
+        self.send_output(output_id, segment.chunk(fin), data)
+    }
+
     /// Allocates a [`DataSample`] of the specified size.
     ///
     /// The data sample will use shared memory when suitable to enable efficient data transfer
@@ -1293,6 +1313,95 @@ pub fn init_tracing(
     Ok(guard)
 }
 
+/// Builder for streaming segment metadata.
+///
+/// Manages session/segment IDs and auto-incrementing sequence numbers
+/// for real-time streaming patterns (voice, video, sensor streams).
+pub struct StreamSegment {
+    session_id: String,
+    segment_id: i64,
+    seq: i64,
+}
+
+impl StreamSegment {
+    /// Start a new session with a generated session ID and segment 0.
+    pub fn new() -> Self {
+        Self {
+            session_id: AdoraNode::new_request_id(),
+            segment_id: 0,
+            seq: 0,
+        }
+    }
+
+    /// Start a new session with an explicit session ID.
+    pub fn with_session_id(session_id: String) -> Self {
+        Self {
+            session_id,
+            segment_id: 0,
+            seq: 0,
+        }
+    }
+
+    /// Advance to a new segment (resets seq to 0). Returns the new segment_id.
+    pub fn next_segment(&mut self) -> i64 {
+        self.segment_id += 1;
+        self.seq = 0;
+        self.segment_id
+    }
+
+    /// Build metadata parameters for a chunk. Auto-increments seq.
+    pub fn chunk(&mut self, fin: bool) -> MetadataParameters {
+        let mut params = MetadataParameters::new();
+        params.insert(
+            SESSION_ID.into(),
+            Parameter::String(self.session_id.clone()),
+        );
+        params.insert(SEGMENT_ID.into(), Parameter::Integer(self.segment_id));
+        params.insert(SEQ.into(), Parameter::Integer(self.seq));
+        params.insert(FIN.into(), Parameter::Bool(fin));
+        self.seq += 1;
+        params
+    }
+
+    /// Build metadata for a flush message (new segment, discards older queued data).
+    ///
+    /// Advances to a new segment, then emits a chunk with `flush=true` and
+    /// `fin=false`. The prior segment ends without a `fin=true` signal -- this
+    /// is intentional for interruption semantics (the old data is being
+    /// discarded, not completed).
+    ///
+    /// **Note**: flush discards *all* queued messages on the receiver's input
+    /// regardless of `session_id`. Do not multiplex independent sessions on a
+    /// single `DataId` when using flush.
+    pub fn flush(&mut self) -> MetadataParameters {
+        self.next_segment();
+        let mut params = self.chunk(false);
+        params.insert(FLUSH.into(), Parameter::Bool(true));
+        params
+    }
+
+    /// Returns the session ID.
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
+    /// Returns the current segment ID.
+    pub fn segment_id(&self) -> i64 {
+        self.segment_id
+    }
+
+    /// Returns the sequence number that will be used by the next `chunk()` call.
+    pub fn seq(&self) -> i64 {
+        self.seq
+    }
+}
+
+impl Default for StreamSegment {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1398,5 +1507,89 @@ mod tests {
         let outputs: Vec<_> = rx.try_iter().collect();
         assert_eq!(outputs.len(), 1);
         assert_eq!(outputs[0]["id"], "response");
+    }
+
+    #[test]
+    fn stream_segment_new_generates_valid_session_id() {
+        let seg = StreamSegment::new();
+        uuid::Uuid::parse_str(seg.session_id()).expect("session_id should be valid UUID");
+        assert_eq!(seg.segment_id(), 0);
+    }
+
+    #[test]
+    fn stream_segment_with_session_id() {
+        let seg = StreamSegment::with_session_id("my-session".into());
+        assert_eq!(seg.session_id(), "my-session");
+        assert_eq!(seg.segment_id(), 0);
+        assert_eq!(seg.seq(), 0);
+    }
+
+    #[test]
+    fn stream_segment_seq_accessor_tracks_next_seq() {
+        let mut seg = StreamSegment::with_session_id("s1".into());
+        assert_eq!(seg.seq(), 0);
+        seg.chunk(false);
+        assert_eq!(seg.seq(), 1);
+        seg.chunk(false);
+        assert_eq!(seg.seq(), 2);
+        seg.next_segment();
+        assert_eq!(seg.seq(), 0);
+    }
+
+    #[test]
+    fn stream_segment_chunk_auto_increments_seq() {
+        let mut seg = StreamSegment::with_session_id("s1".into());
+        let p0 = seg.chunk(false);
+        let p1 = seg.chunk(false);
+        let p2 = seg.chunk(true);
+
+        assert_eq!(p0.get(SEQ), Some(&Parameter::Integer(0)));
+        assert_eq!(p1.get(SEQ), Some(&Parameter::Integer(1)));
+        assert_eq!(p2.get(SEQ), Some(&Parameter::Integer(2)));
+        assert_eq!(p0.get(FIN), Some(&Parameter::Bool(false)));
+        assert_eq!(p2.get(FIN), Some(&Parameter::Bool(true)));
+        assert_eq!(p0.get(SESSION_ID), Some(&Parameter::String("s1".into())));
+        assert_eq!(p0.get(SEGMENT_ID), Some(&Parameter::Integer(0)));
+    }
+
+    #[test]
+    fn stream_segment_next_segment_resets_seq() {
+        let mut seg = StreamSegment::with_session_id("s1".into());
+        seg.chunk(false); // seq=0
+        seg.chunk(false); // seq=1
+        let new_id = seg.next_segment();
+        assert_eq!(new_id, 1);
+        assert_eq!(seg.segment_id(), 1);
+
+        let p = seg.chunk(false);
+        assert_eq!(p.get(SEQ), Some(&Parameter::Integer(0)));
+        assert_eq!(p.get(SEGMENT_ID), Some(&Parameter::Integer(1)));
+    }
+
+    #[test]
+    fn stream_segment_flush_advances_segment_and_sets_flush() {
+        let mut seg = StreamSegment::with_session_id("s1".into());
+        seg.chunk(false);
+        let p = seg.flush();
+        assert_eq!(seg.segment_id(), 1);
+        assert_eq!(p.get(FLUSH), Some(&Parameter::Bool(true)));
+        assert_eq!(p.get(SEGMENT_ID), Some(&Parameter::Integer(1)));
+        // flush resets seq, then chunk increments it to 1
+        assert_eq!(p.get(SEQ), Some(&Parameter::Integer(0)));
+    }
+
+    #[test]
+    fn send_stream_chunk_sends_output() {
+        let (mut node, events, rx) = test_node();
+        let mut seg = StreamSegment::with_session_id("s1".into());
+
+        node.send_stream_chunk("audio".into(), &mut seg, false, NullArray::new(0))
+            .unwrap();
+
+        drop(node);
+        drop(events);
+        let outputs: Vec<_> = rx.try_iter().collect();
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0]["id"], "audio");
     }
 }

@@ -401,6 +401,11 @@ pub enum Parameter {
 | `request_id` | Service request/reply correlation |
 | `goal_id` | Action goal identifier |
 | `goal_status` | Action completion: `succeeded`, `aborted`, `canceled` |
+| `session_id` | Streaming session identifier |
+| `segment_id` | Streaming segment within a session |
+| `seq` | Streaming chunk sequence number |
+| `fin` | Last chunk of a streaming segment |
+| `flush` | Discard older queued messages on input |
 
 ## Zero-Copy Shared Memory
 

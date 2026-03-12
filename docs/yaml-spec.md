@@ -439,11 +439,12 @@ Required for `adora topic echo`, `adora topic hz`, and `adora topic info` comman
 
 ## Communication Patterns
 
-Adora supports three communication patterns built on top of the dataflow:
+Adora supports four communication patterns built on top of the dataflow:
 
 - **Topic** (default): pub/sub dataflow
 - **Service**: request/reply via `request_id` metadata
 - **Action**: goal/feedback/result via `goal_id`/`goal_status` metadata, with cancellation support
+- **Streaming**: session/segment/chunk via `session_id`/`segment_id`/`seq`/`fin`/`flush` metadata, with queue flush for interruption
 
 See [Communication Patterns](../../../docs/patterns.md) for details and examples.
 

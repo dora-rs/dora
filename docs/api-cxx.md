@@ -249,15 +249,20 @@ enum class MetadataValueType : uint8_t {
 };
 ```
 
-### Service and Action Patterns
+### Service, Action, and Streaming Patterns
 
-C++ nodes can implement [service and action patterns](patterns.md) using the metadata API. The well-known metadata keys are:
+C++ nodes can implement [communication patterns](patterns.md) using the metadata API. The well-known metadata keys are:
 
 | Key | Description |
 |-----|-------------|
 | `"request_id"` | Service request/response correlation (UUID v7) |
 | `"goal_id"` | Action goal identification (UUID v7) |
 | `"goal_status"` | Action result status: `"succeeded"`, `"aborted"`, or `"canceled"` |
+| `"session_id"` | Streaming session identifier |
+| `"segment_id"` | Streaming segment within a session (integer) |
+| `"seq"` | Streaming chunk sequence number (integer) |
+| `"fin"` | Last chunk of a streaming segment (bool) |
+| `"flush"` | Discard older queued messages on input (bool) |
 
 ```cpp
 // Service server: pass through request_id from input metadata

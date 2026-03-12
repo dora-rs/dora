@@ -156,9 +156,9 @@ node.send_output("image", pa.array(pixels), {"camera_id": "front"})
 
 **Raises:** `RuntimeError` if `data` is neither `bytes` nor a `pyarrow.Array`.
 
-##### Service and action patterns
+##### Service, action, and streaming patterns
 
-Python nodes use the same metadata key conventions as Rust for [service and action patterns](patterns.md). Parameters are plain dicts with string keys.
+Python nodes use the same metadata key conventions as Rust for [communication patterns](patterns.md). Parameters are plain dicts with string keys.
 
 **Well-known metadata keys:**
 
@@ -167,6 +167,11 @@ Python nodes use the same metadata key conventions as Rust for [service and acti
 | `"request_id"` | Service request/response correlation (UUID v7) |
 | `"goal_id"` | Action goal identification (UUID v7) |
 | `"goal_status"` | Action result status: `"succeeded"`, `"aborted"`, or `"canceled"` |
+| `"session_id"` | Streaming session identifier |
+| `"segment_id"` | Streaming segment within a session (integer) |
+| `"seq"` | Streaming chunk sequence number (integer) |
+| `"fin"` | Last chunk of a streaming segment (bool) |
+| `"flush"` | Discard older queued messages on input (bool) |
 
 **Service client example:**
 
@@ -190,6 +195,19 @@ node.send_output("response", result, event["metadata"])
 ```python
 goal_id = str(uuid.uuid7())
 node.send_output("goal", data, {"goal_id": goal_id})
+```
+
+**Streaming example** (flush downstream queues on user interruption):
+
+```python
+params = {
+    "session_id": session_id,
+    "segment_id": 1,
+    "seq": 0,
+    "fin": False,
+    "flush": True,
+}
+node.send_output("text", data, metadata={"parameters": params})
 ```
 
 See [patterns.md](patterns.md) for the full guide.

@@ -38,11 +38,9 @@ impl Metadata {
     }
 
     pub fn open_telemetry_context(&self) -> String {
-        if let Some(Parameter::String(otel)) = self.parameters.get("open_telemetry_context") {
-            otel.to_string()
-        } else {
-            "".to_string()
-        }
+        get_string_param(&self.parameters, "open_telemetry_context")
+            .unwrap_or("")
+            .to_string()
     }
 }
 
@@ -82,6 +80,24 @@ pub fn get_string_param<'a>(params: &'a MetadataParameters, key: &str) -> Option
     })
 }
 
+/// Extract an integer parameter from metadata, returning `None` if missing or
+/// not a `Parameter::Integer`.
+pub fn get_integer_param(params: &MetadataParameters, key: &str) -> Option<i64> {
+    params.get(key).and_then(|p| match p {
+        Parameter::Integer(n) => Some(*n),
+        _ => None,
+    })
+}
+
+/// Extract a bool parameter from metadata, returning `None` if missing or
+/// not a `Parameter::Bool`.
+pub fn get_bool_param(params: &MetadataParameters, key: &str) -> Option<bool> {
+    params.get(key).and_then(|p| match p {
+        Parameter::Bool(b) => Some(*b),
+        _ => None,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Well-known metadata parameter keys for service and action patterns
 // ---------------------------------------------------------------------------
@@ -104,6 +120,25 @@ pub const GOAL_STATUS_ABORTED: &str = "aborted";
 /// Goal was canceled by the client.
 pub const GOAL_STATUS_CANCELED: &str = "canceled";
 
+// ---------------------------------------------------------------------------
+// Well-known metadata parameter keys for the streaming pattern
+// ---------------------------------------------------------------------------
+
+/// Metadata key identifying the conversation/session.
+pub const SESSION_ID: &str = "session_id";
+
+/// Metadata key for the logical segment within a session (e.g. one utterance).
+pub const SEGMENT_ID: &str = "segment_id";
+
+/// Metadata key for chunk sequence number within a segment.
+pub const SEQ: &str = "seq";
+
+/// Metadata key marking the last chunk of a segment (`true` on final chunk).
+pub const FIN: &str = "fin";
+
+/// Metadata key to discard older queued messages on this input (`true` to flush).
+pub const FLUSH: &str = "flush";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BufferOffset {
     pub offset: usize,
@@ -124,11 +159,25 @@ mod tests {
         assert_eq!(GOAL_STATUS_SUCCEEDED, "succeeded");
         assert_eq!(GOAL_STATUS_ABORTED, "aborted");
         assert_eq!(GOAL_STATUS_CANCELED, "canceled");
+        assert_eq!(SESSION_ID, "session_id");
+        assert_eq!(SEGMENT_ID, "segment_id");
+        assert_eq!(SEQ, "seq");
+        assert_eq!(FIN, "fin");
+        assert_eq!(FLUSH, "flush");
     }
 
     #[test]
     fn well_known_keys_are_distinct() {
-        let keys = [REQUEST_ID, GOAL_ID, GOAL_STATUS];
+        let keys = [
+            REQUEST_ID,
+            GOAL_ID,
+            GOAL_STATUS,
+            SESSION_ID,
+            SEGMENT_ID,
+            SEQ,
+            FIN,
+            FLUSH,
+        ];
         for (i, a) in keys.iter().enumerate() {
             for b in &keys[i + 1..] {
                 assert_ne!(a, b);
@@ -163,5 +212,35 @@ mod tests {
         let mut params = MetadataParameters::default();
         params.insert("num".to_string(), Parameter::Integer(42));
         assert_eq!(get_string_param(&params, "num"), None);
+    }
+
+    #[test]
+    fn get_integer_param_extracts_integer() {
+        let mut params = MetadataParameters::default();
+        params.insert("key".to_string(), Parameter::Integer(42));
+        assert_eq!(get_integer_param(&params, "key"), Some(42));
+        assert_eq!(get_integer_param(&params, "missing"), None);
+    }
+
+    #[test]
+    fn get_integer_param_returns_none_for_non_integer() {
+        let mut params = MetadataParameters::default();
+        params.insert("s".to_string(), Parameter::String("hello".to_string()));
+        assert_eq!(get_integer_param(&params, "s"), None);
+    }
+
+    #[test]
+    fn get_bool_param_extracts_bool() {
+        let mut params = MetadataParameters::default();
+        params.insert("key".to_string(), Parameter::Bool(true));
+        assert_eq!(get_bool_param(&params, "key"), Some(true));
+        assert_eq!(get_bool_param(&params, "missing"), None);
+    }
+
+    #[test]
+    fn get_bool_param_returns_none_for_non_bool() {
+        let mut params = MetadataParameters::default();
+        params.insert("n".to_string(), Parameter::Integer(1));
+        assert_eq!(get_bool_param(&params, "n"), None);
     }
 }
