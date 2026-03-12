@@ -89,7 +89,7 @@ use crate::{extract_err_from_stderr::extract_err_from_stderr, pending::DataflowS
 
 const STDERR_LOG_LINES_MAX: usize = 500;
 
-const EMPTY_SET: BTreeSet<DataId> = BTreeSet::new();
+static EMPTY_SET: BTreeSet<DataId> = BTreeSet::new();
 
 pub struct Daemon {
     pub(crate) state: Arc<state::DaemonState>,
