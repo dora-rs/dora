@@ -1,16 +1,19 @@
 use std::{
     net::SocketAddr,
     path::PathBuf,
-    process::{Command, Stdio},
+    process::Command,
     time::{Duration, Instant},
 };
 
 use clap::Args;
-use eyre::{Context, bail};
+use eyre::Context;
 
 use crate::{
-    command::{Executable, default_tracing, up::adora_executable_path},
-    common::connect_to_coordinator,
+    command::{
+        Executable, default_tracing,
+        up::{adora_executable_path, detach_process},
+    },
+    common::{connect_to_coordinator, connect_with_retry},
 };
 
 use super::config::ClusterConfig;
@@ -47,18 +50,9 @@ impl Executable for Up {
             }
             Err(_) => {
                 start_coordinator(config.coordinator.port)?;
-                let deadline = Instant::now() + Duration::from_secs(10);
-                loop {
-                    match connect_to_coordinator(coordinator_addr) {
-                        Ok(s) => break s,
-                        Err(_) if Instant::now() < deadline => {
-                            std::thread::sleep(Duration::from_millis(50));
-                        }
-                        Err(err) => {
-                            bail!("timed out waiting for coordinator at {coordinator_addr}: {err}");
-                        }
-                    }
-                }
+                connect_with_retry(coordinator_addr, Duration::from_secs(10)).map_err(|err| {
+                    eyre::eyre!("timed out waiting for coordinator at {coordinator_addr}: {err}")
+                })?
             }
         };
 
@@ -170,14 +164,7 @@ fn start_coordinator(port: u16) -> eyre::Result<()> {
         &port.to_string(),
         "--quiet",
     ]);
-    cmd.stdin(Stdio::null());
-    cmd.stdout(Stdio::null());
-    cmd.stderr(Stdio::null());
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        cmd.process_group(0);
-    }
+    detach_process(&mut cmd);
     cmd.spawn().wrap_err("failed to start adora coordinator")?;
     println!("Started coordinator on 0.0.0.0:{port}");
     Ok(())

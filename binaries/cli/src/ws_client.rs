@@ -99,12 +99,12 @@ impl WsSession {
                 if msg.contains("onnection refused") || msg.contains("No connection could be made")
                 {
                     eyre!(
-                        "cannot connect to coordinator at {addr}: {e}\n\n  \
+                        "cannot connect to coordinator at {addr}: {msg}\n\n  \
                          hint: is the coordinator running? Start it with `adora up`"
                     )
                 } else if msg.contains("401") || msg.contains("Unauthorized") {
                     eyre!(
-                        "authentication failed connecting to coordinator at {addr}: {e}\n\n  \
+                        "authentication failed connecting to coordinator at {addr}: {msg}\n\n  \
                          The coordinator was started with --auth and requires a valid token.\n  \
                          The token is stored in ~/.config/adora/.adora-token\n\n  \
                          Possible fixes:\n  \
@@ -114,7 +114,7 @@ impl WsSession {
                          - Restart without --auth to disable authentication"
                     )
                 } else {
-                    eyre!("failed to connect to coordinator at {addr}: {e}")
+                    eyre!("failed to connect to coordinator at {addr}: {msg}")
                 }
             })?
             .0;

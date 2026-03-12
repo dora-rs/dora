@@ -1,6 +1,9 @@
 use super::system::status::daemon_running;
 use super::{Executable, default_tracing};
-use crate::{LOCALHOST, common::connect_to_coordinator};
+use crate::{
+    LOCALHOST,
+    common::{connect_to_coordinator, connect_with_retry},
+};
 use adora_core::topics::ADORA_COORDINATOR_PORT_WS_DEFAULT;
 use adora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply};
 use eyre::{Context, ContextCompat, bail};
@@ -53,24 +56,13 @@ pub(crate) fn up(config_path: Option<&Path>, auth: bool) -> eyre::Result<()> {
         Err(_) => {
             start_coordinator(auth).wrap_err("failed to start adora-coordinator")?;
 
-            {
-                let deadline = std::time::Instant::now() + Duration::from_secs(10);
-                loop {
-                    match connect_to_coordinator(coordinator_addr) {
-                        Ok(session) => break session,
-                        Err(_) if std::time::Instant::now() < deadline => {
-                            std::thread::sleep(Duration::from_millis(50));
-                        }
-                        Err(err) => {
-                            bail!(
-                                "timed out waiting for coordinator to start at {coordinator_addr}: {err}\n\n  \
-                                 hint: is port {port} already in use? Check with `adora status`\n  \
-                                 or stop the existing coordinator with `adora down`"
-                            );
-                        }
-                    }
-                }
-            }
+            connect_with_retry(coordinator_addr, Duration::from_secs(10)).map_err(|err| {
+                eyre::eyre!(
+                    "timed out waiting for coordinator to start at {coordinator_addr}: {err}\n\n  \
+                     hint: is port {port} already in use? Check with `adora status`\n  \
+                     or stop the existing coordinator with `adora down`"
+                )
+            })?
         }
     };
 
@@ -103,23 +95,12 @@ pub(crate) fn down(
 ) -> Result<(), eyre::ErrReport> {
     let UpConfig {} = parse_adora_config(config_path)?;
     // Retry connection briefly — the coordinator may still be initializing after `adora up`.
-    let session = {
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        loop {
-            match connect_to_coordinator(coordinator_addr) {
-                Ok(s) => break s,
-                Err(_) if std::time::Instant::now() < deadline => {
-                    std::thread::sleep(Duration::from_millis(100));
-                }
-                Err(_) => {
-                    bail!(
-                        "could not connect to coordinator at {coordinator_addr}\n\n  \
-                         hint: is it running? Start it with `adora up`"
-                    );
-                }
-            }
-        }
-    };
+    let session = connect_with_retry(coordinator_addr, Duration::from_secs(5)).map_err(|_| {
+        eyre::eyre!(
+            "could not connect to coordinator at {coordinator_addr}\n\n  \
+             hint: is it running? Start it with `adora up`"
+        )
+    })?;
     // send destroy command to adora-coordinator
     let reply_raw = session
         .request(&serde_json::to_vec(&ControlRequest::Destroy).unwrap())
@@ -168,17 +149,10 @@ pub(crate) fn adora_executable_path() -> eyre::Result<std::ffi::OsString> {
     }
 }
 
-fn start_coordinator(auth: bool) -> eyre::Result<()> {
-    let path = adora_executable_path()?;
-    let mut cmd = Command::new(path);
-    cmd.arg("coordinator");
-    cmd.arg("--quiet");
-    if auth {
-        cmd.arg("--auth");
-    }
-    // Detach the child so it survives after `adora up` exits:
-    // - null stdio prevents broken-pipe crashes when the parent's terminal closes
-    // - new process group prevents terminal signals (SIGHUP/SIGINT) from propagating
+/// Detach a child process so it survives after the parent exits:
+/// - null stdio prevents broken-pipe crashes when the parent's terminal closes
+/// - new process group prevents terminal signals (SIGHUP/SIGINT) from propagating
+pub(crate) fn detach_process(cmd: &mut Command) {
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::null());
     cmd.stderr(Stdio::null());
@@ -187,6 +161,17 @@ fn start_coordinator(auth: bool) -> eyre::Result<()> {
         use std::os::unix::process::CommandExt;
         cmd.process_group(0);
     }
+}
+
+fn start_coordinator(auth: bool) -> eyre::Result<()> {
+    let path = adora_executable_path()?;
+    let mut cmd = Command::new(path);
+    cmd.arg("coordinator");
+    cmd.arg("--quiet");
+    if auth {
+        cmd.arg("--auth");
+    }
+    detach_process(&mut cmd);
     cmd.spawn().wrap_err(
         "failed to run `adora coordinator`\n\n  \
          hint: ensure the `adora` binary is in your PATH",
@@ -202,14 +187,7 @@ fn start_daemon() -> eyre::Result<()> {
     let mut cmd = Command::new(path);
     cmd.arg("daemon");
     cmd.arg("--quiet");
-    cmd.stdin(Stdio::null());
-    cmd.stdout(Stdio::null());
-    cmd.stderr(Stdio::null());
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        cmd.process_group(0);
-    }
+    detach_process(&mut cmd);
     cmd.spawn().wrap_err(
         "failed to run `adora daemon`\n\n  \
          hint: ensure the `adora` binary is in your PATH",

@@ -131,6 +131,23 @@ pub(crate) fn connect_to_coordinator(coordinator_addr: SocketAddr) -> eyre::Resu
     WsSession::connect(coordinator_addr)
 }
 
+/// Try to connect to the coordinator, retrying for `timeout` before giving up.
+pub(crate) fn connect_with_retry(
+    addr: SocketAddr,
+    timeout: std::time::Duration,
+) -> eyre::Result<WsSession> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match connect_to_coordinator(addr) {
+            Ok(session) => return Ok(session),
+            Err(_) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
 pub(crate) fn resolve_dataflow(dataflow: String) -> eyre::Result<PathBuf> {
     let dataflow = if source_is_url(&dataflow) {
         // try to download the shared library

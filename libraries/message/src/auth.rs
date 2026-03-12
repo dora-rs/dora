@@ -125,44 +125,45 @@ pub fn read_token(working_dir: &Path) -> std::io::Result<Option<AuthToken>> {
 }
 
 fn read_token_from_path(path: &Path) -> std::io::Result<Option<AuthToken>> {
-    match fs::read_to_string(path) {
-        Ok(content) => {
-            // On Unix, reject token files not owned by the current user or
-            // with permissions more permissive than 0o600.
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::MetadataExt;
-                if let Ok(meta) = fs::metadata(path) {
-                    let uid = unsafe { libc::geteuid() };
-                    if meta.uid() != uid {
-                        log::warn!(
-                            "ignoring token file {} (owned by uid {}, expected {})",
-                            path.display(),
-                            meta.uid(),
-                            uid
-                        );
-                        return Ok(None);
-                    }
-                    if meta.mode() & 0o077 != 0 {
-                        log::warn!(
-                            "ignoring token file {} (mode {:o} is too permissive, expected 0600)",
-                            path.display(),
-                            meta.mode() & 0o777
-                        );
-                        return Ok(None);
-                    }
-                }
-            }
+    let file = match fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
 
-            let trimmed = content.trim();
-            if trimmed.is_empty() {
-                Ok(None)
-            } else {
-                Ok(Some(AuthToken(trimmed.to_string())))
+    // On Unix, verify ownership/permissions on the *open* fd (fstat) to
+    // avoid a TOCTOU race between read and metadata check.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if let Ok(meta) = file.metadata() {
+            let uid = unsafe { libc::geteuid() };
+            if meta.uid() != uid {
+                log::warn!(
+                    "ignoring token file {} (owned by uid {}, expected {})",
+                    path.display(),
+                    meta.uid(),
+                    uid
+                );
+                return Ok(None);
+            }
+            if meta.mode() & 0o077 != 0 {
+                log::warn!(
+                    "ignoring token file {} (mode {:o} is too permissive, expected 0600)",
+                    path.display(),
+                    meta.mode() & 0o777
+                );
+                return Ok(None);
             }
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e),
+    }
+
+    let content = std::io::read_to_string(file)?;
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(AuthToken(trimmed.to_string())))
     }
 }
 

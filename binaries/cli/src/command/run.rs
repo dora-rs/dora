@@ -5,7 +5,7 @@
 use super::{Executable, system::status::daemon_running};
 use crate::{
     LOCALHOST,
-    common::{connect_to_coordinator, handle_dataflow_result, resolve_dataflow, write_events_to},
+    common::{connect_with_retry, handle_dataflow_result, resolve_dataflow, write_events_to},
     output::{
         LogFormat, LogOutputConfig, parse_log_filter, parse_log_level_str, print_log_message,
     },
@@ -214,20 +214,8 @@ impl Executable for Run {
         ));
 
         // --- Wait for coordinator to accept connections ---
-        let session = {
-            let deadline = std::time::Instant::now() + Duration::from_secs(10);
-            loop {
-                match connect_to_coordinator(coordinator_addr) {
-                    Ok(session) => break session,
-                    Err(_) if std::time::Instant::now() < deadline => {
-                        std::thread::sleep(Duration::from_millis(50));
-                    }
-                    Err(e) => {
-                        return Err(e).context("failed to connect to embedded coordinator");
-                    }
-                }
-            }
-        };
+        let session = connect_with_retry(coordinator_addr, Duration::from_secs(10))
+            .context("failed to connect to embedded coordinator")?;
 
         // --- Wait for daemon to connect (poll on the same session) ---
         {
