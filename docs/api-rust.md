@@ -265,6 +265,11 @@ pub fn drain(&mut self) -> Option<Vec<Event>>
 
 // True if no events are buffered in the scheduler or receiver.
 pub fn is_empty(&self) -> bool
+
+// Returns and resets accumulated drop counts per input ID.
+// For `drop_oldest` inputs, drops happen at `queue_size`.
+// For `backpressure` inputs, drops happen at 10x `queue_size` (hard safety cap).
+pub fn drain_drop_counts(&mut self) -> HashMap<DataId, u64>
 ```
 
 `EventStream` also implements `futures::Stream<Item = Event>`, so it can be used with `StreamExt::next()` and other combinators. Unlike `recv`/`recv_async`, the `Stream` implementation does **not** use the EventScheduler, preserving chronological event order.

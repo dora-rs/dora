@@ -11,6 +11,33 @@ use serde::{Deserialize, Serialize};
 
 pub use crate::id::{DataId, NodeId, OperatorId};
 
+/// Default queue size when none is configured.
+pub const DEFAULT_QUEUE_SIZE: usize = 10;
+
+/// Queue overflow policy for an input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum QueuePolicy {
+    /// Drop the oldest queued message when the queue is full (default).
+    #[default]
+    DropOldest,
+    /// Buffer up to 10x `queue_size` without dropping. Drops with ERROR log at hard cap.
+    Backpressure,
+}
+
+impl QueuePolicy {
+    /// Returns the effective capacity for a given configured queue size.
+    ///
+    /// - `DropOldest`: returns `queue_size` as-is.
+    /// - `Backpressure`: returns `10 * queue_size` (min 100) as a hard safety cap.
+    pub fn effective_cap(&self, queue_size: usize) -> usize {
+        match self {
+            Self::DropOldest => queue_size,
+            Self::Backpressure => queue_size.saturating_mul(10).max(100),
+        }
+    }
+}
+
 /// Contains the input and output configuration of the node.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct NodeRunConfig {
@@ -49,6 +76,7 @@ pub struct Input {
     pub mapping: InputMapping,
     pub queue_size: Option<usize>,
     pub input_timeout: Option<f64>,
+    pub queue_policy: Option<QueuePolicy>,
 }
 
 impl PartialEq for Input {
@@ -56,6 +84,7 @@ impl PartialEq for Input {
         self.mapping == other.mapping
             && self.queue_size == other.queue_size
             && self.input_timeout.map(f64::to_bits) == other.input_timeout.map(f64::to_bits)
+            && self.queue_policy == other.queue_policy
     }
 }
 
@@ -67,9 +96,12 @@ pub enum InputDef {
     MappingOnly(InputMapping),
     WithOptions {
         source: InputMapping,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         queue_size: Option<usize>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         input_timeout: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        queue_policy: Option<QueuePolicy>,
     },
 }
 
@@ -82,13 +114,15 @@ impl PartialEq for InputDef {
                     source: s1,
                     queue_size: q1,
                     input_timeout: t1,
+                    queue_policy: p1,
                 },
                 Self::WithOptions {
                     source: s2,
                     queue_size: q2,
                     input_timeout: t2,
+                    queue_policy: p2,
                 },
-            ) => s1 == s2 && q1 == q2 && t1.map(f64::to_bits) == t2.map(f64::to_bits),
+            ) => s1 == s2 && q1 == q2 && t1.map(f64::to_bits) == t2.map(f64::to_bits) && p1 == p2,
             _ => false,
         }
     }
@@ -98,13 +132,17 @@ impl Eq for InputDef {}
 
 impl From<Input> for InputDef {
     fn from(input: Input) -> Self {
-        if input.queue_size.is_none() && input.input_timeout.is_none() {
+        if input.queue_size.is_none()
+            && input.input_timeout.is_none()
+            && input.queue_policy.is_none()
+        {
             Self::MappingOnly(input.mapping)
         } else {
             Self::WithOptions {
                 source: input.mapping,
                 queue_size: input.queue_size,
                 input_timeout: input.input_timeout,
+                queue_policy: input.queue_policy,
             }
         }
     }
@@ -117,15 +155,18 @@ impl From<InputDef> for Input {
                 mapping,
                 queue_size: None,
                 input_timeout: None,
+                queue_policy: None,
             },
             InputDef::WithOptions {
                 source,
                 queue_size,
                 input_timeout,
+                queue_policy,
             } => Self {
                 mapping: source,
                 queue_size,
                 input_timeout,
+                queue_policy,
             },
         }
     }
@@ -287,4 +328,72 @@ pub enum LocalCommunicationConfig {
 pub enum RemoteCommunicationConfig {
     #[default]
     Tcp,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_input_without_queue_policy() {
+        let yaml = "source: node_a/output_1\nqueue_size: 5\n";
+        let input: Input = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(input.queue_size, Some(5));
+        assert_eq!(input.queue_policy, None);
+    }
+
+    #[test]
+    fn parse_input_with_drop_oldest_policy() {
+        let yaml = "source: node_a/output_1\nqueue_size: 5\nqueue_policy: drop_oldest\n";
+        let input: Input = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(input.queue_policy, Some(QueuePolicy::DropOldest));
+    }
+
+    #[test]
+    fn parse_input_with_backpressure_policy() {
+        let yaml = "source: node_a/output_1\nqueue_size: 10\nqueue_policy: backpressure\n";
+        let input: Input = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(input.queue_policy, Some(QueuePolicy::Backpressure));
+    }
+
+    #[test]
+    fn parse_short_form_input_has_no_policy() {
+        let yaml = "node_a/output_1";
+        let input: Input = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(input.queue_policy, None);
+        assert_eq!(input.queue_size, None);
+    }
+
+    #[test]
+    fn roundtrip_input_with_policy() {
+        let input = Input {
+            mapping: "node_a/output_1".parse().unwrap(),
+            queue_size: Some(3),
+            input_timeout: None,
+            queue_policy: Some(QueuePolicy::Backpressure),
+        };
+        let yaml = serde_yaml::to_string(&input).unwrap();
+        let parsed: Input = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(input, parsed);
+    }
+
+    #[test]
+    fn roundtrip_input_without_policy_uses_short_form() {
+        let input = Input {
+            mapping: "node_a/output_1".parse().unwrap(),
+            queue_size: None,
+            input_timeout: None,
+            queue_policy: None,
+        };
+        let yaml = serde_yaml::to_string(&input).unwrap();
+        // Short form should not contain "source:" key
+        assert!(!yaml.contains("source:"));
+        let parsed: Input = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(input, parsed);
+    }
+
+    #[test]
+    fn queue_policy_default_is_drop_oldest() {
+        assert_eq!(QueuePolicy::default(), QueuePolicy::DropOldest);
+    }
 }

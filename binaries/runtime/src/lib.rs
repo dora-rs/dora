@@ -110,11 +110,16 @@ pub fn main() -> eyre::Result<()> {
     Ok(())
 }
 
-fn queue_sizes(config: &OperatorConfig) -> std::collections::BTreeMap<DataId, usize> {
+fn queue_sizes(
+    config: &OperatorConfig,
+) -> std::collections::BTreeMap<DataId, (usize, adora_message::config::QueuePolicy)> {
     let mut sizes = BTreeMap::new();
     for (input_id, input) in &config.inputs {
-        let queue_size = input.queue_size.unwrap_or(10);
-        sizes.insert(input_id.clone(), queue_size);
+        let queue_size = input
+            .queue_size
+            .unwrap_or(adora_message::config::DEFAULT_QUEUE_SIZE);
+        let policy = input.queue_policy.unwrap_or_default();
+        sizes.insert(input_id.clone(), (queue_size, policy));
     }
     sizes
 }

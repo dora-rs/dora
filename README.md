@@ -307,7 +307,7 @@ nodes:
 
 **Built-in timer nodes:** `adora/timer/millis/<N>` and `adora/timer/hz/<N>`.
 
-**Input format:** `<node-id>/<output-name>` to subscribe to another node's output.
+**Input format:** `<node-id>/<output-name>` to subscribe to another node's output. Long form supports `queue_size`, `queue_policy` (`drop_oldest` or `backpressure`), and `input_timeout`. See the [YAML Specification](docs/yaml-spec.md) for details.
 
 **Type annotations:** Optionally annotate ports with type URNs for static and runtime validation. See the [Type Annotations Guide](docs/types.md) for the full type library.
 

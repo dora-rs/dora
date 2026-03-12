@@ -2,7 +2,6 @@ use crate::{
     CoreNodeKindExt, Event,
     log::NodeLogger,
     node_communication::spawn_listener_loop,
-    node_inputs,
     spawn::{command::path_spawn_command, prepared::PreparedNode},
 };
 use adora_core::{
@@ -89,17 +88,12 @@ impl Spawner {
             )
             .await;
 
-        let queue_sizes = node_inputs(&node)
-            .into_iter()
-            .map(|(k, v)| (k, v.queue_size.unwrap_or(10)))
-            .collect();
         let last_activity = Arc::new(AtomicU64::new(crate::node_communication::current_millis()));
         let daemon_communication = spawn_listener_loop(
             &dataflow_id,
             &node_id,
             &self.daemon_tx,
             self.dataflow_descriptor.communication.local,
-            queue_sizes,
             self.clock.clone(),
             last_activity.clone(),
         )

@@ -516,6 +516,7 @@ fn rewrite_module_input(
                             mapping: bound_input.mapping.clone(),
                             queue_size: input.queue_size.or(bound_input.queue_size),
                             input_timeout: input.input_timeout.or(bound_input.input_timeout),
+                            queue_policy: input.queue_policy.or(bound_input.queue_policy),
                         }))
                     }
                     None if optional_inputs.contains(&port_name) => Ok(None),
@@ -533,6 +534,7 @@ fn rewrite_module_input(
                     }),
                     queue_size: input.queue_size,
                     input_timeout: input.input_timeout,
+                    queue_policy: input.queue_policy,
                 }))
             } else {
                 // External reference — pass through unchanged
@@ -593,6 +595,7 @@ fn rewrite_inputs_map(
                             }),
                             queue_size: input.queue_size,
                             input_timeout: input.input_timeout,
+                            queue_policy: input.queue_policy,
                         }
                     } else {
                         bail!(

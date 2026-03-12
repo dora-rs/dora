@@ -280,6 +280,13 @@
               "format": "uint",
               "minimum": 0
             },
+            "queue_policy": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "enum": ["drop_oldest", "backpressure", null]
+            },
             "source": {
               "$ref": "#/$defs/InputMapping"
             }

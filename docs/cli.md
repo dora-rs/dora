@@ -150,6 +150,7 @@ nodes:
       sensor_data:
         source: sensor/frames
         queue_size: 10            # input buffer size (default: 10)
+        queue_policy: drop_oldest # or "backpressure" (buffers up to 10x queue_size)
         input_timeout: 5.0        # circuit breaker timeout in seconds
 
     # --- Outputs ---

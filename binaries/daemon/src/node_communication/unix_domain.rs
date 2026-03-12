@@ -1,10 +1,9 @@
 use std::{
-    collections::BTreeMap,
     io::ErrorKind,
     sync::{Arc, atomic::AtomicU64},
 };
 
-use adora_core::{config::DataId, uhlc::HLC};
+use adora_core::uhlc::HLC;
 use adora_message::{
     common::Timestamped, daemon_to_node::DaemonReply, node_to_daemon::DaemonRequest,
 };
@@ -25,7 +24,6 @@ use super::{Connection, Listener};
 pub async fn listener_loop(
     listener: UnixListener,
     daemon_tx: mpsc::Sender<Timestamped<Event>>,
-    queue_sizes: BTreeMap<DataId, usize>,
     clock: Arc<HLC>,
     last_activity: Arc<AtomicU64>,
 ) {
@@ -42,7 +40,6 @@ pub async fn listener_loop(
                 tokio::spawn(handle_connection_loop(
                     connection,
                     daemon_tx.clone(),
-                    queue_sizes.clone(),
                     clock.clone(),
                     last_activity.clone(),
                 ));
@@ -55,7 +52,6 @@ pub async fn listener_loop(
 async fn handle_connection_loop(
     connection: UnixStream,
     daemon_tx: mpsc::Sender<Timestamped<Event>>,
-    queue_sizes: BTreeMap<DataId, usize>,
     clock: Arc<HLC>,
     last_activity: Arc<AtomicU64>,
 ) {

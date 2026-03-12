@@ -152,7 +152,12 @@ impl EventStream {
             .map(|(input, config)| {
                 (
                     input.clone(),
-                    (config.queue_size.unwrap_or(1), VecDeque::new()),
+                    (
+                        config
+                            .queue_size
+                            .unwrap_or(adora_message::config::DEFAULT_QUEUE_SIZE),
+                        VecDeque::new(),
+                    ),
                 )
             })
             .collect();
@@ -162,7 +167,21 @@ impl EventStream {
             (1_000, VecDeque::new()),
         );
 
-        let scheduler = Scheduler::new(queue_size_limit);
+        let queue_policies: HashMap<DataId, adora_message::config::QueuePolicy> = input_config
+            .iter()
+            .filter_map(|(input, config)| config.queue_policy.map(|p| (input.clone(), p)))
+            .collect();
+
+        let scheduler = Scheduler::with_policies(queue_size_limit, queue_policies);
+
+        let total_queue_capacity: usize = input_config
+            .values()
+            .map(|c| {
+                c.queue_size
+                    .unwrap_or(adora_message::config::DEFAULT_QUEUE_SIZE)
+            })
+            .sum::<usize>()
+            .max(64);
 
         let write_events_to = match write_events_to {
             Some(path) => {
@@ -201,9 +220,11 @@ impl EventStream {
             clock,
             scheduler,
             write_events_to,
+            total_queue_capacity,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn init_on_channel(
         dataflow_id: DataflowId,
         node_id: &NodeId,
@@ -212,6 +233,7 @@ impl EventStream {
         clock: Arc<uhlc::HLC>,
         scheduler: Scheduler,
         write_events_to: Option<WriteEventsTo>,
+        channel_capacity: usize,
     ) -> eyre::Result<Self> {
         channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;
         let reply = channel
@@ -232,7 +254,7 @@ impl EventStream {
 
         close_channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;
 
-        let (tx, rx) = flume::bounded(10_000);
+        let (tx, rx) = flume::bounded(channel_capacity);
 
         let use_scheduler = match &channel {
             DaemonChannel::IntegrationTestChannel(_) => {
@@ -338,6 +360,17 @@ impl EventStream {
     /// Check if there are any buffered events in the scheduler or the receiver.
     pub fn is_empty(&self) -> bool {
         self.scheduler.is_empty() & self.receiver.is_empty()
+    }
+
+    /// Returns and resets the accumulated drop counts per input ID.
+    ///
+    /// When inputs overflow their queue limits, the oldest messages are discarded.
+    /// For `drop_oldest` inputs this happens at `queue_size`. For `backpressure`
+    /// inputs this happens at a hard safety cap of 10x `queue_size`.
+    /// This method returns a map from input ID to the number of messages dropped
+    /// since the last call.
+    pub fn drain_drop_counts(&mut self) -> HashMap<DataId, u64> {
+        self.scheduler.drain_drop_counts()
     }
 
     fn add_event(&mut self, event: EventItem) {
