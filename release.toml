@@ -1,0 +1,21 @@
+# cargo-release configuration
+# Usage: cargo release [patch|minor|major] --execute
+# Docs: https://github.com/crate-ci/cargo-release
+
+# All workspace crates share a single version
+shared-version = true
+
+# CI publishes to crates.io, not cargo-release
+publish = false
+
+# Push the tag and commit to origin
+push = true
+push-remote = "origin"
+
+# Tag format
+tag = true
+tag-name = "v{{version}}"
+tag-message = "Release v{{version}}"
+
+# Commit message for the version bump
+pre-release-commit-message = "chore: release v{{version}}"

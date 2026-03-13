@@ -48,7 +48,7 @@ adora run examples/python-dataflow/dataflow.yml --uv --stop-after 10s
 
 ## Workspace Layout
 
-- **Rust edition 2024, MSRV 1.85.0, version 0.4.1** (adora-message is independently versioned at 0.7.0)
+- **Rust edition 2024, MSRV 1.85.0, version 0.4.1** (all crates share workspace version)
 - Python packages use PyO3 0.23 and are built with **maturin**, not cargo
 
 ### Key crates

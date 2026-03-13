@@ -57,7 +57,7 @@ members = [
 [workspace.package]
 edition = "2024"
 rust-version = "1.85.0"
-# Make sure to also bump `apis/node/python/__init__.py` version.
+# Python packages derive version from CARGO_PKG_VERSION automatically.
 version = "0.4.1"
 description = "`adora` goal is to be a low latency, composable, and distributed data flow."
 documentation = "https://adora-rs.ai"
@@ -90,8 +90,7 @@ adora-coordinator = { version = "0.4.1", path = "binaries/coordinator" }
 adora-ros2-bridge = { version = "0.4.1", path = "libraries/extensions/ros2-bridge" }
 adora-ros2-bridge-msg-gen = { version = "0.4.1", path = "libraries/extensions/ros2-bridge/msg-gen" }
 adora-ros2-bridge-python = { path = "libraries/extensions/ros2-bridge/python" }
-# versioned independently from the other adora crates
-adora-message = { version = "0.7.0", path = "libraries/message" }
+adora-message = { version = "0.4.1", path = "libraries/message" }
 arrow = { version = "58" }
 arrow-schema = { version = "58" }
 arrow-data = { version = "58" }

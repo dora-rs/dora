@@ -68,8 +68,46 @@ We use [`rustfmt`](https://github.com/rust-lang/rustfmt) with its default settin
 Please run `cargo fmt --all` on your code before submitting a pull request.
 Our CI will run an automatic formatting check of your code.
 
-## Publishing new Versions
+## Releasing
 
-The maintainers are responsible for publishing new versions of the `adora` crates.
-Please don't open unsolicited pull requests to create new releases.
-Instead, request a new version by opening an issue or by leaving a comment on a merged PR.
+Releases are automated via GitHub Actions. Only maintainers should cut releases.
+
+### Prerequisites (one-time)
+
+```bash
+cargo install cargo-release git-cliff
+```
+
+### Cutting a release
+
+```bash
+# 1. Ensure main is green and up to date
+git checkout main && git pull
+
+# 2. Generate/update changelog
+git cliff --tag v0.5.0 --output CHANGELOG.md
+git add CHANGELOG.md && git commit -m "docs: update changelog for v0.5.0"
+
+# 3. Bump version, commit, tag, and push (dry-run first)
+cargo release minor              # dry-run: review what will happen
+cargo release minor --execute    # bumps workspace version, tags v0.5.0, pushes
+```
+
+CI takes over from the tag push and automatically:
+- Publishes all crates to crates.io (in dependency order)
+- Builds and publishes Python wheels to PyPI (`adora-rs`, `adora-rs-cli`)
+- Builds CLI binaries for all platforms
+- Creates a GitHub Release with changelog and binary assets
+
+### Configuration
+
+| File | Purpose |
+|------|---------|
+| `release.toml` | cargo-release settings (version bump, tagging) |
+| `cliff.toml` | git-cliff changelog generation |
+| `.github/workflows/release.yml` | Tag-triggered publish pipeline |
+
+### Required GitHub secrets
+
+- `CARGO_REGISTRY_TOKEN`: crates.io API token
+- PyPI: configure [OIDC trusted publishing](https://docs.pypi.org/trusted-publishers/) for the `pypi` environment (no secret needed)

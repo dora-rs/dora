@@ -277,7 +277,7 @@ dependencies = [
 
 [[package]]
 name = "adora-message"
-version = "0.7.0"
+version = "0.4.1"
 dependencies = [
  "aligned-vec",
  "arrow-data",

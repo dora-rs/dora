@@ -1,0 +1,181 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: write
+  id-token: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ── 1. Publish Rust crates to crates.io ──────────────────────────────────
+  publish-crates:
+    name: Publish crates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Publish in dependency order
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          # Topological order: leaves first, binaries last.
+          # Skips Python crates (published to PyPI separately).
+          CRATES=(
+            adora-message
+            adora-arrow-convert
+            shared-memory-server
+            adora-coordinator-store
+            adora-core
+            adora-recording
+            adora-download
+            adora-tracing
+            adora-metrics
+            adora-operator-api-types
+            adora-operator-api-macros
+            adora-operator-api
+            adora-node-api
+            adora-node-api-c
+            adora-operator-api-c
+            adora-node-api-cxx
+            adora-operator-api-cxx
+            adora-ros2-bridge-msg-gen
+            adora-ros2-bridge
+            adora-ros2-bridge-arrow
+            adora-ros2-bridge-node
+            adora-runtime
+            adora-coordinator
+            adora-daemon
+            adora-record-node
+            adora-replay-node
+            adora-cli
+          )
+          for crate in "${CRATES[@]}"; do
+            echo "::group::Publishing $crate"
+            cargo publish -p "$crate" --no-verify || echo "::warning::$crate skipped (already published?)"
+            echo "::endgroup::"
+            sleep 5  # crates.io index propagation
+          done
+
+  # ── 2. Build Python wheels ────────────────────────────────────────────────
+  build-wheels:
+    name: Build wheels (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-gnu,  runner: ubuntu-22.04 }
+          - { target: aarch64-unknown-linux-gnu, runner: ubuntu-22.04 }
+          - { target: x86_64-apple-darwin,       runner: macos-latest }
+          - { target: aarch64-apple-darwin,      runner: macos-14     }
+          - { target: x86_64-pc-windows-msvc,    runner: windows-2022 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build adora-rs wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          args: --release --out dist -m apis/python/node/Cargo.toml
+          manylinux: auto
+      - name: Build adora-rs-cli wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          args: --release --out dist -m binaries/cli/Cargo.toml
+          manylinux: auto
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.target }}
+          path: dist/
+
+  # ── 3. Publish wheels to PyPI ─────────────────────────────────────────────
+  publish-pypi:
+    name: Publish to PyPI
+    needs: build-wheels
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/adora-rs
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          merge-multiple: true
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+
+  # ── 4. Build CLI binaries via cargo-dist ──────────────────────────────────
+  dist:
+    name: Build CLI binaries (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: aarch64-apple-darwin,      runner: macos-14     }
+          - { target: aarch64-unknown-linux-gnu, runner: ubuntu-22.04 }
+          - { target: x86_64-unknown-linux-gnu,  runner: ubuntu-22.04 }
+          - { target: x86_64-pc-windows-msvc,    runner: windows-2022 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Build CLI for ${{ matrix.target }}
+        run: cargo build -p adora-cli --release --target ${{ matrix.target }}
+      - name: Package binary (unix)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p artifacts
+          cp target/${{ matrix.target }}/release/adora-cli artifacts/adora
+          tar czf artifacts/adora-${{ matrix.target }}.tar.gz -C artifacts adora
+      - name: Package binary (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts
+          Copy-Item "target/${{ matrix.target }}/release/adora-cli.exe" "artifacts/adora.exe"
+          Compress-Archive -Path "artifacts/adora.exe" -DestinationPath "artifacts/adora-${{ matrix.target }}.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.target }}
+          path: artifacts/adora-*.*
+
+  # ── 5. Create GitHub Release with changelog ───────────────────────────────
+  github-release:
+    name: GitHub Release
+    needs: [publish-crates, publish-pypi, dist]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: release-assets/
+      - name: Generate changelog
+        uses: orhun/git-cliff-action@v3
+        id: cliff
+        with:
+          config: cliff.toml
+          args: --latest --strip header
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          body: ${{ steps.cliff.outputs.content }}
+          files: release-assets/*
