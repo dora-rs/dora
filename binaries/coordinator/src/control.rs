@@ -10,7 +10,7 @@ use uuid::Uuid;
 #[derive(Debug)]
 pub enum ControlEvent {
     IncomingRequest {
-        request: ControlRequest,
+        request: Box<ControlRequest>,
         reply_sender: oneshot::Sender<eyre::Result<ControlRequestReply>>,
     },
     LogSubscribe {

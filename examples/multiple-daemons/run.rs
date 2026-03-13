@@ -144,7 +144,7 @@ async fn start_dataflow(
     let (reply_sender, reply) = oneshot::channel();
     coordinator_events_tx
         .send(Event::Control(ControlEvent::IncomingRequest {
-            request: ControlRequest::Start {
+            request: Box::new(ControlRequest::Start {
                 build_id: dataflow_session.build_id,
                 session_id: dataflow_session.session_id,
                 dataflow: dataflow_descriptor,
@@ -152,7 +152,7 @@ async fn start_dataflow(
                 name: None,
                 uv: false,
                 write_events_to: None,
-            },
+            }),
             reply_sender,
         }))
         .await?;
@@ -166,7 +166,7 @@ async fn start_dataflow(
     let (reply_sender, reply) = oneshot::channel();
     coordinator_events_tx
         .send(Event::Control(ControlEvent::IncomingRequest {
-            request: ControlRequest::WaitForSpawn { dataflow_id: uuid },
+            request: Box::new(ControlRequest::WaitForSpawn { dataflow_id: uuid }),
             reply_sender,
         }))
         .await?;
@@ -185,7 +185,7 @@ async fn connected_machines(
     let (reply_sender, reply) = oneshot::channel();
     coordinator_events_tx
         .send(Event::Control(ControlEvent::IncomingRequest {
-            request: ControlRequest::ConnectedMachines,
+            request: Box::new(ControlRequest::ConnectedMachines),
             reply_sender,
         }))
         .await?;
@@ -204,7 +204,7 @@ async fn running_dataflows(
     let (reply_sender, reply) = oneshot::channel();
     coordinator_events_tx
         .send(Event::Control(ControlEvent::IncomingRequest {
-            request: ControlRequest::List,
+            request: Box::new(ControlRequest::List),
             reply_sender,
         }))
         .await?;
@@ -221,7 +221,7 @@ async fn destroy(coordinator_events_tx: &Sender<Event>) -> eyre::Result<()> {
     let (reply_sender, reply) = oneshot::channel();
     coordinator_events_tx
         .send(Event::Control(ControlEvent::IncomingRequest {
-            request: ControlRequest::Destroy,
+            request: Box::new(ControlRequest::Destroy),
             reply_sender,
         }))
         .await?;
