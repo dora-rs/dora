@@ -18,6 +18,8 @@ use pyo3::{
 };
 use std::time::UNIX_EPOCH;
 
+type PyObject = Py<PyAny>;
+
 /// Dora Event
 pub struct PyEvent {
     pub event: MergedEvent<PyObject>,
@@ -32,6 +34,12 @@ pub struct NodeCleanupHandle {
 
 /// Owned type with delayed cleanup (using `handle` method).
 pub struct DelayedCleanup<T>(Arc<Mutex<T>>);
+
+impl<T> Clone for DelayedCleanup<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
 
 impl<T> DelayedCleanup<T> {
     pub fn new(value: T) -> Self {
@@ -175,7 +183,7 @@ impl PyEvent {
             MergedEvent::Dora(Event::Input { data, .. }) => {
                 // TODO: Does this call leak data?&
                 let array_data = data.to_data().to_pyarrow(py)?;
-                Ok(Some(array_data))
+                Ok(Some(array_data.into()))
             }
             _ => Ok(None),
         }

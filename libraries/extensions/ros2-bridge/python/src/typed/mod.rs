@@ -57,12 +57,12 @@ mod tests {
     use serde_assert::Deserializer;
     #[test]
     fn test_python_array_code() -> Result<()> {
-        pyo3::prepare_freethreaded_python();
+        Python::initialize();
         let context = Ros2Context::new(None).context("Could not create a context")?;
         let messages = context.messages.clone();
         let serializer = Serializer::builder().build();
 
-        Python::with_gil(|py| -> Result<()> {
+        Python::attach(|py| -> Result<()> {
             let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")); //.join("test_utils.py"); // Adjust this path as needed
 
             // Add the Python module's directory to sys.path
