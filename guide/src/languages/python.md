@@ -156,9 +156,9 @@ node.send_output("image", pa.array(pixels), {"camera_id": "front"})
 
 **Raises:** `RuntimeError` if `data` is neither `bytes` nor a `pyarrow.Array`.
 
-##### Service and action patterns
+##### Service, action, and streaming patterns
 
-Python nodes use the same metadata key conventions as Rust for [service and action patterns](../concepts/patterns.md). Parameters are plain dicts with string keys.
+Python nodes use the same metadata key conventions as Rust for [communication patterns](patterns.md). Parameters are plain dicts with string keys.
 
 **Well-known metadata keys:**
 
@@ -167,6 +167,11 @@ Python nodes use the same metadata key conventions as Rust for [service and acti
 | `"request_id"` | Service request/response correlation (UUID v7) |
 | `"goal_id"` | Action goal identification (UUID v7) |
 | `"goal_status"` | Action result status: `"succeeded"`, `"aborted"`, or `"canceled"` |
+| `"session_id"` | Streaming session identifier |
+| `"segment_id"` | Streaming segment within a session (integer) |
+| `"seq"` | Streaming chunk sequence number (integer) |
+| `"fin"` | Last chunk of a streaming segment (bool) |
+| `"flush"` | Discard older queued messages on input (bool) |
 
 **Service client example:**
 
@@ -192,13 +197,51 @@ goal_id = str(uuid.uuid7())
 node.send_output("goal", data, {"goal_id": goal_id})
 ```
 
-See [patterns.md](../concepts/patterns.md) for the full guide.
+**Streaming example** (flush downstream queues on user interruption):
+
+```python
+params = {
+    "session_id": session_id,
+    "segment_id": 1,
+    "seq": 0,
+    "fin": False,
+    "flush": True,
+}
+node.send_output("text", data, metadata={"parameters": params})
+```
+
+See [patterns.md](patterns.md) for the full guide.
 
 ---
 
+#### Logging
+
+Python nodes can log using either Python's built-in `logging` module (recommended) or the explicit node API.
+
+**Python `logging` module (auto-bridged):**
+
+When `Node()` is created, it automatically installs a handler that routes Python's `logging` module through the adora daemon. No configuration needed:
+
+```python
+import logging
+from dora import Node
+
+node = Node()  # Installs the logging bridge
+
+logging.info("Sensor initialized")       # -> structured "info" log entry
+logging.warning("High temperature")      # -> structured "warn" log entry
+logging.debug("Raw bytes: %s", data)     # -> structured "debug" log entry
+```
+
+These log entries are captured with full metadata (level, message, file path, line number) and work with `min_log_level` filtering, `send_logs_as` routing, and `adora/logs` subscribers.
+
+> **Note:** Do not call `logging.basicConfig()` before creating `Node()`. The constructor sets up the bridge; calling `basicConfig()` first may install a conflicting handler.
+
+**Explicit node API:**
+
 #### `log(level, message, target=None, fields=None)`
 
-Emit a structured log message routed through the adora daemon.
+Emit a structured log message with optional target and key-value fields.
 
 ```python
 node.log("info", "Processing frame", target="vision")
@@ -211,7 +254,32 @@ node.log("error", "Sensor timeout", fields={"sensor": "lidar", "retry": "3"})
 - `target` (str, optional) -- Target module or subsystem name.
 - `fields` (dict[str, str], optional) -- Structured key-value context fields.
 
-Works with the daemon's `min_log_level` filtering and `send_logs_as` routing.
+Works with the daemon's `min_log_level` filtering, `send_logs_as` routing, and `adora/logs` subscribers.
+
+---
+
+#### `log_error(message)`, `log_warn(message)`, `log_info(message)`, `log_debug(message)`, `log_trace(message)`
+
+Convenience methods for common log levels:
+
+```python
+node.log_error("Connection failed")
+node.log_warn("Temperature elevated")
+node.log_info("Sensor initialized")
+node.log_debug("Raw bytes received")
+node.log_trace("Entering loop iteration")
+```
+
+Each is equivalent to `node.log(level, message)`.
+
+**When to use which:**
+
+| Method | Structured? | Fields? | Best for |
+|--------|------------|---------|----------|
+| `logging.info()` | Yes | No | General-purpose logging |
+| `node.log("info", msg, fields={...})` | Yes | Yes | Structured context (sensor_id, etc.) |
+| `node.log_info(msg)` | Yes | No | Quick one-liner |
+| `print()` | No | No | Legacy code, quick debugging |
 
 ---
 
@@ -603,7 +671,7 @@ Declare an output on this node and return an `Output` reference for use as an in
 output = sender.add_output("data")
 ```
 
-#### `add_input(input_id, source, queue_size=None) -> Node`
+#### `add_input(input_id, source, queue_size=None, queue_policy=None) -> Node`
 
 Subscribe this node to an output from another node.
 
@@ -617,12 +685,16 @@ receiver.add_input("tick", "adora/timer/millis/100")
 
 # With a custom queue size
 receiver.add_input("images", camera_output, queue_size=2)
+
+# Lossless input (blocks sender when full)
+receiver.add_input("commands", cmd_output, queue_size=100, queue_policy="backpressure")
 ```
 
 **Parameters:**
 - `input_id` (str) -- Name of the input on this node.
 - `source` (str | Output) -- Either a string (`"node_id/output_id"`) or an `Output` object.
 - `queue_size` (int, optional) -- Maximum number of buffered messages for this input.
+- `queue_policy` (str, optional) -- `"drop_oldest"` (default) or `"backpressure"` (buffers up to 10x `queue_size` before dropping).
 
 #### `to_dict() -> dict`
 

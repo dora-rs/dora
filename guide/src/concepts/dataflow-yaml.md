@@ -37,6 +37,8 @@ nodes:
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `nodes` | list | **required** | List of node configurations |
+| `strict_types` | bool | `false` | Treat type warnings as errors in `validate` and `build` |
+| `type_rules` | list | `[]` | User-defined type compatibility rules (see [Type Annotations](types.md#user-defined-compatibility-rules)) |
 | `health_check_interval` | float | `5.0` | Seconds between daemon health check sweeps. For each node with `health_check_timeout` set, the daemon checks whether the node has communicated within its timeout; if not, the node is killed and its `restart_policy` is evaluated |
 | `_unstable_deploy` | object | -- | Root-level deployment config (see [Deployment](#deployment)) |
 | `_unstable_debug` | object | -- | Debug options (see [Debug](#debug)) |
@@ -55,11 +57,12 @@ Every node requires an `id`. All other fields are optional (though most nodes ne
 
 ### Source
 
-A node's executable comes from a local path, a git repository, or is implicit (operator/ROS2 nodes).
+A node's executable comes from a local path, a git repository, a module reference, or is implicit (operator/ROS2 nodes).
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `path` | string | Path to executable or script. Can also be a URL (legacy) |
+| `module` | string | Path to a module definition file (mutually exclusive with `path`). See [Modules Guide](modules.md) |
 | `git` | string | Git repo URL. `adora build` clones it and uses the clone dir as working directory |
 | `branch` | string | Branch to checkout (requires `git`, mutually exclusive with `tag`/`rev`) |
 | `tag` | string | Tag to checkout (requires `git`, mutually exclusive with `branch`/`rev`) |
@@ -93,13 +96,21 @@ inputs:
   sensor_data:
     source: sensor/frames
     queue_size: 10
+    queue_policy: drop_oldest
     input_timeout: 5.0
+
+  # Lossless input (blocks sender when full)
+  commands:
+    source: controller/cmd
+    queue_size: 100
+    queue_policy: backpressure
 ```
 
 | Input option | Type | Default | Description |
 |-------------|------|---------|-------------|
 | `source` | string | **required** | `<node-id>/<output-id>` or timer path |
-| `queue_size` | integer | `10` | Input buffer size. When full, the **oldest message is dropped** to make room for the newest |
+| `queue_size` | integer | `10` | Input buffer size |
+| `queue_policy` | string | `drop_oldest` | `drop_oldest`: drops oldest message when full. `backpressure`: buffers up to 10x `queue_size` without dropping (drops with ERROR log at hard cap) |
 | `input_timeout` | float | -- | Circuit breaker timeout in seconds. If no message arrives within this period, the daemon closes the input and the node receives an `InputClosed` event for graceful degradation |
 
 #### Built-in Timers
@@ -113,6 +124,19 @@ inputs:
   fast: adora/timer/hz/30        # 30 Hz (~33ms)
 ```
 
+#### Built-in Log Aggregation
+
+Subscribe to structured log messages from all (or filtered) nodes:
+
+```yaml
+inputs:
+  all_logs: adora/logs               # all nodes, all levels
+  errors:   adora/logs/error         # error+ from all nodes
+  sensor:   adora/logs/info/sensor   # info+ from specific node
+```
+
+Each message arrives as a JSON-encoded `LogMessage` string. See [Logging](logging.md#adoralogs----automatic-log-aggregation) for details.
+
 #### Outputs
 
 A list of output identifiers the node produces:
@@ -122,6 +146,66 @@ outputs:
   - processed_image
   - metadata
 ```
+
+### Type Annotations
+
+Optional type annotations for inputs and outputs. Types are never required -- unannotated ports remain fully dynamic.
+
+```yaml
+- id: camera
+  path: camera.py
+  outputs:
+    - image
+    - depth
+  output_types:
+    image: std/media/v1/Image
+    depth: std/media/v1/Image
+
+- id: detector
+  path: detect.py
+  inputs:
+    image: camera/image
+  input_types:
+    image: std/media/v1/Image
+  outputs:
+    - bbox
+  output_types:
+    bbox: std/vision/v1/BoundingBox
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `output_types` | object | `{}` | Maps output IDs to type URNs. Keys must match entries in `outputs` |
+| `input_types` | object | `{}` | Maps input IDs to expected type URNs. Keys must match entries in `inputs` |
+| `output_metadata` | object | `{}` | Maps output IDs to lists of required metadata keys |
+| `pattern` | string | -- | Communication pattern shorthand: `service-server`, `service-client`, `action-server`, `action-client` |
+
+Type URNs use the format `std/<category>/v<version>/<TypeName>` and support parameters (e.g. `std/media/v1/AudioFrame[sample_type=f32]`). See the [Type Annotations Guide](types.md) for the full standard type library, parameterized types, compatibility rules, and user-defined types.
+
+Run `adora validate <file>` to check type annotations statically. For runtime checking, set `ADORA_RUNTIME_TYPE_CHECK=warn` or `error`:
+
+```bash
+adora validate dataflow.yml
+ADORA_RUNTIME_TYPE_CHECK=warn adora run dataflow.yml
+```
+
+Types also appear on `adora graph` edge labels when annotated.
+
+### Module Parameters
+
+When using `module:`, pass configuration values via `params:`:
+
+```yaml
+- id: fast_pipeline
+  module: modules/transform.module.yml
+  inputs:
+    data: sender/value
+  params:
+    speed: "2.0"
+    mode: turbo
+```
+
+Inside the module, params are available as `$PARAM_<UPPERCASE_KEY>` in `args:` and as environment variables. See the [Modules Guide](modules.md) for full documentation.
 
 ### Environment
 
@@ -164,6 +248,8 @@ Example:
 ```
 
 When using `send_stdout_as` or `send_logs_as`, include the output name in the `outputs` list so downstream nodes can subscribe to it.
+
+For a complete guide to all logging features, see [Logging](logging.md).
 
 ### Fault Tolerance
 
@@ -376,11 +462,12 @@ Required for `adora topic echo`, `adora topic hz`, and `adora topic info` comman
 
 ## Communication Patterns
 
-Adora supports three communication patterns built on top of the dataflow:
+Adora supports four communication patterns built on top of the dataflow:
 
 - **Topic** (default): pub/sub dataflow
 - **Service**: request/reply via `request_id` metadata
 - **Action**: goal/feedback/result via `goal_id`/`goal_status` metadata, with cancellation support
+- **Streaming**: session/segment/chunk via `session_id`/`segment_id`/`seq`/`fin`/`flush` metadata, with queue flush for interruption
 
 See [Communication Patterns](../../../docs/patterns.md) for details and examples.
 
