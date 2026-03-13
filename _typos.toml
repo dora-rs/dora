@@ -1,3 +1,6 @@
+[files]
+extend-exclude = ["Changelog.md"]
+
 [default.extend-identifiers]
 # *sigh* this just isn't worth the cost of fixing
 DeviceNDArray = "DeviceNDArray"
