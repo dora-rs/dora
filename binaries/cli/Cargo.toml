@@ -19,7 +19,7 @@ path = "src/main.rs"
 default = ["tracing", "metrics", "python"]
 tracing = ["dep:adora-tracing"]
 metrics = ["adora-runtime/metrics", "adora-coordinator/prometheus"]
-python = ["pyo3", "pyo3-build-config"]
+python = ["pyo3"]
 redb-backend = ["adora-coordinator/redb-backend", "dep:libc"]
 
 [dependencies]
@@ -84,7 +84,6 @@ which = "7"
 tempfile = "3.23.0"
 
 [build-dependencies]
-pyo3-build-config = { version = "0.23", optional = true }
 
 [lib]
 name = "adora_cli"

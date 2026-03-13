@@ -72,7 +72,6 @@ dependencies = [
  "log",
  "notify",
  "pyo3",
- "pyo3-build-config 0.23.5",
  "ratatui",
  "self-replace",
  "self_update",
@@ -104,7 +103,7 @@ dependencies = [
  "adora-runtime",
  "eyre",
  "pyo3",
- "pyo3-build-config 0.28.2",
+ "pyo3-build-config",
  "tokio",
 ]
 
@@ -391,7 +390,7 @@ dependencies = [
  "flume 0.10.14",
  "futures",
  "pyo3",
- "pyo3-build-config 0.28.2",
+ "pyo3-build-config",
  "pythonize",
  "serde_json",
  "serde_yaml",
@@ -4955,20 +4954,10 @@ dependencies = [
  "libc",
  "once_cell",
  "portable-atomic",
- "pyo3-build-config 0.28.2",
+ "pyo3-build-config",
  "pyo3-ffi",
  "pyo3-macros",
  "serde",
-]
-
-[[package]]
-name = "pyo3-build-config"
-version = "0.23.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "94f6cbe86ef3bf18998d9df6e0f3fc1050a8c5efa409bf712e661a4366e010fb"
-dependencies = [
- "once_cell",
- "target-lexicon 0.12.16",
 ]
 
 [[package]]
@@ -4977,7 +4966,7 @@ version = "0.28.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8bf94ee265674bf76c09fa430b0e99c26e319c945d96ca0d5a8215f31bf81cf7"
 dependencies = [
- "target-lexicon 0.13.5",
+ "target-lexicon",
 ]
 
 [[package]]
@@ -4987,7 +4976,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "491aa5fc66d8059dd44a75f4580a2962c1862a1c2945359db36f6c2818b748dc"
 dependencies = [
  "libc",
- "pyo3-build-config 0.28.2",
+ "pyo3-build-config",
 ]
 
 [[package]]
@@ -5010,7 +4999,7 @@ checksum = "22faaa1ce6c430a1f71658760497291065e6450d7b5dc2bcf254d49f66ee700a"
 dependencies = [
  "heck 0.5.0",
  "proc-macro2",
- "pyo3-build-config 0.28.2",
+ "pyo3-build-config",
  "quote",
  "syn 2.0.114",
 ]
@@ -6537,12 +6526,6 @@ dependencies = [
  "libc",
  "xattr",
 ]
-
-[[package]]
-name = "target-lexicon"
-version = "0.12.16"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61c41af27dd6d1e27b1b16b489db798443478cef1f06a660c96db617ba5de3b1"
 
 [[package]]
 name = "target-lexicon"
