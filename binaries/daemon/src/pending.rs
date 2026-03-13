@@ -6,8 +6,9 @@ use std::{
 use dora_core::{config::NodeId, uhlc::HLC};
 use dora_message::{
     DataflowId,
+    common::LogMessage,
     common::{DaemonId, Timestamped},
-    daemon_to_coordinator::{CoordinatorNotifyClient, LogMessage},
+    daemon_to_coordinator::CoordinatorNotifyClient,
     daemon_to_node::DaemonReply,
     tarpc,
 };

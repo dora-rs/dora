@@ -502,28 +502,31 @@ impl PreparedNode {
                             message.dataflow_id = Some(dataflow_id);
                             message.node_id = Some(node_id.clone());
                             message.daemon_id = Some(daemon_id.clone());
-                            cloned_logger.log(message).await;
+                            cloned_logger.log(message, &daemon_id).await;
                         }
                         Err(_err) => {
                             cloned_logger
-                                .log(LogMessage {
-                                    daemon_id: Some(daemon_id.clone()),
-                                    dataflow_id: Some(dataflow_id),
-                                    build_id: None,
-                                    level: dora_core::build::LogLevelOrStdout::Stdout,
-                                    node_id: Some(node_id.clone()),
-                                    target: None,
-                                    message: formatted,
-                                    file: None,
-                                    line: None,
-                                    module_path: None,
-                                    timestamp: uhlc
-                                        .new_timestamp()
-                                        .get_time()
-                                        .to_system_time()
-                                        .into(),
-                                    fields: None,
-                                })
+                                .log(
+                                    LogMessage {
+                                        daemon_id: Some(daemon_id.clone()),
+                                        dataflow_id: Some(dataflow_id),
+                                        build_id: None,
+                                        level: dora_core::build::LogLevelOrStdout::Stdout,
+                                        node_id: Some(node_id.clone()),
+                                        target: None,
+                                        message: formatted,
+                                        file: None,
+                                        line: None,
+                                        module_path: None,
+                                        timestamp: uhlc
+                                            .new_timestamp()
+                                            .get_time()
+                                            .to_system_time()
+                                            .into(),
+                                        fields: None,
+                                    },
+                                    &daemon_id,
+                                )
                                 .await;
                         }
                     }

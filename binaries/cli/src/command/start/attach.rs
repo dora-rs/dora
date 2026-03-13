@@ -1,20 +1,19 @@
-use crate::tcp::AsyncTcpConnection;
 use dora_core::descriptor::{CoreNodeKind, Descriptor, DescriptorExt, resolve_path};
-use dora_message::cli_to_coordinator::{CoordinatorControlClient, LegacyControlRequest};
-use dora_message::common::LogMessage;
+use dora_core::topics::zenoh_log_subscribe_all_for_dataflow;
+use dora_message::cli_to_coordinator::CoordinatorControlClient;
 use dora_message::coordinator_to_cli::{CheckDataflowReply, DataflowResult, StopDataflowReply};
 use dora_message::id::{NodeId, OperatorId};
 use dora_message::tarpc;
 use eyre::Context;
 use notify::event::ModifyKind;
 use notify::{Config, Event as NotifyEvent, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
-use std::{collections::HashMap, net::SocketAddr};
+use std::{collections::HashMap, net::IpAddr};
 use std::{path::PathBuf, time::Duration};
 use tracing::info;
 use uuid::Uuid;
 
 use crate::common::{handle_dataflow_result, long_context, rpc};
-use crate::output::print_log_message;
+use crate::output::subscribe_and_print_logs;
 
 pub async fn attach_dataflow(
     dataflow: Descriptor,
@@ -22,7 +21,7 @@ pub async fn attach_dataflow(
     dataflow_id: Uuid,
     client: &CoordinatorControlClient,
     hot_reload: bool,
-    coordinator_socket: SocketAddr,
+    coordinator_addr: IpAddr,
     log_level: log::LevelFilter,
 ) -> Result<(), eyre::ErrReport> {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -121,31 +120,20 @@ pub async fn attach_dataflow(
     })
     .wrap_err("failed to set ctrl-c handler")?;
 
-    // subscribe to log messages
-    let mut log_session = AsyncTcpConnection {
-        stream: tokio::net::TcpStream::connect(coordinator_socket)
-            .await
-            .wrap_err("failed to connect to dora coordinator")?,
-    };
-    log_session
-        .send(
-            &serde_json::to_vec(&LegacyControlRequest::LogSubscribe {
-                dataflow_id,
-                level: log_level,
-            })
-            .wrap_err("failed to serialize message")?,
-        )
+    // Subscribe to log messages via zenoh — prints directly without routing
+    // through the event channel, since log display is fire-and-forget.
+    let zenoh_session = dora_core::topics::open_zenoh_session(Some(coordinator_addr))
         .await
-        .wrap_err("failed to send log subscribe request to coordinator")?;
-    tokio::spawn(async move {
-        while let Ok(raw) = log_session.receive().await {
-            let parsed: eyre::Result<LogMessage> =
-                serde_json::from_slice(&raw).context("failed to parse log message");
-            if tx.send(AttachEvent::Log(parsed)).is_err() {
-                break;
-            }
-        }
-    });
+        .wrap_err("failed to open zenoh session for log subscription")?;
+    let log_topic = zenoh_log_subscribe_all_for_dataflow(dataflow_id);
+    let _log_task = subscribe_and_print_logs(
+        &zenoh_session,
+        &log_topic,
+        log_level,
+        false,
+        print_daemon_name,
+    )
+    .await?;
 
     loop {
         let event: AttachLoopEvent =
@@ -184,14 +172,6 @@ pub async fn attach_dataflow(
                     .await?;
                     AttachLoopEvent::Stopped { uuid, result }
                 }
-                Ok(Some(AttachEvent::Log(Ok(log_message)))) => {
-                    print_log_message(log_message, false, print_daemon_name);
-                    continue;
-                }
-                Ok(Some(AttachEvent::Log(Err(err)))) => {
-                    tracing::warn!("failed to parse log message: {:#?}", err);
-                    continue;
-                }
                 Ok(None) => {
                     // all senders dropped, channel closed
                     break Ok(());
@@ -219,7 +199,6 @@ enum AttachEvent {
     Stop {
         force: bool,
     },
-    Log(eyre::Result<LogMessage>),
 }
 
 enum AttachLoopEvent {

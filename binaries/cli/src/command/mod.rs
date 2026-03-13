@@ -93,7 +93,7 @@ fn default_tracing() -> eyre::Result<()> {
         use dora_tracing::TracingBuilder;
 
         TracingBuilder::new("dora-cli")
-            .with_stdout("warn", false)
+            .with_stdout("info", false)
             .build()
             .wrap_err("failed to set up tracing subscriber")?;
     }

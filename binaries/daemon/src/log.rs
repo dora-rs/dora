@@ -7,19 +7,18 @@ use std::{
 use dora_core::{
     build::{BuildLogger, LogLevelOrStdout},
     config::NodeId,
+    topics::{
+        zenoh_log_topic_for_build_daemon, zenoh_log_topic_for_build_node,
+        zenoh_log_topic_for_dataflow_daemon, zenoh_log_topic_for_dataflow_node,
+    },
     uhlc,
 };
 use dora_message::{
     BuildId,
-    common::{DaemonId, LogLevel, LogMessage, Timestamped},
-    daemon_to_coordinator::CoordinatorRequest,
+    common::{DaemonId, LogLevel, LogMessage},
 };
-use eyre::Context;
 use flume::Sender;
-use tokio::net::TcpStream;
 use uuid::Uuid;
-
-use crate::socket_stream_utils::socket_stream_send;
 
 pub fn log_path(working_dir: &Path, dataflow_id: &Uuid, node_id: &NodeId) -> PathBuf {
     let dataflow_dir = working_dir.join("out").join(dataflow_id.to_string());
@@ -201,7 +200,7 @@ impl DaemonLogger {
 
             fields: None,
         };
-        self.logger.log(message).await
+        self.logger.log(message, &self.daemon_id).await
     }
 
     pub async fn log_build(
@@ -232,7 +231,7 @@ impl DaemonLogger {
                 .into(),
             fields: None,
         };
-        self.logger.log(message).await
+        self.logger.log(message, &self.daemon_id).await
     }
 
     pub(crate) fn daemon_id(&self) -> &DaemonId {
@@ -249,7 +248,6 @@ impl DaemonLogger {
 
 pub struct Logger {
     pub(super) destination: LogDestination,
-    pub(super) daemon_id: DaemonId,
     pub(super) clock: Arc<uhlc::HLC>,
 }
 
@@ -261,114 +259,46 @@ impl Logger {
         }
     }
 
-    pub async fn log(&mut self, message: LogMessage) {
-        match &mut self.destination {
-            LogDestination::Coordinator {
-                coordinator_connection,
-            } => {
-                let message = Timestamped {
-                    inner: CoordinatorRequest::Log {
-                        daemon_id: self.daemon_id.clone(),
-                        message: message.clone(),
-                    },
-                    timestamp: self.clock.new_timestamp(),
+    pub async fn log(&mut self, message: LogMessage, daemon_id: &DaemonId) {
+        match &self.destination {
+            LogDestination::Zenoh { session } => {
+                let topic = if let Some(dataflow_id) = &message.dataflow_id {
+                    if let Some(node_id) = &message.node_id {
+                        zenoh_log_topic_for_dataflow_node(*dataflow_id, node_id)
+                    } else {
+                        zenoh_log_topic_for_dataflow_daemon(*dataflow_id, daemon_id)
+                    }
+                } else if let Some(build_id) = &message.build_id {
+                    if let Some(node_id) = &message.node_id {
+                        zenoh_log_topic_for_build_node(build_id, node_id)
+                    } else {
+                        zenoh_log_topic_for_build_daemon(build_id, daemon_id)
+                    }
+                } else {
+                    // No dataflow or build context; fall back to tracing.
+                    Self::log_via_tracing(&message);
+                    return;
                 };
-                Self::log_to_coordinator(message, coordinator_connection).await
+                let payload =
+                    serde_json::to_vec(&message).expect("failed to serialize log message");
+                if let Err(err) = session.put(&topic, payload).await {
+                    tracing::warn!("failed to publish log via zenoh: {err}");
+                }
             }
             LogDestination::Channel { sender } => {
                 let _ = sender.send_async(message).await;
             }
             LogDestination::Tracing => {
-                // log message using tracing if reporting to coordinator is not possible
-                match message.level {
-                    LogLevelOrStdout::Stdout => {
-                        tracing::info!(
-                            build_id = ?message.build_id.map(|id| id.to_string()),
-                            dataflow_id = ?message.dataflow_id.map(|id| id.to_string()),
-                            node_id = ?message.node_id.map(|id| id.to_string()),
-                            target = message.target,
-                            module_path = message.module_path,
-                            file = message.file,
-                            line = message.line,
-                            "{}",
-                            Indent(&message.message)
-                        )
-                    }
-                    LogLevelOrStdout::LogLevel(level) => match level {
-                        LogLevel::Error => {
-                            tracing::error!(
-                                build_id = ?message.build_id.map(|id| id.to_string()),
-                                dataflow_id = ?message.dataflow_id.map(|id| id.to_string()),
-                                node_id = ?message.node_id.map(|id| id.to_string()),
-                                target = message.target,
-                                module_path = message.module_path,
-                                file = message.file,
-                                line = message.line,
-                                "{}",
-                                Indent(&message.message)
-                            );
-                        }
-                        LogLevel::Warn => {
-                            tracing::warn!(
-                                build_id = ?message.build_id.map(|id| id.to_string()),
-                                dataflow_id = ?message.dataflow_id.map(|id| id.to_string()),
-                                node_id = ?message.node_id.map(|id| id.to_string()),
-                                target = message.target,
-                                module_path = message.module_path,
-                                file = message.file,
-                                line = message.line,
-                                "{}",
-                                Indent(&message.message)
-                            );
-                        }
-                        LogLevel::Info => {
-                            tracing::info!(
-                                build_id = ?message.build_id.map(|id| id.to_string()),
-                                dataflow_id = ?message.dataflow_id.map(|id| id.to_string()),
-                                node_id = ?message.node_id.map(|id| id.to_string()),
-                                target = message.target,
-                                module_path = message.module_path,
-                                file = message.file,
-                                line = message.line,
-                                "{}",
-                                Indent(&message.message)
-                            );
-                        }
-                        LogLevel::Debug => {
-                            tracing::debug!(
-                                build_id = ?message.build_id.map(|id| id.to_string()),
-                                dataflow_id = ?message.dataflow_id.map(|id| id.to_string()),
-                                node_id = ?message.node_id.map(|id| id.to_string()),
-                                target = message.target,
-                                module_path = message.module_path,
-                                file = message.file,
-                                line = message.line,
-                                "{}",
-                                Indent(&message.message)
-                            );
-                        }
-                        _ => {}
-                    },
-                }
+                Self::log_via_tracing(&message);
             }
         }
     }
 
     pub async fn try_clone(&self) -> eyre::Result<Self> {
         let destination = match &self.destination {
-            LogDestination::Coordinator {
-                coordinator_connection,
-            } => {
-                let addr = coordinator_connection
-                    .peer_addr()
-                    .context("failed to get coordinator peer addr")?;
-                let new_connection = TcpStream::connect(addr)
-                    .await
-                    .context("failed to connect to coordinator during logger clone")?;
-                LogDestination::Coordinator {
-                    coordinator_connection: new_connection,
-                }
-            }
+            LogDestination::Zenoh { session } => LogDestination::Zenoh {
+                session: session.clone(),
+            },
             LogDestination::Channel { sender } => LogDestination::Channel {
                 sender: sender.clone(),
             },
@@ -377,28 +307,86 @@ impl Logger {
 
         Ok(Self {
             destination,
-            daemon_id: self.daemon_id.clone(),
             clock: self.clock.clone(),
         })
     }
 
-    async fn log_to_coordinator(
-        message: Timestamped<CoordinatorRequest>,
-        connection: &mut TcpStream,
-    ) {
-        let msg = serde_json::to_vec(&message).expect("failed to serialize log message");
-        match socket_stream_send(connection, &msg)
-            .await
-            .wrap_err("failed to send log message to dora-coordinator")
-        {
-            Ok(()) => (),
-            Err(err) => tracing::warn!("{err:?}"),
+    fn log_via_tracing(message: &LogMessage) {
+        match message.level {
+            LogLevelOrStdout::Stdout => {
+                tracing::info!(
+                    build_id = ?message.build_id.map(|id| id.to_string()),
+                    dataflow_id = ?message.dataflow_id.map(|id| id.to_string()),
+                    node_id = ?message.node_id.as_ref().map(|id| id.to_string()),
+                    target = message.target,
+                    module_path = message.module_path,
+                    file = message.file,
+                    line = message.line,
+                    "{}",
+                    Indent(&message.message)
+                )
+            }
+            LogLevelOrStdout::LogLevel(level) => match level {
+                LogLevel::Error => {
+                    tracing::error!(
+                        build_id = ?message.build_id.map(|id| id.to_string()),
+                        dataflow_id = ?message.dataflow_id.map(|id| id.to_string()),
+                        node_id = ?message.node_id.as_ref().map(|id| id.to_string()),
+                        target = message.target,
+                        module_path = message.module_path,
+                        file = message.file,
+                        line = message.line,
+                        "{}",
+                        Indent(&message.message)
+                    );
+                }
+                LogLevel::Warn => {
+                    tracing::warn!(
+                        build_id = ?message.build_id.map(|id| id.to_string()),
+                        dataflow_id = ?message.dataflow_id.map(|id| id.to_string()),
+                        node_id = ?message.node_id.as_ref().map(|id| id.to_string()),
+                        target = message.target,
+                        module_path = message.module_path,
+                        file = message.file,
+                        line = message.line,
+                        "{}",
+                        Indent(&message.message)
+                    );
+                }
+                LogLevel::Info => {
+                    tracing::info!(
+                        build_id = ?message.build_id.map(|id| id.to_string()),
+                        dataflow_id = ?message.dataflow_id.map(|id| id.to_string()),
+                        node_id = ?message.node_id.as_ref().map(|id| id.to_string()),
+                        target = message.target,
+                        module_path = message.module_path,
+                        file = message.file,
+                        line = message.line,
+                        "{}",
+                        Indent(&message.message)
+                    );
+                }
+                LogLevel::Debug => {
+                    tracing::debug!(
+                        build_id = ?message.build_id.map(|id| id.to_string()),
+                        dataflow_id = ?message.dataflow_id.map(|id| id.to_string()),
+                        node_id = ?message.node_id.as_ref().map(|id| id.to_string()),
+                        target = message.target,
+                        module_path = message.module_path,
+                        file = message.file,
+                        line = message.line,
+                        "{}",
+                        Indent(&message.message)
+                    );
+                }
+                _ => {}
+            },
         }
     }
 }
 
 pub enum LogDestination {
-    Coordinator { coordinator_connection: TcpStream },
+    Zenoh { session: zenoh::Session },
     Channel { sender: Sender<LogMessage> },
     Tracing,
 }
