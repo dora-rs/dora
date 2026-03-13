@@ -2,7 +2,7 @@ import typing
 
 import pyarrow
 
-import dora
+import adora
 
 @typing.final
 class Enum:
@@ -65,7 +65,7 @@ class Enum:
 
 @typing.final
 class Node:
-    """The custom node API lets you integrate `dora` into your application.
+    """The custom node API lets you integrate `adora` into your application.
     It allows you to retrieve input and send output in any fashion you want.
 
     Use with:
@@ -77,7 +77,7 @@ class Node:
     ```"""
 
     def __init__(self, node_id: str = None) -> None:
-        """The custom node API lets you integrate `dora` into your application.
+        """The custom node API lets you integrate `adora` into your application.
         It allows you to retrieve input and send output in any fashion you want.
 
         Creating a Node automatically bridges Python's ``logging`` module to the
@@ -143,8 +143,8 @@ class Node:
 
         Returns 0 on the first run, 1 after the first restart, etc."""
 
-    def merge_external_events(self, subscription: dora.Ros2Subscription) -> None:
-        """Merge an external event stream with dora main loop.
+    def merge_external_events(self, subscription: adora.Ros2Subscription) -> None:
+        """Merge an external event stream with adora main loop.
         This currently only work with ROS2."""
 
     def next(self, timeout: float = None) -> dict:
@@ -230,7 +230,7 @@ class Ros2Context:
     You can also use `ros_paths` if you don't want to use env variable.
 
     warning::
-    dora Ros2 bridge functionality is considered **unstable**. It may be changed
+    Adora ROS2 bridge functionality is considered **unstable**. It may be changed
     at any point without it being considered a breaking change.
 
     ```python
@@ -250,7 +250,7 @@ class Ros2Context:
         You can also use `ros_paths` if you don't want to use env variable.
 
         warning::
-        dora Ros2 bridge functionality is considered **unstable**. It may be changed
+        Adora ROS2 bridge functionality is considered **unstable**. It may be changed
         at any point without it being considered a breaking change.
 
         ```python
@@ -258,8 +258,8 @@ class Ros2Context:
         ```"""
 
     def new_node(
-        self, name: str, namespace: str, options: dora.Ros2NodeOptions
-    ) -> dora.Ros2Node:
+        self, name: str, namespace: str, options: adora.Ros2NodeOptions
+    ) -> adora.Ros2Node:
         """Create a new ROS2 node
 
         ```python
@@ -271,7 +271,7 @@ class Ros2Context:
         ```
 
         warning::
-        dora Ros2 bridge functionality is considered **unstable**. It may be changed
+        Adora ROS2 bridge functionality is considered **unstable**. It may be changed
         at any point without it being considered a breaking change."""
 
     def __repr__(self) -> str:
@@ -347,26 +347,26 @@ class Ros2Node:
     """ROS2 Node
 
     warnings::
-    - dora Ros2 bridge functionality is considered **unstable**. It may be changed
+    - Adora ROS2 bridge functionality is considered **unstable**. It may be changed
     at any point without it being considered a breaking change.
     - There's a known issue about ROS2 nodes not being discoverable by ROS2
     See: https://github.com/jhelovuo/ros2-client/issues/4"""
 
     def create_publisher(
-        self, topic: dora.Ros2Topic, qos: dora.Ros2QosPolicies = None
-    ) -> dora.Ros2Publisher:
+        self, topic: adora.Ros2Topic, qos: adora.Ros2QosPolicies = None
+    ) -> adora.Ros2Publisher:
         """Create a ROS2 publisher
 
         ```python
         pose_publisher = ros2_node.create_publisher(turtle_pose_topic)
         ```
         warnings:
-        - dora Ros2 bridge functionality is considered **unstable**. It may be changed
+        - Adora ROS2 bridge functionality is considered **unstable**. It may be changed
         at any point without it being considered a breaking change."""
 
     def create_subscription(
-        self, topic: dora.Ros2Topic, qos: dora.Ros2QosPolicies = None
-    ) -> dora.Ros2Subscription:
+        self, topic: adora.Ros2Topic, qos: adora.Ros2QosPolicies = None
+    ) -> adora.Ros2Subscription:
         """Create a ROS2 subscription
 
         ```python
@@ -374,12 +374,12 @@ class Ros2Node:
         ```
 
         warnings:
-        - dora Ros2 bridge functionality is considered **unstable**. It may be changed
+        - Adora ROS2 bridge functionality is considered **unstable**. It may be changed
         at any point without it being considered a breaking change."""
 
     def create_topic(
-        self, name: str, message_type: str, qos: dora.Ros2QosPolicies
-    ) -> dora.Ros2Topic:
+        self, name: str, message_type: str, qos: adora.Ros2QosPolicies
+    ) -> adora.Ros2Topic:
         """Create a ROS2 topic to connect to.
 
         ```python
@@ -412,7 +412,7 @@ class Ros2Publisher:
     """ROS2 Publisher
 
     warnings:
-    - dora Ros2 bridge functionality is considered **unstable**. It may be changed
+    - Adora ROS2 bridge functionality is considered **unstable**. It may be changed
     at any point without it being considered a breaking change."""
 
     def publish(self, data: pyarrow.Array) -> None:
@@ -446,14 +446,14 @@ class Ros2QosPolicies:
 
     def __init__(
         self,
-        durability: dora.Ros2Durability = None,
-        liveliness: dora.Ros2Liveliness = None,
+        durability: adora.Ros2Durability = None,
+        liveliness: adora.Ros2Liveliness = None,
         reliable: bool = None,
         keep_all: bool = None,
         lease_duration: float = None,
         max_blocking_time: float = None,
         keep_last: int = None,
-    ) -> dora.Ros2QosPolicies:
+    ) -> adora.Ros2QosPolicies:
         """ROS2 QoS Policy"""
 
     def __repr__(self) -> str:
@@ -468,7 +468,7 @@ class Ros2Subscription:
 
 
     warnings:
-    - dora Ros2 bridge functionality is considered **unstable**. It may be changed
+    - Adora ROS2 bridge functionality is considered **unstable**. It may be changed
     at any point without it being considered a breaking change."""
 
     def next(self): ...
@@ -483,7 +483,7 @@ class Ros2Topic:
     """ROS2 Topic
 
     warnings:
-    - dora Ros2 bridge functionality is considered **unstable**. It may be changed
+    - Adora ROS2 bridge functionality is considered **unstable**. It may be changed
     at any point without it being considered a breaking change."""
 
     def __repr__(self) -> str:
@@ -499,10 +499,10 @@ def build(
     coordinator_port: int = None,
     force_local: bool = False,
 ) -> None:
-    """Build a Dataflow, exactly the same way as `dora build` command line tool."""
+    """Build a Dataflow, exactly the same way as `adora build` command line tool."""
 
 def run(dataflow_path: str, uv: bool = None, stop_after: float = None) -> None:
-    """Run a Dataflow, exactly the same way as `dora run` command line tool.
+    """Run a Dataflow, exactly the same way as `adora run` command line tool.
 
     Args:
         dataflow_path: Path to the dataflow YAML file

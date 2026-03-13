@@ -631,7 +631,7 @@ pub struct Node {
     /// nodes:
     ///   - id: rust-node
     ///     git: https://github.com/adora-rs/adora.git
-    ///     tag: v0.3.0
+    ///     tag: v0.1.0
     /// ```
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tag: Option<String>,
