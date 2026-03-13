@@ -1,6 +1,6 @@
 param (
     [string]$repo = "adora-rs/adora",
-    [string]$bin = "adora-cli",
+    [string]$bin = "adora",
     [string]$tag,
     [string]$target,
     [string]$to = "$HOME\.adora\bin",
@@ -35,7 +35,7 @@ FLAGS:
 
 OPTIONS:
     --repo REPO     Github Repository to install the binary from  [default: adora-rs/adora]
-    --bin BIN       Name of the binary to install  [default: adora-cli]
+    --bin BIN       Name of the binary to install  [default: adora]
     --tag TAG       Tag (version) of the bin to install, defaults to latest release
     --to LOCATION   Where to install the binary [default: $HOME\.adora\bin]
     --target TARGET
@@ -112,7 +112,7 @@ Write-Host "Archive $archive"
 $zip = "$tmp\$bin-$target.zip"
 Download-File $archive $zip
 
-Write-Host "Placing adora-rs cli in ", $to
+Write-Host "Placing adora cli in ", $to
 
 Expand-Archive -Path $zip -DestinationPath $to -Force
 Remove-Item -Path $tmp -Recurse -Force

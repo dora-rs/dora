@@ -24,7 +24,7 @@ FLAGS:
 
 OPTIONS:
     --repo REPO     Github Repository to install the binary from  [default: adora-rs/adora]
-    --bin BIN       Name of the binary to install  [default: adora-cli]
+    --bin BIN       Name of the binary to install  [default: adora]
     --tag TAG       Tag (version) of the bin to install, defaults to latest release
     --to LOCATION   Where to install the binary [default: ~/.adora/bin]
     --target TARGET
@@ -105,7 +105,7 @@ if [ -z "${repo-}" ]; then
 fi
 
 if [ -z "${bin-}" ]; then
-  bin="adora-cli"
+  bin="adora"
 fi
 
 url=https://github.com/$repo
@@ -291,10 +291,10 @@ else
   download "$archive" - | tar -C "$td" -xz
 fi
 
-echo "Placing adora-rs cli in $dest"
+echo "Placing adora cli in $dest"
 
-# Binary is named 'adora' inside subdirectory '$bin-$target/'
-src_bin="$td/$bin-$target/adora"
+# Binary is named 'adora' at the archive root
+src_bin="$td/adora"
 dest_bin="$dest/adora"
 
 if [ -e "$dest_bin" ] && [ "$force" = false ]; then
