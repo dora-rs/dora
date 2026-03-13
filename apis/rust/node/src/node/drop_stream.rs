@@ -124,11 +124,13 @@ fn drop_stream_loop(
             Ok(other) => {
                 let err = eyre!("unexpected drop reply: {other:?}");
                 tracing::warn!("{err:?}");
+                std::thread::sleep(Duration::from_millis(100));
                 continue;
             }
             Err(err) => {
                 let err = eyre!(err).wrap_err("failed to receive incoming drop event");
                 tracing::warn!("{err:?}");
+                std::thread::sleep(Duration::from_millis(100));
                 continue;
             }
         };

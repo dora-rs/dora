@@ -119,17 +119,20 @@ fn event_stream_loop(
             Ok(DaemonReply::Result(Err(err))) => {
                 let err = eyre!(err).wrap_err("error in incoming event");
                 tracing::error!("{err:?}");
+                std::thread::sleep(Duration::from_millis(100));
                 continue;
             }
 
             Ok(other) => {
                 let err = eyre!("unexpected control reply: {other:?}");
                 tracing::warn!("{err:?}");
+                std::thread::sleep(Duration::from_millis(100));
                 continue;
             }
             Err(err) => {
                 let err = err.wrap_err("failed to receive incoming event");
                 tracing::warn!("{err:?}");
+                std::thread::sleep(Duration::from_millis(100));
                 continue;
             }
         };
