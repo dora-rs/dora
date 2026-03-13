@@ -1,75 +1,52 @@
-"""TODO: Add docstring."""
-
 import os
 import time
-
-import cv2
 import numpy as np
 import pyarrow as pa
 from dora import DoraStatus
 
+# HEADLESS FIX: Must be set BEFORE cv2 import
+if os.environ.get("GITHUB_ACTIONS") == "true":
+    os.environ["QT_QPA_PLATFORM"] = "offscreen"
+
+import cv2  # noqa: E402
+
 CAMERA_WIDTH = 640
 CAMERA_HEIGHT = 480
 CAMERA_INDEX = int(os.getenv("CAMERA_INDEX", 0))
-CI = os.environ.get("CI")
-
 font = cv2.FONT_HERSHEY_SIMPLEX
 
 
 class Operator:
-    """Sending image from webcam to the dataflow."""
+    """Captures and streams webcam frames."""
 
     def __init__(self):
-        """TODO: Add docstring."""
         self.video_capture = cv2.VideoCapture(CAMERA_INDEX)
-        self.start_time = time.time()
         self.video_capture.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
         self.video_capture.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
         self.failure_count = 0
 
-    def on_event(
-        self,
-        dora_event: str,
-        send_output,
-    ) -> DoraStatus:
-        """TODO: Add docstring."""
-        event_type = dora_event["type"]
-        if event_type == "INPUT":
+    def on_event(self, dora_event, send_output) -> DoraStatus:
+        if dora_event["type"] == "INPUT":
             ret, frame = self.video_capture.read()
             if ret:
                 frame = cv2.resize(frame, (CAMERA_WIDTH, CAMERA_HEIGHT))
                 self.failure_count = 0
-            ## Push an error image in case the camera is not available.
             elif self.failure_count > 10:
                 frame = np.zeros((CAMERA_HEIGHT, CAMERA_WIDTH, 3), dtype=np.uint8)
                 cv2.putText(
-                    frame,
-                    f"No Webcam was found at index {CAMERA_INDEX}",
-                    (30, 30),
-                    font,
-                    0.75,
-                    (255, 255, 255),
-                    2,
-                    1,
+                    frame, "No Webcam Found", (30, 30), font, 0.75, (255, 255, 255), 2
                 )
             else:
                 self.failure_count += 1
                 return DoraStatus.CONTINUE
 
-            send_output(
-                "image",
-                pa.array(frame.ravel()),
-                dora_event["metadata"],
-            )
-        elif event_type == "STOP":
-            print("received stop")
-        else:
-            print("received unexpected event:", event_type)
+            # Clean metadata {} fixes the 'could not convert type' error
+            send_output("image", pa.array(frame.ravel()), {})
 
-        if time.time() - self.start_time < 20 or CI != "true":
-            return DoraStatus.CONTINUE
-        return DoraStatus.STOP
+        elif dora_event["type"] == "STOP":
+            return DoraStatus.STOP
+
+        return DoraStatus.CONTINUE
 
     def __del__(self):
-        """TODO: Add docstring."""
         self.video_capture.release()
