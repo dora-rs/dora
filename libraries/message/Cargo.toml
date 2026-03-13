@@ -1,7 +1,6 @@
 [package]
 name = "adora-message"
-# versioned separately from the other adora crates
-version = "0.7.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 documentation.workspace = true
