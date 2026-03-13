@@ -73,8 +73,8 @@ CLI  -->  Coordinator  -->  Daemon(s)  -->  Nodes / Operators
               (distributed)    (per machine)    (user code)
 ```
 
-- **CLI <-> Coordinator**: TCP request-reply for build/run/stop commands
-- **Coordinator <-> Daemon**: TCP for node spawning and dataflow lifecycle
+- **CLI <-> Coordinator**: WebSocket (port 6013) for build/run/stop commands
+- **Coordinator <-> Daemon**: WebSocket for node spawning and dataflow lifecycle
 - **Daemon <-> Daemon**: Zenoh for distributed cross-machine communication
 - **Daemon <-> Node**: Shared memory for messages >4KB (zero-copy), TCP for small messages
 - **Data format**: Apache Arrow columnar format throughout (zero serialization overhead)

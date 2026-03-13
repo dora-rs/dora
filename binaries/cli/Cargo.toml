@@ -16,8 +16,9 @@ name = "adora"
 path = "src/main.rs"
 
 [features]
-default = ["tracing"]
+default = ["tracing", "metrics", "python"]
 tracing = ["dep:adora-tracing"]
+metrics = ["adora-runtime/metrics", "adora-coordinator/prometheus"]
 python = ["pyo3", "pyo3-build-config"]
 redb-backend = ["adora-coordinator/redb-backend", "dep:libc"]
 

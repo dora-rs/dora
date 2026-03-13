@@ -154,7 +154,7 @@ use pyo3::{
 #[cfg(feature = "python")]
 #[pyfunction]
 fn py_main(_py: Python) -> PyResult<()> {
-    pyo3::prepare_freethreaded_python();
+    Python::initialize();
     // Skip first argument as it is a python call.
     let args = std::env::args_os().skip(1).collect::<Vec<_>>();
 

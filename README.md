@@ -110,8 +110,8 @@ powershell -ExecutionPolicy ByPass -c "irm https://github.com/dora-rs/adora/rele
 | Feature | Description | Default |
 |---------|-------------|---------|
 | `tracing` | OpenTelemetry tracing support | Yes |
-| `metrics` | OpenTelemetry metrics collection | No |
-| `python` | Python operator support (PyO3) | No |
+| `metrics` | OpenTelemetry metrics collection | Yes |
+| `python` | Python operator support (PyO3) | Yes |
 | `redb-backend` | Persistent coordinator state (redb) | No |
 | `prometheus` | Prometheus `/metrics` endpoint on coordinator | No |
 
@@ -348,7 +348,7 @@ CLI  -->  Coordinator  -->  Daemon(s)  -->  Nodes / Operators
 | Layer | Protocol | Purpose |
 |-------|----------|---------|
 | CLI <-> Coordinator | WebSocket (port 6013) | Build, run, stop commands |
-| Coordinator <-> Daemon | TCP | Node spawning, dataflow lifecycle |
+| Coordinator <-> Daemon | WebSocket | Node spawning, dataflow lifecycle |
 | Daemon <-> Daemon | Zenoh | Distributed cross-machine communication |
 | Daemon <-> Node | Shared memory / TCP | Zero-copy IPC for data >4KB, TCP for small messages |
 
