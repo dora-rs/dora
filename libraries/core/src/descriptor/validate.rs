@@ -699,8 +699,6 @@ pub struct TypeCheckResult {
     pub inferences: Vec<TypeInference>,
 }
 
-/// Timer node URN prefix.
-const TIMER_PREFIX: &str = "adora/timer/";
 /// Timer nodes auto-inject this type.
 const TIMER_TYPE: &str = "std/core/v1/UInt64";
 
@@ -975,7 +973,7 @@ fn check_metadata_annotations(
     warnings: &mut Vec<TypeWarning>,
 ) {
     // Check explicit output_metadata keys exist in outputs
-    for (output_id, _) in output_metadata {
+    for output_id in output_metadata.keys() {
         if !outputs.contains(output_id) {
             warnings.push(TypeWarning {
                 node_id: node_id.to_string(),
@@ -1002,6 +1000,7 @@ fn check_metadata_annotations(
 ///
 /// Also performs type inference (Phase 3) and strict-mode unannotated checks.
 /// `timer_types` maps input IDs to auto-injected timer type URNs.
+#[allow(clippy::too_many_arguments)]
 fn check_edge_mismatches_with_compat(
     node_id: &str,
     input_types: &BTreeMap<DataId, String>,
