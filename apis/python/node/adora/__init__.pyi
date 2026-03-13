@@ -71,7 +71,7 @@ class Node:
     Use with:
 
     ```python
-    from dora import Node
+    from adora import Node
 
     node = Node()
     ```"""
@@ -88,7 +88,7 @@ class Node:
         Use with:
 
         ```python
-        from dora import Node
+        from adora import Node
 
         node = Node()
         ```"""

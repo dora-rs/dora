@@ -73,7 +73,7 @@ Levels (most to least verbose): `stdout`, `trace`, `debug`, `info`, `warn`, `err
 
 ```python
 import json
-from dora import Node
+from adora import Node
 
 node = Node()
 for event in node:

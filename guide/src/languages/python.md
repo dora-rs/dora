@@ -224,7 +224,7 @@ When `Node()` is created, it automatically installs a handler that routes Python
 
 ```python
 import logging
-from dora import Node
+from adora import Node
 
 node = Node()  # Installs the logging bridge
 
