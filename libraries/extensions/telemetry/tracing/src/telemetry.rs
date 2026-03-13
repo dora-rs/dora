@@ -53,7 +53,7 @@ pub fn init_tracing(_name: &str, endpoint: &str) -> eyre::Result<sdktrace::SdkTr
 }
 
 /// Legacy function name for backward compatibility
-#[deprecated(since = "0.3.14", note = "Use `init_tracing` instead")]
+#[deprecated(since = "0.1.0", note = "Use `init_tracing` instead")]
 pub fn init_jaeger_tracing(
     name: &str,
     endpoint: &str,

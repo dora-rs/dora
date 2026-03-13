@@ -11,6 +11,8 @@
 
 - [Architecture](concepts/architecture.md)
 - [Dataflow YAML](concepts/dataflow-yaml.md)
+- [Type Annotations](concepts/types.md)
+- [Modules](concepts/modules.md)
 - [Communication Patterns](concepts/patterns.md)
 
 # Language APIs
@@ -27,6 +29,7 @@
 - [Debugging](operations/debugging.md)
 - [Fault Tolerance](operations/fault-tolerance.md)
 - [Distributed Deployment](operations/distributed.md)
+- [Performance](operations/performance.md)
 
 # Advanced
 

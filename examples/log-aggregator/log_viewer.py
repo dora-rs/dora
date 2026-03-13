@@ -6,7 +6,7 @@ log messages from every node in the dataflow.
 
 import json
 
-from dora import Node
+from adora import Node
 
 node = Node()
 

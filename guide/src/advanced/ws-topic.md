@@ -285,4 +285,4 @@ For high-throughput topics (camera images, point clouds), the binary frame chann
 | Unit (client) | `binaries/cli/src/ws_client.rs` | `handle_response_topic_subscribe_ack` -- verifies ack routing and subscriber registration |
 | Unit (all existing) | `binaries/cli/src/ws_client.rs` | Updated to pass topic subscribe state through `handle_response` |
 
-The `TopicSubscribe` / binary frame path is primarily validated via integration testing with a running coordinator and Zenoh session. See [Testing Guide](../development/testing.md) for smoke test instructions.
+The `TopicSubscribe` / binary frame path is primarily validated via integration testing with a running coordinator and Zenoh session. See [Testing Guide](testing-guide.md) for smoke test instructions.

@@ -16,7 +16,7 @@ Instead of referencing local paths, each node specifies a Git URL and tag:
 ```yaml
 - id: rust-node
   git: https://github.com/adora-rs/adora.git
-  tag: v0.4.0
+  tag: v0.1.0
   build: cargo build -p rust-dataflow-example-node
   path: target/debug/rust-dataflow-example-node
 ```

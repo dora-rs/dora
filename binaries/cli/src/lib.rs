@@ -86,10 +86,10 @@ mod tests {
 
     #[test]
     fn pip_show_valid_output() {
-        let output = b"Name: adora-rs\nVersion: 0.4.1\nSummary: some desc\n";
+        let output = b"Name: adora-rs\nVersion: 0.1.0\nSummary: some desc\n";
         assert_eq!(
             parse_version_from_pip_show(output),
-            Some("0.4.1".to_string())
+            Some("0.1.0".to_string())
         );
     }
 

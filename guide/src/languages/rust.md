@@ -111,9 +111,9 @@ pub fn send_output_sample(
 pub fn close_outputs(&mut self, outputs_ids: Vec<DataId>) -> NodeResult<()>
 ```
 
-#### Service and Action Helpers
+#### Service, Action, and Streaming Helpers
 
-Higher-level methods for the [service and action communication patterns](../concepts/patterns.md). These use well-known metadata keys to correlate requests, goals, and responses.
+Higher-level methods for the [communication patterns](patterns.md). These use well-known metadata keys to correlate requests, goals, responses, and streaming segments.
 
 ```rust
 // Generate a unique, time-ordered ID (UUID v7) for correlation.
@@ -160,7 +160,24 @@ node.send_output("goal".into(), params, data)?;
 let gid = get_string_param(&metadata.parameters, GOAL_ID);
 ```
 
-See [patterns.md](../concepts/patterns.md) for the full guide and [examples/service-example](../../../examples/service-example) and [examples/action-example](../../../examples/action-example) for working code.
+**Streaming example** (real-time voice/video pipeline with interruption):
+```rust
+use adora_node_api::StreamSegment;
+
+// Create a streaming segment builder (auto-generates session_id)
+let mut seg = StreamSegment::new();
+
+// Send chunks with auto-incrementing seq
+node.send_stream_chunk("text".into(), &mut seg, false, chunk_data)?;
+// Mark final chunk of a segment
+node.send_stream_chunk("text".into(), &mut seg, true, last_chunk)?;
+
+// On user interruption: flush downstream queues and start a new segment
+let flush_params = seg.flush();
+node.send_output("text".into(), flush_params, empty_data)?;
+```
+
+See [patterns.md](patterns.md) for the full guide and [examples/service-example](../examples/service-example) and [examples/action-example](../examples/action-example) for working code.
 
 #### Data Allocation
 
@@ -194,7 +211,11 @@ pub fn dataflow_descriptor(&self) -> NodeResult<&Descriptor>
 
 #### Logging
 
-All log methods emit structured JSONL to stdout, which the daemon parses automatically. Works with `min_log_level` filtering and `send_logs_as` routing.
+Rust nodes have two ways to emit structured logs. Both produce identical structured log entries in the daemon.
+
+**Option 1: Node API (recommended for most cases)**
+
+All log methods emit structured JSONL to stdout, which the daemon parses automatically. Works with `min_log_level` filtering, `send_logs_as` routing, and `adora/logs` subscribers.
 
 ```rust
 // General structured log. Level: "error", "warn", "info", "debug", "trace".
@@ -216,6 +237,24 @@ pub fn log_info(&self, message: &str)
 pub fn log_debug(&self, message: &str)
 pub fn log_trace(&self, message: &str)
 ```
+
+**Option 2: Rust `tracing` crate**
+
+When adora's tracing subscriber is initialized (via `init_tracing()` or the default feature), `tracing::info!()` etc. output structured JSON to stdout that the daemon parses identically:
+
+```rust
+tracing::info!("Sensor started");
+tracing::warn!(sensor_id = "temp-01", "High temperature");
+```
+
+Use `tracing` when you want ecosystem integration (spans, instrumentation, OpenTelemetry). Use `node.log_*()` when you want explicit control or structured fields as `BTreeMap`.
+
+| Method | Structured? | Fields? | OpenTelemetry? | Best for |
+|--------|------------|---------|----------------|----------|
+| `node.log_info(msg)` | Yes | No | No | Quick one-liner |
+| `node.log_with_fields(...)` | Yes | Yes (BTreeMap) | No | Structured key-value context |
+| `tracing::info!(key = val, msg)` | Yes | Yes (spans) | Yes | Ecosystem integration, OTel |
+| `println!()` | No (`stdout` level) | No | No | Quick debugging |
 
 ---
 
@@ -248,6 +287,11 @@ pub fn drain(&mut self) -> Option<Vec<Event>>
 
 // True if no events are buffered in the scheduler or receiver.
 pub fn is_empty(&self) -> bool
+
+// Returns and resets accumulated drop counts per input ID.
+// For `drop_oldest` inputs, drops happen at `queue_size`.
+// For `backpressure` inputs, drops happen at 10x `queue_size` (hard safety cap).
+pub fn drain_drop_counts(&mut self) -> HashMap<DataId, u64>
 ```
 
 `EventStream` also implements `futures::Stream<Item = Event>`, so it can be used with `StreamExt::next()` and other combinators. Unlike `recv`/`recv_async`, the `Stream` implementation does **not** use the EventScheduler, preserving chronological event order.
@@ -331,11 +375,13 @@ pub enum Parameter {
     Timestamp(DateTime<Utc>),
 }
 
-// Extract a string parameter, returning None if missing or non-String.
+// Extract typed parameters, returning None if missing or wrong type.
 pub fn get_string_param<'a>(params: &'a MetadataParameters, key: &str) -> Option<&'a str>
+pub fn get_integer_param(params: &MetadataParameters, key: &str) -> Option<i64>
+pub fn get_bool_param(params: &MetadataParameters, key: &str) -> Option<bool>
 ```
 
-**Well-known metadata keys** (for [service and action patterns](../concepts/patterns.md)):
+**Well-known metadata keys** (for [communication patterns](patterns.md)):
 
 | Constant | Value | Used by |
 |----------|-------|---------|
@@ -345,6 +391,11 @@ pub fn get_string_param<'a>(params: &'a MetadataParameters, key: &str) -> Option
 | `GOAL_STATUS_SUCCEEDED` | `"succeeded"` | Goal completed successfully |
 | `GOAL_STATUS_ABORTED` | `"aborted"` | Goal aborted by server |
 | `GOAL_STATUS_CANCELED` | `"canceled"` | Goal canceled by client |
+| `SESSION_ID` | `"session_id"` | Streaming session identifier |
+| `SEGMENT_ID` | `"segment_id"` | Streaming segment within a session |
+| `SEQ` | `"seq"` | Streaming chunk sequence number |
+| `FIN` | `"fin"` | Last chunk of a streaming segment |
+| `FLUSH` | `"flush"` | Discard older queued messages on input |
 
 All constants are re-exported from `adora_node_api`.
 

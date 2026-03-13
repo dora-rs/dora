@@ -16,11 +16,18 @@ This guide covers how to debug, record, replay, and monitor adora dataflows. It 
   - [Replay Options](#replay-options)
   - [Selective Replay](#selective-replay)
   - [Recording File Format](#recording-file-format)
+- [Node Management](#node-management)
+  - [Node Info](#node-info)
+  - [Node Restart](#node-restart)
+  - [Node Stop](#node-stop)
 - [Topic Inspection](#topic-inspection)
   - [Listing Topics](#listing-topics)
   - [Echoing Topic Data](#echoing-topic-data)
+  - [Publishing Test Data](#publishing-test-data)
   - [Measuring Frequency](#measuring-frequency)
   - [Topic Metadata and Stats](#topic-metadata-and-stats)
+- [Runtime Parameters](#runtime-parameters)
+- [Environment Diagnosis](#environment-diagnosis)
 - [Trace Inspection](#trace-inspection)
 - [Resource Monitoring](#resource-monitoring)
 - [Log Analysis](#log-analysis)
@@ -53,7 +60,7 @@ _unstable_debug:
 
 This tells the daemon to publish all inter-node messages to Zenoh, where the coordinator can proxy them to CLI clients via WebSocket. Without this flag, topic inspection commands will return an error.
 
-The `record`, `replay`, `logs`, `list`, `top`, and `graph` commands do **not** require this flag.
+The `record`, `replay`, `logs`, `list`, `top`, `graph`, `node info/restart/stop`, `param`, and `doctor` commands do **not** require this flag. The `topic pub` command does require it.
 
 ---
 
@@ -62,32 +69,45 @@ The `record`, `replay`, `logs`, `list`, `top`, and `graph` commands do **not** r
 When something goes wrong, follow this sequence:
 
 ```bash
-# 1. Is the coordinator running?
-adora status
+# 1. Run full environment diagnosis
+adora doctor --dataflow dataflow.yml
 
 # 2. What dataflows are active?
 adora list
 
-# 3. Check node resource usage
+# 3. Inspect the problem node
+adora node info -d my-dataflow problem-node
+
+# 4. Check node resource usage
 adora top
 
-# 4. Stream logs from the problem node
+# 5. Stream logs from the problem node
 adora logs my-dataflow problem-node --follow --level debug
 
-# 5. Is the node producing output?
+# 6. Is the node producing output?
 adora topic echo -d my-dataflow problem-node/output
 
-# 6. Is it publishing at the expected rate?
+# 7. Inject test data
+adora topic pub -d my-dataflow problem-node/input '[1, 2, 3]'
+
+# 8. Is it publishing at the expected rate?
 adora topic hz -d my-dataflow --window 5
 
-# 7. View coordinator traces (no external infra needed)
+# 9. Check/modify runtime parameters
+adora param list -d my-dataflow problem-node
+adora param set -d my-dataflow problem-node debug_level 2
+
+# 10. Restart a misbehaving node (without stopping the dataflow)
+adora node restart -d my-dataflow problem-node
+
+# 11. View coordinator traces (no external infra needed)
 adora trace list
 adora trace view <trace-id-prefix>
 
-# 8. Visualize the dataflow graph
+# 12. Visualize the dataflow graph
 adora graph dataflow.yml --open
 
-# 9. Record for offline analysis
+# 13. Record for offline analysis
 adora record dataflow.yml -o debug-capture.adorec
 ```
 
@@ -242,6 +262,46 @@ The `event_bytes` field contains the raw `Timestamped<InterDaemonEvent>` bincode
 
 ---
 
+## Node Management
+
+### Node Info
+
+Get detailed information about a specific node including its status, inputs, outputs, metrics, and restart count:
+
+```bash
+adora node info -d my-dataflow camera
+
+# JSON output
+adora node info -d my-dataflow camera --format json
+```
+
+### Node Restart
+
+Restart a single node without stopping the entire dataflow. Useful for recovering a misbehaving node or picking up configuration changes:
+
+```bash
+# Restart with default grace period
+adora node restart -d my-dataflow camera
+
+# Restart with custom grace period
+adora node restart -d my-dataflow camera --grace 10s
+```
+
+The daemon sends a stop event, waits for the grace period, then respawns the node process.
+
+### Node Stop
+
+Stop a single node without stopping the entire dataflow:
+
+```bash
+adora node stop -d my-dataflow camera
+
+# With custom grace period
+adora node stop -d my-dataflow camera --grace 5s
+```
+
+---
+
 ## Topic Inspection
 
 Topic inspection commands subscribe to live dataflow messages via the coordinator's WebSocket proxy. They require `--debug` flag or `publish_all_messages_to_zenoh: true`.
@@ -302,6 +362,26 @@ The TUI displays:
 
 Press `q` or Ctrl-C to exit. Requires an interactive terminal.
 
+### Publishing Test Data
+
+Inject data into a running dataflow for testing. Requires `publish_all_messages_to_zenoh: true`.
+
+```bash
+# Publish a single Arrow array
+adora topic pub -d my-dataflow sensor/threshold '[42]'
+
+# Publish from a JSON file
+adora topic pub -d my-dataflow sensor/config --file test-config.json
+
+# Publish multiple messages
+adora topic pub -d my-dataflow sensor/trigger '[1]' --count 10
+```
+
+This is useful for:
+- Testing node behavior with known input data
+- Triggering specific code paths in downstream nodes
+- Simulating sensor inputs without hardware
+
 ### Topic Metadata and Stats
 
 One-shot statistics collection:
@@ -320,6 +400,53 @@ Reports:
 - Subscriber nodes (from descriptor)
 - Message count and bandwidth
 - Publishing frequency
+
+---
+
+## Runtime Parameters
+
+Runtime parameters let you read and modify node configuration while a dataflow is running, without restarting. Parameters are stored in the coordinator and optionally forwarded to running nodes.
+
+```bash
+# List all parameters for a node
+adora param list -d my-dataflow detector
+
+# Get a single parameter
+adora param get -d my-dataflow detector confidence
+
+# Set a parameter (value is JSON)
+adora param set -d my-dataflow detector confidence 0.8
+adora param set -d my-dataflow detector config '{"nms": 0.5, "classes": ["car", "person"]}'
+
+# Delete a parameter
+adora param delete -d my-dataflow detector confidence
+```
+
+Parameters are persisted in the coordinator store (in-memory or redb). When a node is running, `param set` also forwards the new value to the node's daemon. Nodes can read parameters through the node event stream.
+
+**Limits:** Keys max 256 bytes, values max 64KB serialized.
+
+---
+
+## Environment Diagnosis
+
+`adora doctor` performs a comprehensive health check of your environment:
+
+```bash
+# Basic diagnosis
+adora doctor
+
+# Diagnosis + dataflow validation
+adora doctor --dataflow dataflow.yml
+```
+
+Checks performed:
+1. Coordinator reachability
+2. Connected daemon status
+3. Active dataflow health
+4. Dataflow YAML validation (if `--dataflow` provided)
+
+Use this as a first step when debugging any issue, or in CI to validate the environment before running tests.
 
 ---
 
@@ -494,14 +621,24 @@ The HTML mode generates a self-contained file with an interactive mermaid.js dia
 ## Monitoring Running Dataflows
 
 ```bash
+# Full environment diagnosis
+adora doctor
+
 # List all dataflows (active and completed)
 adora list
 
 # List nodes in a specific dataflow
 adora node list -d my-dataflow
 
+# Get detailed info on a specific node
+adora node info -d my-dataflow camera
+
 # Check coordinator/daemon status
 adora status
+
+# View/modify runtime parameters
+adora param list -d my-dataflow detector
+adora param set -d my-dataflow detector threshold 0.5
 ```
 
 `adora list` shows each dataflow's UUID, name, status, and node count. Use `-d <name>` with other commands to target a specific dataflow.
@@ -590,6 +727,6 @@ adora record dataflow.yml --proxy -o remote-capture.adorec
 ## See Also
 
 - [CLI Reference](cli.md) -- complete command reference
-- [WebSocket Control Plane](../advanced/ws-control.md) -- how CLI communicates with coordinator
-- [WebSocket Topic Data Channel](../advanced/ws-topic.md) -- how topic data is proxied
-- [Testing Guide](../development/testing.md) -- running smoke tests
+- [WebSocket Control Plane](websocket-control-plane.md) -- how CLI communicates with coordinator
+- [WebSocket Topic Data Channel](websocket-topic-data-channel.md) -- how topic data is proxied
+- [Testing Guide](testing-guide.md) -- running smoke tests

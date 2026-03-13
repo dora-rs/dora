@@ -48,8 +48,8 @@ adora run examples/python-dataflow/dataflow.yml --uv --stop-after 10s
 
 ## Workspace Layout
 
-- **Rust edition 2024, MSRV 1.85.0, version 0.4.1** (all crates share workspace version)
-- Python packages use PyO3 0.23 and are built with **maturin**, not cargo
+- **Rust edition 2024, MSRV 1.85.0, version 0.1.0** (all crates share workspace version)
+- Python packages use PyO3 0.28 and are built with **maturin**, not cargo
 
 ### Key crates
 
@@ -169,4 +169,4 @@ For quick local validation: `./scripts/smoke-all.sh`
 - Discuss non-trivial changes in a GitHub issue or Discord first
 - Don't fix unrelated warnings in PRs
 - Python packages are distributed via PyPI (`adora-rs-cli`, `adora-node-api`)
-- Release profile `dist` uses thin LTO
+- Release profile `dist` uses fat LTO

@@ -408,10 +408,10 @@ check_cargo_toml_version() {
   # Use find with -exec to properly handle file paths
   find . -name "Cargo.toml" -not -path "*/target/*" 2>/dev/null | while IFS= read -r cargo_toml; do
     # Extract adora-node-api version from Cargo.toml
-    # Matches patterns like: adora-node-api = { version = "0.4.1" or adora-node-api = "0.4.1"
+    # Matches patterns like: adora-node-api = { version = "0.1.0" or adora-node-api = "0.1.0"
     cargo_version=$(grep -E 'adora-node-api *=' "$cargo_toml" 2>/dev/null | head -1 | sed -n 's/.*version *= *"\([^"]*\)".*/\1/p' || true)
     if [ -z "$cargo_version" ]; then
-      # Try simple format: adora-node-api = "0.4.1"
+      # Try simple format: adora-node-api = "0.1.0"
       cargo_version=$(grep -E 'adora-node-api *=' "$cargo_toml" 2>/dev/null | head -1 | sed -n 's/.*= *"\([^"]*\)".*/\1/p' || true)
     fi
 

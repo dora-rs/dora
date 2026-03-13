@@ -11,6 +11,7 @@ Adora (AI-Dora, Dataflow-Oriented Robotic Architecture) is a 100% Rust framework
 - [Command Reference](#command-reference)
   - [Lifecycle](#lifecycle-commands)
   - [Monitoring](#monitoring-commands)
+  - [Debugging](#debugging-commands)
   - [Setup](#setup-commands)
   - [Utility](#utility-commands)
   - [Self-Management](#self-management-commands)
@@ -18,10 +19,10 @@ Adora (AI-Dora, Dataflow-Oriented Robotic Architecture) is a 100% Rust framework
 - [Architecture Guide](#architecture-guide)
 - [Writing Nodes](#writing-nodes)
 - [Writing Operators](#writing-operators)
-- [Distributed Deployments](#distributed-deployments) -- see also [Distributed Deployment Guide](distributed.md) for cluster management, scheduling, and operations
+- [Distributed Deployments](#distributed-deployments) -- see also [Distributed Deployment Guide](distributed-deployment.md) for cluster management, scheduling, and operations
 - [Troubleshooting](#troubleshooting)
 - [Debugging and Observability](debugging.md) -- standalone guide covering record/replay, topic inspection, log analysis, and resource monitoring
-- **API References:** [Rust](../languages/rust.md) | [Python](../languages/python.md) | [C](../languages/c.md) | [C++](../languages/cpp.md)
+- **API References:** [Rust](api-rust.md) | [Python](api-python.md) | [C](api-c.md) | [C++](api-cxx.md)
 
 ---
 
@@ -149,6 +150,7 @@ nodes:
       sensor_data:
         source: sensor/frames
         queue_size: 10            # input buffer size (default: 10)
+        queue_policy: drop_oldest # or "backpressure" (buffers up to 10x queue_size)
         input_timeout: 5.0        # circuit breaker timeout in seconds
 
     # --- Outputs ---
@@ -336,6 +338,9 @@ adora build <PATH> [OPTIONS]
 | `<PATH>` | required | Dataflow descriptor path |
 | `--uv` | false | Use `uv` for Python builds |
 | `--local` | false | Force local build (skip coordinator) |
+| `--strict-types` | false | Treat type warnings as errors (non-zero exit code) |
+
+**Type checking:** After expanding modules, `build` runs the same type checks as `validate`. Warnings are printed by default; use `--strict-types` (or set `strict_types: true` in the YAML) to fail the build on type mismatches. User-defined types in a `types/` directory next to the dataflow are loaded automatically.
 
 **Build strategy:** If nodes have `_unstable_deploy` sections and a coordinator is reachable, builds are distributed to target machines. Otherwise, builds run locally.
 
@@ -630,6 +635,8 @@ Subscribes to the topic for the specified duration and reports: type (Arrow sche
 
 Manage and inspect dataflow nodes.
 
+##### `adora node list`
+
 ```
 adora node list [OPTIONS]
 ```
@@ -637,6 +644,176 @@ adora node list [OPTIONS]
 Lists nodes in a running dataflow with their status, CPU, memory, and restart count.
 
 **Columns:** NODE, STATUS, PID, CPU%, MEMORY (MB), RESTARTS, DATAFLOW
+
+##### `adora node info`
+
+Show detailed information about a specific node including status, inputs, outputs, and metrics.
+
+```
+adora node info <NODE> [OPTIONS]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `<NODE>` | required | Node ID to inspect |
+| `-d <DATAFLOW>`, `--dataflow` | interactive | Dataflow UUID or name |
+| `-f <FORMAT>`, `--format` | `table` | Output format: `table\|json` |
+
+##### `adora node restart`
+
+Restart a single node within a running dataflow. The daemon stops the node process and respawns it.
+
+```
+adora node restart <NODE> [OPTIONS]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `<NODE>` | required | Node ID to restart |
+| `-d <DATAFLOW>`, `--dataflow` | interactive | Dataflow UUID or name |
+| `--grace <DURATION>` | | Grace period before force-killing the node |
+
+##### `adora node stop`
+
+Stop a single node within a running dataflow without stopping the entire dataflow.
+
+```
+adora node stop <NODE> [OPTIONS]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `<NODE>` | required | Node ID to stop |
+| `-d <DATAFLOW>`, `--dataflow` | interactive | Dataflow UUID or name |
+| `--grace <DURATION>` | | Grace period before force-killing the node |
+
+#### `adora topic pub`
+
+Publish JSON data to a topic in a running dataflow. Requires `publish_all_messages_to_zenoh: true`.
+
+```
+adora topic pub <TOPIC> [DATA] [OPTIONS]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `<TOPIC>` | required | Topic to publish to (format: `node_id/output_id`) |
+| `[DATA]` | | JSON data to publish (required unless `--file`) |
+| `--file <PATH>` | | Read data from a JSON file instead of command line |
+| `--count <N>` | `1` | Number of messages to publish |
+| `-d <DATAFLOW>`, `--dataflow` | required | Dataflow UUID or name |
+
+**Examples:**
+
+```bash
+# Publish a single value
+adora topic pub -d my-app sensor/threshold '[42]'
+
+# Publish from file, 10 times
+adora topic pub -d my-app sensor/config --file config.json --count 10
+```
+
+#### `adora param`
+
+Manage runtime parameters for nodes. Parameters are persisted in the coordinator store and optionally forwarded to running nodes.
+
+##### `adora param list`
+
+List all runtime parameters for a node.
+
+```
+adora param list <NODE> [OPTIONS]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `<NODE>` | required | Node ID |
+| `-d <DATAFLOW>`, `--dataflow` | interactive | Dataflow UUID or name |
+| `--format <FMT>` | `table` | Output format: `table\|json` |
+
+##### `adora param get`
+
+Get a single runtime parameter value.
+
+```
+adora param get <NODE> <KEY> [OPTIONS]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `<NODE>` | required | Node ID |
+| `<KEY>` | required | Parameter key |
+| `-d <DATAFLOW>`, `--dataflow` | interactive | Dataflow UUID or name |
+
+##### `adora param set`
+
+Set a runtime parameter. The value is JSON. The parameter is stored in the coordinator and forwarded to the node if it is running.
+
+```
+adora param set <NODE> <KEY> <VALUE> [OPTIONS]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `<NODE>` | required | Node ID |
+| `<KEY>` | required | Parameter key (max 256 bytes) |
+| `<VALUE>` | required | Parameter value as JSON (max 64KB serialized) |
+| `-d <DATAFLOW>`, `--dataflow` | interactive | Dataflow UUID or name |
+
+**Examples:**
+
+```bash
+# Set a numeric parameter
+adora param set -d my-app sensor threshold 42
+
+# Set a string parameter
+adora param set -d my-app camera resolution '"1080p"'
+
+# Set a complex parameter
+adora param set -d my-app detector config '{"confidence": 0.8, "nms": 0.5}'
+```
+
+##### `adora param delete`
+
+Delete a runtime parameter.
+
+```
+adora param delete <NODE> <KEY> [OPTIONS]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `<NODE>` | required | Node ID |
+| `<KEY>` | required | Parameter key |
+| `-d <DATAFLOW>`, `--dataflow` | interactive | Dataflow UUID or name |
+
+#### `adora doctor`
+
+Diagnose environment, coordinator/daemon connectivity, and optionally validate a dataflow YAML.
+
+```
+adora doctor [OPTIONS]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--dataflow <PATH>` | | Path to a dataflow YAML to validate |
+
+Checks performed:
+1. Coordinator reachability
+2. Daemon connectivity
+3. Active dataflow status
+4. Dataflow YAML validation (if `--dataflow` provided)
+
+**Examples:**
+
+```bash
+# Basic health check
+adora doctor
+
+# Check environment + validate a dataflow
+adora doctor --dataflow dataflow.yml
+```
 
 #### `adora trace list`
 
@@ -724,6 +901,31 @@ adora new <NAME> [OPTIONS]
 | `--kind <KIND>` | `dataflow` | `dataflow\|node` |
 | `--lang <LANG>` | `rust` | `rust\|python\|c\|cxx` |
 
+#### `adora expand`
+
+Expand module references in a dataflow and print the resulting flat YAML. Useful for debugging module composition.
+
+```
+adora expand <PATH> [OPTIONS]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `<PATH>` | required | Dataflow descriptor (or module file with `--module`) |
+| `--module` | false | Validate a standalone module file instead of a full dataflow |
+
+**Examples:**
+
+```bash
+# Expand a dataflow with modules
+adora expand dataflow.yml
+
+# Validate a module file
+adora expand --module modules/navigation.module.yml
+```
+
+See the [Modules Guide](modules.md) for full documentation on module composition.
+
 #### `adora graph`
 
 Visualize a dataflow as a graph.
@@ -738,7 +940,7 @@ adora graph <PATH> [OPTIONS]
 | `--mermaid` | false | Output Mermaid diagram text |
 | `--open` | false | Open HTML in browser |
 
-Without `--mermaid`, generates an interactive HTML file using mermaid.js.
+Without `--mermaid`, generates an interactive HTML file using mermaid.js. When outputs have type annotations, edge labels include the type name (e.g. `image [Image]`).
 
 ```bash
 # Generate HTML
@@ -747,6 +949,41 @@ adora graph dataflow.yml --open
 # Generate Mermaid for GitHub markdown
 adora graph dataflow.yml --mermaid
 ```
+
+#### `adora validate`
+
+Validate a dataflow YAML file and check type annotations.
+
+```
+adora validate <PATH> [OPTIONS]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `<PATH>` | required | Dataflow descriptor path |
+| `--strict-types` | false | Treat warnings as errors (non-zero exit code for CI) |
+
+Checks:
+1. **Key existence**: `output_types`/`input_types` keys exist in the corresponding `outputs`/`inputs` lists
+2. **URN resolution**: All type URNs resolve in the standard or user-defined type library
+3. **Edge compatibility**: Connected edges have compatible types (exact match, widening, or user-defined rules)
+4. **Parameterized types**: Parameter mismatches (e.g. `AudioFrame[sample_type=f32]` vs `AudioFrame[sample_type=i16]`)
+5. **Timer auto-typing**: Timer inputs are automatically typed as `std/core/v1/UInt64`
+6. **Type inference**: When only upstream annotates a type, it is inferred on the downstream input
+7. **Metadata patterns**: `output_metadata` keys and `pattern` shorthands are validated
+8. **Schema compatibility**: Struct types are checked at the field level (missing/wrong fields)
+
+User-defined types in a `types/` directory next to the dataflow are loaded automatically.
+
+```bash
+# Validate with warnings
+adora validate dataflow.yml
+
+# Strict mode for CI (exit 1 on warnings)
+adora validate --strict-types dataflow.yml
+```
+
+See the [Type Annotations Guide](types.md) for the full type library and usage details.
 
 ---
 
@@ -823,6 +1060,7 @@ All environment variables serve as fallbacks. CLI flags always take precedence.
 | `ADORA_LOG_FORMAT` | `pretty` | `run`, `logs` | Default output format |
 | `ADORA_LOG_FILTER` | | `run`, `logs` | Default per-node level overrides |
 | `ADORA_ALLOW_SHELL_NODES` | | `run` | Enable shell node execution |
+| `ADORA_RUNTIME_TYPE_CHECK` | | `run`, `start` | Runtime type checking: `warn` (log mismatches) or `error` (fail on mismatch). See [Type Annotations](types.md#runtime-type-checking) |
 
 ```bash
 # Set defaults for a development session
@@ -1257,7 +1495,7 @@ adora coordinator --store redb
 
 State is persisted to `~/.adora/coordinator.redb`. On restart, stale dataflows are marked as failed and the coordinator resumes normal operation.
 
-> For managed cluster deployments (cluster.yml, SSH-based lifecycle, label scheduling, systemd services, rolling upgrades), see the [Distributed Deployment Guide](distributed.md).
+> For managed cluster deployments (cluster.yml, SSH-based lifecycle, label scheduling, systemd services, rolling upgrades), see the [Distributed Deployment Guide](distributed-deployment.md).
 
 ---
 
@@ -1302,29 +1540,42 @@ State is persisted to `~/.adora/coordinator.redb`. On restart, stale dataflows a
 ### Debug Workflow
 
 ```bash
-# 1. Check infrastructure
-adora status
+# 1. Full environment diagnosis
+adora doctor --dataflow dataflow.yml
 
 # 2. Start with verbose logging and debug topics
 adora run dataflow.yml --log-level trace --debug
 
-# 3. Monitor specific node
+# 3. Inspect a specific node
+adora node info -d my-dataflow problem-node
+
+# 4. Monitor specific node logs
 adora logs my-dataflow problem-node --follow --level debug
 
-# 4. Check resource usage
+# 5. Check resource usage
 adora top
 
-# 5. Inspect topic data
+# 6. Inspect topic data
 adora topic echo -d my-dataflow problem-node/output
 
-# 6. Measure frequencies
+# 7. Publish test data to a topic
+adora topic pub -d my-dataflow problem-node/input '[1, 2, 3]'
+
+# 8. Measure frequencies
 adora topic hz -d my-dataflow --window 5
 
-# 7. View coordinator traces (no external infra needed)
+# 9. View/modify runtime parameters
+adora param list -d my-dataflow problem-node
+adora param set -d my-dataflow problem-node threshold 42
+
+# 10. Restart a misbehaving node without stopping the dataflow
+adora node restart -d my-dataflow problem-node
+
+# 11. View coordinator traces (no external infra needed)
 adora trace list
 adora trace view <trace-id-prefix>
 
-# 8. Visualize dataflow graph
+# 12. Visualize dataflow graph
 adora graph dataflow.yml --open
 ```
 

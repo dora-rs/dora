@@ -27,8 +27,8 @@ Adora is built on four core principles:
 
 ## Workspace Structure
 
-**Rust edition 2024, MSRV 1.85.0, workspace version 0.4.1.**
-`adora-message` is independently versioned at 0.7.0.
+**Rust edition 2024, MSRV 1.85.0, workspace version 0.1.0.**
+All crates share the workspace version.
 
 ### Binaries (7)
 
@@ -46,7 +46,7 @@ Adora is built on four core principles:
 
 | Path | Crate | Role |
 |------|-------|------|
-| `libraries/message` | adora-message (v0.7.0) | All inter-component message types, protocol definitions, Arrow metadata |
+| `libraries/message` | adora-message | All inter-component message types, protocol definitions, Arrow metadata |
 | `libraries/core` | adora-core | Dataflow descriptor parsing, build utilities, Zenoh config |
 | `libraries/shared-memory-server` | shared-memory-server | Zero-copy IPC for messages >= 4 KiB |
 | `libraries/recording` | adora-recording | Recording format (.adorec): bincode header + entries + footer |

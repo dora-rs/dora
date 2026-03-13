@@ -1,10 +1,11 @@
 # Communication Patterns
 
 Adora is a dataflow framework based on pub/sub message passing. On top of
-basic topics, the framework supports **service** (request/reply) and **action**
-(goal/feedback/result) patterns using well-known metadata keys. No changes to
-the daemon, coordinator, or YAML syntax are required -- the patterns are
-implemented as conventions at the node API level.
+basic topics, the framework supports **service** (request/reply), **action**
+(goal/feedback/result), and **streaming** (session/segment/chunk) patterns
+using well-known metadata keys. No changes to the daemon, coordinator, or
+YAML syntax are required -- the patterns are implemented as conventions at
+the node API level.
 
 ## 1. Topic (pub/sub)
 
@@ -118,21 +119,105 @@ sends a result with `goal_status = "canceled"`.
 
 **Example**: `examples/action-example/`
 
-## 4. Choosing a pattern
+## 4. Streaming (session/segment/chunk)
 
-| Need a response? | Long-running? | Cancelable? | Pattern |
-|:-:|:-:|:-:|---------|
-| No | - | - | **Topic** |
-| Yes | No | No | **Service** |
-| Yes | Yes | Optional | **Action** |
+For real-time pipelines (voice, video, sensor streams) where a user can
+interrupt mid-stream and queued data must be discarded.
 
-## 5. Important details
+### Well-known metadata keys
+
+| Key | Type | Constant | Description |
+|-----|------|----------|-------------|
+| `session_id` | String | `SESSION_ID` | Identifies the conversation/session |
+| `segment_id` | Integer | `SEGMENT_ID` | Logical unit within a session (e.g. one utterance) |
+| `seq` | Integer | `SEQ` | Chunk sequence number within a segment |
+| `fin` | Bool | `FIN` | `true` on the last chunk of a segment |
+| `flush` | Bool | `FLUSH` | `true` to discard older queued messages on this input |
+
+### YAML
+
+```yaml
+nodes:
+  - id: asr
+    inputs:
+      mic: mic-source/audio
+    outputs:
+      - text
+
+  - id: llm
+    inputs:
+      text: asr/text
+    outputs:
+      - tokens
+
+  - id: tts
+    inputs:
+      tokens: llm/tokens
+    outputs:
+      - audio
+```
+
+### Node API
+
+```rust
+use adora_node_api::{StreamSegment, AdoraNode};
+
+let mut seg = StreamSegment::new();
+
+// Send chunks with auto-incrementing seq (e.g. inside an ASR node)
+node.send_stream_chunk("text".into(), &mut seg, false, chunk_data)?;
+// Mark final chunk of a segment
+node.send_stream_chunk("text".into(), &mut seg, true, last_chunk)?;
+
+// On user interruption: flush downstream queues and start a new segment.
+// The prior segment ends without a fin=true signal -- old data is discarded.
+let flush_params = seg.flush();
+node.send_output("text".into(), flush_params, empty_data)?;
+```
+
+### Queue flush behavior
+
+When a message arrives with `flush: true` in its metadata, the
+receiver's input queue is cleared of all older messages before the
+flush message is delivered. This enables instant interruption in
+voice pipelines -- when the user speaks over TTS output, the ASR node
+sends a new segment with `flush: true`, and the TTS node immediately
+discards any queued audio chunks from the previous response.
+
+**Note**: flush discards *all* queued messages on the input regardless of
+`session_id`. Do not multiplex independent sessions on a single input
+when using flush.
+
+### Python
+
+```python
+# Streaming metadata is a plain dict
+params = {
+    "session_id": session_id,
+    "segment_id": 1,
+    "seq": 0,
+    "fin": False,
+    "flush": True,  # flush older queued messages
+}
+node.send_output("text", data, metadata={"parameters": params})
+```
+
+## 5. Choosing a pattern
+
+| Need a response? | Long-running? | Cancelable? | Real-time stream? | Pattern |
+|:-:|:-:|:-:|:-:|---------|
+| No | - | - | No | **Topic** |
+| Yes | No | No | No | **Service** |
+| Yes | Yes | Optional | No | **Action** |
+| No | Yes | Via flush | Yes | **Streaming** |
+
+## 6. Important details
 
 - **`goal_status` matching is case-sensitive.** Always use the exact lowercase
   values: `"succeeded"`, `"aborted"`, `"canceled"`. The ROS2 bridge defaults
   to `Aborted` for unrecognised values.
 
-## 6. Python compatibility
+## 7. Python compatibility
 
 Python nodes use the same metadata conventions. Parameters are plain dicts
 with string keys:

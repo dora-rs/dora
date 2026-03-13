@@ -156,7 +156,7 @@ The CLI connects to `/api/control` to send `ControlRequest` commands and receive
 | `BuildLogSubscribe` | Subscribe to live build logs |
 | `CliAndDefaultDaemonOnSameMachine` | Check co-location |
 | `GetNodeInfo` | Get node metadata |
-| `TopicSubscribe` | Subscribe to live topic data via binary WS frames ([details](ws-topic.md)) |
+| `TopicSubscribe` | Subscribe to live topic data via binary WS frames ([details](websocket-topic-data-channel.md)) |
 | `TopicUnsubscribe` | Cancel a topic subscription |
 
 ### Log subscription flow
@@ -200,7 +200,7 @@ The session loop maintains:
 - `pending_topic_subscribes: HashMap<Uuid, (ack_tx, data_tx)>` -- for topic subscribe ack routing
 - `topic_subscribers: HashMap<Uuid, std_mpsc::Sender>` -- for binary frame dispatch by subscription UUID
 
-Binary WS frames (topic data) are dispatched separately from text frames. See [WebSocket Topic Data Channel](ws-topic.md) for details.
+Binary WS frames (topic data) are dispatched separately from text frames. See [WebSocket Topic Data Channel](websocket-topic-data-channel.md) for details.
 
 On disconnect, all pending requests receive an error via their oneshot channels.
 

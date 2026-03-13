@@ -24,7 +24,7 @@ Start here if you're unsure which approach fits your use case.
 
 ```python
 import logging
-from dora import Node
+from adora import Node
 
 node = Node()  # Automatically bridges Python logging -> adora
 
@@ -585,7 +585,7 @@ The `level` parameter accepts `"error"`, `"warn"` (or `"warning"`), `"info"`, `"
 Python nodes have three ways to log, all producing structured log entries:
 
 ```python
-from dora import Node
+from adora import Node
 import logging
 
 node = Node()
