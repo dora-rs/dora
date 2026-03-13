@@ -373,7 +373,7 @@ binaries/
   replay-node/          # Recorded message replayer
 libraries/
   core/                 # Descriptor parsing, build utilities
-  message/              # Inter-component message types (v0.7.0)
+  message/              # Inter-component message types
   shared-memory-server/ # Zero-copy IPC
   arrow-convert/        # Arrow data conversion
   recording/            # .adorec recording format
@@ -467,6 +467,7 @@ See [docs/patterns.md](docs/patterns.md) for the full guide.
 | [log-sink-tcp](examples/log-sink-tcp) | YAML | TCP-based log sink |
 | [log-sink-file](examples/log-sink-file) | YAML | File-based log sink |
 | [log-sink-alert](examples/log-sink-alert) | YAML | Alert-based log sink |
+| [log-aggregator](examples/log-aggregator) | Python | Centralized log aggregation via `adora/logs` |
 
 ### Performance
 

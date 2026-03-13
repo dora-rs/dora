@@ -328,7 +328,7 @@ binaries/
   replay-node/          # 录制消息回放器
 libraries/
   core/                 # 描述符解析、构建工具
-  message/              # 组件间消息类型（v0.7.0）
+  message/              # 组件间消息类型
   shared-memory-server/ # 零拷贝 IPC
   arrow-convert/        # Arrow 数据转换
   recording/            # .adorec 录制格式
@@ -415,6 +415,7 @@ examples/               # 示例数据流
 | [log-sink-tcp](examples/log-sink-tcp) | YAML | 基于 TCP 的日志接收器 |
 | [log-sink-file](examples/log-sink-file) | YAML | 基于文件的日志接收器 |
 | [log-sink-alert](examples/log-sink-alert) | YAML | 基于告警的日志接收器 |
+| [log-aggregator](examples/log-aggregator) | Python | 通过 `adora/logs` 集中日志聚合 |
 
 ### 性能
 

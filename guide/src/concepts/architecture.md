@@ -39,7 +39,7 @@ binaries/
   replay-node/          # Recorded message replayer
 libraries/
   core/                 # Descriptor parsing, build utilities
-  message/              # Inter-component message types (v0.7.0)
+  message/              # Inter-component message types
   shared-memory-server/ # Zero-copy IPC
   arrow-convert/        # Arrow data conversion
   recording/            # .adorec recording format
