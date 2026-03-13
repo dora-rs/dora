@@ -168,6 +168,10 @@ jobs:
           pattern: dist-*
           merge-multiple: true
           path: release-assets/
+      - name: Copy install scripts to release assets
+        run: |
+          cp install.sh release-assets/adora-cli-installer.sh
+          cp install.ps1 release-assets/adora-cli-installer.ps1
       - name: Generate changelog
         uses: orhun/git-cliff-action@v3
         id: cliff
