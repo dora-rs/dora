@@ -12,10 +12,9 @@ body = """
 {% endif %}\
 {% for group, commits in commits | group_by(attribute="group") %}
 ### {{ group | upper_first }}
-{% for commit in commits %}\
-- {{ commit.message | split(pat="\n") | first | upper_first }} \
-([{{ commit.id | truncate(length=7, end="") }}](https://github.com/dora-rs/adora/commit/{{ commit.id }}))\
-{% endfor %}
+{% for commit in commits %}
+- {{ commit.message | split(pat="\n") | first | upper_first }} ([{{ commit.id | truncate(length=7, end="") }}](https://github.com/dora-rs/adora/commit/{{ commit.id }}))
+{%- endfor %}
 {% endfor %}\n
 """
 trim = true
