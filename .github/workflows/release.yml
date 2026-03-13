@@ -116,7 +116,7 @@ jobs:
         with:
           packages-dir: dist/
 
-  # ── 4. Build CLI binaries via cargo-dist ──────────────────────────────────
+  # ── 4. Build CLI binaries ─────────────────────────────────────────────────
   dist:
     name: Build CLI binaries (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
@@ -134,20 +134,25 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
+      - name: Install cross-compilation tools (aarch64-linux)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
       - name: Build CLI for ${{ matrix.target }}
         run: cargo build -p adora-cli --release --target ${{ matrix.target }}
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
       - name: Package binary (unix)
         if: runner.os != 'Windows'
         run: |
           mkdir -p artifacts
-          cp target/${{ matrix.target }}/release/adora-cli artifacts/adora
+          cp target/${{ matrix.target }}/release/adora artifacts/adora
           tar czf artifacts/adora-${{ matrix.target }}.tar.gz -C artifacts adora
       - name: Package binary (windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path artifacts
-          Copy-Item "target/${{ matrix.target }}/release/adora-cli.exe" "artifacts/adora.exe"
+          Copy-Item "target/${{ matrix.target }}/release/adora.exe" "artifacts/adora.exe"
           Compress-Archive -Path "artifacts/adora.exe" -DestinationPath "artifacts/adora-${{ matrix.target }}.zip"
       - uses: actions/upload-artifact@v4
         with:
