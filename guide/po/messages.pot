@@ -1492,7 +1492,7 @@ msgstr ""
 
 #: src/concepts/architecture.md:30
 msgid ""
-"**Rust edition 2024, MSRV 1.85.0, workspace version 0.4.1.** All crates "
+"**Rust edition 2024, MSRV 1.85.0, workspace version 0.1.0.** All crates "
 "share the workspace version."
 msgstr ""
 

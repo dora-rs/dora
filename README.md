@@ -491,7 +491,7 @@ See [docs/patterns.md](docs/patterns.md) for the full guide.
 
 ## Development
 
-**Rust edition 2024, MSRV 1.85.0, workspace version 0.4.1.**
+**Rust edition 2024, MSRV 1.85.0, workspace version 0.1.0.**
 
 ### Build
 

@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "action-example-client"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "adora-node-api",
  "arrow",
@@ -13,7 +13,7 @@ dependencies = [
 
 [[package]]
 name = "action-example-server"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "adora-node-api",
  "arrow",
@@ -28,7 +28,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "adora-arrow-convert"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "arrow",
  "chrono",
@@ -39,7 +39,7 @@ dependencies = [
 
 [[package]]
 name = "adora-cli"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "adora-coordinator",
  "adora-core",
@@ -96,7 +96,7 @@ dependencies = [
 
 [[package]]
 name = "adora-cli-api-python"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "adora-cli",
  "adora-download",
@@ -110,7 +110,7 @@ dependencies = [
 
 [[package]]
 name = "adora-coordinator"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "adora-coordinator-store",
  "adora-core",
@@ -140,7 +140,7 @@ dependencies = [
 
 [[package]]
 name = "adora-coordinator-store"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "adora-message",
  "bincode 2.0.1",
@@ -154,7 +154,7 @@ dependencies = [
 
 [[package]]
 name = "adora-core"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "adora-message",
  "arrow-schema",
@@ -183,7 +183,7 @@ dependencies = [
 
 [[package]]
 name = "adora-daemon"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "adora-arrow-convert",
  "adora-core",
@@ -231,7 +231,7 @@ dependencies = [
 
 [[package]]
 name = "adora-download"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "eyre",
  "reqwest",
@@ -265,7 +265,7 @@ dependencies = [
 
 [[package]]
 name = "adora-log-utils"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "adora-arrow-convert",
  "adora-message",
@@ -277,7 +277,7 @@ dependencies = [
 
 [[package]]
 name = "adora-message"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "aligned-vec",
  "arrow-data",
@@ -305,7 +305,7 @@ dependencies = [
 
 [[package]]
 name = "adora-metrics"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "eyre",
  "opentelemetry",
@@ -316,7 +316,7 @@ dependencies = [
 
 [[package]]
 name = "adora-node-api"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "adora-arrow-convert",
  "adora-core",
@@ -350,7 +350,7 @@ dependencies = [
 
 [[package]]
 name = "adora-node-api-c"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "adora-node-api",
  "arrow-array",
@@ -360,7 +360,7 @@ dependencies = [
 
 [[package]]
 name = "adora-node-api-cxx"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "adora-node-api",
  "adora-ros2-bridge",
@@ -380,7 +380,7 @@ dependencies = [
 
 [[package]]
 name = "adora-node-api-python"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "adora-node-api",
  "adora-operator-api-python",
@@ -401,7 +401,7 @@ dependencies = [
 
 [[package]]
 name = "adora-operator-api"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "adora-arrow-convert",
  "adora-operator-api-macros",
@@ -410,14 +410,14 @@ dependencies = [
 
 [[package]]
 name = "adora-operator-api-c"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "adora-operator-api-types",
 ]
 
 [[package]]
 name = "adora-operator-api-cxx"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "adora-operator-api",
  "cxx",
@@ -426,7 +426,7 @@ dependencies = [
 
 [[package]]
 name = "adora-operator-api-macros"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -435,7 +435,7 @@ dependencies = [
 
 [[package]]
 name = "adora-operator-api-python"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "adora-node-api",
  "aligned-vec",
@@ -452,7 +452,7 @@ dependencies = [
 
 [[package]]
 name = "adora-operator-api-types"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "adora-arrow-convert",
  "arrow",
@@ -461,7 +461,7 @@ dependencies = [
 
 [[package]]
 name = "adora-record-node"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "adora-message",
  "adora-node-api",
@@ -474,7 +474,7 @@ dependencies = [
 
 [[package]]
 name = "adora-recording"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "eyre",
  "tempfile",
@@ -483,7 +483,7 @@ dependencies = [
 
 [[package]]
 name = "adora-replay-node"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "adora-message",
  "adora-node-api",
@@ -494,7 +494,7 @@ dependencies = [
 
 [[package]]
 name = "adora-ros2-bridge"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "adora-cli",
  "adora-daemon",
@@ -520,7 +520,7 @@ dependencies = [
 
 [[package]]
 name = "adora-ros2-bridge-arrow"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "adora-ros2-bridge-msg-gen",
  "arrow",
@@ -531,7 +531,7 @@ dependencies = [
 
 [[package]]
 name = "adora-ros2-bridge-msg-gen"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "glob",
@@ -549,7 +549,7 @@ dependencies = [
 
 [[package]]
 name = "adora-ros2-bridge-node"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "adora-message",
  "adora-node-api",
@@ -569,7 +569,7 @@ dependencies = [
 
 [[package]]
 name = "adora-ros2-bridge-python"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "adora-ros2-bridge",
  "adora-ros2-bridge-arrow",
@@ -584,7 +584,7 @@ dependencies = [
 
 [[package]]
 name = "adora-runtime"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "adora-core",
  "adora-download",
@@ -612,7 +612,7 @@ dependencies = [
 
 [[package]]
 name = "adora-tracing"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "eyre",
  "opentelemetry",
@@ -1182,7 +1182,7 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
 name = "benchmark-example-node"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "adora-node-api",
  "eyre",
@@ -1193,7 +1193,7 @@ dependencies = [
 
 [[package]]
 name = "benchmark-example-sink"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "adora-node-api",
  "eyre",
@@ -3752,7 +3752,7 @@ dependencies = [
 
 [[package]]
 name = "log-sink-alert"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "adora-arrow-convert",
  "adora-log-utils",
@@ -3763,7 +3763,7 @@ dependencies = [
 
 [[package]]
 name = "log-sink-file"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "adora-log-utils",
  "adora-node-api",
@@ -3772,7 +3772,7 @@ dependencies = [
 
 [[package]]
 name = "log-sink-tcp"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "adora-log-utils",
  "adora-node-api",
@@ -3964,7 +3964,7 @@ dependencies = [
 
 [[package]]
 name = "multiple-daemons-example-node"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "adora-node-api",
  "eyre",
@@ -3975,14 +3975,14 @@ dependencies = [
 
 [[package]]
 name = "multiple-daemons-example-operator"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "adora-operator-api",
 ]
 
 [[package]]
 name = "multiple-daemons-example-sink"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "adora-node-api",
  "eyre",
@@ -5236,7 +5236,7 @@ dependencies = [
 
 [[package]]
 name = "receive_data"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "adora-node-api",
  "chrono",
@@ -5471,7 +5471,7 @@ dependencies = [
 
 [[package]]
 name = "rust-dataflow-example-node"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "adora-node-api",
  "eyre",
@@ -5484,7 +5484,7 @@ dependencies = [
 
 [[package]]
 name = "rust-dataflow-example-sink"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "adora-node-api",
  "eyre",
@@ -5492,7 +5492,7 @@ dependencies = [
 
 [[package]]
 name = "rust-dataflow-example-sink-dynamic"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "adora-node-api",
  "eyre",
@@ -5500,7 +5500,7 @@ dependencies = [
 
 [[package]]
 name = "rust-dataflow-example-status-node"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "adora-node-api",
  "eyre",
@@ -5519,7 +5519,7 @@ dependencies = [
 
 [[package]]
 name = "rust-ros2-example-node"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "adora-node-api",
  "adora-ros2-bridge",
@@ -6063,7 +6063,7 @@ dependencies = [
 
 [[package]]
 name = "service-example-client"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "adora-node-api",
  "arrow",
@@ -6072,7 +6072,7 @@ dependencies = [
 
 [[package]]
 name = "service-example-server"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "adora-node-api",
  "arrow",
@@ -6128,7 +6128,7 @@ dependencies = [
 
 [[package]]
 name = "shared-memory-server"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "bincode 1.3.3",
  "criterion",
@@ -8232,7 +8232,7 @@ dependencies = [
 
 [[package]]
 name = "yaml-bridge-action-goal"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "adora-node-api",
  "arrow",
@@ -8241,7 +8241,7 @@ dependencies = [
 
 [[package]]
 name = "yaml-bridge-action-server-handler"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "adora-node-api",
  "arrow",
@@ -8250,7 +8250,7 @@ dependencies = [
 
 [[package]]
 name = "yaml-bridge-service-handler"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "adora-node-api",
  "arrow",
@@ -8259,7 +8259,7 @@ dependencies = [
 
 [[package]]
 name = "yaml-bridge-service-requester"
-version = "0.4.1"
+version = "0.1.0"
 dependencies = [
  "adora-node-api",
  "arrow",
