@@ -550,7 +550,7 @@ async fn start_inner(
                     request,
                     reply_sender,
                 } => {
-                    match request {
+                    match *request {
                         ControlRequest::Build {
                             session_id,
                             dataflow,

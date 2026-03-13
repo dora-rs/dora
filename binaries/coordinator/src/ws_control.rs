@@ -356,7 +356,7 @@ pub(crate) async fn handle_control_ws(
                 // Normal request-reply
                 let (reply_tx, reply_rx) = oneshot::channel();
                 let event = ControlEvent::IncomingRequest {
-                    request: control_request,
+                    request: Box::new(control_request),
                     reply_sender: reply_tx,
                 };
 
