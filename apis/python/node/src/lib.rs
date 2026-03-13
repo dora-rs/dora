@@ -22,6 +22,8 @@ use pyo3::types::{PyBytes, PyDict};
 use pyo3_special_method_derive::{Dict, Dir, Repr, Str};
 use tokio::runtime::{Builder, Runtime};
 use tracing::{Level, span};
+type PyObject = Py<PyAny>;
+
 static RUNTIME: LazyLock<Runtime> = LazyLock::new(|| {
     Builder::new_multi_thread()
         .worker_threads(4)
@@ -83,7 +85,7 @@ pub fn setup_logging(py: Python) -> PyResult<()> {
 class HostHandler(Handler):
 	def __init__(self, level=0):
 		super().__init__(level=level)
-	
+
 	def emit(self, record):
 		host_log(record)
 
@@ -158,7 +160,7 @@ impl Node {
             _handles: Arc::new(node.handle()),
         };
 
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             // Extend the `logging` module to interact with tracing
             setup_logging(py)
         })?;
@@ -198,7 +200,7 @@ impl Node {
     #[pyo3(signature = (timeout=None))]
     #[allow(clippy::should_implement_trait)]
     pub fn next(&self, py: Python, timeout: Option<f32>) -> PyResult<Option<Py<PyDict>>> {
-        let event = py.allow_threads(|| self.events.recv(timeout.map(Duration::from_secs_f32)));
+        let event = py.detach(|| self.events.recv(timeout.map(Duration::from_secs_f32)));
         if let Some(event) = event {
             let dict = event
                 .to_py_dict(py)
@@ -290,7 +292,7 @@ impl Node {
             .await;
         if let Some(event) = event {
             // Get python
-            Python::with_gil(|py| {
+            Python::attach(|py| {
                 let dict = event
                     .to_py_dict(py)
                     .context("Could not convert event into a dict")?;
@@ -363,7 +365,7 @@ impl Node {
     ) -> eyre::Result<()> {
         let parameters = pydict_to_metadata(metadata)?;
 
-        if let Ok(py_bytes) = data.downcast_bound::<PyBytes>(py) {
+        if let Ok(py_bytes) = data.cast_bound::<PyBytes>(py) {
             let data = py_bytes.as_bytes();
             self.node
                 .get_mut()
@@ -418,13 +420,13 @@ impl Node {
         let stream = futures::stream::poll_fn(move |cx| {
             let s = subscription.as_stream().map(|item| {
                 match item.context("failed to read ROS2 message") {
-                    Ok((value, _info)) => Python::with_gil(|py| {
+                    Ok((value, _info)) => Python::attach(|py| {
                         value
                             .to_pyarrow(py)
                             .context("failed to convert value to pyarrow")
-                            .unwrap_or_else(|err| err_to_pyany(err, py))
+                            .map_or_else(|err| err_to_pyany(err, py), |obj| obj.into())
                     }),
-                    Err(err) => Python::with_gil(|py| err_to_pyany(err, py)),
+                    Err(err) => Python::attach(|py| err_to_pyany(err, py)),
                 }
             });
             futures::pin_mut!(s);

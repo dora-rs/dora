@@ -23,7 +23,7 @@ use tokio::sync::oneshot;
 use tracing::{error, field, span, warn};
 
 fn traceback(err: pyo3::PyErr) -> eyre::Report {
-    let traceback = Python::with_gil(|py| err.traceback(py).and_then(|t| t.format().ok()));
+    let traceback = Python::attach(|py| err.traceback(py).and_then(|t| t.format().ok()));
     if let Some(traceback) = traceback {
         eyre::eyre!("{traceback}\n{err}")
     } else {
@@ -108,7 +108,7 @@ pub fn run(
 
     let python_runner = move || {
         let mut operator =
-            match Python::with_gil(init_operator).wrap_err("failed to init python operator") {
+            match Python::attach(init_operator).wrap_err("failed to init python operator") {
                 Ok(op) => {
                     let _ = init_done.send(Ok(()));
                     op
@@ -130,7 +130,7 @@ pub fn run(
                 reload = true;
                 // Reloading method
                 #[allow(clippy::blocks_in_conditions)]
-                match Python::with_gil(|py| -> Result<Py<PyAny>> {
+                match Python::attach(|py| -> Result<Py<PyAny>> {
                     // Saving current state
                     let current_state = operator
                         .getattr(py, "__dict__")
@@ -186,7 +186,7 @@ pub fn run(
                 }
             }
 
-            let status = Python::with_gil(|py| -> Result<i32> {
+            let status = Python::attach(|py| -> Result<i32> {
                 let span = span!(tracing::Level::TRACE, "on_event", input_id = field::Empty);
                 let _ = span.enter();
 
@@ -227,9 +227,9 @@ pub fn run(
                     .map_err(traceback);
                 match status_enum {
                     Ok(status_enum) => {
-                        let status_val = Python::with_gil(|py| status_enum.getattr(py, "value"))
+                        let status_val = Python::attach(|py| status_enum.getattr(py, "value"))
                             .wrap_err("on_event must have enum return value")?;
-                        Python::with_gil(|py| status_val.extract(py))
+                        Python::attach(|py| status_val.extract(py))
                             .wrap_err("on_event has invalid return value")
                     }
                     Err(err) => {
@@ -253,7 +253,7 @@ pub fn run(
 
         // Dropping the operator using Python garbage collector.
         // Locking the GIL for immediate release.
-        Python::with_gil(|_py| {
+        Python::attach(|_py| {
             drop(operator);
         });
 
@@ -303,12 +303,14 @@ mod callback_impl {
     use dora_tracing::telemetry::deserialize_context;
     use eyre::{Context, Result, eyre};
     use pyo3::{
-        Bound, PyObject, Python, pymethods,
+        Bound, Py, PyAny, Python, pymethods,
         types::{PyBytes, PyBytesMethods, PyDict},
     };
     use tokio::sync::oneshot;
     use tracing::{field, span};
     use tracing_opentelemetry::OpenTelemetrySpanExt;
+
+    type PyObject = Py<PyAny>;
 
     /// Send an output from the operator:
     /// - the first argument is the `output_id` as defined in your dataflow.
@@ -381,7 +383,7 @@ mod callback_impl {
                 eyre::bail!("invalid `data` type, must by `PyBytes` or arrow array")
             };
 
-            py.allow_threads(|| {
+            py.detach(|| {
                 let event = OperatorEvent::Output {
                     output_id: output.to_owned().into(),
                     type_info,

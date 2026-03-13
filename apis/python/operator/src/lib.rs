@@ -18,6 +18,8 @@ use pyo3::{
 };
 use std::time::UNIX_EPOCH;
 
+type PyObject = Py<PyAny>;
+
 /// Dora Event
 pub struct PyEvent {
     pub event: MergedEvent<PyObject>,
@@ -175,7 +177,7 @@ impl PyEvent {
             MergedEvent::Dora(Event::Input { data, .. }) => {
                 // TODO: Does this call leak data?&
                 let array_data = data.to_data().to_pyarrow(py)?;
-                Ok(Some(array_data))
+                Ok(Some(array_data.into()))
             }
             _ => Ok(None),
         }
