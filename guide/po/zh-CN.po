@@ -4423,7 +4423,7 @@ msgid "git"
 msgstr ""
 
 #: src/concepts/dataflow-yaml.md:77
-msgid "https://github.com/adora-rs/adora.git"
+msgid "https://github.com/dora-rs/adora.git"
 msgstr ""
 
 #: src/concepts/dataflow-yaml.md:78
@@ -14213,8 +14213,8 @@ msgid "Check for and install CLI updates."
 msgstr "检查并安装 CLI 更新。"
 
 #: src/operations/cli.md:1037
-msgid "Downloads from GitHub releases (`adora-rs/adora`)."
-msgstr "从 GitHub releases（`adora-rs/adora`）下载。"
+msgid "Downloads from GitHub releases (`dora-rs/adora`)."
+msgstr "从 GitHub releases（`dora-rs/adora`）下载。"
 
 #: src/operations/cli.md:1039
 msgid "`adora self uninstall`"

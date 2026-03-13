@@ -36,7 +36,7 @@
 //! nodes:
 //!   - id: rust-node
 //!     # URL of your repository
-//!     git: https://github.com/adora-rs/adora.git
+//!     git: https://github.com/dora-rs/adora.git
 //!     # the build command that should be invoked after cloning
 //!     build: cargo build -p rust-dataflow-example-node
 //!     # path to the executable that should be run on start

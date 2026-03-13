@@ -42,7 +42,7 @@ Once inside the container, you can:
 uv venv --seed -p 3.11
 
 ## Install nodes dependencies of a remote graph
-adora build https://raw.githubusercontent.com/adora-rs/adora/refs/heads/main/examples/object-detection/yolo.yml --uv
+adora build https://raw.githubusercontent.com/dora-rs/adora/refs/heads/main/examples/object-detection/yolo.yml --uv
 
 ## Run yolo graph
 adora run yolo.yml --uv

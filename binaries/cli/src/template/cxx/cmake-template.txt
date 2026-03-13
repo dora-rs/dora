@@ -38,7 +38,7 @@ else()
     include(ExternalProject)
     ExternalProject_Add(Adora
         PREFIX ${CMAKE_CURRENT_BINARY_DIR}/adora
-        GIT_REPOSITORY https://github.com/adora-rs/adora.git
+        GIT_REPOSITORY https://github.com/dora-rs/adora.git
         GIT_TAG main
         BUILD_IN_SOURCE True
         CONFIGURE_COMMAND ""

@@ -231,7 +231,7 @@ impl SharedLibraryOperator<'_> {
                     error: None,
                 },
                 Event::Reload { .. } => {
-                    // Reloading shared lib operator is not supported. See: https://github.com/adora-rs/adora/pull/239#discussion_r1154313139
+                    // Reloading shared lib operator is not supported. See: https://github.com/dora-rs/adora/pull/239#discussion_r1154313139
                     continue;
                 }
                 Event::Error(err) => adora_operator_api_types::RawEvent {

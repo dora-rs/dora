@@ -346,7 +346,7 @@
           ]
         },
         "branch": {
-          "description": "Git branch to checkout after cloning.\n\nThe `branch` field is only allowed in combination with the [`git`](#git) field.\nIt specifies the branch that should be checked out after cloning.\nOnly one of `branch`, `tag`, or `rev` can be specified.\n\n## Example\n\n```yaml\nnodes:\n  - id: rust-node\n    git: https://github.com/adora-rs/adora.git\n    branch: some-branch-name\n```",
+          "description": "Git branch to checkout after cloning.\n\nThe `branch` field is only allowed in combination with the [`git`](#git) field.\nIt specifies the branch that should be checked out after cloning.\nOnly one of `branch`, `tag`, or `rev` can be specified.\n\n## Example\n\n```yaml\nnodes:\n  - id: rust-node\n    git: https://github.com/dora-rs/adora.git\n    branch: some-branch-name\n```",
           "type": [
             "string",
             "null"
@@ -388,7 +388,7 @@
           }
         },
         "git": {
-          "description": "Git repository URL for downloading nodes.\n\nThe `git` key allows downloading nodes (i.e. their source code) from git repositories.\nThis can be especially useful for distributed dataflows.\n\nWhen a `git` key is specified, `adora build` automatically clones the specified repository\n(or reuse an existing clone).\nThen it checks out the specified [`branch`](Self::branch), [`tag`](Self::tag), or\n[`rev`](Self::rev), or the default branch if none of them are specified.\nAfterwards it runs the [`build`](Self::build) command if specified.\n\nNote that the git clone directory is set as working directory for both the\n[`build`](Self::build) command and the specified [`path`](Self::path).\n\n## Example\n\n```yaml\nnodes:\n  - id: rust-node\n    git: https://github.com/adora-rs/adora.git\n    build: cargo build -p rust-dataflow-example-node\n    path: target/debug/rust-dataflow-example-node\n```\n\nIn the above example, `adora build` will first clone the specified `git` repository and then\nrun the specified `build` inside the local clone directory.\nWhen `adora run` or `adora start` is invoked, the working directory will be the git clone\ndirectory too. So a relative `path` will start from the clone directory.",
+          "description": "Git repository URL for downloading nodes.\n\nThe `git` key allows downloading nodes (i.e. their source code) from git repositories.\nThis can be especially useful for distributed dataflows.\n\nWhen a `git` key is specified, `adora build` automatically clones the specified repository\n(or reuse an existing clone).\nThen it checks out the specified [`branch`](Self::branch), [`tag`](Self::tag), or\n[`rev`](Self::rev), or the default branch if none of them are specified.\nAfterwards it runs the [`build`](Self::build) command if specified.\n\nNote that the git clone directory is set as working directory for both the\n[`build`](Self::build) command and the specified [`path`](Self::path).\n\n## Example\n\n```yaml\nnodes:\n  - id: rust-node\n    git: https://github.com/dora-rs/adora.git\n    build: cargo build -p rust-dataflow-example-node\n    path: target/debug/rust-dataflow-example-node\n```\n\nIn the above example, `adora build` will first clone the specified `git` repository and then\nrun the specified `build` inside the local clone directory.\nWhen `adora run` or `adora start` is invoked, the working directory will be the git clone\ndirectory too. So a relative `path` will start from the clone directory.",
           "type": [
             "string",
             "null"
@@ -547,7 +547,7 @@
           "format": "double"
         },
         "rev": {
-          "description": "Git revision (e.g. commit hash) to checkout after cloning.\n\nThe `rev` field is only allowed in combination with the [`git`](#git) field.\nIt specifies the git revision (e.g. a commit hash) that should be checked out after cloning.\nOnly one of `branch`, `tag`, or `rev` can be specified.\n\n## Example\n\n```yaml\nnodes:\n  - id: rust-node\n    git: https://github.com/adora-rs/adora.git\n    rev: 64ab0d7c\n```",
+          "description": "Git revision (e.g. commit hash) to checkout after cloning.\n\nThe `rev` field is only allowed in combination with the [`git`](#git) field.\nIt specifies the git revision (e.g. a commit hash) that should be checked out after cloning.\nOnly one of `branch`, `tag`, or `rev` can be specified.\n\n## Example\n\n```yaml\nnodes:\n  - id: rust-node\n    git: https://github.com/dora-rs/adora.git\n    rev: 64ab0d7c\n```",
           "type": [
             "string",
             "null"
@@ -579,7 +579,7 @@
           ]
         },
         "tag": {
-          "description": "Git tag to checkout after cloning.\n\nThe `tag` field is only allowed in combination with the [`git`](#git) field.\nIt specifies the git tag that should be checked out after cloning.\nOnly one of `branch`, `tag`, or `rev` can be specified.\n\n## Example\n\n```yaml\nnodes:\n  - id: rust-node\n    git: https://github.com/adora-rs/adora.git\n    tag: v0.3.0\n```",
+          "description": "Git tag to checkout after cloning.\n\nThe `tag` field is only allowed in combination with the [`git`](#git) field.\nIt specifies the git tag that should be checked out after cloning.\nOnly one of `branch`, `tag`, or `rev` can be specified.\n\n## Example\n\n```yaml\nnodes:\n  - id: rust-node\n    git: https://github.com/dora-rs/adora.git\n    tag: v0.3.0\n```",
           "type": [
             "string",
             "null"

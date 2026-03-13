@@ -6,7 +6,7 @@ Adora supports nodes written in C++ through this API crate.
 
 - Clone the `adora` repository:
   ```bash
-  > git clone https://github.com/adora-rs/adora.git
+  > git clone https://github.com/dora-rs/adora.git
   > cd adora
   ```
 - Build the `adora-node-api-cxx` package:

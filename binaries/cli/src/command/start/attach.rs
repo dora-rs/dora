@@ -40,7 +40,7 @@ pub fn attach_dataflow(
 
     for node in nodes.into_values() {
         match node.kind {
-            // Reloading Custom Nodes is not supported. See: https://github.com/adora-rs/adora/pull/239#discussion_r1154313139
+            // Reloading Custom Nodes is not supported. See: https://github.com/dora-rs/adora/pull/239#discussion_r1154313139
             CoreNodeKind::Custom(_cn) => (),
             CoreNodeKind::Runtime(rn) => {
                 for op in rn.operators.iter() {
@@ -54,7 +54,7 @@ pub fn attach_dataflow(
                         node_path_lookup
                             .insert(path, (dataflow_id, node.id.clone(), Some(op.id.clone())));
                     }
-                    // Reloading non-python operator is not supported. See: https://github.com/adora-rs/adora/pull/239#discussion_r1154313139
+                    // Reloading non-python operator is not supported. See: https://github.com/dora-rs/adora/pull/239#discussion_r1154313139
                 }
             }
         }

@@ -590,7 +590,7 @@ pub struct Node {
     /// ```yaml
     /// nodes:
     ///   - id: rust-node
-    ///     git: https://github.com/adora-rs/adora.git
+    ///     git: https://github.com/dora-rs/adora.git
     ///     build: cargo build -p rust-dataflow-example-node
     ///     path: target/debug/rust-dataflow-example-node
     /// ```
@@ -613,7 +613,7 @@ pub struct Node {
     /// ```yaml
     /// nodes:
     ///   - id: rust-node
-    ///     git: https://github.com/adora-rs/adora.git
+    ///     git: https://github.com/dora-rs/adora.git
     ///     branch: some-branch-name
     /// ```
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -630,7 +630,7 @@ pub struct Node {
     /// ```yaml
     /// nodes:
     ///   - id: rust-node
-    ///     git: https://github.com/adora-rs/adora.git
+    ///     git: https://github.com/dora-rs/adora.git
     ///     tag: v0.1.0
     /// ```
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -647,7 +647,7 @@ pub struct Node {
     /// ```yaml
     /// nodes:
     ///   - id: rust-node
-    ///     git: https://github.com/adora-rs/adora.git
+    ///     git: https://github.com/dora-rs/adora.git
     ///     rev: 64ab0d7c
     /// ```
     #[serde(default, skip_serializing_if = "Option::is_none")]

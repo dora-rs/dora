@@ -71,7 +71,7 @@ impl Builder {
                         tracing::warn!(
                             "using git clone directory as working dir: \
                             this behavior is unstable and might change \
-                            (see https://github.com/adora-rs/adora/pull/901)"
+                            (see https://github.com/dora-rs/adora/pull/901)"
                         );
                         clone_dir
                     }

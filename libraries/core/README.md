@@ -24,7 +24,7 @@ We can pass the JSON Schema to VSCode [`redhat.vscode-yaml`](https://marketplace
 
 ```json
   "yaml.schemas": {
-    "https://raw.githubusercontent.com/adora-rs/adora/main/libraries/core/adora-schema.json": "/*"
+    "https://raw.githubusercontent.com/dora-rs/adora/main/libraries/core/adora-schema.json": "/*"
   },
 ```
 

@@ -63,7 +63,7 @@ description = "`adora` goal is to be a low latency, composable, and distributed 
 documentation = "https://adora-rs.ai"
 readme = "./README.md"
 license = "Apache-2.0"
-repository = "https://github.com/adora-rs/adora/"
+repository = "https://github.com/dora-rs/adora/"
 
 [workspace.dependencies]
 adora-node-api = { version = "0.1.0", path = "apis/rust/node", default-features = false }

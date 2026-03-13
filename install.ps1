@@ -1,5 +1,5 @@
 param (
-    [string]$repo = "adora-rs/adora",
+    [string]$repo = "dora-rs/adora",
     [string]$bin = "adora",
     [string]$tag,
     [string]$target,
@@ -34,7 +34,7 @@ FLAGS:
     -f, --force     Force overwriting an existing binary
 
 OPTIONS:
-    --repo REPO     Github Repository to install the binary from  [default: adora-rs/adora]
+    --repo REPO     Github Repository to install the binary from  [default: dora-rs/adora]
     --bin BIN       Name of the binary to install  [default: adora]
     --tag TAG       Tag (version) of the bin to install, defaults to latest release
     --to LOCATION   Where to install the binary [default: $HOME\.adora\bin]

@@ -1,6 +1,6 @@
 nodes:
   - id: rust-node
-    git: https://github.com/adora-rs/adora.git
+    git: https://github.com/dora-rs/adora.git
     tag: v0.1.0 # pinned tag, update this when releasing a new version
     build: cargo build -p rust-dataflow-example-node
     path: target/debug/rust-dataflow-example-node
@@ -10,7 +10,7 @@ nodes:
       - random
 
   - id: rust-status-node
-    git: https://github.com/adora-rs/adora.git
+    git: https://github.com/dora-rs/adora.git
     tag: v0.1.0 # pinned tag, update this when releasing a new version
     build: cargo build -p rust-dataflow-example-status-node
     path: target/debug/rust-dataflow-example-status-node
@@ -21,7 +21,7 @@ nodes:
       - status
 
   - id: rust-sink
-    git: https://github.com/adora-rs/adora.git
+    git: https://github.com/dora-rs/adora.git
     tag: v0.1.0 # pinned tag, update this when releasing a new version
     build: cargo build -p rust-dataflow-example-sink
     path: target/debug/rust-dataflow-example-sink

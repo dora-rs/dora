@@ -1034,7 +1034,7 @@ Check for and install CLI updates.
 adora self update [--check-only]
 ```
 
-Downloads from GitHub releases (`adora-rs/adora`).
+Downloads from GitHub releases (`dora-rs/adora`).
 
 #### `adora self uninstall`
 

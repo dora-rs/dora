@@ -79,7 +79,7 @@ cargo install adora-cli
 ### 从源码构建
 
 ```bash
-git clone https://github.com/adora-rs/adora.git
+git clone https://github.com/dora-rs/adora.git
 cd adora
 cargo build --release -p adora-cli
 PATH=$PATH:$(pwd)/target/release
@@ -95,13 +95,13 @@ maturin develop -m apis/python/operator/Cargo.toml
 
 ```bash
 curl --proto '=https' --tlsv1.2 -LsSf \
-  https://github.com/adora-rs/adora/releases/latest/download/adora-cli-installer.sh | sh
+  https://github.com/dora-rs/adora/releases/latest/download/adora-cli-installer.sh | sh
 ```
 
 **Windows：**
 
 ```powershell
-powershell -ExecutionPolicy ByPass -c "irm https://github.com/adora-rs/adora/releases/latest/download/adora-cli-installer.ps1 | iex"
+powershell -ExecutionPolicy ByPass -c "irm https://github.com/dora-rs/adora/releases/latest/download/adora-cli-installer.ps1 | iex"
 ```
 
 ### 构建特性
@@ -124,7 +124,7 @@ cargo install adora-cli --features redb-backend
 
 ```bash
 pip install adora-rs-cli adora-rs
-git clone https://github.com/adora-rs/adora.git && cd adora
+git clone https://github.com/dora-rs/adora.git && cd adora
 adora run examples/python-dataflow/dataflow.yml
 ```
 

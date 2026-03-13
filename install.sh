@@ -23,7 +23,7 @@ FLAGS:
     -f, --force     Force overwriting an existing binary
 
 OPTIONS:
-    --repo REPO     Github Repository to install the binary from  [default: adora-rs/adora]
+    --repo REPO     Github Repository to install the binary from  [default: dora-rs/adora]
     --bin BIN       Name of the binary to install  [default: adora]
     --tag TAG       Tag (version) of the bin to install, defaults to latest release
     --to LOCATION   Where to install the binary [default: ~/.adora/bin]
@@ -101,7 +101,7 @@ while test $# -gt 0; do
 done
 
 if [ -z "${repo-}" ]; then
-  repo="adora-rs/adora"
+  repo="dora-rs/adora"
 fi
 
 if [ -z "${bin-}" ]; then

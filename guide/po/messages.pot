@@ -369,7 +369,7 @@ msgstr ""
 msgid ""
 "```powershell\n"
 "powershell -ExecutionPolicy ByPass -c \"irm "
-"https://github.com/adora-rs/adora/releases/latest/download/adora-cli-installer.ps1 "
+"https://github.com/dora-rs/adora/releases/latest/download/adora-cli-installer.ps1 "
 "| iex\"\n"
 "```"
 msgstr ""
@@ -4204,7 +4204,7 @@ msgid "git"
 msgstr ""
 
 #: src/concepts/dataflow-yaml.md:77
-msgid "https://github.com/adora-rs/adora.git"
+msgid "https://github.com/dora-rs/adora.git"
 msgstr ""
 
 #: src/concepts/dataflow-yaml.md:78
@@ -13394,7 +13394,7 @@ msgid "Check for and install CLI updates."
 msgstr ""
 
 #: src/operations/cli.md:1037
-msgid "Downloads from GitHub releases (`adora-rs/adora`)."
+msgid "Downloads from GitHub releases (`dora-rs/adora`)."
 msgstr ""
 
 #: src/operations/cli.md:1039
