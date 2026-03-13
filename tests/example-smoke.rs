@@ -543,3 +543,12 @@ fn smoke_local_action_example() {
         15,
     );
 }
+
+#[test]
+fn smoke_local_log_aggregator() {
+    run_smoke_test_local(
+        "local-log-aggregator",
+        "examples/log-aggregator/dataflow.yml",
+        10,
+    );
+}

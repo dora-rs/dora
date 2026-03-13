@@ -2,6 +2,85 @@
 
 Adora provides a structured logging system for real-time robotics and AI dataflows. Logs are captured per-node as structured JSONL files, forwarded to the coordinator for live streaming, and optionally routed through the dataflow graph as data messages.
 
+## Which Logging Approach Should I Use?
+
+Start here if you're unsure which approach fits your use case.
+
+| I want to... | Approach | Config |
+|--------------|----------|--------|
+| **Log from Python** | Use Python's `logging` module (auto-bridged) | Nothing -- just `import logging` |
+| **Log from Rust** | Use `node.log_info()` / `node.log_error()` etc. | Nothing -- works out of the box |
+| **Log from C/C++** | Use `adora_log()` / `log_message()` | Nothing -- works out of the box |
+| **Filter noisy nodes** | Set `min_log_level` in YAML | Per-node YAML field |
+| **Watch all logs in one place** | Subscribe to `adora/logs` virtual input | `inputs: logs: adora/logs` |
+| **Process one node's logs as data** | Use `send_logs_as` on that node | Per-node YAML + wire the output |
+| **Rotate log files** | Set `max_log_size` in YAML | Per-node YAML field |
+| **Build a custom log sink** | Use `adora-log-utils` crate | Rust dependency |
+| **Filter CLI display** | Use `--log-level` / `--log-filter` flags | CLI flags or env vars |
+
+### Language-Specific Quick Start
+
+**Python** -- the simplest path is Python's built-in `logging` module:
+
+```python
+import logging
+from dora import Node
+
+node = Node()  # Automatically bridges Python logging -> adora
+
+logging.info("Sensor started")       # Captured as structured "info" log
+logging.warning("High temp: 42C")    # Captured as structured "warn" log
+print("raw debug output")            # Captured as "stdout" level
+```
+
+When `Node()` is created, it installs a handler that routes all Python `logging` calls through Rust's `tracing` system. The daemon parses these as structured log entries with level, message, file, and line number. No extra configuration needed.
+
+You can also use the explicit API for structured fields:
+
+```python
+node.log_info("Reading acquired")
+node.log("info", "Reading acquired", fields={"sensor_id": "temp-01"})
+```
+
+**Rust** -- use the node API convenience methods:
+
+```rust
+let (node, mut events) = AdoraNode::init_from_env()?;
+
+// Convenience methods (recommended for most cases)
+node.log_info("Sensor started");
+node.log_warn("High temperature");
+
+// With structured fields
+let mut fields = BTreeMap::new();
+fields.insert("sensor_id".into(), "temp-01".into());
+node.log_with_fields("info", "Reading acquired", None, Some(&fields));
+```
+
+Alternatively, Rust nodes can use the `tracing` crate. When adora's tracing subscriber is initialized (via `init_tracing()`), `tracing::info!()` etc. output structured JSON to stdout, which the daemon parses automatically:
+
+```rust
+// Also works -- parsed as structured logs by the daemon
+tracing::info!("Sensor started");
+tracing::warn!(sensor_id = "temp-01", "High temperature");
+```
+
+Use `node.log_*()` when you want explicit control over the log format. Use `tracing::*!()` when you want ecosystem integration (spans, instrumentation, OpenTelemetry). Both produce identical structured log entries in the daemon.
+
+**C** -- use the `adora_log()` function:
+
+```c
+adora_log(ctx, "info", 4, "Sensor started", 14);
+```
+
+**C++** -- use the `log_message()` function:
+
+```cpp
+log_message(node.send_output, "info", "Sensor started");
+```
+
+---
+
 ## Features at a Glance
 
 | Feature | Scope | Config |
@@ -16,6 +95,7 @@ Adora provides a structured logging system for real-time robotics and AI dataflo
 | Rotation file limit | Per-node YAML | `max_rotated_files` |
 | Node log API | Rust/Python/C/C++ node | `node.log()`, `adora_log()`, etc. |
 | Log utilities library | Rust crate | `adora-log-utils` |
+| **Log aggregation** | **Dataflow input** | **`adora/logs` virtual input** |
 | Time-range filtering | `adora logs` | `--since`, `--until` |
 | Live log streaming | `adora logs` | `--follow` |
 | Text search | `adora logs` | `--grep` |
@@ -51,7 +131,7 @@ Each line has this structure:
 | `node_id` | string | Node ID |
 | `message` | string | The log message text |
 | `target` | string? | Rust module target (e.g. `"sensor::module"`), null if absent |
-| `fields` | object? | Structured key-value fields from the logging framework |
+| `fields` | object? | Structured key-value fields from the logging framework. **Trust model:** fields originate from node stdout and are passed through without sanitization. In mixed-trust environments, log consumers should validate field contents before acting on them |
 
 ### How Node Output Becomes Log Entries
 
@@ -331,6 +411,57 @@ Unlike `send_stdout_as`, this only sends lines that were successfully parsed as 
 
 Use this to build log aggregation, alerting, or monitoring nodes within the dataflow itself.
 
+### `adora/logs` -- Automatic Log Aggregation
+
+Subscribe to logs from **all nodes** with a single input line -- no manual wiring needed:
+
+```yaml
+nodes:
+  - id: sensor
+    path: sensor.py
+    inputs:
+      tick: adora/timer/millis/200
+    outputs:
+      - reading
+
+  - id: processor
+    path: processor.py
+    inputs:
+      reading: sensor/reading
+    outputs:
+      - result
+
+  - id: log-viewer
+    path: log_viewer.py
+    inputs:
+      logs: adora/logs              # all nodes, all levels
+      errors: adora/logs/error      # only error+ from all nodes
+      sensor: adora/logs/info/sensor  # info+ from one node
+```
+
+The `adora/logs` virtual input works like `adora/timer` -- the daemon handles subscription internally. Each log message arrives as a JSON-encoded `LogMessage` string in an Arrow array. To prevent infinite loops, a node never receives its own log messages.
+
+**Syntax:**
+
+| Input | Description |
+|-------|-------------|
+| `adora/logs` | All logs from all nodes |
+| `adora/logs/<level>` | Logs at `<level>` or above from all nodes |
+| `adora/logs/<level>/<node-id>` | Logs at `<level>` or above from a specific node |
+
+Levels: `stdout`, `error`, `warn`, `info`, `debug`, `trace`.
+
+**When to use `adora/logs` vs `send_logs_as`:**
+
+| | `adora/logs` | `send_logs_as` |
+|--|-------------|---------------|
+| Scope | All nodes at once | One node at a time |
+| YAML changes | Only the consumer | Each source node |
+| Adding a node | Zero wiring changes | Must update consumer |
+| Use case | Dashboard, monitoring | Per-node log processing |
+
+See `examples/log-aggregator/` for a complete working example.
+
 ### `max_log_size`
 
 Enable size-based log file rotation.
@@ -451,23 +582,44 @@ The `level` parameter accepts `"error"`, `"warn"` (or `"warning"`), `"info"`, `"
 
 ### Python
 
+Python nodes have three ways to log, all producing structured log entries:
+
 ```python
-from adora import Node
+from dora import Node
+import logging
 
 node = Node()
 
-# General log with level string and optional target
-node.log("info", "sensor initialized", target="sensor.init")
+# Option 1: Python's logging module (recommended -- auto-bridged by Node())
+logging.info("sensor initialized")
+logging.warning("temperature elevated")
+logging.debug("raw bytes: %s", data)
 
-# Structured fields
+# Option 2: Explicit adora API with level string
+node.log("info", "sensor initialized", target="sensor.init")
 node.log("info", "reading acquired", fields={"sensor_id": "temp-01", "reading": "42.5"})
 
-# For most cases, use Python's built-in logging module instead:
-import logging
-logging.info("sensor initialized")
+# Option 3: Convenience methods
+node.log_error("connection failed")
+node.log_warn("temperature elevated")
+node.log_info("reading acquired")
+node.log_debug("raw bytes received")
+node.log_trace("entering loop iteration")
+
+# This also works but produces "stdout"-level entries (no structure):
+print("raw output")
 ```
 
-The Python `node.log()` method has the same level normalization as Rust. However, Python nodes typically use the standard `logging` module, which the daemon parses into structured log entries automatically.
+**How the Python logging bridge works:** When `Node()` is created, it installs a custom `logging.Handler` that routes all Python `logging` calls through Rust's `tracing` system. The daemon parses these as structured log entries with level, message, file path, and line number. This happens automatically -- no configuration needed.
+
+| Method | Structured? | Fields support? | When to use |
+|--------|------------|-----------------|-------------|
+| `logging.info()` | Yes | No (use `extra=` for custom formatters) | General-purpose logging |
+| `node.log("info", msg, fields={...})` | Yes | Yes | When you need structured key-value context |
+| `node.log_info(msg)` | Yes | No | Quick one-liner, same as `node.log("info", msg)` |
+| `print()` | No (`stdout` level) | No | Legacy code, quick debugging |
+
+**Common pitfall:** Do not call `logging.basicConfig()` before creating `Node()`. The node constructor sets up the logging bridge; calling `basicConfig()` first may install a conflicting handler. If you need custom formatters, configure them after `Node()` creation.
 
 ### C
 
@@ -657,7 +809,7 @@ Understanding the internal pipeline helps with debugging and tuning. For each no
 Node Process (stdout/stderr)
     |
     v
-[1] Capture: lines buffered in mpsc channel (capacity 10)
+[1] Capture: lines buffered in mpsc channel (capacity 100)
     |
     v
 [2] send_stdout_as: raw line -> Arrow data -> dataflow output
@@ -1072,6 +1224,33 @@ With JSON format, each line is a complete `LogMessage` that can be processed by 
 ```bash
 # Extract error messages with jq
 cat test-logs.json | jq -r 'select(.level == "ERROR") | "\(.node_id): \(.message)"'
+```
+
+---
+
+## Performance Considerations
+
+Logging adds I/O overhead proportional to log volume. Here's how to tune it:
+
+**`min_log_level` is the most impactful setting.** It filters at the daemon before any I/O: no log file write, no coordinator forwarding, no `send_logs_as` routing. A node emitting 1000 debug lines/sec at `min_log_level: info` generates zero overhead for those lines.
+
+**`send_logs_as` adds a dataflow message per log line.** Each parsed log entry is serialized to JSON, converted to Arrow, and sent through the dataflow. For high-volume nodes, this can consume significant bandwidth. Use `min_log_level` to limit what gets routed.
+
+**`adora/logs` subscribers share a single serialization.** The daemon converts each log line to Arrow once and clones the result for each subscriber. The cost scales linearly with subscriber count, not log volume x subscriber count. For most dataflows (1-3 log subscribers), this is negligible.
+
+**Log line size is capped at 1 MB.** Lines longer than 1 MB from node stdout/stderr are truncated to prevent heap exhaustion. This protects against buggy nodes that dump large binary data to stdout.
+
+**Log file rotation is recommended for long-running dataflows.** Without `max_log_size`, log files grow unbounded. A node emitting 100 lines/sec at ~200 bytes/line fills 1 GB in ~14 hours.
+
+**Recommended production settings:**
+
+```yaml
+nodes:
+  - id: my-node
+    path: ./my-node
+    min_log_level: info        # drop debug/trace at source
+    max_log_size: "50MB"       # rotate at 50MB
+    max_rotated_files: 5       # keep 5 rotated files (300MB max)
 ```
 
 ---

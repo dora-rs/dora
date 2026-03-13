@@ -124,6 +124,19 @@ inputs:
   fast: adora/timer/hz/30        # 30 Hz (~33ms)
 ```
 
+#### Built-in Log Aggregation
+
+Subscribe to structured log messages from all (or filtered) nodes:
+
+```yaml
+inputs:
+  all_logs: adora/logs               # all nodes, all levels
+  errors:   adora/logs/error         # error+ from all nodes
+  sensor:   adora/logs/info/sensor   # info+ from specific node
+```
+
+Each message arrives as a JSON-encoded `LogMessage` string. See [Logging](logging.md#adoralogs----automatic-log-aggregation) for details.
+
 #### Outputs
 
 A list of output identifiers the node produces:
@@ -235,6 +248,8 @@ Example:
 ```
 
 When using `send_stdout_as` or `send_logs_as`, include the output name in the `outputs` list so downstream nodes can subscribe to it.
+
+For a complete guide to all logging features, see [Logging](logging.md).
 
 ### Fault Tolerance
 

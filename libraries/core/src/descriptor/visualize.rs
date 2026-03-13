@@ -96,7 +96,7 @@ fn collect_adora_nodes(
 ) {
     for input in values {
         match &input.mapping {
-            InputMapping::User(_) => {}
+            InputMapping::User(_) | InputMapping::Logs(_) => {}
             InputMapping::Timer { interval } => {
                 adora_timers.insert(*interval);
             }
@@ -207,7 +207,7 @@ fn visualize_inputs(
 ) {
     for (input_id, input) in inputs {
         match &input.mapping {
-            mapping @ InputMapping::Timer { .. } => {
+            mapping @ (InputMapping::Timer { .. } | InputMapping::Logs(_)) => {
                 writeln!(flowchart, "  {mapping} -- {input_id} --> {target}").unwrap();
             }
             InputMapping::User(mapping) => {

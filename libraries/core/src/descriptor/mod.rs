@@ -100,7 +100,7 @@ impl DescriptorExt for Descriptor {
             for mapping in input_mappings
                 .into_iter()
                 .filter_map(|i| match &mut i.mapping {
-                    InputMapping::Timer { .. } => None,
+                    InputMapping::Timer { .. } | InputMapping::Logs(_) => None,
                     InputMapping::User(m) => Some(m),
                 })
             {

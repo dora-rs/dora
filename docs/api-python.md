@@ -214,9 +214,34 @@ See [patterns.md](patterns.md) for the full guide.
 
 ---
 
+#### Logging
+
+Python nodes can log using either Python's built-in `logging` module (recommended) or the explicit node API.
+
+**Python `logging` module (auto-bridged):**
+
+When `Node()` is created, it automatically installs a handler that routes Python's `logging` module through the adora daemon. No configuration needed:
+
+```python
+import logging
+from dora import Node
+
+node = Node()  # Installs the logging bridge
+
+logging.info("Sensor initialized")       # -> structured "info" log entry
+logging.warning("High temperature")      # -> structured "warn" log entry
+logging.debug("Raw bytes: %s", data)     # -> structured "debug" log entry
+```
+
+These log entries are captured with full metadata (level, message, file path, line number) and work with `min_log_level` filtering, `send_logs_as` routing, and `adora/logs` subscribers.
+
+> **Note:** Do not call `logging.basicConfig()` before creating `Node()`. The constructor sets up the bridge; calling `basicConfig()` first may install a conflicting handler.
+
+**Explicit node API:**
+
 #### `log(level, message, target=None, fields=None)`
 
-Emit a structured log message routed through the adora daemon.
+Emit a structured log message with optional target and key-value fields.
 
 ```python
 node.log("info", "Processing frame", target="vision")
@@ -229,7 +254,32 @@ node.log("error", "Sensor timeout", fields={"sensor": "lidar", "retry": "3"})
 - `target` (str, optional) -- Target module or subsystem name.
 - `fields` (dict[str, str], optional) -- Structured key-value context fields.
 
-Works with the daemon's `min_log_level` filtering and `send_logs_as` routing.
+Works with the daemon's `min_log_level` filtering, `send_logs_as` routing, and `adora/logs` subscribers.
+
+---
+
+#### `log_error(message)`, `log_warn(message)`, `log_info(message)`, `log_debug(message)`, `log_trace(message)`
+
+Convenience methods for common log levels:
+
+```python
+node.log_error("Connection failed")
+node.log_warn("Temperature elevated")
+node.log_info("Sensor initialized")
+node.log_debug("Raw bytes received")
+node.log_trace("Entering loop iteration")
+```
+
+Each is equivalent to `node.log(level, message)`.
+
+**When to use which:**
+
+| Method | Structured? | Fields? | Best for |
+|--------|------------|---------|----------|
+| `logging.info()` | Yes | No | General-purpose logging |
+| `node.log("info", msg, fields={...})` | Yes | Yes | Structured context (sensor_id, etc.) |
+| `node.log_info(msg)` | Yes | No | Quick one-liner |
+| `print()` | No | No | Legacy code, quick debugging |
 
 ---
 

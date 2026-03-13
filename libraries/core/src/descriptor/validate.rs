@@ -351,7 +351,7 @@ fn check_input(
     input_id_str: &str,
 ) -> Result<(), eyre::ErrReport> {
     match &input.mapping {
-        InputMapping::Timer { interval: _ } => {}
+        InputMapping::Timer { interval: _ } | InputMapping::Logs(_) => {}
         InputMapping::User(UserInputMapping { source, output }) => {
             let source_node = nodes.values().find(|n| &n.id == source).ok_or_else(|| {
                 eyre!("source node `{source}` mapped to input `{input_id_str}` does not exist",)
@@ -1078,6 +1078,8 @@ fn check_edge_mismatches_with_compat(
                     }
                 }
             }
+            // Log subscriptions deliver JSON strings — skip type checking.
+            InputMapping::Logs(_) => {}
         }
     }
 }

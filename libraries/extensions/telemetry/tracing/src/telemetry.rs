@@ -61,9 +61,15 @@ pub fn init_jaeger_tracing(
     init_tracing(name, endpoint)
 }
 
+/// Serialize the trace context (trace ID, span ID) into a compact string.
+/// Only W3C TraceContext keys (`traceparent`, `tracestate`) are included.
+/// OTel Baggage keys are stripped to prevent sensitive data from leaking
+/// across node boundaries in the dataflow.
 pub fn serialize_context(context: &Context) -> String {
     let mut map = HashMap::new();
     global::get_text_map_propagator(|propagator| propagator.inject_context(context, &mut map));
+    // Strip baggage to avoid propagating sensitive data across nodes
+    map.remove("baggage");
     let mut string_context = String::new();
     for (k, v) in map.iter() {
         string_context.push_str(k);

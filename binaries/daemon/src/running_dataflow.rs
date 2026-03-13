@@ -144,6 +144,13 @@ pub(crate) struct DropTokenInformation {
     pub pending_nodes: BTreeSet<NodeId>,
 }
 
+/// A subscriber to the `adora/logs` virtual input.
+pub struct LogSubscriber {
+    pub node_id: NodeId,
+    pub input_id: DataId,
+    pub filter: adora_message::config::LogSubscriptionFilter,
+}
+
 pub struct RunningDataflow {
     pub(crate) id: uuid::Uuid,
     pub(crate) descriptor: Descriptor,
@@ -155,6 +162,8 @@ pub struct RunningDataflow {
     pub(crate) drop_channels: HashMap<NodeId, UnboundedSender<Timestamped<NodeDropEvent>>>,
     pub(crate) mappings: HashMap<OutputId, BTreeSet<(NodeId, DataId)>>,
     pub(crate) timers: BTreeMap<Duration, BTreeSet<(NodeId, DataId)>>,
+    /// Nodes subscribing to `adora/logs` virtual input.
+    pub(crate) log_subscribers: Vec<LogSubscriber>,
     pub(crate) open_inputs: BTreeMap<NodeId, BTreeSet<DataId>>,
     pub(crate) input_deadlines: HashMap<(NodeId, DataId), InputDeadline>,
     pub(crate) broken_inputs: HashMap<(NodeId, DataId), Duration>,
@@ -204,6 +213,7 @@ impl RunningDataflow {
             drop_channels: HashMap::new(),
             mappings: HashMap::new(),
             timers: BTreeMap::new(),
+            log_subscribers: Vec::new(),
             open_inputs: BTreeMap::new(),
             input_deadlines: HashMap::new(),
             broken_inputs: HashMap::new(),

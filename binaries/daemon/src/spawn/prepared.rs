@@ -50,6 +50,20 @@ struct LogLine {
     stream: LogStream,
 }
 
+/// Maximum length of a single log line before truncation (1 MB).
+/// Prevents a malicious or buggy node from causing heap exhaustion via
+/// a single multi-GB stdout/stderr line.
+const MAX_LOG_LINE_BYTES: usize = 1024 * 1024;
+
+/// Truncate a log line to `MAX_LOG_LINE_BYTES`, respecting UTF-8 char boundaries.
+fn truncate_log_line(content: &mut String) {
+    if content.len() > MAX_LOG_LINE_BYTES {
+        let boundary = content.floor_char_boundary(MAX_LOG_LINE_BYTES);
+        content.truncate(boundary);
+        content.push_str("... [truncated]");
+    }
+}
+
 #[derive(Clone, Default)]
 struct RestartConfig {
     max_restarts: u32,
@@ -410,7 +424,7 @@ impl PreparedNode {
         if !dataflow_dir.exists() {
             std::fs::create_dir_all(&dataflow_dir).context("could not create dataflow_dir")?;
         }
-        let (tx, mut rx) = mpsc::channel::<LogLine>(10);
+        let (tx, mut rx) = mpsc::channel::<LogLine>(100);
         let mut file = File::create(log::log_path(
             &self.node_working_dir,
             &self.dataflow_id,
@@ -467,8 +481,8 @@ impl PreparedNode {
                     }
                 };
 
-                // send the buffered lines
-                let content = std::mem::take(&mut buffer);
+                let mut content = std::mem::take(&mut buffer);
+                truncate_log_line(&mut content);
                 let sent = stdout_tx
                     .send(LogLine {
                         content: content.clone(),
@@ -527,8 +541,8 @@ impl PreparedNode {
 
                 self.node_stderr_most_recent.force_push(new);
 
-                // send the buffered lines
-                let content = std::mem::take(&mut buffer);
+                let mut content = std::mem::take(&mut buffer);
+                truncate_log_line(&mut content);
                 let sent = stderr_tx
                     .send(LogLine {
                         content: content.clone(),
@@ -602,6 +616,7 @@ impl PreparedNode {
         } else {
             None
         };
+        let daemon_tx_log_broadcast = self.daemon_tx.clone();
         let working_dir_c = self.node_working_dir.clone();
         let uhlc = self.clock.clone();
         let mut logger_c = logger.try_clone().await?;
@@ -680,6 +695,23 @@ impl PreparedNode {
                 if let Some(min_level) = &min_log_level {
                     if !log_message.level.passes(min_level) {
                         continue;
+                    }
+                }
+
+                // Broadcast to adora/logs subscribers (try_send to avoid
+                // blocking the log processing task if the daemon queue is full)
+                {
+                    let event = AdoraEvent::LogBroadcast {
+                        dataflow_id,
+                        log_message: log_message.clone(),
+                    }
+                    .into();
+                    let event = Timestamped {
+                        inner: event,
+                        timestamp: uhlc.new_timestamp(),
+                    };
+                    if daemon_tx_log_broadcast.try_send(event).is_err() {
+                        tracing::debug!("adora/logs broadcast queue full, dropping log event");
                     }
                 }
 

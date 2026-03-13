@@ -36,37 +36,34 @@ fn runtime() -> PyResult<&'static Runtime> {
 }
 
 /// Consume a Python `logging.LogRecord` and emit a Rust `tracing::Event` instead.
+///
+/// Emits synchronously on the calling thread (no async needed since there are
+/// no `.await` points) and uses `Span::in_scope()` instead of `span.enter()`
+/// to avoid holding an `Entered` guard across thread boundaries.
 #[pyfunction]
 fn host_log<'py>(record: Bound<'py, PyAny>) -> PyResult<()> {
     let level = record.getattr("levelno")?.extract::<u8>()?;
     let message = record.getattr("getMessage")?.call0()?.to_string();
     let pathname = record.getattr("pathname")?.to_string();
-    let lineno = record.getattr("lineno")?.to_string();
+    let lineno = record.getattr("lineno")?.extract::<u32>().unwrap_or(0);
     let target = record.getattr("name")?.to_string();
 
-    runtime()?.spawn(async move {
-    if level.ge(&40u8) {
-        let span = span!(Level::ERROR, "adora.python.log.error", file=pathname, line=lineno, %target, %message);
-        let _enter = span.enter();
-        tracing::event!(tracing::Level::ERROR, file=pathname, line=lineno, %target, %message);
-    } else if level.ge(&30u8) {
-        let span = span!(Level::WARN, "adora.python.log.warn", file=pathname, line=lineno, %target, %message);
-        let _enter = span.enter();
-        tracing::event!(tracing::Level::WARN, file=pathname, line=lineno, %target, %message);
-    } else if level.ge(&20u8){
-        let span = span!(Level::INFO, "adora.python.log.info", file=pathname, line=lineno, %target, %message);
-        let _enter = span.enter();
-        tracing::event!(tracing::Level::INFO, file=pathname, line=lineno, %target, %message);
-    } else if level.ge(&10u8) {
-        let span = span!(Level::DEBUG, "adora.python.log.debug", file=pathname, line=lineno, %target, %message);
-        let _enter = span.enter();
-        tracing::event!(tracing::Level::DEBUG, file=pathname, line=lineno, %target, %message);
+    if level >= 40 {
+        span!(Level::ERROR, "adora.python.log.error", file = pathname, line = lineno, %target, %message)
+            .in_scope(|| tracing::event!(tracing::Level::ERROR, file = pathname, line = lineno, %target, %message));
+    } else if level >= 30 {
+        span!(Level::WARN, "adora.python.log.warn", file = pathname, line = lineno, %target, %message)
+            .in_scope(|| tracing::event!(tracing::Level::WARN, file = pathname, line = lineno, %target, %message));
+    } else if level >= 20 {
+        span!(Level::INFO, "adora.python.log.info", file = pathname, line = lineno, %target, %message)
+            .in_scope(|| tracing::event!(tracing::Level::INFO, file = pathname, line = lineno, %target, %message));
+    } else if level >= 10 {
+        span!(Level::DEBUG, "adora.python.log.debug", file = pathname, line = lineno, %target, %message)
+            .in_scope(|| tracing::event!(tracing::Level::DEBUG, file = pathname, line = lineno, %target, %message));
     } else {
-        let span = span!(Level::TRACE, "adora.python.log.trace", file=pathname, line=lineno, %target, %message);
-        let _enter = span.enter();
-        tracing::event!(tracing::Level::TRACE, file=pathname, line=lineno, %target, %message);
+        span!(Level::TRACE, "adora.python.log.trace", file = pathname, line = lineno, %target, %message)
+            .in_scope(|| tracing::event!(tracing::Level::TRACE, file = pathname, line = lineno, %target, %message));
     }
-    });
     Ok(())
 }
 
@@ -411,6 +408,61 @@ impl Node {
         self.node
             .get_mut()
             .log_with_fields(level, message, target, ordered.as_ref());
+    }
+
+    /// Log an error message.
+    ///
+    /// Shorthand for ``node.log("error", message)``.
+    ///
+    /// :param message: The log message
+    /// :type message: str
+    /// :rtype: None
+    pub fn log_error(&self, message: &str) {
+        self.node.get_mut().log_error(message);
+    }
+
+    /// Log a warning message.
+    ///
+    /// Shorthand for ``node.log("warn", message)``.
+    ///
+    /// :param message: The log message
+    /// :type message: str
+    /// :rtype: None
+    pub fn log_warn(&self, message: &str) {
+        self.node.get_mut().log_warn(message);
+    }
+
+    /// Log an info message.
+    ///
+    /// Shorthand for ``node.log("info", message)``.
+    ///
+    /// :param message: The log message
+    /// :type message: str
+    /// :rtype: None
+    pub fn log_info(&self, message: &str) {
+        self.node.get_mut().log_info(message);
+    }
+
+    /// Log a debug message.
+    ///
+    /// Shorthand for ``node.log("debug", message)``.
+    ///
+    /// :param message: The log message
+    /// :type message: str
+    /// :rtype: None
+    pub fn log_debug(&self, message: &str) {
+        self.node.get_mut().log_debug(message);
+    }
+
+    /// Log a trace message.
+    ///
+    /// Shorthand for ``node.log("trace", message)``.
+    ///
+    /// :param message: The log message
+    /// :type message: str
+    /// :rtype: None
+    pub fn log_trace(&self, message: &str) {
+        self.node.get_mut().log_trace(message);
     }
 
     /// Returns the full dataflow descriptor that this node is part of.
