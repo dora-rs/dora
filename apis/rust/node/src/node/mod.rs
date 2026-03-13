@@ -10,7 +10,6 @@ use crate::{
 use self::{
     arrow_utils::{copy_array_into_sample, required_data_size},
     control_channel::ControlChannel,
-    drop_stream::DropStream,
 };
 use aligned_vec::{AVec, ConstAlign};
 use arrow::array::Array;
@@ -26,19 +25,17 @@ use dora_message::{
     DataflowId,
     daemon_to_node::{DaemonCommunication, DaemonReply, NodeConfig},
     metadata::{ArrowTypeInfo, Metadata, MetadataParameters},
-    node_to_daemon::{DaemonRequest, DataMessage, DropToken, Timestamped},
+    node_to_daemon::{DaemonRequest, DataMessage, Timestamped},
 };
 use eyre::{WrapErr, bail};
 use is_terminal::IsTerminal;
-use shared_memory_extended::{Shmem, ShmemConf};
 
 use std::sync::Mutex;
 use std::{
-    collections::{BTreeSet, HashMap, VecDeque},
+    collections::{BTreeSet, HashMap},
     ops::{Deref, DerefMut},
     path::PathBuf,
     sync::Arc,
-    time::Duration,
 };
 use tokio::runtime::Handle;
 
@@ -48,23 +45,6 @@ use tracing::{info, warn};
 
 pub mod arrow_utils;
 mod control_channel;
-mod drop_stream;
-
-/// The data size threshold at which we start using shared memory.
-///
-/// Shared memory works by sharing memory pages. This means that the smallest
-/// memory region that can be shared is one memory page, which is typically
-/// 4KiB.
-///
-/// Using shared memory for messages smaller than the page size still requires
-/// sharing a full page, so we have some memory overhead. We also have some
-/// performance overhead because we need to issue multiple syscalls. For small
-/// messages it is faster to send them over a traditional TCP stream (or similar).
-///
-/// This hardcoded threshold value specifies which messages are sent through
-/// shared memory. Messages that are smaller than this threshold are sent through
-/// TCP.
-pub const ZERO_COPY_THRESHOLD: usize = 4096;
 
 /// Allows sending outputs and retrieving node information.
 ///
@@ -77,13 +57,13 @@ pub struct DoraNode {
     control_channel: ControlChannel,
     clock: Arc<uhlc::HLC>,
 
-    sent_out_shared_memory: HashMap<DropToken, ShmemHandle>,
-    drop_stream: DropStream,
-    cache: VecDeque<ShmemHandle>,
-
     dataflow_descriptor: serde_yaml::Result<Descriptor>,
     warned_unknown_output: BTreeSet<DataId>,
     interactive: bool,
+
+    zenoh_session: Option<zenoh::Session>,
+    shm_provider: Option<zenoh::shm::ShmProvider<zenoh::shm::PosixShmProviderBackend>>,
+    publishers: HashMap<DataId, zenoh::pubsub::Publisher<'static>>,
 }
 
 impl DoraNode {
@@ -359,11 +339,13 @@ impl DoraNode {
             run_config: NodeRunConfig {
                 inputs: Default::default(),
                 outputs: Default::default(),
+                shared_memory_pool_size: None,
             },
             daemon_communication: Some(DaemonCommunication::Interactive),
             dataflow_descriptor: serde_yaml::Value::Null,
             dynamic: false,
             write_events_to: None,
+            coordinator_addr: None,
         };
         let (mut node, events) = Self::init(node_config)?;
         node.interactive = true;
@@ -388,11 +370,13 @@ impl DoraNode {
             run_config: NodeRunConfig {
                 inputs: Default::default(),
                 outputs: Default::default(),
+                shared_memory_pool_size: None,
             },
             daemon_communication: None,
             dataflow_descriptor: serde_yaml::Value::Null,
             dynamic: false,
             write_events_to: None,
+            coordinator_addr: None,
         };
         let testing_comm = TestingCommunication {
             input,
@@ -424,6 +408,7 @@ impl DoraNode {
             dataflow_descriptor,
             dynamic,
             write_events_to,
+            coordinator_addr,
         } = node_config;
         let clock = Arc::new(uhlc::HLC::default());
         let input_config = run_config.inputs.clone();
@@ -459,6 +444,23 @@ impl DoraNode {
             },
         };
 
+        // Set up zenoh session for data plane (unless interactive/testing)
+        let is_interactive = matches!(
+            &daemon_communication,
+            DaemonCommunicationWrapper::Testing { .. }
+        ) || matches!(
+            &daemon_communication,
+            DaemonCommunicationWrapper::Standard(DaemonCommunication::Interactive)
+        );
+
+        let zenoh_session = if !is_interactive {
+            let session = dora_core::topics::open_zenoh_session_sync(coordinator_addr)
+                .wrap_err("failed to open zenoh session for node")?;
+            Some(session)
+        } else {
+            None
+        };
+
         let event_stream = EventStream::init(
             dataflow_id,
             &node_id,
@@ -466,26 +468,84 @@ impl DoraNode {
             input_config,
             clock.clone(),
             write_events_to,
+            zenoh_session.as_ref(),
         )
         .wrap_err("failed to init event stream")?;
-        let drop_stream =
-            DropStream::init(dataflow_id, &node_id, &daemon_communication, clock.clone())
-                .wrap_err("failed to init drop stream")?;
         let control_channel =
             ControlChannel::init(dataflow_id, &node_id, &daemon_communication, clock.clone())
                 .wrap_err("failed to init control channel")?;
+
+        let has_outputs = !run_config.outputs.is_empty();
+        let (shm_provider, publishers) = if zenoh_session.is_some() && has_outputs {
+            use zenoh::Wait;
+            let session = zenoh_session.as_ref().unwrap();
+
+            // Create SHM provider with configurable pool size.
+            // The pool is used for zero-copy output publishing. If the pool is
+            // exhausted, allocation blocks until receivers release buffers (see
+            // `allocate_data_sample`). For high-throughput nodes with large
+            // messages, configure via `shared_memory_pool_size` in the dataflow
+            // YAML or the `DORA_NODE_SHM_POOL_SIZE` env var (bytes).
+            let pool_size: usize = run_config
+                .shared_memory_pool_size
+                .map(|bs| bs.as_bytes())
+                .or_else(|| {
+                    std::env::var("DORA_NODE_SHM_POOL_SIZE")
+                        .ok()
+                        .and_then(|s| s.parse().ok())
+                })
+                .unwrap_or(8 * 1024 * 1024); // 8MB default
+
+            let provider = {
+                use zenoh::shm::*;
+                match ShmProviderBuilder::default_backend(pool_size).wait() {
+                    Ok(p) => Some(p),
+                    Err(e) => {
+                        if std::env::var("DORA_SHM_REQUIRED").is_ok() {
+                            return Err(eyre::eyre!("{e}")).wrap_err(
+                                "failed to create zenoh SHM provider (DORA_SHM_REQUIRED is set)",
+                            );
+                        }
+                        tracing::warn!(
+                            "failed to create zenoh SHM provider ({e}), falling back to heap buffers"
+                        );
+                        None
+                    }
+                }
+            };
+
+            // Declare publishers for each output
+            let mut pubs = HashMap::new();
+            for output_id in run_config.outputs.iter() {
+                let topic =
+                    dora_core::topics::zenoh_output_publish_topic(dataflow_id, &node_id, output_id);
+                let publisher = session
+                    .declare_publisher(topic)
+                    .wait()
+                    .map_err(|e| eyre::eyre!("{e}"))
+                    .wrap_err_with(|| {
+                        format!("failed to declare zenoh publisher for output {output_id}")
+                    })?;
+                pubs.insert(output_id.clone(), publisher);
+            }
+
+            (provider, pubs)
+        } else {
+            (None, HashMap::new())
+        };
+
         let node = Self {
             id: node_id,
             dataflow_id,
             node_config: run_config.clone(),
             control_channel,
             clock,
-            sent_out_shared_memory: HashMap::new(),
-            drop_stream,
-            cache: VecDeque::new(),
             dataflow_descriptor: serde_yaml::from_value(dataflow_descriptor),
             warned_unknown_output: BTreeSet::new(),
             interactive: false,
+            zenoh_session,
+            shm_provider,
+            publishers,
         };
 
         if dynamic {
@@ -666,25 +726,49 @@ impl DoraNode {
         parameters: MetadataParameters,
         sample: Option<DataSample>,
     ) -> eyre::Result<()> {
-        if !self.interactive {
-            self.handle_finished_drop_tokens()?;
-        }
-
         let metadata = Metadata::from_parameters(self.clock.new_timestamp(), type_info, parameters);
 
-        let (data, shmem) = match sample {
-            Some(sample) => sample.finalize(),
-            None => (None, None),
+        // If we have a zenoh publisher for this output, publish via zenoh and
+        // notify the daemon with a data-less control message. Otherwise fall back
+        // to sending the full payload through the control channel.
+        let data = if let Some(publisher) = self.publishers.get(&output_id) {
+            if let Some(sample) = sample {
+                use zenoh::Wait;
+
+                // Serialize metadata as a zenoh attachment so receivers get both
+                // the data payload (zero-copy via SHM) and the metadata.
+                let metadata_bytes = bincode::serialize(&metadata)
+                    .wrap_err("failed to serialize metadata for zenoh attachment")?;
+
+                match sample.inner {
+                    DataSampleInner::ZenohShm(sbuf) => {
+                        publisher
+                            .put(sbuf)
+                            .attachment(&metadata_bytes[..])
+                            .wait()
+                            .map_err(|e| eyre::eyre!("{e}"))
+                            .wrap_err("zenoh SHM publish failed")?;
+                    }
+                    DataSampleInner::Vec(v) => {
+                        publisher
+                            .put(v.as_slice())
+                            .attachment(&metadata_bytes[..])
+                            .wait()
+                            .map_err(|e| eyre::eyre!("{e}"))
+                            .wrap_err("zenoh publish failed")?;
+                    }
+                }
+            }
+            // Data was (or would have been) sent via zenoh; daemon only needs the notification.
+            None
+        } else {
+            // Fallback: send via control channel only (interactive/testing mode)
+            sample.map(|s| s.finalize())
         };
 
         self.control_channel
             .send_message(output_id.clone(), metadata, data)
             .wrap_err_with(|| format!("failed to send output {output_id}"))?;
-
-        if let Some((shared_memory, drop_token)) = shmem {
-            self.sent_out_shared_memory
-                .insert(drop_token, shared_memory);
-        }
 
         Ok(())
     }
@@ -727,76 +811,47 @@ impl DoraNode {
 
     /// Allocates a [`DataSample`] of the specified size.
     ///
-    /// The data sample will use shared memory when suitable to enable efficient data transfer
-    /// when sending an output message.
+    /// When a zenoh SHM provider is available, the buffer is allocated from shared memory,
+    /// enabling zero-copy data transfer between nodes on the same machine.
+    /// Falls back to an aligned Vec when no SHM provider is available (interactive/testing mode).
+    ///
+    /// # Blocking behavior
+    ///
+    /// SHM allocation uses `BlockOn<GarbageCollect>`: if the pool is full, it triggers
+    /// garbage collection of released buffers and blocks until space is available. This
+    /// can stall the sender if receivers hold onto buffers for a long time. Increase the
+    /// pool size via the `DORA_NODE_SHM_POOL_SIZE` environment variable or
+    /// `shared_memory_pool_size` in the dataflow YAML (default: 8 MB) if you observe
+    /// send stalls.
     pub fn allocate_data_sample(&mut self, data_len: usize) -> eyre::Result<DataSample> {
-        let data = if data_len >= ZERO_COPY_THRESHOLD && !self.interactive {
-            // create shared memory region
-            let shared_memory = self.allocate_shared_memory(data_len)?;
+        // Zero-length allocations are not supported by zenoh SHM; use a plain Vec.
+        if data_len == 0 {
+            let avec: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, 0);
+            return Ok(avec.into());
+        }
 
-            DataSample {
-                inner: DataSampleInner::Shmem(shared_memory),
-                len: data_len,
-            }
-        } else {
-            let avec: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, data_len);
-
-            avec.into()
-        };
-
-        Ok(data)
-    }
-
-    fn allocate_shared_memory(&mut self, data_len: usize) -> eyre::Result<ShmemHandle> {
-        let cache_index = self
-            .cache
-            .iter()
-            .enumerate()
-            .rev()
-            .filter(|(_, s)| s.len() >= data_len)
-            .min_by_key(|(_, s)| s.len())
-            .map(|(i, _)| i);
-        let memory = match cache_index {
-            Some(i) => {
-                // we know that this index exists, so we can safely unwrap here
-                self.cache.remove(i).unwrap()
-            }
-            None => ShmemHandle(Box::new(
-                ShmemConf::new()
-                    .size(data_len)
-                    .writable(true)
-                    .create()
-                    .wrap_err("failed to allocate shared memory")?,
-            )),
-        };
-        assert!(memory.len() >= data_len);
-
-        Ok(memory)
-    }
-
-    fn handle_finished_drop_tokens(&mut self) -> eyre::Result<()> {
-        loop {
-            match self.drop_stream.try_recv() {
-                Ok(token) => match self.sent_out_shared_memory.remove(&token) {
-                    Some(region) => self.add_to_cache(region),
-                    None => tracing::warn!("received unknown finished drop token `{token:?}`"),
-                },
-                Err(flume::TryRecvError::Empty) => break,
-                Err(flume::TryRecvError::Disconnected) => {
-                    bail!("event stream was closed before sending all expected drop tokens")
+        if let Some(provider) = &self.shm_provider {
+            use zenoh::Wait;
+            use zenoh::shm::{BlockOn, GarbageCollect};
+            match provider
+                .alloc(data_len)
+                .with_policy::<BlockOn<GarbageCollect>>()
+                .wait()
+            {
+                Ok(sbuf) => {
+                    return Ok(DataSample {
+                        len: data_len,
+                        inner: DataSampleInner::ZenohShm(sbuf),
+                    });
+                }
+                Err(e) => {
+                    tracing::warn!("SHM allocation failed ({e}), falling back to heap buffer");
                 }
             }
         }
-        Ok(())
-    }
 
-    fn add_to_cache(&mut self, memory: ShmemHandle) {
-        const MAX_CACHE_SIZE: usize = 20;
-
-        self.cache.push_back(memory);
-        while self.cache.len() > MAX_CACHE_SIZE {
-            self.cache.pop_front();
-        }
+        let avec: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, data_len);
+        Ok(avec.into())
     }
 
     /// Returns the full dataflow descriptor that this node is part of.
@@ -829,37 +884,6 @@ impl Drop for DoraNode {
             tracing::warn!("{err:?}")
         }
 
-        while !self.sent_out_shared_memory.is_empty() {
-            if self.drop_stream.is_empty() {
-                tracing::trace!(
-                    "waiting for {} remaining drop tokens",
-                    self.sent_out_shared_memory.len()
-                );
-            }
-
-            match self.drop_stream.recv_timeout(Duration::from_secs(2)) {
-                Ok(token) => {
-                    self.sent_out_shared_memory.remove(&token);
-                }
-                Err(flume::RecvTimeoutError::Disconnected) => {
-                    tracing::warn!(
-                        "finished_drop_tokens channel closed while still waiting for drop tokens; \
-                        closing {} shared memory regions that might not yet been mapped.",
-                        self.sent_out_shared_memory.len()
-                    );
-                    break;
-                }
-                Err(flume::RecvTimeoutError::Timeout) => {
-                    tracing::warn!(
-                        "timeout while waiting for drop tokens; \
-                        closing {} shared memory regions that might not yet been mapped.",
-                        self.sent_out_shared_memory.len()
-                    );
-                    break;
-                }
-            }
-        }
-
         if let Err(err) = self.control_channel.report_outputs_done() {
             tracing::warn!("{err:?}")
         }
@@ -868,7 +892,7 @@ impl Drop for DoraNode {
 
 /// A data region suitable for sending as an output message.
 ///
-/// The region is stored in shared memory when suitable to enable efficient data transfer.
+/// When zenoh SHM is available, the buffer is backed by shared memory for zero-copy transfer.
 ///
 /// `DataSample` implements the [`Deref`] and [`DerefMut`] traits to read and write the mapped data.
 pub struct DataSample {
@@ -877,18 +901,14 @@ pub struct DataSample {
 }
 
 impl DataSample {
-    fn finalize(self) -> (Option<DataMessage>, Option<(ShmemHandle, DropToken)>) {
+    fn finalize(self) -> DataMessage {
         match self.inner {
-            DataSampleInner::Shmem(shared_memory) => {
-                let drop_token = DropToken::generate();
-                let data = DataMessage::SharedMemory {
-                    shared_memory_id: shared_memory.get_os_id().to_owned(),
-                    len: self.len,
-                    drop_token,
-                };
-                (Some(data), Some((shared_memory, drop_token)))
+            DataSampleInner::Vec(buffer) => DataMessage::Vec(buffer),
+            DataSampleInner::ZenohShm(sbuf) => {
+                // Copy SHM data into a Vec for the control channel fallback path
+                let data = &sbuf[..self.len];
+                DataMessage::Vec(AVec::from_slice(128, data))
             }
-            DataSampleInner::Vec(buffer) => (Some(DataMessage::Vec(buffer)), None),
         }
     }
 }
@@ -897,21 +917,19 @@ impl Deref for DataSample {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
-        let slice = match &self.inner {
-            DataSampleInner::Shmem(handle) => unsafe { handle.as_slice() },
-            DataSampleInner::Vec(data) => data,
-        };
-        &slice[..self.len]
+        match &self.inner {
+            DataSampleInner::Vec(data) => &data[..self.len],
+            DataSampleInner::ZenohShm(sbuf) => &sbuf[..self.len],
+        }
     }
 }
 
 impl DerefMut for DataSample {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        let slice = match &mut self.inner {
-            DataSampleInner::Shmem(handle) => unsafe { handle.as_slice_mut() },
-            DataSampleInner::Vec(data) => data,
-        };
-        &mut slice[..self.len]
+        match &mut self.inner {
+            DataSampleInner::Vec(data) => &mut data[..self.len],
+            DataSampleInner::ZenohShm(sbuf) => &mut sbuf[..self.len],
+        }
     }
 }
 
@@ -927,8 +945,8 @@ impl From<AVec<u8, ConstAlign<128>>> for DataSample {
 impl std::fmt::Debug for DataSample {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let kind = match &self.inner {
-            DataSampleInner::Shmem(_) => "SharedMemory",
             DataSampleInner::Vec(_) => "Vec",
+            DataSampleInner::ZenohShm(_) => "ZenohShm",
         };
         f.debug_struct("DataSample")
             .field("len", &self.len)
@@ -938,28 +956,9 @@ impl std::fmt::Debug for DataSample {
 }
 
 enum DataSampleInner {
-    Shmem(ShmemHandle),
     Vec(AVec<u8, ConstAlign<128>>),
+    ZenohShm(zenoh::shm::ZShmMut),
 }
-
-struct ShmemHandle(Box<Shmem>);
-
-impl Deref for ShmemHandle {
-    type Target = Shmem;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl DerefMut for ShmemHandle {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
-unsafe impl Send for ShmemHandle {}
-unsafe impl Sync for ShmemHandle {}
 
 /// Init Opentelemetry Tracing
 ///

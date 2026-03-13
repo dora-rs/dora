@@ -6,10 +6,12 @@ use std::{
     time::Duration,
 };
 
+use aligned_vec::{AVec, ConstAlign};
 use dora_message::{
     DataflowId,
     daemon_to_node::{DaemonCommunication, DaemonReply, DataMessage, NodeEvent},
     id::DataId,
+    metadata::Metadata,
     node_to_daemon::{DaemonRequest, Timestamped},
 };
 pub use event::{Event, StopCause};
@@ -24,10 +26,11 @@ use self::thread::{EventItem, EventStreamThreadHandle};
 use crate::{
     DaemonCommunicationWrapper,
     daemon_connection::{DaemonChannel, node_integration_testing::convert_output_to_json},
-    event_stream::data_conversion::{MappedInputData, RawData, SharedMemoryData},
+    event_stream::data_conversion::RawData,
 };
 use dora_core::{
-    config::{Input, NodeId},
+    config::{Input, InputMapping, NodeId},
+    metadata::ArrowTypeInfoExt,
     uhlc,
 };
 use eyre::{Context, eyre};
@@ -69,10 +72,17 @@ pub struct EventStream {
     write_events_to: Option<WriteEventsTo>,
     start_timestamp: uhlc::Timestamp,
     use_scheduler: bool,
+    /// Set of input IDs that have zenoh subscriptions.
+    /// When a daemon event arrives with `data: None` for one of these inputs,
+    /// we skip it because the data will arrive via zenoh.
+    zenoh_input_ids: Arc<std::collections::BTreeSet<DataId>>,
+    /// Dropping this sender disconnects the channel, causing zenoh subscriber
+    /// threads to exit via the async select on the shutdown receiver.
+    _zenoh_shutdown_tx: flume::Sender<()>,
 }
 
 impl EventStream {
-    #[tracing::instrument(level = "trace", skip(clock))]
+    #[tracing::instrument(level = "trace", skip(clock, zenoh_session))]
     pub(crate) fn init(
         dataflow_id: DataflowId,
         node_id: &NodeId,
@@ -80,6 +90,7 @@ impl EventStream {
         input_config: BTreeMap<DataId, Input>,
         clock: Arc<uhlc::HLC>,
         write_events_to: Option<PathBuf>,
+        zenoh_session: Option<&zenoh::Session>,
     ) -> eyre::Result<Self> {
         let channel = match daemon_communication {
             DaemonCommunicationWrapper::Standard(daemon_communication) => {
@@ -116,15 +127,10 @@ impl EventStream {
         let close_channel = match daemon_communication {
             DaemonCommunicationWrapper::Standard(daemon_communication) => {
                 match daemon_communication {
-                    DaemonCommunication::Shmem {
-                        daemon_events_close_region_id,
-                        ..
-                    } => unsafe { DaemonChannel::new_shmem(daemon_events_close_region_id) }
-                        .wrap_err_with(|| {
-                            format!(
-                                "failed to create shmem event close channel for node `{node_id}`"
-                            )
-                        })?,
+                    DaemonCommunication::Shmem { .. } => {
+                        // Use TCP fallback for close channel since we removed the dedicated SHM region
+                        DaemonChannel::Interactive(Default::default())
+                    }
                     DaemonCommunication::Tcp { socket_addr } => {
                         DaemonChannel::new_tcp(*socket_addr).wrap_err_with(|| {
                             format!("failed to connect event close channel for node `{node_id}`")
@@ -200,6 +206,8 @@ impl EventStream {
             clock,
             scheduler,
             write_events_to,
+            zenoh_session,
+            &input_config,
         )
     }
 
@@ -211,6 +219,8 @@ impl EventStream {
         clock: Arc<uhlc::HLC>,
         scheduler: Scheduler,
         write_events_to: Option<WriteEventsTo>,
+        zenoh_session: Option<&zenoh::Session>,
+        input_config: &BTreeMap<DataId, Input>,
     ) -> eyre::Result<Self> {
         channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;
         let reply = channel
@@ -242,7 +252,132 @@ impl EventStream {
             _ => true,
         };
 
-        let thread_handle = thread::init(node_id.clone(), tx, channel, clock.clone())?;
+        // Set up zenoh subscribers for user inputs
+        let mut zenoh_input_ids = std::collections::BTreeSet::new();
+        let (zenoh_shutdown_tx, zenoh_shutdown_rx) = flume::bounded::<()>(0);
+        if let Some(session) = zenoh_session {
+            use zenoh::Wait;
+
+            for (input_id, input) in input_config {
+                if let InputMapping::User(mapping) = &input.mapping {
+                    zenoh_input_ids.insert(input_id.clone());
+
+                    let topic = dora_core::topics::zenoh_output_publish_topic(
+                        dataflow_id,
+                        &mapping.source,
+                        &mapping.output,
+                    );
+                    let subscriber = session
+                        .declare_subscriber(&topic)
+                        .wait()
+                        .map_err(|e| eyre::eyre!("{e}"))
+                        .wrap_err_with(|| {
+                            format!(
+                                "failed to declare zenoh subscriber for input {input_id} on topic {topic}"
+                            )
+                        })?;
+
+                    let tx_clone = tx.clone();
+                    let input_id_clone = input_id.clone();
+                    let clock_clone = clock.clone();
+                    let shutdown_rx = zenoh_shutdown_rx.clone();
+
+                    // Spawn a background thread to receive zenoh samples and feed them
+                    // into the event channel. Uses async select to wait on both the
+                    // subscriber and a shutdown signal, ensuring clean exit on drop.
+                    std::thread::spawn(move || {
+                        futures::executor::block_on(async {
+                            loop {
+                                let recv_fut = subscriber.recv_async();
+                                let shutdown_fut = shutdown_rx.recv_async();
+
+                                match select(pin!(recv_fut), pin!(shutdown_fut)).await {
+                                    Either::Left((Ok(sample), _)) => {
+                                        let payload = sample.payload();
+                                        let payload_len = payload.len();
+
+                                        // Extract metadata from the attachment (sent by the publisher)
+                                        let metadata = if let Some(attachment) = sample.attachment()
+                                        {
+                                            let attachment_bytes = attachment.to_bytes();
+                                            match bincode::deserialize::<Metadata>(
+                                                &attachment_bytes,
+                                            ) {
+                                                Ok(m) => m,
+                                                Err(e) => {
+                                                    tracing::warn!(
+                                                        "failed to deserialize metadata attachment for input {}: {e}",
+                                                        input_id_clone
+                                                    );
+                                                    continue;
+                                                }
+                                            }
+                                        } else {
+                                            // No attachment: create a fallback metadata with a
+                                            // receiver timestamp. This loses the original sender
+                                            // timestamp.
+                                            tracing::warn!(
+                                                "zenoh sample for input {} has no metadata attachment, using fallback",
+                                                input_id_clone
+                                            );
+                                            Metadata::new(
+                                                clock_clone.new_timestamp(),
+                                                dora_message::metadata::ArrowTypeInfo::byte_array(
+                                                    payload_len,
+                                                ),
+                                            )
+                                        };
+
+                                        // Try zero-copy path: if the payload is backed by SHM,
+                                        // reference it directly without copying.
+                                        let event_item = if let Some(shm) = payload.as_shm() {
+                                            EventItem::ZenohShmInput {
+                                                id: input_id_clone.clone(),
+                                                metadata,
+                                                shm: shm.to_owned(),
+                                            }
+                                        } else {
+                                            // Fallback: copy bytes for non-SHM payloads
+                                            // (e.g. remote subscribers)
+                                            let payload_bytes = payload.to_bytes();
+                                            let data_vec: AVec<u8, ConstAlign<128>> =
+                                                AVec::from_slice(128, &payload_bytes);
+                                            let event = NodeEvent::Input {
+                                                id: input_id_clone.clone(),
+                                                metadata,
+                                                data: Some(DataMessage::Vec(data_vec)),
+                                            };
+                                            let (drop_tx, _drop_rx) = flume::bounded(0);
+                                            EventItem::NodeEvent {
+                                                event,
+                                                ack_channel: drop_tx,
+                                            }
+                                        };
+
+                                        if tx_clone.send(event_item).is_err() {
+                                            // Event channel closed, stop listening
+                                            break;
+                                        }
+                                    }
+                                    // Subscriber closed or shutdown signal received
+                                    _ => break,
+                                }
+                            }
+                        });
+                    });
+                }
+            }
+        }
+
+        let zenoh_input_ids = Arc::new(zenoh_input_ids);
+
+        let thread_handle = thread::init(
+            node_id.clone(),
+            tx,
+            channel,
+            clock.clone(),
+            zenoh_input_ids.clone(),
+        )?;
 
         Ok(EventStream {
             node_id: node_id.clone(),
@@ -254,6 +389,8 @@ impl EventStream {
             scheduler,
             write_events_to,
             use_scheduler,
+            zenoh_input_ids,
+            _zenoh_shutdown_tx: zenoh_shutdown_tx,
         })
     }
 
@@ -413,7 +550,11 @@ impl EventStream {
                         Some(event_json)
                     }
                 },
-                _ => None,
+                // ZenohShmInput events are not recorded to avoid copying the SHM data.
+                // FatalError/TimeoutError events are not recorded.
+                EventItem::ZenohShmInput { .. }
+                | EventItem::FatalError(_)
+                | EventItem::TimeoutError(_) => None,
             };
             if let Some(event_json) = event_json {
                 write_events_to.events_buffer.push(event_json);
@@ -527,6 +668,21 @@ impl EventStream {
                 NodeEvent::AllInputsClosed => Event::Stop(event::StopCause::AllInputsClosed),
             },
 
+            EventItem::ZenohShmInput { id, metadata, shm } => {
+                let raw_data = RawData::ZenohShm(shm);
+                match raw_data
+                    .into_arrow_array(&metadata.type_info)
+                    .map(arrow::array::make_array)
+                {
+                    Ok(data) => Event::Input {
+                        id,
+                        metadata,
+                        data: data.into(),
+                    },
+                    Err(err) => Event::Error(format!("{err:?}")),
+                }
+            }
+
             EventItem::FatalError(err) => {
                 Event::Error(format!("fatal event stream error: {err:?}"))
             }
@@ -549,23 +705,11 @@ pub enum TryRecvError {
 pub fn data_to_arrow_array(
     data: Option<DataMessage>,
     metadata: &dora_message::metadata::Metadata,
-    drop_channel: flume::Sender<()>,
+    _drop_channel: flume::Sender<()>,
 ) -> eyre::Result<Arc<dyn arrow::array::Array>> {
     let data = match data {
         None => Ok(None),
         Some(DataMessage::Vec(v)) => Ok(Some(RawData::Vec(v))),
-        Some(DataMessage::SharedMemory {
-            shared_memory_id,
-            len,
-            drop_token: _, // handled in `event_stream_loop`
-        }) => unsafe {
-            MappedInputData::map(&shared_memory_id, len).map(|data| {
-                Some(RawData::SharedMemory(SharedMemoryData {
-                    data,
-                    _drop: drop_channel,
-                }))
-            })
-        },
     };
 
     data.and_then(|data| {
