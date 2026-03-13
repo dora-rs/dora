@@ -11,6 +11,16 @@ use serde::{Deserialize, Serialize};
 
 pub use crate::id::{DataId, NodeId, OperatorId};
 
+/// Filter for the `adora/logs` virtual input.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, JsonSchema)]
+pub struct LogSubscriptionFilter {
+    /// Minimum log level to receive. `None` means all levels (including stdout).
+    #[schemars(with = "Option<String>")]
+    pub min_level: Option<crate::common::LogLevelOrStdout>,
+    /// Only receive logs from this specific node. `None` means all nodes.
+    pub node_filter: Option<NodeId>,
+}
+
 /// Default queue size when none is configured.
 pub const DEFAULT_QUEUE_SIZE: usize = 10;
 
@@ -174,7 +184,13 @@ impl From<InputDef> for Input {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, JsonSchema)]
 pub enum InputMapping {
-    Timer { interval: Duration },
+    Timer {
+        interval: Duration,
+    },
+    /// Subscribe to log messages from all (or filtered) nodes in the dataflow.
+    ///
+    /// Syntax: `adora/logs`, `adora/logs/{level}`, `adora/logs/{level}/{node_id}`
+    Logs(LogSubscriptionFilter),
     User(UserInputMapping),
 }
 
@@ -184,7 +200,9 @@ impl InputMapping {
 
         match self {
             InputMapping::User(mapping) => &mapping.source,
-            InputMapping::Timer { .. } => ADORA_NODE_ID.get_or_init(|| NodeId("adora".to_string())),
+            InputMapping::Timer { .. } | InputMapping::Logs(_) => {
+                ADORA_NODE_ID.get_or_init(|| NodeId("adora".to_string()))
+            }
         }
     }
 }
@@ -195,6 +213,16 @@ impl fmt::Display for InputMapping {
             InputMapping::Timer { interval } => {
                 let duration = format_duration(*interval);
                 write!(f, "adora/timer/{duration}")
+            }
+            InputMapping::Logs(filter) => {
+                write!(f, "adora/logs")?;
+                if let Some(level) = &filter.min_level {
+                    write!(f, "/{}", format_log_level(level))?;
+                    if let Some(node) = &filter.node_filter {
+                        write!(f, "/{node}")?;
+                    }
+                }
+                Ok(())
             }
             InputMapping::User(mapping) => {
                 write!(f, "{}/{}", mapping.source, mapping.output)
@@ -238,9 +266,32 @@ impl FromStr for InputMapping {
                     };
                     Self::Timer { interval }
                 }
+                Some(("logs", rest)) => {
+                    // adora/logs/{level} or adora/logs/{level}/{node_id}
+                    let (level_str, node_filter) = match rest.split_once('/') {
+                        Some((level, node)) => (Some(level), Some(NodeId(node.to_owned()))),
+                        None => {
+                            if rest.is_empty() {
+                                (None, None)
+                            } else {
+                                (Some(rest), None)
+                            }
+                        }
+                    };
+                    let min_level = level_str.map(parse_log_level_str).transpose()?;
+                    Self::Logs(LogSubscriptionFilter {
+                        min_level,
+                        node_filter,
+                    })
+                }
                 Some((other, _)) => {
                     return Err(format!("unknown adora input `{other}`"));
                 }
+                // "adora/logs" with no sub-path
+                None if output == "logs" => Self::Logs(LogSubscriptionFilter {
+                    min_level: None,
+                    node_filter: None,
+                }),
                 None => return Err("adora input has invalid format".into()),
             },
             _ => Self::User(UserInputMapping {
@@ -250,6 +301,35 @@ impl FromStr for InputMapping {
         };
 
         Ok(mapping)
+    }
+}
+
+fn parse_log_level_str(s: &str) -> Result<crate::common::LogLevelOrStdout, String> {
+    use crate::common::{LogLevel, LogLevelOrStdout};
+    match s.to_lowercase().as_str() {
+        "stdout" => Ok(LogLevelOrStdout::Stdout),
+        "error" => Ok(LogLevelOrStdout::LogLevel(LogLevel::Error)),
+        "warn" => Ok(LogLevelOrStdout::LogLevel(LogLevel::Warn)),
+        "info" => Ok(LogLevelOrStdout::LogLevel(LogLevel::Info)),
+        "debug" => Ok(LogLevelOrStdout::LogLevel(LogLevel::Debug)),
+        "trace" => Ok(LogLevelOrStdout::LogLevel(LogLevel::Trace)),
+        other => Err(format!(
+            "unknown log level `{other}` (expected: stdout, error, warn, info, debug, trace)"
+        )),
+    }
+}
+
+fn format_log_level(level: &crate::common::LogLevelOrStdout) -> &'static str {
+    use crate::common::{LogLevel, LogLevelOrStdout};
+    match level {
+        LogLevelOrStdout::Stdout => "stdout",
+        LogLevelOrStdout::LogLevel(l) => match *l {
+            LogLevel::Error => "error",
+            LogLevel::Warn => "warn",
+            LogLevel::Info => "info",
+            LogLevel::Debug => "debug",
+            LogLevel::Trace => "trace",
+        },
     }
 }
 
@@ -395,5 +475,91 @@ mod tests {
     #[test]
     fn queue_policy_default_is_drop_oldest() {
         assert_eq!(QueuePolicy::default(), QueuePolicy::DropOldest);
+    }
+
+    #[test]
+    fn parse_logs_all() {
+        let mapping: InputMapping = "adora/logs".parse().unwrap();
+        assert!(matches!(
+            mapping,
+            InputMapping::Logs(LogSubscriptionFilter {
+                min_level: None,
+                node_filter: None,
+            })
+        ));
+    }
+
+    #[test]
+    fn parse_logs_with_level() {
+        use crate::common::{LogLevel, LogLevelOrStdout};
+        let mapping: InputMapping = "adora/logs/info".parse().unwrap();
+        match mapping {
+            InputMapping::Logs(f) => {
+                assert_eq!(
+                    f.min_level,
+                    Some(LogLevelOrStdout::LogLevel(LogLevel::Info))
+                );
+                assert_eq!(f.node_filter, None);
+            }
+            _ => panic!("expected Logs variant"),
+        }
+    }
+
+    #[test]
+    fn parse_logs_with_level_and_node() {
+        use crate::common::{LogLevel, LogLevelOrStdout};
+        let mapping: InputMapping = "adora/logs/error/sensor".parse().unwrap();
+        match mapping {
+            InputMapping::Logs(f) => {
+                assert_eq!(
+                    f.min_level,
+                    Some(LogLevelOrStdout::LogLevel(LogLevel::Error))
+                );
+                assert_eq!(f.node_filter, Some(NodeId("sensor".to_string())));
+            }
+            _ => panic!("expected Logs variant"),
+        }
+    }
+
+    #[test]
+    fn parse_logs_invalid_level() {
+        let result: Result<InputMapping, _> = "adora/logs/banana".parse();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn display_roundtrip_logs_all() {
+        let mapping: InputMapping = "adora/logs".parse().unwrap();
+        assert_eq!(mapping.to_string(), "adora/logs");
+    }
+
+    #[test]
+    fn display_roundtrip_logs_with_level() {
+        let mapping: InputMapping = "adora/logs/warn".parse().unwrap();
+        assert_eq!(mapping.to_string(), "adora/logs/warn");
+    }
+
+    #[test]
+    fn display_roundtrip_logs_with_level_and_node() {
+        let mapping: InputMapping = "adora/logs/debug/camera".parse().unwrap();
+        assert_eq!(mapping.to_string(), "adora/logs/debug/camera");
+    }
+
+    #[test]
+    fn logs_source_is_adora() {
+        let mapping: InputMapping = "adora/logs".parse().unwrap();
+        assert_eq!(mapping.source().to_string(), "adora");
+    }
+
+    #[test]
+    fn parse_logs_trailing_slash() {
+        let mapping: InputMapping = "adora/logs/".parse().unwrap();
+        assert!(matches!(
+            mapping,
+            InputMapping::Logs(LogSubscriptionFilter {
+                min_level: None,
+                node_filter: None,
+            })
+        ));
     }
 }

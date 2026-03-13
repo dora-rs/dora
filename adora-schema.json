@@ -176,11 +176,11 @@
       "additionalProperties": false
     },
     "Input": {
-      "description": "An input subscription. Either a short-form string (`node-id/output-id` or `adora/timer/millis/N`) or an object with `source`, `queue_size`, `queue_policy`, and `input_timeout`.",
+      "description": "An input subscription. Either a short-form string (`node-id/output-id`, `adora/timer/millis/N`, or `adora/logs[/level[/node]]`) or an object with `source`, `queue_size`, `queue_policy`, and `input_timeout`.",
       "anyOf": [
         {
           "type": "string",
-          "description": "Short form: `<node-id>/<output-id>` or `adora/timer/millis/<N>` or `adora/timer/hz/<N>`."
+          "description": "Short form: `<node-id>/<output-id>`, `adora/timer/millis/<N>`, `adora/timer/hz/<N>`, or `adora/logs[/<level>[/<node-id>]]`."
         },
         {
           "type": "object",

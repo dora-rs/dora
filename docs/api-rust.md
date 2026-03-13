@@ -211,7 +211,11 @@ pub fn dataflow_descriptor(&self) -> NodeResult<&Descriptor>
 
 #### Logging
 
-All log methods emit structured JSONL to stdout, which the daemon parses automatically. Works with `min_log_level` filtering and `send_logs_as` routing.
+Rust nodes have two ways to emit structured logs. Both produce identical structured log entries in the daemon.
+
+**Option 1: Node API (recommended for most cases)**
+
+All log methods emit structured JSONL to stdout, which the daemon parses automatically. Works with `min_log_level` filtering, `send_logs_as` routing, and `adora/logs` subscribers.
 
 ```rust
 // General structured log. Level: "error", "warn", "info", "debug", "trace".
@@ -233,6 +237,24 @@ pub fn log_info(&self, message: &str)
 pub fn log_debug(&self, message: &str)
 pub fn log_trace(&self, message: &str)
 ```
+
+**Option 2: Rust `tracing` crate**
+
+When adora's tracing subscriber is initialized (via `init_tracing()` or the default feature), `tracing::info!()` etc. output structured JSON to stdout that the daemon parses identically:
+
+```rust
+tracing::info!("Sensor started");
+tracing::warn!(sensor_id = "temp-01", "High temperature");
+```
+
+Use `tracing` when you want ecosystem integration (spans, instrumentation, OpenTelemetry). Use `node.log_*()` when you want explicit control or structured fields as `BTreeMap`.
+
+| Method | Structured? | Fields? | OpenTelemetry? | Best for |
+|--------|------------|---------|----------------|----------|
+| `node.log_info(msg)` | Yes | No | No | Quick one-liner |
+| `node.log_with_fields(...)` | Yes | Yes (BTreeMap) | No | Structured key-value context |
+| `tracing::info!(key = val, msg)` | Yes | Yes (spans) | Yes | Ecosystem integration, OTel |
+| `println!()` | No (`stdout` level) | No | No | Quick debugging |
 
 ---
 

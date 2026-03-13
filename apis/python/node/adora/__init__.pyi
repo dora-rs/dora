@@ -80,6 +80,11 @@ class Node:
         """The custom node API lets you integrate `dora` into your application.
         It allows you to retrieve input and send output in any fashion you want.
 
+        Creating a Node automatically bridges Python's ``logging`` module to the
+        adora daemon. After ``Node()`` is created, ``logging.info()`` etc. produce
+        structured log entries that work with ``min_log_level``, ``send_logs_as``,
+        and ``adora/logs`` subscribers. No extra configuration needed.
+
         Use with:
 
         ```python
@@ -87,6 +92,38 @@ class Node:
 
         node = Node()
         ```"""
+
+    def log(
+        self,
+        level: str,
+        message: str,
+        target: typing.Optional[str] = None,
+        fields: typing.Optional[typing.Dict[str, str]] = None,
+    ) -> None:
+        """Send a structured log message.
+
+        Outputs a JSONL line to stdout that the daemon parses automatically.
+        Works with ``min_log_level`` filtering and ``send_logs_as`` routing.
+
+        :param level: Log level string (error, warn, info, debug, trace)
+        :param message: The log message
+        :param target: Optional target/module path
+        :param fields: Optional key-value pairs for structured context"""
+
+    def log_error(self, message: str) -> None:
+        """Log an error message. Shorthand for ``node.log("error", message)``."""
+
+    def log_warn(self, message: str) -> None:
+        """Log a warning message. Shorthand for ``node.log("warn", message)``."""
+
+    def log_info(self, message: str) -> None:
+        """Log an info message. Shorthand for ``node.log("info", message)``."""
+
+    def log_debug(self, message: str) -> None:
+        """Log a debug message. Shorthand for ``node.log("debug", message)``."""
+
+    def log_trace(self, message: str) -> None:
+        """Log a trace message. Shorthand for ``node.log("trace", message)``."""
 
     def dataflow_descriptor(self) -> dict:
         """Returns the full dataflow descriptor that this node is part of.

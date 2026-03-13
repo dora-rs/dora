@@ -25,11 +25,14 @@ pub mod telemetry;
 /// Setup tracing with a default configuration.
 ///
 /// This will set up a global subscriber that logs to stdout with a filter level of "warn".
+/// Outputs structured JSONL that the adora daemon parses as `LogMessage`,
+/// so `tracing::info!()` calls in user nodes are automatically routed through
+/// the adora log pipeline (file, coordinator, `adora/logs` subscribers).
 ///
 /// Should **ONLY** be used in `AdoraNode` implementations.
 pub fn set_up_tracing(name: &str) -> eyre::Result<()> {
     TracingBuilder::new(name)
-        .with_stdout("warn", false)
+        .with_node_stdout("warn")
         .build()
         .wrap_err(format!(
             "failed to set tracing global subscriber for {name}"
@@ -56,6 +59,33 @@ impl TracingBuilder {
             layers: Vec::new(),
             guard: None,
         }
+    }
+
+    /// Add a layer that writes structured JSONL to stdout, compatible with the
+    /// adora daemon's `LogMessageHelper` parser.
+    ///
+    /// This is the recommended layer for user nodes: `tracing::info!()` calls
+    /// are automatically parsed by the daemon and routed through the log pipeline.
+    pub fn with_node_stdout(mut self, filter: impl AsRef<str>) -> Self {
+        let mut parsed = EnvFilter::builder()
+            .parse_lossy(filter)
+            .add_directive("hyper=off".parse().unwrap())
+            .add_directive("tonic=off".parse().unwrap())
+            .add_directive("tokio=off".parse().unwrap())
+            .add_directive("process_wrap=off".parse().unwrap())
+            .add_directive("h2=off".parse().unwrap())
+            .add_directive("reqwest=off".parse().unwrap());
+        let env_log = std::env::var("RUST_LOG").unwrap_or_default();
+        if !env_log.contains("zenoh") {
+            parsed = parsed.add_directive("zenoh=warn".parse().unwrap());
+        }
+        let env_filter = EnvFilter::from_default_env().or(parsed);
+        let layer = tracing_subscriber::fmt::layer()
+            .json()
+            .with_writer(std::io::stdout)
+            .with_filter(env_filter);
+        self.layers.push(layer.boxed());
+        self
     }
 
     /// Add a layer that write logs to the [std::io::stdout] with the given filter.

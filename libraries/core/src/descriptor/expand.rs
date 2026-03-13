@@ -501,7 +501,7 @@ fn rewrite_module_input(
     optional_inputs: &BTreeSet<String>,
 ) -> eyre::Result<Option<Input>> {
     match &input.mapping {
-        InputMapping::Timer { .. } => Ok(Some(input.clone())),
+        InputMapping::Timer { .. } | InputMapping::Logs(_) => Ok(Some(input.clone())),
         InputMapping::User(user_mapping) => {
             let source_str = user_mapping.source.to_string();
 
@@ -612,7 +612,7 @@ fn rewrite_inputs_map(
                     input.clone()
                 }
             }
-            InputMapping::Timer { .. } => input.clone(),
+            InputMapping::Timer { .. } | InputMapping::Logs(_) => input.clone(),
         };
         new_inputs.insert(input_id.clone(), new_input);
     }

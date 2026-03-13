@@ -1695,6 +1695,15 @@ impl Daemon {
                                 .or_default()
                                 .insert((node.id.clone(), input_id));
                         }
+                        InputMapping::Logs(filter) => {
+                            dataflow
+                                .log_subscribers
+                                .push(crate::running_dataflow::LogSubscriber {
+                                    node_id: node.id.clone(),
+                                    input_id,
+                                    filter,
+                                });
+                        }
                     }
                 } else if let InputMapping::User(mapping) = input.mapping {
                     dataflow
@@ -2715,6 +2724,89 @@ impl Daemon {
                     dataflow.subscribe_channels.remove(id);
                 }
             }
+            AdoraEvent::LogBroadcast {
+                dataflow_id,
+                log_message,
+            } => {
+                let Some(dataflow) = self.running.get_mut(&dataflow_id) else {
+                    return Ok(());
+                };
+
+                if dataflow.log_subscribers.is_empty() {
+                    return Ok(());
+                }
+
+                // Serialize to JSON once (shared across all subscribers)
+                let json = match serde_json::to_string(&log_message) {
+                    Ok(j) => j,
+                    Err(e) => {
+                        tracing::warn!("failed to serialize LogMessage: {e}");
+                        return Ok(());
+                    }
+                };
+
+                // Convert to Arrow once, share the sample across subscribers
+                use adora_arrow_convert::IntoArrow;
+                let array = json.as_str().into_arrow();
+                let array: adora_node_api::arrow::array::ArrayData = array.into();
+                let total_len = adora_node_api::arrow_utils::required_data_size(&array);
+                let mut sample: aligned_vec::AVec<u8, aligned_vec::ConstAlign<128>> =
+                    aligned_vec::AVec::__from_elem(128, 0, total_len);
+                let type_info =
+                    adora_node_api::arrow_utils::copy_array_into_sample(&mut sample, &array);
+
+                let mut closed = Vec::new();
+                for sub in &dataflow.log_subscribers {
+                    // Apply level filter
+                    if let Some(min_level) = &sub.filter.min_level {
+                        if !log_message.level.passes(min_level) {
+                            continue;
+                        }
+                    }
+                    // Apply node filter
+                    if let Some(node_filter) = &sub.filter.node_filter {
+                        if log_message.node_id.as_ref() != Some(node_filter) {
+                            continue;
+                        }
+                    }
+                    // Don't deliver logs to the subscriber itself (avoid loops)
+                    if log_message.node_id.as_ref() == Some(&sub.node_id) {
+                        continue;
+                    }
+
+                    let Some(channel) = dataflow.subscribe_channels.get(&sub.node_id) else {
+                        continue;
+                    };
+
+                    let metadata =
+                        metadata::Metadata::new(self.clock.new_timestamp(), type_info.clone());
+
+                    let send_result = send_with_timestamp(
+                        channel,
+                        NodeEvent::Input {
+                            id: sub.input_id.clone(),
+                            metadata,
+                            data: Some(DataMessage::Vec(sample.clone())),
+                        },
+                        &self.clock,
+                    );
+                    match send_result {
+                        Ok(()) => {
+                            dataflow.inc_pending(&sub.node_id);
+                        }
+                        Err(_) => {
+                            closed.push(sub.node_id.clone());
+                        }
+                    }
+                }
+                for id in &closed {
+                    dataflow.subscribe_channels.remove(id);
+                }
+                // Prune stale log subscribers whose channels were just removed
+                dataflow
+                    .log_subscribers
+                    .retain(|sub| !closed.contains(&sub.node_id));
+            }
             AdoraEvent::SpawnedNodeResult {
                 dataflow_id,
                 node_id,
@@ -3352,6 +3444,11 @@ pub enum AdoraEvent {
         output_id: OutputId,
         message: DataMessage,
         metadata: metadata::Metadata,
+    },
+    /// A parsed LogMessage from a node, to be fanned out to `adora/logs` subscribers.
+    LogBroadcast {
+        dataflow_id: DataflowId,
+        log_message: adora_message::common::LogMessage,
     },
     SpawnedNodeResult {
         dataflow_id: DataflowId,

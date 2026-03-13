@@ -778,11 +778,29 @@ impl AdoraNode {
         &mut self,
         output_id: DataId,
         type_info: ArrowTypeInfo,
-        parameters: MetadataParameters,
+        #[allow(unused_mut)] mut parameters: MetadataParameters,
         sample: Option<DataSample>,
     ) -> NodeResult<()> {
         if !self.interactive {
             self.handle_finished_drop_tokens()?;
+        }
+
+        // Auto-inject OpenTelemetry trace context when telemetry is enabled.
+        // Uses the ambient OTel context, which is populated when the tracing
+        // subscriber has an OpenTelemetry layer (e.g., via with_otlp_tracing).
+        // Only trace/span IDs are propagated (via W3C TraceContext propagator).
+        // OTel Baggage is NOT propagated to avoid leaking sensitive data across
+        // node boundaries. If a user explicitly provides this key, it wins.
+        #[cfg(feature = "tracing")]
+        if !parameters.contains_key("open_telemetry_context") {
+            let cx = opentelemetry::Context::current();
+            let serialized = adora_tracing::telemetry::serialize_context(&cx);
+            if !serialized.is_empty() {
+                parameters.insert(
+                    "open_telemetry_context".to_string(),
+                    crate::Parameter::String(serialized),
+                );
+            }
         }
 
         let metadata = Metadata::from_parameters(self.clock.new_timestamp(), type_info, parameters);
@@ -865,6 +883,10 @@ impl AdoraNode {
         self.log_with_fields(level, message, target, None);
     }
 
+    /// Maximum total size of log fields before they are dropped (60 KB).
+    /// Matches the downstream 64 KB parse limit with headroom for the message envelope.
+    const MAX_LOG_FIELDS_BYTES: usize = 60 * 1024;
+
     /// Send a structured log message with optional key-value fields.
     ///
     /// Like [`log`](Self::log), but accepts additional structured fields that
@@ -896,7 +918,7 @@ impl AdoraNode {
         }
         if let Some(fields) = fields {
             let total: usize = fields.iter().map(|(k, v)| k.len() + v.len()).sum();
-            if total <= 48 * 1024 {
+            if total <= Self::MAX_LOG_FIELDS_BYTES {
                 entry["fields"] = serde_json::json!(fields);
             } else {
                 eprintln!("adora log: fields too large ({total} bytes), dropping fields");

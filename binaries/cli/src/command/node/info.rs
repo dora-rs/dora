@@ -248,6 +248,7 @@ fn build_input_info(node_desc: &adora_message::descriptor::Node) -> Vec<InputInf
                 InputMapping::Timer { interval } => {
                     format!("adora/timer/millis/{}", interval.as_millis())
                 }
+                mapping @ InputMapping::Logs(_) => mapping.to_string(),
             };
             InputInfo {
                 id: input_id.to_string(),
