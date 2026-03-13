@@ -299,7 +299,7 @@ if __name__ == "__main__":
     # Directory of the current file
     current_directory = os.path.dirname(current_file_path)
 
-    path = current_directory + "object_detection.py"
+    path = os.path.join(current_directory,"object_detection.py")  # ← FIXED
     with open(path, encoding="utf8") as f:
         raw = f.read()
 
