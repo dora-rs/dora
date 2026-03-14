@@ -82,7 +82,6 @@ jobs:
           - { runner: windows-2022,  target: x64,     os: windows, zig: false }
         repository:
           - { path: apis/python/node, name: adora-rs }
-          - { path: binaries/cli,     name: adora-rs-cli }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

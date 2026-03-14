@@ -5,7 +5,7 @@ This guide walks you through writing Python nodes and operators for adora datafl
 ## Prerequisites
 
 ```bash
-pip install adora-rs-cli   # CLI (adora command)
+cargo install adora-cli    # CLI (adora command)
 pip install adora-rs       # Python node/operator API
 ```
 

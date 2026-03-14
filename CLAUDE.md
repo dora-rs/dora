@@ -168,5 +168,5 @@ For quick local validation: `./scripts/smoke-all.sh`
 - Format with `rustfmt` default settings before submitting PRs
 - Discuss non-trivial changes in a GitHub issue or Discord first
 - Don't fix unrelated warnings in PRs
-- Python packages are distributed via PyPI (`adora-rs-cli`, `adora-node-api`)
+- Python node API is distributed via PyPI (`adora-rs`); CLI is distributed via crates.io and GitHub Releases
 - Release profile `dist` uses fat LTO
