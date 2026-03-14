@@ -91,9 +91,12 @@ tempfile = "3.23.0"
 [lib]
 name = "adora_cli"
 path = "src/lib.rs"
-# cdylib is only needed for the Python wrapper (PyO3 extension module).
-# Use: cargo build -p adora-cli --features python
-crate-type = ["lib"]
+# cdylib is required by maturin for the Python wheel build.
+# Cargo builds all listed crate-types for the lib target, so this adds
+# a small overhead to every build.  The alternative (removing cdylib and
+# using a wrapper crate) is more complex and breaks the pyproject.toml
+# scripts entry that provides the `adora` console command.
+crate-type = ["lib", "cdylib"]
 
 [package.metadata.dist]
 # Enable adora-cli binary to be distributed
