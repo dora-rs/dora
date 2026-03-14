@@ -63,17 +63,11 @@
 
 ## 安装
 
-### 从 PyPI 安装（推荐）
+### 从 crates.io 安装（推荐）
 
 ```bash
-pip install adora-rs-cli          # CLI（adora 命令）
+cargo install adora-cli           # CLI（adora 命令）
 pip install adora-rs              # Python 节点/算子 API
-```
-
-### 从 crates.io 安装
-
-```bash
-cargo install adora-cli
 ```
 
 ### 从源码构建
@@ -123,7 +117,8 @@ cargo install adora-cli --features redb-backend
 ### 1. 运行 Python 数据流
 
 ```bash
-pip install adora-rs-cli adora-rs
+cargo install adora-cli            # 或使用下方安装脚本
+pip install adora-rs
 git clone https://github.com/dora-rs/adora.git && cd adora
 adora run examples/python-dataflow/dataflow.yml
 ```

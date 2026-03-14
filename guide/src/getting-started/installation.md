@@ -1,16 +1,10 @@
 # Installation
 
-## From PyPI (recommended)
+## From crates.io (recommended)
 
 ```bash
-pip install adora-rs-cli          # CLI (adora command)
+cargo install adora-cli           # CLI (adora command)
 pip install adora-rs              # Python node/operator API
-```
-
-## From crates.io
-
-```bash
-cargo install adora-cli
 ```
 
 ## From source

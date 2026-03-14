@@ -95,7 +95,7 @@ cargo release minor --execute    # bumps workspace version, tags v0.5.0, pushes
 
 CI takes over from the tag push and automatically:
 - Publishes all crates to crates.io (in dependency order)
-- Builds and publishes Python wheels to PyPI (`adora-rs`, `adora-rs-cli`)
+- Builds and publishes the Python node API wheel to PyPI (`adora-rs`)
 - Builds CLI binaries for all platforms
 - Creates a GitHub Release with changelog and binary assets
 

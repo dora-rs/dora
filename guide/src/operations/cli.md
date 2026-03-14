@@ -44,12 +44,10 @@ adora down
 
 ## Installation
 
-### From PyPI (recommended)
+### From crates.io (recommended)
 
 ```bash
-pip install adora-rs-cli
-# or
-uv pip install adora-rs-cli
+cargo install adora-cli
 ```
 
 ### From source

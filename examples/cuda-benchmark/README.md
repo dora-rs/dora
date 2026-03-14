@@ -3,7 +3,7 @@
 ## Install
 
 ```bash
-pip install adora-rs-cli # if not already present
+cargo install adora-cli  # if not already present
 
 # Install pyarrow with gpu support
 conda install pyarrow "arrow-cpp-proc=*=cuda" -c conda-forge
