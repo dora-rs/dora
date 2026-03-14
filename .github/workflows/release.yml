@@ -87,14 +87,14 @@ jobs:
           target: ${{ matrix.target }}
           args: --release --out dist -m apis/python/node/Cargo.toml
           manylinux: "2_28"
-          before-script-linux: yum install -y perl-IPC-Cmd openssl-devel || apt-get update && apt-get install -y libssl-dev
+          before-script-linux: yum install -y perl-IPC-Cmd openssl-devel
       - name: Build adora-rs-cli wheel
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
           args: --release --out dist -m binaries/cli/Cargo.toml
           manylinux: "2_28"
-          before-script-linux: yum install -y perl-IPC-Cmd openssl-devel || apt-get update && apt-get install -y libssl-dev
+          before-script-linux: yum install -y perl-IPC-Cmd openssl-devel
       - uses: actions/upload-artifact@v4
         with:
           name: wheels-${{ matrix.target }}
