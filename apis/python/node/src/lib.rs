@@ -577,11 +577,9 @@ impl Events {
         let event = match &mut *inner {
             EventsInner::Adora(events) => events.try_recv().map(MergedEvent::Adora),
             EventsInner::Merged(_events) => {
-                return Err(TryRecvError::Other(
-                    "try_recv is not supported after merge_external_events(); \
-                     use recv() or recv_async() instead"
-                        .into(),
-                ));
+                // try_recv is not supported on merged event streams;
+                // return Closed so callers fall back to recv().
+                return Err(TryRecvError::Closed);
             }
         };
         event.map(|event| PyEvent { event })
