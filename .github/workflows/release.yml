@@ -70,16 +70,16 @@ jobs:
   #   - Windows: x64 only
   #   - working-directory instead of -m flag
   build-wheels:
-    name: Build wheels (${{ matrix.platform.target }})
+    name: Build wheels (${{ matrix.platform.os }}-${{ matrix.platform.target }})
     runs-on: ${{ matrix.platform.runner }}
     strategy:
       fail-fast: false
       matrix:
         platform:
-          - { runner: ubuntu-22.04,  target: x86_64 }
-          - { runner: ubuntu-22.04,  target: aarch64 }
-          - { runner: macos-14,      target: aarch64 }
-          - { runner: windows-2022,  target: x64 }
+          - { runner: ubuntu-22.04,  target: x86_64,  os: linux,   zig: true }
+          - { runner: ubuntu-22.04,  target: aarch64, os: linux,   zig: true }
+          - { runner: macos-14,      target: aarch64, os: macos,   zig: false }
+          - { runner: windows-2022,  target: x64,     os: windows, zig: false }
         repository:
           - { path: apis/python/node, name: adora-rs }
           - { path: binaries/cli,     name: adora-rs-cli }
@@ -91,16 +91,24 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Build wheels
+      - name: Build wheels (zig)
+        if: matrix.platform.zig
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
           args: --release --out dist --zig
           manylinux: manylinux_2_28
           working-directory: ${{ matrix.repository.path }}
+      - name: Build wheels (native)
+        if: ${{ !matrix.platform.zig }}
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.platform.target }}
+          args: --release --out dist
+          working-directory: ${{ matrix.repository.path }}
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.repository.name }}-${{ matrix.platform.target }}
+          name: ${{ matrix.repository.name }}-${{ matrix.platform.os }}-${{ matrix.platform.target }}
           path: ${{ matrix.repository.path }}/dist/
 
   # ── 3. Publish wheels to PyPI ─────────────────────────────────────────────
