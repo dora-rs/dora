@@ -64,52 +64,44 @@ jobs:
           done
 
   # ── 2. Build Python wheels ────────────────────────────────────────────────
+  # Modeled after dora-rs/dora pip-release.yml:
+  #   - Linux: use --zig for cross-compilation (handles vendored-openssl)
+  #   - macOS: aarch64 only (x86_64 cross-compile has OpenSSL issues)
+  #   - Windows: x64 only
+  #   - working-directory instead of -m flag
   build-wheels:
-    name: Build wheels (${{ matrix.target }})
-    runs-on: ${{ matrix.runner }}
+    name: Build wheels (${{ matrix.platform.target }})
+    runs-on: ${{ matrix.platform.runner }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { target: x86_64-unknown-linux-gnu,  runner: ubuntu-22.04 }
-          - { target: aarch64-unknown-linux-gnu, runner: ubuntu-22.04 }
-          - { target: x86_64-apple-darwin,       runner: macos-latest }
-          - { target: aarch64-apple-darwin,      runner: macos-14     }
-          - { target: x86_64-pc-windows-msvc,    runner: windows-2022 }
+        platform:
+          - { runner: ubuntu-22.04,  target: x86_64 }
+          - { runner: ubuntu-22.04,  target: aarch64 }
+          - { runner: macos-14,      target: aarch64 }
+          - { runner: windows-2022,  target: x64 }
+        repository:
+          - { path: apis/python/node, name: adora-rs }
+          - { path: binaries/cli,     name: adora-rs-cli }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install OpenSSL (macOS)
-        if: runner.os == 'macOS'
-        run: brew install openssl@3
-      - name: Build adora-rs wheel
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
-          target: ${{ matrix.target }}
-          args: --release --out dist -m apis/python/node/Cargo.toml
-          manylinux: "2_28"
-          before-script-linux: |
-            if command -v dnf &>/dev/null; then dnf install -y openssl-devel perl-IPC-Cmd;
-            elif command -v yum &>/dev/null; then yum install -y openssl-devel perl-IPC-Cmd;
-            elif command -v apk &>/dev/null; then apk add openssl-dev perl;
-            fi
-      - name: Build adora-rs-cli wheel
-        uses: PyO3/maturin-action@v1
-        with:
-          target: ${{ matrix.target }}
-          args: --release --out dist -m binaries/cli/Cargo.toml
-          manylinux: "2_28"
-          before-script-linux: |
-            if command -v dnf &>/dev/null; then dnf install -y openssl-devel perl-IPC-Cmd;
-            elif command -v yum &>/dev/null; then yum install -y openssl-devel perl-IPC-Cmd;
-            elif command -v apk &>/dev/null; then apk add openssl-dev perl;
-            fi
+          target: ${{ matrix.platform.target }}
+          args: --release --out dist --zig
+          manylinux: manylinux_2_28
+          working-directory: ${{ matrix.repository.path }}
       - uses: actions/upload-artifact@v4
         with:
-          name: wheels-${{ matrix.target }}
-          path: dist/
+          name: ${{ matrix.repository.name }}-${{ matrix.platform.target }}
+          path: ${{ matrix.repository.path }}/dist/
 
   # ── 3. Publish wheels to PyPI ─────────────────────────────────────────────
   publish-pypi:
@@ -122,7 +114,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          pattern: wheels-*
+          pattern: adora-rs*
           merge-multiple: true
           path: dist/
       - uses: pypa/gh-action-pypi-publish@release/v1

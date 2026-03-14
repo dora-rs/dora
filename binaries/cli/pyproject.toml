@@ -11,8 +11,7 @@ requires-python = ">=3.8"
 dependencies = ['adora-rs >= 0.3.9', 'uv']
 
 [tool.maturin]
-bindings = "pyo3"
-features = ["python-extension-module"]
+features = ["python", "pyo3/extension-module"]
 
 [tool.ruff.lint]
 extend-select = [
