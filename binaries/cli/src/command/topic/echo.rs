@@ -76,8 +76,27 @@ fn inspect(
 
     let (_subscription_id, data_rx) = session.subscribe_topics(dataflow_id, ws_topics)?;
 
+    // If no data arrives within this timeout, hint that debug mode may be needed.
+    const HINT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+    let mut hint_shown = false;
     let mut buf = Vec::with_capacity(1024);
-    while let Ok(result) = data_rx.recv() {
+    loop {
+        let result = match data_rx.recv_timeout(HINT_TIMEOUT) {
+            Ok(result) => result,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if !hint_shown {
+                    eprintln!(
+                        "{}: no topic data received. Ensure your dataflow was started with \
+                         `--debug` or add the following to your dataflow YAML:\n\n  \
+                         _unstable_debug:\n    publish_all_messages_to_zenoh: true\n",
+                        "hint".yellow().bold(),
+                    );
+                    hint_shown = true;
+                }
+                continue;
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        };
         buf.clear();
         let payload = match result {
             Ok(p) => p,

@@ -56,6 +56,7 @@ jobs:
           --exclude adora-node-api-python
           --exclude adora-operator-api-python
           --exclude adora-ros2-bridge-python
+          --exclude adora-cli-api-python
           --exclude adora-examples
           --exclude rust-dataflow-example-node
           --exclude multiple-daemons-example-operator

@@ -252,6 +252,7 @@ impl RunningDataflow {
             let clock = clock.clone();
             let task = async move {
                 let mut interval_stream = tokio::time::interval(interval);
+                interval_stream.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 let hlc = HLC::default();
                 loop {
                     interval_stream.tick().await;

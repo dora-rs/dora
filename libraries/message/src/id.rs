@@ -56,7 +56,8 @@ impl FromStr for NodeId {
 /// # Panics
 ///
 /// Panics if `id` contains invalid characters. Use `NodeId::from_str()` or
-/// `id.parse::<NodeId>()` for a fallible alternative when handling untrusted input.
+/// `id.parse::<NodeId>()` for a fallible alternative when handling untrusted
+/// input.
 impl From<String> for NodeId {
     fn from(id: String) -> Self {
         if let Err(e) = validate_id(&id) {

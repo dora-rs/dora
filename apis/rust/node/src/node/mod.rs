@@ -583,26 +583,30 @@ impl AdoraNode {
         };
 
         if dynamic {
-            // Inject env variable from dataflow descriptor.
-            match &node.dataflow_descriptor {
-                Ok(descriptor) => {
-                    if let Some(env_vars) = descriptor
-                        .nodes
-                        .iter()
-                        .find(|n| n.id == node.id)
-                        .and_then(|n| n.env.as_ref())
-                    {
-                        for (key, value) in env_vars {
-                            // SAFETY: setting env variable is safe as long as we don't
-                            // have multiple threads doing it at the same time.
-                            unsafe {
-                                std::env::set_var(key, value.to_string());
-                            }
+            // Env vars from the dataflow descriptor are already injected by the
+            // daemon at spawn time via `Command::env()`.  Setting them here with
+            // `std::env::set_var` would be undefined behavior because the tokio
+            // multi-threaded runtime is already running and other threads may
+            // call `std::env::var` concurrently.
+            //
+            // If the node was started outside the daemon (manual dynamic node),
+            // the user must set the required env vars before launching the
+            // process.
+            if let Ok(descriptor) = &node.dataflow_descriptor {
+                if let Some(env_vars) = descriptor
+                    .nodes
+                    .iter()
+                    .find(|n| n.id == node.id)
+                    .and_then(|n| n.env.as_ref())
+                {
+                    for key in env_vars.keys() {
+                        if std::env::var(key).is_err() {
+                            warn!(
+                                "env var `{key}` declared in dataflow descriptor is not set; \
+                                 it should have been injected by the daemon at spawn time"
+                            );
                         }
                     }
-                }
-                Err(err) => {
-                    warn!("Could not parse dataflow descriptor: {err:#}");
                 }
             }
         }

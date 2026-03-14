@@ -14,7 +14,7 @@ default = ["telemetry"]
 telemetry = ["adora-runtime/telemetry"]
 
 [dependencies]
-adora-cli = { workspace = true }
+adora-cli = { workspace = true, features = ["python"] }
 adora-runtime = { workspace = true, features = ["tracing", "metrics", "python"] }
 adora-download = { workspace = true }
 adora-node-api = { workspace = true }

@@ -35,7 +35,12 @@ impl<T, U> ShmemServer<T, U> {
     where
         T: for<'a> Deserialize<'a> + std::fmt::Debug,
     {
-        assert!(!self.reply_expected);
+        if self.reply_expected {
+            eyre::bail!(
+                "ShmemServer::listen called while a reply is still pending; \
+                 call send_reply() first"
+            );
+        }
         let result = self.channel.receive(None);
         if matches!(result, Ok(Some(_))) {
             self.reply_expected = true;
@@ -48,7 +53,12 @@ impl<T, U> ShmemServer<T, U> {
     where
         U: Serialize + std::fmt::Debug,
     {
-        assert!(self.reply_expected);
+        if !self.reply_expected {
+            eyre::bail!(
+                "ShmemServer::send_reply called without a pending request; \
+                 call listen() first"
+            );
+        }
         self.channel.send(value)?;
         self.reply_expected = false;
         Ok(())

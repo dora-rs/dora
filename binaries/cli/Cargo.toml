@@ -16,10 +16,14 @@ name = "adora"
 path = "src/main.rs"
 
 [features]
-default = ["tracing", "metrics", "python"]
+default = ["tracing", "metrics"]
 tracing = ["dep:adora-tracing"]
 metrics = ["adora-runtime/metrics", "adora-coordinator/prometheus"]
 python = ["pyo3"]
+# Enable extension-module only when building the Python wheel via maturin.
+# This suppresses Python library linking, which is correct for cdylib targets
+# loaded into Python but breaks standalone binary and test builds.
+python-extension-module = ["python", "pyo3/extension-module"]
 redb-backend = ["adora-coordinator/redb-backend", "dep:libc"]
 
 [dependencies]
@@ -70,7 +74,6 @@ self_update = { version = "0.42.0", features = [
     "compression-flate2",
 ], default-features = false }
 pyo3 = { workspace = true, features = [
-    "extension-module",
     "abi3",
 ], optional = true }
 self-replace = "1.5.0"

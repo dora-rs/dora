@@ -577,7 +577,11 @@ impl Events {
         let event = match &mut *inner {
             EventsInner::Adora(events) => events.try_recv().map(MergedEvent::Adora),
             EventsInner::Merged(_events) => {
-                todo!("try_recv on external event stream is not yet implemented!")
+                return Err(TryRecvError::Other(
+                    "try_recv is not supported after merge_external_events(); \
+                     use recv() or recv_async() instead"
+                        .into(),
+                ));
             }
         };
         event.map(|event| PyEvent { event })
@@ -614,7 +618,10 @@ impl Events {
                 None => return None,
             },
             EventsInner::Merged(_events) => {
-                todo!("Draining external event is not yet implemented!")
+                // drain is not supported on merged event streams; return None
+                // to indicate no buffered events, matching the semantics of an
+                // empty Adora stream.
+                return None;
             }
         };
     }
@@ -624,7 +631,9 @@ impl Events {
         match &*inner {
             EventsInner::Adora(events) => events.is_empty(),
             EventsInner::Merged(_events) => {
-                todo!("is_empty on external event stream is not yet implemented!")
+                // Cannot determine emptiness of a merged stream; conservatively
+                // return false so callers do not skip a recv() call.
+                false
             }
         }
     }

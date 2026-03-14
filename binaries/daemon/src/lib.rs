@@ -235,7 +235,9 @@ impl Daemon {
         let clock = Arc::new(HLC::default());
 
         let mut ctrlc_events = set_up_ctrlc_handler(clock.clone())?;
-        let (remote_daemon_events_tx, remote_daemon_events_rx) = flume::bounded(10);
+        // Sized for bursts of inter-daemon events (e.g. high-frequency Zenoh
+        // messages); 10 caused blocking under load.
+        let (remote_daemon_events_tx, remote_daemon_events_rx) = flume::bounded(100);
         let (daemon_id, coordinator_sender, incoming_events) = {
             let incoming_events = set_up_event_stream(
                 coordinator_ws_addr,
@@ -1278,14 +1280,25 @@ impl Daemon {
                 .any(|node| node.pid.is_some());
 
             if has_running_nodes {
-                // Refresh process metrics (cpu, memory, disk)
+                // Refresh process metrics (cpu, memory, disk).
+                // Run on spawn_blocking to avoid stalling the main event loop —
+                // refresh_processes_specifics(All) iterates all OS processes
+                // which can take tens of milliseconds on loaded systems.
                 let refresh_kind = ProcessRefreshKind::nothing()
                     .with_cpu()
                     .with_memory()
                     .with_disk_usage();
-                // Refresh all processes so we can discover descendant
-                // processes (e.g. Python child spawned by uv).
-                system.refresh_processes_specifics(ProcessesToUpdate::All, true, refresh_kind);
+                let mut sys = std::mem::take(system);
+                sys = tokio::task::spawn_blocking(move || {
+                    sys.refresh_processes_specifics(ProcessesToUpdate::All, true, refresh_kind);
+                    sys
+                })
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::error!("sysinfo refresh panicked: {e}");
+                    sysinfo::System::new()
+                });
+                *system = sys;
 
                 // Collect metrics for each node
                 for (node_id, running_node) in &dataflow.running_nodes {
