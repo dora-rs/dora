@@ -83,18 +83,22 @@ jobs:
           python-version: "3.11"
       - name: Build adora-rs wheel
         uses: PyO3/maturin-action@v1
+        env:
+          OPENSSL_NO_VENDOR: "1"
         with:
           target: ${{ matrix.target }}
           args: --release --out dist -m apis/python/node/Cargo.toml
           manylinux: "2_28"
-          before-script-linux: yum install -y perl-IPC-Cmd openssl-devel
+          before-script-linux: dnf install -y perl-IPC-Cmd openssl-devel || yum install -y perl-IPC-Cmd openssl-devel
       - name: Build adora-rs-cli wheel
         uses: PyO3/maturin-action@v1
+        env:
+          OPENSSL_NO_VENDOR: "1"
         with:
           target: ${{ matrix.target }}
           args: --release --out dist -m binaries/cli/Cargo.toml
           manylinux: "2_28"
-          before-script-linux: yum install -y perl-IPC-Cmd openssl-devel
+          before-script-linux: dnf install -y perl-IPC-Cmd openssl-devel || yum install -y perl-IPC-Cmd openssl-devel
       - uses: actions/upload-artifact@v4
         with:
           name: wheels-${{ matrix.target }}
