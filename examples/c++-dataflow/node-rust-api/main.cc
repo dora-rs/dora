@@ -1,6 +1,5 @@
 #include "../build/dora-node-api.h"
 
-#include <cassert>
 #include <iostream>
 #include <vector>
 
@@ -13,9 +12,14 @@ int main()
 
     auto id = node_id(dora_node.send_output);
     auto df_id = dataflow_id(dora_node.send_output);
-    assert(!id.empty() && "node_id() must return a non-empty string");
-    assert(!df_id.empty() && "dataflow_id() must return a non-empty string");
-    assert(std::string(id) == "cxx-node-rust-api" && "node_id() must match dataflow config");
+    if (id.empty() || df_id.empty()) {
+        std::cerr << "node_id() or dataflow_id() returned empty string" << std::endl;
+        return -1;
+    }
+    if (std::string(id) != "cxx-node-rust-api") {
+        std::cerr << "node_id() mismatch: expected 'cxx-node-rust-api', got '" << std::string(id) << "'" << std::endl;
+        return -1;
+    }
 
     for (int i = 0; i < 20; i++)
     {
