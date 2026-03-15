@@ -180,6 +180,13 @@ int main() {
     try {
         auto dora_node = init_dora_node();
         std::cout << "Dora node initialized successfully" << std::endl;
+
+        auto id = node_id(dora_node.send_output);
+        auto df_id = dataflow_id(dora_node.send_output);
+        if (id.empty() || df_id.empty()) {
+            std::cerr << "node_id() or dataflow_id() returned empty string" << std::endl;
+            return 1;
+        }
         int counter=0;
         while (counter<10) {
             counter++;

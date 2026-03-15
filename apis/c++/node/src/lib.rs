@@ -82,6 +82,9 @@ mod ffi {
 
         fn init_dora_node() -> Result<DoraNode>;
 
+        fn node_id(output_sender: &Box<OutputSender>) -> String;
+        fn dataflow_id(output_sender: &Box<OutputSender>) -> String;
+
         fn dora_events_into_combined(events: Box<Events>) -> CombinedEvents;
         fn empty_combined_events() -> CombinedEvents;
         fn next(self: &mut Events) -> Box<DoraEvent>;
@@ -597,6 +600,14 @@ unsafe fn event_as_arrow_input_with_info(
 }
 
 pub struct OutputSender(dora_node_api::DoraNode);
+
+fn node_id(output_sender: &Box<OutputSender>) -> String {
+    output_sender.0.id().to_string()
+}
+
+fn dataflow_id(output_sender: &Box<OutputSender>) -> String {
+    output_sender.0.dataflow_id().to_string()
+}
 
 fn send_output(sender: &mut Box<OutputSender>, id: String, data: &[u8]) -> ffi::DoraResult {
     send_output_internal(sender, id, data, Default::default())

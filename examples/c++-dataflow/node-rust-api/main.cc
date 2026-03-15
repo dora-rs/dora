@@ -10,6 +10,17 @@ int main()
 
     auto dora_node = init_dora_node();
 
+    auto id = node_id(dora_node.send_output);
+    auto df_id = dataflow_id(dora_node.send_output);
+    if (id.empty() || df_id.empty()) {
+        std::cerr << "node_id() or dataflow_id() returned empty string" << std::endl;
+        return -1;
+    }
+    if (std::string(id) != "cxx-node-rust-api") {
+        std::cerr << "node_id() mismatch: expected 'cxx-node-rust-api', got '" << std::string(id) << "'" << std::endl;
+        return -1;
+    }
+
     for (int i = 0; i < 20; i++)
     {
 
