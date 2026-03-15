@@ -1,6 +1,7 @@
 #include <dora-node-api.h>
 #include <arrow/api.h>
 #include <arrow/c/bridge.h>
+#include <cassert>
 #include <cstdint>
 #include <exception>
 #include <iostream>
@@ -183,8 +184,8 @@ int main() {
 
         auto id = node_id(dora_node.send_output);
         auto df_id = dataflow_id(dora_node.send_output);
-        std::cout << "Node ID: " << std::string(id) << std::endl;
-        std::cout << "Dataflow ID: " << std::string(df_id) << std::endl;
+        assert(!id.empty() && "node_id() must return a non-empty string");
+        assert(!df_id.empty() && "dataflow_id() must return a non-empty string");
         int counter=0;
         while (counter<10) {
             counter++;
