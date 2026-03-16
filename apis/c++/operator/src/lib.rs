@@ -37,6 +37,9 @@ mod ffi {
             data: &[u8],
             output_sender: &mut OutputSender,
         ) -> DoraOnInputResult;
+
+        fn on_input_closed(op: Pin<&mut Operator>, id: &str) -> DoraOnInputResult;
+        fn on_stop(op: Pin<&mut Operator>) -> DoraOnInputResult;
     }
 }
 
@@ -89,10 +92,31 @@ impl DoraOperator for OperatorWrapper {
                     Err(result.error)
                 }
             }
-            _ => {
-                // ignore other events for now
-                Ok(DoraStatus::Continue)
+            Event::InputClosed { id } => {
+                let operator = self.operator.as_mut().unwrap();
+                let result = ffi::on_input_closed(operator, id);
+                if result.error.is_empty() {
+                    Ok(match result.stop {
+                        false => DoraStatus::Continue,
+                        true => DoraStatus::Stop,
+                    })
+                } else {
+                    Err(result.error)
+                }
             }
+            Event::Stop => {
+                let operator = self.operator.as_mut().unwrap();
+                let result = ffi::on_stop(operator);
+                if result.error.is_empty() {
+                    Ok(match result.stop {
+                        false => DoraStatus::Continue,
+                        true => DoraStatus::Stop,
+                    })
+                } else {
+                    Err(result.error)
+                }
+            }
+            _ => Ok(DoraStatus::Continue),
         }
     }
 }
