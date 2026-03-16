@@ -116,6 +116,8 @@ mod ffi {
             output_sender: &mut Box<OutputSender>,
             output_ids: Vec<String>,
         ) -> DoraResult;
+        fn node_config_json(output_sender: &Box<OutputSender>) -> Result<String>;
+        fn dataflow_descriptor_json(output_sender: &Box<OutputSender>) -> Result<String>;
         fn send_output(
             output_sender: &mut Box<OutputSender>,
             id: String,
@@ -429,6 +431,16 @@ fn close_outputs(sender: &mut Box<OutputSender>, output_ids: Vec<String>) -> ffi
             error: format!("{err:?}"),
         },
     }
+}
+
+fn node_config_json(output_sender: &Box<OutputSender>) -> eyre::Result<String> {
+    serde_json::to_string(output_sender.0.node_config())
+        .map_err(|e| eyre!("failed to serialize node config: {e}"))
+}
+
+fn dataflow_descriptor_json(output_sender: &Box<OutputSender>) -> eyre::Result<String> {
+    let desc = output_sender.0.dataflow_descriptor()?;
+    serde_json::to_string(desc).map_err(|e| eyre!("failed to serialize dataflow descriptor: {e}"))
 }
 
 unsafe fn event_as_arrow_input(

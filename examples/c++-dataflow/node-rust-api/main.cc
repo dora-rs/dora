@@ -21,6 +21,12 @@ int main()
         return -1;
     }
 
+    auto config = node_config_json(dora_node.send_output);
+    std::cout << "Node config: " << std::string(config) << std::endl;
+
+    auto descriptor = dataflow_descriptor_json(dora_node.send_output);
+    std::cout << "Dataflow descriptor length: " << descriptor.length() << std::endl;
+
     // Demonstrate try_next_event (non-blocking poll)
     auto poll = try_next_event(dora_node.events);
     if (event_type(poll) == DoraEventType::Timeout) {
