@@ -37,6 +37,8 @@ mod ffi {
         Unknown,
         AllInputsClosed,
         Timeout,
+        NodeFailed,
+        Reload,
     }
 
     struct DoraInput {
@@ -46,6 +48,12 @@ mod ffi {
 
     struct DoraResult {
         error: String,
+    }
+
+    struct DoraNodeFailed {
+        affected_input_ids: Vec<String>,
+        error: String,
+        source_node_id: String,
     }
 
     struct ArrowInputInfo {
@@ -103,6 +111,11 @@ mod ffi {
         fn drained_events_len(drained: &Box<DrainedEvents>) -> usize;
         fn drained_events_next(drained: &mut Box<DrainedEvents>) -> Box<DoraEvent>;
         fn event_as_input(event: Box<DoraEvent>) -> Result<DoraInput>;
+        fn event_as_node_failed(event: Box<DoraEvent>) -> Result<DoraNodeFailed>;
+        fn close_outputs(
+            output_sender: &mut Box<OutputSender>,
+            output_ids: Vec<String>,
+        ) -> DoraResult;
         fn send_output(
             output_sender: &mut Box<OutputSender>,
             id: String,
@@ -354,6 +367,8 @@ fn event_type(event: &DoraEvent) -> ffi::DoraEventType {
             Event::Input { .. } => ffi::DoraEventType::Input,
             Event::InputClosed { .. } => ffi::DoraEventType::InputClosed,
             Event::Error(_) => ffi::DoraEventType::Error,
+            Event::NodeFailed { .. } => ffi::DoraEventType::NodeFailed,
+            Event::Reload { .. } => ffi::DoraEventType::Reload,
             _ => ffi::DoraEventType::Unknown,
         },
         None => ffi::DoraEventType::AllInputsClosed,
@@ -382,6 +397,38 @@ fn event_as_input(event: Box<DoraEvent>) -> eyre::Result<ffi::DoraInput> {
         id: id.into(),
         data,
     })
+}
+
+fn event_as_node_failed(event: Box<DoraEvent>) -> eyre::Result<ffi::DoraNodeFailed> {
+    let Some(Event::NodeFailed {
+        affected_input_ids,
+        error,
+        source_node_id,
+    }) = event.event
+    else {
+        bail!("not a NodeFailed event");
+    };
+    Ok(ffi::DoraNodeFailed {
+        affected_input_ids: affected_input_ids
+            .into_iter()
+            .map(|id| id.to_string())
+            .collect(),
+        error,
+        source_node_id: source_node_id.to_string(),
+    })
+}
+
+fn close_outputs(sender: &mut Box<OutputSender>, output_ids: Vec<String>) -> ffi::DoraResult {
+    let ids: Vec<dora_node_api::dora_core::config::DataId> =
+        output_ids.into_iter().map(|s| s.into()).collect();
+    match sender.0.close_outputs(ids) {
+        Ok(()) => ffi::DoraResult {
+            error: String::new(),
+        },
+        Err(err) => ffi::DoraResult {
+            error: format!("{err:?}"),
+        },
+    }
 }
 
 unsafe fn event_as_arrow_input(

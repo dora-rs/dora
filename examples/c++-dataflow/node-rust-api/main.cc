@@ -55,6 +55,16 @@ int main()
                 return -1;
             }
         }
+        else if (ty == DoraEventType::NodeFailed)
+        {
+            auto failed = event_as_node_failed(std::move(event));
+            std::cerr << "Node failed: source=" << std::string(failed.source_node_id)
+                      << " error=" << std::string(failed.error) << std::endl;
+        }
+        else if (ty == DoraEventType::Reload)
+        {
+            std::cout << "Reload event received" << std::endl;
+        }
         else
         {
             std::cerr << "Unknown event type " << static_cast<int>(ty) << std::endl;
