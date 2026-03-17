@@ -173,9 +173,7 @@ impl PyEvent {
     fn value(&self, py: Python<'_>) -> PyResult<Option<PyObject>> {
         match &self.event {
             MergedEvent::Dora(Event::Input { data, .. }) => {
-                // TODO: Does this call leak data?&
-                let array_data = data.to_data().to_pyarrow(py)?;
-                Ok(Some(array_data))
+                Ok(Some(arrow_input_to_pyarrow(data, py)?))
             }
             _ => Ok(None),
         }
@@ -201,6 +199,13 @@ impl PyEvent {
             _other => None,
         }
     }
+}
+
+fn arrow_input_to_pyarrow(
+    data: &dora_node_api::arrow::array::ArrayRef,
+    py: Python<'_>,
+) -> PyResult<PyObject> {
+    data.to_data().to_pyarrow(py)
 }
 
 pub fn pydict_to_metadata(dict: Option<Bound<'_, PyDict>>) -> Result<MetadataParameters> {
@@ -374,6 +379,7 @@ mod tests {
             ListArray, StructArray,
         },
         buffer::Buffer,
+        pyarrow::ToPyArrow,
     };
 
     use arrow_schema::{DataType, Field};
@@ -381,6 +387,7 @@ mod tests {
         buffer_into_arrow_array, copy_array_into_sample, required_data_size,
     };
     use eyre::{Context, Result};
+    use pyo3::{Python, types::PyAnyMethods};
 
     fn assert_roundtrip(arrow_array: &ArrayData) -> Result<()> {
         let size = required_data_size(arrow_array);
@@ -456,6 +463,57 @@ mod tests {
         let list_array = ListArray::from(list_data).into();
         assert_roundtrip(&list_array).context("ListArray roundtrip failed")?;
 
+        Ok(())
+    }
+
+    #[test]
+    fn to_pyarrow_releases_custom_allocation_owner() -> Result<()> {
+        pyo3::prepare_freethreaded_python();
+
+        let values = [1_i32, 2_i32, 3_i32, 4_i32];
+        let mut raw_bytes: AVec<u8, ConstAlign<128>> =
+            AVec::__from_elem(128, 0, values.len() * std::mem::size_of::<i32>());
+        for (index, value) in values.iter().enumerate() {
+            let offset = index * std::mem::size_of::<i32>();
+            raw_bytes[offset..offset + std::mem::size_of::<i32>()]
+                .copy_from_slice(&value.to_le_bytes());
+        }
+
+        let owner = Arc::new(raw_bytes);
+        let ptr = NonNull::new(owner.as_ptr() as *mut u8).expect("null pointer");
+        let allocation_owner: Arc<dyn arrow::alloc::Allocation> = owner.clone();
+        let buffer = unsafe {
+            arrow::buffer::Buffer::from_custom_allocation(ptr, owner.len(), allocation_owner)
+        };
+        let array_data = ArrayData::builder(DataType::Int32)
+            .len(values.len())
+            .add_buffer(buffer)
+            .build()
+            .expect("failed to build array data");
+
+        let baseline_refcount = Arc::strong_count(&owner);
+
+        Python::with_gil(|py| -> Result<()> {
+            if py.import("pyarrow").is_err() {
+                return Ok(());
+            }
+
+            let py_array = array_data
+                .to_pyarrow(py)
+                .context("failed to convert to pyarrow")?;
+            drop(py_array);
+
+            let gc = pyo3::types::PyModule::import(py, "gc").context("failed to import gc")?;
+            gc.call_method0("collect")
+                .context("failed to run python gc.collect")?;
+            Ok(())
+        })?;
+
+        assert_eq!(
+            Arc::strong_count(&owner),
+            baseline_refcount,
+            "custom allocation owner refcount should return to baseline after dropping pyarrow array"
+        );
         Ok(())
     }
 }
