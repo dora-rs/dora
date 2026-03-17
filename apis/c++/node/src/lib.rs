@@ -79,6 +79,7 @@ mod ffi {
         type MergedEvents;
         type MergedDoraEvent;
         type Metadata;
+        type DataSampleHandle;
 
         fn init_dora_node() -> Result<DoraNode>;
 
@@ -159,6 +160,25 @@ mod ffi {
         fn set_timestamp(self: &mut Metadata, key: &str, value: i64) -> Result<()>;
         #[cxx_name = "type"]
         fn value_type(self: &Metadata, key: &str) -> Result<MetadataValueType>;
+
+        // Zero-copy output API
+        fn allocate_data_sample(
+            output_sender: &mut Box<OutputSender>,
+            len: usize,
+        ) -> Result<Box<DataSampleHandle>>;
+        unsafe fn data_sample_as_ptr(handle: &mut Box<DataSampleHandle>) -> *mut u8;
+        fn data_sample_len(handle: &Box<DataSampleHandle>) -> usize;
+        fn send_data_sample(
+            output_sender: &mut Box<OutputSender>,
+            id: String,
+            sample: Box<DataSampleHandle>,
+        ) -> DoraResult;
+        fn send_data_sample_with_metadata(
+            output_sender: &mut Box<OutputSender>,
+            id: String,
+            sample: Box<DataSampleHandle>,
+            metadata: Box<Metadata>,
+        ) -> DoraResult;
     }
 }
 
@@ -635,6 +655,62 @@ fn send_output_internal(
         .send_output_raw(id.into(), metadata, data.len(), |out| {
             out.copy_from_slice(data)
         });
+    let error = match result {
+        Ok(()) => String::new(),
+        Err(err) => format!("{err:?}"),
+    };
+    ffi::DoraResult { error }
+}
+
+pub struct DataSampleHandle(dora_node_api::DataSample);
+
+fn allocate_data_sample(
+    sender: &mut Box<OutputSender>,
+    len: usize,
+) -> eyre::Result<Box<DataSampleHandle>> {
+    let sample = sender.0.allocate_data_sample(len)?;
+    Ok(Box::new(DataSampleHandle(sample)))
+}
+
+unsafe fn data_sample_as_ptr(handle: &mut Box<DataSampleHandle>) -> *mut u8 {
+    handle.0.as_mut_ptr()
+}
+
+fn data_sample_len(handle: &Box<DataSampleHandle>) -> usize {
+    handle.0.len()
+}
+
+fn send_data_sample(
+    sender: &mut Box<OutputSender>,
+    id: String,
+    sample: Box<DataSampleHandle>,
+) -> ffi::DoraResult {
+    send_data_sample_internal(sender, id, sample, Default::default())
+}
+
+fn send_data_sample_with_metadata(
+    sender: &mut Box<OutputSender>,
+    id: String,
+    sample: Box<DataSampleHandle>,
+    metadata: Box<Metadata>,
+) -> ffi::DoraResult {
+    let metadata = *metadata;
+    let parameters = metadata.into_parameters();
+    send_data_sample_internal(sender, id, sample, parameters)
+}
+
+fn send_data_sample_internal(
+    sender: &mut Box<OutputSender>,
+    id: String,
+    sample: Box<DataSampleHandle>,
+    metadata: DoraMetadataParameters,
+) -> ffi::DoraResult {
+    use dora_node_api::dora_core::metadata::ArrowTypeInfoExt;
+    let data_len = sample.0.len();
+    let type_info = dora_message::metadata::ArrowTypeInfo::byte_array(data_len);
+    let result = sender
+        .0
+        .send_output_sample(id.into(), type_info, metadata, Some(sample.0));
     let error = match result {
         Ok(()) => String::new(),
         Err(err) => format!("{err:?}"),
