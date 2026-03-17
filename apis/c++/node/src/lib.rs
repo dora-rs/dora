@@ -728,11 +728,11 @@ impl MergedEvents {
         let events = Box::pin(events.map(move |event| ExternalEvent { event, id }));
 
         let inner = self.events.take().unwrap();
-        let merged: Box<dyn Stream<Item = _> + Unpin + 'static> =
-            Box::new(inner.merge_external(events).map(|event| match event {
-                MergedEvent::Dora(event) => MergedEvent::Dora(event),
-                MergedEvent::External(event) => MergedEvent::External(event.flatten()),
-            }));
+        let merged_stream = inner.merge_external(events).map(|event| match event {
+            MergedEvent::Dora(event) => MergedEvent::Dora(event),
+            MergedEvent::External(event) => MergedEvent::External(event.flatten()),
+        });
+        let merged: Box<dyn Stream<Item = _> + Unpin + 'static> = Box::new(merged_stream);
         self.events = Some(merged);
 
         id

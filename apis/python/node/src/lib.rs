@@ -540,9 +540,9 @@ impl<'a> MergeExternalSend<'a, PyObject> for EventsInner {
     fn merge_external_send(
         self,
         external_events: impl Stream<Item = PyObject> + Unpin + Send + Sync + 'a,
-    ) -> Box<dyn Stream<Item = Self::Item> + Unpin + Send + Sync + 'a> {
-        match self {
-            EventsInner::Dora(events) => events.merge_external_send(external_events),
+    ) -> impl Stream<Item = Self::Item> + Unpin + Send + Sync + 'a {
+        let stream: Box<dyn Stream<Item = Self::Item> + Unpin + Send + Sync + 'a> = match self {
+            EventsInner::Dora(events) => Box::new(events.merge_external_send(external_events)),
             EventsInner::Merged(events) => {
                 let merged = events.merge_external_send(external_events);
                 Box::new(merged.map(|event| match event {
@@ -550,7 +550,8 @@ impl<'a> MergeExternalSend<'a, PyObject> for EventsInner {
                     MergedEvent::External(e) => MergedEvent::External(e.flatten()),
                 }))
             }
-        }
+        };
+        stream
     }
 }
 
