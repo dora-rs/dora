@@ -80,7 +80,7 @@ impl DropStream {
             other => eyre::bail!("unexpected drop subscribe reply: {other:?}"),
         }
 
-        let (tx, rx) = flume::bounded(0);
+        let (tx, rx) = flume::unbounded();
         let node_id_cloned = node_id.clone();
 
         let handle = std::thread::spawn(|| drop_stream_loop(node_id_cloned, tx, channel, clock));
