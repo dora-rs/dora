@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, path::Path, process::Stdio};
 use dora_message::descriptor::EnvValue;
 use eyre::{Context, eyre};
 use tokio::{
-    io::{AsyncBufReadExt, BufReader},
+    io::{AsyncBufRead, AsyncBufReadExt, BufReader},
     process::Command,
 };
 
@@ -58,20 +58,7 @@ pub async fn run_build_command(
         let stdout_tx = stdout_tx.clone();
 
         tokio::spawn(async move {
-            let mut stdout_lines = child_stdout.lines();
-            let mut stderr_lines = child_stderr.lines();
-            loop {
-                let line = tokio::select! {
-                    line = stdout_lines.next_line() => line,
-                    line = stderr_lines.next_line() => line,
-                };
-                let Some(line) = line.transpose() else {
-                    break;
-                };
-                if stdout_tx.send(line).await.is_err() {
-                    break;
-                }
-            }
+            forward_build_output(child_stdout, child_stderr, stdout_tx).await;
         });
 
         let exit_status = child
@@ -83,4 +70,131 @@ pub async fn run_build_command(
         }
     }
     Ok(())
+}
+
+async fn forward_build_output<R1, R2>(
+    stdout: R1,
+    stderr: R2,
+    stdout_tx: tokio::sync::mpsc::Sender<std::io::Result<String>>,
+) where
+    R1: AsyncBufRead + Unpin,
+    R2: AsyncBufRead + Unpin,
+{
+    let mut stdout_lines = stdout.lines();
+    let mut stderr_lines = stderr.lines();
+    let mut stdout_open = true;
+    let mut stderr_open = true;
+
+    while stdout_open || stderr_open {
+        tokio::select! {
+            line = stdout_lines.next_line(), if stdout_open => {
+                stdout_open = forward_line(line, &stdout_tx).await;
+            }
+            line = stderr_lines.next_line(), if stderr_open => {
+                stderr_open = forward_line(line, &stdout_tx).await;
+            }
+            else => break,
+        }
+    }
+}
+
+async fn forward_line(
+    line: std::io::Result<Option<String>>,
+    stdout_tx: &tokio::sync::mpsc::Sender<std::io::Result<String>>,
+) -> bool {
+    match line {
+        Ok(Some(line)) => stdout_tx.send(Ok(line)).await.is_ok(),
+        Ok(None) => false,
+        Err(err) => {
+            let _ = stdout_tx.send(Err(err)).await;
+            false
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::forward_build_output;
+    use tokio::io::{AsyncWriteExt, BufReader};
+
+    #[test]
+    fn keeps_draining_stdout_after_stderr_closes() {
+        run_forward_output_test(true);
+    }
+
+    #[test]
+    fn keeps_draining_stderr_after_stdout_closes() {
+        run_forward_output_test(false);
+    }
+
+    fn run_forward_output_test(stdout_stays_open: bool) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("failed to build tokio runtime");
+
+        runtime.block_on(async move {
+            let (stdout_reader, mut stdout_writer) = tokio::io::duplex(64);
+            let (stderr_reader, mut stderr_writer) = tokio::io::duplex(64);
+            let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+
+            let forward_task = tokio::spawn(forward_build_output(
+                BufReader::new(stdout_reader),
+                BufReader::new(stderr_reader),
+                tx,
+            ));
+
+            let writer_task = tokio::spawn(async move {
+                if stdout_stays_open {
+                    stderr_writer
+                        .shutdown()
+                        .await
+                        .expect("failed to close stderr writer");
+
+                    for index in 0..256 {
+                        stdout_writer
+                            .write_all(format!("line-{index}\n").as_bytes())
+                            .await
+                            .expect("failed to write test line");
+                    }
+                    stdout_writer
+                        .shutdown()
+                        .await
+                        .expect("failed to close stdout writer");
+                } else {
+                    stdout_writer
+                        .shutdown()
+                        .await
+                        .expect("failed to close stdout writer");
+
+                    for index in 0..256 {
+                        stderr_writer
+                            .write_all(format!("line-{index}\n").as_bytes())
+                            .await
+                            .expect("failed to write test line");
+                    }
+                    stderr_writer
+                        .shutdown()
+                        .await
+                        .expect("failed to close stderr writer");
+                }
+            });
+
+            let collect_task = tokio::spawn(async move {
+                let mut lines = Vec::new();
+                while let Some(line) = rx.recv().await {
+                    lines.push(line.expect("unexpected line forwarding error"));
+                }
+                lines
+            });
+
+            writer_task.await.expect("writer task failed");
+            forward_task.await.expect("forward task failed");
+            let lines = collect_task.await.expect("collector task failed");
+
+            assert_eq!(lines.len(), 256);
+            assert_eq!(lines.first().map(String::as_str), Some("line-0"));
+            assert_eq!(lines.last().map(String::as_str), Some("line-255"));
+        });
+    }
 }
