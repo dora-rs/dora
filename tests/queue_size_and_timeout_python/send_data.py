@@ -9,16 +9,15 @@ from dora import Node
 def main() -> None:
     """TODO: Add docstring."""
     dora_node = Node()
+    start = time.time()
     i = 0
-    for event in dora_node:
-        event_type = event["type"]
-        if event_type == "STOP":
-            break
-        if event_type != "INPUT":
-            continue
-
+    while time.time() - start < 10:
         dora_node.send_output("ts", pa.array([time.perf_counter_ns(), i]))
         i += 1
+
+        event = dora_node.next(timeout=0.001)
+        if event is not None and event["type"] == "STOP":
+            break
 
 
 if __name__ == "__main__":
