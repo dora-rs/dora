@@ -10,8 +10,7 @@ def main() -> None:
     dora_node = Node()
 
     i = 0
-    while True:
-        message = dora_node.next()
+    for message in dora_node:
         message_type = message["type"]
         if message_type == "STOP":
             break

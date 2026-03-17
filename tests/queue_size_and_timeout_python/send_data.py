@@ -10,15 +10,15 @@ def main() -> None:
     """TODO: Add docstring."""
     dora_node = Node()
     i = 0
-    while True:
+    for event in dora_node:
+        event_type = event["type"]
+        if event_type == "STOP":
+            break
+        if event_type != "INPUT":
+            continue
+
         dora_node.send_output("ts", pa.array([time.perf_counter_ns(), i]))
         i += 1
-        # print(f"Sent {i} times", flush=True)
-        time.sleep(0.001)
-
-        event = dora_node.next(timeout=0.001)
-        if event is not None and event["type"] == "STOP":
-            break
 
 
 if __name__ == "__main__":
