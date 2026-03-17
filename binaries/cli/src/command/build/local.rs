@@ -8,6 +8,7 @@ use dora_core::{
 use dora_message::{common::GitSource, id::NodeId};
 use eyre::Context;
 
+use crate::progress::BuildProgress;
 use crate::session::DataflowSession;
 
 pub async fn build_dataflow_locally(
@@ -38,6 +39,9 @@ async fn build_dataflow(
     let prev_git_sources = &dataflow_session.git_sources;
 
     let mut tasks = Vec::new();
+
+    let total_nodes = nodes.len() as u64;
+    let progress = BuildProgress::new(total_nodes, "Building nodes...");
 
     // build nodes
     for node in nodes.into_values() {
@@ -74,7 +78,9 @@ async fn build_dataflow(
             .with_context(|| format!("failed to build node `{node_id}`"))?;
         info.node_working_dirs
             .insert(node_id, node.node_working_dir);
+        progress.inc(1);
     }
+    progress.finish();
     Ok(info)
 }
 

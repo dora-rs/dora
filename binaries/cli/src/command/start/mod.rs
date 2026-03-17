@@ -11,6 +11,7 @@ use crate::{
         write_events_to,
     },
     output::print_log_message,
+    progress::Spinner,
     session::DataflowSession,
 };
 use dora_core::{
@@ -189,11 +190,13 @@ async fn wait_until_dataflow_started(
         }
     });
 
+    let spinner = Spinner::new("Waiting for dataflow to start...");
     rpc(
         "wait for dataflow spawn",
         client.wait_for_spawn(long_context(), dataflow_id),
     )
     .await?;
+    spinner.finish_with_message("Dataflow started");
     eprintln!("dataflow started: {dataflow_id}");
 
     Ok(())
