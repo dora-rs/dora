@@ -1617,6 +1617,7 @@ dependencies = [
  "itertools 0.14.0",
  "log",
  "once_cell",
+ "reqwest",
  "schemars 1.2.1",
  "serde",
  "serde-with-expand-env",
