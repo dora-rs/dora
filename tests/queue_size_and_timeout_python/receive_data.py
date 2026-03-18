@@ -10,12 +10,12 @@ def main() -> None:
     dora_node = Node()
 
     i = 0
-    while True:
-        message = dora_node.next(timeout=0.05)
-        if message is None:
+    for message in dora_node:
+        message_type = message["type"]
+        if message_type == "STOP":
             break
 
-        if message["type"] != "INPUT":
+        if message_type != "INPUT":
             continue
         sent = message["value"][0].as_py()
         j = message["value"][1].as_py()
