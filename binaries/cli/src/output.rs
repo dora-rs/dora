@@ -9,6 +9,21 @@ pub fn print_log_message(
     print_dataflow_id: bool,
     print_daemon_name: bool,
 ) {
+    println!(
+        "{}",
+        format_log_message(log_message, print_dataflow_id, print_daemon_name)
+    );
+}
+
+/// Format a log message into a string without printing it.
+///
+/// Use this when output must be routed through a progress bar
+/// (via `ProgressBar::println`) to avoid mangling the display.
+pub fn format_log_message(
+    log_message: LogMessage,
+    print_dataflow_id: bool,
+    print_daemon_name: bool,
+) -> String {
     let LogMessage {
         build_id: _,
         dataflow_id,
@@ -65,7 +80,7 @@ pub fn print_log_message(
         Some(target) => format!("{target} ").dimmed(),
         None => "".normal(),
     };
-    println!("{time} {level} {dataflow} {node}{target} {message}");
+    format!("{time} {level} {dataflow} {node}{target} {message}")
 }
 
 /// Generate a color for a word based on its semantic features

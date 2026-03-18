@@ -3,6 +3,7 @@ use super::{Executable, default_tracing};
 use crate::{
     LOCALHOST,
     common::{connect_and_check_version, connect_to_coordinator_rpc, long_context, rpc},
+    progress::Spinner,
 };
 use dora_core::topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT;
 
@@ -37,7 +38,8 @@ pub(crate) async fn up(config_path: Option<&Path>) -> eyre::Result<()> {
         Err(_) => {
             start_coordinator().wrap_err("failed to start dora-coordinator")?;
 
-            loop {
+            let spinner = Spinner::new("Starting coordinator...");
+            let client = loop {
                 match connect_to_coordinator_rpc(coordinator_addr, control_port).await {
                     Ok(client) => break client,
                     Err(_) => {
@@ -45,13 +47,16 @@ pub(crate) async fn up(config_path: Option<&Path>) -> eyre::Result<()> {
                         tokio::time::sleep(Duration::from_millis(50)).await;
                     }
                 }
-            }
+            };
+            spinner.finish_with_message("Coordinator started");
+            client
         }
     };
 
     if !daemon_running(&client).await? {
         start_daemon().wrap_err("failed to start dora-daemon")?;
 
+        let spinner = Spinner::new("Starting daemon...");
         // wait a bit until daemon is connected
         let mut i = 0;
         const WAIT_S: f32 = 0.1;
@@ -61,10 +66,12 @@ pub(crate) async fn up(config_path: Option<&Path>) -> eyre::Result<()> {
             }
             i += 1;
             if i > 20 {
+                spinner.fail_with_message("Daemon failed to start");
                 eyre::bail!("daemon not connected after {}s", WAIT_S * i as f32);
             }
             tokio::time::sleep(Duration::from_secs_f32(WAIT_S)).await;
         }
+        spinner.finish_with_message("Daemon started");
     }
 
     Ok(())
@@ -117,8 +124,6 @@ fn start_coordinator() -> eyre::Result<()> {
     cmd.arg("--quiet");
     cmd.spawn().wrap_err("failed to run `dora coordinator`")?;
 
-    println!("started dora coordinator");
-
     Ok(())
 }
 
@@ -136,8 +141,6 @@ fn start_daemon() -> eyre::Result<()> {
     cmd.arg("daemon");
     cmd.arg("--quiet");
     cmd.spawn().wrap_err("failed to run `dora daemon`")?;
-
-    println!("started dora daemon");
 
     Ok(())
 }

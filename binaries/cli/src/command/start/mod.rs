@@ -10,7 +10,8 @@ use crate::{
         connect_and_check_version, local_working_dir, long_context, resolve_dataflow, rpc,
         write_events_to,
     },
-    output::print_log_message,
+    output::format_log_message,
+    progress::Spinner,
     session::DataflowSession,
 };
 use dora_core::{
@@ -174,13 +175,16 @@ async fn wait_until_dataflow_started(
         )
         .await
         .wrap_err("failed to send log subscribe request to coordinator")?;
+    let spinner = Spinner::new("Waiting for dataflow to start...");
+    let bar = spinner.clone_bar();
     tokio::spawn(async move {
         while let Ok(raw) = log_session.receive().await {
             let parsed: eyre::Result<LogMessage> =
                 serde_json::from_slice(&raw).context("failed to parse log message");
             match parsed {
                 Ok(log_message) => {
-                    print_log_message(log_message, false, print_daemon_id);
+                    // Print above the spinner so it stays pinned at the bottom.
+                    bar.println(format_log_message(log_message, false, print_daemon_id));
                 }
                 Err(err) => {
                     tracing::warn!("failed to parse log message: {err:?}")
@@ -194,7 +198,7 @@ async fn wait_until_dataflow_started(
         client.wait_for_spawn(long_context(), dataflow_id),
     )
     .await?;
-    eprintln!("dataflow started: {dataflow_id}");
+    spinner.finish_with_message(&format!("Dataflow started: {dataflow_id}"));
 
     Ok(())
 }

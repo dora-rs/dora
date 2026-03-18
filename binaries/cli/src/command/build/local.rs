@@ -7,7 +7,9 @@ use dora_core::{
 };
 use dora_message::{common::GitSource, id::NodeId};
 use eyre::Context;
+use indicatif::ProgressBar;
 
+use crate::progress::BuildProgress;
 use crate::session::DataflowSession;
 
 pub async fn build_dataflow_locally(
@@ -39,6 +41,9 @@ async fn build_dataflow(
 
     let mut tasks = Vec::new();
 
+    let total_nodes = nodes.len() as u64;
+    let progress = BuildProgress::new(total_nodes, "Building nodes...");
+
     // build nodes
     for node in nodes.into_values() {
         let node_id = node.id.clone();
@@ -57,6 +62,7 @@ async fn build_dataflow(
                 prev_git,
                 LocalBuildLogger {
                     node_id: node_id.clone(),
+                    bar: progress.clone_bar(),
                 },
                 &mut git_manager,
             )
@@ -74,12 +80,15 @@ async fn build_dataflow(
             .with_context(|| format!("failed to build node `{node_id}`"))?;
         info.node_working_dirs
             .insert(node_id, node.node_working_dir);
+        progress.inc(1);
     }
+    progress.finish();
     Ok(info)
 }
 
 struct LocalBuildLogger {
     node_id: NodeId,
+    bar: ProgressBar,
 }
 
 impl BuildLogger for LocalBuildLogger {
@@ -102,12 +111,14 @@ impl BuildLogger for LocalBuildLogger {
         };
         let node = self.node_id.to_string().bold().bright_black();
         let message: String = message.into();
-        println!("{node}: {level}   {message}");
+        // Print above the progress bar so it stays pinned at the bottom.
+        self.bar.println(format!("{node}: {level}   {message}"));
     }
 
     async fn try_clone(&self) -> eyre::Result<Self::Clone> {
         Ok(LocalBuildLogger {
             node_id: self.node_id.clone(),
+            bar: self.bar.clone(),
         })
     }
 }
