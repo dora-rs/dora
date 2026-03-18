@@ -95,84 +95,77 @@ mod tests {
     use super::forward_build_output;
     use tokio::io::{AsyncWriteExt, BufReader};
 
-    #[test]
-    fn keeps_draining_stdout_after_stderr_closes() {
-        run_forward_output_test(true);
+    #[tokio::test]
+    async fn keeps_draining_stdout_after_stderr_closes() {
+        run_forward_output_test(true).await;
     }
 
-    #[test]
-    fn keeps_draining_stderr_after_stdout_closes() {
-        run_forward_output_test(false);
+    #[tokio::test]
+    async fn keeps_draining_stderr_after_stdout_closes() {
+        run_forward_output_test(false).await;
     }
 
-    fn run_forward_output_test(stdout_stays_open: bool) {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("failed to build tokio runtime");
+    async fn run_forward_output_test(stdout_stays_open: bool) {
+        let (stdout_reader, mut stdout_writer) = tokio::io::duplex(64);
+        let (stderr_reader, mut stderr_writer) = tokio::io::duplex(64);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
 
-        runtime.block_on(async move {
-            let (stdout_reader, mut stdout_writer) = tokio::io::duplex(64);
-            let (stderr_reader, mut stderr_writer) = tokio::io::duplex(64);
-            let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        let forward_task = tokio::spawn(forward_build_output(
+            BufReader::new(stdout_reader),
+            BufReader::new(stderr_reader),
+            tx,
+        ));
 
-            let forward_task = tokio::spawn(forward_build_output(
-                BufReader::new(stdout_reader),
-                BufReader::new(stderr_reader),
-                tx,
-            ));
+        let writer_task = tokio::spawn(async move {
+            if stdout_stays_open {
+                stderr_writer
+                    .shutdown()
+                    .await
+                    .expect("failed to close stderr writer");
 
-            let writer_task = tokio::spawn(async move {
-                if stdout_stays_open {
-                    stderr_writer
-                        .shutdown()
-                        .await
-                        .expect("failed to close stderr writer");
-
-                    for index in 0..256 {
-                        stdout_writer
-                            .write_all(format!("line-{index}\n").as_bytes())
-                            .await
-                            .expect("failed to write test line");
-                    }
+                for index in 0..256 {
                     stdout_writer
-                        .shutdown()
+                        .write_all(format!("line-{index}\n").as_bytes())
                         .await
-                        .expect("failed to close stdout writer");
-                } else {
-                    stdout_writer
-                        .shutdown()
-                        .await
-                        .expect("failed to close stdout writer");
+                        .expect("failed to write test line");
+                }
+                stdout_writer
+                    .shutdown()
+                    .await
+                    .expect("failed to close stdout writer");
+            } else {
+                stdout_writer
+                    .shutdown()
+                    .await
+                    .expect("failed to close stdout writer");
 
-                    for index in 0..256 {
-                        stderr_writer
-                            .write_all(format!("line-{index}\n").as_bytes())
-                            .await
-                            .expect("failed to write test line");
-                    }
+                for index in 0..256 {
                     stderr_writer
-                        .shutdown()
+                        .write_all(format!("line-{index}\n").as_bytes())
                         .await
-                        .expect("failed to close stderr writer");
+                        .expect("failed to write test line");
                 }
-            });
-
-            let collect_task = tokio::spawn(async move {
-                let mut lines = Vec::new();
-                while let Some(line) = rx.recv().await {
-                    lines.push(line.expect("unexpected line forwarding error"));
-                }
-                lines
-            });
-
-            writer_task.await.expect("writer task failed");
-            forward_task.await.expect("forward task failed");
-            let lines = collect_task.await.expect("collector task failed");
-
-            assert_eq!(lines.len(), 256);
-            assert_eq!(lines.first().map(String::as_str), Some("line-0"));
-            assert_eq!(lines.last().map(String::as_str), Some("line-255"));
+                stderr_writer
+                    .shutdown()
+                    .await
+                    .expect("failed to close stderr writer");
+            }
         });
+
+        let collect_task = tokio::spawn(async move {
+            let mut lines = Vec::new();
+            while let Some(line) = rx.recv().await {
+                lines.push(line.expect("unexpected line forwarding error"));
+            }
+            lines
+        });
+
+        writer_task.await.expect("writer task failed");
+        forward_task.await.expect("forward task failed");
+        let lines = collect_task.await.expect("collector task failed");
+
+        assert_eq!(lines.len(), 256);
+        assert_eq!(lines.first().map(String::as_str), Some("line-0"));
+        assert_eq!(lines.last().map(String::as_str), Some("line-255"));
     }
 }
