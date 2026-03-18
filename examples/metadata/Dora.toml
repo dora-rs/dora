@@ -1,0 +1,9 @@
+[package]
+name = "camera_node"
+version = "0.1.0"
+entrypoint = "python -m camera_node"
+
+[dependencies]
+yolo = { version = "^1.2.0" }
+math = { path = "../math-node" }
+vision = { git = "https://github.com/example/vision-node.git", rev = "main" }

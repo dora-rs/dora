@@ -6,6 +6,7 @@ use std::{
 
 mod command;
 mod common;
+mod dora_toml;
 mod formatting;
 pub mod output;
 pub mod session;
