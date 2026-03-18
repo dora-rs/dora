@@ -124,8 +124,6 @@ fn start_coordinator() -> eyre::Result<()> {
     cmd.arg("--quiet");
     cmd.spawn().wrap_err("failed to run `dora coordinator`")?;
 
-    println!("started dora coordinator");
-
     Ok(())
 }
 
@@ -143,8 +141,6 @@ fn start_daemon() -> eyre::Result<()> {
     cmd.arg("daemon");
     cmd.arg("--quiet");
     cmd.spawn().wrap_err("failed to run `dora daemon`")?;
-
-    println!("started dora daemon");
 
     Ok(())
 }
