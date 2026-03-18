@@ -78,6 +78,9 @@ while test $# -gt 0; do
       help
       exit 0
       ;;
+    --force | -f)
+      force=true
+      ;;
     --repo)
       repo=$2
       shift

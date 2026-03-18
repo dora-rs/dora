@@ -10,7 +10,7 @@ use dora_message::{
     id::{DataId, NodeId, OperatorId},
 };
 use eyre::{Context, bail, eyre};
-use std::{collections::BTreeMap, path::Path, process::Command};
+use std::{collections::BTreeMap, path::Path, process::Command, time::Duration};
 use tracing::info;
 
 use super::{Descriptor, DescriptorExt, resolve_path};
@@ -35,7 +35,9 @@ pub fn check_dataflow(
                     DYNAMIC_SOURCE => (),
                     source => {
                         if source_is_url(source) {
-                            info!("{source} is a URL."); // TODO: Implement url check.
+                            if let Err(err) = check_url(source) {
+                                errors.push(format!("node `{}`: {err}", node.id));
+                            }
                         } else if let Some(remote_daemon_id) = remote_daemon_id {
                             if let Some(deploy) = &node.deploy {
                                 if let Some(machine) = &deploy.machine {
@@ -62,7 +64,12 @@ pub fn check_dataflow(
                     match &operator_definition.config.source {
                         OperatorSource::SharedLibrary(path) => {
                             if source_is_url(path) {
-                                info!("{path} is a URL."); // TODO: Implement url check.
+                                if let Err(err) = check_url(path) {
+                                    errors.push(format!(
+                                        "node `{}`, operator `{}`: {err}",
+                                        node.id, operator_definition.id,
+                                    ));
+                                }
                             } else if operator_definition.config.build.is_some() {
                                 info!("skipping path check for operator with build command");
                             } else {
@@ -90,7 +97,12 @@ pub fn check_dataflow(
                             has_python_operator = true;
                             let path = &python_source.source;
                             if source_is_url(path) {
-                                info!("{path} is a URL."); // TODO: Implement url check.
+                                if let Err(err) = check_url(path) {
+                                    errors.push(format!(
+                                        "node `{}`, operator `{}`: {err}",
+                                        node.id, operator_definition.id,
+                                    ));
+                                }
                             } else if !working_dir.join(path).exists() {
                                 errors.push(format!(
                                     "node `{}`, operator `{}`: no Python library at `{path}`",
@@ -100,7 +112,12 @@ pub fn check_dataflow(
                         }
                         OperatorSource::Wasm(path) => {
                             if source_is_url(path) {
-                                info!("{path} is a URL."); // TODO: Implement url check.
+                                if let Err(err) = check_url(path) {
+                                    errors.push(format!(
+                                        "node `{}`, operator `{}`: {err}",
+                                        node.id, operator_definition.id,
+                                    ));
+                                }
                             } else if !working_dir.join(path).exists() {
                                 errors.push(format!(
                                     "node `{}`, operator `{}`: no WASM library at `{path}`",
@@ -283,4 +300,117 @@ assert dora.__version__=='{VERSION}',  'Python dora-rs should be {VERSION}, but 
     }
 
     Ok(())
+}
+
+fn check_url(url: &str) -> eyre::Result<()> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .wrap_err("failed to build HTTP client for URL validation")?;
+
+    match client.head(url).send() {
+        Ok(response) => {
+            if response.status().is_success() {
+                Ok(())
+            } else if response.status() == reqwest::StatusCode::METHOD_NOT_ALLOWED {
+                match client.get(url).send() {
+                    Ok(get_response) if get_response.status().is_success() => Ok(()),
+                    Ok(get_response) => eyre::bail!(
+                        "URL `{}` is not reachable (status code: {})",
+                        url,
+                        get_response.status()
+                    ),
+                    Err(err) => eyre::bail!("Failed to reach URL `{}`: {}", url, err),
+                }
+            } else {
+                eyre::bail!(
+                    "URL `{}` is not reachable (status code: {})",
+                    url,
+                    response.status()
+                )
+            }
+        }
+        Err(err) => eyre::bail!("Failed to reach URL `{}`: {}", url, err),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::check_url;
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::thread;
+
+    fn read_request_method(stream: &mut TcpStream) -> String {
+        let mut buffer = [0_u8; 2048];
+        let bytes_read = stream.read(&mut buffer).expect("failed to read request");
+        let request = std::str::from_utf8(&buffer[..bytes_read]).expect("invalid UTF-8 in request");
+        request
+            .lines()
+            .next()
+            .and_then(|line| line.split_whitespace().next())
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    #[test]
+    fn check_url_accepts_success_status() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("failed to bind test server");
+        let addr = listener.local_addr().expect("failed to get local addr");
+
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("failed to accept connection");
+            let _ = read_request_method(&mut stream);
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                .expect("failed to write response");
+        });
+
+        check_url(&format!("http://{addr}/ok")).expect("URL should be reachable");
+        handle.join().expect("server thread panicked");
+    }
+
+    #[test]
+    fn check_url_rejects_non_success_status() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("failed to bind test server");
+        let addr = listener.local_addr().expect("failed to get local addr");
+
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("failed to accept connection");
+            let _ = read_request_method(&mut stream);
+            stream
+                .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
+                .expect("failed to write response");
+        });
+
+        let err = check_url(&format!("http://{addr}/missing")).expect_err("URL should be rejected");
+        assert!(err.to_string().contains("status code: 404"));
+        handle.join().expect("server thread panicked");
+    }
+
+    #[test]
+    fn check_url_falls_back_to_get_when_head_not_allowed() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("failed to bind test server");
+        let addr = listener.local_addr().expect("failed to get local addr");
+
+        let handle = thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().expect("failed to accept connection");
+                let method = read_request_method(&mut stream);
+                if method == "HEAD" {
+                    stream
+                        .write_all(b"HTTP/1.1 405 Method Not Allowed\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
+                        .expect("failed to write response");
+                } else {
+                    stream
+                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                        .expect("failed to write response");
+                }
+            }
+        });
+
+        check_url(&format!("http://{addr}/head-not-allowed"))
+            .expect("GET fallback should mark URL as reachable");
+        handle.join().expect("server thread panicked");
+    }
 }
