@@ -399,7 +399,7 @@ mod tests {
                 let method = read_request_method(&mut stream);
                 if method == "HEAD" {
                     stream
-                        .write_all(b"HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\n\r\n")
+                        .write_all(b"HTTP/1.1 405 Method Not Allowed\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
                         .expect("failed to write response");
                 } else {
                     stream
