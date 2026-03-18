@@ -123,10 +123,7 @@ pub async fn attach_dataflow(
     // through the event channel, since log display is fire-and-forget.
     // The zenoh session was opened by the caller *before* the start RPC
     // to avoid missing early log messages.
-    // Base topic without level suffix — subscribe_and_print_logs will
-    // append one subscriber per level that passes the filter.
-    // We use `*/*` to match `{source_type}/{source_id}`.
-    let base_topic = format!("dora/log/dataflow/{dataflow_id}/*/*");
+    let base_topic = dora_core::topics::zenoh_log_base_topic_for_dataflow(dataflow_id);
     let _log_task = subscribe_and_print_logs(
         zenoh_session,
         &base_topic,

@@ -200,6 +200,42 @@ pub fn log_level_suffixes_for_filter(filter: log::LevelFilter) -> Vec<&'static s
     suffixes
 }
 
+/// Zenoh base key expression for subscribing to log messages from **all**
+/// sources (nodes and daemons) of a dataflow.
+///
+/// Format: `dora/log/dataflow/{dataflow_id}/*/*`
+///
+/// Append a level suffix (e.g. `/info`) to form a complete subscribe topic.
+#[cfg(feature = "zenoh")]
+pub fn zenoh_log_base_topic_for_dataflow(dataflow_id: uuid::Uuid) -> String {
+    format!("dora/log/dataflow/{dataflow_id}/*/*")
+}
+
+/// Zenoh base key expression for subscribing to log messages from a specific
+/// node in a dataflow.
+///
+/// Format: `dora/log/dataflow/{dataflow_id}/node/{node_id}`
+///
+/// Append a level suffix (e.g. `/info`) to form a complete subscribe topic.
+#[cfg(feature = "zenoh")]
+pub fn zenoh_log_base_topic_for_dataflow_node(
+    dataflow_id: uuid::Uuid,
+    node_id: &dora_message::id::NodeId,
+) -> String {
+    format!("dora/log/dataflow/{dataflow_id}/node/{node_id}")
+}
+
+/// Zenoh base key expression for subscribing to log messages from **all**
+/// sources (nodes and daemons) of a build.
+///
+/// Format: `dora/log/build/{build_id}/*/*`
+///
+/// Append a level suffix (e.g. `/info`) to form a complete subscribe topic.
+#[cfg(feature = "zenoh")]
+pub fn zenoh_log_base_topic_for_build(build_id: &dora_message::BuildId) -> String {
+    format!("dora/log/build/{build_id}/*/*")
+}
+
 /// Zenoh key expression for publishing a log message originating from a
 /// specific node in a dataflow.
 ///

@@ -73,7 +73,7 @@ impl Executable for Start {
         let zenoh_session = dora_core::topics::open_zenoh_session(Some(self.coordinator_addr))
             .await
             .wrap_err("failed to open zenoh session for log subscription")?;
-        let base_log_topic = format!("dora/log/dataflow/{dataflow_id}/*/*");
+        let base_log_topic = dora_core::topics::zenoh_log_base_topic_for_dataflow(dataflow_id);
 
         let (dataflow, dataflow_descriptor, client) = start_dataflow(
             self.dataflow,

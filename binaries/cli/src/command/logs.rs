@@ -88,7 +88,7 @@ pub async fn logs(
     let zenoh_session = dora_core::topics::open_zenoh_session(Some(coordinator_addr))
         .await
         .wrap_err("failed to open zenoh session for log subscription")?;
-    let base_topic = format!("dora/log/dataflow/{uuid}/node/{node}");
+    let base_topic = dora_core::topics::zenoh_log_base_topic_for_dataflow_node(uuid, &node);
     let log_task =
         subscribe_and_print_logs(&zenoh_session, &base_topic, log_level, false, false).await?;
 
