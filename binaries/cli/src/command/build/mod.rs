@@ -62,8 +62,8 @@ use crate::{
 };
 
 use distributed::{build_distributed_dataflow, wait_until_dataflow_built};
+use indicatif::{ProgressBar, ProgressStyle};
 use local::build_dataflow_locally;
-
 mod distributed;
 mod git;
 mod local;
@@ -193,6 +193,7 @@ pub async fn build_async(
                 .parent()
                 .ok_or_else(|| eyre::eyre!("dataflow path has no parent dir"))?
                 .to_owned();
+            let sp = spinner("Building dataflow locally...");
             let build_info = build_dataflow_locally(
                 dataflow_descriptor,
                 &git_sources,
@@ -201,7 +202,7 @@ pub async fn build_async(
                 uv,
             )
             .await?;
-
+            sp.finish_with_message("Build complete ✓");
             dataflow_session.git_sources = git_sources;
             // generate a random BuildId and store the associated build info
             dataflow_session.build_id = Some(BuildId::generate());
@@ -215,6 +216,8 @@ pub async fn build_async(
             let local_working_dir =
                 local_working_dir(&dataflow_path, &dataflow_descriptor, &coordinator_client)
                     .await?;
+            let sp = spinner("Building dataflow through coordinator...");
+
             let build_id = build_distributed_dataflow(
                 &coordinator_client,
                 dataflow_descriptor,
@@ -224,12 +227,12 @@ pub async fn build_async(
                 uv,
             )
             .await?;
-
+            sp.finish_with_message("Build submitted to coordinator ✓");
             dataflow_session.git_sources = git_sources;
             dataflow_session
                 .write_out_for_dataflow(&dataflow_path)
                 .context("failed to write out dataflow session file")?;
-
+            let sp = spinner("Waiting for build to complete...");
             // wait until dataflow build is finished
 
             wait_until_dataflow_built(
@@ -239,7 +242,7 @@ pub async fn build_async(
                 log::LevelFilter::Info,
             )
             .await?;
-
+            sp.finish_with_message("Build complete ✓");
             dataflow_session.build_id = Some(build_id);
             dataflow_session.local_build = None;
             dataflow_session
@@ -274,4 +277,15 @@ fn coordinator_socket(
     let coordinator_addr = coordinator_addr.unwrap_or(LOCALHOST);
     let coordinator_port = coordinator_port.unwrap_or(DORA_COORDINATOR_PORT_CONTROL_DEFAULT);
     (coordinator_addr, coordinator_port).into()
+}
+fn spinner(message: &str) -> ProgressBar {
+    let sp = ProgressBar::new_spinner();
+    sp.set_style(
+        ProgressStyle::default_spinner()
+            .template("{spinner:.green} {msg}")
+            .unwrap(),
+    );
+    sp.set_message(message.to_string());
+    sp.enable_steady_tick(std::time::Duration::from_millis(100));
+    sp
 }
