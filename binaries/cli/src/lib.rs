@@ -8,6 +8,7 @@ mod command;
 mod common;
 mod formatting;
 pub mod output;
+mod registry;
 pub mod session;
 mod template;
 
