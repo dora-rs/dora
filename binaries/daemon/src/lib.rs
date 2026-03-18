@@ -9,7 +9,7 @@ use dora_core::{
     },
     topics::{
         DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, LOCALHOST, open_zenoh_session,
-        zenoh_output_publish_topic,
+        open_zenoh_session_as_daemon, zenoh_output_publish_topic,
     },
     uhlc::HLC,
 };
@@ -125,7 +125,7 @@ impl Daemon {
         // Use a large channel capacity to prevent deadlock
         let (dora_events_tx, dora_events_rx) = mpsc::channel(1000);
 
-        let zenoh_session = open_zenoh_session(Some(coordinator_addr.ip()))
+        let zenoh_session = open_zenoh_session_as_daemon(Some(coordinator_addr.ip()))
             .await
             .wrap_err("failed to open zenoh session")?;
 

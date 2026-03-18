@@ -940,6 +940,7 @@ async fn build_dataflow_on_machine(
 
 #[allow(clippy::too_many_arguments)]
 async fn start_dataflow(
+    dataflow_id: Option<Uuid>,
     build_id: Option<BuildId>,
     session_id: SessionId,
     dataflow: Descriptor,
@@ -951,6 +952,7 @@ async fn start_dataflow(
     write_events_to: Option<PathBuf>,
 ) -> eyre::Result<Uuid> {
     let plan = run::plan_dataflow(
+        dataflow_id,
         build_id,
         session_id,
         &dataflow,

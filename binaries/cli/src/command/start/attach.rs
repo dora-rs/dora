@@ -7,8 +7,8 @@ use dora_message::tarpc;
 use eyre::Context;
 use notify::event::ModifyKind;
 use notify::{Config, Event as NotifyEvent, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
-use std::{collections::HashMap, net::IpAddr};
-use std::{path::PathBuf, time::Duration};
+use std::time::Duration;
+use std::{collections::HashMap, path::PathBuf};
 use tracing::info;
 use uuid::Uuid;
 
@@ -21,7 +21,7 @@ pub async fn attach_dataflow(
     dataflow_id: Uuid,
     client: &CoordinatorControlClient,
     hot_reload: bool,
-    coordinator_addr: IpAddr,
+    zenoh_session: &zenoh::Session,
     log_level: log::LevelFilter,
 ) -> Result<(), eyre::ErrReport> {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -122,12 +122,11 @@ pub async fn attach_dataflow(
 
     // Subscribe to log messages via zenoh — prints directly without routing
     // through the event channel, since log display is fire-and-forget.
-    let zenoh_session = dora_core::topics::open_zenoh_session(Some(coordinator_addr))
-        .await
-        .wrap_err("failed to open zenoh session for log subscription")?;
+    // The zenoh session was opened by the caller *before* the start RPC
+    // to avoid missing early log messages.
     let log_topic = zenoh_log_subscribe_all_for_dataflow(dataflow_id);
     let _log_task = subscribe_and_print_logs(
-        &zenoh_session,
+        zenoh_session,
         &log_topic,
         log_level,
         false,

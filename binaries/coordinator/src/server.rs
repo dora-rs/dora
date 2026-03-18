@@ -109,6 +109,7 @@ impl CoordinatorControl for CoordinatorControlServer {
 
     async fn start(self, _context: Context, request: StartRequest) -> Result<Uuid, String> {
         let StartRequest {
+            dataflow_id,
             build_id,
             session_id,
             dataflow,
@@ -134,6 +135,7 @@ impl CoordinatorControl for CoordinatorControlServer {
             }
         }
         let uuid = start_dataflow(
+            dataflow_id,
             build_id,
             session_id,
             dataflow,

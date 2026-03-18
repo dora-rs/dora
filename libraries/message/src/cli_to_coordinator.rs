@@ -40,6 +40,13 @@ pub struct BuildRequest {
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct StartRequest {
+    /// Client-generated dataflow ID. When provided, the CLI can subscribe
+    /// to the log topic *before* sending this RPC, avoiding a race
+    /// where early log messages are missed.
+    ///
+    /// When `None`, the coordinator generates the ID (backwards compat).
+    #[serde(default)]
+    pub dataflow_id: Option<Uuid>,
     pub build_id: Option<BuildId>,
     pub session_id: SessionId,
     pub dataflow: Descriptor,

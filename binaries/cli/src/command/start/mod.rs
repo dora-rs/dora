@@ -27,7 +27,7 @@ use std::{
     net::{IpAddr, SocketAddr},
     path::PathBuf,
 };
-use uuid::Uuid;
+use uuid::{NoContext, Timestamp, Uuid};
 
 mod attach;
 
@@ -65,8 +65,26 @@ impl Executable for Start {
         default_tracing()?;
         let coordinator_socket: SocketAddr = (self.coordinator_addr, self.coordinator_port).into();
 
-        let (dataflow, dataflow_descriptor, client, dataflow_id) =
-            start_dataflow(self.dataflow, self.name, coordinator_socket, self.uv).await?;
+        // Generate the dataflow ID on the CLI side so we can subscribe to
+        // zenoh log messages *before* triggering the start RPC, ensuring
+        // no early log messages are missed.
+        let dataflow_id = Uuid::new_v7(Timestamp::now(NoContext));
+
+        // Open the zenoh session and subscribe to logs early, before the
+        // start RPC triggers the daemon to begin publishing.
+        let zenoh_session = dora_core::topics::open_zenoh_session(Some(self.coordinator_addr))
+            .await
+            .wrap_err("failed to open zenoh session for log subscription")?;
+        let log_topic = zenoh_log_subscribe_all_for_dataflow(dataflow_id);
+
+        let (dataflow, dataflow_descriptor, client) = start_dataflow(
+            self.dataflow,
+            self.name,
+            coordinator_socket,
+            self.uv,
+            dataflow_id,
+        )
+        .await?;
 
         let attach = match (self.attach, self.detach) {
             (true, true) => eyre::bail!("both `--attach` and `--detach` are given"),
@@ -91,17 +109,17 @@ impl Executable for Start {
                 dataflow_id,
                 &client,
                 self.hot_reload,
-                self.coordinator_addr,
+                &zenoh_session,
                 log_level,
             )
             .await
         } else {
             let print_daemon_name = dataflow_descriptor.nodes.iter().any(|n| n.deploy.is_some());
-            // wait until dataflow is started
             wait_until_dataflow_started(
                 dataflow_id,
                 &client,
-                self.coordinator_addr,
+                &zenoh_session,
+                &log_topic,
                 log::LevelFilter::Info,
                 print_daemon_name,
             )
@@ -115,7 +133,8 @@ async fn start_dataflow(
     name: Option<String>,
     coordinator_socket: SocketAddr,
     uv: bool,
-) -> Result<(PathBuf, Descriptor, CoordinatorControlClient, Uuid), eyre::Error> {
+    dataflow_id: Uuid,
+) -> Result<(PathBuf, Descriptor, CoordinatorControlClient), eyre::Error> {
     let dataflow = resolve_dataflow(dataflow)
         .await
         .context("could not resolve dataflow")?;
@@ -130,11 +149,12 @@ async fn start_dataflow(
 
     let local_working_dir = local_working_dir(&dataflow, &dataflow_descriptor, &client).await?;
 
-    let dataflow_id = rpc(
+    let returned_id = rpc(
         "start dataflow",
         client.start(
             tarpc::context::current(),
             StartRequest {
+                dataflow_id: Some(dataflow_id),
                 build_id: dataflow_session.build_id,
                 session_id: dataflow_session.session_id,
                 dataflow: dataflow_descriptor.clone(),
@@ -146,31 +166,22 @@ async fn start_dataflow(
         ),
     )
     .await?;
-    eprintln!("dataflow start triggered: {dataflow_id}");
+    eprintln!("dataflow start triggered: {returned_id}");
 
-    Ok((dataflow, dataflow_descriptor, client, dataflow_id))
+    Ok((dataflow, dataflow_descriptor, client))
 }
 
 async fn wait_until_dataflow_started(
     dataflow_id: Uuid,
     client: &CoordinatorControlClient,
-    coordinator_addr: IpAddr,
+    zenoh_session: &zenoh::Session,
+    log_topic: &str,
     log_level: log::LevelFilter,
     print_daemon_id: bool,
 ) -> eyre::Result<()> {
-    // Subscribe to log messages via zenoh
-    let zenoh_session = dora_core::topics::open_zenoh_session(Some(coordinator_addr))
-        .await
-        .wrap_err("failed to open zenoh session for log subscription")?;
-    let log_topic = zenoh_log_subscribe_all_for_dataflow(dataflow_id);
-    let log_task = subscribe_and_print_logs(
-        &zenoh_session,
-        &log_topic,
-        log_level,
-        false,
-        print_daemon_id,
-    )
-    .await?;
+    let log_task =
+        subscribe_and_print_logs(zenoh_session, log_topic, log_level, false, print_daemon_id)
+            .await?;
 
     let result = rpc(
         "wait for dataflow spawn",
