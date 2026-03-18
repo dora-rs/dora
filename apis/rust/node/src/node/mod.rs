@@ -64,6 +64,10 @@ pub struct DoraNode {
     zenoh_session: Option<zenoh::Session>,
     shm_provider: Option<zenoh::shm::ShmProvider<zenoh::shm::PosixShmProviderBackend>>,
     publishers: HashMap<DataId, zenoh::pubsub::Publisher<'static>>,
+    /// Messages smaller than this threshold are sent as plain bytes through
+    /// zenoh (no SHM allocation). Configurable via `DORA_ZERO_COPY_THRESHOLD`
+    /// env var. Default: 4096 bytes.
+    zero_copy_threshold: usize,
 }
 
 impl DoraNode {
@@ -534,6 +538,11 @@ impl DoraNode {
             (None, HashMap::new())
         };
 
+        let zero_copy_threshold: usize = std::env::var("DORA_ZERO_COPY_THRESHOLD")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(4096);
+
         let node = Self {
             id: node_id,
             dataflow_id,
@@ -546,6 +555,7 @@ impl DoraNode {
             zenoh_session,
             shm_provider,
             publishers,
+            zero_copy_threshold,
         };
 
         if dynamic {
@@ -824,9 +834,11 @@ impl DoraNode {
     /// `shared_memory_pool_size` in the dataflow YAML (default: 8 MB) if you observe
     /// send stalls.
     pub fn allocate_data_sample(&mut self, data_len: usize) -> eyre::Result<DataSample> {
-        // Zero-length allocations are not supported by zenoh SHM; use a plain Vec.
-        if data_len == 0 {
-            let avec: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, 0);
+        // Small messages and zero-length allocations skip SHM and use plain
+        // bytes through zenoh. This avoids the SHM allocation overhead for
+        // tiny payloads while still benefiting from zenoh pub/sub routing.
+        if data_len < self.zero_copy_threshold {
+            let avec: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, data_len);
             return Ok(avec.into());
         }
 
