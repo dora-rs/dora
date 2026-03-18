@@ -11,6 +11,7 @@ use crate::{
     output::print_log_message,
     session::DataflowSession,
 };
+use dora_core::descriptor::{Descriptor, DescriptorExt};
 use dora_daemon::{Daemon, LogDestination, flume};
 use duration_str::parse as parse_duration_str;
 use eyre::Context;
@@ -84,8 +85,11 @@ impl Executable for Run {
         let dataflow_path = resolve_dataflow(self.dataflow)
             .await
             .context("could not resolve dataflow")?;
-        let dataflow_session = DataflowSession::read_session(&dataflow_path)
-            .context("failed to read DataflowSession")?;
+        let dataflow_descriptor =
+            Descriptor::blocking_read(&dataflow_path).wrap_err("Failed to read yaml dataflow")?;
+        let dataflow_session =
+            DataflowSession::read_and_sync_for_dataflow(&dataflow_path, &dataflow_descriptor)
+                .context("failed to read DataflowSession")?;
 
         let (log_tx, log_rx) = flume::bounded(100);
         std::thread::spawn(move || {

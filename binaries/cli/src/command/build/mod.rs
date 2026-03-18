@@ -135,7 +135,8 @@ pub async fn build_async(
     let dataflow_descriptor =
         Descriptor::blocking_read(&dataflow_path).wrap_err("Failed to read yaml dataflow")?;
     let mut dataflow_session =
-        DataflowSession::read_session(&dataflow_path).context("failed to read DataflowSession")?;
+        DataflowSession::read_and_sync_for_dataflow(&dataflow_path, &dataflow_descriptor)
+            .context("failed to read DataflowSession")?;
 
     let mut git_sources = BTreeMap::new();
     let resolved_nodes = dataflow_descriptor
@@ -211,7 +212,6 @@ pub async fn build_async(
                 .context("failed to write out dataflow session file")?;
         }
         BuildKind::ThroughCoordinator { coordinator_client } => {
-            let coord = coordinator_socket(coordinator_addr, coordinator_port);
             let local_working_dir =
                 local_working_dir(&dataflow_path, &dataflow_descriptor, &coordinator_client)
                     .await?;

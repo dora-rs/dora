@@ -122,7 +122,8 @@ async fn start_dataflow(
     let dataflow_descriptor =
         Descriptor::blocking_read(&dataflow).wrap_err("Failed to read yaml dataflow")?;
     let dataflow_session =
-        DataflowSession::read_session(&dataflow).context("failed to read DataflowSession")?;
+        DataflowSession::read_and_sync_for_dataflow(&dataflow, &dataflow_descriptor)
+            .context("failed to read DataflowSession")?;
 
     let client = connect_and_check_version(coordinator_socket.ip(), coordinator_socket.port())
         .await
