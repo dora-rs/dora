@@ -173,7 +173,7 @@ impl PyEvent {
     fn value(&self, py: Python<'_>) -> PyResult<Option<PyObject>> {
         match &self.event {
             MergedEvent::Dora(Event::Input { data, .. }) => {
-                Ok(Some(arrow_input_to_pyarrow(data, py)?))
+                Ok(Some(data.to_data().to_pyarrow(py)?))
             }
             _ => Ok(None),
         }
@@ -199,13 +199,6 @@ impl PyEvent {
             _other => None,
         }
     }
-}
-
-fn arrow_input_to_pyarrow(
-    data: &dora_node_api::arrow::array::ArrayRef,
-    py: Python<'_>,
-) -> PyResult<PyObject> {
-    data.to_data().to_pyarrow(py)
 }
 
 pub fn pydict_to_metadata(dict: Option<Bound<'_, PyDict>>) -> Result<MetadataParameters> {
@@ -372,19 +365,22 @@ pub fn metadata_to_pydict<'a>(
 mod tests {
     use std::{ptr::NonNull, sync::Arc};
 
+    use crate::PyEvent;
     use aligned_vec::{AVec, ConstAlign};
     use arrow::{
         array::{
-            ArrayData, ArrayRef, BooleanArray, Float64Array, Int8Array, Int32Array, Int64Array,
-            ListArray, StructArray,
+            Array, ArrayData, ArrayRef, BooleanArray, Float64Array, Int8Array, Int32Array,
+            Int64Array, ListArray, StructArray,
         },
         buffer::Buffer,
-        pyarrow::ToPyArrow,
     };
 
     use arrow_schema::{DataType, Field};
-    use dora_node_api::arrow_utils::{
-        buffer_into_arrow_array, copy_array_into_sample, required_data_size,
+    use dora_node_api::{
+        ArrowData, Event, Metadata,
+        arrow_utils::{buffer_into_arrow_array, copy_array_into_sample, required_data_size},
+        dora_core::metadata::ArrowTypeInfoExt,
+        merged::MergedEvent,
     };
     use eyre::{Context, Result};
     use pyo3::{Python, types::PyAnyMethods};
@@ -466,44 +462,65 @@ mod tests {
         Ok(())
     }
 
+    fn shared_memory_backed_arrow_data(
+        source: &ArrayData,
+    ) -> Result<(ArrowData, Arc<AVec<u8, ConstAlign<128>>>)> {
+        let size = required_data_size(source);
+        let mut sample: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, size);
+        let info = copy_array_into_sample(&mut sample, source);
+        let owner = Arc::new(sample);
+        let ptr = NonNull::new(owner.as_ptr() as *mut u8).expect("null pointer");
+        let raw_buffer = unsafe {
+            arrow::buffer::Buffer::from_custom_allocation(
+                ptr,
+                owner.len(),
+                owner.clone() as Arc<dyn arrow::alloc::Allocation>,
+            )
+        };
+        let array_data = buffer_into_arrow_array(&raw_buffer, &info)?;
+        Ok((ArrowData(arrow::array::make_array(array_data)), owner))
+    }
+
     #[test]
-    fn to_pyarrow_releases_custom_allocation_owner() -> Result<()> {
+    fn py_event_input_conversion_does_not_leak_shared_memory_owner() -> Result<()> {
         pyo3::prepare_freethreaded_python();
 
-        let values = [1_i32, 2_i32, 3_i32, 4_i32];
-        let mut raw_bytes: AVec<u8, ConstAlign<128>> =
-            AVec::__from_elem(128, 0, values.len() * std::mem::size_of::<i32>());
-        for (index, value) in values.iter().enumerate() {
-            let offset = index * std::mem::size_of::<i32>();
-            raw_bytes[offset..offset + std::mem::size_of::<i32>()]
-                .copy_from_slice(&value.to_le_bytes());
-        }
-
-        let owner = Arc::new(raw_bytes);
-        let ptr = NonNull::new(owner.as_ptr() as *mut u8).expect("null pointer");
-        let allocation_owner: Arc<dyn arrow::alloc::Allocation> = owner.clone();
-        let buffer = unsafe {
-            arrow::buffer::Buffer::from_custom_allocation(ptr, owner.len(), allocation_owner)
-        };
-        let array_data = ArrayData::builder(DataType::Int32)
-            .len(values.len())
-            .add_buffer(buffer)
-            .build()
-            .expect("failed to build array data");
-
+        let source = Int32Array::from(vec![1, 2, 3, 4]).to_data();
+        let (shared_data, owner) = shared_memory_backed_arrow_data(&source)?;
         let baseline_refcount = Arc::strong_count(&owner);
 
         Python::with_gil(|py| -> Result<()> {
-            if py.import("pyarrow").is_err() {
-                return Ok(());
+            py.import("pyarrow")
+                .context("pyarrow is required for this ownership test")?;
+            let gc = pyo3::types::PyModule::import(py, "gc").context("failed to import gc")?;
+
+            for _ in 0..64 {
+                let event = Event::Input {
+                    id: "in".into(),
+                    metadata: Metadata::new(
+                        dora_node_api::uhlc::HLC::default().new_timestamp(),
+                        ArrowTypeInfoExt::empty(),
+                    ),
+                    data: ArrowData(shared_data.0.clone()),
+                };
+                let py_event = PyEvent {
+                    event: MergedEvent::Dora(event),
+                };
+
+                let event_dict = py_event
+                    .to_py_dict(py)
+                    .context("failed to convert event to Python dict")?;
+                let value = event_dict
+                    .bind(py)
+                    .get_item("value")
+                    .context("failed to read `value` from event dict")?;
+                value
+                    .call_method0("to_pylist")
+                    .context("failed to materialize pyarrow value")?;
+                drop(value);
+                drop(event_dict);
             }
 
-            let py_array = array_data
-                .to_pyarrow(py)
-                .context("failed to convert to pyarrow")?;
-            drop(py_array);
-
-            let gc = pyo3::types::PyModule::import(py, "gc").context("failed to import gc")?;
             gc.call_method0("collect")
                 .context("failed to run python gc.collect")?;
             Ok(())
@@ -512,7 +529,7 @@ mod tests {
         assert_eq!(
             Arc::strong_count(&owner),
             baseline_refcount,
-            "custom allocation owner refcount should return to baseline after dropping pyarrow array"
+            "shared-memory owner refcount should return to baseline after full PyEvent lifecycle"
         );
         Ok(())
     }
