@@ -79,6 +79,10 @@ pub struct EventStream {
     /// Dropping this sender disconnects the channel, causing zenoh subscriber
     /// threads to exit via the async select on the shutdown receiver.
     _zenoh_shutdown_tx: flume::Sender<()>,
+    /// Set to true after a Stop event has been returned. Subsequent recv calls
+    /// return None immediately, preventing hangs when zenoh subscriber threads
+    /// still hold sender clones that keep the flume channel open.
+    stop_received: bool,
 }
 
 impl EventStream {
@@ -391,6 +395,7 @@ impl EventStream {
             use_scheduler,
             zenoh_input_ids,
             _zenoh_shutdown_tx: zenoh_shutdown_tx,
+            stop_received: false,
         })
     }
 
@@ -450,8 +455,15 @@ impl EventStream {
     /// [`StreamExt::next`] method with a custom timeout future instead
     /// ([`EventStream`] implements the [`Stream`] trait).
     pub async fn recv_async(&mut self) -> Option<Event> {
+        if self.stop_received {
+            return None;
+        }
         if !self.use_scheduler {
-            return self.receiver.next().await.map(Self::convert_event_item);
+            let event = self.receiver.next().await.map(Self::convert_event_item);
+            if matches!(&event, Some(Event::Stop(_))) {
+                self.stop_received = true;
+            }
+            return event;
         }
         loop {
             if self.scheduler.is_empty() {
@@ -468,7 +480,11 @@ impl EventStream {
             }
         }
         let event = self.scheduler.next();
-        event.map(Self::convert_event_item)
+        let event = event.map(Self::convert_event_item);
+        if matches!(&event, Some(Event::Stop(_))) {
+            self.stop_received = true;
+        }
+        event
     }
 
     /// Check if there are any buffered events in the scheduler or the receiver.
@@ -727,9 +743,17 @@ impl Stream for EventStream {
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
-        self.receiver
+        if self.stop_received {
+            return std::task::Poll::Ready(None);
+        }
+        let poll = self
+            .receiver
             .poll_next_unpin(cx)
-            .map(|item| item.map(Self::convert_event_item))
+            .map(|item| item.map(Self::convert_event_item));
+        if matches!(&poll, std::task::Poll::Ready(Some(Event::Stop(_)))) {
+            self.stop_received = true;
+        }
+        poll
     }
 }
 
