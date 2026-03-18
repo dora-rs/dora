@@ -25,6 +25,8 @@
 //!     - not when using `tag` or `rev`, because these are not expected to change
 //! - after fetching changes, the `build` command will be executed again
 //!     - _tip:_ use a build tool that supports incremental builds (e.g. `cargo`) to make this rebuild faster
+//! - resolved git commits are written to `dora.lock` in the dataflow directory
+//!     - if a matching entry is present in `dora.lock`, it is reused on the next build
 //!
 //! The **working directory** will be set to the git repository.
 //! This means that both the `build` and `path` keys will be run from this folder.
@@ -58,6 +60,7 @@ use std::{collections::BTreeMap, net::IpAddr};
 use super::{Executable, default_tracing};
 use crate::{
     common::{connect_and_check_version, local_working_dir, resolve_dataflow},
+    lockfile::DoraLock,
     session::DataflowSession,
 };
 
@@ -138,6 +141,10 @@ pub async fn build_async(
         DataflowSession::read_session(&dataflow_path).context("failed to read DataflowSession")?;
 
     let mut git_sources = BTreeMap::new();
+    let mut lockfile = DoraLock::read_for_dataflow(&dataflow_path)
+        .context("failed to read dora.lock for this dataflow")?;
+    let mut next_lockfile = DoraLock::new();
+    let mut lock_hits = 0usize;
     let resolved_nodes = dataflow_descriptor
         .resolve_aliases_and_set_defaults()
         .context("failed to resolve nodes")?;
@@ -147,11 +154,29 @@ pub async fn build_async(
             ..
         }) = node.kind
         {
-            let source = git::fetch_commit_hash(repo, rev)
-                .with_context(|| format!("failed to find commit hash for `{node_id}`"))?;
+            let source = if let Some(locked_source) =
+                lockfile.resolve_git_source(&node_id, &repo, rev.as_ref())
+            {
+                lock_hits += 1;
+                log::info!("using locked git source for node `{node_id}`");
+                locked_source
+            } else {
+                git::fetch_commit_hash(repo.clone(), rev.clone())
+                    .with_context(|| format!("failed to find commit hash for `{node_id}`"))?
+            };
+            next_lockfile.set_git_source(node_id.clone(), repo, rev, source.commit_hash.clone());
             git_sources.insert(node_id, source);
         }
     }
+    if !git_sources.is_empty() {
+        log::info!(
+            "resolved git sources using dora.lock ({} cached, {} fetched)",
+            lock_hits,
+            git_sources.len().saturating_sub(lock_hits)
+        );
+    }
+    // Drop old parsed lockfile to ensure all future reads use the normalized representation.
+    lockfile = next_lockfile;
 
     let session = || connect_to_coordinator_rpc_with_defaults(coordinator_addr, coordinator_port);
 
@@ -206,7 +231,7 @@ pub async fn build_async(
             )
             .await?;
 
-            dataflow_session.git_sources = git_sources;
+            dataflow_session.git_sources = git_sources.clone();
             // generate a random BuildId and store the associated build info
             dataflow_session.build_id = Some(BuildId::generate());
             dataflow_session.local_build = Some(build_info);
@@ -238,6 +263,12 @@ pub async fn build_async(
                 .context("failed to write out dataflow session file")?;
         }
     };
+
+    if !git_sources.is_empty() {
+        lockfile
+            .write_for_dataflow(&dataflow_path)
+            .context("failed to write dora.lock for this dataflow")?;
+    }
 
     Ok(())
 }
