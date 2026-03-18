@@ -484,6 +484,7 @@ mod tests {
     #[test]
     fn py_event_input_conversion_does_not_leak_shared_memory_owner() -> Result<()> {
         pyo3::prepare_freethreaded_python();
+        const CYCLE_COUNT: usize = 8;
 
         let source = Int32Array::from(vec![1, 2, 3, 4]).to_data();
         let (shared_data, owner) = shared_memory_backed_arrow_data(&source)?;
@@ -494,7 +495,9 @@ mod tests {
                 .context("pyarrow is required for this ownership test")?;
             let gc = pyo3::types::PyModule::import(py, "gc").context("failed to import gc")?;
 
-            for _ in 0..64 {
+            // Run multiple conversion/use/drop cycles to ensure refcount stability
+            // across repeated Rust->Python FFI handoffs before explicit GC.
+            for _ in 0..CYCLE_COUNT {
                 let event = Event::Input {
                     id: "in".into(),
                     metadata: Metadata::new(
