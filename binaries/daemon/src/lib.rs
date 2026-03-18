@@ -37,7 +37,7 @@ use local_listener::DynamicNodeEventWrapper;
 use log::{DaemonLogger, DataflowLogger, Logger};
 use pending::PendingNodes;
 use process_wrap::tokio::TokioChildWrapper;
-use shared_memory_server::ShmemConf;
+use shared_memory_extended::ShmemConf;
 use spawn::Spawner;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, VecDeque},

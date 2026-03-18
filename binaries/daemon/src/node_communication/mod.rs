@@ -12,7 +12,6 @@ use dora_message::{
 };
 use eyre::{Context, eyre};
 use futures::{Future, future, task};
-use shared_memory_server::{ShmemConf, ShmemServer};
 use std::{
     collections::{BTreeMap, VecDeque},
     mem,
@@ -29,8 +28,6 @@ use tokio::{
     },
 };
 
-// TODO unify and avoid duplication;
-pub mod shmem;
 pub mod tcp;
 #[cfg(unix)]
 pub mod unix_domain;
@@ -66,85 +63,6 @@ pub async fn spawn_listener_loop(
             let abort_handle = handle.abort_handle();
 
             Ok((DaemonCommunication::Tcp { socket_addr }, Some(abort_handle)))
-        }
-        LocalCommunicationConfig::Shmem => {
-            let daemon_control_region = ShmemConf::new()
-                .size(4096)
-                .create()
-                .wrap_err("failed to allocate daemon_control_region")?;
-            let daemon_events_region = ShmemConf::new()
-                .size(4096)
-                .create()
-                .wrap_err("failed to allocate daemon_events_region")?;
-            let daemon_drop_region = ShmemConf::new()
-                .size(4096)
-                .create()
-                .wrap_err("failed to allocate daemon_drop_region")?;
-            let daemon_events_close_region = ShmemConf::new()
-                .size(4096)
-                .create()
-                .wrap_err("failed to allocate daemon_drop_region")?;
-            let daemon_control_region_id = daemon_control_region.get_os_id().to_owned();
-            let daemon_events_region_id = daemon_events_region.get_os_id().to_owned();
-            let daemon_drop_region_id = daemon_drop_region.get_os_id().to_owned();
-            let daemon_events_close_region_id = daemon_events_close_region.get_os_id().to_owned();
-
-            let s_control = unsafe { ShmemServer::new(daemon_control_region) }
-                .wrap_err("failed to create control server")?;
-            let s_events = unsafe { ShmemServer::new(daemon_events_region) }
-                .wrap_err("failed to create events server")?;
-            let s_drop = unsafe { ShmemServer::new(daemon_drop_region) }
-                .wrap_err("failed to create drop server")?;
-            let s_events_close = unsafe { ShmemServer::new(daemon_events_close_region) }
-                .wrap_err("failed to create events close server")?;
-
-            // Run all four shmem listener loops inside a single task so that
-            // a single AbortHandle can stop all of them when the dataflow
-            // finishes.  Previously each was a separate fire-and-forget spawn
-            // with no way to cancel them, causing task + blocking-thread leaks
-            // on every dataflow run (and blocking-thread exhaustion after node
-            // crashes, because `pthread_cond_wait` blocked indefinitely).
-            let event_loop_node_id = format!("{dataflow_id}/{node_id}");
-            let handle = tokio::spawn({
-                let daemon_tx = daemon_tx.clone();
-                let queue_sizes = queue_sizes.clone();
-                let clock = clock.clone();
-                async move {
-                    tokio::join!(
-                        shmem::listener_loop(
-                            s_control,
-                            daemon_tx.clone(),
-                            queue_sizes.clone(),
-                            clock.clone(),
-                        ),
-                        shmem::listener_loop(
-                            s_events,
-                            daemon_tx.clone(),
-                            queue_sizes.clone(),
-                            clock.clone(),
-                        ),
-                        shmem::listener_loop(
-                            s_drop,
-                            daemon_tx.clone(),
-                            queue_sizes.clone(),
-                            clock.clone(),
-                        ),
-                        shmem::listener_loop(s_events_close, daemon_tx, queue_sizes, clock),
-                    );
-                    tracing::debug!("all shmem listener loops finished for `{event_loop_node_id}`");
-                }
-            });
-            let abort_handle = handle.abort_handle();
-
-            Ok((
-                DaemonCommunication::Shmem {
-                    daemon_control_region_id,
-                    daemon_events_region_id,
-                    daemon_drop_region_id,
-                    daemon_events_close_region_id,
-                },
-                Some(abort_handle),
-            ))
         }
         #[cfg(unix)]
         LocalCommunicationConfig::UnixDomain => {
