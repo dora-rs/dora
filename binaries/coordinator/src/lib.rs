@@ -53,10 +53,16 @@ use uuid::Uuid;
 mod control;
 mod listener;
 mod log_subscriber;
+mod persistence;
 mod run;
 mod server;
 mod state;
 mod tcp_utils;
+
+#[derive(Debug, Clone, Default)]
+pub struct CoordinatorOptions {
+    pub state_file: Option<PathBuf>,
+}
 
 /// Start the coordinator with a TCP listener for control messages. Returns the daemon port and
 /// a future that resolves when the coordinator finishes.
@@ -65,13 +71,28 @@ pub async fn start(
     bind_control: SocketAddr,
     external_events: impl Stream<Item = Event> + Unpin,
 ) -> Result<(u16, impl Future<Output = eyre::Result<()>>), eyre::ErrReport> {
+    start_with_options(
+        bind,
+        bind_control,
+        external_events,
+        CoordinatorOptions::default(),
+    )
+    .await
+}
+
+pub async fn start_with_options(
+    bind: SocketAddr,
+    bind_control: SocketAddr,
+    external_events: impl Stream<Item = Event> + Unpin,
+    options: CoordinatorOptions,
+) -> Result<(u16, impl Future<Output = eyre::Result<()>>), eyre::ErrReport> {
     let tasks = FuturesUnordered::new();
     let control_events = control::control_events(bind_control, &tasks)
         .await
         .wrap_err("failed to create control events")?;
 
     let (daemon_port, coordinator_state, future) =
-        init_coordinator(bind, external_events, control_events, tasks).await?;
+        init_coordinator(bind, external_events, control_events, tasks, options).await?;
 
     // Bind the tarpc RPC server on the same interface
     let rpc_bind = SocketAddr::new(
@@ -114,8 +135,14 @@ pub async fn start_with_channel_rpc(
 > {
     let tasks = FuturesUnordered::new();
 
-    let (_daemon_port, coordinator_state, future) =
-        init_coordinator(bind, external_events, futures::stream::empty(), tasks).await?;
+    let (_daemon_port, coordinator_state, future) = init_coordinator(
+        bind,
+        external_events,
+        futures::stream::empty(),
+        tasks,
+        CoordinatorOptions::default(),
+    )
+    .await?;
 
     // Create an in-process channel-based client (no TCP overhead)
     let (client_transport, server_transport) = tarpc::transport::channel::unbounded();
@@ -136,6 +163,7 @@ async fn init_coordinator(
     external_events: impl Stream<Item = Event> + Unpin,
     control_events: impl Stream<Item = Event> + Unpin,
     mut tasks: FuturesUnordered<JoinHandle<()>>,
+    options: CoordinatorOptions,
 ) -> Result<(
     u16,
     Arc<state::CoordinatorState>,
@@ -173,17 +201,53 @@ async fn init_coordinator(
     let (abortable_events, abort_handle) =
         futures::stream::abortable((events, daemon_heartbeat_interval).merge());
 
+    let persistence = options
+        .state_file
+        .map(persistence::CoordinatorPersistence::new);
+    let restored = if let Some(persistence) = &persistence {
+        let restored = persistence.load().await?;
+        tracing::info!(
+            "loaded coordinator persisted state from `{}` (archived_dataflows: {}, dataflow_results: {})",
+            persistence.path().display(),
+            restored.archived_dataflows.len(),
+            restored.dataflow_results.len()
+        );
+        restored
+    } else {
+        persistence::PersistedCoordinatorState::default()
+    };
+
     let (daemon_events_tx, daemon_events) = tokio::sync::mpsc::channel(100);
     let coordinator_state = Arc::new(state::CoordinatorState {
         clock: Arc::new(HLC::default()),
         running_builds: Default::default(),
         finished_builds: Default::default(),
         running_dataflows: Default::default(),
-        dataflow_results: Default::default(),
-        archived_dataflows: Default::default(),
+        dataflow_results: {
+            let map = DashMap::new();
+            for entry in restored.dataflow_results {
+                map.insert(
+                    entry.dataflow_id,
+                    entry
+                        .daemon_results
+                        .into_iter()
+                        .map(|daemon_result| (daemon_result.daemon_id, daemon_result.result))
+                        .collect(),
+                );
+            }
+            map
+        },
+        archived_dataflows: {
+            let map = DashMap::new();
+            for entry in restored.archived_dataflows {
+                map.insert(entry.dataflow_id, entry.dataflow);
+            }
+            map
+        },
         daemon_connections: Default::default(),
         daemon_events_tx,
         abort_handle,
+        persistence,
     });
 
     let state_for_caller = coordinator_state.clone();
@@ -756,6 +820,7 @@ impl<T: Clone> CachedResult<T> {
     }
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ArchivedDataflow {
     name: Option<String>,
     nodes: BTreeMap<NodeId, ResolvedNode>,

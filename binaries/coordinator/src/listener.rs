@@ -202,6 +202,9 @@ impl CoordinatorNotify for CoordinatorNotifyServer {
                         .entry(dataflow_id)
                         .or_insert_with(|| ArchivedDataflow::from(entry.get()));
                     let mut finished_dataflow = entry.remove();
+                    if let Err(err) = self.coordinator_state.persist_archived_state().await {
+                        tracing::error!("failed to persist coordinator state: {err:?}");
+                    }
                     let clock = &self.coordinator_state.clock;
                     send_log_message(
                         &mut finished_dataflow.log_subscribers,

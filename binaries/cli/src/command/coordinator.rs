@@ -7,7 +7,10 @@ use dora_core::topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, DORA_COORDINATOR_
 use dora_tracing::TracingBuilder;
 
 use eyre::Context;
-use std::net::{IpAddr, SocketAddr};
+use std::{
+    net::{IpAddr, SocketAddr},
+    path::PathBuf,
+};
 use tracing::level_filters::LevelFilter;
 
 #[derive(Debug, clap::Args)]
@@ -28,6 +31,9 @@ pub struct Coordinator {
     /// Suppresses all log output to stdout.
     #[clap(long)]
     quiet: bool,
+    /// Optional file path for persisting archived coordinator state.
+    #[clap(long, value_name = "PATH")]
+    state_file: Option<PathBuf>,
 }
 
 impl Executable for Coordinator {
@@ -47,8 +53,15 @@ impl Executable for Coordinator {
 
         let bind = SocketAddr::new(self.interface, self.port);
         let bind_control = SocketAddr::new(self.control_interface, self.control_port);
-        let (port, task) =
-            dora_coordinator::start(bind, bind_control, futures::stream::empty::<Event>()).await?;
+        let (port, task) = dora_coordinator::start_with_options(
+            bind,
+            bind_control,
+            futures::stream::empty::<Event>(),
+            dora_coordinator::CoordinatorOptions {
+                state_file: self.state_file,
+            },
+        )
+        .await?;
         if !self.quiet {
             println!("Listening for incoming daemon connection on {port}");
         }
