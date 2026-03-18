@@ -662,8 +662,27 @@ fn send_output_internal(
     ffi::DoraResult { error }
 }
 
+/// Opaque handle to a pre-allocated data sample.
+///
+/// The sample may be backed by shared memory (for buffers >= 4096 bytes) or
+/// a regular aligned allocation (for smaller buffers). Use
+/// [`data_sample_as_ptr`] to obtain a raw pointer for writing, then pass the
+/// handle to [`send_data_sample`] to send it.
+///
+/// **Limitation:** The current zero-copy path sends data as a flat byte array
+/// (`UInt8` Arrow type). It does not support structured Arrow data types.
+/// For typed Arrow output, use [`send_arrow_output`] instead (which copies
+/// the data into the sample internally).
 pub struct DataSampleHandle(dora_node_api::DataSample);
 
+/// Allocate a data sample of `len` bytes.
+///
+/// Uses shared memory when `len >= 4096` to enable zero-copy transfer to
+/// subscribers. The returned handle owns the allocation; write into it via
+/// [`data_sample_as_ptr`] and send it via [`send_data_sample`].
+///
+/// **Note:** The sample is typed as a flat `UInt8` byte array. For
+/// structured Arrow types, use [`send_arrow_output`] instead.
 fn allocate_data_sample(
     sender: &mut Box<OutputSender>,
     len: usize,
@@ -672,14 +691,31 @@ fn allocate_data_sample(
     Ok(Box::new(DataSampleHandle(sample)))
 }
 
+/// Returns a mutable raw pointer to the sample's underlying buffer.
+///
+/// # Safety
+///
+/// - The pointer is valid only as long as the `DataSampleHandle` is alive
+///   and has not been moved (i.e., not yet passed to [`send_data_sample`]).
+/// - The caller must not write beyond `data_sample_len(handle)` bytes.
+/// - After calling [`send_data_sample`], the handle is consumed and any
+///   previously obtained pointer is **invalid** — do not dereference it.
 unsafe fn data_sample_as_ptr(handle: &mut Box<DataSampleHandle>) -> *mut u8 {
     handle.0.as_mut_ptr()
 }
 
+/// Returns the size of the sample buffer in bytes.
 fn data_sample_len(handle: &Box<DataSampleHandle>) -> usize {
     handle.0.len()
 }
 
+/// Send a pre-filled data sample as output (zero-copy for shared-memory
+/// backed samples).
+///
+/// Consumes the `DataSampleHandle`. Any raw pointer previously obtained
+/// from [`data_sample_as_ptr`] becomes invalid after this call.
+///
+/// The data is sent as a flat `UInt8` byte array.
 fn send_data_sample(
     sender: &mut Box<OutputSender>,
     id: String,
