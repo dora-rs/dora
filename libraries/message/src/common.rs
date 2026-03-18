@@ -337,6 +337,15 @@ impl std::fmt::Display for DaemonId {
     }
 }
 
+/// Returns a system-level unique machine identifier.
+///
+/// This is used to reliably determine whether two processes (e.g. CLI and
+/// daemon) are running on the same physical/virtual machine, even when a
+/// NAT maps multiple machines to the same public IP address.
+pub fn machine_uid() -> Option<String> {
+    machine_uid::get().ok()
+}
+
 #[derive(Debug, serde::Deserialize, serde::Serialize, Clone, PartialEq, Eq)]
 pub struct GitSource {
     pub repo: String,

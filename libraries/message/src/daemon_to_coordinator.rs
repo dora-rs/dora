@@ -24,6 +24,11 @@ pub enum CoordinatorRequest {
 pub struct DaemonRegisterRequest {
     dora_version: semver::Version,
     pub machine_id: Option<String>,
+    /// System-level unique machine identifier (e.g. `/etc/machine-id` on Linux).
+    /// Used to reliably detect whether CLI and daemon run on the same machine,
+    /// even behind NAT.
+    #[serde(default)]
+    pub machine_uid: Option<String>,
 }
 
 impl DaemonRegisterRequest {
@@ -31,6 +36,7 @@ impl DaemonRegisterRequest {
         Self {
             dora_version: current_crate_version(),
             machine_id,
+            machine_uid: crate::common::machine_uid(),
         }
     }
 

@@ -351,6 +351,7 @@ async fn start_inner(
             Event::Daemon(event) => match event {
                 DaemonRequest::Register {
                     machine_id,
+                    machine_uid,
                     mut connection,
                     version_check_result,
                 } => {
@@ -409,6 +410,7 @@ async fn start_inner(
                                     client: daemon_client,
                                     last_heartbeat: Instant::now(),
                                     peer_addr,
+                                    machine_uid,
                                 },
                             );
                         }
@@ -545,6 +547,8 @@ pub(crate) struct DaemonConnection {
     client: DaemonControlClient,
     pub(crate) last_heartbeat: Instant,
     peer_addr: Option<SocketAddr>,
+    /// System-level machine identifier reported by the daemon at registration.
+    machine_uid: Option<String>,
 }
 
 async fn handle_destroy(
@@ -1083,6 +1087,7 @@ impl Event {
 pub enum DaemonRequest {
     Register {
         machine_id: Option<String>,
+        machine_uid: Option<String>,
         connection: TcpStream,
         version_check_result: Result<(), String>,
     },

@@ -89,6 +89,8 @@ use crate::{extract_err_from_stderr::extract_err_from_stderr, pending::DataflowS
 
 const STDERR_LOG_LINES_MAX: usize = 500;
 
+static EMPTY_SET: BTreeSet<DataId> = BTreeSet::new();
+
 pub struct Daemon {
     pub(crate) state: Arc<state::DaemonState>,
 
@@ -3013,9 +3015,6 @@ pub struct RunningDataflow {
     stop_sent: bool,
 
     /// Used in `open_inputs`.
-    ///
-    /// TODO: replace this with a constant once `BTreeSet::new` is `const` on stable.
-    empty_set: BTreeSet<DataId>,
 
     /// Contains the node that caused the error for nodes that experienced a cascading error.
     cascading_error_causes: CascadingErrorCauses,
@@ -3072,7 +3071,6 @@ impl RunningDataflow {
             _timer_handles: BTreeMap::new(),
             _listener_tasks: Vec::new(),
             stop_sent: false,
-            empty_set: BTreeSet::new(),
             cascading_error_causes: Default::default(),
             grace_duration_kills: Default::default(),
             handled_node_failed: BTreeSet::new(),
@@ -3186,9 +3184,8 @@ impl RunningDataflow {
 
                 for (node, proc) in &running_processes {
                     if let Some(proc) = proc {
-                        if proc.submit(crate::ProcessOperation::SoftKill) {
-                            grace_duration_kills.insert(node.clone());
-                        }
+                        grace_duration_kills.insert(node.clone());
+                        proc.submit(crate::ProcessOperation::SoftKill);
                     }
                 }
 
@@ -3197,13 +3194,12 @@ impl RunningDataflow {
 
                 for (node, proc) in &running_processes {
                     if let Some(proc) = proc {
-                        if proc.submit(crate::ProcessOperation::Kill) {
-                            grace_duration_kills.insert(node.clone());
-                            warn!(
-                                "{node} was killed due to not stopping within the {:#?} grace period",
-                                duration + kill_duration
-                            );
-                        }
+                        grace_duration_kills.insert(node.clone());
+                        proc.submit(crate::ProcessOperation::Kill);
+                        warn!(
+                            "{node} was killed due to not stopping within the {:#?} grace period",
+                            duration + kill_duration
+                        );
                     }
                 }
             });
@@ -3250,9 +3246,8 @@ impl RunningDataflow {
 
                 for (node, proc) in &running_processes {
                     if let Some(proc) = proc {
-                        if proc.submit(crate::ProcessOperation::SoftKill) {
-                            grace_duration_kills.insert(node.clone());
-                        }
+                        grace_duration_kills.insert(node.clone());
+                        proc.submit(crate::ProcessOperation::SoftKill);
                     }
                 }
 
@@ -3261,13 +3256,12 @@ impl RunningDataflow {
 
                 for (node, proc) in &running_processes {
                     if let Some(proc) = proc {
-                        if proc.submit(crate::ProcessOperation::Kill) {
-                            grace_duration_kills.insert(node.clone());
-                            warn!(
-                                "{node} was killed due to not stopping within the {:#?} grace period",
-                                duration + kill_duration
-                            );
-                        }
+                        grace_duration_kills.insert(node.clone());
+                        proc.submit(crate::ProcessOperation::Kill);
+                        warn!(
+                            "{node} was killed due to not stopping within the {:#?} grace period",
+                            duration + kill_duration
+                        );
                     }
                 }
             });
@@ -3299,7 +3293,7 @@ impl RunningDataflow {
     }
 
     fn open_inputs(&self, node_id: &NodeId) -> &BTreeSet<DataId> {
-        self.open_inputs.get(node_id).unwrap_or(&self.empty_set)
+        self.open_inputs.get(node_id).unwrap_or(&EMPTY_SET)
     }
 
     async fn check_drop_token(&mut self, token: DropToken, clock: &HLC) -> eyre::Result<()> {

@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, path::PathBuf};
+use std::path::PathBuf;
 
 use proc_macro2::Span;
 use quote::{ToTokens, format_ident, quote};
@@ -10,7 +10,7 @@ use crate::types::{Action, Message, Service};
 pub struct Package {
     pub name: String,
     pub path: PathBuf,
-    pub dependencies: Vec<Package>,
+    pub dependencies: Vec<Self>,
     pub messages: Vec<Message>,
     pub services: Vec<Service>,
     pub actions: Vec<Action>,

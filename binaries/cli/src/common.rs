@@ -170,7 +170,10 @@ pub(crate) async fn cli_and_daemon_on_same_machine(
 ) -> eyre::Result<bool> {
     rpc(
         "check if CLI and daemon on same machine",
-        client.cli_and_default_daemon_on_same_machine(tarpc::context::current()),
+        client.cli_and_default_daemon_on_same_machine(
+            tarpc::context::current(),
+            dora_message::common::machine_uid(),
+        ),
     )
     .await
 }

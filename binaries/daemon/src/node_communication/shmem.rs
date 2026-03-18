@@ -22,7 +22,29 @@ pub async fn listener_loop(
         while let Ok(operation) = rx.recv() {
             match operation {
                 Operation::Receive(sender) => {
-                    if sender.send(server.listen()).is_err() {
+                    // `server.listen()` now returns `Err` after a short poll
+                    // interval instead of blocking in `pthread_cond_wait`
+                    // forever.  Loop here so that a node crash (where the
+                    // client never signals the disconnect event) does not
+                    // pin this blocking thread permanently: every ~50 ms we
+                    // check whether the controlling async task has been
+                    // cancelled (indicated by the flume Sender being dropped).
+                    let result = loop {
+                        match server.listen() {
+                            Ok(v) => break Ok(v),
+                            Err(_) => {
+                                if rx.is_disconnected() {
+                                    // The async side of listener_loop was
+                                    // cancelled (dataflow finished / abort
+                                    // handle fired).  Exit cleanly.
+                                    return;
+                                }
+                                // Likely a poll timeout; node is still alive
+                                // but has not sent yet.  Retry.
+                            }
+                        }
+                    };
+                    if sender.send(result).is_err() {
                         break;
                     }
                 }

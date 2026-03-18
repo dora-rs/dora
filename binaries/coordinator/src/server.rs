@@ -344,14 +344,23 @@ impl CoordinatorControl for CoordinatorControlServer {
     async fn cli_and_default_daemon_on_same_machine(
         self,
         _context: Context,
+        machine_uid: Option<String>,
     ) -> Result<bool, String> {
-        let Some(cli_ip) = self.client_ip else {
-            return Ok(false);
-        };
         let Some(default_id) = self.state.daemon_connections.unnamed().next() else {
             return Ok(false);
         };
         let Some(connection) = self.state.daemon_connections.get(&default_id) else {
+            return Ok(false);
+        };
+
+        // Prefer machine UID comparison — works correctly through NAT.
+        if let (Some(cli_uid), Some(daemon_uid)) = (&machine_uid, &connection.machine_uid) {
+            return Ok(cli_uid == daemon_uid);
+        }
+
+        // Fall back to IP address comparison for older daemons that don't
+        // report a machine UID yet.
+        let Some(cli_ip) = self.client_ip else {
             return Ok(false);
         };
         let same = connection

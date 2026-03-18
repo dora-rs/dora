@@ -166,12 +166,6 @@ impl TracingBuilder {
         Ok(self)
     }
 
-    /// Legacy method name for backward compatibility.
-    #[deprecated(since = "0.4.0", note = "Use `with_otlp_tracing` instead")]
-    pub fn with_jaeger_tracing(self) -> eyre::Result<Self> {
-        self.with_otlp_tracing()
-    }
-
     pub fn add_layer<L>(mut self, layer: L) -> Self
     where
         L: Layer<Registry> + Send + Sync + 'static,
