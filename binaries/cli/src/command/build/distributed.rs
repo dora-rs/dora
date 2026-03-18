@@ -1,4 +1,4 @@
-use dora_core::{descriptor::Descriptor, topics::zenoh_log_subscribe_all_for_build};
+use dora_core::descriptor::Descriptor;
 use dora_message::{
     BuildId,
     cli_to_coordinator::{BuildRequest, CoordinatorControlClient},
@@ -35,9 +35,9 @@ pub async fn build_distributed_dataflow(
     let zenoh_session = dora_core::topics::open_zenoh_session(Some(coordinator_addr))
         .await
         .wrap_err("failed to open zenoh session for build log subscription")?;
-    let log_topic = zenoh_log_subscribe_all_for_build(&build_id);
+    let base_topic = format!("dora/log/build/{build_id}/*/*");
     let log_task =
-        subscribe_and_print_logs(&zenoh_session, &log_topic, log_level, false, true).await?;
+        subscribe_and_print_logs(&zenoh_session, &base_topic, log_level, false, true).await?;
 
     // Now trigger the build — the daemon may start publishing logs
     // immediately, but our subscriber is already active.

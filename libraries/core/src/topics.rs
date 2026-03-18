@@ -153,68 +153,105 @@ pub fn zenoh_output_publish_topic(
     format!("dora/{network_id}/{dataflow_id}/output/{node_id}/{output_id}")
 }
 
+/// Return the zenoh topic suffix for a given log level.
+///
+/// The suffix is appended to the base topic so that subscribers can
+/// match only the levels they care about.
+#[cfg(feature = "zenoh")]
+pub fn log_level_topic_suffix(level: &dora_message::common::LogLevelOrStdout) -> &'static str {
+    use dora_message::common::LogLevelOrStdout;
+    match level {
+        LogLevelOrStdout::Stdout => "stdout",
+        LogLevelOrStdout::LogLevel(l) => match l {
+            log::Level::Error => "error",
+            log::Level::Warn => "warn",
+            log::Level::Info => "info",
+            log::Level::Debug => "debug",
+            log::Level::Trace => "trace",
+        },
+    }
+}
+
+/// All topic suffixes that should be subscribed to for a given
+/// [`log::LevelFilter`].
+///
+/// Stdout is always included because it should always be displayed.
+#[cfg(feature = "zenoh")]
+pub fn log_level_suffixes_for_filter(filter: log::LevelFilter) -> Vec<&'static str> {
+    let mut suffixes = vec!["stdout"];
+    // log levels: Error(1) < Warn(2) < Info(3) < Debug(4) < Trace(5)
+    // LevelFilter uses the same ordering; a filter of Info means
+    // Error, Warn, and Info should pass.
+    if filter >= log::LevelFilter::Error {
+        suffixes.push("error");
+    }
+    if filter >= log::LevelFilter::Warn {
+        suffixes.push("warn");
+    }
+    if filter >= log::LevelFilter::Info {
+        suffixes.push("info");
+    }
+    if filter >= log::LevelFilter::Debug {
+        suffixes.push("debug");
+    }
+    if filter >= log::LevelFilter::Trace {
+        suffixes.push("trace");
+    }
+    suffixes
+}
+
 /// Zenoh key expression for publishing a log message originating from a
 /// specific node in a dataflow.
 ///
-/// Format: `dora/log/dataflow/{dataflow_id}/node/{node_id}`
+/// Format: `dora/log/dataflow/{dataflow_id}/node/{node_id}/{level}`
 #[cfg(feature = "zenoh")]
 pub fn zenoh_log_topic_for_dataflow_node(
     dataflow_id: uuid::Uuid,
     node_id: &dora_message::id::NodeId,
+    level: &dora_message::common::LogLevelOrStdout,
 ) -> String {
-    format!("dora/log/dataflow/{dataflow_id}/node/{node_id}")
+    let suffix = log_level_topic_suffix(level);
+    format!("dora/log/dataflow/{dataflow_id}/node/{node_id}/{suffix}")
 }
 
 /// Zenoh key expression for publishing a daemon-level log message (not
 /// associated with a specific node) for a dataflow.
 ///
-/// Format: `dora/log/dataflow/{dataflow_id}/daemon/{daemon_id}`
+/// Format: `dora/log/dataflow/{dataflow_id}/daemon/{daemon_id}/{level}`
 #[cfg(feature = "zenoh")]
 pub fn zenoh_log_topic_for_dataflow_daemon(
     dataflow_id: uuid::Uuid,
     daemon_id: &dora_message::common::DaemonId,
+    level: &dora_message::common::LogLevelOrStdout,
 ) -> String {
-    format!("dora/log/dataflow/{dataflow_id}/daemon/{daemon_id}")
-}
-
-/// Zenoh key expression for subscribing to log messages from **all** sources
-/// (nodes and daemons) of a dataflow.
-///
-/// Format: `dora/log/dataflow/{dataflow_id}/**`
-#[cfg(feature = "zenoh")]
-pub fn zenoh_log_subscribe_all_for_dataflow(dataflow_id: uuid::Uuid) -> String {
-    format!("dora/log/dataflow/{dataflow_id}/**")
+    let suffix = log_level_topic_suffix(level);
+    format!("dora/log/dataflow/{dataflow_id}/daemon/{daemon_id}/{suffix}")
 }
 
 /// Zenoh key expression for publishing a log message originating from a
 /// specific node during a build.
 ///
-/// Format: `dora/log/build/{build_id}/node/{node_id}`
+/// Format: `dora/log/build/{build_id}/node/{node_id}/{level}`
 #[cfg(feature = "zenoh")]
 pub fn zenoh_log_topic_for_build_node(
     build_id: &dora_message::BuildId,
     node_id: &dora_message::id::NodeId,
+    level: &dora_message::common::LogLevelOrStdout,
 ) -> String {
-    format!("dora/log/build/{build_id}/node/{node_id}")
+    let suffix = log_level_topic_suffix(level);
+    format!("dora/log/build/{build_id}/node/{node_id}/{suffix}")
 }
 
 /// Zenoh key expression for publishing a daemon-level log message during a
 /// build (not associated with a specific node).
 ///
-/// Format: `dora/log/build/{build_id}/daemon/{daemon_id}`
+/// Format: `dora/log/build/{build_id}/daemon/{daemon_id}/{level}`
 #[cfg(feature = "zenoh")]
 pub fn zenoh_log_topic_for_build_daemon(
     build_id: &dora_message::BuildId,
     daemon_id: &dora_message::common::DaemonId,
+    level: &dora_message::common::LogLevelOrStdout,
 ) -> String {
-    format!("dora/log/build/{build_id}/daemon/{daemon_id}")
-}
-
-/// Zenoh key expression for subscribing to log messages from **all** sources
-/// (nodes and daemons) of a build.
-///
-/// Format: `dora/log/build/{build_id}/**`
-#[cfg(feature = "zenoh")]
-pub fn zenoh_log_subscribe_all_for_build(build_id: &dora_message::BuildId) -> String {
-    format!("dora/log/build/{build_id}/**")
+    let suffix = log_level_topic_suffix(level);
+    format!("dora/log/build/{build_id}/daemon/{daemon_id}/{suffix}")
 }

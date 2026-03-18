@@ -1,5 +1,4 @@
 use dora_core::descriptor::{CoreNodeKind, Descriptor, DescriptorExt, resolve_path};
-use dora_core::topics::zenoh_log_subscribe_all_for_dataflow;
 use dora_message::cli_to_coordinator::CoordinatorControlClient;
 use dora_message::coordinator_to_cli::{CheckDataflowReply, DataflowResult, StopDataflowReply};
 use dora_message::id::{NodeId, OperatorId};
@@ -124,10 +123,13 @@ pub async fn attach_dataflow(
     // through the event channel, since log display is fire-and-forget.
     // The zenoh session was opened by the caller *before* the start RPC
     // to avoid missing early log messages.
-    let log_topic = zenoh_log_subscribe_all_for_dataflow(dataflow_id);
+    // Base topic without level suffix — subscribe_and_print_logs will
+    // append one subscriber per level that passes the filter.
+    // We use `*/*` to match `{source_type}/{source_id}`.
+    let base_topic = format!("dora/log/dataflow/{dataflow_id}/*/*");
     let _log_task = subscribe_and_print_logs(
         zenoh_session,
-        &log_topic,
+        &base_topic,
         log_level,
         false,
         print_daemon_name,

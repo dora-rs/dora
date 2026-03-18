@@ -14,9 +14,7 @@ use crate::{
 };
 use dora_core::{
     descriptor::{Descriptor, DescriptorExt},
-    topics::{
-        DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST, zenoh_log_subscribe_all_for_dataflow,
-    },
+    topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST},
 };
 use dora_message::{
     cli_to_coordinator::{CoordinatorControlClient, StartRequest},
@@ -75,7 +73,7 @@ impl Executable for Start {
         let zenoh_session = dora_core::topics::open_zenoh_session(Some(self.coordinator_addr))
             .await
             .wrap_err("failed to open zenoh session for log subscription")?;
-        let log_topic = zenoh_log_subscribe_all_for_dataflow(dataflow_id);
+        let base_log_topic = format!("dora/log/dataflow/{dataflow_id}/*/*");
 
         let (dataflow, dataflow_descriptor, client) = start_dataflow(
             self.dataflow,
@@ -119,7 +117,7 @@ impl Executable for Start {
                 dataflow_id,
                 &client,
                 &zenoh_session,
-                &log_topic,
+                &base_log_topic,
                 log::LevelFilter::Info,
                 print_daemon_name,
             )

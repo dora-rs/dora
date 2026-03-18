@@ -165,6 +165,7 @@ impl Daemon {
         let log_destination = match daemon_state.zenoh_session.as_ref() {
             Some(session) => LogDestination::Zenoh {
                 session: session.clone(),
+                publishers: std::collections::HashMap::new(),
             },
             None => {
                 tracing::warn!(

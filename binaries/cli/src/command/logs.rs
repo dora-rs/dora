@@ -8,9 +8,7 @@ use crate::{
     output::subscribe_and_print_logs,
 };
 use clap::Args;
-use dora_core::topics::{
-    DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST, zenoh_log_topic_for_dataflow_node,
-};
+use dora_core::topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST};
 use dora_message::cli_to_coordinator::CoordinatorControlClient;
 use eyre::{Context, Result};
 use uuid::Uuid;
@@ -90,9 +88,9 @@ pub async fn logs(
     let zenoh_session = dora_core::topics::open_zenoh_session(Some(coordinator_addr))
         .await
         .wrap_err("failed to open zenoh session for log subscription")?;
-    let log_topic = zenoh_log_topic_for_dataflow_node(uuid, &node);
+    let base_topic = format!("dora/log/dataflow/{uuid}/node/{node}");
     let log_task =
-        subscribe_and_print_logs(&zenoh_session, &log_topic, log_level, false, false).await?;
+        subscribe_and_print_logs(&zenoh_session, &base_topic, log_level, false, false).await?;
 
     // Block until the task ends (subscriber closes).
     let _ = log_task.await;

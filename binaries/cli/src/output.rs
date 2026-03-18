@@ -8,46 +8,56 @@ use dora_message::common::LogMessage;
 use eyre::Context;
 use tokio::task::JoinHandle;
 
-/// Check whether a log message should be displayed given the log level filter.
-pub fn should_display(message: &LogMessage, filter: log::LevelFilter) -> bool {
-    match &message.level {
-        LogLevelOrStdout::Stdout => true,
-        LogLevelOrStdout::LogLevel(level) => {
-            // Convert log::Level to log::LevelFilter for a safe same-type comparison
-            // rather than relying on cross-type PartialOrd between Level and LevelFilter.
-            let msg_filter = level.to_level_filter();
-            msg_filter <= filter
-        }
-    }
-}
-
-/// Subscribe to a zenoh log topic and spawn a background task that prints
-/// received messages filtered by level.
+/// Subscribe to zenoh log topics for each level that passes `log_level` and
+/// spawn a background task that prints received messages.
+///
+/// One subscriber is declared per matching level suffix (including stdout).
+/// All subscribers share the same channel via the `callback` method so that
+/// a single receiver task can print messages in arrival order.
 pub async fn subscribe_and_print_logs(
     zenoh_session: &zenoh::Session,
-    log_topic: &str,
+    base_topic: &str,
     log_level: log::LevelFilter,
     print_dataflow_id: bool,
     print_daemon_name: bool,
 ) -> eyre::Result<JoinHandle<()>> {
-    let subscriber = zenoh_session
-        .declare_subscriber(log_topic)
-        .await
-        .map_err(|e| eyre::eyre!(e))
-        .wrap_err("failed to subscribe to log topic")?;
-    Ok(tokio::spawn(async move {
-        while let Ok(sample) = subscriber.recv_async().await {
-            let payload = sample.payload().to_bytes();
-            match serde_json::from_slice::<LogMessage>(&payload) {
-                Ok(log_message) => {
-                    if should_display(&log_message, log_level) {
-                        print_log_message(log_message, print_dataflow_id, print_daemon_name);
+    let suffixes = dora_core::topics::log_level_suffixes_for_filter(log_level);
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<LogMessage>();
+
+    // Keep subscriber handles alive so they aren't dropped.
+    let mut _subscribers = Vec::new();
+
+    for suffix in &suffixes {
+        let topic = format!("{base_topic}/{suffix}");
+        let tx = tx.clone();
+        let subscriber = zenoh_session
+            .declare_subscriber(&topic)
+            .callback(move |sample| {
+                let payload = sample.payload().to_bytes();
+                match serde_json::from_slice::<LogMessage>(&payload) {
+                    Ok(log_message) => {
+                        let _ = tx.send(log_message);
+                    }
+                    Err(err) => {
+                        tracing::warn!("failed to parse log message: {err:?}");
                     }
                 }
-                Err(err) => {
-                    tracing::warn!("failed to parse log message: {err:?}")
-                }
-            }
+            })
+            .await
+            .map_err(|e| eyre::eyre!(e))
+            .wrap_err_with(|| format!("failed to subscribe to log topic {topic}"))?;
+        _subscribers.push(subscriber);
+    }
+
+    // Drop the sender so the receiver will end when all subscriber
+    // callbacks are gone (i.e. when the subscribers are dropped).
+    drop(tx);
+
+    Ok(tokio::spawn(async move {
+        // Move subscribers into the task so they stay alive.
+        let _subscribers = _subscribers;
+        while let Some(log_message) = rx.recv().await {
+            print_log_message(log_message, print_dataflow_id, print_daemon_name);
         }
     }))
 }

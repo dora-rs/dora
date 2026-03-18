@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     ops::{Deref, DerefMut},
     path::{Path, PathBuf},
     sync::Arc,
@@ -260,28 +261,55 @@ impl Logger {
     }
 
     pub async fn log(&mut self, message: LogMessage, daemon_id: &DaemonId) {
-        match &self.destination {
-            LogDestination::Zenoh { session } => {
+        match &mut self.destination {
+            LogDestination::Zenoh {
+                session,
+                publishers,
+            } => {
                 let topic = if let Some(dataflow_id) = &message.dataflow_id {
                     if let Some(node_id) = &message.node_id {
-                        zenoh_log_topic_for_dataflow_node(*dataflow_id, node_id)
+                        zenoh_log_topic_for_dataflow_node(*dataflow_id, node_id, &message.level)
                     } else {
-                        zenoh_log_topic_for_dataflow_daemon(*dataflow_id, daemon_id)
+                        zenoh_log_topic_for_dataflow_daemon(*dataflow_id, daemon_id, &message.level)
                     }
                 } else if let Some(build_id) = &message.build_id {
                     if let Some(node_id) = &message.node_id {
-                        zenoh_log_topic_for_build_node(build_id, node_id)
+                        zenoh_log_topic_for_build_node(build_id, node_id, &message.level)
                     } else {
-                        zenoh_log_topic_for_build_daemon(build_id, daemon_id)
+                        zenoh_log_topic_for_build_daemon(build_id, daemon_id, &message.level)
                     }
                 } else {
                     // No dataflow or build context; fall back to tracing.
                     Self::log_via_tracing(&message);
                     return;
                 };
+
+                // Re-use an existing publisher or create one with a
+                // matching listener so we only serialize + send when at
+                // least one subscriber is listening on this topic.
+                let entry = publishers.entry(topic.clone());
+                let pub_entry = match entry {
+                    std::collections::hash_map::Entry::Occupied(o) => o.into_mut(),
+                    std::collections::hash_map::Entry::Vacant(v) => {
+                        match Self::create_publisher(session, &topic).await {
+                            Ok(pe) => v.insert(pe),
+                            Err(err) => {
+                                tracing::warn!(
+                                    "failed to create zenoh publisher for {topic}: {err}"
+                                );
+                                return;
+                            }
+                        }
+                    }
+                };
+
+                if !pub_entry.has_matching_subscribers() {
+                    return;
+                }
+
                 let payload =
                     serde_json::to_vec(&message).expect("failed to serialize log message");
-                if let Err(err) = session.put(&topic, payload).await {
+                if let Err(err) = pub_entry.publisher.put(payload).await {
                     tracing::warn!("failed to publish log via zenoh: {err}");
                 }
             }
@@ -296,8 +324,9 @@ impl Logger {
 
     pub async fn try_clone(&self) -> eyre::Result<Self> {
         let destination = match &self.destination {
-            LogDestination::Zenoh { session } => LogDestination::Zenoh {
+            LogDestination::Zenoh { session, .. } => LogDestination::Zenoh {
                 session: session.clone(),
+                publishers: std::collections::HashMap::new(),
             },
             LogDestination::Channel { sender } => LogDestination::Channel {
                 sender: sender.clone(),
@@ -308,6 +337,33 @@ impl Logger {
         Ok(Self {
             destination,
             clock: self.clock.clone(),
+        })
+    }
+
+    /// Create a publisher with a matching listener that tracks whether
+    /// any subscribers exist for its topic.
+    async fn create_publisher(session: &zenoh::Session, topic: &str) -> eyre::Result<LogPublisher> {
+        let topic: zenoh::key_expr::KeyExpr<'static> =
+            zenoh::key_expr::KeyExpr::try_from(topic.to_owned()).map_err(|e| eyre::eyre!("{e}"))?;
+        let publisher = session
+            .declare_publisher(topic)
+            .await
+            .map_err(|e| eyre::eyre!(e))?;
+
+        let has_subscribers = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = has_subscribers.clone();
+        let _matching_listener = publisher
+            .matching_listener()
+            .callback(move |status| {
+                flag.store(status.matching(), std::sync::atomic::Ordering::Relaxed);
+            })
+            .await
+            .map_err(|e| eyre::eyre!(e))?;
+
+        Ok(LogPublisher {
+            publisher,
+            has_subscribers,
+            _matching_listener,
         })
     }
 
@@ -386,9 +442,30 @@ impl Logger {
 }
 
 pub enum LogDestination {
-    Zenoh { session: zenoh::Session },
-    Channel { sender: Sender<LogMessage> },
+    Zenoh {
+        session: zenoh::Session,
+        publishers: HashMap<String, LogPublisher>,
+    },
+    Channel {
+        sender: Sender<LogMessage>,
+    },
     Tracing,
+}
+
+/// A zenoh publisher paired with a matching listener that tracks
+/// whether any subscribers are currently listening.
+pub struct LogPublisher {
+    publisher: zenoh::pubsub::Publisher<'static>,
+    has_subscribers: Arc<std::sync::atomic::AtomicBool>,
+    /// Kept alive so the matching callback stays registered.
+    _matching_listener: zenoh::matching::MatchingListener<()>,
+}
+
+impl LogPublisher {
+    fn has_matching_subscribers(&self) -> bool {
+        self.has_subscribers
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
 }
 
 enum CowMut<'a, T> {
