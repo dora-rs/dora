@@ -81,6 +81,8 @@ mod ffi {
         type Metadata;
 
         fn init_dora_node() -> Result<DoraNode>;
+        fn init_dora_node_from_id(node_id: String) -> Result<DoraNode>;
+        fn init_dora_node_flexible(node_id: String) -> Result<DoraNode>;
 
         fn node_id(output_sender: &Box<OutputSender>) -> String;
         fn dataflow_id(output_sender: &Box<OutputSender>) -> String;
@@ -170,6 +172,32 @@ pub mod ros2 {
 
 fn init_dora_node() -> eyre::Result<ffi::DoraNode> {
     let (node, events) = dora_node_api::DoraNode::init_from_env()?;
+    let events = Events(events);
+    let send_output = OutputSender(node);
+
+    Ok(ffi::DoraNode {
+        events: Box::new(events),
+        send_output: Box::new(send_output),
+    })
+}
+
+fn init_dora_node_from_id(node_id: String) -> eyre::Result<ffi::DoraNode> {
+    let (node, events) = dora_node_api::DoraNode::init_from_node_id(
+        dora_node_api::dora_core::config::NodeId::from(node_id),
+    )?;
+    let events = Events(events);
+    let send_output = OutputSender(node);
+
+    Ok(ffi::DoraNode {
+        events: Box::new(events),
+        send_output: Box::new(send_output),
+    })
+}
+
+fn init_dora_node_flexible(node_id: String) -> eyre::Result<ffi::DoraNode> {
+    let (node, events) = dora_node_api::DoraNode::init_flexible(
+        dora_node_api::dora_core::config::NodeId::from(node_id),
+    )?;
     let events = Events(events);
     let send_output = OutputSender(node);
 
