@@ -1600,6 +1600,7 @@ dependencies = [
  "serde_yaml 0.9.34+deprecated",
  "splitty",
  "tokio",
+ "tokio-stream",
  "tracing",
  "url",
  "uuid",

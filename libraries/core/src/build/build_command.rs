@@ -6,6 +6,7 @@ use tokio::{
     io::{AsyncBufRead, AsyncBufReadExt, BufReader},
     process::Command,
 };
+use tokio_stream::{StreamExt, wrappers::LinesStream};
 
 pub async fn run_build_command(
     build: &str,
@@ -80,34 +81,11 @@ async fn forward_build_output<R1, R2>(
     R1: AsyncBufRead + Unpin,
     R2: AsyncBufRead + Unpin,
 {
-    let mut stdout_lines = stdout.lines();
-    let mut stderr_lines = stderr.lines();
-    let mut stdout_open = true;
-    let mut stderr_open = true;
+    let mut merged = LinesStream::new(stdout.lines()).merge(LinesStream::new(stderr.lines()));
 
-    while stdout_open || stderr_open {
-        tokio::select! {
-            line = stdout_lines.next_line(), if stdout_open => {
-                stdout_open = forward_line(line, &stdout_tx).await;
-            }
-            line = stderr_lines.next_line(), if stderr_open => {
-                stderr_open = forward_line(line, &stdout_tx).await;
-            }
-            else => break,
-        }
-    }
-}
-
-async fn forward_line(
-    line: std::io::Result<Option<String>>,
-    stdout_tx: &tokio::sync::mpsc::Sender<std::io::Result<String>>,
-) -> bool {
-    match line {
-        Ok(Some(line)) => stdout_tx.send(Ok(line)).await.is_ok(),
-        Ok(None) => false,
-        Err(err) => {
-            let _ = stdout_tx.send(Err(err)).await;
-            false
+    while let Some(line) = merged.next().await {
+        if stdout_tx.send(line).await.is_err() {
+            break;
         }
     }
 }
