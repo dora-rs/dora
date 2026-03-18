@@ -9,7 +9,10 @@ pub fn print_log_message(
     print_dataflow_id: bool,
     print_daemon_name: bool,
 ) {
-    println!("{}", format_log_message(log_message, print_dataflow_id, print_daemon_name));
+    println!(
+        "{}",
+        format_log_message(log_message, print_dataflow_id, print_daemon_name)
+    );
 }
 
 /// Format a log message into a string without printing it.
