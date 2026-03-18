@@ -7,6 +7,7 @@ use std::{
 mod command;
 mod common;
 mod formatting;
+mod lockfile;
 pub mod output;
 pub mod session;
 mod template;
