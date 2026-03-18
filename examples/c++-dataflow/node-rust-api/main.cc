@@ -29,7 +29,7 @@ int main()
 
     // Demonstrate try_next_event (non-blocking poll)
     auto poll = try_next_event(dora_node.events);
-    if (event_type(poll) == DoraEventType::Timeout) {
+    if (event_type(poll) == DoraEventType::Empty) {
         std::cout << "No event ready yet (non-blocking)" << std::endl;
     }
 

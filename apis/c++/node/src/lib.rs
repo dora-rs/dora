@@ -1,4 +1,4 @@
-use std::{any::Any, collections::BTreeMap, time::Duration, vec};
+use std::{any::Any, collections::BTreeMap, time::{Duration, Instant}, vec};
 
 use crate::ffi::MetadataValueType;
 
@@ -37,6 +37,7 @@ mod ffi {
         Unknown,
         AllInputsClosed,
         Timeout,
+        Empty,
         NodeFailed,
         Reload,
     }
@@ -255,10 +256,7 @@ pub struct Events(EventStream);
 
 impl Events {
     fn next(&mut self) -> Box<DoraEvent> {
-        Box::new(DoraEvent {
-            event: self.0.recv(),
-            timed_out: false,
-        })
+        Box::new(DoraEvent::from_recv(self.0.recv()))
     }
 }
 
@@ -268,42 +266,29 @@ fn next_event(events: &mut Box<Events>) -> Box<DoraEvent> {
 
 fn next_event_timeout(events: &mut Box<Events>, timeout_ms: u64) -> Box<DoraEvent> {
     let dur = Duration::from_millis(timeout_ms);
-    match events.0.recv_timeout(dur) {
-        Some(event) => {
-            let timed_out = matches!(&event, Event::Error(msg) if msg.contains("timed out"));
-            if timed_out {
-                Box::new(DoraEvent {
-                    event: None,
-                    timed_out: true,
-                })
-            } else {
-                Box::new(DoraEvent {
-                    event: Some(event),
-                    timed_out: false,
-                })
+    let deadline = Instant::now() + dur;
+
+    loop {
+        match events.0.try_recv() {
+            Ok(event) => return Box::new(DoraEvent::with_event(event)),
+            Err(TryRecvError::Closed) => return Box::new(DoraEvent::closed()),
+            Err(TryRecvError::Empty) => {
+                let now = Instant::now();
+                if now >= deadline {
+                    return Box::new(DoraEvent::timed_out());
+                }
+                let remaining = deadline - now;
+                std::thread::sleep(remaining.min(Duration::from_millis(10)));
             }
         }
-        None => Box::new(DoraEvent {
-            event: None,
-            timed_out: false,
-        }),
     }
 }
 
 fn try_next_event(events: &mut Box<Events>) -> Box<DoraEvent> {
     match events.0.try_recv() {
-        Ok(event) => Box::new(DoraEvent {
-            event: Some(event),
-            timed_out: false,
-        }),
-        Err(TryRecvError::Empty) => Box::new(DoraEvent {
-            event: None,
-            timed_out: true,
-        }),
-        Err(TryRecvError::Closed) => Box::new(DoraEvent {
-            event: None,
-            timed_out: false,
-        }),
+        Ok(event) => Box::new(DoraEvent::with_event(event)),
+        Err(TryRecvError::Empty) => Box::new(DoraEvent::empty()),
+        Err(TryRecvError::Closed) => Box::new(DoraEvent::closed()),
     }
 }
 
@@ -324,14 +309,8 @@ fn drained_events_len(drained: &Box<DrainedEvents>) -> usize {
 
 fn drained_events_next(drained: &mut Box<DrainedEvents>) -> Box<DoraEvent> {
     match drained.0.pop_front() {
-        Some(e) => Box::new(DoraEvent {
-            event: Some(e),
-            timed_out: false,
-        }),
-        None => Box::new(DoraEvent {
-            event: None,
-            timed_out: true,
-        }),
+        Some(e) => Box::new(DoraEvent::with_event(e)),
+        None => Box::new(DoraEvent::empty()),
     }
 }
 
@@ -354,17 +333,54 @@ fn empty_combined_events() -> ffi::CombinedEvents {
     }
 }
 
+/// Why a DoraEvent has no event payload.
+#[derive(PartialEq)]
+enum NoEventReason {
+    /// An event is present.
+    HasEvent,
+    /// The event stream closed (all inputs closed).
+    Closed,
+    /// A timeout expired before an event arrived.
+    TimedOut,
+    /// No event was immediately available (non-blocking check).
+    Empty,
+}
+
 pub struct DoraEvent {
     event: Option<Event>,
-    timed_out: bool,
+    reason: NoEventReason,
+}
+
+impl DoraEvent {
+    fn with_event(event: Event) -> Self {
+        Self { event: Some(event), reason: NoEventReason::HasEvent }
+    }
+
+    fn from_recv(event: Option<Event>) -> Self {
+        match event {
+            Some(e) => Self::with_event(e),
+            None => Self::closed(),
+        }
+    }
+
+    fn closed() -> Self {
+        Self { event: None, reason: NoEventReason::Closed }
+    }
+
+    fn timed_out() -> Self {
+        Self { event: None, reason: NoEventReason::TimedOut }
+    }
+
+    fn empty() -> Self {
+        Self { event: None, reason: NoEventReason::Empty }
+    }
 }
 
 fn event_type(event: &DoraEvent) -> ffi::DoraEventType {
-    if event.timed_out {
-        return ffi::DoraEventType::Timeout;
-    }
-    match &event.event {
-        Some(event) => match event {
+    match (&event.event, &event.reason) {
+        (_, NoEventReason::TimedOut) => ffi::DoraEventType::Timeout,
+        (_, NoEventReason::Empty) => ffi::DoraEventType::Empty,
+        (Some(event), _) => match event {
             Event::Stop(_) => ffi::DoraEventType::Stop,
             Event::Input { .. } => ffi::DoraEventType::Input,
             Event::InputClosed { .. } => ffi::DoraEventType::InputClosed,
@@ -373,7 +389,7 @@ fn event_type(event: &DoraEvent) -> ffi::DoraEventType {
             Event::Reload { .. } => ffi::DoraEventType::Reload,
             _ => ffi::DoraEventType::Unknown,
         },
-        None => ffi::DoraEventType::AllInputsClosed,
+        (None, _) => ffi::DoraEventType::AllInputsClosed,
     }
 }
 
@@ -1048,10 +1064,7 @@ impl ffi::CombinedEvent {
 
 fn downcast_dora(event: ffi::CombinedEvent) -> eyre::Result<Box<DoraEvent>> {
     match event.event.0 {
-        Some(MergedEvent::Dora(event)) => Ok(Box::new(DoraEvent {
-            event: Some(event),
-            timed_out: false,
-        })),
+        Some(MergedEvent::Dora(event)) => Ok(Box::new(DoraEvent::with_event(event))),
         _ => eyre::bail!("not an external event"),
     }
 }
