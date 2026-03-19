@@ -6,8 +6,11 @@ use std::{
 
 mod command;
 mod common;
+mod dora_toml;
 mod formatting;
 pub mod output;
+mod package_metadata;
+mod registry;
 pub mod session;
 mod template;
 
