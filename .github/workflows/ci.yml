@@ -59,26 +59,36 @@ jobs:
       - name: Free disk Space (Windows)
         if: runner.os == 'Windows'
         run: |
-          docker system prune --all -f 2>$null; $true
-          docker builder prune -af 2>$null; $true
-          Remove-Item "C:\Android" -Force -Recurse -ErrorAction SilentlyContinue
-          Remove-Item "C:\hostedtoolcache\windows\Ruby" -Force -Recurse -ErrorAction SilentlyContinue
-          Remove-Item "C:\hostedtoolcache\windows\go" -Force -Recurse -ErrorAction SilentlyContinue
-          Remove-Item "C:\hostedtoolcache\windows\Java*" -Force -Recurse -ErrorAction SilentlyContinue
-          Remove-Item "C:\hostedtoolcache\windows\CodeQL" -Force -Recurse -ErrorAction SilentlyContinue
-          Remove-Item "C:\Program Files (x86)\Microsoft SDKs\Azure" -Force -Recurse -ErrorAction SilentlyContinue
-          Remove-Item "C:\Program Files\Azure Cosmos DB Emulator" -Force -Recurse -ErrorAction SilentlyContinue
-          Remove-Item "C:\Program Files\MongoDB" -Force -Recurse -ErrorAction SilentlyContinue
-          Remove-Item "C:\mysql*" -Force -Recurse -ErrorAction SilentlyContinue
-          Remove-Item "C:\Program Files\PostgreSQL" -Force -Recurse -ErrorAction SilentlyContinue
-          Remove-Item "C:\Selenium" -Force -Recurse -ErrorAction SilentlyContinue
-          Remove-Item "C:\SeleniumWebDrivers" -Force -Recurse -ErrorAction SilentlyContinue
-          Remove-Item "C:\Program Files\dotnet\sdk\*" -Force -Recurse -ErrorAction SilentlyContinue
-          Remove-Item "C:\Program Files\dotnet\shared" -Force -Recurse -ErrorAction SilentlyContinue
-          Remove-Item "C:\Program Files (x86)\Microsoft Visual Studio\2019" -Force -Recurse -ErrorAction SilentlyContinue
-          Remove-Item "C:\ProgramData\Chocolatey" -Force -Recurse -ErrorAction SilentlyContinue
-          Remove-Item "C:\mingw64" -Force -Recurse -ErrorAction SilentlyContinue
-          Remove-Item "C:\Strawberry" -Force -Recurse -ErrorAction SilentlyContinue
+          $ErrorActionPreference = "Continue"
+          docker system prune --all -f 2>$null
+          docker builder prune -af 2>$null
+
+          @(
+            "C:\Android"
+            "C:\hostedtoolcache\windows\Ruby"
+            "C:\hostedtoolcache\windows\go"
+            "C:\hostedtoolcache\windows\Java*"
+            "C:\hostedtoolcache\windows\CodeQL"
+            "C:\Program Files (x86)\Microsoft SDKs\Azure"
+            "C:\Program Files\Azure Cosmos DB Emulator"
+            "C:\Program Files\MongoDB"
+            "C:\mysql*"
+            "C:\Program Files\PostgreSQL"
+            "C:\Selenium"
+            "C:\SeleniumWebDrivers"
+            "C:\Program Files\dotnet\sdk\*"
+            "C:\Program Files\dotnet\shared"
+            "C:\Program Files (x86)\Microsoft Visual Studio\2019"
+            "C:\ProgramData\Chocolatey"
+            "C:\mingw64"
+            "C:\Strawberry"
+          ) | ForEach-Object {
+            Get-Item -Path $_ -ErrorAction SilentlyContinue |
+              Remove-Item -Force -Recurse -ErrorAction SilentlyContinue
+          }
+
+          # This cleanup is best-effort; do not fail CI when a path is absent/locked.
+          if ($LASTEXITCODE -ne $null) { $global:LASTEXITCODE = 0 }
 
       - uses: Swatinem/rust-cache@v2
         with:
