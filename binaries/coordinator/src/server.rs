@@ -401,3 +401,140 @@ impl CoordinatorControl for CoordinatorControlServer {
         Ok(node_infos)
     }
 }
+#[cfg(test)]
+mod tests {
+    use std::{
+        collections::{BTreeMap, BTreeSet},
+        sync::Arc,
+    };
+
+    use dora_core::{descriptor::DescriptorExt, uhlc::HLC};
+    use dora_message::{BuildId, common::DaemonId};
+    use tokio::sync::{mpsc, oneshot};
+    use uuid::Uuid;
+
+    use crate::{CachedResult, RunningBuild, RunningDataflow, state::CoordinatorState};
+
+    fn make_state() -> Arc<CoordinatorState> {
+        let (_abortable, abort_handle) =
+            futures::stream::abortable(futures::stream::empty::<crate::Event>());
+        let (daemon_events_tx, _daemon_events_rx) = mpsc::channel(8);
+        Arc::new(CoordinatorState {
+            clock: Arc::new(HLC::default()),
+            running_builds: Default::default(),
+            finished_builds: Default::default(),
+            running_dataflows: Default::default(),
+            dataflow_results: Default::default(),
+            archived_dataflows: Default::default(),
+            daemon_connections: Default::default(),
+            daemon_events_tx,
+            abort_handle,
+        })
+    }
+
+    fn make_running_dataflow(
+        dataflow_id: Uuid,
+        daemon_id: DaemonId,
+    ) -> (RunningDataflow, dora_message::id::NodeId) {
+        let descriptor_yaml = r#"
+nodes:
+  - id: demo-node
+    path: /bin/echo
+"#;
+        let descriptor: dora_message::descriptor::Descriptor =
+            serde_yaml::from_str(descriptor_yaml).expect("failed to parse descriptor yaml");
+        let nodes = descriptor
+            .resolve_aliases_and_set_defaults()
+            .expect("failed to resolve descriptor");
+        let node_id = nodes.keys().next().expect("expected one node").clone();
+
+        let node_to_daemon = BTreeMap::from([(node_id.clone(), daemon_id.clone())]);
+        let daemons = BTreeSet::from([daemon_id.clone()]);
+
+        (
+            RunningDataflow {
+                name: Some("disconnect-test".to_string()),
+                uuid: dataflow_id,
+                descriptor,
+                daemons: daemons.clone(),
+                pending_daemons: BTreeSet::new(),
+                exited_before_subscribe: Vec::new(),
+                nodes,
+                node_to_daemon,
+                node_metrics: BTreeMap::new(),
+                spawn_result: CachedResult::default(),
+                stop_reply_senders: Vec::new(),
+                buffered_log_messages: Vec::new(),
+                log_subscribers: Vec::new(),
+                pending_spawn_results: daemons,
+            },
+            node_id,
+        )
+    }
+
+    #[tokio::test]
+    async fn daemon_disconnect_fails_pending_waiters_immediately() {
+        let state = make_state();
+        let daemon_id = DaemonId::new(Some("timeout-daemon".to_string()));
+
+        let build_id = BuildId::generate();
+        state.running_builds.insert(
+            build_id,
+            RunningBuild {
+                errors: Vec::new(),
+                build_result: CachedResult::default(),
+                buffered_log_messages: Vec::new(),
+                log_subscribers: Vec::new(),
+                pending_build_results: BTreeSet::from([daemon_id.clone()]),
+            },
+        );
+
+        let dataflow_id = Uuid::new_v4();
+        let (running_dataflow, _node_id) = make_running_dataflow(dataflow_id, daemon_id.clone());
+        state.running_dataflows.insert(dataflow_id, running_dataflow);
+
+        let (build_tx, build_rx) = oneshot::channel();
+        state
+            .running_builds
+            .get_mut(&build_id)
+            .expect("missing running build")
+            .build_result
+            .register(build_tx);
+
+        let (spawn_tx, spawn_rx) = oneshot::channel();
+        state
+            .running_dataflows
+            .get_mut(&dataflow_id)
+            .expect("missing running dataflow")
+            .spawn_result
+            .register(spawn_tx);
+
+        crate::handle_daemon_disconnect(&state, &daemon_id, "watchdog timeout");
+
+        let build_result = build_rx.await.expect("build waiter dropped unexpectedly");
+        let build_finished = build_result.expect("build waiter should receive cached result");
+        let err = build_finished
+            .result
+            .expect_err("build should fail after daemon disconnect");
+        assert!(
+            err.contains("timeout-daemon"),
+            "expected daemon id in build error, got: {err}"
+        );
+
+        let spawn_result = spawn_rx.await.expect("spawn waiter dropped unexpectedly");
+        let spawn_err = spawn_result.expect_err("spawn should fail after daemon disconnect");
+        assert!(
+            spawn_err.to_string().contains("timeout-daemon"),
+            "expected daemon id in spawn error, got: {spawn_err}"
+        );
+
+        assert!(
+            state.running_builds.get(&build_id).is_none(),
+            "running build should be moved to finished cache"
+        );
+        assert!(
+            state.finished_builds.get(&build_id).is_some(),
+            "finished build cache should contain failed build result"
+        );
+    }
+}
