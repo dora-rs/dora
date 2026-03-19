@@ -31,3 +31,6 @@ log = { version = "0.4.21", features = ["serde"] }
 dora-message = { workspace = true }
 itertools = "0.14.0"
 dashmap = "6.1.0"
+
+[dev-dependencies]
+serde_yaml = { workspace = true }

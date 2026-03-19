@@ -491,7 +491,9 @@ nodes:
 
         let dataflow_id = Uuid::new_v4();
         let (running_dataflow, _node_id) = make_running_dataflow(dataflow_id, daemon_id.clone());
-        state.running_dataflows.insert(dataflow_id, running_dataflow);
+        state
+            .running_dataflows
+            .insert(dataflow_id, running_dataflow);
 
         let (build_tx, build_rx) = oneshot::channel();
         state
