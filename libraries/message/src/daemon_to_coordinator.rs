@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 pub use crate::common::{
     DataMessage, LogLevel, LogMessage, NodeError, NodeErrorCause, NodeExitStatus, Timestamped,
 };
+use crate::coordinator_to_cli::NodeHealth;
 use crate::{
     BuildId, DataflowId, common::DaemonId, current_crate_version, id::NodeId, versions_compatible,
 };
@@ -79,6 +80,13 @@ pub struct NodeMetrics {
     pub disk_write_bytes: Option<u64>,
 }
 
+/// Runtime health snapshot for a node process.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct NodeRuntime {
+    pub health: NodeHealth,
+    pub metrics: Option<NodeMetrics>,
+}
+
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct DataflowDaemonResult {
     pub timestamp: uhlc::Timestamp,
@@ -110,6 +118,8 @@ pub trait CoordinatorNotify {
     async fn daemon_exit();
     /// Report resource metrics for running nodes.
     async fn node_metrics(dataflow_id: DataflowId, metrics: BTreeMap<NodeId, NodeMetrics>);
+    /// Report runtime health and optional metrics for local nodes.
+    async fn node_runtime(dataflow_id: DataflowId, runtime: BTreeMap<NodeId, NodeRuntime>);
     /// Report that a build has completed (or failed) on this daemon.
     async fn build_result(build_id: BuildId, result: Result<(), String>);
     /// Report that a dataflow spawn has completed (or failed) on this daemon.

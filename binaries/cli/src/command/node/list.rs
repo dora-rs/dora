@@ -11,7 +11,9 @@ use crate::{
     formatting::OutputFormat,
 };
 use dora_message::{
-    cli_to_coordinator::CoordinatorControlClient, coordinator_to_cli::NodeInfo, tarpc,
+    cli_to_coordinator::CoordinatorControlClient,
+    coordinator_to_cli::{NodeHealth, NodeInfo},
+    tarpc,
 };
 
 /// List all currently running nodes and their status.
@@ -97,26 +99,19 @@ async fn list(
     let entries: Vec<OutputEntry> = filtered_nodes
         .into_iter()
         .map(|node| {
-            let (status, pid, cpu, memory) = if let Some(metrics) = node.metrics {
+            let (pid, cpu, memory) = if let Some(metrics) = node.metrics {
                 (
-                    "Running".to_string(),
                     metrics.pid.to_string(),
                     format!("{:.1}%", metrics.cpu_usage),
                     format!("{:.0} MB", metrics.memory_mb),
                 )
             } else {
-                // Node exists but no metrics available (might be starting or error state)
-                (
-                    "Unknown".to_string(),
-                    "-".to_string(),
-                    "-".to_string(),
-                    "-".to_string(),
-                )
+                ("-".to_string(), "-".to_string(), "-".to_string())
             };
 
             OutputEntry {
                 node: node.node_id.to_string(),
-                status,
+                status: format_node_health(node.health).to_string(),
                 pid,
                 cpu,
                 memory,
@@ -173,4 +168,31 @@ async fn list(
     }
 
     Ok(())
+}
+
+fn format_node_health(health: NodeHealth) -> &'static str {
+    match health {
+        NodeHealth::Pending => "Pending",
+        NodeHealth::Running => "Running",
+        NodeHealth::Stopping => "Stopping",
+        NodeHealth::Stopped => "Stopped",
+        NodeHealth::Failed => "Failed",
+        NodeHealth::Unknown => "Unknown",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_node_health;
+    use dora_message::coordinator_to_cli::NodeHealth;
+
+    #[test]
+    fn formats_all_node_health_variants() {
+        assert_eq!(format_node_health(NodeHealth::Pending), "Pending");
+        assert_eq!(format_node_health(NodeHealth::Running), "Running");
+        assert_eq!(format_node_health(NodeHealth::Stopping), "Stopping");
+        assert_eq!(format_node_health(NodeHealth::Stopped), "Stopped");
+        assert_eq!(format_node_health(NodeHealth::Failed), "Failed");
+        assert_eq!(format_node_health(NodeHealth::Unknown), "Unknown");
+    }
 }

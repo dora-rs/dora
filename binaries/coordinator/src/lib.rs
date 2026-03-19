@@ -694,6 +694,8 @@ pub(crate) struct RunningDataflow {
     nodes: BTreeMap<NodeId, ResolvedNode>,
     /// Maps each node to the daemon it's running on
     node_to_daemon: BTreeMap<NodeId, DaemonId>,
+    /// Latest runtime health snapshot for each node (from daemons)
+    node_runtime: BTreeMap<NodeId, dora_message::daemon_to_coordinator::NodeRuntime>,
     /// Latest metrics for each node (from daemons)
     node_metrics: BTreeMap<NodeId, dora_message::daemon_to_coordinator::NodeMetrics>,
 
@@ -1091,6 +1093,7 @@ async fn start_dataflow(
             daemons: daemons.clone(),
             nodes,
             node_to_daemon,
+            node_runtime: BTreeMap::new(),
             node_metrics: BTreeMap::new(),
             spawn_result: CachedResult::default(),
             stop_reply_senders: Vec::new(),

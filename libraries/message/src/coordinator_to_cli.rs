@@ -11,7 +11,18 @@ pub struct NodeInfo {
     pub dataflow_name: Option<String>,
     pub node_id: NodeId,
     pub daemon_id: DaemonId,
+    pub health: NodeHealth,
     pub metrics: Option<NodeMetricsInfo>,
+}
+
+#[derive(Debug, Clone, Copy, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+pub enum NodeHealth {
+    Pending,
+    Running,
+    Stopping,
+    Stopped,
+    Failed,
+    Unknown,
 }
 
 /// Resource metrics for a node (from daemon)

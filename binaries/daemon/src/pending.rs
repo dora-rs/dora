@@ -77,6 +77,10 @@ impl PendingNodes {
         !self.local_nodes.is_empty()
     }
 
+    pub fn local_nodes_snapshot(&self) -> Vec<NodeId> {
+        self.local_nodes.iter().cloned().collect()
+    }
+
     pub async fn handle_node_subscription(
         &mut self,
         node_id: NodeId,

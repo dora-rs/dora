@@ -7,7 +7,8 @@ use dora_message::{
     common::DaemonId,
     coordinator_to_cli::{
         CheckDataflowReply, DataflowIdAndName, DataflowInfo, DataflowList, DataflowListEntry,
-        DataflowResult, DataflowStatus, NodeInfo, NodeMetricsInfo, StopDataflowReply, VersionInfo,
+        DataflowResult, DataflowStatus, NodeHealth, NodeInfo, NodeMetricsInfo, StopDataflowReply,
+        VersionInfo,
     },
     tarpc::context::Context,
 };
@@ -387,17 +388,194 @@ impl CoordinatorControl for CoordinatorControlServer {
                             disk_write_mb_s: m.disk_write_bytes.map(|b| b as f64 / 1000.0 / 1000.0),
                         }
                     });
+                    let health = dataflow
+                        .node_runtime
+                        .get(node_id)
+                        .map(|runtime| runtime.health)
+                        .unwrap_or_else(|| {
+                            if metrics.is_some() {
+                                NodeHealth::Running
+                            } else {
+                                NodeHealth::Unknown
+                            }
+                        });
 
                     node_infos.push(NodeInfo {
                         dataflow_id: dataflow.uuid,
                         dataflow_name: dataflow.name.clone(),
                         node_id: node_id.clone(),
                         daemon_id: daemon_id.clone(),
+                        health,
                         metrics,
                     });
                 }
             }
         }
         Ok(node_infos)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        collections::{BTreeMap, BTreeSet},
+        sync::Arc,
+    };
+
+    use dora_core::{descriptor::DescriptorExt, uhlc::HLC};
+    use dora_message::{
+        cli_to_coordinator::CoordinatorControl,
+        common::DaemonId,
+        coordinator_to_cli::NodeHealth,
+        daemon_to_coordinator::{CoordinatorNotify, NodeMetrics, NodeRuntime},
+        tarpc,
+    };
+    use tokio::sync::mpsc;
+    use uuid::Uuid;
+
+    use crate::{
+        CachedResult, RunningDataflow, listener::CoordinatorNotifyServer, state::CoordinatorState,
+    };
+
+    fn make_state() -> Arc<CoordinatorState> {
+        let (_abortable, abort_handle) =
+            futures::stream::abortable(futures::stream::empty::<crate::Event>());
+        let (daemon_events_tx, _daemon_events_rx) = mpsc::channel(8);
+        Arc::new(CoordinatorState {
+            clock: Arc::new(HLC::default()),
+            running_builds: Default::default(),
+            finished_builds: Default::default(),
+            running_dataflows: Default::default(),
+            dataflow_results: Default::default(),
+            archived_dataflows: Default::default(),
+            daemon_connections: Default::default(),
+            daemon_events_tx,
+            abort_handle,
+        })
+    }
+
+    fn make_running_dataflow(
+        dataflow_id: Uuid,
+        daemon_id: DaemonId,
+    ) -> (RunningDataflow, dora_message::id::NodeId) {
+        let descriptor_yaml = r#"
+nodes:
+  - id: demo-node
+    path: /bin/echo
+"#;
+        let descriptor: dora_message::descriptor::Descriptor =
+            serde_yaml::from_str(descriptor_yaml).expect("failed to parse descriptor yaml");
+        let nodes = descriptor
+            .resolve_aliases_and_set_defaults()
+            .expect("failed to resolve descriptor");
+        let node_id = nodes.keys().next().expect("expected one node").clone();
+
+        let node_to_daemon = BTreeMap::from([(node_id.clone(), daemon_id.clone())]);
+        let daemons = BTreeSet::from([daemon_id.clone()]);
+
+        (
+            RunningDataflow {
+                name: Some("health-test".to_string()),
+                uuid: dataflow_id,
+                descriptor,
+                daemons: daemons.clone(),
+                pending_daemons: BTreeSet::new(),
+                exited_before_subscribe: Vec::new(),
+                nodes,
+                node_to_daemon,
+                node_runtime: BTreeMap::new(),
+                node_metrics: BTreeMap::new(),
+                spawn_result: CachedResult::default(),
+                stop_reply_senders: Vec::new(),
+                buffered_log_messages: Vec::new(),
+                log_subscribers: Vec::new(),
+                pending_spawn_results: daemons,
+            },
+            node_id,
+        )
+    }
+
+    #[tokio::test]
+    async fn get_node_info_reflects_runtime_health_transitions() {
+        let state = make_state();
+        let daemon_id = DaemonId::new(Some("health-daemon".to_string()));
+        let dataflow_id = Uuid::new_v4();
+        let (running_dataflow, node_id) = make_running_dataflow(dataflow_id, daemon_id.clone());
+        state
+            .running_dataflows
+            .insert(dataflow_id, running_dataflow);
+
+        let notify = CoordinatorNotifyServer {
+            daemon_id: daemon_id.clone(),
+            coordinator_state: state.clone(),
+        };
+        let control = super::CoordinatorControlServer {
+            state: state.clone(),
+            client_ip: None,
+        };
+
+        notify
+            .clone()
+            .node_runtime(
+                tarpc::context::current(),
+                dataflow_id,
+                BTreeMap::from([(
+                    node_id.clone(),
+                    NodeRuntime {
+                        health: NodeHealth::Running,
+                        metrics: Some(NodeMetrics {
+                            pid: 42,
+                            cpu_usage: 1.5,
+                            memory_bytes: 1024,
+                            disk_read_bytes: Some(10),
+                            disk_write_bytes: Some(20),
+                        }),
+                    },
+                )]),
+            )
+            .await;
+
+        let infos = control
+            .clone()
+            .get_node_info(tarpc::context::current())
+            .await
+            .expect("get_node_info failed");
+        let running = infos
+            .iter()
+            .find(|i| i.node_id == node_id)
+            .expect("missing node info after running update");
+        assert_eq!(running.health, NodeHealth::Running);
+        assert!(
+            running.metrics.is_some(),
+            "expected metrics for running node"
+        );
+
+        notify
+            .node_runtime(
+                tarpc::context::current(),
+                dataflow_id,
+                BTreeMap::from([(
+                    node_id.clone(),
+                    NodeRuntime {
+                        health: NodeHealth::Failed,
+                        metrics: None,
+                    },
+                )]),
+            )
+            .await;
+
+        let infos = control
+            .get_node_info(tarpc::context::current())
+            .await
+            .expect("get_node_info failed");
+        let failed = infos
+            .iter()
+            .find(|i| i.node_id == node_id)
+            .expect("missing node info after failed update");
+        assert_eq!(failed.health, NodeHealth::Failed);
+        assert!(
+            failed.metrics.is_none(),
+            "expected no metrics for failed node"
+        );
     }
 }
