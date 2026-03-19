@@ -69,12 +69,20 @@ run_networked() {
     # Poll until dataflow finishes or timeout.
     # Reaching the timeout is fine -- timer-driven dataflows run forever.
     local elapsed=0
+    local failed=false
     while [ "$elapsed" -lt "$timeout" ]; do
         sleep 2
         elapsed=$((elapsed + 2))
         local list_out
         list_out=$("$ADORA" list --json 2>/dev/null || echo "")
-        if [ -z "$list_out" ] || ! echo "$list_out" | grep -q "Running"; then
+        if [ -z "$list_out" ]; then
+            break
+        fi
+        if echo "$list_out" | grep -q "Failed"; then
+            failed=true
+            break
+        fi
+        if ! echo "$list_out" | grep -q "Running"; then
             break
         fi
     done
@@ -84,7 +92,11 @@ run_networked() {
     sleep 0.5
     "$ADORA" down > /dev/null 2>&1 || true
 
-    log_pass "$name"
+    if [ "$failed" = true ]; then
+        log_fail "$name"
+    else
+        log_pass "$name"
+    fi
 }
 
 # Run a dataflow with adora run --stop-after (local/in-process mode).

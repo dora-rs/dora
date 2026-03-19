@@ -2,6 +2,11 @@
 
 This guide covers how to run, write, and troubleshoot tests across the Adora workspace.
 
+## Prerequisites
+
+- Rust toolchain (MSRV 1.85.0)
+- Python 3 with `numpy` and `pyarrow` installed (`pip install numpy pyarrow`) — required for Python smoke tests
+
 ## Quick Start (5-minute validation)
 
 Run these three commands to validate that the workspace is healthy:

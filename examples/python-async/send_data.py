@@ -1,4 +1,4 @@
-"""TODO: Add docstring."""
+"""Async example: send timestamped data at 10ms intervals."""
 
 import time
 
@@ -8,11 +8,9 @@ from adora import Node
 
 node = Node()
 
-i = 0
 for event in node:
-    if i == 100:
+    if event["type"] == "STOP":
         break
-    else:
-        i += 1
-    now = time.perf_counter_ns()
-    node.send_output("data", pa.array([np.uint64(now)]))
+    if event["type"] == "INPUT":
+        now = time.perf_counter_ns()
+        node.send_output("data", pa.array([np.uint64(now)]))

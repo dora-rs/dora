@@ -123,7 +123,7 @@ cargo install adora-cli --features redb-backend
 
 ```bash
 cargo install adora-cli            # or use install script below
-pip install adora-rs
+pip install adora-rs numpy pyarrow
 git clone https://github.com/dora-rs/adora.git && cd adora
 adora run examples/python-dataflow/dataflow.yml
 ```
