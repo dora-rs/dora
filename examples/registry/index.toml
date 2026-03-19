@@ -1,0 +1,16 @@
+version = 1
+
+[[packages]]
+name = "camera_node"
+version = "0.1.0"
+entrypoint = "python -m camera_node"
+description = "Camera capture node"
+
+[packages.dependencies]
+yolo = { version = "^1.2.0" }
+
+[[packages]]
+name = "camera_node"
+version = "0.2.0"
+entrypoint = "python -m camera_node"
+description = "Camera capture node (improved)"
