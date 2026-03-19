@@ -7,7 +7,8 @@ use dora_message::{
     common::DaemonId,
     coordinator_to_cli::{DataflowResult, LogLevel, LogMessage, StopDataflowReply},
     daemon_to_coordinator::{
-        CoordinatorNotify, CoordinatorRequest, DataflowDaemonResult, NodeMetrics, Timestamped,
+        CoordinatorNotify, CoordinatorRequest, DataflowDaemonResult, NodeMetrics, StateGetRequest,
+        StateSetRequest, Timestamped,
     },
     tarpc,
 };
@@ -381,5 +382,96 @@ impl CoordinatorNotify for CoordinatorNotifyServer {
                 );
             }
         }
+    }
+
+    async fn state_get(
+        self,
+        _ctx: tarpc::context::Context,
+        request: StateGetRequest,
+    ) -> Result<Option<Vec<u8>>, String> {
+        tracing::debug!(
+            "state_get requested by daemon `{}` for namespace=`{}` key=`{}` (no-op backend)",
+            self.daemon_id,
+            request.namespace,
+            request.key
+        );
+        Ok(None)
+    }
+
+    async fn state_set(
+        self,
+        _ctx: tarpc::context::Context,
+        request: StateSetRequest,
+    ) -> Result<(), String> {
+        tracing::debug!(
+            "state_set requested by daemon `{}` for namespace=`{}` key=`{}` value_len={} (no-op backend)",
+            self.daemon_id,
+            request.namespace,
+            request.key,
+            request.value.len()
+        );
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::CoordinatorState;
+    use dora_core::uhlc::HLC;
+    use futures::stream::AbortHandle;
+    use tokio::sync::mpsc;
+
+    fn test_server() -> CoordinatorNotifyServer {
+        let (daemon_events_tx, _daemon_events_rx) = mpsc::channel(1);
+        let (abort_handle, _abort_registration) = AbortHandle::new_pair();
+        let coordinator_state = Arc::new(CoordinatorState {
+            clock: Arc::new(HLC::default()),
+            running_builds: Default::default(),
+            finished_builds: Default::default(),
+            running_dataflows: Default::default(),
+            dataflow_results: Default::default(),
+            archived_dataflows: Default::default(),
+            daemon_connections: Default::default(),
+            daemon_events_tx,
+            abort_handle,
+        });
+        CoordinatorNotifyServer {
+            daemon_id: DaemonId::new(Some("test-daemon".to_owned())),
+            coordinator_state,
+        }
+    }
+
+    #[tokio::test]
+    async fn state_get_noop_returns_none() {
+        let server = test_server();
+        let result = <CoordinatorNotifyServer as CoordinatorNotify>::state_get(
+            server,
+            tarpc::context::current(),
+            StateGetRequest {
+                namespace: "runtime".to_owned(),
+                key: "k".to_owned(),
+            },
+        )
+        .await
+        .expect("state_get should not fail in no-op mode");
+
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn state_set_noop_returns_ok() {
+        let server = test_server();
+        <CoordinatorNotifyServer as CoordinatorNotify>::state_set(
+            server,
+            tarpc::context::current(),
+            StateSetRequest {
+                namespace: "runtime".to_owned(),
+                key: "k".to_owned(),
+                value: vec![1, 2, 3],
+            },
+        )
+        .await
+        .expect("state_set should not fail in no-op mode");
     }
 }

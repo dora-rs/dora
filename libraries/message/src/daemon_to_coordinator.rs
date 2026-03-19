@@ -91,6 +91,26 @@ impl DataflowDaemonResult {
     }
 }
 
+/// Request payload for reading a shared state value.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub struct StateGetRequest {
+    /// Logical namespace for the state key.
+    pub namespace: String,
+    /// Key inside the namespace.
+    pub key: String,
+}
+
+/// Request payload for writing a shared state value.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub struct StateSetRequest {
+    /// Logical namespace for the state key.
+    pub namespace: String,
+    /// Key inside the namespace.
+    pub key: String,
+    /// Value bytes to store.
+    pub value: Vec<u8>,
+}
+
 /// tarpc service for daemon→coordinator notifications.
 ///
 /// The coordinator runs a tarpc server implementing this trait,
@@ -114,4 +134,14 @@ pub trait CoordinatorNotify {
     async fn build_result(build_id: BuildId, result: Result<(), String>);
     /// Report that a dataflow spawn has completed (or failed) on this daemon.
     async fn spawn_result(dataflow_id: DataflowId, result: Result<(), String>);
+    /// Read a shared state value by namespace/key.
+    ///
+    /// This is a contract-only RPC in the initial prototype. Backends may
+    /// return `Ok(None)` if no shared state storage is configured.
+    async fn state_get(request: StateGetRequest) -> Result<Option<Vec<u8>>, String>;
+    /// Write a shared state value by namespace/key.
+    ///
+    /// This is a contract-only RPC in the initial prototype. Backends may
+    /// acknowledge writes without persistence.
+    async fn state_set(request: StateSetRequest) -> Result<(), String>;
 }

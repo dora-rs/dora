@@ -8,13 +8,14 @@ use dora_core::{
 use dora_message::{
     BuildId, DataflowId, SessionId,
     common::{DaemonId, NodeError},
-    daemon_to_coordinator::{CoordinatorNotifyClient, DataflowDaemonResult},
+    daemon_to_coordinator::{
+        CoordinatorNotifyClient, DataflowDaemonResult, StateGetRequest, StateSetRequest,
+    },
     id::NodeId,
     node_to_daemon::Timestamped,
     tarpc,
 };
 use tokio::sync::{Mutex, mpsc};
-use uuid::Uuid;
 
 use crate::{Event, InterDaemonEvent, RunningDataflow};
 
@@ -126,6 +127,60 @@ impl DaemonState {
     /// Get the coordinator client, if set.
     pub(crate) fn coordinator_client(&self) -> Option<&CoordinatorNotifyClient> {
         self.coordinator_client.get()
+    }
+
+    /// Best-effort shared-state read through the coordinator RPC channel.
+    ///
+    /// Current prototype behavior:
+    /// - returns `Ok(None)` if no coordinator is configured.
+    /// - backend may return `Ok(None)` when no shared-state store is enabled.
+    #[allow(dead_code)]
+    pub(crate) async fn state_get(
+        &self,
+        namespace: impl Into<String>,
+        key: impl Into<String>,
+    ) -> Result<Option<Vec<u8>>, String> {
+        let Some(client) = self.coordinator_client() else {
+            return Ok(None);
+        };
+        client
+            .state_get(
+                tarpc::context::current(),
+                StateGetRequest {
+                    namespace: namespace.into(),
+                    key: key.into(),
+                },
+            )
+            .await
+            .map_err(|err| format!("state_get RPC failed: {err}"))?
+    }
+
+    /// Best-effort shared-state write through the coordinator RPC channel.
+    ///
+    /// Current prototype behavior:
+    /// - returns `Ok(())` if no coordinator is configured.
+    /// - backend may acknowledge without persistence.
+    #[allow(dead_code)]
+    pub(crate) async fn state_set(
+        &self,
+        namespace: impl Into<String>,
+        key: impl Into<String>,
+        value: Vec<u8>,
+    ) -> Result<(), String> {
+        let Some(client) = self.coordinator_client() else {
+            return Ok(());
+        };
+        client
+            .state_set(
+                tarpc::context::current(),
+                StateSetRequest {
+                    namespace: namespace.into(),
+                    key: key.into(),
+                    value,
+                },
+            )
+            .await
+            .map_err(|err| format!("state_set RPC failed: {err}"))?
     }
 
     /// Finish a dataflow: report to coordinator and clean up state.
