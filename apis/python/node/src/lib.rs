@@ -438,7 +438,7 @@ impl Node {
             EventsInner::Merged(Box::new(futures::stream::empty())),
         );
         // update self.events with the merged stream
-        *inner = EventsInner::Merged(events.merge_external_send(Box::pin(stream)));
+        *inner = EventsInner::Merged(Box::new(events.merge_external_send(Box::pin(stream))));
 
         Ok(())
     }
