@@ -544,7 +544,7 @@ impl Daemon {
                     let _ = reply_tx.send(result);
                 }
                 Event::MetricsInterval => {
-                    self.collect_and_send_metrics().await?;
+                    self.collect_and_send_runtime().await?;
                 }
                 Event::CtrlC => {
                     tracing::info!("received ctrlc signal -> stopping all dataflows");
@@ -775,8 +775,9 @@ impl Daemon {
         trigger_result
     }
 
-    async fn collect_and_send_metrics(&mut self) -> eyre::Result<()> {
-        use dora_message::daemon_to_coordinator::NodeMetrics;
+    async fn collect_and_send_runtime(&mut self) -> eyre::Result<()> {
+        use dora_message::coordinator_to_cli::NodeHealth;
+        use dora_message::daemon_to_coordinator::{NodeMetrics, NodeRuntime};
         use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate};
 
         if self.state.coordinator_client().is_none() {
@@ -789,10 +790,10 @@ impl Daemon {
         // Metrics are collected every 2 seconds (metrics_interval)
         const METRICS_INTERVAL_SECS: f64 = 2.0;
 
-        // Collect metrics for all running dataflows
+        // Collect runtime health for all local nodes in running dataflows.
         for entry in self.state.running.iter() {
             let (dataflow_id, dataflow) = (entry.key(), entry.value());
-            let mut metrics = BTreeMap::new();
+            let mut runtime = BTreeMap::new();
 
             // Collect all PIDs for this dataflow
             let pids: Vec<Pid> = dataflow
@@ -817,28 +818,36 @@ impl Daemon {
                     refresh_kind,
                 );
 
-                // Collect metrics for each node
+                // Collect metrics for each running node.
                 for (node_id, running_node) in &dataflow.running_nodes {
                     if let Some(pid) = running_node.pid.as_ref() {
                         let pid = pid.load(atomic::Ordering::Acquire);
                         let sys_pid = Pid::from_u32(pid);
                         if let Some(process) = system.process(sys_pid) {
                             let disk_usage = process.disk_usage();
-                            // Divide by metrics_interval to get per-second averages
-                            metrics.insert(
+                            // Divide by metrics_interval to get per-second averages.
+                            let metrics = NodeMetrics {
+                                pid,
+                                cpu_usage: process.cpu_usage(),
+                                memory_bytes: process.memory(),
+                                disk_read_bytes: Some(
+                                    (disk_usage.read_bytes as f64 / METRICS_INTERVAL_SECS) as u64,
+                                ),
+                                disk_write_bytes: Some(
+                                    (disk_usage.written_bytes as f64 / METRICS_INTERVAL_SECS)
+                                        as u64,
+                                ),
+                            };
+                            let health = if dataflow.stop_sent {
+                                NodeHealth::Stopping
+                            } else {
+                                NodeHealth::Running
+                            };
+                            runtime.insert(
                                 node_id.clone(),
-                                NodeMetrics {
-                                    pid,
-                                    cpu_usage: process.cpu_usage(),
-                                    memory_bytes: process.memory(),
-                                    disk_read_bytes: Some(
-                                        (disk_usage.read_bytes as f64 / METRICS_INTERVAL_SECS)
-                                            as u64,
-                                    ),
-                                    disk_write_bytes: Some(
-                                        (disk_usage.written_bytes as f64 / METRICS_INTERVAL_SECS)
-                                            as u64,
-                                    ),
+                                NodeRuntime {
+                                    health,
+                                    metrics: Some(metrics),
                                 },
                             );
                         }
@@ -846,14 +855,39 @@ impl Daemon {
                 }
             }
 
-            // Send metrics to coordinator if we have any (fire-and-forget).
-            if !metrics.is_empty() {
+            // Add non-running local nodes (pending/stopped/failed) without metrics.
+            let node_results = self
+                .state
+                .dataflow_node_results
+                .get(dataflow_id)
+                .map(|entry| entry.value().clone())
+                .unwrap_or_default();
+
+            for node_id in dataflow.pending_nodes.local_nodes_snapshot() {
+                runtime.entry(node_id).or_insert(NodeRuntime {
+                    health: NodeHealth::Pending,
+                    metrics: None,
+                });
+            }
+
+            for (node_id, node_result) in node_results {
+                runtime.entry(node_id).or_insert_with(|| NodeRuntime {
+                    health: if node_result.is_ok() {
+                        NodeHealth::Stopped
+                    } else {
+                        NodeHealth::Failed
+                    },
+                    metrics: None,
+                });
+            }
+
+            if !runtime.is_empty() {
                 if let Some(client) = self.state.coordinator_client() {
                     let client = client.clone();
                     let dataflow_id = *dataflow_id;
                     tokio::spawn(async move {
                         let _ = client
-                            .node_metrics(tarpc::context::current(), dataflow_id, metrics)
+                            .node_runtime(tarpc::context::current(), dataflow_id, runtime)
                             .await;
                     });
                 }

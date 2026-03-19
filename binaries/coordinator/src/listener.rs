@@ -7,7 +7,8 @@ use dora_message::{
     common::DaemonId,
     coordinator_to_cli::{DataflowResult, LogLevel, LogMessage, StopDataflowReply},
     daemon_to_coordinator::{
-        CoordinatorNotify, CoordinatorRequest, DataflowDaemonResult, NodeMetrics, Timestamped,
+        CoordinatorNotify, CoordinatorRequest, DataflowDaemonResult, NodeMetrics, NodeRuntime,
+        Timestamped,
     },
     tarpc,
 };
@@ -301,6 +302,28 @@ impl CoordinatorNotify for CoordinatorNotifyServer {
         {
             for (node_id, node_metrics) in metrics {
                 dataflow.node_metrics.insert(node_id, node_metrics);
+            }
+        }
+    }
+
+    async fn node_runtime(
+        self,
+        _ctx: tarpc::context::Context,
+        dataflow_id: Uuid,
+        runtime: BTreeMap<dora_message::id::NodeId, NodeRuntime>,
+    ) {
+        if let Some(mut dataflow) = self
+            .coordinator_state
+            .running_dataflows
+            .get_mut(&dataflow_id)
+        {
+            for (node_id, runtime_state) in runtime {
+                if let Some(metrics) = runtime_state.metrics.clone() {
+                    dataflow.node_metrics.insert(node_id.clone(), metrics);
+                } else {
+                    dataflow.node_metrics.remove(&node_id);
+                }
+                dataflow.node_runtime.insert(node_id, runtime_state);
             }
         }
     }
