@@ -191,7 +191,7 @@ jobs:
           cp install.sh release-assets/adora-cli-installer.sh
           cp install.ps1 release-assets/adora-cli-installer.ps1
       - name: Generate changelog
-        uses: orhun/git-cliff-action@v3
+        uses: orhun/git-cliff-action@v4
         id: cliff
         with:
           config: cliff.toml
