@@ -1,5 +1,6 @@
 use super::Executable;
 use crate::{common::handle_dataflow_result, session::DataflowSession};
+use dora_core::descriptor::{Descriptor, DescriptorExt};
 use dora_core::topics::{
     DORA_COORDINATOR_PORT_DEFAULT, DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, LOCALHOST,
 };
@@ -70,8 +71,13 @@ impl Executable for Daemon {
                             self.coordinator_addr
                         );
                     }
-                    let dataflow_session =
-                        DataflowSession::read_session(&dataflow_path).context("failed to read DataflowSession")?;
+                    let dataflow_descriptor = Descriptor::blocking_read(&dataflow_path)
+                        .wrap_err("Failed to read yaml dataflow")?;
+                    let dataflow_session = DataflowSession::read_and_sync_for_dataflow(
+                        &dataflow_path,
+                        &dataflow_descriptor,
+                    )
+                    .context("failed to read DataflowSession")?;
 
                     let result = dora_daemon::Daemon::run_dataflow(&dataflow_path,
                         dataflow_session.build_id, dataflow_session.local_build, dataflow_session.session_id, false,
