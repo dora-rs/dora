@@ -3,7 +3,10 @@ use crate::{
     log::NodeLogger,
     node_communication::spawn_listener_loop,
     node_inputs,
-    spawn::{command::path_spawn_command, prepared::PreparedNode},
+    spawn::{
+        command::{path_spawn_command, uv_python_interpreter_from_env},
+        prepared::PreparedNode,
+    },
 };
 use clonable_command::{Command, Stdio};
 use crossbeam::queue::ArrayQueue;
@@ -200,14 +203,30 @@ impl Spawner {
                         ]);
                         Some(command)
                     } else {
+                        let uv_python = uv_python_interpreter_from_env();
                         let mut cmd = if self.uv {
                             let mut cmd = Command::new("uv");
                             cmd = cmd.arg("run");
+                            cmd = cmd.arg("--no-project");
+                            if let Some(ref uv_python) = uv_python {
+                                cmd = cmd.arg("--python");
+                                cmd = cmd.arg(uv_python);
+                            } else {
+                                cmd = cmd.arg("--active");
+                            }
+                            cmd = cmd.arg("--no-managed-python");
                             cmd = cmd.arg("python");
-                            tracing::info!(
-                                "spawning: uv run python -uc import dora; dora.start_runtime() # {}",
-                                node.id
-                            );
+                            match uv_python {
+                                Some(path) => tracing::info!(
+                                    "spawning: uv run --no-project --python {} --no-managed-python python -uc import dora; dora.start_runtime() # {}",
+                                    path.display(),
+                                    node.id
+                                ),
+                                None => tracing::info!(
+                                    "spawning: uv run --active --no-project --no-managed-python python -uc import dora; dora.start_runtime() # {}",
+                                    node.id
+                                ),
+                            }
                             cmd
                         } else {
                             let python = get_python_path()
