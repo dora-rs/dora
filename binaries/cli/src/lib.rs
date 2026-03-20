@@ -8,6 +8,8 @@ mod command;
 mod common;
 mod formatting;
 pub mod output;
+pub mod package_archive;
+pub mod publish_metadata;
 pub mod session;
 mod template;
 
