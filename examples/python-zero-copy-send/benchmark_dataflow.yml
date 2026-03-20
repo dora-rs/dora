@@ -1,0 +1,19 @@
+nodes:
+    - id: benchmark
+      path: benchmark.py
+      inputs:
+          start: dora/timer/millis/100
+          receiver_response: benchmark_receiver/benchmark_receiver_output
+      outputs:
+          - benchmark_output
+      env:
+          ITERATIONS: 100
+
+    - id: benchmark_receiver
+      path: benchmark_receiver.py
+      inputs:
+          benchmark_output: benchmark/benchmark_output
+      outputs:
+          - benchmark_receiver_output
+      env:
+          ITERATIONS: 100
