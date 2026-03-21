@@ -501,6 +501,7 @@ async fn start_inner(
                     tracing::error!("Disconnecting daemons that failed watchdog: {disconnected:?}");
                     for machine_id in disconnected {
                         coordinator_state.daemon_connections.remove(&machine_id);
+                        handle_daemon_disconnect(&coordinator_state, &machine_id);
                     }
                 }
             }
@@ -525,6 +526,77 @@ async fn start_inner(
     Ok(())
 }
 
+pub(crate) async fn send_log_message(
+    log_subscribers: &mut Vec<LogSubscriber>,
+    message: &LogMessage,
+) {
+    for subscriber in log_subscribers.iter_mut() {
+        let send_result =
+            tokio::time::timeout(Duration::from_millis(100), subscriber.send_message(message));
+
+        if send_result.await.is_err() {
+            subscriber.close();
+        }
+    }
+    log_subscribers.retain(|s| !s.is_closed());
+}
+
+pub(crate) fn handle_daemon_disconnect(
+    coordinator_state: &state::CoordinatorState,
+    daemon_id: &DaemonId,
+) {
+    let mut dataflows_to_finalize = Vec::new();
+    for mut dataflow in coordinator_state.running_dataflows.iter_mut() {
+        let removed = dataflow.daemons.remove(daemon_id);
+        if !removed {
+            continue;
+        }
+
+        dataflow.pending_daemons.remove(daemon_id);
+        dataflow.pending_spawn_results.remove(daemon_id);
+
+        tracing::info!(
+            "removed disconnected daemon `{daemon_id}` from running dataflow `{}`",
+            dataflow.uuid
+        );
+
+        if dataflow.daemons.is_empty() {
+            dataflows_to_finalize.push(dataflow.uuid);
+        }
+    }
+
+    for dataflow_id in dataflows_to_finalize {
+        let Some((_, mut finished_dataflow)) =
+            coordinator_state.running_dataflows.remove(&dataflow_id)
+        else {
+            continue;
+        };
+
+        coordinator_state
+            .archived_dataflows
+            .entry(dataflow_id)
+            .or_insert_with(|| ArchivedDataflow::from(&finished_dataflow));
+
+        let reply = StopDataflowReply {
+            uuid: dataflow_id,
+            result: coordinator_state
+                .dataflow_results
+                .get(&dataflow_id)
+                .map(|r| dataflow_result(r.value(), dataflow_id, &coordinator_state.clock))
+                .unwrap_or_else(|| {
+                    DataflowResult::ok_empty(dataflow_id, coordinator_state.clock.new_timestamp())
+                }),
+        };
+
+        for sender in finished_dataflow.stop_reply_senders.drain(..) {
+            let _ = sender.send(Ok(reply.clone()));
+        }
+
+        tracing::warn!(
+            "finalized dataflow `{dataflow_id}` after daemon disconnect because no daemons remained"
+        );
+    }
+}
 pub(crate) fn dataflow_result(
     results: &BTreeMap<DaemonId, DataflowDaemonResult>,
     dataflow_uuid: Uuid,
@@ -1123,4 +1195,97 @@ fn set_up_ctrlc_handler() -> Result<impl Stream<Item = Event>, eyre::ErrReport> 
     .wrap_err("failed to set ctrl-c handler")?;
 
     Ok(ReceiverStream::new(ctrlc_rx))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        CachedResult, DaemonConnections, RunningDataflow, handle_daemon_disconnect, state,
+    };
+    use dora_message::{
+        config::CommunicationConfig,
+        descriptor::{Debug, Descriptor},
+    };
+    use std::{collections::BTreeMap, sync::Arc};
+    use tokio::sync::{mpsc, oneshot};
+    use uuid::Uuid;
+
+    fn test_descriptor() -> Descriptor {
+        Descriptor {
+            nodes: Vec::new(),
+            env: None,
+            communication: CommunicationConfig::default(),
+            deploy: None,
+            debug: Debug::default(),
+        }
+    }
+
+    #[test]
+    fn daemon_disconnect_removes_daemon_and_finalizes_dataflow_when_last_daemon_drops() {
+        let daemon_id = dora_message::common::DaemonId::new(Some("machine-1".into()));
+        let dataflow_id = Uuid::new_v4();
+
+        let (abort_handle, _registration) = futures::stream::AbortHandle::new_pair();
+        let (daemon_events_tx, _daemon_events_rx) = mpsc::channel(1);
+        let coordinator_state = state::CoordinatorState {
+            clock: Arc::new(dora_core::uhlc::HLC::default()),
+            running_builds: Default::default(),
+            finished_builds: Default::default(),
+            running_dataflows: Default::default(),
+            dataflow_results: Default::default(),
+            archived_dataflows: Default::default(),
+            daemon_connections: DaemonConnections::default(),
+            daemon_events_tx,
+            abort_handle,
+        };
+
+        let (stop_tx, stop_rx) = oneshot::channel();
+        coordinator_state.running_dataflows.insert(
+            dataflow_id,
+            RunningDataflow {
+                name: Some("disconnect-test".into()),
+                uuid: dataflow_id,
+                descriptor: test_descriptor(),
+                daemons: [daemon_id.clone()].into_iter().collect(),
+                pending_daemons: [daemon_id.clone()].into_iter().collect(),
+                exited_before_subscribe: Vec::new(),
+                nodes: BTreeMap::new(),
+                node_to_daemon: BTreeMap::new(),
+                node_metrics: BTreeMap::new(),
+                spawn_result: CachedResult::default(),
+                stop_reply_senders: vec![stop_tx],
+                buffered_log_messages: Vec::new(),
+                log_subscribers: Vec::new(),
+                pending_spawn_results: [daemon_id.clone()].into_iter().collect(),
+            },
+        );
+
+        handle_daemon_disconnect(&coordinator_state, &daemon_id);
+
+        assert!(
+            coordinator_state
+                .running_dataflows
+                .get(&dataflow_id)
+                .is_none(),
+            "dataflow should be removed from running map when last daemon disconnects"
+        );
+        assert!(
+            coordinator_state
+                .archived_dataflows
+                .get(&dataflow_id)
+                .is_some(),
+            "dataflow should be archived after finalization"
+        );
+
+        let stop_reply = stop_rx
+            .blocking_recv()
+            .expect("stop waiter should be resolved")
+            .expect("stop waiter should get success reply");
+        assert_eq!(stop_reply.uuid, dataflow_id);
+        assert_eq!(stop_reply.result.uuid, dataflow_id);
+        assert!(
+            stop_reply.result.node_results.is_empty(),
+            "finalized dataflow without daemon results should be empty"
+        );
+    }
 }
