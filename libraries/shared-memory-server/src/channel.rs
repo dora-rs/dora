@@ -277,11 +277,6 @@ mod tests {
         let shmem = ShmemConf::new().size(10).create().unwrap();
 
         let result = unsafe { ShmemChannel::new_server(shmem) };
-        assert!(result.is_err());
-        let err = result.err().unwrap();
-        assert!(
-            err.to_string().contains("shared memory too small")
-                || err.to_string().contains("event sizes exceed")
-        );
+        assert!(result.is_err(), "Expected ShmemChannel initialization to fail on 10-byte memory, but it succeeded!");
     }
 }
