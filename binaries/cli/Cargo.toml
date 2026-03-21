@@ -21,6 +21,7 @@ tracing = ["dep:dora-tracing"]
 python = ["pyo3"]
 
 [dependencies]
+aligned-vec = "0.5.0"
 arrow = { workspace = true }
 arrow-schema = { workspace = true }
 clap = { version = "4.0.3", features = ["derive", "string"] }

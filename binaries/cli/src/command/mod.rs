@@ -9,6 +9,8 @@ mod list;
 mod logs;
 mod new;
 mod node;
+mod play;
+mod record;
 mod run;
 mod runtime;
 mod self_;
@@ -34,6 +36,8 @@ use list::ListArgs;
 use logs::LogsArgs;
 use new::NewArgs;
 use node::Node;
+use play::Play;
+use record::Record;
 use runtime::Runtime;
 use self_::SelfSubCommand;
 use start::Start;
@@ -77,6 +81,8 @@ pub enum Command {
     Topic(Topic),
     #[clap(subcommand)]
     Node(Node),
+    Record(Record),
+    Play(Play),
 
     Version(Version),
 
@@ -126,6 +132,8 @@ impl Executable for Command {
             Command::Runtime(args) => args.execute().await,
             Command::Topic(args) => args.execute().await,
             Command::Node(args) => args.execute().await,
+            Command::Record(args) => args.execute().await,
+            Command::Play(args) => args.execute().await,
             Command::Version(args) => args.execute().await,
             Command::Completion(args) => args.execute().await,
         }

@@ -1533,6 +1533,7 @@ dependencies = [
 name = "dora-cli"
 version = "0.4.1"
 dependencies = [
+ "aligned-vec",
  "arrow",
  "arrow-json",
  "arrow-schema",
