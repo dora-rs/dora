@@ -11,9 +11,12 @@ use eyre::{Context, ContextCompat};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct DataflowSession {
+    #[serde(default)]
     pub build_id: Option<BuildId>,
     pub session_id: SessionId,
+    #[serde(default)]
     pub git_sources: BTreeMap<NodeId, GitSource>,
+    #[serde(default)]
     pub local_build: Option<BuildInfo>,
 }
 
@@ -247,7 +250,7 @@ mod tests {
         .expect("failed to create out dir");
         fs::write(
             &session_file,
-            "build_id: null\nsession_id: 0195f7e0-3f4a-7e22-b13f-41f0327de0f8\n",
+            "build_id: null\nsession_id: 0195f7e0-3f4a-7e22-b13f-41f0327de0f8\ngit_sources: [\n",
         )
         .expect("failed to write truncated session file");
 
@@ -265,5 +268,30 @@ mod tests {
             after.contains("session_id"),
             "truncated session file should stay unchanged"
         );
+    }
+
+    #[test]
+    fn read_session_accepts_missing_optional_fields() {
+        let root = test_root();
+        let dataflow_path = test_dataflow_path(&root);
+        let session_file = session_file_for(&dataflow_path);
+        fs::create_dir_all(
+            session_file
+                .parent()
+                .expect("session file should have parent"),
+        )
+        .expect("failed to create out dir");
+        fs::write(
+            &session_file,
+            "session_id: 0195f7e0-3f4a-7e22-b13f-41f0327de0f8\n",
+        )
+        .expect("failed to write legacy session file");
+
+        let parsed = DataflowSession::read_session(&dataflow_path)
+            .expect("legacy session with missing optional fields should still parse");
+
+        assert!(parsed.build_id.is_none());
+        assert!(parsed.git_sources.is_empty());
+        assert!(parsed.local_build.is_none());
     }
 }
