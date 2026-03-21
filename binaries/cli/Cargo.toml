@@ -54,6 +54,7 @@ duration-str = "0.5"
 tabwriter = "1.4.0"
 log = { version = "0.4.21", features = ["serde"] }
 colored = "2.1.0"
+indicatif = "0.17"
 crossterm = "0.29.0"
 ratatui = "0.29.0"
 itertools = "0.14"

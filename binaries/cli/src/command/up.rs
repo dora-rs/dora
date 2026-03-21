@@ -5,8 +5,8 @@ use crate::{
     common::{connect_and_check_version, connect_to_coordinator_rpc, long_context, rpc},
 };
 use dora_core::topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT;
-
 use eyre::{Context, ContextCompat, bail};
+use indicatif::{ProgressBar, ProgressStyle};
 use std::path::PathBuf;
 use std::{fs, net::SocketAddr, path::Path, process::Command, time::Duration};
 
@@ -32,16 +32,28 @@ pub(crate) async fn up(config_path: Option<&Path>) -> eyre::Result<()> {
     let UpConfig {} = parse_dora_config(config_path)?;
     let coordinator_addr = LOCALHOST;
     let control_port = DORA_COORDINATOR_PORT_CONTROL_DEFAULT;
+
     let client = match connect_to_coordinator_rpc(coordinator_addr, control_port).await {
         Ok(client) => client,
         Err(_) => {
+            let spinner = ProgressBar::new_spinner();
+            spinner.set_style(
+                ProgressStyle::default_spinner()
+                    .template("{spinner:.cyan} {msg}")
+                    .unwrap(),
+            );
+            spinner.set_message("Starting dora coordinator...");
+            spinner.enable_steady_tick(Duration::from_millis(80));
+
             start_coordinator().wrap_err("failed to start dora-coordinator")?;
 
             loop {
                 match connect_to_coordinator_rpc(coordinator_addr, control_port).await {
-                    Ok(client) => break client,
+                    Ok(client) => {
+                        spinner.finish_with_message("✓ Dora coordinator started");
+                        break client;
+                    }
                     Err(_) => {
-                        // sleep a bit until the coordinator accepts connections
                         tokio::time::sleep(Duration::from_millis(50)).await;
                     }
                 }
@@ -50,17 +62,27 @@ pub(crate) async fn up(config_path: Option<&Path>) -> eyre::Result<()> {
     };
 
     if !daemon_running(&client).await? {
+        let spinner = ProgressBar::new_spinner();
+        spinner.set_style(
+            ProgressStyle::default_spinner()
+                .template("{spinner:.cyan} {msg}")
+                .unwrap(),
+        );
+        spinner.set_message("Starting dora daemon...");
+        spinner.enable_steady_tick(Duration::from_millis(80));
+
         start_daemon().wrap_err("failed to start dora-daemon")?;
 
-        // wait a bit until daemon is connected
         let mut i = 0;
         const WAIT_S: f32 = 0.1;
         loop {
             if daemon_running(&client).await? {
+                spinner.finish_with_message("✓ Dora daemon started");
                 break;
             }
             i += 1;
             if i > 20 {
+                spinner.finish_with_message("✗ Daemon failed to connect");
                 eyre::bail!("daemon not connected after {}s", WAIT_S * i as f32);
             }
             tokio::time::sleep(Duration::from_secs_f32(WAIT_S)).await;
@@ -117,8 +139,6 @@ fn start_coordinator() -> eyre::Result<()> {
     cmd.arg("--quiet");
     cmd.spawn().wrap_err("failed to run `dora coordinator`")?;
 
-    println!("started dora coordinator");
-
     Ok(())
 }
 
@@ -136,8 +156,6 @@ fn start_daemon() -> eyre::Result<()> {
     cmd.arg("daemon");
     cmd.arg("--quiet");
     cmd.spawn().wrap_err("failed to run `dora daemon`")?;
-
-    println!("started dora daemon");
 
     Ok(())
 }
