@@ -27,8 +27,12 @@ impl ShmemChannel {
         let (client_event, client_event_len) =
             unsafe { Event::new(memory.as_ptr().wrapping_add(server_event_len), true) }
                 .map_err(|err| eyre!("failed to open raw client event: {err}"))?;
-        let (disconnect_offset, len_offset, data_offset) =
-            offsets(memory.as_ptr(), server_event_len, client_event_len, memory.len())?;
+        let (disconnect_offset, len_offset, data_offset) = offsets(
+            memory.as_ptr(),
+            server_event_len,
+            client_event_len,
+            memory.len(),
+        )?;
 
         server_event
             .set(EventState::Clear)
@@ -68,8 +72,12 @@ impl ShmemChannel {
         let (client_event, client_event_len) =
             unsafe { Event::from_existing(memory.as_ptr().wrapping_add(server_event_len)) }
                 .map_err(|err| eyre!("failed to open raw client event: {err}"))?;
-        let (disconnect_offset, len_offset, data_offset) =
-            offsets(memory.as_ptr(), server_event_len, client_event_len, memory.len())?;
+        let (disconnect_offset, len_offset, data_offset) = offsets(
+            memory.as_ptr(),
+            server_event_len,
+            client_event_len,
+            memory.len(),
+        )?;
 
         Ok(Self {
             memory,
@@ -212,7 +220,9 @@ fn offsets(
     let data_offset = data as usize - base;
 
     if data_offset > memory_len {
-        eyre::bail!("shared memory too small for layout (required offset: {data_offset}, available: {memory_len})");
+        eyre::bail!(
+            "shared memory too small for layout (required offset: {data_offset}, available: {memory_len})"
+        );
     }
 
     Ok((disconnect_offset, len_offset, data_offset))
@@ -264,14 +274,14 @@ mod tests {
 
     #[test]
     fn test_small_memory_server_fails() {
-        let shmem = ShmemConf::new()
-            .size(10)
-            .create()
-            .unwrap();
-        
+        let shmem = ShmemConf::new().size(10).create().unwrap();
+
         let result = unsafe { ShmemChannel::new_server(shmem) };
         assert!(result.is_err());
         let err = result.err().unwrap();
-        assert!(err.to_string().contains("shared memory too small") || err.to_string().contains("event sizes exceed"));
+        assert!(
+            err.to_string().contains("shared memory too small")
+                || err.to_string().contains("event sizes exceed")
+        );
     }
 }
