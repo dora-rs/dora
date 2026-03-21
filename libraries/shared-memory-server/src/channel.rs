@@ -28,7 +28,7 @@ impl ShmemChannel {
             unsafe { Event::new(memory.as_ptr().wrapping_add(server_event_len), true) }
                 .map_err(|err| eyre!("failed to open raw client event: {err}"))?;
         let (disconnect_offset, len_offset, data_offset) =
-            offsets(memory.as_ptr(), server_event_len, client_event_len);
+            offsets(memory.as_ptr(), server_event_len, client_event_len, memory.len())?;
 
         server_event
             .set(EventState::Clear)
@@ -69,7 +69,7 @@ impl ShmemChannel {
             unsafe { Event::from_existing(memory.as_ptr().wrapping_add(server_event_len)) }
                 .map_err(|err| eyre!("failed to open raw client event: {err}"))?;
         let (disconnect_offset, len_offset, data_offset) =
-            offsets(memory.as_ptr(), server_event_len, client_event_len);
+            offsets(memory.as_ptr(), server_event_len, client_event_len, memory.len())?;
 
         Ok(Self {
             memory,
@@ -193,18 +193,29 @@ fn offsets(
     base_ptr: *mut u8,
     server_event_len: usize,
     client_event_len: usize,
-) -> (usize, usize, usize) {
-    let (disconnect, len, data) = offset_ptrs(
-        base_ptr
-            .wrapping_add(server_event_len)
-            .wrapping_add(client_event_len),
-    );
+    memory_len: usize,
+) -> eyre::Result<(usize, usize, usize)> {
+    let total_event_len = server_event_len
+        .checked_add(client_event_len)
+        .ok_or_else(|| eyre!("event length overflow"))?;
+
+    if total_event_len > memory_len {
+        eyre::bail!("event sizes ({total_event_len}) exceed shared memory length ({memory_len})");
+    }
+
+    let next_free = base_ptr.wrapping_add(total_event_len);
+    let (disconnect, len, data) = offset_ptrs(next_free);
+
     let base = base_ptr as usize;
-    (
-        disconnect as usize - base,
-        len as usize - base,
-        data as usize - base,
-    )
+    let disconnect_offset = disconnect as usize - base;
+    let len_offset = len as usize - base;
+    let data_offset = data as usize - base;
+
+    if data_offset > memory_len {
+        eyre::bail!("shared memory too small for layout (required offset: {data_offset}, available: {memory_len})");
+    }
+
+    Ok((disconnect_offset, len_offset, data_offset))
 }
 
 fn offset_ptrs(next_free: *mut u8) -> (*mut AtomicBool, *mut AtomicU64, *mut u8) {
@@ -243,5 +254,24 @@ impl Drop for ShmemChannel {
                 tracing::warn!("failed to signal ShmemChannel disconnect: {err}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use shared_memory_extended::ShmemConf;
+
+    #[test]
+    fn test_small_memory_server_fails() {
+        let shmem = ShmemConf::new()
+            .size(10)
+            .create()
+            .unwrap();
+        
+        let result = unsafe { ShmemChannel::new_server(shmem) };
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        assert!(err.to_string().contains("shared memory too small") || err.to_string().contains("event sizes exceed"));
     }
 }
