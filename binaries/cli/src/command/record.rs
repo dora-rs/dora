@@ -7,15 +7,11 @@ use arrow::{
 };
 use clap::Args;
 use dora_core::topics::{open_zenoh_session, zenoh_output_publish_topic};
-use dora_message::{
-    common::Timestamped,
-    daemon_to_daemon::InterDaemonEvent,
-    id::DataId,
-};
+use dora_message::{common::Timestamped, daemon_to_daemon::InterDaemonEvent, id::DataId};
 use eyre::{Context, bail, eyre};
 use tokio::{
     select,
-    sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
+    sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
     task::JoinSet,
     time::{Duration, timeout},
 };
@@ -95,7 +91,13 @@ impl Executable for Record {
             );
         }
 
-        record(self.coordinator, self.selector, self.output_file, self.duration).await
+        record(
+            self.coordinator,
+            self.selector,
+            self.output_file,
+            self.duration,
+        )
+        .await
     }
 }
 
@@ -112,7 +114,11 @@ async fn record(
         bail!("No topics found to record");
     }
 
-    println!("Recording {} topics from dataflow {}", topics.len(), dataflow_id);
+    println!(
+        "Recording {} topics from dataflow {}",
+        topics.len(),
+        dataflow_id
+    );
     for topic in &topics {
         println!("  - {}", topic);
     }
@@ -145,7 +151,10 @@ async fn record(
         if routers.next().is_some() {
             break true;
         }
-        if timeout(Duration::from_millis(200), wait_for_ctrl_c()).await.is_ok() {
+        if timeout(Duration::from_millis(200), wait_for_ctrl_c())
+            .await
+            .is_ok()
+        {
             break false;
         }
     };
@@ -178,7 +187,10 @@ async fn record(
 
     // Handle duration timeout or wait for Ctrl+C
     if let Some(duration_secs) = duration {
-        println!("Recording for {} seconds (press Ctrl+C to stop early)", duration_secs);
+        println!(
+            "Recording for {} seconds (press Ctrl+C to stop early)",
+            duration_secs
+        );
 
         select! {
             _ = timeout(Duration::from_secs_f64(duration_secs), wait_for_ctrl_c()) => {
@@ -200,7 +212,11 @@ async fn record(
     // Wait for writer to finish
     let message_count = writer_handle.await??;
 
-    println!("✓ Recorded {} messages to {}", message_count, output_path.display());
+    println!(
+        "✓ Recorded {} messages to {}",
+        message_count,
+        output_path.display()
+    );
 
     Ok(())
 }
@@ -292,8 +308,8 @@ async fn write_recording(
     let file = std::fs::File::create(&temp_path)
         .with_context(|| format!("failed to create output file: {}", temp_path.display()))?;
 
-    let mut writer = FileWriter::try_new(file, &schema)
-        .context("failed to create Arrow IPC writer")?;
+    let mut writer =
+        FileWriter::try_new(file, &schema).context("failed to create Arrow IPC writer")?;
 
     let mut message_count = 0;
     let mut batch_messages = Vec::new();
@@ -367,7 +383,9 @@ fn write_batch(
     )
     .context("failed to create RecordBatch")?;
 
-    writer.write(&batch).context("failed to write batch to Arrow IPC file")?;
+    writer
+        .write(&batch)
+        .context("failed to write batch to Arrow IPC file")?;
 
     Ok(())
 }

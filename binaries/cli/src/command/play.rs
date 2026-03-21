@@ -18,10 +18,7 @@ use tokio::time::{Duration, sleep};
 use uuid::Uuid;
 
 use crate::{
-    command::{
-        Executable, default_tracing,
-        topic::selector::DataflowSelector,
-    },
+    command::{Executable, default_tracing, topic::selector::DataflowSelector},
     common::CoordinatorOptions,
 };
 
@@ -100,8 +97,7 @@ async fn play(
     let file_handle = std::fs::File::open(&file)
         .with_context(|| format!("failed to open recording file: {}", file.display()))?;
 
-    let reader = FileReader::try_new(file_handle, None)
-        .context("failed to open Arrow IPC file")?;
+    let reader = FileReader::try_new(file_handle, None).context("failed to open Arrow IPC file")?;
 
     // Validate schema
     validate_schema(&reader)?;
@@ -144,7 +140,8 @@ async fn play(
     println!(" ok");
 
     // Read all batches into memory for potential looping
-    let batches = reader.collect::<Result<Vec<_>, _>>()
+    let batches = reader
+        .collect::<Result<Vec<_>, _>>()
         .context("failed to read batches from recording")?;
 
     if batches.is_empty() {
@@ -173,7 +170,14 @@ async fn play(
 
 fn validate_schema(reader: &FileReader<std::fs::File>) -> eyre::Result<()> {
     let schema = reader.schema();
-    let expected_fields = ["timestamp_us", "node_id", "output_id", "data", "type_info", "metadata"];
+    let expected_fields = [
+        "timestamp_us",
+        "node_id",
+        "output_id",
+        "data",
+        "type_info",
+        "metadata",
+    ];
 
     for field_name in expected_fields {
         if schema.field_with_name(field_name).is_err() {
@@ -205,7 +209,9 @@ async fn play_batches(
 
         for i in 0..batch.num_rows() {
             let timestamp_us = timestamp_array.value(i);
-            let node_id: NodeId = node_id_array.value(i).parse()
+            let node_id: NodeId = node_id_array
+                .value(i)
+                .parse()
                 .context("failed to parse node_id")?;
             let output_id = DataId::from(output_id_array.value(i));
             let data = if data_array.is_null(i) {
@@ -217,10 +223,10 @@ async fn play_batches(
             let metadata_json = metadata_array.value(i);
 
             // Deserialize type_info and metadata
-            let type_info: ArrowTypeInfo = serde_json::from_str(type_info_json)
-                .context("failed to deserialize type_info")?;
-            let parameters: MetadataParameters = serde_json::from_str(metadata_json)
-                .context("failed to deserialize metadata")?;
+            let type_info: ArrowTypeInfo =
+                serde_json::from_str(type_info_json).context("failed to deserialize type_info")?;
+            let parameters: MetadataParameters =
+                serde_json::from_str(metadata_json).context("failed to deserialize metadata")?;
 
             // Handle timing
             if let Some(last_ts) = last_timestamp_us {
