@@ -54,7 +54,7 @@ use adora_core::{
 };
 use adora_message::{BuildId, descriptor::NodeSource};
 use eyre::Context;
-use std::{collections::BTreeMap, net::IpAddr};
+use std::{collections::BTreeMap, net::IpAddr, path::PathBuf};
 
 use crate::ws_client::WsSession;
 
@@ -66,10 +66,12 @@ use crate::{
 
 use distributed::{build_distributed_dataflow, wait_until_dataflow_built};
 use local::build_dataflow_locally;
+use lockfile::BuildLockfile;
 
 mod distributed;
 mod git;
 mod local;
+mod lockfile;
 
 #[derive(Debug, clap::Args)]
 /// Run build commands provided in the given dataflow.
@@ -92,6 +94,15 @@ pub struct Build {
     /// Treat type warnings as errors
     #[clap(long, action)]
     strict_types: bool,
+    /// Use pinned git source commits from a lockfile.
+    #[clap(long, action)]
+    locked: bool,
+    /// Write resolved git source commits to a lockfile.
+    #[clap(long, action)]
+    write_lockfile: bool,
+    /// Path to build lockfile (defaults to `<dataflow-stem>.adora-lock.yaml`).
+    #[clap(long, value_name = "PATH")]
+    lockfile: Option<PathBuf>,
 }
 
 impl Executable for Build {
@@ -104,6 +115,9 @@ impl Executable for Build {
             self.uv,
             self.local,
             self.strict_types,
+            self.locked,
+            self.write_lockfile,
+            self.lockfile,
         )
     }
 }
@@ -115,8 +129,14 @@ pub fn build(
     uv: bool,
     force_local: bool,
     strict_types: bool,
+    locked: bool,
+    write_lockfile: bool,
+    lockfile_override: Option<PathBuf>,
 ) -> eyre::Result<()> {
     let dataflow_path = resolve_dataflow(dataflow).context("could not resolve dataflow")?;
+    if lockfile_override.is_some() && !(locked || write_lockfile) {
+        eyre::bail!("`--lockfile` requires either `--locked` or `--write-lockfile`");
+    }
     let working_dir = dataflow_path
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."));
@@ -172,6 +192,18 @@ pub fn build(
     let mut dataflow_session =
         DataflowSession::read_session(&dataflow_path).context("failed to read DataflowSession")?;
 
+    let lockfile_path = BuildLockfile::path_for_dataflow(&dataflow_path, lockfile_override);
+    let build_lockfile = if locked {
+        Some(BuildLockfile::read_from(&lockfile_path).with_context(|| {
+            format!(
+                "failed to read build lockfile at `{}`",
+                lockfile_path.display()
+            )
+        })?)
+    } else {
+        None
+    };
+
     let mut git_sources = BTreeMap::new();
     let resolved_nodes = dataflow_descriptor
         .resolve_aliases_and_set_defaults()
@@ -182,10 +214,25 @@ pub fn build(
             ..
         }) = node.kind
         {
-            let source = git::fetch_commit_hash(repo, rev)
-                .with_context(|| format!("failed to find commit hash for `{node_id}`"))?;
+            let source = match &build_lockfile {
+                Some(lockfile) => lockfile
+                    .get_source(&node_id, &repo)
+                    .with_context(|| format!("failed to resolve locked git source `{node_id}`"))?,
+                None => git::fetch_commit_hash(repo, rev)
+                    .with_context(|| format!("failed to find commit hash for `{node_id}`"))?,
+            };
             git_sources.insert(node_id, source);
         }
+    }
+    if write_lockfile {
+        let lockfile = BuildLockfile::from_git_sources(git_sources.clone());
+        lockfile.write_to(&lockfile_path).with_context(|| {
+            format!(
+                "failed to write build lockfile to `{}`",
+                lockfile_path.display()
+            )
+        })?;
+        log::info!("wrote build lockfile to {}", lockfile_path.display());
     }
 
     let session = || connect_to_coordinator_with_defaults(coordinator_addr, coordinator_port);
