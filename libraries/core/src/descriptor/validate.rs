@@ -358,9 +358,11 @@ mod tests {
 
     #[test]
     fn check_url_rejects_non_success_status() {
-        let err = validate_url_status("http://example.test/missing", Ok(StatusCode::NOT_FOUND), || {
-            panic!("GET should not be called when HEAD is not 405")
-        })
+        let err = validate_url_status(
+            "http://example.test/missing",
+            Ok(StatusCode::NOT_FOUND),
+            || panic!("GET should not be called when HEAD is not 405"),
+        )
         .expect_err("URL should be rejected");
         assert!(err.to_string().contains("status code: 404"));
     }
