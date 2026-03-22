@@ -2,7 +2,6 @@
 
 import time
 
-import numpy as np
 import pyarrow as pa
 from dora import Node
 
@@ -15,4 +14,4 @@ for event in node:
     else:
         i += 1
     now = time.perf_counter_ns()
-    node.send_output("data", pa.array([np.uint64(now)]))
+    node.send_output("data", pa.array([now], type=pa.uint64()))
