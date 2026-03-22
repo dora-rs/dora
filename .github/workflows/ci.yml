@@ -401,7 +401,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install the latest version of uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
 

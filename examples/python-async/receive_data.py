@@ -1,6 +1,18 @@
 import asyncio
+import signal
+import sys
 
 from dora import Node
+
+
+def handle_sigterm(signum, frame):
+    """Handle SIGTERM for graceful shutdown."""
+    print("Received SIGTERM, shutting down gracefully...")
+    sys.exit(0)
+
+
+# Register signal handler
+signal.signal(signal.SIGTERM, handle_sigterm)
 
 
 async def main():
