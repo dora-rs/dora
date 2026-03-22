@@ -1,0 +1,68 @@
+cmake_minimum_required(VERSION 3.21)
+project(___name___ LANGUAGES C)
+
+set(DORA_ROOT_DIR "__DORA_PATH__" CACHE FILEPATH "Path to the root of dora")
+
+set(dora_c_include_dir "${CMAKE_CURRENT_BINARY_DIR}/include/c")
+
+if(DORA_ROOT_DIR)
+    include(ExternalProject)
+    ExternalProject_Add(Dora
+        SOURCE_DIR ${DORA_ROOT_DIR}
+        BUILD_IN_SOURCE True
+        CONFIGURE_COMMAND ""
+        BUILD_COMMAND
+            cargo build
+            --package dora-node-api-c
+        INSTALL_COMMAND ""
+    )
+
+    add_custom_command(OUTPUT ${dora_c_include_dir}
+        WORKING_DIRECTORY ${DORA_ROOT_DIR}
+        DEPENDS Dora
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${dora_c_include_dir}
+        COMMAND ${CMAKE_COMMAND} -E copy_directory apis/c/node ${dora_c_include_dir}/node
+    )
+
+    add_custom_target(Dora_c DEPENDS ${dora_c_include_dir})
+    set(dora_link_dirs ${DORA_ROOT_DIR}/target/debug)
+else()
+    include(ExternalProject)
+    ExternalProject_Add(Dora
+        PREFIX ${CMAKE_CURRENT_BINARY_DIR}/dora
+        GIT_REPOSITORY https://github.com/dora-rs/dora.git
+        GIT_TAG main
+        BUILD_IN_SOURCE True
+        CONFIGURE_COMMAND ""
+        BUILD_COMMAND
+            cargo build
+            --package dora-node-api-c
+            --target-dir ${CMAKE_CURRENT_BINARY_DIR}/dora/src/Dora/target
+        INSTALL_COMMAND ""
+    )
+
+    add_custom_command(OUTPUT ${dora_c_include_dir}
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/dora/src/Dora/target
+        DEPENDS Dora
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${dora_c_include_dir}
+        COMMAND ${CMAKE_COMMAND} -E copy_directory ../apis/c/node ${dora_c_include_dir}/node
+    )
+
+    set(dora_link_dirs ${CMAKE_CURRENT_BINARY_DIR}/dora/src/Dora/target/debug)
+
+    add_custom_target(Dora_c DEPENDS ${dora_c_include_dir})
+endif()
+
+link_directories(${dora_link_dirs})
+
+add_executable(___name___ node.c)
+add_dependencies(___name___ Dora_c)
+target_include_directories(___name___ PRIVATE ${dora_c_include_dir})
+
+if(WIN32)
+    target_link_libraries(___name___ dora_node_api_c ws2_32 userenv ntdll bcrypt)
+else()
+    target_link_libraries(___name___ dora_node_api_c m z)
+endif()
+
+install(TARGETS ___name___ DESTINATION ${CMAKE_CURRENT_SOURCE_DIR}/bin)

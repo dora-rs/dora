@@ -8,6 +8,7 @@ use std::{
 const NODE: &str = include_str!("node/node-template.c");
 const TALKER: &str = include_str!("talker/talker-template.c");
 const LISTENER: &str = include_str!("listener/listener-template.c");
+const NODE_CMAKE: &str = include_str!("node-cmake-template.txt");
 
 pub fn create(args: crate::CommandNew, use_path_deps: bool) -> eyre::Result<()> {
     let crate::CommandNew {
@@ -18,7 +19,7 @@ pub fn create(args: crate::CommandNew, use_path_deps: bool) -> eyre::Result<()> 
     } = args;
 
     match kind {
-        crate::Kind::Node => create_custom_node(name, path, NODE),
+        crate::Kind::Node => create_custom_node(name, path, NODE, use_path_deps),
         crate::Kind::Dataflow => create_dataflow(name, path, use_path_deps),
     }
 }
@@ -47,9 +48,9 @@ fn create_dataflow(
     fs::write(&dataflow_yml_path, dataflow_yml)
         .with_context(|| format!("failed to write `{}`", dataflow_yml_path.display()))?;
 
-    create_custom_node("talker_1".into(), Some(root.join("talker_1")), TALKER)?;
-    create_custom_node("talker_2".into(), Some(root.join("talker_2")), TALKER)?;
-    create_custom_node("listener_1".into(), Some(root.join("listener_1")), LISTENER)?;
+    create_custom_node("talker_1".into(), Some(root.join("talker_1")), TALKER, use_path_deps)?;
+    create_custom_node("talker_2".into(), Some(root.join("talker_2")), TALKER, use_path_deps)?;
+    create_custom_node("listener_1".into(), Some(root.join("listener_1")), LISTENER, use_path_deps)?;
     create_cmakefile(root.to_path_buf(), use_path_deps)?;
 
     println!(
@@ -87,6 +88,7 @@ fn create_custom_node(
     name: String,
     path: Option<PathBuf>,
     template_scripts: &str,
+    use_path_deps: bool,
 ) -> Result<(), eyre::ErrReport> {
     if name.contains('/') {
         bail!("node name must not contain `/` separators");
@@ -107,12 +109,41 @@ fn create_custom_node(
     fs::write(&header_path, HEADER_NODE_API)
         .with_context(|| format!("failed to write `{}`", header_path.display()))?;
 
-    // TODO: Makefile?
+    create_node_cmakefile(&name, root, use_path_deps)?;
 
     println!(
         "Created new C custom node `{name}` at {}",
         Path::new(".").join(root).display()
     );
 
+    Ok(())
+}
+
+fn create_node_cmakefile(
+    name: &str,
+    root: &Path,
+    use_path_deps: bool,
+) -> Result<(), eyre::ErrReport> {
+    let cmake_content = if use_path_deps {
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let workspace_dir = manifest_dir
+            .parent()
+            .context("Could not get manifest parent folder")?
+            .parent()
+            .context("Could not get manifest grandparent folder")?;
+        NODE_CMAKE
+            .replace("___name___", name)
+            .replace("__DORA_PATH__", workspace_dir.to_str().unwrap())
+    } else {
+        NODE_CMAKE
+            .replace("___name___", name)
+            .replace("__DORA_PATH__", "")
+    };
+
+    let cmake_path = root.join("CMakeLists.txt");
+    fs::write(&cmake_path, cmake_content)
+        .with_context(|| format!("failed to write `{}`", cmake_path.display()))?;
+
+    println!("Created new CMakeLists.txt at {}", cmake_path.display());
     Ok(())
 }
