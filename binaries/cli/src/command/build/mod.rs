@@ -57,7 +57,10 @@ use std::{collections::BTreeMap, net::IpAddr};
 
 use super::{Executable, default_tracing};
 use crate::{
-    common::{connect_and_check_version, local_working_dir, resolve_dataflow},
+    common::{
+        connect_and_check_version, is_coordinator_unavailable_error, local_working_dir,
+        resolve_dataflow,
+    },
     session::DataflowSession,
 };
 
@@ -180,11 +183,17 @@ pub async fn build_async(
                 );
                 BuildKind::ThroughCoordinator { coordinator_client }
             }
+<<<<<<< HEAD
             Err(_) => {
                 tracing::warn!("No dora coordinator instance found -> trying a local build");
+=======
+            Err(err) if is_coordinator_unavailable_error(&err) => {
+                log::warn!("No dora coordinator instance found -> trying a local build");
+>>>>>>> fa6ebd9f (fix(cli): only fallback to local build when coordinator is unavailable)
                 // no coordinator instance found -> do a local build
                 BuildKind::Local
             }
+            Err(err) => return Err(err).context("failed to connect to coordinator"),
         }
     };
 

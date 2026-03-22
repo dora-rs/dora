@@ -13,6 +13,7 @@ use eyre::{Context, ContextCompat, bail};
 use std::{
     env::current_dir,
     future::Future,
+    io::ErrorKind,
     net::IpAddr,
     path::{Path, PathBuf},
     time::Duration,
@@ -194,6 +195,14 @@ pub(crate) async fn connect_and_check_version(
     Ok(client)
 }
 
+pub(crate) fn is_coordinator_unavailable_error(err: &eyre::Report) -> bool {
+    err.chain().any(|source| {
+        source
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|io| io.kind() == ErrorKind::ConnectionRefused)
+    })
+}
+
 /// Check that the coordinator's message format version matches this CLI's.
 pub(crate) async fn check_coordinator_version(
     client: &CoordinatorControlClient,
@@ -245,6 +254,8 @@ fn semver_compatible(a: &semver::Version, b: &semver::Version) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use eyre::WrapErr;
+    use std::io;
 
     fn v(s: &str) -> semver::Version {
         semver::Version::parse(s).unwrap()
@@ -278,5 +289,34 @@ mod tests {
 
         // Different major: incompatible
         assert!(!semver_compatible(&v("1.0.0"), &v("2.0.0")));
+    }
+
+    #[test]
+    fn detects_connection_refused_as_unavailable_coordinator() {
+        let err = eyre::Report::from(io::Error::new(
+            io::ErrorKind::ConnectionRefused,
+            "coordinator not listening",
+        ));
+
+        assert!(is_coordinator_unavailable_error(&err));
+    }
+
+    #[test]
+    fn detects_wrapped_connection_refused_errors() {
+        let err = Err::<(), _>(io::Error::new(
+            io::ErrorKind::ConnectionRefused,
+            "coordinator not listening",
+        ))
+        .wrap_err("failed to connect tarpc client to coordinator")
+        .unwrap_err();
+
+        assert!(is_coordinator_unavailable_error(&err));
+    }
+
+    #[test]
+    fn does_not_treat_version_errors_as_unavailable_coordinator() {
+        let err = eyre::eyre!("coordinator version mismatch");
+
+        assert!(!is_coordinator_unavailable_error(&err));
     }
 }
