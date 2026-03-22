@@ -298,7 +298,10 @@ impl PreparedNode {
         .await
         .expect("Failed to create log file");
         let mut child_stdout =
-            tokio::io::BufReader::new(child.stdout().take().expect("failed to take stdout"));
+            tokio::io::BufReader::new(child.stdout().take().context(format!(
+                "failed to capture stdout pipe from spawned node `{}`",
+                self.node.id
+            ))?);
         let stdout_tx = tx.clone();
         let node_id = self.node.id.clone();
         let mut logger_c = logger.try_clone().await?;
@@ -352,7 +355,10 @@ impl PreparedNode {
         });
 
         let mut child_stderr =
-            tokio::io::BufReader::new(child.stderr().take().expect("failed to take stderr"));
+            tokio::io::BufReader::new(child.stderr().take().context(format!(
+                "failed to capture stderr pipe from spawned node `{}`",
+                self.node.id
+            ))?);
 
         // Stderr listener stream
         let stderr_tx = tx.clone();

@@ -4,7 +4,7 @@ use dora_message::descriptor::EnvValue;
 use eyre::{Context, eyre};
 use tokio::{
     io::{AsyncBufRead, AsyncBufReadExt, BufReader},
-    process::Command,
+    process::{Child, ChildStderr, ChildStdout, Command},
 };
 use tokio_stream::{StreamExt, wrappers::LinesStream};
 
@@ -54,8 +54,7 @@ pub async fn run_build_command(
             .spawn()
             .wrap_err_with(|| format!("failed to spawn `{build}`"))?;
 
-        let child_stdout = BufReader::new(child.stdout.take().expect("failed to take stdout"));
-        let child_stderr = BufReader::new(child.stderr.take().expect("failed to take stderr"));
+        let (child_stdout, child_stderr) = take_child_output(&mut child, build_line)?;
         let stdout_tx = stdout_tx.clone();
 
         tokio::spawn(async move {
@@ -71,6 +70,21 @@ pub async fn run_build_command(
         }
     }
     Ok(())
+}
+
+fn take_child_output(
+    child: &mut Child,
+    build_line: &str,
+) -> eyre::Result<(BufReader<ChildStdout>, BufReader<ChildStderr>)> {
+    let child_stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| eyre!("missing stdout pipe for build command `{build_line}`"))?;
+    let child_stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| eyre!("missing stderr pipe for build command `{build_line}`"))?;
+    Ok((BufReader::new(child_stdout), BufReader::new(child_stderr)))
 }
 
 async fn forward_build_output<R1, R2>(
@@ -92,8 +106,12 @@ async fn forward_build_output<R1, R2>(
 
 #[cfg(test)]
 mod tests {
-    use super::forward_build_output;
-    use tokio::io::{AsyncWriteExt, BufReader};
+    use super::{forward_build_output, take_child_output};
+    use std::process::Stdio;
+    use tokio::{
+        io::{AsyncWriteExt, BufReader},
+        process::{Child, Command},
+    };
 
     #[tokio::test]
     async fn keeps_draining_stdout_after_stderr_closes() {
@@ -167,5 +185,48 @@ mod tests {
         assert_eq!(lines.len(), 256);
         assert_eq!(lines.first().map(String::as_str), Some("line-0"));
         assert_eq!(lines.last().map(String::as_str), Some("line-255"));
+    }
+
+    #[tokio::test]
+    async fn errors_when_stdout_pipe_is_missing() {
+        let mut child = spawn_test_child().await;
+        let _stdout = child
+            .stdout
+            .take()
+            .expect("test child should start with a stdout pipe");
+
+        let err = take_child_output(&mut child, "test-command")
+            .expect_err("missing stdout pipe should return an error");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("missing stdout pipe"));
+        assert!(msg.contains("test-command"));
+
+        let _ = child.wait().await;
+    }
+
+    #[tokio::test]
+    async fn errors_when_stderr_pipe_is_missing() {
+        let mut child = spawn_test_child().await;
+        let _stderr = child
+            .stderr
+            .take()
+            .expect("test child should start with a stderr pipe");
+
+        let err = take_child_output(&mut child, "test-command")
+            .expect_err("missing stderr pipe should return an error");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("missing stderr pipe"));
+        assert!(msg.contains("test-command"));
+
+        let _ = child.wait().await;
+    }
+
+    async fn spawn_test_child() -> Child {
+        let mut cmd = Command::new(std::env::current_exe().expect("failed to locate test binary"));
+        cmd.arg("--help");
+        cmd.stdin(Stdio::null());
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+        cmd.spawn().expect("failed to spawn test child")
     }
 }
