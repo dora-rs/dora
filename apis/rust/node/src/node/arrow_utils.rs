@@ -95,7 +95,12 @@ pub fn buffer_into_arrow_array(
     let mut buffers = Vec::new();
     for BufferOffset { offset, len } in &type_info.buffer_offsets {
         if offset.saturating_add(*len) > raw_buffer.len() {
-            eyre::bail!("Buffer length out of bounds: offset {} + len {} > buffer len {}", offset, len, raw_buffer.len());
+            eyre::bail!(
+                "Buffer length out of bounds: offset {} + len {} > buffer len {}",
+                offset,
+                len,
+                raw_buffer.len()
+            );
         }
         buffers.push(raw_buffer.slice_with_length(*offset, *len));
     }
@@ -122,8 +127,8 @@ pub fn buffer_into_arrow_array(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dora_message::metadata::BufferOffset;
     use arrow::datatypes::DataType;
+    use dora_message::metadata::BufferOffset;
 
     #[test]
     fn test_malicious_arrow_metadata_panics() {
@@ -133,7 +138,10 @@ mod tests {
             null_count: 0,
             validity: None,
             offset: 0,
-            buffer_offsets: vec![BufferOffset { offset: 1000, len: 100 }], // MALICIOUS: Out of bounds
+            buffer_offsets: vec![BufferOffset {
+                offset: 1000,
+                len: 100,
+            }], // MALICIOUS: Out of bounds
             child_data: vec![],
         };
 
@@ -141,6 +149,9 @@ mod tests {
 
         let result = buffer_into_arrow_array(&raw_buffer, &type_info);
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err().to_string(), "Buffer length out of bounds: offset 1000 + len 100 > buffer len 12");
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Buffer length out of bounds: offset 1000 + len 100 > buffer len 12"
+        );
     }
 }
