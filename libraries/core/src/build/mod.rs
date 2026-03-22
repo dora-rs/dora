@@ -1,9 +1,13 @@
 pub use git::GitManager;
 pub use logger::{BuildLogger, LogLevelOrStdout, TracingBuildLogger};
 
-use std::{collections::BTreeMap, future::Future, path::PathBuf};
+use std::{
+    collections::BTreeMap,
+    future::Future,
+    path::{Path, PathBuf},
+};
 
-use crate::descriptor::ResolvedNode;
+use crate::descriptor::{CustomNode, OperatorSource, ResolvedNode};
 use dora_message::{
     SessionId,
     common::{GitSource, LogLevel},
@@ -63,6 +67,7 @@ impl Builder {
         git_folder: Option<GitFolder>,
     ) -> eyre::Result<BuiltNode> {
         logger.log_message(LogLevel::Debug, "building node").await;
+        let python_env_dir;
         let node_working_dir = match &node.kind {
             CoreNodeKind::Custom(n) => {
                 let node_working_dir = match git_folder {
@@ -81,6 +86,7 @@ impl Builder {
                 if let Some(build) = &n.build {
                     build_node(logger, &node.env, node_working_dir.clone(), build, self.uv).await?;
                 }
+                python_env_dir = managed_python_env_dir(&node, &node_working_dir);
                 node_working_dir
             }
             CoreNodeKind::Runtime(n) => {
@@ -97,10 +103,14 @@ impl Builder {
                         .await?;
                     }
                 }
+                python_env_dir = managed_python_env_dir(&node, &self.base_working_dir);
                 self.base_working_dir.clone()
             }
         };
-        Ok(BuiltNode { node_working_dir })
+        Ok(BuiltNode {
+            node_working_dir,
+            python_env_dir,
+        })
     }
 }
 
@@ -147,15 +157,128 @@ async fn build_node(
 
 pub struct BuiltNode {
     pub node_working_dir: PathBuf,
+    pub python_env_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct BuildInfo {
     pub node_working_dirs: BTreeMap<NodeId, PathBuf>,
+    #[serde(default)]
+    pub python_env_dirs: BTreeMap<NodeId, PathBuf>,
+}
+
+pub fn managed_python_env_dir(node: &ResolvedNode, node_working_dir: &Path) -> Option<PathBuf> {
+    node_requires_managed_python_env(node)
+        .then(|| node_working_dir.join(".dora").join("python-env"))
+}
+
+fn node_requires_managed_python_env(node: &ResolvedNode) -> bool {
+    match &node.kind {
+        CoreNodeKind::Custom(custom) => is_python_custom_node(custom),
+        CoreNodeKind::Runtime(runtime) => runtime
+            .operators
+            .iter()
+            .any(|operator| matches!(operator.config.source, OperatorSource::Python(_))),
+    }
+}
+
+fn is_python_custom_node(custom: &CustomNode) -> bool {
+    Path::new(&custom.path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("py"))
 }
 
 pub struct PrevGitSource {
     pub git_source: GitSource,
     /// `True` if any nodes of this dataflow still require the source for building.
     pub still_needed_for_this_build: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::managed_python_env_dir;
+    use crate::descriptor::{
+        CoreNodeKind, CustomNode, OperatorConfig, OperatorDefinition, OperatorSource, PythonSource,
+        ResolvedNode, RuntimeNode,
+    };
+    use dora_message::{
+        config::NodeRunConfig,
+        descriptor::RestartPolicy,
+        id::{NodeId, OperatorId},
+    };
+    use std::{collections::BTreeMap, path::PathBuf};
+
+    fn python_custom_node() -> ResolvedNode {
+        ResolvedNode {
+            id: NodeId::from("python-custom".to_owned()),
+            name: None,
+            description: None,
+            env: None,
+            deploy: None,
+            kind: CoreNodeKind::Custom(CustomNode {
+                path: "node.py".to_owned(),
+                source: dora_message::descriptor::NodeSource::Local,
+                args: None,
+                envs: None,
+                build: None,
+                send_stdout_as: None,
+                restart_policy: RestartPolicy::Never,
+                run_config: NodeRunConfig {
+                    inputs: BTreeMap::new(),
+                    outputs: Default::default(),
+                },
+            }),
+        }
+    }
+
+    fn python_runtime_node() -> ResolvedNode {
+        ResolvedNode {
+            id: NodeId::from("python-runtime".to_owned()),
+            name: None,
+            description: None,
+            env: None,
+            deploy: None,
+            kind: CoreNodeKind::Runtime(RuntimeNode {
+                operators: vec![OperatorDefinition {
+                    id: OperatorId::from("op".to_owned()),
+                    config: OperatorConfig {
+                        name: None,
+                        description: None,
+                        inputs: BTreeMap::new(),
+                        outputs: Default::default(),
+                        source: OperatorSource::Python(PythonSource {
+                            source: "operator.py".to_owned(),
+                            conda_env: None,
+                        }),
+                        build: None,
+                        send_stdout_as: None,
+                    },
+                }],
+            }),
+        }
+    }
+
+    #[test]
+    fn assigns_managed_env_dir_to_python_custom_nodes() {
+        let working_dir = PathBuf::from("workdir");
+        let env_dir = managed_python_env_dir(&python_custom_node(), &working_dir)
+            .expect("python custom node should get managed env dir");
+        assert_eq!(env_dir, PathBuf::from("workdir/.dora/python-env"));
+    }
+
+    #[test]
+    fn assigns_managed_env_dir_to_python_runtime_nodes() {
+        let working_dir = PathBuf::from("runtime-dir");
+        let env_dir = managed_python_env_dir(&python_runtime_node(), &working_dir)
+            .expect("python runtime node should get managed env dir");
+        assert_eq!(env_dir, PathBuf::from("runtime-dir/.dora/python-env"));
+    }
+
+    #[test]
+    fn build_info_deserializes_without_python_env_dirs() {
+        let build_info: super::BuildInfo =
+            serde_yaml::from_str("node_working_dirs: {}\n").expect("build info should parse");
+        assert!(build_info.python_env_dirs.is_empty());
+    }
 }

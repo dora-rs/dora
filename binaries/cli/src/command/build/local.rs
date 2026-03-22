@@ -67,13 +67,17 @@ async fn build_dataflow(
 
     let mut info = BuildInfo {
         node_working_dirs: Default::default(),
+        python_env_dirs: Default::default(),
     };
     for (node_id, task) in tasks {
         let node = task
             .await
             .with_context(|| format!("failed to build node `{node_id}`"))?;
         info.node_working_dirs
-            .insert(node_id, node.node_working_dir);
+            .insert(node_id.clone(), node.node_working_dir);
+        if let Some(python_env_dir) = node.python_env_dir {
+            info.python_env_dirs.insert(node_id, python_env_dir);
+        }
     }
     Ok(info)
 }
