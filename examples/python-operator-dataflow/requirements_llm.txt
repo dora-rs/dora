@@ -1,9 +1,23 @@
+# Core dependencies
+numpy
+pyarrow
+opencv-python
+
+# Audio/Input dependencies
+# Note: sounddevice requires PortAudio system library
+# Install on Ubuntu: sudo apt-get install libportaudio2 portaudio19-dev
 openai-whisper
 sounddevice
 pynput
+
+# ML/NLP dependencies
+torch
 sentence-transformers
 transformers
 pylcs
 accelerate
+
+# Model optimization (optional, for GPTQ models)
+# If not using GPTQ-quantized models, these can be omitted
 optimum
 auto-gptq>=0.7.1
