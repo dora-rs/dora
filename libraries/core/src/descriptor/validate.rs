@@ -308,109 +308,92 @@ fn check_url(url: &str) -> eyre::Result<()> {
         .build()
         .wrap_err("failed to build HTTP client for URL validation")?;
 
-    match client.head(url).send() {
-        Ok(response) => {
-            if response.status().is_success() {
-                Ok(())
-            } else if response.status() == reqwest::StatusCode::METHOD_NOT_ALLOWED {
-                match client.get(url).send() {
-                    Ok(get_response) if get_response.status().is_success() => Ok(()),
-                    Ok(get_response) => eyre::bail!(
-                        "URL `{}` is not reachable (status code: {})",
-                        url,
-                        get_response.status()
-                    ),
-                    Err(err) => eyre::bail!("Failed to reach URL `{}`: {}", url, err),
-                }
-            } else {
-                eyre::bail!(
-                    "URL `{}` is not reachable (status code: {})",
-                    url,
-                    response.status()
-                )
-            }
-        }
+    let head_status = client
+        .head(url)
+        .send()
+        .map(|response| response.status())
+        .map_err(|err| err.to_string());
+
+    validate_url_status(url, head_status, || {
+        client
+            .get(url)
+            .send()
+            .map(|response| response.status())
+            .map_err(|err| err.to_string())
+    })
+}
+
+fn validate_url_status<F>(
+    url: &str,
+    head_status: Result<reqwest::StatusCode, String>,
+    get_status: F,
+) -> eyre::Result<()>
+where
+    F: FnOnce() -> Result<reqwest::StatusCode, String>,
+{
+    match head_status {
+        Ok(status) if status.is_success() => Ok(()),
+        Ok(reqwest::StatusCode::METHOD_NOT_ALLOWED) => match get_status() {
+            Ok(status) if status.is_success() => Ok(()),
+            Ok(status) => eyre::bail!("URL `{}` is not reachable (status code: {})", url, status),
+            Err(err) => eyre::bail!("Failed to reach URL `{}`: {}", url, err),
+        },
+        Ok(status) => eyre::bail!("URL `{}` is not reachable (status code: {})", url, status),
         Err(err) => eyre::bail!("Failed to reach URL `{}`: {}", url, err),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::check_url;
-    use std::io::{Read, Write};
-    use std::net::{TcpListener, TcpStream};
-    use std::thread;
-
-    fn read_request_method(stream: &mut TcpStream) -> String {
-        let mut buffer = [0_u8; 2048];
-        let bytes_read = stream.read(&mut buffer).expect("failed to read request");
-        let request = std::str::from_utf8(&buffer[..bytes_read]).expect("invalid UTF-8 in request");
-        request
-            .lines()
-            .next()
-            .and_then(|line| line.split_whitespace().next())
-            .unwrap_or_default()
-            .to_string()
-    }
+    use super::validate_url_status;
+    use reqwest::StatusCode;
 
     #[test]
     fn check_url_accepts_success_status() {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("failed to bind test server");
-        let addr = listener.local_addr().expect("failed to get local addr");
-
-        let handle = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("failed to accept connection");
-            let _ = read_request_method(&mut stream);
-            stream
-                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
-                .expect("failed to write response");
-        });
-
-        check_url(&format!("http://{addr}/ok")).expect("URL should be reachable");
-        handle.join().expect("server thread panicked");
+        validate_url_status("http://example.test/ok", Ok(StatusCode::OK), || {
+            panic!("GET should not be called when HEAD succeeds")
+        })
+        .expect("URL should be reachable");
     }
 
     #[test]
     fn check_url_rejects_non_success_status() {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("failed to bind test server");
-        let addr = listener.local_addr().expect("failed to get local addr");
-
-        let handle = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("failed to accept connection");
-            let _ = read_request_method(&mut stream);
-            stream
-                .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
-                .expect("failed to write response");
-        });
-
-        let err = check_url(&format!("http://{addr}/missing")).expect_err("URL should be rejected");
+        let err = validate_url_status("http://example.test/missing", Ok(StatusCode::NOT_FOUND), || {
+            panic!("GET should not be called when HEAD is not 405")
+        })
+        .expect_err("URL should be rejected");
         assert!(err.to_string().contains("status code: 404"));
-        handle.join().expect("server thread panicked");
     }
 
     #[test]
     fn check_url_falls_back_to_get_when_head_not_allowed() {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("failed to bind test server");
-        let addr = listener.local_addr().expect("failed to get local addr");
+        validate_url_status(
+            "http://example.test/head-not-allowed",
+            Ok(StatusCode::METHOD_NOT_ALLOWED),
+            || Ok(StatusCode::OK),
+        )
+        .expect("GET fallback should mark URL as reachable");
+    }
 
-        let handle = thread::spawn(move || {
-            for _ in 0..2 {
-                let (mut stream, _) = listener.accept().expect("failed to accept connection");
-                let method = read_request_method(&mut stream);
-                if method == "HEAD" {
-                    stream
-                        .write_all(b"HTTP/1.1 405 Method Not Allowed\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
-                        .expect("failed to write response");
-                } else {
-                    stream
-                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
-                        .expect("failed to write response");
-                }
-            }
-        });
+    #[test]
+    fn check_url_rejects_get_fallback_failure() {
+        let err = validate_url_status(
+            "http://example.test/head-not-allowed",
+            Ok(StatusCode::METHOD_NOT_ALLOWED),
+            || Ok(StatusCode::BAD_GATEWAY),
+        )
+        .expect_err("URL should be rejected when GET fallback fails");
+        assert!(err.to_string().contains("status code: 502"));
+    }
 
-        check_url(&format!("http://{addr}/head-not-allowed"))
-            .expect("GET fallback should mark URL as reachable");
-        handle.join().expect("server thread panicked");
+    #[test]
+    fn check_url_rejects_transport_error() {
+        let err = validate_url_status(
+            "http://example.test/error",
+            Err("connection refused".to_owned()),
+            || Ok(StatusCode::OK),
+        )
+        .expect_err("transport errors should be surfaced");
+        assert!(err.to_string().contains("connection refused"));
     }
 }
