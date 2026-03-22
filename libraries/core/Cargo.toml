@@ -38,3 +38,4 @@ fs_extra = "1.3.0"
 splitty = "1.0.2"
 zenoh = { workspace = true, optional = true }
 reqwest = { version = "0.12.4", default-features = false, features = ["rustls-tls", "blocking"] }
+tempfile = "3.27.0"

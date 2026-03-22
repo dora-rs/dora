@@ -168,3 +168,6 @@ path = "examples/cmake-dataflow/run.rs"
 [profile.dist]
 inherits = "release"
 lto = "thin"
+
+[dependencies]
+tempfile = "3.23.0"
