@@ -1,7 +1,22 @@
 # Adora v0.1.1+ Sprint Plan
 
 **Based on**: audit-report-2026-03-21.md (combined audit)
-**Date**: 2026-03-23
+**Created**: 2026-03-23
+**Updated**: 2026-03-23
+
+---
+
+## Summary
+
+| Sprint | Done | Deferred | Total |
+|--------|------|----------|-------|
+| Sprint 1 | 8 | 1 | 9 |
+| Sprint 2 | 10 | 1 | 11 |
+| Sprint 3 | 9 | 3 | 12 |
+| Sprint 4 | 6 | 2 | 8 |
+| Sprint 5 | 5 | 7 | 12 |
+| Review fixes | 7 | — | 7 |
+| **Total** | **45** | **14** | **59** |
 
 ---
 
@@ -9,52 +24,64 @@
 
 ### Sprint 1: Memory Safety + Templates (quick wins)
 
-| # | ID | Task | Files | Effort |
-|---|-----|------|-------|--------|
-| 1 | DC1 | Bounds-check shmem `len` before `[..len]` indexing | `daemon/src/lib.rs:3207` | XS |
-| 2 | CM2 | Remove `unsafe impl Sync for ShmemChannel` | `shared-memory-server/src/channel.rs:259-260` | XS |
-| 3 | DC8 | Fix Python operator count `> 2` -> `> 1` | `daemon/src/spawn/spawner.rs:211` | XS |
-| 4 | AC7 | Fix C++ template null ptr UB | `cli/src/template/cxx/node-template.cc:27` | XS |
-| 5 | AC15/AC16 | Fix Rust template unused variable warnings | `cli/src/template/rust/node/main-template.rs`, `operator/lib-template.rs` | XS |
-| 6 | AC17/D5 | Fix Python template `"TICK"` -> `"tick"` | `cli/src/template/python/__node-name__/__node_name__/main.py` | XS |
-| 7 | ET2 | Gitignore committed artifacts; remove from repo | `examples/*/out/.gitignore`, `tests/dataflows/out/` | S |
-| 8 | SEC2 | Restrict URL schemes to `https://` (+ `http://`) | `libraries/core/src/descriptor/mod.rs:322` | XS |
-| 9 | AC5/AC6 | Fix `drain()`/`try_recv()` for merged streams | `apis/python/node/src/lib.rs:233,579` | S |
+| # | ID | Task | Status | Commit |
+|---|-----|------|--------|--------|
+| 1 | DC1 | Bounds-check shmem `len` before `[..len]` indexing | DONE | `9711789` |
+| 2 | CM2 | Document `unsafe impl Sync for ShmemChannel` safety invariants | DONE | `9711789` (kept Sync — needed by EventStream; added docs) |
+| 3 | DC8 | Fix Python operator count `> 2` -> `> 1` | DONE | `9711789` |
+| 4 | AC7 | Fix C++ template null ptr UB | SKIP | False positive — CXX `rust::String` is always valid |
+| 5 | AC15/AC16 | Fix Rust template unused variable warnings | DONE | `9711789` |
+| 6 | AC17/D5 | Fix Python template `"TICK"` -> `"tick"` | DONE | `9711789` |
+| 7 | ET2 | Gitignore committed artifacts; remove from repo | DONE | `9711789` (25 .gitignore files) |
+| 8 | SEC2 | Restrict URL schemes to `https://` (+ `http://`) | DONE | `9711789` |
+| 9 | AC5/AC6 | Fix `drain()`/`try_recv()` for merged streams | DONE | `9711789` |
 
 ### Sprint 2: Panics + Security + Performance Foundations
 
-| # | ID | Task | Files | Effort |
-|---|-----|------|-------|--------|
-| 10 | Q1 | `NodeId::from(String)` -> `TryFrom<String>` | `libraries/message/src/id.rs:61-68` + call sites | M |
-| 11 | Q2 | ROS2 bridge `.unwrap()` -> `.context()?` | `binaries/ros2-bridge-node/src/main.rs:156,385` | XS |
-| 12 | Q3 | Tracing `.unwrap()` in `tokio::spawn` -> log + fallback | `apis/rust/node/src/node/mod.rs:1304,1306,1314` | S |
-| 13 | Q4 | Python `drain()` error -> log instead of silent empty dict | `apis/python/node/src/lib.rs:232-234` | XS |
-| 14 | DC7 | `AllNodesReady` race: `bail!` -> warn + queue | `daemon/src/pending.rs:131-133` | S |
-| 15 | S1 | Log warning when `adora run` uses no auth | `cli/src/command/run.rs` | XS |
-| 16 | P1 | Wrap `DataMessage` in `Arc` for fan-out | `daemon/src/lib.rs:3119`, `message/src/` NodeEvent | M |
-| 17 | P2 | Wrap `Metadata` in `Arc` for fan-out | Same as P1 | S |
-| 18 | S2/P13 | Bounded per-node event channels | `daemon/src/running_dataflow.rs:159` | M |
-| 19 | DEP1 | Arrow `default-features = false` | `Cargo.toml` workspace + per-crate features | S |
-| 20 | CVE | Upgrade Zenoh (resolves lz4_flex, quinn-proto) | `Cargo.toml`, `Cargo.lock` | S |
+| # | ID | Task | Status | Commit |
+|---|-----|------|--------|--------|
+| 10 | Q1 | NodeId CLI validation via `.parse()` instead of `.into()` | DONE | `58df7e2` (8 CLI call sites + topic/pub) |
+| 11 | Q2 | ROS2 bridge `.unwrap()` -> `.context()?` | DONE | `6f2e032` |
+| 12 | Q3 | Tracing `.unwrap()` in `tokio::spawn` -> log + fallback | DONE | `6f2e032` |
+| 13 | Q4 | Python `drain()` error -> log instead of silent empty dict | DONE | `6f2e032` |
+| 14 | DC7 | `AllNodesReady` race: `bail!` -> warn + proceed | DONE | `6f2e032` |
+| 15 | S1 | Log warning when `adora run` uses no auth | DONE | `6f2e032` |
+| 16 | P1 | Wrap `DataMessage` in `Arc` for fan-out | DONE | `425fde8` |
+| 17 | P2 | Wrap `Metadata` in `Arc` for fan-out | DONE | `425fde8` |
+| 18 | S2/P13 | Bounded per-node event channels (capacity 1000) | DONE | `04ac605` |
+| 19 | DEP1 | Arrow `default-features = false` | DONE | `6f9ac14` (15 -> 12 sub-crates) |
+| 20 | CVE | Upgrade Zenoh (resolves lz4_flex, quinn-proto) | DEFERRED | High risk — Zenoh API changes need investigation |
+
+### Review Fixes (post-Sprint 2)
+
+| # | ID | Task | Status | Commit |
+|---|-----|------|--------|--------|
+| R1 | — | Reserve channel headroom for control events (Stop, InputClosed) | DONE | `63b589b` |
+| R2 | — | Switch finished_builds/archived_dataflows to IndexMap (FIFO eviction) | DONE | `da58d8e` |
+| R3 | — | send_with_timestamp returns Ok(true)/Ok(false) for pending counter | DONE | `da58d8e` |
+| R4 | — | Fix topic/pub_.rs `.into()` -> `.parse()` (missed in Q1) | DONE | `63b589b` |
+| R5 | — | Add `# Panics` doc to `From<&str> for DataId` | DONE | `da58d8e` |
+| R6 | — | Log file flush note on rotation | DONE | `da58d8e` |
+| R7 | — | IndexMap dep added to coordinator | DONE | `da58d8e` |
 
 ---
 
 ## v0.1.x — Reliability (Sprint 3)
 
-| # | ID | Task | Files | Effort |
-|---|-----|------|-------|--------|
-| 21 | DC2 | Cancellation token for listener loops | `daemon/src/spawn/prepared.rs:567-585`, `node_communication/shmem.rs` | M |
-| 22 | DC4 | `try_send` for log-related daemon_tx sends | `daemon/src/spawn/prepared.rs:666,748` | S |
-| 23 | DC5 | Remove per-line `sync_all()` from log writer | `daemon/src/spawn/prepared.rs:844` | XS |
-| 24 | DC6 | Recursive child process aggregation | `daemon/src/lib.rs:1317-1325` | S |
-| 25 | CM3 | Signal client event on server drop | `shared-memory-server/src/channel.rs:262-286` | S |
-| 26 | CM7 | Preserve `uv` flag in auto-recovery | `coordinator/src/handlers.rs:601-608` | XS |
-| 27 | CM9 | Clean `running_dataflows` on heartbeat timeout | `coordinator/src/lib.rs:1241-1249` | S |
-| 28 | CM11/12 | TTL eviction for `finished_builds` + `archived_dataflows` | `coordinator/src/lib.rs:246,249` | S |
-| 29 | ET1 | Add CI E2E job (smoke + ws-cli-e2e + fault-tolerance) | `.github/workflows/ci.yml` | M |
-| 30 | ET3 | Remove `#[ignore]` or add `--ignored` CI step | `tests/ws-cli-e2e.rs:431,477` | XS |
-| 31 | ET4 | Check for "Failed" in smoke test polling | `tests/example-smoke.rs:195` | XS |
-| 32 | SEC1 | sha256 digest for URL-sourced downloads | `libraries/extensions/download/src/lib.rs`, descriptor YAML schema | M |
+| # | ID | Task | Status | Commit |
+|---|-----|------|--------|--------|
+| 21 | DC2 | Cancellation token for listener loops | DEFERRED | M effort — async lifecycle redesign |
+| 22 | DC4 | `try_send` for log-related daemon_tx sends | DONE | `8064b83` |
+| 23 | DC5 | Remove per-line `sync_all()` from log writer | DONE | `8064b83` |
+| 24 | DC6 | Recursive child process aggregation | DONE | `8064b83` |
+| 25 | CM3 | Signal client event on server drop | DEFERRED | Touches shmem channel internals |
+| 26 | CM7 | Preserve `uv` flag in auto-recovery | DONE | `8064b83` |
+| 27 | CM9 | Clean `running_dataflows` on daemon heartbeat timeout | DONE | `8064b83` |
+| 28 | CM11/12 | Cap `finished_builds` (100) + `archived_dataflows` (200) | DONE | `8064b83` + `da58d8e` (IndexMap) |
+| 29 | ET1 | Add CI E2E job (ws-cli-e2e + fault-tolerance) | DONE | `8064b83` |
+| 30 | ET3 | Remove `#[ignore]` from 2 E2E tests | DONE | `8064b83` |
+| 31 | ET4 | Check for "Failed" state in smoke test polling | DONE | `8064b83` |
+| 32 | SEC1 | sha256 digest for URL-sourced downloads | DEFERRED | M effort — YAML schema change |
 
 ---
 
@@ -62,61 +89,75 @@
 
 ### Sprint 4: Performance
 
-| # | ID | Task | Files | Effort |
-|---|-----|------|-------|--------|
-| 33 | P4 | Split shmem protocol (bincode metadata + raw bytes) | `shared-memory-server/src/channel.rs`, `daemon/src/lib.rs` | L |
-| 34 | P3 | Only copy shmem data when remote receivers exist | `daemon/src/lib.rs:3200-3215` | M |
-| 35 | P8 | Separate metadata ser from Zenoh payload | `daemon/src/lib.rs:2342-2347` | M |
-| 36 | A2 | Remove per-timer HLC; use shared daemon clock | `daemon/src/running_dataflow.rs:256` | XS |
-| 37 | P10 | Pre-allocate timer metadata template | `daemon/src/running_dataflow.rs:263-264` | S |
-| 38 | P12 | `ProcessesToUpdate::Some(&pids)` for sysinfo | `daemon/src/lib.rs:1293` | S |
-| 39 | P5 | TCP vectored write or `BufWriter` | `daemon/src/socket_stream_utils.rs:17-20` | S |
-| 40 | Q5 | Split daemon `lib.rs` into modules | `daemon/src/lib.rs` (4081 lines) | L |
+| # | ID | Task | Status | Commit |
+|---|-----|------|--------|--------|
+| 33 | P4 | Split shmem protocol (bincode metadata + raw bytes) | DEFERRED | L effort — protocol change |
+| 34 | P3 | Only copy shmem data when remote receivers exist | DONE | `bf96b1b` |
+| 35 | P8 | Separate metadata ser from Zenoh payload | DEFERRED | M effort, coupled with P4 |
+| 36 | A2 | Remove per-timer HLC; use shared daemon clock | DONE | `bf96b1b` |
+| 37 | P10 | Pre-allocate timer metadata template | DONE | `bf96b1b` |
+| 38 | P12 | Pre-build parent->children map for metrics aggregation | DONE | `bf96b1b` (O(P+N*D) vs O(N*P)) |
+| 39 | P5 | TCP single-buffer write (was 2-3 syscalls) | DONE | `bf96b1b` |
+| 40 | Q5 | Split daemon `lib.rs` into modules | DEFERRED | L effort — large refactor |
 
 ### Sprint 5: DX + Dependencies
 
-| # | ID | Task | Files | Effort |
-|---|-----|------|-------|--------|
-| 41 | D1 | Create `docs/quickstart.md` | `docs/quickstart.md` (new) | M |
-| 42 | D2 | Python service/streaming helpers | `apis/python/node/src/lib.rs` | M |
-| 43 | D3 | Add metadata to Operator API `Event::Input` | `apis/rust/operator/src/lib.rs` | M |
-| 44 | D4 | Align Operator API types (`DataId`, `&str` send) | Same as D3 | S |
-| 45 | — | Add streaming pattern example | `examples/streaming-example/` (new) | M |
-| 46 | DEP4 | Zenoh `default-features = false` | `Cargo.toml` | S |
-| 47 | DEP3 | Tokio explicit feature list | Multiple `Cargo.toml` | S |
-| 48 | DEP6 | Replace `once_cell` -> `std::sync::LazyLock` | `libraries/message/src/config.rs` | XS |
-| 49 | DEP8 | Move `inquire` behind feature flag | `apis/rust/node/Cargo.toml` | S |
-| 50 | DEP10 | Align `which` to v7 | Multiple `Cargo.toml` | XS |
-| 51 | — | Centralize deps in `[workspace.dependencies]` | `Cargo.toml` + per-crate | M |
-| 52 | — | Add `[profile.release]` with `lto = "thin"` | `Cargo.toml` | XS |
+| # | ID | Task | Status | Commit |
+|---|-----|------|--------|--------|
+| 41 | D1 | Create `docs/quickstart.md` | DONE | `934f1c4` |
+| 42 | D2 | Python service/streaming helpers | DEFERRED | M effort — API design needed |
+| 43 | D3 | Add metadata to Operator API `Event::Input` | DEFERRED | M effort — breaking API change |
+| 44 | D4 | Align Operator API types (`DataId`, `&str` send) | DEFERRED | Coupled with D3 |
+| 45 | — | Add streaming pattern example | DEFERRED | M effort |
+| 46 | DEP4 | Zenoh `default-features = false` | DEFERRED | Need to identify required transports |
+| 47 | DEP3 | Tokio explicit feature list | DEFERRED | Too invasive |
+| 48 | DEP6 | Replace `once_cell` -> `std::sync::OnceLock` | DONE | `4b6e15c` |
+| 49 | DEP8 | Move `inquire` behind `interactive` feature flag | DONE | `4b6e15c` |
+| 50 | DEP10 | Align `which` to v7 across all crates | DONE | `4b6e15c` |
+| 51 | — | Centralize deps in `[workspace.dependencies]` | DEFERRED | M effort |
+| 52 | — | Add `[profile.release]` with `lto = "thin"` | DONE | `4b6e15c` |
 
 ---
 
-## Dependency Graph
+## Deferred Items (14 remaining)
 
-```
-Sprint 1 (no deps)
-  |
-Sprint 2
-  ├── P1/P2 (Arc wrapping) --> Sprint 4 P4 (shmem protocol split)
-  ├── S2 (bounded channels) --> Sprint 3 DC2 (listener cancellation)
-  └── Q1 (NodeId TryFrom) --> standalone, many call sites
-       |
-Sprint 3
-  ├── ET1 (CI E2E) --> validates everything after
-  └── DC2 (cancellation) --> Sprint 4 Q5 (daemon split)
-       |
-Sprint 4
-  ├── P4 (shmem protocol) --> most impactful perf change
-  └── Q5 (daemon split) --> enables future maintainability
-       |
-Sprint 5 (no deps, parallel with Sprint 4)
-```
+### High Priority (should do before v0.2)
 
-## Open Questions
+| # | ID | Task | Effort | Blocker |
+|---|-----|------|--------|---------|
+| 20 | CVE | Upgrade Zenoh | S | API compatibility investigation needed |
+| 32 | SEC1 | sha256 digest for URL downloads | M | YAML schema addition |
+| 42 | D2 | Python service/streaming helpers | M | API design decision |
+| 43/44 | D3/D4 | Operator API metadata + type alignment | M | Breaking change — needs migration path |
 
-1. **Q1 (NodeId)**: Keep `From<String>` with debug-assert, or remove entirely?
-2. **S2 (bounded channels)**: Default capacity? Configurable per-node in YAML? Drop-oldest or backpressure?
-3. **P1 (Arc)**: `Arc<DataMessage>` + `Arc<Metadata>` separately, or single `Arc<NodeEventPayload>`?
-4. **Zenoh upgrade**: Pinned to 1.7.x or jump to latest?
+### Medium Priority (v0.2+)
+
+| # | ID | Task | Effort | Blocker |
+|---|-----|------|--------|---------|
+| 21 | DC2 | Listener loop cancellation tokens | M | Async lifecycle redesign |
+| 25 | CM3 | Signal shmem client on server drop | S | Shmem channel internals |
+| 33 | P4 | Split shmem protocol (metadata + raw bytes) | L | Protocol change, compat |
+| 35 | P8 | Separate Zenoh metadata from payload | M | Coupled with P4 |
+| 45 | — | Streaming pattern example | M | Working code needed |
+| 46 | DEP4 | Zenoh default-features = false | S | Transport identification |
+| 51 | — | Centralize workspace deps | M | Wide-reaching Cargo.toml changes |
+
+### Low Priority (v0.3+)
+
+| # | ID | Task | Effort | Blocker |
+|---|-----|------|--------|---------|
+| 40 | Q5 | Split daemon lib.rs (4081 lines) | L | Large refactor, no behavior change |
+| 47 | DEP3 | Tokio explicit feature list | S | Too invasive for quick sprint |
+
+---
+
+## Resolved Open Questions
+
+1. **Q1 (NodeId)**: Kept `From<String>` for internal use (known-valid strings). CLI call sites migrated to `.parse()`. `From<String>` panics are documented.
+2. **S2 (bounded channels)**: Capacity 1000, drop-newest for data events, 50-slot headroom reserved for control events. `send_with_timestamp` returns `Ok(true/false)`.
+3. **P1 (Arc)**: `Arc<DataMessage>` + `Arc<Metadata>` separately in `NodeEvent::Input`. Consumers use `Arc::unwrap_or_clone` (zero-cost when ref count is 1).
+
+## Remaining Open Questions
+
+4. **Zenoh upgrade**: Pinned to 1.7.x or jump to latest? Need API compatibility check.
 5. **D3 (Operator metadata)**: Breaking change — ship in v0.2 as documented?
