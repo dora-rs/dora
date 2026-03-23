@@ -172,6 +172,23 @@ pub fn managed_python_env_dir(node: &ResolvedNode, node_working_dir: &Path) -> O
         .then(|| node_working_dir.join(".dora").join("python-env"))
 }
 
+pub fn managed_python_bin_dir(python_env_dir: &Path) -> PathBuf {
+    if cfg!(windows) {
+        python_env_dir.join("Scripts")
+    } else {
+        python_env_dir.join("bin")
+    }
+}
+
+pub fn managed_python_interpreter(python_env_dir: &Path) -> PathBuf {
+    let executable = if cfg!(windows) {
+        "python.exe"
+    } else {
+        "python"
+    };
+    managed_python_bin_dir(python_env_dir).join(executable)
+}
+
 fn node_requires_managed_python_env(node: &ResolvedNode) -> bool {
     match &node.kind {
         CoreNodeKind::Custom(custom) => is_python_custom_node(custom),
@@ -197,7 +214,7 @@ pub struct PrevGitSource {
 
 #[cfg(test)]
 mod tests {
-    use super::managed_python_env_dir;
+    use super::{managed_python_bin_dir, managed_python_env_dir, managed_python_interpreter};
     use crate::descriptor::{
         CoreNodeKind, CustomNode, OperatorConfig, OperatorDefinition, OperatorSource, PythonSource,
         ResolvedNode, RuntimeNode,
@@ -280,5 +297,23 @@ mod tests {
         let build_info: super::BuildInfo =
             serde_yaml::from_str("node_working_dirs: {}\n").expect("build info should parse");
         assert!(build_info.python_env_dirs.is_empty());
+    }
+
+    #[test]
+    fn managed_python_helpers_use_platform_layout() {
+        let env_dir = PathBuf::from("env-dir");
+        let expected_bin_dir = if cfg!(windows) {
+            PathBuf::from("env-dir/Scripts")
+        } else {
+            PathBuf::from("env-dir/bin")
+        };
+        let expected_interpreter = if cfg!(windows) {
+            PathBuf::from("env-dir/Scripts/python.exe")
+        } else {
+            PathBuf::from("env-dir/bin/python")
+        };
+
+        assert_eq!(managed_python_bin_dir(&env_dir), expected_bin_dir);
+        assert_eq!(managed_python_interpreter(&env_dir), expected_interpreter);
     }
 }
