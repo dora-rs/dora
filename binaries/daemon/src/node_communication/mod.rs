@@ -52,6 +52,7 @@ pub async fn spawn_listener_loop(
     config: LocalCommunicationConfig,
     clock: Arc<uhlc::HLC>,
     last_activity: Arc<AtomicU64>,
+    shutdown: tokio::sync::watch::Receiver<bool>,
 ) -> eyre::Result<DaemonCommunication> {
     match config {
         LocalCommunicationConfig::Tcp => {
@@ -69,8 +70,9 @@ pub async fn spawn_listener_loop(
 
             let event_loop_node_id = format!("{dataflow_id}/{node_id}");
             let daemon_tx = daemon_tx.clone();
+            let shutdown = shutdown.clone();
             tokio::spawn(async move {
-                tcp::listener_loop(socket, daemon_tx, clock, last_activity).await;
+                tcp::listener_loop(socket, daemon_tx, clock, last_activity, shutdown).await;
                 tracing::debug!("event listener loop finished for `{event_loop_node_id}`");
             });
 
@@ -135,6 +137,7 @@ pub async fn spawn_listener_loop(
                     daemon_tx,
                     clock,
                     last_activity,
+                    shutdown.clone(),
                 ));
             }
 
@@ -145,8 +148,9 @@ pub async fn spawn_listener_loop(
                 let daemon_tx = daemon_tx.clone();
                 let clock = clock.clone();
                 let last_activity = last_activity.clone();
+                let shutdown = shutdown.clone();
                 tokio::task::spawn(async move {
-                    shmem::listener_loop(server, daemon_tx, clock, last_activity).await;
+                    shmem::listener_loop(server, daemon_tx, clock, last_activity, shutdown).await;
                     tracing::debug!("event listener loop finished for `{event_loop_node_id}`");
                 });
             }
@@ -158,8 +162,9 @@ pub async fn spawn_listener_loop(
                 let daemon_tx = daemon_tx.clone();
                 let clock = clock.clone();
                 let last_activity = last_activity.clone();
+                let shutdown = shutdown.clone();
                 tokio::task::spawn(async move {
-                    shmem::listener_loop(server, daemon_tx, clock, last_activity).await;
+                    shmem::listener_loop(server, daemon_tx, clock, last_activity, shutdown).await;
                     tracing::debug!("drop listener loop finished for `{drop_loop_node_id}`");
                 });
             }
@@ -171,7 +176,7 @@ pub async fn spawn_listener_loop(
                 let daemon_tx = daemon_tx.clone();
                 let clock = clock.clone();
                 tokio::task::spawn(async move {
-                    shmem::listener_loop(server, daemon_tx, clock, last_activity).await;
+                    shmem::listener_loop(server, daemon_tx, clock, last_activity, shutdown).await;
                     tracing::debug!(
                         "events close listener loop finished for `{drop_loop_node_id}`"
                     );
@@ -215,7 +220,7 @@ pub async fn spawn_listener_loop(
             let event_loop_node_id = format!("{dataflow_id}/{node_id}");
             let daemon_tx = daemon_tx.clone();
             tokio::spawn(async move {
-                unix_domain::listener_loop(socket, daemon_tx, clock, last_activity).await;
+                unix_domain::listener_loop(socket, daemon_tx, clock, last_activity, shutdown).await;
                 tracing::debug!("event listener loop finished for `{event_loop_node_id}`");
             });
 

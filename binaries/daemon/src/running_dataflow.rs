@@ -179,6 +179,9 @@ pub struct RunningDataflow {
     pub(crate) node_stderr_most_recent: BTreeMap<NodeId, Arc<ArrayQueue<String>>>,
     pub(crate) publishers: BTreeMap<OutputId, zenoh::pubsub::Publisher<'static>>,
     pub(crate) finished_tx: broadcast::Sender<()>,
+    /// Shutdown signal for listener loops — send `true` when dataflow finishes.
+    pub(crate) listener_shutdown_tx: tokio::sync::watch::Sender<bool>,
+    pub(crate) listener_shutdown_rx: tokio::sync::watch::Receiver<bool>,
     pub(crate) publish_all_messages_to_zenoh: bool,
     /// Cross-daemon Zenoh network counters
     pub(crate) net_bytes_sent: Arc<AtomicU64>,
@@ -204,6 +207,7 @@ impl RunningDataflow {
         dataflow_descriptor: Descriptor,
     ) -> RunningDataflow {
         let (finished_tx, _) = broadcast::channel(1);
+        let (listener_shutdown_tx, listener_shutdown_rx) = tokio::sync::watch::channel(false);
         Self {
             id: dataflow_id,
             pending_nodes: PendingNodes::new(dataflow_id, daemon_id),
@@ -229,6 +233,8 @@ impl RunningDataflow {
             node_stderr_most_recent: BTreeMap::new(),
             publishers: Default::default(),
             finished_tx,
+            listener_shutdown_tx,
+            listener_shutdown_rx,
             publish_all_messages_to_zenoh: dataflow_descriptor.debug.publish_all_messages_to_zenoh,
             descriptor: dataflow_descriptor,
             net_bytes_sent: Default::default(),

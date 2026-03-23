@@ -16,6 +16,7 @@ pub async fn listener_loop(
     daemon_tx: mpsc::Sender<Timestamped<Event>>,
     clock: Arc<HLC>,
     last_activity: Arc<AtomicU64>,
+    shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
     let (tx, rx) = flume::bounded(0);
     tokio::task::spawn_blocking(move || {
@@ -39,7 +40,15 @@ pub async fn listener_loop(
         }
     });
     let connection = ShmemConnection(tx);
-    Listener::run(connection, daemon_tx, clock, last_activity).await
+    let mut shutdown = shutdown;
+    tokio::select! {
+        _ = Listener::run(connection, daemon_tx, clock, last_activity) => {}
+        _ = shutdown.changed() => {
+            tracing::trace!("shmem listener shutting down");
+        }
+    }
+    // Dropping `tx` (inside `connection`) causes the spawn_blocking thread
+    // to exit when `rx.recv()` returns Err.
 }
 
 #[allow(clippy::large_enum_variant)]

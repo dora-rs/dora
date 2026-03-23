@@ -67,6 +67,8 @@ pub struct Spawner {
     pub clock: Arc<HLC>,
     pub uv: bool,
     pub ft_stats: Arc<crate::FaultToleranceStats>,
+    /// Signals listener loops to shut down when the dataflow finishes.
+    pub shutdown: tokio::sync::watch::Receiver<bool>,
 }
 
 impl Spawner {
@@ -96,6 +98,7 @@ impl Spawner {
             self.dataflow_descriptor.communication.local,
             self.clock.clone(),
             last_activity.clone(),
+            self.shutdown.clone(),
         )
         .await?;
 

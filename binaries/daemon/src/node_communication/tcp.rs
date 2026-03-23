@@ -24,23 +24,26 @@ pub async fn listener_loop(
     daemon_tx: mpsc::Sender<Timestamped<Event>>,
     clock: Arc<HLC>,
     last_activity: Arc<AtomicU64>,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
     loop {
-        match listener
-            .accept()
-            .await
-            .wrap_err("failed to accept new connection")
-        {
-            Err(err) => {
-                tracing::warn!("{err}");
+        tokio::select! {
+            result = listener.accept() => {
+                match result.wrap_err("failed to accept new connection") {
+                    Err(err) => tracing::warn!("{err}"),
+                    Ok((connection, _)) => {
+                        tokio::spawn(handle_connection_loop(
+                            connection,
+                            daemon_tx.clone(),
+                            clock.clone(),
+                            last_activity.clone(),
+                        ));
+                    }
+                }
             }
-            Ok((connection, _)) => {
-                tokio::spawn(handle_connection_loop(
-                    connection,
-                    daemon_tx.clone(),
-                    clock.clone(),
-                    last_activity.clone(),
-                ));
+            _ = shutdown.changed() => {
+                tracing::trace!("TCP listener shutting down");
+                break;
             }
         }
     }

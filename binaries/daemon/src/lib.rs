@@ -1750,6 +1750,7 @@ impl Daemon {
             clock: self.clock.clone(),
             uv,
             ft_stats: self.ft_stats.clone(),
+            shutdown: dataflow.listener_shutdown_rx.clone(),
         };
 
         let mut tasks = Vec::new();
@@ -2657,6 +2658,10 @@ impl Daemon {
                 .send_event(&msg)
                 .await
                 .wrap_err("failed to report dataflow finish to adora-coordinator")?;
+        }
+        // Signal all listener loops for this dataflow to shut down
+        if let Some(df) = self.running.get(&dataflow_id) {
+            let _ = df.listener_shutdown_tx.send(true);
         }
         self.running.remove(&dataflow_id);
 

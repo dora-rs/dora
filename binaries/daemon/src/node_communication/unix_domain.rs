@@ -20,29 +20,32 @@ use crate::{
 
 use super::{Connection, Listener};
 
-#[tracing::instrument(skip(listener, daemon_tx, clock, last_activity), level = "trace")]
+#[tracing::instrument(skip(listener, daemon_tx, clock, last_activity, shutdown), level = "trace")]
 pub async fn listener_loop(
     listener: UnixListener,
     daemon_tx: mpsc::Sender<Timestamped<Event>>,
     clock: Arc<HLC>,
     last_activity: Arc<AtomicU64>,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
     loop {
-        match listener
-            .accept()
-            .await
-            .wrap_err("failed to accept new connection")
-        {
-            Err(err) => {
-                tracing::info!("{err}");
+        tokio::select! {
+            result = listener.accept() => {
+                match result.wrap_err("failed to accept new connection") {
+                    Err(err) => tracing::info!("{err}"),
+                    Ok((connection, _)) => {
+                        tokio::spawn(handle_connection_loop(
+                            connection,
+                            daemon_tx.clone(),
+                            clock.clone(),
+                            last_activity.clone(),
+                        ));
+                    }
+                }
             }
-            Ok((connection, _)) => {
-                tokio::spawn(handle_connection_loop(
-                    connection,
-                    daemon_tx.clone(),
-                    clock.clone(),
-                    last_activity.clone(),
-                ));
+            _ = shutdown.changed() => {
+                tracing::trace!("Unix domain listener shutting down");
+                break;
             }
         }
     }
