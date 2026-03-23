@@ -58,7 +58,7 @@ use tokio::{
     io::{AsyncReadExt, AsyncSeekExt},
     sync::{
         broadcast,
-        mpsc::{self, UnboundedSender},
+        mpsc::{self},
         oneshot::{self, Sender},
     },
 };
@@ -83,7 +83,7 @@ pub mod bench_support {
     ) -> (
         RunningDataflow,
         HLC,
-        Vec<mpsc::UnboundedReceiver<Timestamped<NodeEvent>>>,
+        Vec<mpsc::Receiver<Timestamped<NodeEvent>>>,
     ) {
         let descriptor = adora_message::descriptor::Descriptor {
             nodes: vec![],
@@ -105,7 +105,7 @@ pub mod bench_support {
         let input_id: DataId = "input".to_string().into();
         for i in 0..fan_out {
             let receiver_id: NodeId = format!("receiver_{i}").into();
-            let (tx, rx) = mpsc::unbounded_channel();
+            let (tx, rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
             df.subscribe_channels.insert(receiver_id.clone(), tx);
             df.pending_messages
                 .insert(receiver_id.clone(), Arc::new(AtomicU64::new(0)));
@@ -2404,7 +2404,7 @@ impl Daemon {
     async fn subscribe(
         dataflow: &mut RunningDataflow,
         node_id: NodeId,
-        event_sender: UnboundedSender<Timestamped<NodeEvent>>,
+        event_sender: mpsc::Sender<Timestamped<NodeEvent>>,
         clock: &HLC,
     ) {
         // some inputs might have been closed already -> report those events
@@ -3124,7 +3124,7 @@ async fn send_output_to_local_receivers(
                 metadata: metadata.clone(),
                 data: data.clone(),
             };
-            match channel.send(Timestamped {
+            match channel.try_send(Timestamped {
                 inner: item,
                 timestamp,
             }) {
@@ -3191,8 +3191,15 @@ async fn send_output_to_local_receivers(
                             .insert(receiver_id.clone());
                     }
                 }
-                Err(_) => {
+                Err(mpsc::error::TrySendError::Closed(_)) => {
                     closed.push(receiver_id);
+                }
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    tracing::warn!(
+                        node = %receiver_id,
+                        "event channel full (capacity {}), dropping message (node is too slow)",
+                        NODE_EVENT_CHANNEL_CAPACITY,
+                    );
                 }
             }
         }
@@ -3432,12 +3439,12 @@ pub enum DaemonNodeEvent {
         reply_sender: oneshot::Sender<DaemonReply>,
     },
     Subscribe {
-        event_sender: UnboundedSender<Timestamped<NodeEvent>>,
+        event_sender: mpsc::Sender<Timestamped<NodeEvent>>,
         pending_counter: Arc<AtomicU64>,
         reply_sender: oneshot::Sender<DaemonReply>,
     },
     SubscribeDrop {
-        event_sender: UnboundedSender<Timestamped<NodeDropEvent>>,
+        event_sender: mpsc::Sender<Timestamped<NodeDropEvent>>,
         reply_sender: oneshot::Sender<DaemonReply>,
     },
     CloseOutputs {
@@ -3493,15 +3500,30 @@ enum RunStatus {
     Exit,
 }
 
-pub(crate) fn send_with_timestamp<T>(
-    sender: &UnboundedSender<Timestamped<T>>,
+/// Default capacity for per-node event channels. Bounded to prevent OOM
+/// from slow receivers. Large enough to absorb normal bursts.
+pub(crate) const NODE_EVENT_CHANNEL_CAPACITY: usize = 1000;
+
+/// Send an event with a timestamp. Returns Ok if sent, or Err if channel is
+/// closed. If the channel is full (slow receiver), the event is dropped with
+/// a warning — the daemon event loop must never block on a slow node.
+pub(crate) fn send_with_timestamp<T: std::fmt::Debug>(
+    sender: &mpsc::Sender<Timestamped<T>>,
     event: T,
     clock: &HLC,
 ) -> Result<(), mpsc::error::SendError<Timestamped<T>>> {
-    sender.send(Timestamped {
+    let msg = Timestamped {
         inner: event,
         timestamp: clock.new_timestamp(),
-    })
+    };
+    match sender.try_send(msg) {
+        Ok(()) => Ok(()),
+        Err(mpsc::error::TrySendError::Closed(msg)) => Err(mpsc::error::SendError(msg)),
+        Err(mpsc::error::TrySendError::Full(_)) => {
+            tracing::warn!("node event channel full, dropping event (slow receiver)");
+            Ok(()) // not a channel-closed error; don't remove the subscriber
+        }
+    }
 }
 
 fn set_up_ctrlc_handler(
@@ -3628,7 +3650,7 @@ mod fault_tolerance_tests {
         HLC::default()
     }
 
-    fn drain_events(rx: &mut mpsc::UnboundedReceiver<Timestamped<NodeEvent>>) -> Vec<NodeEvent> {
+    fn drain_events(rx: &mut mpsc::Receiver<Timestamped<NodeEvent>>) -> Vec<NodeEvent> {
         let mut events = Vec::new();
         while let Ok(timestamped) = rx.try_recv() {
             events.push(timestamped.inner);
@@ -3666,7 +3688,7 @@ mod fault_tolerance_tests {
             .or_default()
             .insert(input_y.clone());
 
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
         df.subscribe_channels.insert(node_a.clone(), tx);
 
         // Act: permanently close input_x
@@ -3701,7 +3723,7 @@ mod fault_tolerance_tests {
         let disable_restart = running.disable_restart.clone();
         df.running_nodes.insert(node_a.clone(), running);
 
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
         df.subscribe_channels.insert(node_a.clone(), tx);
 
         close_input(&mut df, &node_a, &input_x, &clock);
@@ -3737,7 +3759,7 @@ mod fault_tolerance_tests {
         let disable_restart = running.disable_restart.clone();
         df.running_nodes.insert(node_a.clone(), running);
 
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
         df.subscribe_channels.insert(node_a.clone(), tx);
 
         // Close last open input — but broken input still exists
@@ -3767,7 +3789,7 @@ mod fault_tolerance_tests {
         let disable_restart = running.disable_restart.clone();
         df.running_nodes.insert(node_a.clone(), running);
 
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
         df.subscribe_channels.insert(node_a.clone(), tx);
 
         // Permanently close the broken input (upstream exited)
@@ -3804,7 +3826,7 @@ mod fault_tolerance_tests {
         df.broken_inputs
             .insert((node_a.clone(), input_x.clone()), Duration::from_secs(5));
 
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
         df.subscribe_channels.insert(node_a.clone(), tx);
 
         break_input(&mut df, &node_a, &input_x, &clock);
@@ -3840,7 +3862,7 @@ mod fault_tolerance_tests {
         let disable_restart = running.disable_restart.clone();
         df.running_nodes.insert(node_a.clone(), running);
 
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
         df.subscribe_channels.insert(node_a.clone(), tx);
 
         break_input(&mut df, &node_a, &input_x, &clock);
@@ -3874,7 +3896,7 @@ mod fault_tolerance_tests {
         df.broken_inputs
             .insert((receiver.clone(), input.clone()), timeout);
 
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
         df.subscribe_channels.insert(receiver.clone(), tx);
 
         // Send data from upstream
@@ -3955,7 +3977,7 @@ mod fault_tolerance_tests {
         let disable_restart = running.disable_restart.clone();
         df.running_nodes.insert(receiver.clone(), running);
 
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
         df.subscribe_channels.insert(receiver.clone(), tx);
 
         // Step 1: Simulate timeout — insert into broken_inputs then break
@@ -4022,7 +4044,7 @@ mod fault_tolerance_tests {
         let clock = test_clock();
         let _node_id: NodeId = "node_a".to_string().into();
 
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
 
         // Simulate sending a ParamUpdate
         let result = send_with_timestamp(
@@ -4049,7 +4071,7 @@ mod fault_tolerance_tests {
     #[test]
     fn param_update_fails_on_closed_channel() {
         let clock = test_clock();
-        let (tx, rx) = mpsc::unbounded_channel::<Timestamped<NodeEvent>>();
+        let (tx, rx) = mpsc::channel::<Timestamped<NodeEvent>>(NODE_EVENT_CHANNEL_CAPACITY);
         drop(rx); // close the receiver
 
         let result = send_with_timestamp(

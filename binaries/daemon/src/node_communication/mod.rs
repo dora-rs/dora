@@ -27,7 +27,7 @@ use tokio::net::UnixListener;
 use tokio::{
     net::TcpListener,
     sync::{
-        mpsc::{self, UnboundedReceiver},
+        mpsc::{self, Receiver},
         oneshot,
     },
 };
@@ -232,8 +232,8 @@ struct Listener {
     dataflow_id: DataflowId,
     node_id: NodeId,
     daemon_tx: mpsc::Sender<Timestamped<Event>>,
-    subscribed_events: Option<UnboundedReceiver<Timestamped<NodeEvent>>>,
-    subscribed_drop_events: Option<UnboundedReceiver<Timestamped<NodeDropEvent>>>,
+    subscribed_events: Option<Receiver<Timestamped<NodeEvent>>>,
+    subscribed_drop_events: Option<Receiver<Timestamped<NodeDropEvent>>>,
     pending_counter: Option<Arc<AtomicU64>>,
     queue: VecDeque<Box<Option<Timestamped<NodeEvent>>>>,
     clock: Arc<uhlc::HLC>,
@@ -428,7 +428,7 @@ impl Listener {
                 self.process_daemon_event(event, None, connection).await?;
             }
             DaemonRequest::Subscribe => {
-                let (tx, rx) = mpsc::unbounded_channel();
+                let (tx, rx) = mpsc::channel(crate::NODE_EVENT_CHANNEL_CAPACITY);
                 let pending_counter = Arc::new(AtomicU64::new(0));
                 let (reply_sender, reply) = oneshot::channel();
                 self.process_daemon_event(
@@ -445,7 +445,7 @@ impl Listener {
                 self.pending_counter = Some(pending_counter);
             }
             DaemonRequest::SubscribeDrop => {
-                let (tx, rx) = mpsc::unbounded_channel();
+                let (tx, rx) = mpsc::channel(crate::NODE_EVENT_CHANNEL_CAPACITY);
                 let (reply_sender, reply) = oneshot::channel();
                 self.process_daemon_event(
                     DaemonNodeEvent::SubscribeDrop {

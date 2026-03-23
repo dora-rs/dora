@@ -34,7 +34,7 @@ use std::{
 };
 use tokio::sync::{
     broadcast,
-    mpsc::{self, UnboundedSender},
+    mpsc::{self, Sender},
 };
 use tracing::warn;
 
@@ -156,10 +156,10 @@ pub struct RunningDataflow {
     pub(crate) descriptor: Descriptor,
     pub(crate) pending_nodes: PendingNodes,
     pub(crate) dataflow_started: bool,
-    pub(crate) subscribe_channels: HashMap<NodeId, UnboundedSender<Timestamped<NodeEvent>>>,
+    pub(crate) subscribe_channels: HashMap<NodeId, Sender<Timestamped<NodeEvent>>>,
     /// Per-node pending message counters (incremented on send, decremented on recv)
     pub(crate) pending_messages: HashMap<NodeId, Arc<AtomicU64>>,
-    pub(crate) drop_channels: HashMap<NodeId, UnboundedSender<Timestamped<NodeDropEvent>>>,
+    pub(crate) drop_channels: HashMap<NodeId, Sender<Timestamped<NodeDropEvent>>>,
     pub(crate) mappings: HashMap<OutputId, BTreeSet<(NodeId, DataId)>>,
     pub(crate) timers: BTreeMap<Duration, BTreeSet<(NodeId, DataId)>>,
     /// Nodes subscribing to `adora/logs` virtual input.
