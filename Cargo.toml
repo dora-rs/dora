@@ -91,7 +91,7 @@ adora-ros2-bridge = { version = "0.1.0", path = "libraries/extensions/ros2-bridg
 adora-ros2-bridge-msg-gen = { version = "0.1.0", path = "libraries/extensions/ros2-bridge/msg-gen" }
 adora-ros2-bridge-python = { path = "libraries/extensions/ros2-bridge/python" }
 adora-message = { version = "0.1.0", path = "libraries/message" }
-arrow = { version = "58" }
+arrow = { version = "58", default-features = false }
 arrow-schema = { version = "58" }
 arrow-data = { version = "58" }
 arrow-array = { version = "58" }
