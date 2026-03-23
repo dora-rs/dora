@@ -1,4 +1,9 @@
-"""TODO: Add docstring."""
+"""Type stub generator for dora-rs Python nodes.
+
+This module provides utilities to automatically generate Python type stubs
+(.pyi files) from Python modules. It utilizes the `inspect` module for
+reflection and the `ast` module to construct the stub syntax tree.
+"""
 
 import argparse
 import ast
@@ -13,7 +18,14 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 
 def path_to_type(*elements: str) -> ast.AST:
-    """TODO: Add docstring."""
+    """Convert a sequence of strings into an AST Attribute or Name node.
+
+    Args:
+        *elements (str): The components of the path (e.g., "typing", "List").
+
+    Returns:
+        ast.AST: An AST node representing the path.
+    """
     base: ast.AST = ast.Name(id=elements[0], ctx=ast.Load())
     for e in elements[1:]:
         base = ast.Attribute(value=base, attr=e, ctx=ast.Load())
@@ -69,7 +81,14 @@ BUILTINS: Dict[str, Union[None, Tuple[List[ast.AST], ast.AST]]] = {
 
 
 def module_stubs(module: Any) -> ast.Module:
-    """TODO: Add docstring."""
+    """Generate the AST for a module's type stubs.
+
+    Args:
+        module (Any): The Python module to process.
+
+    Returns:
+        ast.Module: The AST representing the module's stubs.
+    """
     types_to_import = {"typing"}
     classes = []
     functions = []
@@ -104,7 +123,17 @@ def module_stubs(module: Any) -> ast.Module:
 def class_stubs(
     cls_name: str, cls_def: Any, element_path: List[str], types_to_import: Set[str],
 ) -> ast.ClassDef:
-    """TODO: Add docstring."""
+    """Generate the AST for a class's type stubs.
+
+    Args:
+        cls_name (str): The name of the class.
+        cls_def (Any): The class object to inspect.
+        element_path (List[str]): The path to the class in the module.
+        types_to_import (Set[str]): Set of modules that need to be imported.
+
+    Returns:
+        ast.ClassDef: The AST representing the class's stubs.
+    """
     attributes: List[ast.AST] = []
     methods: List[ast.AST] = []
     magic_methods: List[ast.AST] = []
@@ -205,7 +234,18 @@ def data_descriptor_stub(
     element_path: List[str],
     types_to_import: Set[str],
 ) -> Union[Tuple[ast.AnnAssign, ast.Expr], Tuple[ast.AnnAssign]]:
-    """TODO: Add docstring."""
+    """Generate the AST for a data descriptor (attribute) stub.
+
+    Args:
+        data_desc_name (str): The name of the descriptor.
+        data_desc_def (Any): The descriptor object.
+        element_path (List[str]): The path to the descriptor.
+        types_to_import (Set[str]): Set of modules that need to be imported.
+
+    Returns:
+        Union[Tuple[ast.AnnAssign, ast.Expr], Tuple[ast.AnnAssign]]:
+            A tuple containing the assignment AST and optionally a docstring expression.
+    """
     annotation = None
     doc_comment = None
 
@@ -237,7 +277,18 @@ def function_stub(
     *,
     in_class: bool,
 ) -> ast.FunctionDef:
-    """TODO: Add docstring."""
+    """Generate the AST for a function or method stub.
+
+    Args:
+        fn_name (str): The name of the function.
+        fn_def (Any): The function object.
+        element_path (List[str]): The path to the function.
+        types_to_import (Set[str]): Set of modules that need to be imported.
+        in_class (bool): Whether the function is a method within a class.
+
+    Returns:
+        ast.FunctionDef: The AST representing the function stub.
+    """
     body: List[ast.AST] = []
     doc = inspect.getdoc(fn_def)
     if doc is not None:
@@ -268,7 +319,18 @@ def arguments_stub(
     element_path: List[str],
     types_to_import: Set[str],
 ) -> ast.arguments:
-    """TODO: Add docstring."""
+    """Generate the AST for function arguments.
+
+    Args:
+        callable_name (str): The name of the callable.
+        callable_def (Any): The callable object.
+        doc (str): The docstring containing type information.
+        element_path (List[str]): The path to the callable.
+        types_to_import (Set[str]): Set of modules that need to be imported.
+
+    Returns:
+        ast.arguments: The AST representing the function arguments.
+    """
     real_parameters: Mapping[str, inspect.Parameter] = inspect.signature(
         callable_def,
     ).parameters
@@ -367,7 +429,17 @@ def arguments_stub(
 def returns_stub(
     callable_name: str, doc: str, element_path: List[str], types_to_import: Set[str],
 ) -> Optional[ast.AST]:
-    """TODO: Add docstring."""
+    """Extract and generate the AST for a function's return type.
+
+    Args:
+        callable_name (str): The name of the callable.
+        doc (str): The docstring containing return type information.
+        element_path (List[str]): The path to the callable.
+        types_to_import (Set[str]): Set of modules that need to be imported.
+
+    Returns:
+        Optional[ast.AST]: The AST representing the return type, if found.
+    """
     m = re.findall(r"^ *:rtype: *([^\n]*) *$", doc, re.MULTILINE)
     if len(m) == 0:
         builtin = BUILTINS.get(callable_name)
@@ -387,7 +459,16 @@ def returns_stub(
 def convert_type_from_doc(
     type_str: str, element_path: List[str], types_to_import: Set[str],
 ) -> ast.AST:
-    """TODO: Add docstring."""
+    """Convert a type string from a docstring into an AST node.
+
+    Args:
+        type_str (str): The type string to parse.
+        element_path (List[str]): The path to the element being typed.
+        types_to_import (Set[str]): Set of modules that need to be imported.
+
+    Returns:
+        ast.AST: The AST representing the type.
+    """
     type_str = type_str.strip()
     return parse_type_to_ast(type_str, element_path, types_to_import)
 
@@ -395,8 +476,18 @@ def convert_type_from_doc(
 def parse_type_to_ast(
     type_str: str, element_path: List[str], types_to_import: Set[str],
 ) -> ast.AST:
-    # let's tokenize
-    """TODO: Add docstring."""
+    """Parse a complex type string into an AST node.
+
+    Supports nested types, unions (using 'or'), and optional flags.
+
+    Args:
+        type_str (str): The string representation of the type.
+        element_path (List[str]): The path to the element being typed.
+        types_to_import (Set[str]): Set of modules that need to be imported.
+
+    Returns:
+        ast.AST: The AST representing the parsed type.
+    """
     tokens = []
     current_token = ""
     for c in type_str:
@@ -426,7 +517,14 @@ def parse_type_to_ast(
     # then it's easy
     def parse_sequence(sequence: List[Any]) -> ast.AST:
         # we split based on "or"
-        """TODO: Add docstring."""
+        """Parse a sequence of tokens into a combined AST node.
+
+        Args:
+            sequence (List[Any]): A list of tokens and nested sequences.
+
+        Returns:
+            ast.AST: The AST representing the sequence.
+        """
         or_groups: List[List[str]] = [[]]
         print(sequence)
         # TODO: Fix sequence
@@ -478,7 +576,16 @@ def parse_type_to_ast(
 def concatenated_path_to_type(
     path: str, element_path: List[str], types_to_import: Set[str],
 ) -> ast.AST:
-    """TODO: Add docstring."""
+    """Convert a dotted path string into an AST type node and track imports.
+
+    Args:
+        path (str): The dotted path string (e.g., "dora.Node").
+        element_path (List[str]): The path to the element being typed.
+        types_to_import (Set[str]): Set of modules that need to be imported.
+
+    Returns:
+        ast.AST: The AST representing the type path.
+    """
     parts = path.split(".")
     if any(not p for p in parts):
         raise ValueError(
@@ -490,7 +597,17 @@ def concatenated_path_to_type(
 
 
 def build_doc_comment(doc: str) -> Optional[ast.Expr]:
-    """TODO: Add docstring."""
+    """Clean a docstring and wrap it in an AST expression.
+
+    Removes Sphinx-style type annotations (:type, :rtype) to avoid redundancy
+    in stubs.
+
+    Args:
+        doc (str): The raw docstring.
+
+    Returns:
+        Optional[ast.Expr]: An AST expression containing the cleaned docstring.
+    """
     lines = [line.strip() for line in doc.split("\n")]
     clean_lines = []
     for line in lines:
@@ -502,7 +619,11 @@ def build_doc_comment(doc: str) -> Optional[ast.Expr]:
 
 
 def format_with_ruff(file: str) -> None:
-    """TODO: Add docstring."""
+    """Format a Python file using the Ruff formatter.
+
+    Args:
+        file (str): The path to the file to format.
+    """
     subprocess.check_call(["python", "-m", "ruff", "format", file])
 
 

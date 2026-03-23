@@ -1,5 +1,11 @@
 #!/usr/bin/env python
-"""TODO: Add docstring."""
+"""CUDA benchmark receiver for dora-rs.
+
+This script demonstrates and benchmarks the reception of data packets in a
+dora-rs dataflow. It specifically highlights the performance difference
+between standard CPU-to-GPU copies and optimized zero-copy CUDA-to-CUDA
+transfers using IPC handles.
+"""
 
 import os
 import time
