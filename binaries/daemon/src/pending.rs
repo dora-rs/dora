@@ -129,7 +129,11 @@ impl PendingNodes {
         cascading_errors: &mut CascadingErrorCauses,
     ) -> eyre::Result<()> {
         if !self.local_nodes.is_empty() {
-            bail!("received external `all_nodes_ready` event before local nodes were ready");
+            tracing::warn!(
+                remaining = ?self.local_nodes,
+                "received external `all_nodes_ready` before local nodes were ready; \
+                 proceeding anyway (coordinator may be ahead of this daemon)"
+            );
         }
 
         self.answer_subscribe_requests(exited_before_subscribe, cascading_errors)

@@ -153,7 +153,10 @@ fn run_service_mode(
     config: Ros2BridgeConfig,
     messages: Arc<HashMap<String, HashMap<String, Message>>>,
 ) -> eyre::Result<()> {
-    let service_name = config.service.as_ref().unwrap();
+    let service_name = config
+        .service
+        .as_ref()
+        .context("service name required for service mode")?;
     let service_type = config
         .service_type
         .as_ref()
@@ -382,7 +385,10 @@ fn run_action_mode(
     config: Ros2BridgeConfig,
     messages: Arc<HashMap<String, HashMap<String, Message>>>,
 ) -> eyre::Result<()> {
-    let action_name = config.action.as_ref().unwrap();
+    let action_name = config
+        .action
+        .as_ref()
+        .context("action name required for action mode")?;
     let action_type = config
         .action_type
         .as_ref()

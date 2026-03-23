@@ -1293,25 +1293,31 @@ pub fn init_tracing(
     let guard: Arc<Mutex<Option<OtelGuard>>> = Arc::new(Mutex::new(None));
     let clone = guard.clone();
     let tracing_monitor = async move {
-        let mut builder = TracingBuilder::new(node_id_str);
+        let mut builder = TracingBuilder::new(node_id_str.clone());
         // Only enable OTLP if environment variable is set
         if std::env::var("ADORA_OTLP_ENDPOINT").is_ok()
             || std::env::var("ADORA_JAEGER_TRACING").is_ok()
         {
-            builder = builder
-                .with_otlp_tracing()
-                .context("failed to set up OTLP tracing")
-                .unwrap()
-                .with_stdout("info", true);
-            *clone.lock().unwrap() = builder.guard.take();
+            match builder.with_otlp_tracing() {
+                Ok(b) => {
+                    builder = b.with_stdout("info", true);
+                    if let Ok(mut guard) = clone.lock() {
+                        *guard = builder.guard.take();
+                    }
+                }
+                Err(e) => {
+                    eprintln!("warning: failed to set up OTLP tracing: {e:?}");
+                    // Rebuild without OTLP — with_otlp_tracing consumed builder
+                    builder = TracingBuilder::new(node_id_str).with_stdout("info", true);
+                }
+            }
         } else {
             builder = builder.with_stdout("info", true);
         }
 
-        builder
-            .build()
-            .wrap_err("failed to set up tracing subscriber")
-            .unwrap();
+        if let Err(e) = builder.build() {
+            eprintln!("warning: failed to set up tracing subscriber: {e:?}");
+        }
     };
 
     let rt = Handle::try_current().context("failed to get tokio runtime handle")?;

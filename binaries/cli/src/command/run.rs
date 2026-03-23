@@ -182,6 +182,11 @@ impl Executable for Run {
         }
 
         // --- Spawn embedded coordinator ---
+        log::warn!(
+            "embedded coordinator has no authentication enabled; \
+             any local process can connect and control dataflows. \
+             For production use, run `adora up --auth` instead."
+        );
         let bind_addr: SocketAddr = (LOCALHOST, ADORA_COORDINATOR_PORT_WS_DEFAULT).into();
         let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
         #[cfg(feature = "tracing")]

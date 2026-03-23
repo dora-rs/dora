@@ -230,7 +230,10 @@ impl Node {
                 event
                     .to_py_dict(py)
                     .context("Could not convert event into a dict")
-                    .unwrap_or_else(|_| PyDict::new(py).into())
+                    .unwrap_or_else(|err| {
+                        tracing::warn!("failed to convert event to dict: {err:?}");
+                        PyDict::new(py).into()
+                    })
             })
             .collect();
         Ok(events)
