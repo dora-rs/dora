@@ -1,4 +1,9 @@
-"""TODO: Add docstring."""
+"""Data sender example for dora-rs with draining behavior.
+
+This script demonstrates how to send a sequence of data packets from a
+Python node. It uses a loop to emit timestamps and then terminates,
+allowing the dora-rs runtime to drain the remaining messages.
+"""
 
 import time
 

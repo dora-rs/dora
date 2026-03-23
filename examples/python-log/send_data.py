@@ -1,4 +1,9 @@
-"""TODO: Add docstring."""
+"""Data sender example for dora-rs with logging.
+
+This script demonstrates how to send data from a Python node to the
+dora-rs dataflow. It is typically used in conjunction with a logger node
+to verify message transmission.
+"""
 
 import time
 
