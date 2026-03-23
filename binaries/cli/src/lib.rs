@@ -142,36 +142,3 @@ pub fn lib_main(args: Args) {
     }
 }
 
-#[cfg(feature = "python")]
-use clap::Parser;
-#[cfg(feature = "python")]
-use pyo3::{
-    Bound, PyResult, Python, pyfunction, pymodule,
-    types::{PyModule, PyModuleMethods},
-    wrap_pyfunction,
-};
-
-#[cfg(feature = "python")]
-#[pyfunction]
-fn py_main(_py: Python) -> PyResult<()> {
-    Python::initialize();
-    // Skip first argument as it is a python call.
-    let args = std::env::args_os().skip(1).collect::<Vec<_>>();
-
-    match Args::try_parse_from(args) {
-        Ok(args) => lib_main(args),
-        Err(err) => {
-            eprintln!("{err}");
-        }
-    }
-    Ok(())
-}
-
-/// A Python module implemented in Rust.
-#[cfg(feature = "python")]
-#[pymodule]
-fn adora_cli(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(py_main, &m)?)?;
-    m.add("__version__", env!("CARGO_PKG_VERSION"))?;
-    Ok(())
-}

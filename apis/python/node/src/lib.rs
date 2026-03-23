@@ -142,7 +142,7 @@ impl Node {
             AdoraNode::init_from_env().context("Could not initiate node from environment variable. For dynamic node, please add a node id in the initialization function.")?
         };
         let id = node.id().clone();
-        let dataflow_id = node.dataflow_id().clone();
+        let dataflow_id = *node.dataflow_id();
         runtime()?.spawn(async move {
             let _guard = init_tracing(&id, &dataflow_id).unwrap();
             loop {
@@ -248,10 +248,7 @@ impl Node {
     #[allow(clippy::should_implement_trait)]
     pub fn try_recv(&mut self, py: Python) -> Option<Py<PyDict>> {
         match self.events.try_recv() {
-            Ok(event) => match event.to_py_dict(py) {
-                Ok(dict) => Some(dict),
-                Err(_) => None,
-            },
+            Ok(event) => event.to_py_dict(py).ok(),
             Err(_) => None,
         }
     }
@@ -603,25 +600,18 @@ impl Events {
     fn drain(&self) -> Option<Vec<PyEvent>> {
         let mut inner = self.inner.blocking_lock();
         match &mut *inner {
-            EventsInner::Adora(events) => match events.drain() {
-                Some(items) => {
-                    return Some(
-                        items
-                            .into_iter()
-                            .map(MergedEvent::Adora)
-                            .map(|event| PyEvent { event })
-                            .collect(),
-                    );
-                }
-                None => return None,
-            },
+            EventsInner::Adora(events) => events.drain().map(|items| items
+                .into_iter()
+                .map(MergedEvent::Adora)
+                .map(|event| PyEvent { event })
+                .collect()),
             EventsInner::Merged(_events) => {
                 // drain is not supported on merged event streams; return None
                 // to indicate no buffered events, matching the semantics of an
                 // empty Adora stream.
-                return None;
+                None
             }
-        };
+        }
     }
 
     fn is_empty(&self) -> bool {

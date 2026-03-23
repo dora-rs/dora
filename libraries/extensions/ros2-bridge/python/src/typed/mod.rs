@@ -37,7 +37,6 @@ mod tests {
     use serde_assert::Deserializer;
     #[test]
     fn test_python_array_code() -> Result<()> {
-        pyo3::prepare_freethreaded_python();
         let context = Ros2Context::new(None).context("Could not create a context")?;
         let messages = context.messages.clone();
         let serializer = Serializer::builder().build();
@@ -60,10 +59,10 @@ mod tests {
 
             let arrays = my_module.getattr("TEST_ARRAYS")?;
             let arrays = arrays
-                .downcast::<PyList>()
+                .cast::<PyList>()
                 .map_err(|err| eyre!("Could not downcast PyAny. Err: {}", err))?;
             for array_wrapper in arrays.iter() {
-                let arrays = array_wrapper.downcast::<PyTuple>().map_err(|err| {
+                let arrays = array_wrapper.cast::<PyTuple>().map_err(|err| {
                     eyre!("Could not downcast expected tuple test array. Err: {}", err)
                 })?;
                 let package_name: String = arrays.get_item(0)?.extract()?;
