@@ -209,11 +209,11 @@ impl Spawner {
                     // Use python to spawn runtime if there is a python operator
 
                     // TODO: Handle multi-operator runtime once sub-interpreter is supported
-                    if python_operators.len() > 2 {
+                    if python_operators.len() > 1 {
                         eyre::bail!(
-                            "Runtime currently only support one Python Operator.
-                     This is because pyo4 sub-interpreter is not yet available.
-                     See: https://github.com/PyO4/pyo3/issues/576"
+                            "Runtime currently only supports one Python Operator.
+                     This is because PyO3 sub-interpreter is not yet available.
+                     See: https://github.com/PyO3/pyo3/issues/576"
                         );
                     }
 

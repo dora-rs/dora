@@ -320,7 +320,7 @@ fn node_kind_mut(node: &mut Node) -> eyre::Result<NodeKindMut<'_>> {
 }
 
 pub fn source_is_url(source: &str) -> bool {
-    source.contains("://")
+    source.starts_with("https://") || source.starts_with("http://")
 }
 
 pub fn resolve_path(source: &str, working_dir: &Path) -> Result<PathBuf> {

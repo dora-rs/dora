@@ -8,12 +8,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         match event {
             Event::Input {
                 id,
-                metadata,
+                metadata: _,
                 data: _,
             } => match id.as_str() {
                 other => eprintln!("Received input `{other}`"),
             },
-            _ => {}
+            _other => {}
         }
     }
 

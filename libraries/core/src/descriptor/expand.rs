@@ -377,7 +377,7 @@ fn expand_module_node(
 
         // Resolve relative paths: make inner node paths relative to base_dir
         if let Some(ref path) = inner_node.path {
-            if !path.contains("://") && !Path::new(path).is_absolute() {
+            if !super::source_is_url(path) && !Path::new(path).is_absolute() {
                 let resolved = module_dir.join(path);
                 let relative = resolved.strip_prefix(canonical_base).map_err(|_| {
                     eyre::eyre!(

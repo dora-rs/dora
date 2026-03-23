@@ -3208,7 +3208,14 @@ async fn send_output_to_local_receivers(
                 .os_id(shared_memory_id)
                 .open()
                 .wrap_err("failed to map shared memory output")?;
-            let data = Some(AVec::from_slice(1, &unsafe { memory.as_slice() }[..len]));
+            let mem_slice = unsafe { memory.as_slice() };
+            if len > mem_slice.len() {
+                eyre::bail!(
+                    "shared memory length {len} exceeds region size {}",
+                    mem_slice.len()
+                );
+            }
+            let data = Some(AVec::from_slice(1, &mem_slice[..len]));
             (data, Some(drop_token))
         }
         Some(DataMessage::Vec(v)) => (Some(v), None),

@@ -256,6 +256,16 @@ fn offset_ptrs(next_free: *mut u8) -> eyre::Result<(*mut AtomicBool, *mut Atomic
     Ok((disconnect_ptr.cast(), len_ptr.cast(), data_ptr))
 }
 
+// SAFETY: ShmemChannel owns its shared memory region exclusively.
+// Only one ShmemChannel instance exists per region (enforced by
+// ShmemServer::new / ShmemClient::new). Transferring ownership
+// between threads is safe because the underlying OS primitives
+// (shared memory + events) are not thread-affine.
+//
+// Sync is needed because ShmemChannel is held inside EventStream
+// which requires Sync for merged stream support. Concurrent access
+// is safe because all operations go through &mut self (send/receive),
+// so the borrow checker prevents concurrent use at compile time.
 unsafe impl Send for ShmemChannel {}
 unsafe impl Sync for ShmemChannel {}
 

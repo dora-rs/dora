@@ -1,0 +1,5 @@
+/cpu_bench.adora-session.yaml
+
+# Ignore all runtime artifacts (log files, UUID dirs)
+*
+!.gitignore

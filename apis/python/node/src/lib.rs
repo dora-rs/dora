@@ -575,8 +575,8 @@ impl Events {
             EventsInner::Adora(events) => events.try_recv().map(MergedEvent::Adora),
             EventsInner::Merged(_events) => {
                 // try_recv is not supported on merged event streams;
-                // return Closed so callers fall back to recv().
-                return Err(TryRecvError::Closed);
+                // return Empty (stream is still open, Closed would be wrong).
+                return Err(TryRecvError::Empty);
             }
         };
         event.map(|event| PyEvent { event })
@@ -606,10 +606,9 @@ impl Events {
                 .map(|event| PyEvent { event })
                 .collect()),
             EventsInner::Merged(_events) => {
-                // drain is not supported on merged event streams; return None
-                // to indicate no buffered events, matching the semantics of an
-                // empty Adora stream.
-                None
+                // drain is not supported on merged event streams; return
+                // empty list (stream is still open, None would signal closed).
+                Some(vec![])
             }
         }
     }

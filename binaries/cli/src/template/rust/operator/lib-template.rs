@@ -14,10 +14,10 @@ impl AdoraOperator for ExampleOperator {
         output_sender: &mut AdoraOutputSender,
     ) -> Result<AdoraStatus, String> {
         match event {
-            Event::Input { id, data } => match id {
+            Event::Input { id, data: _ } => match id {
                 other => eprintln!("Received input {other}"),
             },
-            _ => {}
+            _other => {}
         }
 
         Ok(AdoraStatus::Continue)

@@ -10,7 +10,7 @@ def main():
 
     for event in node:
         if event["type"] == "INPUT":
-            if event["id"] == "TICK":
+            if event["id"] == "tick":
                 print(
                     f"""Node received:
                 id: {event["id"]},
