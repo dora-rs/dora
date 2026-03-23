@@ -135,10 +135,11 @@ impl IntegrationTestingEvents {
         let start_timestamp = self.start_timestamp;
         let skip_output_time_offsets = self.options.skip_output_time_offsets;
 
+        let arc_data = data.as_ref().map(|d| std::sync::Arc::new(d.clone()));
         let output = convert_output_to_json(
             output_id,
             metadata,
-            data,
+            &arc_data,
             start_timestamp,
             skip_output_time_offsets,
         )?;
@@ -197,8 +198,8 @@ impl IntegrationTestingEvents {
                 meta.parameters = metadata.unwrap_or_default();
                 NodeEvent::Input {
                     id,
-                    metadata: meta,
-                    data: data.map(|d| DataMessage::Vec(aligned_vec::AVec::from_slice(1, &d))),
+                    metadata: std::sync::Arc::new(meta),
+                    data: data.map(|d| std::sync::Arc::new(DataMessage::Vec(aligned_vec::AVec::from_slice(1, &d)))),
                 }
             }
             IncomingEvent::InputClosed { id } => NodeEvent::InputClosed { id },
@@ -219,7 +220,7 @@ enum OutputWriter {
 pub fn convert_output_to_json(
     output_id: &adora_message::id::DataId,
     metadata: &Metadata,
-    data: &Option<DataMessage>,
+    data: &Option<std::sync::Arc<DataMessage>>,
     start_timestamp: Timestamp,
     skip_output_time_offsets: bool,
 ) -> eyre::Result<serde_json::Map<String, serde_json::Value>> {
@@ -231,7 +232,7 @@ pub fn convert_output_to_json(
     }
     if data.is_some() {
         let (drop_tx, drop_rx) = flume::unbounded();
-        let data_array = data_to_arrow_array(data.clone(), metadata, drop_tx)
+        let data_array = data_to_arrow_array(data.clone().map(|arc| std::sync::Arc::unwrap_or_clone(arc)), metadata, drop_tx)
             .context("failed to convert output to arrow array")?;
         // integration testing doesn't use shared memory -> no drop tokens
         let _ = drop_rx;

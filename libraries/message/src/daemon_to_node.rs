@@ -1,5 +1,7 @@
 use std::{net::SocketAddr, path::PathBuf};
 
+use std::sync::Arc;
+
 use crate::{
     DataflowId,
     config::NodeRunConfig,
@@ -71,8 +73,8 @@ pub enum NodeEvent {
     },
     Input {
         id: DataId,
-        metadata: Metadata,
-        data: Option<DataMessage>,
+        metadata: Arc<Metadata>,
+        data: Option<Arc<DataMessage>>,
     },
     InputClosed {
         id: DataId,

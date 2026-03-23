@@ -2670,7 +2670,7 @@ impl Daemon {
                         channel,
                         NodeEvent::Input {
                             id: input_id.clone(),
-                            metadata: metadata.clone(),
+                            metadata: Arc::new(metadata.clone()),
                             data: None,
                         },
                         &self.clock,
@@ -2719,8 +2719,8 @@ impl Daemon {
                         channel,
                         NodeEvent::Input {
                             id: input_id.clone(),
-                            metadata: metadata.clone(),
-                            data: Some(message.clone()),
+                            metadata: Arc::new(metadata.clone()),
+                            data: Some(Arc::new(message.clone())),
                         },
                         &self.clock,
                     );
@@ -2798,8 +2798,8 @@ impl Daemon {
                         channel,
                         NodeEvent::Input {
                             id: sub.input_id.clone(),
-                            metadata,
-                            data: Some(DataMessage::Vec(sample.clone())),
+                            metadata: Arc::new(metadata),
+                            data: Some(Arc::new(DataMessage::Vec(sample.clone()))),
                         },
                         &self.clock,
                     );
@@ -3113,6 +3113,9 @@ async fn send_output_to_local_receivers(
     let output_id = OutputId(node_id, output_id);
     let local_receivers = dataflow.mappings.get(&output_id).unwrap_or(&empty_set);
     let OutputId(node_id, _) = output_id;
+    // Wrap in Arc once; fan-out clones are O(1) atomic ref bumps instead of O(payload_size) memcpy
+    let metadata = Arc::new(metadata.clone());
+    let data = data.map(Arc::new);
     let mut closed = Vec::new();
     for (receiver_id, input_id) in local_receivers {
         if let Some(channel) = dataflow.subscribe_channels.get(receiver_id) {
@@ -3197,7 +3200,9 @@ async fn send_output_to_local_receivers(
     for id in closed {
         dataflow.subscribe_channels.remove(id);
     }
-    let (data_bytes, drop_token) = match data {
+    // Unwrap Arc for the return-data extraction (this is outside the fan-out loop)
+    let data_owned = data.as_ref().map(|arc| (**arc).clone());
+    let (data_bytes, drop_token) = match data_owned {
         None => (None, None),
         Some(DataMessage::SharedMemory {
             shared_memory_id,

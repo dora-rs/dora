@@ -237,7 +237,7 @@ mod tests {
         EventItem::NodeEvent {
             event: NodeEvent::Input {
                 id: DataId::from(id.to_string()),
-                metadata,
+                metadata: std::sync::Arc::new(metadata),
                 data: None,
             },
             ack_channel: tx,

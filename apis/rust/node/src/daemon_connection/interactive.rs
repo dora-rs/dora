@@ -139,8 +139,8 @@ impl InteractiveEvents {
 
             NodeEvent::Input {
                 id,
-                metadata: Metadata::new(HLC::default().new_timestamp(), type_info),
-                data: data.map(|d| DataMessage::Vec(aligned_vec::AVec::from_slice(1, &d))),
+                metadata: std::sync::Arc::new(Metadata::new(HLC::default().new_timestamp(), type_info)),
+                data: data.map(|d| std::sync::Arc::new(DataMessage::Vec(aligned_vec::AVec::from_slice(1, &d)))),
             }
         };
         Ok(Some(event))
