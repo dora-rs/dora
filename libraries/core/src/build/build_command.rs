@@ -1,5 +1,10 @@
-use crate::build::managed_python_interpreter;
-use std::{collections::BTreeMap, path::Path, process::Stdio};
+use crate::build::{managed_python_bin_dir, managed_python_interpreter};
+use std::{
+    collections::BTreeMap,
+    ffi::OsString,
+    path::{Path, PathBuf},
+    process::Stdio,
+};
 
 use dora_message::descriptor::EnvValue;
 use eyre::{Context, eyre};
@@ -13,6 +18,7 @@ pub async fn run_build_command(
     build: &str,
     working_dir: &Path,
     uv: bool,
+    python_env_dir: Option<PathBuf>,
     envs: &Option<BTreeMap<String, EnvValue>>,
     stdout_tx: tokio::sync::mpsc::Sender<std::io::Result<String>>,
 ) -> eyre::Result<()> {
@@ -48,6 +54,12 @@ pub async fn run_build_command(
                 cmd.env(key, value);
             }
         }
+        if uv {
+            if let Some(python_env_dir) = &python_env_dir {
+                apply_managed_python_env(&mut cmd, python_env_dir, envs)
+                    .context("failed to apply managed Python env")?;
+            }
+        }
 
         cmd.current_dir(dunce::simplified(working_dir));
 
@@ -79,6 +91,48 @@ pub async fn run_build_command(
         }
     }
     Ok(())
+}
+
+fn apply_managed_python_env(
+    cmd: &mut Command,
+    python_env_dir: &Path,
+    envs: &Option<BTreeMap<String, EnvValue>>,
+) -> eyre::Result<()> {
+    let interpreter = managed_python_interpreter(python_env_dir);
+    // Fail closed here: if the managed interpreter is missing, falling through to the ambient
+    // PATH could silently pick a different Python than the one Dora prepared for this node.
+    if !interpreter.is_file() {
+        return Err(eyre!(
+            "managed Python interpreter `{}` is missing; run Dora's Python env preparation first",
+            interpreter.display()
+        ));
+    }
+    cmd.env("VIRTUAL_ENV", python_env_dir);
+    if let Some(path) = managed_python_path(python_env_dir, envs)? {
+        cmd.env("PATH", path);
+    }
+    Ok(())
+}
+
+fn managed_python_path(
+    python_env_dir: &Path,
+    envs: &Option<BTreeMap<String, EnvValue>>,
+) -> eyre::Result<Option<OsString>> {
+    // Prepend the managed env so `python`/`pip` resolve there before any machine-level entries.
+    let mut paths = vec![managed_python_bin_dir(python_env_dir)];
+    let base_path = envs
+        .as_ref()
+        .and_then(|envs| envs.get("PATH"))
+        .map(|value| OsString::from(value.to_string()))
+        .or_else(|| std::env::var_os("PATH"));
+
+    if let Some(base_path) = base_path {
+        paths.extend(std::env::split_paths(&base_path));
+    }
+
+    std::env::join_paths(paths)
+        .map(Some)
+        .wrap_err("failed to compose managed Python PATH")
 }
 
 pub async fn prepare_managed_python_env(
@@ -157,8 +211,10 @@ async fn forward_build_output<R1, R2>(
 
 #[cfg(test)]
 mod tests {
-    use super::{forward_build_output, prepare_managed_python_env, run_build_command};
-    use crate::build::managed_python_interpreter;
+    use super::{
+        forward_build_output, managed_python_path, prepare_managed_python_env, run_build_command,
+    };
+    use crate::build::{managed_python_bin_dir, managed_python_interpreter};
     use dora_message::descriptor::EnvValue;
     use std::{
         collections::BTreeMap,
@@ -257,7 +313,7 @@ mod tests {
         let envs = Some(BTreeMap::new());
         let (stdout_tx, _stdout_rx) = tokio::sync::mpsc::channel(4);
 
-        let err = run_build_command(&build, &working_dir, false, &envs, stdout_tx)
+        let err = run_build_command(&build, &working_dir, false, None, &envs, stdout_tx)
             .await
             .expect_err("missing executable should fail");
         let msg = format!("{err:#}");
@@ -280,6 +336,7 @@ mod tests {
             "cargo --version\n\ncargo --version\n",
             working_dir.path(),
             false,
+            None,
             &None::<BTreeMap<String, EnvValue>>,
             tx,
         )
@@ -306,6 +363,7 @@ mod tests {
             "\n   \n",
             working_dir.path(),
             false,
+            None,
             &None::<BTreeMap<String, EnvValue>>,
             tx,
         )
@@ -343,6 +401,57 @@ mod tests {
         assert!(
             rx.try_recv().is_err(),
             "reused env should not emit build output"
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    fn managed_python_path_prepends_bin_dir_to_path() {
+        let env_dir = PathBuf::from("managed-env");
+        let path_sep = if cfg!(windows) { ";" } else { ":" };
+        let mut envs = BTreeMap::new();
+        envs.insert(
+            "PATH".to_owned(),
+            EnvValue::String(format!("base-one{path_sep}base-two")),
+        );
+
+        let path = managed_python_path(&env_dir, &Some(envs))
+            .expect("path composition should succeed")
+            .expect("path should be set");
+        let paths: Vec<_> = std::env::split_paths(&path).collect();
+
+        assert_eq!(paths[0], managed_python_bin_dir(&env_dir));
+        assert_eq!(paths[1], PathBuf::from("base-one"));
+        assert_eq!(paths[2], PathBuf::from("base-two"));
+    }
+
+    #[tokio::test]
+    async fn run_build_command_errors_if_managed_env_is_missing() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after unix epoch")
+            .as_nanos();
+        let temp_root =
+            std::env::temp_dir().join(format!("dora-managed-python-missing-env-test-{unique}"));
+        let working_dir = temp_root.join("workdir");
+        let env_dir = temp_root.join("env");
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+
+        let err = run_build_command(
+            "python --version",
+            &working_dir,
+            true,
+            Some(env_dir),
+            &None,
+            tx,
+        )
+        .await
+        .expect_err("missing managed env should fail before spawning build command");
+
+        assert!(
+            format!("{err:#}").contains("managed Python interpreter"),
+            "unexpected error: {err:#}"
         );
 
         let _ = std::fs::remove_dir_all(&temp_root);

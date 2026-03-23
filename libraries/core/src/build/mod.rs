@@ -85,6 +85,8 @@ impl Builder {
                 python_env_dir = managed_python_env_dir(&node, &node_working_dir);
                 if self.uv {
                     if let Some(python_env_dir) = &python_env_dir {
+                        // Materialize Dora's managed Python env before any build commands run so
+                        // later `pip`/`python` resolution does not drift to ambient machine state.
                         prepare_python_env(
                             logger,
                             &node.env,
@@ -96,7 +98,15 @@ impl Builder {
                 }
 
                 if let Some(build) = &n.build {
-                    build_node(logger, &node.env, node_working_dir.clone(), build, self.uv).await?;
+                    build_node(
+                        logger,
+                        &node.env,
+                        node_working_dir.clone(),
+                        build,
+                        self.uv,
+                        python_env_dir.clone(),
+                    )
+                    .await?;
                 }
                 node_working_dir
             }
@@ -104,6 +114,8 @@ impl Builder {
                 python_env_dir = managed_python_env_dir(&node, &self.base_working_dir);
                 if self.uv {
                     if let Some(python_env_dir) = &python_env_dir {
+                        // Runtime nodes use one managed Python env per node; prepare it once before
+                        // running any Python operator build commands.
                         prepare_python_env(
                             logger,
                             &node.env,
@@ -122,6 +134,7 @@ impl Builder {
                             self.base_working_dir.clone(),
                             build,
                             self.uv,
+                            python_env_dir.clone(),
                         )
                         .await?;
                     }
@@ -142,6 +155,7 @@ async fn build_node(
     working_dir: PathBuf,
     build: &String,
     uv: bool,
+    python_env_dir: Option<PathBuf>,
 ) -> eyre::Result<()> {
     let build_log_message = if build.contains('\n') {
         format!(
@@ -160,9 +174,16 @@ async fn build_node(
     let mut logger = logger.try_clone().await.context("failed to clone logger")?;
     let (stdout_tx, mut stdout) = tokio::sync::mpsc::channel(10);
     let task = tokio::spawn(async move {
-        run_build_command(&build, &working_dir, uv, &node_env, stdout_tx)
-            .await
-            .context("build command failed")
+        run_build_command(
+            &build,
+            &working_dir,
+            uv,
+            python_env_dir,
+            &node_env,
+            stdout_tx,
+        )
+        .await
+        .context("build command failed")
     });
     let stdout_task = tokio::spawn(async move {
         while let Some(line) = stdout.recv().await {
