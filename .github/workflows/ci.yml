@@ -440,7 +440,16 @@ jobs:
 
           # Check Compliancy
           uv run ruff check .
-          uv run pytest
+          # The workspace root is not a Python package project; each generated node package owns
+          # its own Python sources and tests. Run them from the package directory instead of
+          # relying on `dora build --uv` to install editable packages into the outer CI env.
+          for node in talker-1 talker-2 listener-1; do
+            echo "Running pytest for ${node}"
+            (
+              cd "${node}"
+              PYTHONPATH="$PWD" uv run --active python -m pytest .
+            )
+          done
 
           export OPERATING_MODE=SAVE
           dora build dataflow.yml --uv
