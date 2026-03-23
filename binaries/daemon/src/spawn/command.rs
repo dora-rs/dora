@@ -48,7 +48,7 @@ pub(super) async fn path_spawn_command(
                 }
                 // try to download the shared library
                 let target_dir = Path::new("build");
-                download_file(source, target_dir)
+                download_file(source, target_dir, None)
                     .await
                     .wrap_err("failed to download custom node")?
             } else {

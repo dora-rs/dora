@@ -382,6 +382,92 @@ impl Node {
         Ok(())
     }
 
+    /// Send a service request, automatically injecting a ``request_id`` into
+    /// the metadata. Returns the generated request ID (UUID v7).
+    ///
+    /// This is a convenience wrapper around :meth:`send_output` for the
+    /// request/reply pattern.
+    ///
+    /// :param output_id: The output port to send on
+    /// :type output_id: str
+    /// :param data: Arrow array or bytes payload
+    /// :type data: pyarrow.Array or bytes
+    /// :param metadata: Additional metadata parameters (optional)
+    /// :type metadata: dict, optional
+    /// :rtype: str
+    #[pyo3(signature = (output_id, data, metadata=None))]
+    pub fn send_service_request(
+        &self,
+        output_id: String,
+        data: Py<PyAny>,
+        metadata: Option<Bound<'_, PyDict>>,
+        py: Python,
+    ) -> eyre::Result<String> {
+        let mut parameters = pydict_to_metadata(metadata)?;
+        let request_id = adora_node_api::AdoraNode::new_request_id();
+        parameters.insert(
+            adora_message::metadata::REQUEST_ID.to_string(),
+            adora_message::metadata::Parameter::String(request_id.clone()),
+        );
+
+        if let Ok(py_bytes) = data.cast_bound::<PyBytes>(py) {
+            let data = py_bytes.as_bytes();
+            self.node
+                .get_mut()
+                .send_output_bytes(output_id.into(), parameters, data.len(), data)
+                .wrap_err("failed to send service request")?;
+        } else if let Ok(arrow_array) = arrow::array::ArrayData::from_pyarrow_bound(data.bind(py)) {
+            self.node.get_mut().send_output(
+                output_id.into(),
+                parameters,
+                arrow::array::make_array(arrow_array),
+            )?;
+        } else {
+            eyre::bail!("invalid `data` type, must be `PyBytes` or arrow array")
+        }
+
+        Ok(request_id)
+    }
+
+    /// Send a service response. Convenience wrapper around :meth:`send_output`
+    /// that passes through the ``request_id`` from the incoming request metadata.
+    ///
+    /// :param output_id: The output port to send on
+    /// :type output_id: str
+    /// :param data: Arrow array or bytes payload
+    /// :type data: pyarrow.Array or bytes
+    /// :param metadata: Metadata dict — must include ``request_id`` from the request
+    /// :type metadata: dict
+    /// :rtype: None
+    #[pyo3(signature = (output_id, data, metadata))]
+    pub fn send_service_response(
+        &self,
+        output_id: String,
+        data: Py<PyAny>,
+        metadata: Bound<'_, PyDict>,
+        py: Python,
+    ) -> eyre::Result<()> {
+        let parameters = pydict_to_metadata(Some(metadata))?;
+
+        if let Ok(py_bytes) = data.cast_bound::<PyBytes>(py) {
+            let data = py_bytes.as_bytes();
+            self.node
+                .get_mut()
+                .send_output_bytes(output_id.into(), parameters, data.len(), data)
+                .wrap_err("failed to send service response")?;
+        } else if let Ok(arrow_array) = arrow::array::ArrayData::from_pyarrow_bound(data.bind(py)) {
+            self.node.get_mut().send_output(
+                output_id.into(),
+                parameters,
+                arrow::array::make_array(arrow_array),
+            )?;
+        } else {
+            eyre::bail!("invalid `data` type, must be `PyBytes` or arrow array")
+        }
+
+        Ok(())
+    }
+
     /// Send a structured log message.
     ///
     /// Outputs a JSONL line to stdout that the daemon parses automatically.

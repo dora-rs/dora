@@ -234,6 +234,7 @@ version = "0.1.0"
 dependencies = [
  "eyre",
  "reqwest",
+ "sha2",
  "tokio",
  "tracing",
 ]

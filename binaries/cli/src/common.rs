@@ -156,7 +156,7 @@ pub(crate) fn resolve_dataflow(dataflow: String) -> eyre::Result<PathBuf> {
             .enable_all()
             .build()
             .context("tokio runtime failed")?;
-        rt.block_on(async { download_file(&dataflow, &target_path).await })
+        rt.block_on(async { download_file(&dataflow, &target_path, None).await })
             .wrap_err("failed to download dataflow yaml file")?
     } else {
         PathBuf::from(dataflow)

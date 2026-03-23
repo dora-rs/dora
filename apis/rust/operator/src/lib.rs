@@ -32,7 +32,11 @@ pub mod raw;
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Event<'a> {
-    Input { id: &'a str, data: ArrowData },
+    Input {
+        id: &'a str,
+        metadata: &'a types::Metadata,
+        data: ArrowData,
+    },
     InputParseError { id: &'a str, error: String },
     InputClosed { id: &'a str },
     Stop,
@@ -53,11 +57,11 @@ impl AdoraOutputSender<'_> {
     ///  Send an output from the operator:
     ///  - `id` is the `output_id` as defined in your dataflow.
     ///  - `data` is the data that should be sent
-    pub fn send(&mut self, id: String, data: impl Array) -> Result<(), String> {
+    pub fn send(&mut self, id: &str, data: impl Array) -> Result<(), String> {
         let (data_array, schema) =
             arrow::ffi::to_ffi(&data.into_data()).map_err(|err| err.to_string())?;
         let result = self.0.send_output.call(Output {
-            id: id.into(),
+            id: id.to_owned().into(),
             data_array,
             schema,
             metadata: Metadata {

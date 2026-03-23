@@ -49,6 +49,7 @@ pub unsafe fn adora_on_event<O: AdoraOperator>(
         match data {
             Ok(data) => Event::Input {
                 id: &input.id,
+                metadata: &input.metadata,
                 data: arrow::array::make_array(data).into(),
             },
             Err(err) => Event::InputParseError {

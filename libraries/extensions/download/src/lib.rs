@@ -1,4 +1,5 @@
 use eyre::{Context, ContextCompat};
+use sha2::{Digest, Sha256};
 #[cfg(unix)]
 use std::os::unix::prelude::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -41,7 +42,16 @@ fn get_filename(response: &reqwest::Response) -> Option<String> {
     })
 }
 
-pub async fn download_file<T>(url: T, target_dir: &Path) -> Result<PathBuf, eyre::ErrReport>
+/// Download a file from a URL into `target_dir`.
+///
+/// If `expected_sha256` is provided, the downloaded content is verified
+/// against the hex-encoded SHA-256 digest. Returns an error if the digest
+/// does not match (prevents MITM or corrupted downloads).
+pub async fn download_file<T>(
+    url: T,
+    target_dir: &Path,
+    expected_sha256: Option<&str>,
+) -> Result<PathBuf, eyre::ErrReport>
 where
     T: reqwest::IntoUrl + std::fmt::Display + Copy,
 {
@@ -58,6 +68,19 @@ where
         .bytes()
         .await
         .wrap_err("failed to read operator from `{uri}`")?;
+
+    // Verify integrity if a digest was provided
+    if let Some(expected) = expected_sha256 {
+        let mut hasher = Sha256::new();
+        hasher.update(&bytes);
+        let actual = format!("{:x}", hasher.finalize());
+        if actual != expected {
+            eyre::bail!(
+                "SHA-256 mismatch for `{url}`: expected {expected}, got {actual}"
+            );
+        }
+    }
+
     let path = target_dir.join(filename);
     let mut file = tokio::fs::File::create(&path)
         .await

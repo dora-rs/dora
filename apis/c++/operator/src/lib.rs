@@ -45,7 +45,7 @@ pub struct OutputSender<'a, 'b>(&'a mut AdoraOutputSender<'b>);
 fn send_output(sender: &mut OutputSender, id: &str, data: &[u8]) -> AdoraSendOutputResult {
     let error = sender
         .0
-        .send(id.into(), data.to_owned().into_arrow())
+        .send(id, data.to_owned().into_arrow())
         .err()
         .unwrap_or_default();
     AdoraSendOutputResult { error }
@@ -72,7 +72,7 @@ impl AdoraOperator for OperatorWrapper {
         output_sender: &mut AdoraOutputSender,
     ) -> Result<AdoraStatus, std::string::String> {
         match event {
-            Event::Input { id, data } => {
+            Event::Input { id, metadata: _, data } => {
                 let operator = self.operator.as_mut().unwrap();
                 let mut output_sender = OutputSender(output_sender);
                 let data: &[u8] = data
