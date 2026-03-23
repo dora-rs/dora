@@ -16,7 +16,7 @@ use dora_message::{
 };
 use eyre::Context;
 
-use build_command::run_build_command;
+use build_command::{prepare_managed_python_env, run_build_command};
 use git::GitFolder;
 
 mod build_command;
@@ -82,14 +82,37 @@ impl Builder {
                     }
                     None => self.base_working_dir,
                 };
+                python_env_dir = managed_python_env_dir(&node, &node_working_dir);
+                if self.uv {
+                    if let Some(python_env_dir) = &python_env_dir {
+                        prepare_python_env(
+                            logger,
+                            &node.env,
+                            node_working_dir.clone(),
+                            python_env_dir.clone(),
+                        )
+                        .await?;
+                    }
+                }
 
                 if let Some(build) = &n.build {
                     build_node(logger, &node.env, node_working_dir.clone(), build, self.uv).await?;
                 }
-                python_env_dir = managed_python_env_dir(&node, &node_working_dir);
                 node_working_dir
             }
             CoreNodeKind::Runtime(n) => {
+                python_env_dir = managed_python_env_dir(&node, &self.base_working_dir);
+                if self.uv {
+                    if let Some(python_env_dir) = &python_env_dir {
+                        prepare_python_env(
+                            logger,
+                            &node.env,
+                            self.base_working_dir.clone(),
+                            python_env_dir.clone(),
+                        )
+                        .await?;
+                    }
+                }
                 // run build commands
                 for operator in &n.operators {
                     if let Some(build) = &operator.config.build {
@@ -103,7 +126,6 @@ impl Builder {
                         .await?;
                     }
                 }
-                python_env_dir = managed_python_env_dir(&node, &self.base_working_dir);
                 self.base_working_dir.clone()
             }
         };
@@ -141,6 +163,42 @@ async fn build_node(
         run_build_command(&build, &working_dir, uv, &node_env, stdout_tx)
             .await
             .context("build command failed")
+    });
+    let stdout_task = tokio::spawn(async move {
+        while let Some(line) = stdout.recv().await {
+            logger
+                .log_stdout(line.unwrap_or_else(|err| format!("io err: {}", err.kind())))
+                .await;
+        }
+    });
+    stdout_task.await?;
+    task.await??;
+
+    Ok(())
+}
+
+async fn prepare_python_env(
+    logger: &mut impl BuildLogger,
+    node_env: &Option<BTreeMap<String, EnvValue>>,
+    working_dir: PathBuf,
+    python_env_dir: PathBuf,
+) -> eyre::Result<()> {
+    logger
+        .log_message(
+            LogLevel::Info,
+            format!(
+                "preparing managed Python env in {}",
+                python_env_dir.display()
+            ),
+        )
+        .await;
+    let node_env = node_env.clone();
+    let mut logger = logger.try_clone().await.context("failed to clone logger")?;
+    let (stdout_tx, mut stdout) = tokio::sync::mpsc::channel(10);
+    let task = tokio::spawn(async move {
+        prepare_managed_python_env(&working_dir, &python_env_dir, &node_env, stdout_tx)
+            .await
+            .context("managed Python env preparation failed")
     });
     let stdout_task = tokio::spawn(async move {
         while let Some(line) = stdout.recv().await {
