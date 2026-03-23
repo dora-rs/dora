@@ -233,7 +233,7 @@ struct Listener {
     node_id: NodeId,
     daemon_tx: mpsc::Sender<Timestamped<Event>>,
     subscribed_events: Option<Receiver<Timestamped<NodeEvent>>>,
-    subscribed_drop_events: Option<Receiver<Timestamped<NodeDropEvent>>>,
+    subscribed_drop_events: Option<mpsc::UnboundedReceiver<Timestamped<NodeDropEvent>>>,
     pending_counter: Option<Arc<AtomicU64>>,
     queue: VecDeque<Box<Option<Timestamped<NodeEvent>>>>,
     clock: Arc<uhlc::HLC>,
@@ -445,7 +445,7 @@ impl Listener {
                 self.pending_counter = Some(pending_counter);
             }
             DaemonRequest::SubscribeDrop => {
-                let (tx, rx) = mpsc::channel(crate::NODE_EVENT_CHANNEL_CAPACITY);
+                let (tx, rx) = mpsc::unbounded_channel();
                 let (reply_sender, reply) = oneshot::channel();
                 self.process_daemon_event(
                     DaemonNodeEvent::SubscribeDrop {

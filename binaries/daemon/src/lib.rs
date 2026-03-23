@@ -2448,8 +2448,7 @@ impl Daemon {
                     id: input_id.clone(),
                 },
                 clock,
-            )
-            .is_ok()
+            ).ok() == Some(true)
             {
                 dataflow.inc_pending(&node_id);
             }
@@ -2462,7 +2461,7 @@ impl Daemon {
                 if node.inputs.is_empty() {
                     // do not send AllInputsClosed for source nodes
                 } else if send_with_timestamp(&event_sender, NodeEvent::AllInputsClosed, clock)
-                    .is_ok()
+                   .ok() == Some(true)
                 {
                     dataflow.inc_pending(&node_id);
                 }
@@ -2475,7 +2474,7 @@ impl Daemon {
             if let Some(node) = dataflow.running_nodes.get_mut(&node_id) {
                 node.disable_restart();
             }
-            if send_with_timestamp(&event_sender, NodeEvent::Stop, clock).is_ok() {
+            if send_with_timestamp(&event_sender, NodeEvent::Stop, clock).ok() == Some(true) {
                 dataflow.inc_pending(&node_id);
             }
         }
@@ -3328,7 +3327,7 @@ fn close_input(
                 },
                 clock,
             )
-            .is_ok()
+           .ok() == Some(true)
         {
             dataflow.inc_pending(receiver_id);
         }
@@ -3341,7 +3340,7 @@ fn close_input(
             if let Some(node) = dataflow.running_nodes.get_mut(receiver_id) {
                 node.disable_restart();
             }
-            if send_with_timestamp(channel, NodeEvent::AllInputsClosed, clock).is_ok() {
+            if send_with_timestamp(channel, NodeEvent::AllInputsClosed, clock).ok() == Some(true) {
                 dataflow.inc_pending(receiver_id);
             }
         }
@@ -3369,7 +3368,7 @@ fn break_input(
             },
             clock,
         )
-        .is_ok()
+       .ok() == Some(true)
         {
             dataflow.inc_pending(receiver_id);
         }
@@ -3382,7 +3381,7 @@ fn break_input(
             if let Some(node) = dataflow.running_nodes.get_mut(receiver_id) {
                 node.disable_restart();
             }
-            if send_with_timestamp(channel, NodeEvent::AllInputsClosed, clock).is_ok() {
+            if send_with_timestamp(channel, NodeEvent::AllInputsClosed, clock).ok() == Some(true) {
                 dataflow.inc_pending(receiver_id);
             }
         }
@@ -3487,7 +3486,7 @@ pub enum DaemonNodeEvent {
         reply_sender: oneshot::Sender<DaemonReply>,
     },
     SubscribeDrop {
-        event_sender: mpsc::Sender<Timestamped<NodeDropEvent>>,
+        event_sender: mpsc::UnboundedSender<Timestamped<NodeDropEvent>>,
         reply_sender: oneshot::Sender<DaemonReply>,
     },
     CloseOutputs {
@@ -3595,25 +3594,18 @@ pub(crate) fn send_with_timestamp(
     }
 }
 
-/// Send a drop event with a timestamp. Drop events are always control-plane
-/// and use simple try_send with warning on Full.
+/// Send a drop event with a timestamp. Drop events use unbounded channels
+/// because they are low-frequency and critical for shared memory cleanup —
+/// a missed OutputDropped acknowledgement leaks shmem regions.
 pub(crate) fn send_drop_with_timestamp(
-    sender: &mpsc::Sender<Timestamped<NodeDropEvent>>,
+    sender: &mpsc::UnboundedSender<Timestamped<NodeDropEvent>>,
     event: NodeDropEvent,
     clock: &HLC,
 ) -> Result<(), mpsc::error::SendError<Timestamped<NodeDropEvent>>> {
-    let msg = Timestamped {
+    sender.send(Timestamped {
         inner: event,
         timestamp: clock.new_timestamp(),
-    };
-    match sender.try_send(msg) {
-        Ok(()) => Ok(()),
-        Err(mpsc::error::TrySendError::Closed(msg)) => Err(mpsc::error::SendError(msg)),
-        Err(mpsc::error::TrySendError::Full(_)) => {
-            tracing::warn!("drop event channel full, dropping event");
-            Ok(())
-        }
-    }
+    })
 }
 
 fn set_up_ctrlc_handler(

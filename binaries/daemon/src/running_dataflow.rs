@@ -159,7 +159,7 @@ pub struct RunningDataflow {
     pub(crate) subscribe_channels: HashMap<NodeId, Sender<Timestamped<NodeEvent>>>,
     /// Per-node pending message counters (incremented on send, decremented on recv)
     pub(crate) pending_messages: HashMap<NodeId, Arc<AtomicU64>>,
-    pub(crate) drop_channels: HashMap<NodeId, Sender<Timestamped<NodeDropEvent>>>,
+    pub(crate) drop_channels: HashMap<NodeId, mpsc::UnboundedSender<Timestamped<NodeDropEvent>>>,
     pub(crate) mappings: HashMap<OutputId, BTreeSet<(NodeId, DataId)>>,
     pub(crate) timers: BTreeMap<Duration, BTreeSet<(NodeId, DataId)>>,
     /// Nodes subscribing to `adora/logs` virtual input.
@@ -329,7 +329,7 @@ impl RunningDataflow {
         }
 
         for (node_id, channel) in self.subscribe_channels.drain() {
-            if send_with_timestamp(&channel, NodeEvent::Stop, clock).is_ok() {
+            if send_with_timestamp(&channel, NodeEvent::Stop, clock).ok() == Some(true) {
                 if let Some(counter) = self.pending_messages.get(&node_id) {
                     counter.fetch_add(1, atomic::Ordering::Relaxed);
                 }
@@ -454,7 +454,7 @@ impl RunningDataflow {
         default_grace: Duration,
     ) {
         if let Some(channel) = self.subscribe_channels.get(node_id) {
-            if send_with_timestamp(channel, NodeEvent::Stop, clock).is_ok() {
+            if send_with_timestamp(channel, NodeEvent::Stop, clock).ok() == Some(true) {
                 if let Some(counter) = self.pending_messages.get(node_id) {
                     counter.fetch_add(1, atomic::Ordering::Relaxed);
                 }

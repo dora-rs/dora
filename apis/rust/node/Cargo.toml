@@ -10,10 +10,9 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-default = ["tracing", "metrics", "interactive"]
+default = ["tracing", "metrics"]
 tracing = ["dep:adora-tracing", "dep:opentelemetry"]
 metrics = ["dep:adora-metrics"]
-interactive = ["dep:inquire"]
 
 [dependencies]
 adora-core = { workspace = true }
@@ -36,7 +35,7 @@ adora-arrow-convert = { workspace = true }
 aligned-vec = "0.5.0"
 serde_json = { version = "1.0.86", features = ["preserve_order"] }
 tokio = { version = "1.24.2", features = ["rt-multi-thread", "time", "macros"] }
-inquire = { workspace = true, features = ["console"], optional = true }
+inquire = { workspace = true, features = ["console"] }
 arrow-json = { workspace = true }
 arrow-schema = { workspace = true }
 chrono = { version = "0.4", features = ["serde"] }
