@@ -3126,6 +3126,16 @@ async fn send_output_to_local_receivers(
     let mut closed = Vec::new();
     for (receiver_id, input_id) in local_receivers {
         if let Some(channel) = dataflow.subscribe_channels.get(receiver_id) {
+            // Reserve headroom for control events (Stop, InputClosed, etc.)
+            if channel.capacity() < CONTROL_EVENT_HEADROOM {
+                tracing::warn!(
+                    node = %receiver_id,
+                    "event channel low on capacity ({}/{}), dropping data to preserve control headroom",
+                    channel.capacity(),
+                    NODE_EVENT_CHANNEL_CAPACITY,
+                );
+                continue;
+            }
             let item = NodeEvent::Input {
                 id: input_id.clone(),
                 metadata: metadata.clone(),
@@ -3511,14 +3521,61 @@ enum RunStatus {
 /// from slow receivers. Large enough to absorb normal bursts.
 pub(crate) const NODE_EVENT_CHANNEL_CAPACITY: usize = 1000;
 
+/// Headroom reserved for control events (Stop, InputClosed, etc.).
+/// Data events (Input) are dropped when remaining capacity falls below this
+/// threshold, ensuring control events always have room to be delivered.
+const CONTROL_EVENT_HEADROOM: usize = 50;
+
 /// Send an event with a timestamp. Returns Ok if sent, or Err if channel is
 /// closed. If the channel is full (slow receiver), the event is dropped with
 /// a warning — the daemon event loop must never block on a slow node.
-pub(crate) fn send_with_timestamp<T: std::fmt::Debug>(
-    sender: &mpsc::Sender<Timestamped<T>>,
-    event: T,
+///
+/// For `NodeEvent`: data events (Input) respect headroom reservation to
+/// ensure control events (Stop, InputClosed, etc.) are always deliverable.
+pub(crate) fn send_with_timestamp(
+    sender: &mpsc::Sender<Timestamped<NodeEvent>>,
+    event: NodeEvent,
     clock: &HLC,
-) -> Result<(), mpsc::error::SendError<Timestamped<T>>> {
+) -> Result<(), mpsc::error::SendError<Timestamped<NodeEvent>>> {
+    let is_control = !matches!(event, NodeEvent::Input { .. });
+    let msg = Timestamped {
+        inner: event,
+        timestamp: clock.new_timestamp(),
+    };
+
+    // For data events: check headroom before sending to reserve space for
+    // control events (Stop, InputClosed, AllInputsClosed must never be dropped).
+    if !is_control && sender.capacity() < CONTROL_EVENT_HEADROOM {
+        tracing::warn!("event channel low on capacity, dropping data event to preserve control headroom");
+        return Ok(());
+    }
+
+    match sender.try_send(msg) {
+        Ok(()) => Ok(()),
+        Err(mpsc::error::TrySendError::Closed(msg)) => Err(mpsc::error::SendError(msg)),
+        Err(mpsc::error::TrySendError::Full(msg)) => {
+            if is_control {
+                // Control events must not be dropped. This should be rare
+                // because we reserve CONTROL_EVENT_HEADROOM slots.
+                tracing::error!(
+                    "CRITICAL: control event dropped despite headroom reservation: {:?}",
+                    msg.inner
+                );
+            } else {
+                tracing::warn!("event channel full, dropping data event (slow receiver)");
+            }
+            Ok(()) // don't remove the subscriber
+        }
+    }
+}
+
+/// Send a drop event with a timestamp. Drop events are always control-plane
+/// and use simple try_send with warning on Full.
+pub(crate) fn send_drop_with_timestamp(
+    sender: &mpsc::Sender<Timestamped<NodeDropEvent>>,
+    event: NodeDropEvent,
+    clock: &HLC,
+) -> Result<(), mpsc::error::SendError<Timestamped<NodeDropEvent>>> {
     let msg = Timestamped {
         inner: event,
         timestamp: clock.new_timestamp(),
@@ -3527,8 +3584,8 @@ pub(crate) fn send_with_timestamp<T: std::fmt::Debug>(
         Ok(()) => Ok(()),
         Err(mpsc::error::TrySendError::Closed(msg)) => Err(mpsc::error::SendError(msg)),
         Err(mpsc::error::TrySendError::Full(_)) => {
-            tracing::warn!("node event channel full, dropping event (slow receiver)");
-            Ok(()) // not a channel-closed error; don't remove the subscriber
+            tracing::warn!("drop event channel full, dropping event");
+            Ok(())
         }
     }
 }

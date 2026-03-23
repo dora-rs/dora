@@ -2,7 +2,7 @@
 
 use crate::{
     AdoraEvent, OutputId, coordinator, empty_type_info, fault_tolerance::CascadingErrorCauses,
-    pending::PendingNodes, send_with_timestamp,
+    pending::PendingNodes, send_drop_with_timestamp, send_with_timestamp,
 };
 use adora_core::{
     config::{DataId, NodeId},
@@ -486,7 +486,7 @@ impl RunningDataflow {
                 if entry.get().pending_nodes.is_empty() {
                     let (drop_token, info) = entry.remove_entry();
                     let result = match self.drop_channels.get_mut(&info.owner) {
-                        Some(channel) => send_with_timestamp(
+                        Some(channel) => send_drop_with_timestamp(
                             channel,
                             NodeDropEvent::OutputDropped { drop_token },
                             clock,
