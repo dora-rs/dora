@@ -157,6 +157,7 @@ pub mod bench_support {
             Some(fixture.data_msg.clone()),
             clock,
             None,
+            false, // bench: no remote receivers
         )
         .await;
     }
@@ -1281,10 +1282,6 @@ impl Daemon {
                 .any(|node| node.pid.is_some());
 
             if has_running_nodes {
-                // Refresh process metrics (cpu, memory, disk).
-                // Run on spawn_blocking to avoid stalling the main event loop —
-                // refresh_processes_specifics(All) iterates all OS processes
-                // which can take tens of milliseconds on loaded systems.
                 let refresh_kind = ProcessRefreshKind::nothing()
                     .with_cpu()
                     .with_memory()
@@ -1301,6 +1298,15 @@ impl Daemon {
                 });
                 *system = sys;
 
+                // Pre-build parent->children map once per refresh for O(P+N*D)
+                // child aggregation instead of O(N*P) per-node scanning.
+                let mut children_map: HashMap<sysinfo::Pid, Vec<sysinfo::Pid>> = HashMap::new();
+                for (pid, proc_info) in system.processes() {
+                    if let Some(parent) = proc_info.parent() {
+                        children_map.entry(parent).or_default().push(*pid);
+                    }
+                }
+
                 // Collect metrics for each node
                 for (node_id, running_node) in &dataflow.running_nodes {
                     if let Some(pid) = running_node.pid.as_ref() {
@@ -1315,19 +1321,21 @@ impl Daemon {
                             let mut disk_read = disk_usage.read_bytes;
                             let mut disk_written = disk_usage.written_bytes;
 
-                            // Recursively aggregate all descendants (not just
-                            // direct children) so Python nodes launched via
-                            // `uv -> python` report the real python process metrics.
+                            // Recursively aggregate all descendants using the
+                            // pre-built parent->children map (O(descendants)
+                            // instead of O(all_processes) per node).
                             let mut stack = vec![sys_pid];
                             while let Some(parent) = stack.pop() {
-                                for child in system.processes().values() {
-                                    if child.parent() == Some(parent) {
-                                        cpu_usage += child.cpu_usage();
-                                        memory_bytes += child.memory();
-                                        let child_disk = child.disk_usage();
-                                        disk_read += child_disk.read_bytes;
-                                        disk_written += child_disk.written_bytes;
-                                        stack.push(child.pid());
+                                if let Some(kids) = children_map.get(&parent) {
+                                    for &child_pid in kids {
+                                        if let Some(child) = system.processes().get(&child_pid) {
+                                            cpu_usage += child.cpu_usage();
+                                            memory_bytes += child.memory();
+                                            let child_disk = child.disk_usage();
+                                            disk_read += child_disk.read_bytes;
+                                            disk_written += child_disk.written_bytes;
+                                        }
+                                        stack.push(child_pid);
                                     }
                                 }
                             }
@@ -1474,6 +1482,7 @@ impl Daemon {
                         data.map(DataMessage::Vec),
                         &self.clock,
                         Some(&self.ft_stats),
+                        false, // WS topic publish: no Zenoh forwarding
                     )
                     .await?;
                     Result::<_, eyre::Report>::Ok(())
@@ -2292,6 +2301,9 @@ impl Daemon {
         let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
             format!("send out failed: no running dataflow with ID `{dataflow_id}`")
         })?;
+        let output_id_key = OutputId(node_id.clone(), output_id.clone());
+        let remote_receivers = dataflow.open_external_mappings.contains(&output_id_key)
+            || dataflow.publish_all_messages_to_zenoh;
         let data_bytes = send_output_to_local_receivers(
             node_id.clone(),
             output_id.clone(),
@@ -2300,12 +2312,11 @@ impl Daemon {
             data,
             &self.clock,
             Some(&self.ft_stats),
+            remote_receivers,
         )
         .await?;
 
-        let output_id = OutputId(node_id, output_id);
-        let remote_receivers = dataflow.open_external_mappings.contains(&output_id)
-            || dataflow.publish_all_messages_to_zenoh;
+        let output_id = output_id_key;
         if remote_receivers {
             let event = InterDaemonEvent::Output {
                 dataflow_id,
@@ -3120,6 +3131,7 @@ async fn send_output_to_local_receivers(
     data: Option<DataMessage>,
     clock: &HLC,
     ft_stats: Option<&FaultToleranceStats>,
+    need_data_bytes: bool,
 ) -> Result<Option<AVec<u8, ConstAlign<128>>>, eyre::ErrReport> {
     let timestamp = metadata.timestamp();
     let empty_set = BTreeSet::new();
@@ -3231,30 +3243,37 @@ async fn send_output_to_local_receivers(
     for id in closed {
         dataflow.subscribe_channels.remove(id);
     }
-    // Unwrap Arc for the return-data extraction (this is outside the fan-out loop)
-    let data_owned = data.as_ref().map(|arc| (**arc).clone());
-    let (data_bytes, drop_token) = match data_owned {
-        None => (None, None),
-        Some(DataMessage::SharedMemory {
-            shared_memory_id,
-            len,
-            drop_token,
-        }) => {
-            let memory = ShmemConf::new()
-                .os_id(shared_memory_id)
-                .open()
-                .wrap_err("failed to map shared memory output")?;
-            let mem_slice = unsafe { memory.as_slice() };
-            if len > mem_slice.len() {
-                eyre::bail!(
-                    "shared memory length {len} exceeds region size {}",
-                    mem_slice.len()
-                );
+    // Extract data bytes for remote receivers (Zenoh). Skip the expensive shmem
+    // mmap + copy when there are no remote receivers (local-only optimization).
+    let (data_bytes, drop_token) = if need_data_bytes {
+        let data_owned = data.as_ref().map(|arc| (**arc).clone());
+        match data_owned {
+            None => (None, None),
+            Some(DataMessage::SharedMemory {
+                shared_memory_id,
+                len,
+                drop_token,
+            }) => {
+                let memory = ShmemConf::new()
+                    .os_id(shared_memory_id)
+                    .open()
+                    .wrap_err("failed to map shared memory output")?;
+                let mem_slice = unsafe { memory.as_slice() };
+                if len > mem_slice.len() {
+                    eyre::bail!(
+                        "shared memory length {len} exceeds region size {}",
+                        mem_slice.len()
+                    );
+                }
+                let data = Some(AVec::from_slice(1, &mem_slice[..len]));
+                (data, Some(drop_token))
             }
-            let data = Some(AVec::from_slice(1, &mem_slice[..len]));
-            (data, Some(drop_token))
+            Some(DataMessage::Vec(v)) => (Some(v), None),
         }
-        Some(DataMessage::Vec(v)) => (Some(v), None),
+    } else {
+        // Extract drop token without copying data
+        let drop_token = data.as_ref().and_then(|d| d.drop_token());
+        (None, drop_token)
     };
     if let Some(token) = drop_token {
         // insert token into `pending_drop_tokens` even if there are no local subscribers
@@ -3985,7 +4004,7 @@ mod fault_tolerance_tests {
         );
 
         let result =
-            send_output_to_local_receivers(sender, output, &mut df, &metadata, None, &clock, None)
+            send_output_to_local_receivers(sender, output, &mut df, &metadata, None, &clock, None, false)
                 .await;
         assert!(result.is_ok());
 
@@ -4085,7 +4104,7 @@ mod fault_tolerance_tests {
         );
 
         let result =
-            send_output_to_local_receivers(sender, output, &mut df, &metadata, None, &clock, None)
+            send_output_to_local_receivers(sender, output, &mut df, &metadata, None, &clock, None, false)
                 .await;
         assert!(result.is_ok());
 

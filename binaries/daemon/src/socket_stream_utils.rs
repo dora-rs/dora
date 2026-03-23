@@ -14,10 +14,14 @@ pub async fn socket_stream_send(
             ),
         ));
     }
+    // Concatenate length header + payload into a single buffer to avoid
+    // sending a tiny 8-byte TCP segment with TCP_NODELAY enabled.
+    // Previously used two separate write_all calls (2-3 syscalls per message).
     let len_raw = (message.len() as u64).to_le_bytes();
-    connection.write_all(&len_raw).await?;
-    connection.write_all(message).await?;
-    connection.flush().await?;
+    let mut buf = Vec::with_capacity(8 + message.len());
+    buf.extend_from_slice(&len_raw);
+    buf.extend_from_slice(message);
+    connection.write_all(&buf).await?;
     Ok(())
 }
 

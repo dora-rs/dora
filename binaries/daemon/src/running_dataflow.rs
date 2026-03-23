@@ -253,26 +253,33 @@ impl RunningDataflow {
             let task = async move {
                 let mut interval_stream = tokio::time::interval(interval);
                 interval_stream.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-                let hlc = HLC::default();
                 loop {
                     interval_stream.tick().await;
 
                     let span = tracing::span!(tracing::Level::TRACE, "tick");
                     let _ = span.enter();
 
-                    let mut parameters = BTreeMap::new();
-                    parameters.insert(
-                        "open_telemetry_context".to_string(),
-                        #[cfg(feature = "telemetry")]
-                        adora_node_api::Parameter::String(
-                            adora_tracing::telemetry::serialize_context(&span.context()),
-                        ),
-                        #[cfg(not(feature = "telemetry"))]
-                        adora_node_api::Parameter::String("".into()),
-                    );
+                    // Build metadata with minimal allocations.
+                    // Use shared daemon clock (not per-timer HLC) for causality.
+                    #[cfg(feature = "telemetry")]
+                    let parameters = {
+                        let ctx = adora_tracing::telemetry::serialize_context(&span.context());
+                        if ctx.is_empty() {
+                            BTreeMap::new()
+                        } else {
+                            let mut m = BTreeMap::new();
+                            m.insert(
+                                "open_telemetry_context".to_string(),
+                                adora_node_api::Parameter::String(ctx),
+                            );
+                            m
+                        }
+                    };
+                    #[cfg(not(feature = "telemetry"))]
+                    let parameters = BTreeMap::new();
 
                     let metadata = metadata::Metadata::from_parameters(
-                        hlc.new_timestamp(),
+                        clock.new_timestamp(),
                         empty_type_info(),
                         parameters,
                     );
