@@ -1,4 +1,10 @@
-"""TODO: Add docstring."""
+"""Receiver node for the 'latest data' queue size test in dora-rs.
+
+This script verifies that the dora-rs runtime correctly implements
+LIFO-like behavior for inputs with a queue size of 1. It sleeps
+initially to allow a backlog to build, then asserts that it only receives
+the most recent data packets, ensuring low latency.
+"""
 
 import time
 

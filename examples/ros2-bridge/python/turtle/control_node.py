@@ -1,5 +1,10 @@
 #!/usr/bin/env python
-"""TODO: Add docstring."""
+"""Control node for the ROS2 turtlesim example in dora-rs.
+
+This script demonstrates how to control a ROS2 turtle by sending random
+movement commands ("direction") and logging the turtle's pose based on
+incoming feedback from the ROS2 bridge.
+"""
 
 
 import random
