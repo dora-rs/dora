@@ -29,6 +29,7 @@ use futures_concurrency::stream::Merge;
 use log_subscriber::LogSubscriber;
 use petname::petname;
 pub(crate) use state::DaemonConnections;
+use indexmap::IndexMap;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     net::SocketAddr,
@@ -243,12 +244,12 @@ async fn start_inner(
     let mut events = abortable_events;
 
     let mut running_builds: HashMap<BuildId, RunningBuild> = HashMap::new();
-    let mut finished_builds: HashMap<BuildId, CachedResult> = HashMap::new();
+    let mut finished_builds: IndexMap<BuildId, CachedResult> = IndexMap::new();
 
     let mut running_dataflows: HashMap<DataflowId, RunningDataflow> = HashMap::new();
     let mut dataflow_results: HashMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
         HashMap::new();
-    let mut archived_dataflows: HashMap<DataflowId, ArchivedDataflow> = HashMap::new();
+    let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
     let mut daemon_connections = DaemonConnections::default();
     let mut persist_failure_count: u64 = 0;
 
@@ -447,9 +448,7 @@ async fn start_inner(
                                     .or_insert_with(|| ArchivedDataflow::from(entry.get()));
                                 const MAX_ARCHIVED_DATAFLOWS: usize = 200;
                                 while archived_dataflows.len() > MAX_ARCHIVED_DATAFLOWS {
-                                    if let Some(oldest_key) = archived_dataflows.keys().next().cloned() {
-                                        archived_dataflows.remove(&oldest_key);
-                                    }
+                                    archived_dataflows.shift_remove_index(0);
                                 }
                                 let mut finished_dataflow = entry.remove();
                                 let dataflow_id = finished_dataflow.uuid;
@@ -1464,12 +1463,10 @@ async fn start_inner(
                         ));
 
                         finished_builds.insert(build_id, build.build_result);
-                        // Cap cached builds to prevent unbounded memory growth
+                        // Cap cached builds — evict oldest (FIFO via IndexMap)
                         const MAX_FINISHED_BUILDS: usize = 100;
                         while finished_builds.len() > MAX_FINISHED_BUILDS {
-                            if let Some(oldest_key) = finished_builds.keys().next().cloned() {
-                                finished_builds.remove(&oldest_key);
-                            }
+                            finished_builds.shift_remove_index(0);
                         }
                     }
                 }

@@ -1094,10 +1094,11 @@ impl Daemon {
                                 NodeEvent::ParamUpdate { key, value },
                                 &self.clock,
                             ) {
-                                Ok(()) => {
+                                Ok(true) => {
                                     dataflow.inc_pending(&node_id);
                                     Ok(())
                                 }
+                                Ok(false) => Ok(()), // event dropped (channel full)
                                 Err(_) => Err(eyre::eyre!("node `{node_id}` channel closed")),
                             }
                         } else {
@@ -2268,9 +2269,10 @@ impl Daemon {
         })?;
         if let Some(channel) = dataflow.subscribe_channels.get(&node_id) {
             match send_with_timestamp(channel, NodeEvent::Reload { operator_id }, &self.clock) {
-                Ok(()) => {
+                Ok(true) => {
                     dataflow.inc_pending(&node_id);
                 }
+                Ok(false) => { /* event dropped (channel full) */ }
                 Err(_) => {
                     dataflow.subscribe_channels.remove(&node_id);
                 }
@@ -2683,9 +2685,10 @@ impl Daemon {
                         &self.clock,
                     );
                     match send_result {
-                        Ok(()) => {
+                        Ok(true) => {
                             dataflow.inc_pending(receiver_id);
                         }
+                        Ok(false) => { /* event dropped (channel full) */ }
                         Err(_) => {
                             closed.push(receiver_id);
                         }
@@ -2732,9 +2735,10 @@ impl Daemon {
                         &self.clock,
                     );
                     match send_result {
-                        Ok(()) => {
+                        Ok(true) => {
                             dataflow.inc_pending(receiver_id);
                         }
+                        Ok(false) => { /* event dropped (channel full) */ }
                         Err(_) => {
                             closed.push(receiver_id);
                         }
@@ -2811,9 +2815,10 @@ impl Daemon {
                         &self.clock,
                     );
                     match send_result {
-                        Ok(()) => {
+                        Ok(true) => {
                             dataflow.inc_pending(&sub.node_id);
                         }
+                        Ok(false) => { /* event dropped (channel full) */ }
                         Err(_) => {
                             closed.push(sub.node_id.clone());
                         }
@@ -2942,9 +2947,10 @@ impl Daemon {
                                     },
                                     &self.clock,
                                 ) {
-                                    Ok(()) => {
+                                    Ok(true) => {
                                         dataflow.inc_pending(receiver_id);
                                     }
+                                    Ok(false) => { /* event dropped (channel full) */ }
                                     Err(_) => {
                                         tracing::warn!(
                                             "failed to send NodeRestarted to `{receiver_id}`"
@@ -3186,9 +3192,10 @@ async fn send_output_to_local_receivers(
                             },
                             clock,
                         ) {
-                            Ok(()) => {
+                            Ok(true) => {
                                 dataflow.inc_pending(receiver_id);
                             }
+                            Ok(false) => { /* event dropped (channel full) */ }
                             Err(_) => {
                                 tracing::warn!(
                                     "failed to send InputRecovered for `{receiver_id}/{input_id}`"
@@ -3526,17 +3533,19 @@ pub(crate) const NODE_EVENT_CHANNEL_CAPACITY: usize = 1000;
 /// threshold, ensuring control events always have room to be delivered.
 const CONTROL_EVENT_HEADROOM: usize = 50;
 
-/// Send an event with a timestamp. Returns Ok if sent, or Err if channel is
-/// closed. If the channel is full (slow receiver), the event is dropped with
-/// a warning — the daemon event loop must never block on a slow node.
+/// Send an event with a timestamp. Returns:
+/// - `Ok(true)` — event was delivered
+/// - `Ok(false)` — event was dropped (channel full / headroom reservation)
+/// - `Err` — channel is closed (receiver gone)
 ///
-/// For `NodeEvent`: data events (Input) respect headroom reservation to
-/// ensure control events (Stop, InputClosed, etc.) are always deliverable.
+/// Data events (Input) respect headroom reservation to ensure control events
+/// (Stop, InputClosed, etc.) are always deliverable. Callers should only
+/// increment pending counters when `Ok(true)` is returned.
 pub(crate) fn send_with_timestamp(
     sender: &mpsc::Sender<Timestamped<NodeEvent>>,
     event: NodeEvent,
     clock: &HLC,
-) -> Result<(), mpsc::error::SendError<Timestamped<NodeEvent>>> {
+) -> Result<bool, mpsc::error::SendError<Timestamped<NodeEvent>>> {
     let is_control = !matches!(event, NodeEvent::Input { .. });
     let msg = Timestamped {
         inner: event,
@@ -3547,16 +3556,14 @@ pub(crate) fn send_with_timestamp(
     // control events (Stop, InputClosed, AllInputsClosed must never be dropped).
     if !is_control && sender.capacity() < CONTROL_EVENT_HEADROOM {
         tracing::warn!("event channel low on capacity, dropping data event to preserve control headroom");
-        return Ok(());
+        return Ok(false);
     }
 
     match sender.try_send(msg) {
-        Ok(()) => Ok(()),
+        Ok(()) => Ok(true),
         Err(mpsc::error::TrySendError::Closed(msg)) => Err(mpsc::error::SendError(msg)),
         Err(mpsc::error::TrySendError::Full(msg)) => {
             if is_control {
-                // Control events must not be dropped. This should be rare
-                // because we reserve CONTROL_EVENT_HEADROOM slots.
                 tracing::error!(
                     "CRITICAL: control event dropped despite headroom reservation: {:?}",
                     msg.inner
@@ -3564,7 +3571,7 @@ pub(crate) fn send_with_timestamp(
             } else {
                 tracing::warn!("event channel full, dropping data event (slow receiver)");
             }
-            Ok(()) // don't remove the subscriber
+            Ok(false) // dropped, don't increment pending
         }
     }
 }

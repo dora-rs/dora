@@ -846,6 +846,9 @@ impl PreparedNode {
                 // Note: no per-line sync_all() — OS write-back is sufficient
                 // for log data. Avoids 1000+ fsync/s for high-frequency loggers.
             }
+            // Note: file may have been rotated (drop+recreate) inside the loop.
+            // No explicit flush needed here — the file is flushed during rotation
+            // and will be flushed on drop when this task ends.
             let _ = log_finish_tx.send(()).map_err(|_| {
                 logger_c.log(
                     LogLevel::Error,

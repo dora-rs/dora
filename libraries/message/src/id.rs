@@ -151,6 +151,10 @@ impl From<String> for DataId {
     }
 }
 
+/// # Panics
+///
+/// Panics if `id` contains invalid characters. Prefer `id.parse::<DataId>()`
+/// when handling untrusted input.
 impl From<&str> for DataId {
     fn from(id: &str) -> Self {
         id.to_owned().into()

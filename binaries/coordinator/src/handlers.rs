@@ -32,7 +32,7 @@ use uuid::Uuid;
 pub(crate) fn resolve_name(
     name: String,
     running_dataflows: &HashMap<Uuid, RunningDataflow>,
-    archived_dataflows: &HashMap<Uuid, ArchivedDataflow>,
+    archived_dataflows: &indexmap::IndexMap<Uuid, ArchivedDataflow>,
 ) -> eyre::Result<Uuid> {
     let uuids: Vec<_> = running_dataflows
         .iter()
@@ -335,7 +335,7 @@ pub(crate) async fn stop_node(
 
 pub(crate) async fn retrieve_logs(
     running_dataflows: &HashMap<Uuid, RunningDataflow>,
-    archived_dataflows: &HashMap<Uuid, ArchivedDataflow>,
+    archived_dataflows: &indexmap::IndexMap<Uuid, ArchivedDataflow>,
     dataflow_id: Uuid,
     node_id: NodeId,
     daemon_connections: &mut DaemonConnections,
