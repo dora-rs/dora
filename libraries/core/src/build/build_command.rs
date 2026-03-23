@@ -1,3 +1,4 @@
+use crate::build::managed_python_interpreter;
 use std::{collections::BTreeMap, path::Path, process::Stdio};
 
 use dora_message::descriptor::EnvValue;
@@ -80,6 +81,63 @@ pub async fn run_build_command(
     Ok(())
 }
 
+pub async fn prepare_managed_python_env(
+    working_dir: &Path,
+    python_env_dir: &Path,
+    envs: &Option<BTreeMap<String, EnvValue>>,
+    stdout_tx: tokio::sync::mpsc::Sender<std::io::Result<String>>,
+) -> eyre::Result<()> {
+    std::fs::create_dir_all(working_dir).context("failed to create working directory")?;
+    if let Some(parent) = python_env_dir.parent() {
+        std::fs::create_dir_all(parent).context("failed to create Python env parent dir")?;
+    }
+    if managed_python_interpreter(python_env_dir).is_file() {
+        return Ok(());
+    }
+
+    let mut cmd = Command::new("uv");
+    cmd.arg("venv");
+    cmd.arg("--clear");
+    cmd.arg(python_env_dir);
+
+    if let Some(envs) = envs {
+        for (key, value) in envs {
+            cmd.env(key, value.to_string());
+        }
+    }
+
+    cmd.current_dir(dunce::simplified(working_dir));
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    cmd.env("CLICOLOR", "1");
+    cmd.env("CLICOLOR_FORCE", "1");
+
+    let mut child = cmd
+        .spawn()
+        .wrap_err_with(|| format!("failed to spawn `uv venv {}`", python_env_dir.display()))?;
+
+    let child_stdout = BufReader::new(child.stdout.take().expect("failed to take stdout"));
+    let child_stderr = BufReader::new(child.stderr.take().expect("failed to take stderr"));
+
+    tokio::spawn(async move {
+        forward_build_output(child_stdout, child_stderr, stdout_tx).await;
+    });
+
+    let exit_status = child
+        .wait()
+        .await
+        .wrap_err_with(|| format!("failed to run `uv venv {}`", python_env_dir.display()))?;
+    if !exit_status.success() {
+        return Err(eyre!(
+            "managed Python env preparation `{}` returned {exit_status}",
+            python_env_dir.display()
+        ));
+    }
+
+    Ok(())
+}
+
 async fn forward_build_output<R1, R2>(
     stdout: R1,
     stderr: R2,
@@ -99,7 +157,8 @@ async fn forward_build_output<R1, R2>(
 
 #[cfg(test)]
 mod tests {
-    use super::{forward_build_output, run_build_command};
+    use super::{forward_build_output, prepare_managed_python_env, run_build_command};
+    use crate::build::managed_python_interpreter;
     use dora_message::descriptor::EnvValue;
     use std::{
         collections::BTreeMap,
@@ -254,6 +313,33 @@ mod tests {
         .unwrap_err();
 
         assert!(err.to_string().contains("build command is empty"));
+    }
+
+    #[tokio::test]
+    async fn prepare_managed_python_env_reuses_existing_interpreter() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after unix epoch")
+            .as_nanos();
+        let temp_root =
+            std::env::temp_dir().join(format!("dora-managed-python-env-test-{unique}"));
+        let working_dir = temp_root.join("workdir");
+        let env_dir = temp_root.join("env");
+        let interpreter = managed_python_interpreter(&env_dir);
+
+        std::fs::create_dir_all(interpreter.parent().expect("interpreter should have parent"))
+            .expect("failed to create fake env dir");
+        std::fs::write(&interpreter, b"").expect("failed to create fake interpreter");
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        prepare_managed_python_env(&working_dir, &env_dir, &None, tx)
+            .await
+            .expect("existing interpreter should be reused without error");
+
+        assert!(interpreter.is_file());
+        assert!(rx.try_recv().is_err(), "reused env should not emit build output");
+
+        let _ = std::fs::remove_dir_all(&temp_root);
     }
 
     fn test_working_dir() -> PathBuf {
