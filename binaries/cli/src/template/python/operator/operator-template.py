@@ -32,6 +32,7 @@ class Operator:
         Returns:
             DoraStatus: A status code (CONTINUE or STOP) that determines
                 the operator's next action.
+
         """
         if dora_event["type"] == "INPUT":
             print(

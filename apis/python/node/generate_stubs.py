@@ -25,6 +25,7 @@ def path_to_type(*elements: str) -> ast.AST:
 
     Returns:
         ast.AST: An AST node representing the path.
+
     """
     base: ast.AST = ast.Name(id=elements[0], ctx=ast.Load())
     for e in elements[1:]:
@@ -88,6 +89,7 @@ def module_stubs(module: Any) -> ast.Module:
 
     Returns:
         ast.Module: The AST representing the module's stubs.
+
     """
     types_to_import = {"typing"}
     classes = []
@@ -133,6 +135,7 @@ def class_stubs(
 
     Returns:
         ast.ClassDef: The AST representing the class's stubs.
+
     """
     attributes: List[ast.AST] = []
     methods: List[ast.AST] = []
@@ -245,6 +248,7 @@ def data_descriptor_stub(
     Returns:
         Union[Tuple[ast.AnnAssign, ast.Expr], Tuple[ast.AnnAssign]]:
             A tuple containing the assignment AST and optionally a docstring expression.
+
     """
     annotation = None
     doc_comment = None
@@ -288,6 +292,7 @@ def function_stub(
 
     Returns:
         ast.FunctionDef: The AST representing the function stub.
+
     """
     body: List[ast.AST] = []
     doc = inspect.getdoc(fn_def)
@@ -330,6 +335,7 @@ def arguments_stub(
 
     Returns:
         ast.arguments: The AST representing the function arguments.
+
     """
     real_parameters: Mapping[str, inspect.Parameter] = inspect.signature(
         callable_def,
@@ -439,6 +445,7 @@ def returns_stub(
 
     Returns:
         Optional[ast.AST]: The AST representing the return type, if found.
+
     """
     m = re.findall(r"^ *:rtype: *([^\n]*) *$", doc, re.MULTILINE)
     if len(m) == 0:
@@ -468,6 +475,7 @@ def convert_type_from_doc(
 
     Returns:
         ast.AST: The AST representing the type.
+
     """
     type_str = type_str.strip()
     return parse_type_to_ast(type_str, element_path, types_to_import)
@@ -487,6 +495,7 @@ def parse_type_to_ast(
 
     Returns:
         ast.AST: The AST representing the parsed type.
+
     """
     tokens = []
     current_token = ""
@@ -524,6 +533,7 @@ def parse_type_to_ast(
 
         Returns:
             ast.AST: The AST representing the sequence.
+
         """
         or_groups: List[List[str]] = [[]]
         print(sequence)
@@ -585,6 +595,7 @@ def concatenated_path_to_type(
 
     Returns:
         ast.AST: The AST representing the type path.
+
     """
     parts = path.split(".")
     if any(not p for p in parts):
@@ -607,6 +618,7 @@ def build_doc_comment(doc: str) -> Optional[ast.Expr]:
 
     Returns:
         Optional[ast.Expr]: An AST expression containing the cleaned docstring.
+
     """
     lines = [line.strip() for line in doc.split("\n")]
     clean_lines = []
@@ -623,6 +635,7 @@ def format_with_ruff(file: str) -> None:
 
     Args:
         file (str): The path to the file to format.
+
     """
     subprocess.check_call(["python", "-m", "ruff", "format", file])
 
