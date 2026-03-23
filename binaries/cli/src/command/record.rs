@@ -332,8 +332,10 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
     // Subscribe to topics via WS
     let ws_topics: Vec<_> = topics
         .iter()
-        .map(|(n, o)| (NodeId::from(n.clone()), o.clone().into()))
-        .collect();
+        .map(|(n, o)| -> eyre::Result<_> {
+            Ok((n.parse::<NodeId>().map_err(|e| eyre::eyre!("invalid node ID in topic: {e}"))?, o.clone().into()))
+        })
+        .collect::<eyre::Result<Vec<_>>>()?;
     let (_subscription_id, data_rx) = session.subscribe_topics(dataflow_id, ws_topics)?;
 
     // Set up recording writer

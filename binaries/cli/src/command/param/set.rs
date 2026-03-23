@@ -54,7 +54,7 @@ impl Executable for Set {
         let session = self.coordinator.connect()?;
         let dataflow_id =
             resolve_dataflow_identifier_interactive(&session, self.dataflow.as_deref())?;
-        let node_id: NodeId = self.node.clone().into();
+        let node_id: NodeId = self.node.parse::<NodeId>().map_err(|e| eyre::eyre!("invalid node ID: {e}"))?;
 
         let value: serde_json::Value =
             serde_json::from_str(&self.value).wrap_err("invalid JSON value")?;

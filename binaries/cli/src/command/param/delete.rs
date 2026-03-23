@@ -44,7 +44,7 @@ impl Executable for Delete {
         let session = self.coordinator.connect()?;
         let dataflow_id =
             resolve_dataflow_identifier_interactive(&session, self.dataflow.as_deref())?;
-        let node_id: NodeId = self.node.clone().into();
+        let node_id: NodeId = self.node.parse::<NodeId>().map_err(|e| eyre::eyre!("invalid node ID: {e}"))?;
 
         let reply = send_control_request(
             &session,

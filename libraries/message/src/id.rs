@@ -55,9 +55,8 @@ impl FromStr for NodeId {
 
 /// # Panics
 ///
-/// Panics if `id` contains invalid characters. Use `NodeId::from_str()` or
-/// `id.parse::<NodeId>()` for a fallible alternative when handling untrusted
-/// input.
+/// Panics if `id` contains invalid characters. Prefer `id.parse::<NodeId>()`
+/// or `NodeId::try_from(s)` when handling untrusted input.
 impl From<String> for NodeId {
     fn from(id: String) -> Self {
         if let Err(e) = validate_id(&id) {
@@ -141,8 +140,8 @@ impl From<DataId> for String {
 
 /// # Panics
 ///
-/// Panics if `id` contains invalid characters. Use `DataId::from_str()` or
-/// `id.parse::<DataId>()` for a fallible alternative when handling untrusted input.
+/// Panics if `id` contains invalid characters. Prefer `id.parse::<DataId>()`
+/// or `DataId::try_from(s)` when handling untrusted input.
 impl From<String> for DataId {
     fn from(id: String) -> Self {
         if let Err(e) = validate_id(&id) {
@@ -192,6 +191,19 @@ mod tests {
     #[should_panic(expected = "invalid NodeId")]
     fn node_id_from_string_panics_on_invalid() {
         let _id: NodeId = "bad/id".to_string().into();
+    }
+
+    #[test]
+    fn node_id_parse_rejects_invalid() {
+        assert!("hello".parse::<NodeId>().is_ok());
+        assert!("bad/id".parse::<NodeId>().is_err());
+        assert!("".parse::<NodeId>().is_err());
+    }
+
+    #[test]
+    fn data_id_parse_rejects_invalid() {
+        assert!("output".parse::<DataId>().is_ok());
+        assert!("bad;id".parse::<DataId>().is_err());
     }
 
     #[test]
