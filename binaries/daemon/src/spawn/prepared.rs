@@ -663,7 +663,10 @@ impl PreparedNode {
                         inner: event,
                         timestamp: uhlc.new_timestamp(),
                     };
-                    let _ = daemon_tx_log.send(event).await;
+                    // Use try_send to avoid blocking the log task when the
+                    // daemon event loop is busy (prevents deadlock chain:
+                    // daemon_tx full -> log task blocks -> stdout pipe fills -> node blocks).
+                    let _ = daemon_tx_log.try_send(event);
                 }
 
                 let formatted = content.lines().fold(String::default(), |mut output, line| {
@@ -745,7 +748,7 @@ impl PreparedNode {
                             inner: event,
                             timestamp: uhlc.new_timestamp(),
                         };
-                        let _ = daemon_tx.send(event).await;
+                        let _ = daemon_tx.try_send(event);
                     }
                 }
 
@@ -840,14 +843,8 @@ impl PreparedNode {
                     cloned_logger.log(log_message).await;
                 }
 
-                // Sync to disk
-                let _ = file.sync_all().await.map_err(|err| {
-                    logger_c.log(
-                        LogLevel::Error,
-                        Some("daemon".into()),
-                        format!("Could not sync logs to file due to {err}"),
-                    )
-                });
+                // Note: no per-line sync_all() — OS write-back is sufficient
+                // for log data. Avoids 1000+ fsync/s for high-frequency loggers.
             }
             let _ = log_finish_tx.send(()).map_err(|_| {
                 logger_c.log(

@@ -61,6 +61,27 @@ jobs:
           --exclude rust-dataflow-example-node
           --exclude multiple-daemons-example-operator
 
+  e2e:
+    name: E2E Tests
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build CLI
+        run: cargo build -p adora-cli --release
+      - name: Install CLI
+        run: cp target/release/adora-cli /usr/local/bin/adora
+      - name: Run E2E tests
+        run: >
+          cargo test --test ws-cli-e2e -- --test-threads=1
+        timeout-minutes: 10
+      - name: Run fault-tolerance tests
+        run: >
+          cargo test --test fault-tolerance-e2e -- --test-threads=1
+        timeout-minutes: 10
+
   typos:
     name: Typos
     runs-on: ubuntu-latest

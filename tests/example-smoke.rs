@@ -192,6 +192,20 @@ fn run_smoke_test(name: &str, yaml_path: &str, timeout: Duration) {
             .ok();
         if let Some(output) = list_result {
             let stdout = String::from_utf8_lossy(&output.stdout);
+            if stdout.contains("Failed") {
+                // Clean up before panicking
+                let _ = Command::new(&adora)
+                    .args(["stop", "--all"])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+                let _ = Command::new(&adora)
+                    .arg("down")
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+                panic!("{name}: dataflow entered Failed state");
+            }
             if stdout.trim().is_empty() || !stdout.contains("Running") {
                 break;
             }

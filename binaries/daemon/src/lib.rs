@@ -1314,13 +1314,20 @@ impl Daemon {
                             let mut disk_read = disk_usage.read_bytes;
                             let mut disk_written = disk_usage.written_bytes;
 
-                            for child in system.processes().values() {
-                                if child.parent() == Some(sys_pid) {
-                                    cpu_usage += child.cpu_usage();
-                                    memory_bytes += child.memory();
-                                    let child_disk = child.disk_usage();
-                                    disk_read += child_disk.read_bytes;
-                                    disk_written += child_disk.written_bytes;
+                            // Recursively aggregate all descendants (not just
+                            // direct children) so Python nodes launched via
+                            // `uv -> python` report the real python process metrics.
+                            let mut stack = vec![sys_pid];
+                            while let Some(parent) = stack.pop() {
+                                for child in system.processes().values() {
+                                    if child.parent() == Some(parent) {
+                                        cpu_usage += child.cpu_usage();
+                                        memory_bytes += child.memory();
+                                        let child_disk = child.disk_usage();
+                                        disk_read += child_disk.read_bytes;
+                                        disk_written += child_disk.written_bytes;
+                                        stack.push(child.pid());
+                                    }
                                 }
                             }
 

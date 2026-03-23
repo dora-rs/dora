@@ -441,10 +441,16 @@ async fn start_inner(
                                 .insert(daemon_id, result);
 
                             if dataflow.daemons.is_empty() {
-                                // Archive finished dataflow
+                                // Archive finished dataflow (cap at 200 to prevent unbounded growth)
                                 archived_dataflows
                                     .entry(uuid)
                                     .or_insert_with(|| ArchivedDataflow::from(entry.get()));
+                                const MAX_ARCHIVED_DATAFLOWS: usize = 200;
+                                while archived_dataflows.len() > MAX_ARCHIVED_DATAFLOWS {
+                                    if let Some(oldest_key) = archived_dataflows.keys().next().cloned() {
+                                        archived_dataflows.remove(&oldest_key);
+                                    }
+                                }
                                 let mut finished_dataflow = entry.remove();
                                 let dataflow_id = finished_dataflow.uuid;
                                 send_log_message(
@@ -1272,6 +1278,20 @@ async fn start_inner(
                             tracing::warn!("failed to persist daemon unregistration: {e}");
                         }
                     }
+                    // Clean up running_dataflows: remove disconnected daemon references
+                    for (_uuid, df) in running_dataflows.iter_mut() {
+                        for machine_id in &disconnected {
+                            df.daemons.remove(machine_id);
+                            df.pending_daemons.remove(machine_id);
+                            df.pending_spawn_results.remove(machine_id);
+                        }
+                        if df.daemons.is_empty() {
+                            tracing::error!(
+                                dataflow = %df.uuid,
+                                "all daemons disconnected — dataflow has no live daemons"
+                            );
+                        }
+                    }
                     // Notify remaining daemons about disconnected peers
                     for disconnected_id in &disconnected {
                         let msg = serde_json::to_vec(&Timestamped {
@@ -1444,6 +1464,13 @@ async fn start_inner(
                         ));
 
                         finished_builds.insert(build_id, build.build_result);
+                        // Cap cached builds to prevent unbounded memory growth
+                        const MAX_FINISHED_BUILDS: usize = 100;
+                        while finished_builds.len() > MAX_FINISHED_BUILDS {
+                            if let Some(oldest_key) = finished_builds.keys().next().cloned() {
+                                finished_builds.remove(&oldest_key);
+                            }
+                        }
                     }
                 }
                 None => {
@@ -1584,7 +1611,7 @@ async fn start_inner(
                         nodes: df.nodes.clone(),
                         dataflow_descriptor: df.descriptor.clone(),
                         spawn_nodes,
-                        uv: false,
+                        uv: df.uv,
                         write_events_to: None,
                         artifact_base_url: None,
                     };

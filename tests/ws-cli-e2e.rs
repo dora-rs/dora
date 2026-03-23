@@ -427,7 +427,6 @@ mod real_dataflow {
 
     /// Full lifecycle: start -> list (shows dataflow) -> stop -> destroy
     #[test]
-    #[ignore] // Requires exclusive coordinator port; run with --ignored --test-threads=1
     fn e2e_start_list_stop() {
         ensure_built();
         let adora = adora_bin();
@@ -473,7 +472,6 @@ mod real_dataflow {
 
     /// Verify that a second start after the first completes works correctly.
     #[test]
-    #[ignore] // Requires exclusive coordinator port; run with --ignored --test-threads=1
     fn e2e_sequential_dataflows() {
         ensure_built();
         let adora = adora_bin();
