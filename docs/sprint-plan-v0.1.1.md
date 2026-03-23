@@ -2,7 +2,7 @@
 
 **Based on**: audit-report-2026-03-21.md (combined audit)
 **Created**: 2026-03-23
-**Updated**: 2026-03-23
+**Updated**: 2026-03-24
 
 ---
 
@@ -11,12 +11,12 @@
 | Sprint | Done | Deferred | Total |
 |--------|------|----------|-------|
 | Sprint 1 | 8 | 1 | 9 |
-| Sprint 2 | 10 | 1 | 11 |
-| Sprint 3 | 9 | 3 | 12 |
+| Sprint 2 | 11 | 0 | 11 |
+| Sprint 3 | 10 | 2 | 12 |
 | Sprint 4 | 6 | 2 | 8 |
-| Sprint 5 | 5 | 7 | 12 |
-| Review fixes | 7 | — | 7 |
-| **Total** | **45** | **14** | **59** |
+| Sprint 5 | 6 | 6 | 12 |
+| Review fixes | 9 | — | 9 |
+| **Total** | **50** | **11** | **61** |
 
 ---
 
@@ -50,7 +50,7 @@
 | 17 | P2 | Wrap `Metadata` in `Arc` for fan-out | DONE | `425fde8` |
 | 18 | S2/P13 | Bounded per-node event channels (capacity 1000) | DONE | `04ac605` |
 | 19 | DEP1 | Arrow `default-features = false` | DONE | `6f9ac14` (15 -> 12 sub-crates) |
-| 20 | CVE | Upgrade Zenoh (resolves lz4_flex, quinn-proto) | DEFERRED | High risk — Zenoh API changes need investigation |
+| 20 | CVE | Upgrade Zenoh 1.1.1 -> 1.8.0 | DONE | `3d1293c` (lz4_flex/quinn-proto still transitive — Zenoh upstream) |
 
 ### Review Fixes (post-Sprint 2)
 
@@ -63,6 +63,8 @@
 | R5 | — | Add `# Panics` doc to `From<&str> for DataId` | DONE | `da58d8e` |
 | R6 | — | Log file flush note on rotation | DONE | `da58d8e` |
 | R7 | — | IndexMap dep added to coordinator | DONE | `da58d8e` |
+| R8 | — | Control event `.is_ok()` -> `.ok() == Some(true)` (9 call sites) | DONE | `3df9f59` |
+| R9 | — | Drop channels reverted to unbounded (shmem leak prevention) | DONE | `3df9f59` |
 
 ---
 
@@ -81,7 +83,7 @@
 | 29 | ET1 | Add CI E2E job (ws-cli-e2e + fault-tolerance) | DONE | `8064b83` |
 | 30 | ET3 | Remove `#[ignore]` from 2 E2E tests | DONE | `8064b83` |
 | 31 | ET4 | Check for "Failed" state in smoke test polling | DONE | `8064b83` |
-| 32 | SEC1 | sha256 digest for URL-sourced downloads | DEFERRED | M effort — YAML schema change |
+| 32 | SEC1 | sha256 digest for URL-sourced downloads | DONE | `4e9e12f` (optional expected_sha256 param) |
 
 ---
 
@@ -105,30 +107,21 @@
 | # | ID | Task | Status | Commit |
 |---|-----|------|--------|--------|
 | 41 | D1 | Create `docs/quickstart.md` | DONE | `934f1c4` |
-| 42 | D2 | Python service/streaming helpers | DEFERRED | M effort — API design needed |
-| 43 | D3 | Add metadata to Operator API `Event::Input` | DEFERRED | M effort — breaking API change |
-| 44 | D4 | Align Operator API types (`DataId`, `&str` send) | DEFERRED | Coupled with D3 |
+| 42 | D2 | Python service/streaming helpers | DONE | `4e9e12f` (send_service_request, send_service_response) |
+| 43 | D3 | Add metadata to Operator API `Event::Input` | DONE | `4e9e12f` (metadata: &types::Metadata field) |
+| 44 | D4 | Align Operator API types (`DataId`, `&str` send) | DONE | `4e9e12f` (send takes &str, not String) |
 | 45 | — | Add streaming pattern example | DEFERRED | M effort |
 | 46 | DEP4 | Zenoh `default-features = false` | DEFERRED | Need to identify required transports |
 | 47 | DEP3 | Tokio explicit feature list | DEFERRED | Too invasive |
 | 48 | DEP6 | Replace `once_cell` -> `std::sync::OnceLock` | DONE | `4b6e15c` |
-| 49 | DEP8 | Move `inquire` behind `interactive` feature flag | DONE | `4b6e15c` |
+| 49 | DEP8 | Move `inquire` behind feature flag | REVERTED | `3df9f59` — module too deeply integrated for `#[cfg]` |
 | 50 | DEP10 | Align `which` to v7 across all crates | DONE | `4b6e15c` |
 | 51 | — | Centralize deps in `[workspace.dependencies]` | DEFERRED | M effort |
 | 52 | — | Add `[profile.release]` with `lto = "thin"` | DONE | `4b6e15c` |
 
 ---
 
-## Deferred Items (14 remaining)
-
-### High Priority (should do before v0.2)
-
-| # | ID | Task | Effort | Blocker |
-|---|-----|------|--------|---------|
-| 20 | CVE | Upgrade Zenoh | S | API compatibility investigation needed |
-| 32 | SEC1 | sha256 digest for URL downloads | M | YAML schema addition |
-| 42 | D2 | Python service/streaming helpers | M | API design decision |
-| 43/44 | D3/D4 | Operator API metadata + type alignment | M | Breaking change — needs migration path |
+## Deferred Items (11 remaining)
 
 ### Medium Priority (v0.2+)
 
@@ -140,6 +133,7 @@
 | 35 | P8 | Separate Zenoh metadata from payload | M | Coupled with P4 |
 | 45 | — | Streaming pattern example | M | Working code needed |
 | 46 | DEP4 | Zenoh default-features = false | S | Transport identification |
+| 49 | DEP8 | Move `inquire` behind feature flag | S | Needs `#[cfg]` on DaemonChannel enum |
 | 51 | — | Centralize workspace deps | M | Wide-reaching Cargo.toml changes |
 
 ### Low Priority (v0.3+)
@@ -157,7 +151,10 @@
 2. **S2 (bounded channels)**: Capacity 1000, drop-newest for data events, 50-slot headroom reserved for control events. `send_with_timestamp` returns `Ok(true/false)`.
 3. **P1 (Arc)**: `Arc<DataMessage>` + `Arc<Metadata>` separately in `NodeEvent::Input`. Consumers use `Arc::unwrap_or_clone` (zero-cost when ref count is 1).
 
+4. **Zenoh upgrade**: Upgraded to 1.8.0 (no breaking changes). CVEs for lz4_flex/quinn-proto are Zenoh transitive — tracked upstream.
+5. **D3 (Operator metadata)**: Shipped. Breaking change: `Event::Input` now has `metadata` field; `send()` takes `&str`.
+
 ## Remaining Open Questions
 
-4. **Zenoh upgrade**: Pinned to 1.7.x or jump to latest? Need API compatibility check.
-5. **D3 (Operator metadata)**: Breaking change — ship in v0.2 as documented?
+6. **lz4_flex / quinn-proto CVEs**: Transitive through zenoh-transport. Monitor Zenoh releases for bump.
+7. **DEP8 (inquire)**: Module gating requires `#[cfg(feature)]` on `DaemonChannel` enum variants. Needs broader refactor.
