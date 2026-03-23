@@ -194,6 +194,9 @@ path = "tests/ws-cli-e2e.rs"
 name = "example-smoke"
 path = "tests/example-smoke.rs"
 
+[profile.release]
+lto = "thin"
+
 # The profile that 'dist' will build with
 [profile.dist]
 inherits = "release"

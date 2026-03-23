@@ -5,7 +5,7 @@ use std::{
     time::Duration,
 };
 
-use once_cell::sync::OnceCell;
+use std::sync::OnceLock;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -196,7 +196,7 @@ pub enum InputMapping {
 
 impl InputMapping {
     pub fn source(&self) -> &NodeId {
-        static ADORA_NODE_ID: OnceCell<NodeId> = OnceCell::new();
+        static ADORA_NODE_ID: OnceLock<NodeId> = OnceLock::new();
 
         match self {
             InputMapping::User(mapping) => &mapping.source,

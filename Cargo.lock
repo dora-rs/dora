@@ -89,7 +89,7 @@ dependencies = [
  "tracing-log",
  "uuid",
  "webbrowser",
- "which 7.0.3",
+ "which",
  "zenoh",
 ]
 
@@ -164,7 +164,6 @@ dependencies = [
  "git2",
  "itertools 0.14.0",
  "log",
- "once_cell",
  "schemars 1.2.1",
  "serde",
  "serde-with-expand-env",
@@ -177,7 +176,7 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
- "which 5.0.0",
+ "which",
  "zenoh",
 ]
 
@@ -224,7 +223,7 @@ dependencies = [
  "tracing-opentelemetry",
  "url",
  "uuid",
- "which 5.0.0",
+ "which",
  "windows 0.61.3",
  "zenoh",
 ]
@@ -290,7 +289,6 @@ dependencies = [
  "getrandom 0.2.17",
  "libc",
  "log",
- "once_cell",
  "schemars 1.2.1",
  "semver",
  "serde",
@@ -7431,19 +7429,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "22cfaf3c063993ff62e73cb4311efde4db1efb31ab78a3e5c457939ad5cc0bed"
 dependencies = [
  "rustls-pki-types",
-]
-
-[[package]]
-name = "which"
-version = "5.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9bf3ea8596f3a0dd5980b46430f2058dfe2c36a27ccfbb1845d6fbfcd9ba6e14"
-dependencies = [
- "either",
- "home",
- "once_cell",
- "rustix 0.38.44",
- "windows-sys 0.48.0",
 ]
 
 [[package]]
