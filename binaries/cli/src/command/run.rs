@@ -4,7 +4,7 @@
 
 use super::{Executable, system::status::daemon_running};
 use crate::{
-    LOCALHOST,
+    LOCALHOST, build as build_dataflow,
     common::{connect_with_retry, handle_dataflow_result, resolve_dataflow, write_events_to},
     output::{
         LogFormat, LogOutputConfig, parse_log_filter, parse_log_level_str, print_log_message,
@@ -22,7 +22,7 @@ use adora_message::{
 };
 use duration_str::parse as parse_duration_str;
 use eyre::{Context, ContextCompat, bail};
-use std::{collections::BTreeMap, net::SocketAddr, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 use tokio::runtime::Builder;
 
 #[derive(Debug, clap::Args)]
@@ -81,6 +81,15 @@ pub struct Run {
     /// Enable debug mode (publishes all messages to Zenoh for topic echo/hz/info)
     #[clap(long, action)]
     pub debug: bool,
+    /// Use pinned git source commits from a lockfile during pre-run build.
+    #[clap(long, action, conflicts_with = "write_lockfile")]
+    pub locked: bool,
+    /// Write resolved git source commits to a lockfile during pre-run build.
+    #[clap(long, action)]
+    pub write_lockfile: bool,
+    /// Path to build lockfile (defaults to `<dataflow-stem>.adora-lock.yaml`).
+    #[clap(long, value_name = "PATH")]
+    pub lockfile: Option<PathBuf>,
 }
 
 impl Run {
@@ -94,6 +103,9 @@ impl Run {
             log_filter: None,
             allow_shell_nodes: false,
             debug: false,
+            locked: false,
+            write_lockfile: false,
+            lockfile: None,
         }
     }
 }
@@ -146,7 +158,19 @@ impl Executable for Run {
         };
 
         let dataflow_path =
-            resolve_dataflow(self.dataflow).context("could not resolve dataflow")?;
+            resolve_dataflow(self.dataflow.clone()).context("could not resolve dataflow")?;
+        build_dataflow(
+            dataflow_path.to_string_lossy().into_owned(),
+            None,
+            None,
+            self.uv,
+            true,
+            false,
+            self.locked,
+            self.write_lockfile,
+            self.lockfile.clone(),
+        )
+        .context("failed to build dataflow before run")?;
         let dataflow_session = DataflowSession::read_session(&dataflow_path)
             .context("failed to read DataflowSession")?;
 

@@ -8,6 +8,12 @@ use eyre::{Context, ContextCompat};
 
 const LOCKFILE_VERSION: u32 = 1;
 
+#[derive(serde::Serialize)]
+struct BuildLockfileView<'a> {
+    version: u32,
+    git_sources: &'a BTreeMap<NodeId, GitSource>,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct BuildLockfile {
     version: u32,
@@ -15,13 +21,6 @@ pub struct BuildLockfile {
 }
 
 impl BuildLockfile {
-    pub fn from_git_sources(git_sources: BTreeMap<NodeId, GitSource>) -> Self {
-        Self {
-            version: LOCKFILE_VERSION,
-            git_sources,
-        }
-    }
-
     pub fn path_for_dataflow(dataflow_path: &Path, override_path: Option<PathBuf>) -> PathBuf {
         override_path.unwrap_or_else(|| {
             let file_stem = dataflow_path
@@ -46,11 +45,18 @@ impl BuildLockfile {
         Ok(lockfile)
     }
 
-    pub fn write_to(&self, path: &Path) -> eyre::Result<()> {
+    pub fn write_git_sources(
+        path: &Path,
+        git_sources: &BTreeMap<NodeId, GitSource>,
+    ) -> eyre::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).context("failed to create lockfile directory")?;
         }
-        let serialized = serde_yaml::to_string(self).context("failed to serialize lockfile")?;
+        let view = BuildLockfileView {
+            version: LOCKFILE_VERSION,
+            git_sources,
+        };
+        let serialized = serde_yaml::to_string(&view).context("failed to serialize lockfile")?;
         std::fs::write(path, serialized).context("failed to write lockfile")?;
         Ok(())
     }
@@ -98,8 +104,7 @@ mod tests {
             source("https://example.com/repo", "abc123"),
         );
 
-        let lockfile = BuildLockfile::from_git_sources(git_sources.clone());
-        lockfile.write_to(&lockfile_path).unwrap();
+        BuildLockfile::write_git_sources(&lockfile_path, &git_sources).unwrap();
         let loaded = BuildLockfile::read_from(&lockfile_path).unwrap();
 
         assert_eq!(loaded.version, LOCKFILE_VERSION);
@@ -113,7 +118,10 @@ mod tests {
             "node-a".parse().unwrap(),
             source("https://example.com/repo", "abc123"),
         );
-        let lockfile = BuildLockfile::from_git_sources(git_sources);
+        let lockfile = BuildLockfile {
+            version: LOCKFILE_VERSION,
+            git_sources,
+        };
 
         let err = lockfile
             .get_source(&"node-a".parse().unwrap(), "https://example.com/other")

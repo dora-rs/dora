@@ -95,7 +95,7 @@ pub struct Build {
     #[clap(long, action)]
     strict_types: bool,
     /// Use pinned git source commits from a lockfile.
-    #[clap(long, action)]
+    #[clap(long, action, conflicts_with = "write_lockfile")]
     locked: bool,
     /// Write resolved git source commits to a lockfile.
     #[clap(long, action)]
@@ -225,8 +225,7 @@ pub fn build(
         }
     }
     if write_lockfile {
-        let lockfile = BuildLockfile::from_git_sources(git_sources.clone());
-        lockfile.write_to(&lockfile_path).with_context(|| {
+        BuildLockfile::write_git_sources(&lockfile_path, &git_sources).with_context(|| {
             format!(
                 "failed to write build lockfile to `{}`",
                 lockfile_path.display()

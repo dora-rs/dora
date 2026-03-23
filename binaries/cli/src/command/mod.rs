@@ -246,6 +246,16 @@ mod tests {
     }
 
     #[test]
+    fn parse_run_locked() {
+        parse_ok(&["adora", "run", "foo.yml", "--locked"]);
+    }
+
+    #[test]
+    fn reject_run_locked_and_write_lockfile() {
+        parse_err(&["adora", "run", "foo.yml", "--locked", "--write-lockfile"]);
+    }
+
+    #[test]
     fn parse_up() {
         parse_ok(&["adora", "up"]);
     }
@@ -278,6 +288,16 @@ mod tests {
     #[test]
     fn parse_build() {
         parse_ok(&["adora", "build", "foo.yml"]);
+    }
+
+    #[test]
+    fn parse_build_locked() {
+        parse_ok(&["adora", "build", "foo.yml", "--locked"]);
+    }
+
+    #[test]
+    fn reject_build_locked_and_write_lockfile() {
+        parse_err(&["adora", "build", "foo.yml", "--locked", "--write-lockfile"]);
     }
 
     #[test]
