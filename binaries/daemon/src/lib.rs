@@ -207,6 +207,9 @@ pub struct Daemon {
     ft_stats: Arc<FaultToleranceStats>,
 
     zenoh_session: zenoh::Session,
+    /// Bounded channel for offloading Zenoh publishes from the main event loop.
+    /// A dedicated drain task performs the actual `.put().await` I/O.
+    zenoh_publish_tx: mpsc::Sender<ZenohOutbound>,
     remote_daemon_events_tx: Option<flume::Sender<eyre::Result<Timestamped<InterDaemonEvent>>>>,
 
     logger: DaemonLogger,
@@ -214,8 +217,17 @@ pub struct Daemon {
     sessions: BTreeMap<SessionId, BuildId>,
     builds: BTreeMap<BuildId, BuildInfo>,
     git_manager: GitManager,
-    /// System instance for metrics collection (reused across calls)
+    /// System instance for metrics collection (reused across calls).
     metrics_system: sysinfo::System,
+}
+
+/// Outbound Zenoh message queued for the drain task.
+struct ZenohOutbound {
+    publisher: Arc<zenoh::pubsub::Publisher<'static>>,
+    serialized: Vec<u8>,
+    payload_len: u64,
+    net_bytes_sent: Arc<AtomicU64>,
+    net_messages_sent: Arc<AtomicU64>,
 }
 
 type DaemonRunResult = BTreeMap<Uuid, BTreeMap<NodeId, Result<(), NodeError>>>;
@@ -467,6 +479,25 @@ impl Daemon {
             .wrap_err("failed to open zenoh session")?;
         // Use a large channel capacity to prevent deadlock
         let (adora_events_tx, adora_events_rx) = mpsc::channel(1000);
+
+        // Zenoh publish drain task: offloads .put().await from the main event loop.
+        // The main loop sends ZenohOutbound messages via try_send; this task
+        // performs the actual network I/O without blocking event processing.
+        let (zenoh_publish_tx, mut zenoh_publish_rx) = mpsc::channel::<ZenohOutbound>(256);
+        tokio::spawn(async move {
+            while let Some(msg) = zenoh_publish_rx.recv().await {
+                if let Err(e) = msg.publisher.put(msg.serialized).await {
+                    tracing::error!("zenoh publish failed: {e}");
+                    continue;
+                }
+                msg.net_bytes_sent
+                    .fetch_add(msg.payload_len, atomic::Ordering::Relaxed);
+                msg.net_messages_sent
+                    .fetch_add(1, atomic::Ordering::Relaxed);
+            }
+            tracing::debug!("zenoh publish drain task exiting");
+        });
+
         let daemon = Self {
             logger: Logger {
                 destination: log_destination,
@@ -486,6 +517,7 @@ impl Daemon {
             clock,
             ft_stats: Default::default(),
             zenoh_session,
+            zenoh_publish_tx,
             remote_daemon_events_tx,
             git_manager: Default::default(),
             builds,
@@ -613,7 +645,14 @@ impl Daemon {
                     }
                 }
                 Event::MetricsInterval => {
+                    // Metrics collection uses spawn_blocking for sysinfo refresh.
+                    // The await is brief for the remaining work (node iteration + send).
+                    // TODO: Full fire-and-forget requires extracting metrics into a
+                    // standalone function with snapshot of running dataflow state.
                     self.collect_and_send_metrics().await?;
+                }
+                Event::MetricsSystemReturn(_system) => {
+                    // Reserved for future fire-and-forget metrics pattern
                 }
                 Event::NodeHealthCheckInterval => {
                     self.check_node_health();
@@ -2343,9 +2382,9 @@ impl Daemon {
             format!("send out failed: no running dataflow with ID `{dataflow_id}`")
         })?;
 
-        // publish via zenoh
+        // Get or create publisher (lazy, cached per output)
         let publisher = match dataflow.publishers.entry(output_id.clone()) {
-            std::collections::btree_map::Entry::Occupied(e) => e.into_mut(),
+            std::collections::btree_map::Entry::Occupied(e) => e.get().clone(),
             std::collections::btree_map::Entry::Vacant(e) => {
                 let publish_topic =
                     zenoh_output_publish_topic(dataflow.id, &output_id.0, &output_id.1);
@@ -2356,7 +2395,9 @@ impl Daemon {
                     .await
                     .map_err(|err| eyre!(err))
                     .context("failed to create zenoh publisher")?;
-                e.insert(publisher)
+                let arc = Arc::new(publisher);
+                e.insert(arc.clone());
+                arc
             }
         };
 
@@ -2367,17 +2408,21 @@ impl Daemon {
         .serialize()
         .wrap_err("failed to serialize inter-daemon event")?;
         let payload_len = serialized_event.len() as u64;
-        publisher
-            .put(serialized_event)
-            .await
-            .map_err(|e| eyre!(e))
-            .context("zenoh put failed")?;
-        dataflow
-            .net_bytes_sent
-            .fetch_add(payload_len, atomic::Ordering::Relaxed);
-        dataflow
-            .net_messages_sent
-            .fetch_add(1, atomic::Ordering::Relaxed);
+
+        // Offload Zenoh I/O to the drain task — never blocks the event loop.
+        let outbound = ZenohOutbound {
+            publisher,
+            serialized: serialized_event,
+            payload_len,
+            net_bytes_sent: dataflow.net_bytes_sent.clone(),
+            net_messages_sent: dataflow.net_messages_sent.clone(),
+        };
+        if let Err(mpsc::error::TrySendError::Full(_)) =
+            self.zenoh_publish_tx.try_send(outbound)
+        {
+            tracing::warn!("zenoh publish channel full (256), dropping inter-daemon message");
+        }
+
         Ok(())
     }
 
@@ -3424,6 +3469,8 @@ pub enum Event {
     DynamicNode(DynamicNodeEventWrapper),
     HeartbeatInterval,
     MetricsInterval,
+    /// Returned by the background metrics task with the reusable System instance.
+    MetricsSystemReturn(sysinfo::System),
     NodeHealthCheckInterval,
     CtrlC,
     StopAfter(Duration),
@@ -3466,6 +3513,7 @@ impl Event {
             Event::DynamicNode(_) => "DynamicNode",
             Event::HeartbeatInterval => "HeartbeatInterval",
             Event::MetricsInterval => "MetricsInterval",
+            Event::MetricsSystemReturn(_) => "MetricsSystemReturn",
             Event::NodeHealthCheckInterval => "NodeHealthCheckInterval",
             Event::CtrlC => "CtrlC",
             Event::StopAfter(_) => "StopAfter",

@@ -177,7 +177,7 @@ pub struct RunningDataflow {
     pub(crate) cascading_error_causes: CascadingErrorCauses,
     pub(crate) grace_duration_kills: Arc<crossbeam_skiplist::SkipSet<NodeId>>,
     pub(crate) node_stderr_most_recent: BTreeMap<NodeId, Arc<ArrayQueue<String>>>,
-    pub(crate) publishers: BTreeMap<OutputId, zenoh::pubsub::Publisher<'static>>,
+    pub(crate) publishers: BTreeMap<OutputId, Arc<zenoh::pubsub::Publisher<'static>>>,
     pub(crate) finished_tx: broadcast::Sender<()>,
     /// Shutdown signal for listener loops — send `true` when dataflow finishes.
     pub(crate) listener_shutdown_tx: tokio::sync::watch::Sender<bool>,
