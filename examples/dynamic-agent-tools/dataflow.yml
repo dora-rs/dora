@@ -1,0 +1,23 @@
+# Dynamic Agent Tools Example
+#
+# An AI agent that starts with a basic "echo" tool, then dynamically
+# adds specialized tools (calculator, web search) at runtime.
+#
+# This demonstrates how AI agent systems can extend their capabilities
+# without restarting the dataflow — a key requirement for adaptive agents.
+
+nodes:
+  - id: agent
+    path: agent.py
+    inputs:
+      tick: adora/timer/hz/1
+      tool-response: echo-tool/response
+    outputs:
+      - tool-request
+
+  - id: echo-tool
+    path: echo_tool.py
+    inputs:
+      request: agent/tool-request
+    outputs:
+      - response

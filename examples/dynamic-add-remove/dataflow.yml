@@ -1,0 +1,36 @@
+# Dynamic Add/Remove Example
+#
+# This dataflow starts with a simple sender -> receiver pipeline.
+# After starting, you can dynamically add a "filter" node between them
+# using `adora node add` and `adora node connect`.
+#
+# Step 1: Start the base dataflow
+#   adora up
+#   adora start dataflow.yml --detach
+#
+# Step 2: Add a filter node dynamically
+#   adora node add --from-yaml filter-node.yml --dataflow dynamic-add-remove
+#
+# Step 3: Wire the filter into the pipeline
+#   adora node connect <dataflow> sender/value filter/input
+#   adora node connect <dataflow> filter/output receiver/filtered
+#
+# Step 4: Remove the filter
+#   adora node remove <dataflow> filter
+#
+# Step 5: Stop
+#   adora stop --all
+#   adora down
+
+nodes:
+  - id: sender
+    path: sender.py
+    outputs:
+      - value
+    inputs:
+      tick: adora/timer/millis/200
+
+  - id: receiver
+    path: receiver.py
+    inputs:
+      value: sender/value
