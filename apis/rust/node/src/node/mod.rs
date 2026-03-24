@@ -115,6 +115,16 @@ pub struct AdoraNode {
     drop_stream: DropStream,
     cache: VecDeque<ShmemHandle>,
 
+    /// Zenoh session for direct node-to-node pub/sub (data plane).
+    /// `None` in interactive/testing mode.
+    zenoh_session: Option<zenoh::Session>,
+    /// Zenoh shared memory provider for zero-copy publishing.
+    zenoh_shm_provider: Option<zenoh::shm::ShmProvider<zenoh::shm::PosixShmProviderBackend>>,
+    /// Per-output zenoh publishers (lazily created on first send).
+    zenoh_publishers: HashMap<DataId, zenoh::pubsub::Publisher<'static>>,
+    /// Threshold for using zenoh SHM vs inline bytes (default 4096).
+    zenoh_zero_copy_threshold: usize,
+
     dataflow_descriptor: serde_yaml::Result<Descriptor>,
     warned_unknown_output: BTreeSet<DataId>,
     interactive: bool,
@@ -566,6 +576,53 @@ impl AdoraNode {
             }
         };
 
+        // Initialize zenoh session for direct node-to-node data plane.
+        // The SHM provider enables zero-copy publishing for large messages.
+        let shm_pool_size = std::env::var("ADORA_NODE_SHM_POOL_SIZE")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(8 * 1024 * 1024); // 8 MB default
+        let zenoh_zero_copy_threshold = std::env::var("ADORA_ZERO_COPY_THRESHOLD")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(ZERO_COPY_THRESHOLD);
+        let (zenoh_session, zenoh_shm_provider) =
+            match tokio::runtime::Handle::try_current() {
+                Ok(handle) => {
+                    let session = handle
+                        .block_on(adora_core::topics::open_zenoh_session(None))
+                        .ok();
+                    let provider = session.as_ref().and_then(|_| {
+                        use zenoh::shm::ShmProviderBuilder;
+                        use zenoh::Wait;
+                        match ShmProviderBuilder::default_backend(shm_pool_size).wait() {
+                            Ok(p) => Some(p),
+                            Err(e) => {
+                                if std::env::var("ADORA_SHM_REQUIRED").is_ok() {
+                                    tracing::error!(
+                                        "failed to create zenoh SHM provider: {e} \
+                                         (ADORA_SHM_REQUIRED is set)"
+                                    );
+                                    // Continue without SHM — will fail at send time
+                                    None
+                                } else {
+                                    tracing::warn!(
+                                        "failed to create zenoh SHM provider ({e}), \
+                                         falling back to heap buffers"
+                                    );
+                                    None
+                                }
+                            }
+                        }
+                    });
+                    (session, provider)
+                }
+                Err(_) => {
+                    tracing::debug!("no tokio runtime — zenoh SHM disabled");
+                    (None, None)
+                }
+            };
+
         let node = Self {
             id: node_id,
             dataflow_id,
@@ -575,6 +632,10 @@ impl AdoraNode {
             sent_out_shared_memory: HashMap::new(),
             drop_stream,
             cache: VecDeque::new(),
+            zenoh_session,
+            zenoh_shm_provider,
+            zenoh_publishers: HashMap::new(),
+            zenoh_zero_copy_threshold,
             dataflow_descriptor: serde_yaml::from_value(dataflow_descriptor),
             warned_unknown_output: BTreeSet::new(),
             interactive: false,
