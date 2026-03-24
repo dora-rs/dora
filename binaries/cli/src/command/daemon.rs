@@ -44,6 +44,13 @@ pub struct Daemon {
     /// sets the ADORA_ALLOW_SHELL_NODES environment variable.
     #[clap(long)]
     allow_shell_nodes: bool,
+    /// Number of tokio worker threads (default: number of CPU cores).
+    #[clap(long)]
+    worker_threads: Option<usize>,
+    /// Enable real-time profile: mlockall + SCHED_FIFO priority.
+    /// Requires CAP_SYS_NICE + CAP_IPC_LOCK capabilities.
+    #[clap(long)]
+    rt: bool,
 }
 
 impl Executable for Daemon {
@@ -54,10 +61,49 @@ impl Executable for Daemon {
             unsafe { std::env::set_var("ADORA_ALLOW_SHELL_NODES", "true") };
         }
 
-        let rt = Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .context("tokio runtime failed")?;
+        let mut builder = Builder::new_multi_thread();
+        builder.enable_all();
+        if let Some(threads) = self.worker_threads {
+            builder.worker_threads(threads);
+        }
+        let rt = builder.build().context("tokio runtime failed")?;
+
+        // Apply real-time profile if requested.
+        if self.rt {
+            #[cfg(unix)]
+            {
+                // Lock all memory to prevent page faults.
+                let lock_result = unsafe { libc::mlockall(libc::MCL_CURRENT | libc::MCL_FUTURE) };
+                if lock_result == 0 {
+                    tracing::info!("RT: mlockall enabled (memory locked)");
+                } else {
+                    tracing::warn!(
+                        "RT: mlockall failed (errno {}). Ensure CAP_IPC_LOCK or ulimit -l unlimited.",
+                        std::io::Error::last_os_error()
+                    );
+                }
+
+                // Set SCHED_FIFO priority 50 (Linux only).
+                #[cfg(target_os = "linux")]
+                {
+                    let param = libc::sched_param { sched_priority: 50 };
+                    let sched_result =
+                        unsafe { libc::sched_setscheduler(0, libc::SCHED_FIFO, &param) };
+                    if sched_result == 0 {
+                        tracing::info!("RT: SCHED_FIFO priority 50 enabled");
+                    } else {
+                        tracing::warn!(
+                            "RT: sched_setscheduler failed (errno {}). Ensure CAP_SYS_NICE.",
+                            std::io::Error::last_os_error()
+                        );
+                    }
+                }
+                #[cfg(not(target_os = "linux"))]
+                tracing::info!("RT: SCHED_FIFO not available on this platform (mlockall applied)");
+            }
+            #[cfg(not(unix))]
+            tracing::warn!("RT: --rt flag is only supported on Unix systems");
+        }
 
         #[cfg(feature = "tracing")]
         let _guard = {
