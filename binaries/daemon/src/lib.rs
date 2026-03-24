@@ -191,39 +191,30 @@ const STDERR_LOG_LINES_MAX: usize = 500;
 const METRICS_INTERVAL: Duration = Duration::from_secs(2);
 const METRICS_INTERVAL_SECS: f64 = METRICS_INTERVAL.as_secs() as f64;
 
+/// The Daemon manages running dataflows, node communication, and inter-daemon
+/// message routing. Fields are `pub(crate)` to enable `impl Daemon` blocks in
+/// submodules (e.g., `node_events.rs`, `dataflow_lifecycle.rs`) as part of the
+/// ongoing daemon module split.
 pub struct Daemon {
-    running: HashMap<DataflowId, RunningDataflow>,
-    working_dir: HashMap<DataflowId, PathBuf>,
-
-    events_tx: mpsc::Sender<Timestamped<Event>>,
-
-    coordinator_sender: Option<coordinator::CoordinatorSender>,
-    last_coordinator_heartbeat: Instant,
-    daemon_id: DaemonId,
-
-    /// used for testing and examples
-    exit_when_done: Option<BTreeSet<(Uuid, NodeId)>>,
-    /// set on ctrl-c
-    exit_when_all_finished: bool,
-    /// used to record results of local nodes
-    dataflow_node_results: BTreeMap<Uuid, BTreeMap<NodeId, Result<(), NodeError>>>,
-
-    clock: Arc<uhlc::HLC>,
-    ft_stats: Arc<FaultToleranceStats>,
-
-    zenoh_session: zenoh::Session,
-    /// Bounded channel for offloading Zenoh publishes from the main event loop.
-    /// A dedicated drain task performs the actual `.put().await` I/O.
-    zenoh_publish_tx: mpsc::Sender<ZenohOutbound>,
-    remote_daemon_events_tx: Option<flume::Sender<eyre::Result<Timestamped<InterDaemonEvent>>>>,
-
-    logger: DaemonLogger,
-
-    sessions: BTreeMap<SessionId, BuildId>,
-    builds: BTreeMap<BuildId, BuildInfo>,
-    git_manager: GitManager,
-    /// System instance for metrics collection (reused across calls).
-    metrics_system: sysinfo::System,
+    pub(crate) running: HashMap<DataflowId, RunningDataflow>,
+    pub(crate) working_dir: HashMap<DataflowId, PathBuf>,
+    pub(crate) events_tx: mpsc::Sender<Timestamped<Event>>,
+    pub(crate) coordinator_sender: Option<coordinator::CoordinatorSender>,
+    pub(crate) last_coordinator_heartbeat: Instant,
+    pub(crate) daemon_id: DaemonId,
+    pub(crate) exit_when_done: Option<BTreeSet<(Uuid, NodeId)>>,
+    pub(crate) exit_when_all_finished: bool,
+    pub(crate) dataflow_node_results: BTreeMap<Uuid, BTreeMap<NodeId, Result<(), NodeError>>>,
+    pub(crate) clock: Arc<uhlc::HLC>,
+    pub(crate) ft_stats: Arc<FaultToleranceStats>,
+    pub(crate) zenoh_session: zenoh::Session,
+    pub(crate) zenoh_publish_tx: mpsc::Sender<ZenohOutbound>,
+    pub(crate) remote_daemon_events_tx: Option<flume::Sender<eyre::Result<Timestamped<InterDaemonEvent>>>>,
+    pub(crate) logger: DaemonLogger,
+    pub(crate) sessions: BTreeMap<SessionId, BuildId>,
+    pub(crate) builds: BTreeMap<BuildId, BuildInfo>,
+    pub(crate) git_manager: GitManager,
+    pub(crate) metrics_system: sysinfo::System,
 }
 
 
