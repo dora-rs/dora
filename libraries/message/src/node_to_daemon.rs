@@ -12,18 +12,6 @@ use crate::{
 pub enum DaemonRequest {
     Register(NodeRegisterRequest),
     Subscribe,
-    StateGet {
-        key: String,
-    },
-    StateSet {
-        key: String,
-        value: Vec<u8>,
-    },
-    StateCompareAndSet {
-        key: String,
-        expected_revision: u64,
-        value: Option<Vec<u8>>,
-    },
     SendMessage {
         output_id: DataId,
         metadata: Metadata,
@@ -44,6 +32,18 @@ pub enum DaemonRequest {
     EventStreamDropped,
     NodeConfig {
         node_id: NodeId,
+    },
+    StateGet {
+        key: String,
+    },
+    StateSet {
+        key: String,
+        value: Vec<u8>,
+    },
+    StateCompareAndSet {
+        key: String,
+        expected_revision: u64,
+        value: Option<Vec<u8>>,
     },
 }
 

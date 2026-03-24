@@ -59,12 +59,12 @@ pub enum DaemonReply {
     NodeConfig {
         result: Result<NodeConfig, String>,
     },
+    Empty,
     StateGet {
         value: Option<Vec<u8>>,
         revision: u64,
     },
     StateWrite(StateWriteResult),
-    Empty,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
