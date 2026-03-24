@@ -30,7 +30,16 @@ sudo adora daemon --rt
 
 This sets:
 - `mlockall(MCL_CURRENT | MCL_FUTURE)` — pin all memory, prevent page faults
-- `SCHED_FIFO` priority 50 — deterministic scheduling for daemon threads
+- `SCHED_FIFO` priority 50 — real-time scheduling for the main daemon thread
+
+**Important:** `SCHED_FIFO` applies only to the main thread (the one calling
+`block_on`). Tokio worker threads remain at `SCHED_OTHER`. For full RT
+coverage, use `taskset` + `chrt` to promote the entire process, or use
+`isolcpus` to dedicate cores.
+
+**Warning:** `SCHED_FIFO` without guardrails can starve other processes.
+Ensure `/proc/sys/kernel/sched_rt_runtime_us` is set (default 950000 = 95%)
+to prevent total system hang.
 
 ## Linux Kernel Tuning
 
@@ -56,7 +65,10 @@ echo never | sudo tee /sys/kernel/mm/transparent_hugepage/defrag
 For sub-100us worst-case latency, use a PREEMPT_RT patched kernel:
 
 ```bash
-# Ubuntu
+# Ubuntu 22.04+
+sudo apt install linux-lowlatency
+
+# Debian
 sudo apt install linux-image-rt-amd64
 
 # Or build from source with CONFIG_PREEMPT_RT=y
@@ -125,14 +137,12 @@ Group=adora
 # CPU affinity: pin to cores 2-3
 CPUAffinity=2 3
 
-# Real-time priority
-Nice=-20
-
 # Memory locking
 LimitMEMLOCK=infinity
 
-# Real-time scheduling
+# Real-time scheduling (use instead of Nice when --rt is enabled)
 LimitRTPRIO=99
+# Note: Nice=-20 is ignored under SCHED_FIFO; omit when using --rt.
 
 # Capabilities (instead of running as root)
 AmbientCapabilities=CAP_SYS_NICE CAP_IPC_LOCK
@@ -184,9 +194,6 @@ spec:
 ```bash
 # Control worker thread count (default: num_cpus)
 adora daemon --worker-threads 4
-
-# Or via environment variable
-TOKIO_WORKER_THREADS=4 adora daemon
 ```
 
 ## Zenoh Transport Tuning
@@ -226,6 +233,6 @@ adora run examples/benchmark/dataflow.yml --stop-after 30s
 - **Hard real-time**: Adora runs on Linux (not an RTOS). Even with PREEMPT_RT,
   worst-case latency is microseconds, not nanoseconds.
 - **Deterministic allocation**: The Rust standard allocator is not real-time safe.
-  Consider jemalloc (`--features jemalloc`) for more predictable behavior.
+  Consider jemalloc or mimalloc for more predictable allocation patterns.
 - **Interrupt-free execution**: Network interrupts, disk I/O, and kernel scheduler
   decisions can always cause jitter. Use `isolcpus` and IRQ affinity to minimize.

@@ -4,9 +4,7 @@
 # token-by-token text generation with interruption support.
 #
 # Architecture:
-#   prompt-source --> generator --> token stream --> sink
-#                          ^                          |
-#                          +--- flush (interrupt) ----+
+#   prompt-source (0.5 Hz) --> generator --> token stream --> sink
 #
 # Run:
 #   adora run examples/streaming-example/dataflow.yml --uv

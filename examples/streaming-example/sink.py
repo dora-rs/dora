@@ -29,11 +29,12 @@ def main():
 
                 if fin:
                     # Response complete — reassemble and display
-                    full_response = " ".join(sessions.pop(session_id))
+                    tokens_list = sessions.pop(session_id)
+                    full_response = " ".join(tokens_list)
                     logging.info(
-                        "[session %s] Complete (%s tokens): %s",
+                        "[session %s] Complete (%d tokens): %s",
                         session_id[:8],
-                        int(seq) + 1,
+                        len(tokens_list),
                         full_response,
                     )
 

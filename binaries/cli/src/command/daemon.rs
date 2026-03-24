@@ -49,6 +49,8 @@ pub struct Daemon {
     worker_threads: Option<usize>,
     /// Enable real-time profile: mlockall + SCHED_FIFO priority.
     /// Requires CAP_SYS_NICE + CAP_IPC_LOCK capabilities.
+    /// Warning: SCHED_FIFO applies to the main thread only (tokio workers
+    /// are not promoted). Use with care — see docs/realtime-tuning.md.
     #[clap(long)]
     rt: bool,
 }
@@ -78,7 +80,7 @@ impl Executable for Daemon {
                     tracing::info!("RT: mlockall enabled (memory locked)");
                 } else {
                     tracing::warn!(
-                        "RT: mlockall failed (errno {}). Ensure CAP_IPC_LOCK or ulimit -l unlimited.",
+                        "RT: mlockall failed: {}. Ensure CAP_IPC_LOCK or ulimit -l unlimited.",
                         std::io::Error::last_os_error()
                     );
                 }
@@ -93,7 +95,7 @@ impl Executable for Daemon {
                         tracing::info!("RT: SCHED_FIFO priority 50 enabled");
                     } else {
                         tracing::warn!(
-                            "RT: sched_setscheduler failed (errno {}). Ensure CAP_SYS_NICE.",
+                            "RT: sched_setscheduler failed: {}. Ensure CAP_SYS_NICE.",
                             std::io::Error::last_os_error()
                         );
                     }
