@@ -424,7 +424,7 @@ mod tests {
             daemon_ids: vec![],
             generation: 0,
             created_at: 1000,
-            updated_at: 1000,
+            updated_at: 1000, node_to_daemon: Default::default(), uv: false,
         };
 
         store.put_dataflow(&record).unwrap();
@@ -448,7 +448,7 @@ mod tests {
             status: crate::BuildStatus::Pending,
             errors: vec![],
             created_at: 2000,
-            updated_at: 2000,
+            updated_at: 2000, node_to_daemon: Default::default(), uv: false,
         };
 
         store.put_build(&record).unwrap();
@@ -472,7 +472,7 @@ mod tests {
             daemon_ids: vec![],
             generation: 0,
             created_at: 1000,
-            updated_at: 1000,
+            updated_at: 1000, node_to_daemon: Default::default(), uv: false,
         };
 
         store.put_dataflow(&record).unwrap();
@@ -503,7 +503,7 @@ mod tests {
                 daemon_ids: vec![],
                 generation: 1,
                 created_at: 1000,
-                updated_at: 2000,
+                updated_at: 2000, node_to_daemon: Default::default(), uv: false,
             };
             store.put_dataflow(&record).unwrap();
         }

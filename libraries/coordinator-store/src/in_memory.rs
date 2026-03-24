@@ -261,7 +261,7 @@ mod tests {
             daemon_ids: vec![],
             generation: 0,
             created_at: 0,
-            updated_at: 0,
+            updated_at: 0, node_to_daemon: Default::default(), uv: false,
         };
 
         store.put_dataflow(&record).unwrap();

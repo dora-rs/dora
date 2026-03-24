@@ -51,7 +51,7 @@ pub enum Event {
     },
     DaemonStatusReport {
         daemon_id: DaemonId,
-        running_dataflows: Vec<Uuid>,
+        running_dataflows: Vec<adora_message::daemon_to_coordinator::DataflowStatusEntry>,
     },
 }
 

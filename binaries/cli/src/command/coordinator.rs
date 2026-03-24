@@ -25,10 +25,10 @@ pub struct Coordinator {
     /// Suppresses all log output to stdout.
     #[clap(long)]
     quiet: bool,
-    /// State store backend: "memory" (default) or "redb" or "redb:/path/to/file.redb".
+    /// State store backend: "redb" (default), "memory", or "redb:/path/to/file.redb".
     /// The "redb" backend persists coordinator state to disk so it survives restarts.
-    /// Requires the `redb-backend` feature.
-    #[clap(long, default_value = "memory", value_parser = parse_store_spec)]
+    /// Use "memory" for ephemeral local development.
+    #[clap(long, default_value = "redb", value_parser = parse_store_spec)]
     store: String,
     /// Enable token authentication.
     ///
