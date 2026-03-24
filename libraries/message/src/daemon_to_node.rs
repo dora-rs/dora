@@ -101,6 +101,12 @@ pub enum NodeEvent {
         key: String,
         value: serde_json::Value,
     },
+    /// A runtime parameter has been deleted.
+    ///
+    /// Sent when `adora param delete` removes a parameter for this node.
+    ParamDeleted {
+        key: String,
+    },
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

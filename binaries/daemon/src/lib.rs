@@ -1409,6 +1409,43 @@ impl Daemon {
                 });
                 RunStatus::Continue
             }
+            DaemonCoordinatorEvent::DeleteParam {
+                dataflow_id,
+                node_id,
+                key,
+            } => {
+                let result = match self.running.get(&dataflow_id) {
+                    Some(dataflow) => {
+                        if let Some(channel) = dataflow.subscribe_channels.get(&node_id) {
+                            match send_with_timestamp(
+                                channel,
+                                NodeEvent::ParamDeleted { key },
+                                &self.clock,
+                            ) {
+                                Ok(()) => {
+                                    dataflow.inc_pending(&node_id);
+                                    Ok(())
+                                }
+                                Err(_) => Err(eyre::eyre!("node `{node_id}` channel closed")),
+                            }
+                        } else {
+                            tracing::debug!(
+                                %node_id,
+                                "param delete not deliverable: node not yet connected"
+                            );
+                            Ok(())
+                        }
+                    }
+                    None => Err(eyre::eyre!("no running dataflow with ID `{dataflow_id}`")),
+                };
+                let reply = DaemonCoordinatorReply::DeleteParamResult(
+                    result.map_err(|err| format!("{err:?}")),
+                );
+                let _ = reply_tx.send(Some(reply)).map_err(|_| {
+                    error!("could not send delete param reply from daemon to coordinator")
+                });
+                RunStatus::Continue
+            }
             DaemonCoordinatorEvent::StopDataflow {
                 dataflow_id,
                 grace_duration,
@@ -4235,6 +4272,41 @@ mod fault_tolerance_tests {
             },
             &clock,
         );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn param_delete_delivered_to_node() {
+        let clock = test_clock();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        let result = send_with_timestamp(
+            &tx,
+            NodeEvent::ParamDeleted {
+                key: "threshold".into(),
+            },
+            &clock,
+        );
+        assert!(result.is_ok());
+
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            NodeEvent::ParamDeleted { key } => {
+                assert_eq!(key, "threshold");
+            }
+            other => panic!("expected ParamDeleted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn param_delete_fails_on_closed_channel() {
+        let clock = test_clock();
+        let (tx, rx) = mpsc::unbounded_channel::<Timestamped<NodeEvent>>();
+        drop(rx); // close the receiver
+
+        let result =
+            send_with_timestamp(&tx, NodeEvent::ParamDeleted { key: "rate".into() }, &clock);
         assert!(result.is_err());
     }
 }
