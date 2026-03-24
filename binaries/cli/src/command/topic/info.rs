@@ -190,6 +190,10 @@ async fn info(
                         // Node failed, stop collecting statistics
                         break;
                     }
+                    InterDaemonEvent::StateUpdate(_) => {
+                        // State replication events do not carry output payload statistics.
+                        continue;
+                    }
                 }
             }
             Err(_) => break,

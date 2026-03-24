@@ -266,6 +266,10 @@ async fn log_to_terminal(
                 // NodeFailed events are not relevant for topic echo
                 continue;
             }
+            InterDaemonEvent::StateUpdate(_) => {
+                // State replication events are not part of output topic echo.
+                continue;
+            }
         }
     }
 
