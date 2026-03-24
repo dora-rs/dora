@@ -19,7 +19,7 @@ use adora_message::{
         DataflowStatus, LogLevel, LogMessage,
     },
     coordinator_to_daemon::{DaemonCoordinatorEvent, RegisterResult, Timestamped},
-    daemon_to_coordinator::DataflowDaemonResult,
+    daemon_to_coordinator::{DaemonCoordinatorReply, DataflowDaemonResult},
 };
 pub use control::ControlEvent;
 pub use events::{DaemonRequest, DataflowEvent, Event};
@@ -420,6 +420,21 @@ async fn start_inner(
                                             to machine {daemon_id}"
                                         )
                                     })?;
+                                }
+
+                                // Replay persisted runtime parameters once nodes are ready.
+                                // This restores desired node state after restart/recovery.
+                                let daemon_ids: Vec<_> = dataflow.daemons.iter().cloned().collect();
+                                for daemon_id in daemon_ids {
+                                    replay_persisted_params_for_daemon(
+                                        uuid,
+                                        &daemon_id,
+                                        dataflow,
+                                        store.as_ref(),
+                                        &mut daemon_connections,
+                                        &clock,
+                                    )
+                                    .await;
                                 }
                             }
                         }
@@ -1918,6 +1933,97 @@ async fn start_inner(
     tracing::info!("stopped");
 
     Ok(())
+}
+
+async fn replay_persisted_params_for_daemon(
+    dataflow_id: DataflowId,
+    daemon_id: &DaemonId,
+    dataflow: &RunningDataflow,
+    store: &dyn adora_coordinator_store::CoordinatorStore,
+    daemon_connections: &mut DaemonConnections,
+    clock: &HLC,
+) {
+    let Some(connection) = daemon_connections.get_mut(daemon_id) else {
+        tracing::warn!(
+            "cannot replay params for dataflow {dataflow_id}: no connection for daemon {daemon_id}"
+        );
+        return;
+    };
+
+    for (node_id, node_daemon_id) in &dataflow.node_to_daemon {
+        if node_daemon_id != daemon_id {
+            continue;
+        }
+
+        let params = match store.list_node_params(&dataflow_id, node_id) {
+            Ok(params) => params,
+            Err(err) => {
+                tracing::warn!(
+                    "failed to load persisted params for {dataflow_id}/{node_id}: {err}"
+                );
+                continue;
+            }
+        };
+
+        for (key, bytes) in params {
+            let value: serde_json::Value = match serde_json::from_slice(&bytes) {
+                Ok(value) => value,
+                Err(err) => {
+                    tracing::warn!(
+                        "skipping corrupt persisted param {dataflow_id}/{node_id}/{key}: {err}"
+                    );
+                    continue;
+                }
+            };
+
+            let message = match serde_json::to_vec(&Timestamped {
+                inner: DaemonCoordinatorEvent::SetParam {
+                    dataflow_id,
+                    node_id: node_id.clone(),
+                    key: key.clone(),
+                    value,
+                },
+                timestamp: clock.new_timestamp(),
+            }) {
+                Ok(msg) => msg,
+                Err(err) => {
+                    tracing::warn!(
+                        "failed to serialize param replay message for {dataflow_id}/{node_id}/{key}: {err}"
+                    );
+                    continue;
+                }
+            };
+
+            let reply_raw = match connection.send_and_receive(&message).await {
+                Ok(reply) => reply,
+                Err(err) => {
+                    tracing::warn!(
+                        "failed to replay param {dataflow_id}/{node_id}/{key} to daemon {daemon_id}: {err}"
+                    );
+                    continue;
+                }
+            };
+
+            match serde_json::from_slice(&reply_raw) {
+                Ok(DaemonCoordinatorReply::SetParamResult(Ok(()))) => {}
+                Ok(DaemonCoordinatorReply::SetParamResult(Err(err))) => {
+                    tracing::warn!(
+                        "daemon rejected replayed param {dataflow_id}/{node_id}/{key}: {err}"
+                    );
+                }
+                Ok(other) => {
+                    tracing::warn!(
+                        "unexpected daemon reply while replaying param {dataflow_id}/{node_id}/{key}: {other:?}"
+                    );
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        "failed to deserialize daemon reply while replaying param {dataflow_id}/{node_id}/{key}: {err}"
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[cfg(feature = "tracing")]
