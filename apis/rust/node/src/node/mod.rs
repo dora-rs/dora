@@ -605,9 +605,15 @@ impl AdoraNode {
             zenoh_session.as_ref(),
         )
         .wrap_err("failed to init event stream")?;
-        let drop_stream =
+        // DropStream tracks custom shmem region lifecycle via DropTokens.
+        // When zenoh SHM is available, zenoh handles buffer lifecycle via
+        // reference counting — DropTokens are not needed.
+        let drop_stream = if zenoh_session.is_some() {
+            DropStream::empty()
+        } else {
             DropStream::init(dataflow_id, &node_id, &daemon_communication, clock.clone())
-                .wrap_err("failed to init drop stream")?;
+                .wrap_err("failed to init drop stream")?
+        };
         let control_channel =
             ControlChannel::init(dataflow_id, &node_id, &daemon_communication, clock.clone())
                 .wrap_err("failed to init control channel")?;
@@ -861,7 +867,9 @@ impl AdoraNode {
         #[allow(unused_mut)] mut parameters: MetadataParameters,
         sample: Option<DataSample>,
     ) -> NodeResult<()> {
-        if !self.interactive {
+        // Process drop tokens only when using custom shmem (not zenoh SHM).
+        // With zenoh, buffer lifecycle is handled by zenoh's reference counting.
+        if !self.interactive && self.zenoh_session.is_none() {
             self.handle_finished_drop_tokens()?;
         }
 

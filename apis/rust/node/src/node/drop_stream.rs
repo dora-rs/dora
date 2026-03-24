@@ -16,6 +16,16 @@ pub struct DropStream {
 }
 
 impl DropStream {
+    /// Create a no-op drop stream (for zenoh SHM mode where DropTokens are unused).
+    pub(crate) fn empty() -> Self {
+        let (_tx, rx) = flume::bounded(0);
+        // _tx is dropped immediately -> rx.recv() returns Disconnected
+        Self {
+            receiver: rx,
+            _thread_handle: DropStreamThreadHandle::empty(),
+        }
+    }
+
     #[tracing::instrument(level = "trace", skip(hlc))]
     pub(crate) fn init(
         dataflow_id: DataflowId,
@@ -157,6 +167,14 @@ struct DropStreamThreadHandle {
 }
 
 impl DropStreamThreadHandle {
+    fn empty() -> Self {
+        let (_tx, rx) = flume::bounded(1);
+        Self {
+            node_id: "none".to_string().into(),
+            handle: rx,
+        }
+    }
+
     fn new(node_id: NodeId, join_handle: std::thread::JoinHandle<()>) -> Self {
         let (tx, rx) = flume::bounded(1);
         std::thread::spawn(move || {
