@@ -189,7 +189,7 @@ use crate::{extract_err_from_stderr::extract_err_from_stderr, pending::DataflowS
 
 const STDERR_LOG_LINES_MAX: usize = 500;
 const METRICS_INTERVAL: Duration = Duration::from_secs(2);
-const METRICS_INTERVAL_SECS: f64 = METRICS_INTERVAL.as_secs() as f64;
+const METRICS_INTERVAL_SECS: f64 = METRICS_INTERVAL.as_secs_f64();
 /// Capacity of the Zenoh publish drain channel. Large enough for burst
 /// patterns; messages are dropped with a warning when full.
 const ZENOH_PUBLISH_CHANNEL_CAPACITY: usize = 256;
@@ -1304,6 +1304,7 @@ impl Daemon {
                     }
 
                     // Clean up remaining state for this node.
+                    dataflow.running_nodes.remove(&node_id);
                     dataflow.open_inputs.remove(&node_id);
                     dataflow.subscribe_channels.remove(&node_id);
                     dataflow.drop_channels.remove(&node_id);

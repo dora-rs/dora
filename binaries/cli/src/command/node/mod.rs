@@ -1,8 +1,20 @@
+use adora_message::id::{DataId, NodeId};
 use crate::command::Executable;
 
 mod add;
 mod connect;
 mod disconnect;
+
+/// Parse "node_id/port_id" format used by connect/disconnect commands.
+pub(crate) fn parse_node_port(s: &str) -> eyre::Result<(NodeId, DataId)> {
+    let parts: Vec<&str> = s.splitn(2, '/').collect();
+    if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
+        eyre::bail!("expected 'node_id/port_id', got '{s}'");
+    }
+    let node: NodeId = parts[0].parse().map_err(|e| eyre::eyre!("invalid node ID: {e}"))?;
+    let port: DataId = parts[1].parse().map_err(|e| eyre::eyre!("invalid port ID: {e}"))?;
+    Ok((node, port))
+}
 mod info;
 mod list;
 mod remove;

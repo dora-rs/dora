@@ -1,3 +1,4 @@
+use super::parse_node_port;
 use crate::{
     command::{Executable, default_tracing},
     common::{CoordinatorOptions, resolve_dataflow_identifier_interactive, send_control_request},
@@ -5,7 +6,6 @@ use crate::{
 use adora_message::{
     cli_to_coordinator::ControlRequest,
     coordinator_to_cli::ControlRequestReply,
-    id::{DataId, NodeId},
 };
 use eyre::bail;
 
@@ -25,15 +25,6 @@ pub struct Disconnect {
     target: String,
 }
 
-fn parse_node_port(s: &str) -> eyre::Result<(NodeId, DataId)> {
-    let parts: Vec<&str> = s.splitn(2, '/').collect();
-    if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
-        bail!("expected 'node_id/port_id', got '{s}'");
-    }
-    let node: NodeId = parts[0].parse().map_err(|e| eyre::eyre!("invalid node ID: {e}"))?;
-    let port: DataId = parts[1].parse().map_err(|e| eyre::eyre!("invalid port ID: {e}"))?;
-    Ok((node, port))
-}
 
 impl Executable for Disconnect {
     fn execute(self) -> eyre::Result<()> {
