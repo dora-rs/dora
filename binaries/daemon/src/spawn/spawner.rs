@@ -8,6 +8,7 @@ use crate::{
 use clonable_command::{Command, Stdio};
 use crossbeam::queue::ArrayQueue;
 use dora_core::{
+    build::managed_python_interpreter,
     descriptor::{Descriptor, OperatorDefinition, OperatorSource, PythonSource, ResolvedNode},
     get_python_path,
     uhlc::HLC,
@@ -213,14 +214,32 @@ impl Spawner {
                         Some(command)
                     } else {
                         let mut cmd = if self.uv {
-                            let mut cmd = Command::new("uv");
-                            cmd = cmd.arg("run");
-                            cmd = cmd.arg("python");
-                            tracing::info!(
-                                "spawning: uv run python -uc import dora; dora.start_runtime() # {}",
-                                node.id
-                            );
-                            cmd
+                            if let Some(python_env_dir) = python_env_dir.as_deref() {
+                                // Reuse the managed interpreter so Python operators run
+                                // against the same environment Dora prepared during build.
+                                let python = managed_python_interpreter(python_env_dir);
+                                if !python.is_file() {
+                                    eyre::bail!(
+                                        "managed Python interpreter `{}` is missing",
+                                        python.display()
+                                    );
+                                }
+                                tracing::info!(
+                                    "spawning managed Python {} -uc import dora; dora.start_runtime() # {}",
+                                    python.display(),
+                                    node.id
+                                );
+                                Command::new(python)
+                            } else {
+                                let mut cmd = Command::new("uv");
+                                cmd = cmd.arg("run");
+                                cmd = cmd.arg("python");
+                                tracing::info!(
+                                    "spawning: uv run python -uc import dora; dora.start_runtime() # {}",
+                                    node.id
+                                );
+                                cmd
+                            }
                         } else {
                             let python = get_python_path()
                                 .wrap_err("Could not find python path when spawning custom node")?;
