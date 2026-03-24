@@ -382,6 +382,7 @@ dependencies = [
 name = "adora-node-api-python"
 version = "0.1.0"
 dependencies = [
+ "adora-message",
  "adora-node-api",
  "adora-operator-api-python",
  "adora-ros2-bridge-python",
