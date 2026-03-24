@@ -105,7 +105,7 @@ pyo3 = { version = "0.28", features = [
 pythonize = "0.28"
 git2 = { version = "0.20.4", features = ["vendored-openssl"] }
 serde_yaml = "0.9.33"
-zenoh = "~1.8"
+zenoh = { version = "~1.8", features = ["shared-memory", "unstable"] }
 serde_json = "1.0.145"
 thiserror = "2.0"
 colored = "3.0.0"
