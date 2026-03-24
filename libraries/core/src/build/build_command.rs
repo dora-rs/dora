@@ -145,21 +145,84 @@ pub async fn prepare_managed_python_env(
     if let Some(parent) = python_env_dir.parent() {
         std::fs::create_dir_all(parent).context("failed to create Python env parent dir")?;
     }
-    if managed_python_interpreter(python_env_dir).is_file() {
+    if !managed_python_interpreter(python_env_dir).is_file() {
+        let mut cmd = Command::new("uv");
+        cmd.arg("venv");
+        cmd.arg("--clear");
+        cmd.arg(python_env_dir);
+
+        if let Some(envs) = envs {
+            for (key, value) in envs {
+                cmd.env(key, value.to_string());
+            }
+        }
+
+        cmd.current_dir(dunce::simplified(working_dir));
+        cmd.stdin(Stdio::null());
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+        cmd.env("CLICOLOR", "1");
+        cmd.env("CLICOLOR_FORCE", "1");
+
+        let mut child = cmd
+            .spawn()
+            .wrap_err_with(|| format!("failed to spawn `uv venv {}`", python_env_dir.display()))?;
+
+        let child_stdout = BufReader::new(child.stdout.take().expect("failed to take stdout"));
+        let child_stderr = BufReader::new(child.stderr.take().expect("failed to take stderr"));
+        let stdout_tx = stdout_tx.clone();
+
+        tokio::spawn(async move {
+            forward_build_output(child_stdout, child_stderr, stdout_tx).await;
+        });
+
+        let exit_status = child
+            .wait()
+            .await
+            .wrap_err_with(|| format!("failed to run `uv venv {}`", python_env_dir.display()))?;
+        if !exit_status.success() {
+            return Err(eyre!(
+                "managed Python env preparation `{}` returned {exit_status}",
+                python_env_dir.display()
+            ));
+        }
+    }
+
+    ensure_managed_python_runtime(working_dir, python_env_dir, envs, stdout_tx).await
+}
+
+async fn ensure_managed_python_runtime(
+    working_dir: &Path,
+    python_env_dir: &Path,
+    envs: &Option<BTreeMap<String, EnvValue>>,
+    stdout_tx: tokio::sync::mpsc::Sender<std::io::Result<String>>,
+) -> eyre::Result<()> {
+    if managed_python_can_import_dora(working_dir, python_env_dir, envs).await? {
         return Ok(());
     }
 
+    // Prefer the local workspace package so the managed env runs against the
+    // Dora Python API from this checkout when it is available.
     let mut cmd = Command::new("uv");
-    cmd.arg("venv");
-    cmd.arg("--clear");
-    cmd.arg(python_env_dir);
+    cmd.arg("pip");
+    cmd.arg("install");
+    match local_dora_python_package_dir(working_dir) {
+        Some(package_dir) => {
+            cmd.arg("-e");
+            cmd.arg(package_dir);
+        }
+        None => {
+            cmd.arg(format!("dora-rs=={}", env!("CARGO_PKG_VERSION")));
+        }
+    }
 
     if let Some(envs) = envs {
         for (key, value) in envs {
             cmd.env(key, value.to_string());
         }
     }
-
+    apply_managed_python_env(&mut cmd, python_env_dir, envs)
+        .context("failed to target managed env for Dora runtime install")?;
     cmd.current_dir(dunce::simplified(working_dir));
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
@@ -167,9 +230,12 @@ pub async fn prepare_managed_python_env(
     cmd.env("CLICOLOR", "1");
     cmd.env("CLICOLOR_FORCE", "1");
 
-    let mut child = cmd
-        .spawn()
-        .wrap_err_with(|| format!("failed to spawn `uv venv {}`", python_env_dir.display()))?;
+    let mut child = cmd.spawn().wrap_err_with(|| {
+        format!(
+            "failed to spawn Dora runtime install into `{}`",
+            python_env_dir.display()
+        )
+    })?;
 
     let child_stdout = BufReader::new(child.stdout.take().expect("failed to take stdout"));
     let child_stderr = BufReader::new(child.stderr.take().expect("failed to take stderr"));
@@ -178,18 +244,55 @@ pub async fn prepare_managed_python_env(
         forward_build_output(child_stdout, child_stderr, stdout_tx).await;
     });
 
-    let exit_status = child
-        .wait()
-        .await
-        .wrap_err_with(|| format!("failed to run `uv venv {}`", python_env_dir.display()))?;
+    let exit_status = child.wait().await.wrap_err_with(|| {
+        format!(
+            "failed to install Dora runtime into `{}`",
+            python_env_dir.display()
+        )
+    })?;
     if !exit_status.success() {
         return Err(eyre!(
-            "managed Python env preparation `{}` returned {exit_status}",
+            "managed Python runtime installation `{}` returned {exit_status}",
             python_env_dir.display()
         ));
     }
 
     Ok(())
+}
+
+async fn managed_python_can_import_dora(
+    working_dir: &Path,
+    python_env_dir: &Path,
+    envs: &Option<BTreeMap<String, EnvValue>>,
+) -> eyre::Result<bool> {
+    let interpreter = managed_python_interpreter(python_env_dir);
+    let mut cmd = Command::new(&interpreter);
+    apply_managed_python_env(&mut cmd, python_env_dir, envs)
+        .context("failed to target managed env for Dora runtime probe")?;
+    cmd.arg("-c");
+    cmd.arg("import dora");
+    cmd.current_dir(dunce::simplified(working_dir));
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::null());
+    cmd.stderr(Stdio::null());
+
+    let exit_status = cmd.status().await.wrap_err_with(|| {
+        format!(
+            "failed to probe Dora runtime in `{}`",
+            python_env_dir.display()
+        )
+    })?;
+    Ok(exit_status.success())
+}
+
+fn local_dora_python_package_dir(working_dir: &Path) -> Option<PathBuf> {
+    working_dir.ancestors().find_map(|dir| {
+        let package_dir = dir.join("apis").join("python").join("node");
+        package_dir
+            .join("pyproject.toml")
+            .is_file()
+            .then_some(package_dir)
+    })
 }
 
 async fn forward_build_output<R1, R2>(
@@ -212,14 +315,15 @@ async fn forward_build_output<R1, R2>(
 #[cfg(test)]
 mod tests {
     use super::{
-        forward_build_output, managed_python_path, prepare_managed_python_env, run_build_command,
+        forward_build_output, local_dora_python_package_dir, managed_python_path,
+        prepare_managed_python_env, run_build_command,
     };
     use crate::build::{managed_python_bin_dir, managed_python_interpreter};
     use dora_message::descriptor::EnvValue;
     use std::{
         collections::BTreeMap,
         fs,
-        path::PathBuf,
+        path::{Path, PathBuf},
         time::{SystemTime, UNIX_EPOCH},
     };
     use tempfile::tempdir;
@@ -379,17 +483,14 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time should be after unix epoch")
             .as_nanos();
-        let temp_root = std::env::temp_dir().join(format!("dora-managed-python-env-test-{unique}"));
+        let temp_root =
+            std::env::temp_dir().join(format!("dora-managed-python-env-test-{unique}"));
         let working_dir = temp_root.join("workdir");
         let env_dir = temp_root.join("env");
         let interpreter = managed_python_interpreter(&env_dir);
 
-        std::fs::create_dir_all(
-            interpreter
-                .parent()
-                .expect("interpreter should have parent"),
-        )
-        .expect("failed to create fake env dir");
+        std::fs::create_dir_all(interpreter.parent().expect("interpreter should have parent"))
+            .expect("failed to create fake env dir");
         std::fs::write(&interpreter, b"").expect("failed to create fake interpreter");
 
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
@@ -398,12 +499,38 @@ mod tests {
             .expect("existing interpreter should be reused without error");
 
         assert!(interpreter.is_file());
-        assert!(
-            rx.try_recv().is_err(),
-            "reused env should not emit build output"
-        );
+        assert!(rx.try_recv().is_err(), "reused env should not emit build output");
 
         let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    fn local_dora_python_package_dir_finds_workspace_package() {
+        let working_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("build");
+        let package_dir =
+            local_dora_python_package_dir(&working_dir).expect("workspace package should exist");
+
+        assert!(package_dir.ends_with(Path::new("apis").join("python").join("node")));
+        assert!(package_dir.join("pyproject.toml").is_file());
+    }
+
+    #[test]
+    fn local_dora_python_package_dir_returns_none_outside_workspace() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after unix epoch")
+            .as_nanos();
+        let outside_dir = std::env::temp_dir().join(format!("dora-non-workspace-test-{unique}"));
+        std::fs::create_dir_all(&outside_dir).expect("failed to create temp dir");
+
+        assert!(
+            local_dora_python_package_dir(&outside_dir).is_none(),
+            "outside dirs should not resolve a workspace package"
+        );
+
+        let _ = std::fs::remove_dir_all(&outside_dir);
     }
 
     #[test]
