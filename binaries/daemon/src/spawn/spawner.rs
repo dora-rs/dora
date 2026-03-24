@@ -37,6 +37,7 @@ impl Spawner {
         self,
         node: ResolvedNode,
         node_working_dir: PathBuf,
+        python_env_dir: Option<PathBuf>,
         node_stderr_most_recent: Arc<ArrayQueue<String>>,
         write_events_to: Option<PathBuf>,
         logger: &mut NodeLogger<'_>,
@@ -85,6 +86,7 @@ impl Spawner {
                 .prepare_node_inner(
                     node,
                     node_working_dir,
+                    python_env_dir,
                     &mut logger,
                     dataflow_id,
                     node_config,
@@ -101,6 +103,7 @@ impl Spawner {
         self,
         node: ResolvedNode,
         node_working_dir: PathBuf,
+        python_env_dir: Option<PathBuf>,
         logger: &mut NodeLogger<'_>,
         dataflow_id: uuid::Uuid,
         node_config: NodeConfig,
@@ -110,8 +113,17 @@ impl Spawner {
             .context("failed to create node working directory")?;
         let (command, error_msg) = match &node.kind {
             dora_core::descriptor::CoreNodeKind::Custom(n) => {
-                let command =
-                    path_spawn_command(&node_working_dir, self.uv, logger, n, true).await?;
+                // Custom nodes build their command line here; pass the managed
+                // env path through so Python scripts can opt into it under --uv.
+                let command = path_spawn_command(
+                    &node_working_dir,
+                    self.uv,
+                    python_env_dir.as_deref(),
+                    logger,
+                    n,
+                    true,
+                )
+                .await?;
 
                 let command = if let Some(mut command) = command {
                     command = command.current_dir(&node_working_dir);
