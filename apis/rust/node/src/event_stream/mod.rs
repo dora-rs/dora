@@ -73,7 +73,7 @@ pub struct EventStream {
 }
 
 impl EventStream {
-    #[tracing::instrument(level = "trace", skip(clock))]
+    #[tracing::instrument(level = "trace", skip(clock, zenoh_session))]
     pub(crate) fn init(
         dataflow_id: DataflowId,
         node_id: &NodeId,
@@ -81,6 +81,7 @@ impl EventStream {
         input_config: BTreeMap<DataId, Input>,
         clock: Arc<uhlc::HLC>,
         write_events_to: Option<PathBuf>,
+        zenoh_session: Option<&zenoh::Session>,
     ) -> eyre::Result<Self> {
         let channel = match daemon_communication {
             DaemonCommunicationWrapper::Standard(daemon_communication) => {
@@ -221,6 +222,8 @@ impl EventStream {
             scheduler,
             write_events_to,
             total_queue_capacity,
+            zenoh_session,
+            &input_config,
         )
     }
 
@@ -234,6 +237,8 @@ impl EventStream {
         scheduler: Scheduler,
         write_events_to: Option<WriteEventsTo>,
         channel_capacity: usize,
+        zenoh_session: Option<&zenoh::Session>,
+        input_config: &BTreeMap<DataId, Input>,
     ) -> eyre::Result<Self> {
         channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;
         let reply = channel
@@ -264,6 +269,93 @@ impl EventStream {
             }
             _ => true,
         };
+
+        // Spawn zenoh subscribers for each input that has a source node.
+        // These feed events directly into the same flume channel as daemon events.
+        if let Some(session) = zenoh_session {
+            use zenoh::Wait;
+            for (input_id, input) in input_config {
+                let mapping = &input.mapping;
+                // Only user inputs from other nodes need zenoh subscribers
+                if let adora_message::config::InputMapping::User(user_mapping) = mapping {
+                    let source_node = &user_mapping.source;
+                    let source_output = &user_mapping.output;
+                    let topic = adora_core::topics::zenoh_output_publish_topic(
+                        dataflow_id,
+                        source_node,
+                        source_output,
+                    );
+                    let key_expr = zenoh::key_expr::KeyExpr::new(topic.clone())
+                        .map_err(|e| eyre!("invalid zenoh key: {e}"))?
+                        .into_owned();
+                    let subscriber = session
+                        .declare_subscriber(key_expr)
+                        .wait()
+                        .map_err(|e| eyre!("failed to declare zenoh subscriber: {e}"))?;
+
+                    tracing::debug!(
+                        input = %input_id,
+                        %topic,
+                        "zenoh subscriber declared for input"
+                    );
+
+                    let tx_clone = tx.clone();
+                    let input_id = input_id.clone();
+                    std::thread::spawn(move || {
+                        use zenoh::Wait;
+                        while let Ok(sample) = subscriber.recv() {
+                            // Extract metadata from attachment
+                            let metadata = sample
+                                .attachment()
+                                .and_then(|att| {
+                                    bincode::deserialize::<adora_message::metadata::Metadata>(
+                                        &att.to_bytes(),
+                                    )
+                                    .ok()
+                                });
+                            let metadata = match metadata {
+                                Some(m) => m,
+                                None => {
+                                    tracing::warn!("zenoh sample missing metadata attachment");
+                                    continue;
+                                }
+                            };
+
+                            // Extract data — try SHM zero-copy first
+                            let payload = sample.payload();
+                            let data_bytes = payload.to_bytes();
+                            let data = if data_bytes.is_empty() {
+                                None
+                            } else {
+                                Some(std::sync::Arc::new(
+                                    DataMessage::Vec(
+                                        aligned_vec::AVec::from_slice(1, &data_bytes),
+                                    ),
+                                ))
+                            };
+
+                            let event = NodeEvent::Input {
+                                id: input_id.clone(),
+                                metadata: std::sync::Arc::new(metadata),
+                                data,
+                            };
+
+                            let (ack_tx, _ack_rx) = flume::bounded(1);
+                            if tx_clone
+                                .send(EventItem::NodeEvent {
+                                    event,
+                                    ack_channel: ack_tx,
+                                })
+                                .is_err()
+                            {
+                                break; // receiver dropped
+                            }
+                        }
+                        tracing::trace!("zenoh subscriber thread exiting for input");
+                    });
+                }
+            }
+        }
 
         let thread_handle = thread::init(node_id.clone(), tx, channel, clock.clone())?;
 

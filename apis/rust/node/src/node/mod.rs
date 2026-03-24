@@ -534,48 +534,6 @@ impl AdoraNode {
             },
         };
 
-        let event_stream = EventStream::init(
-            dataflow_id,
-            &node_id,
-            &daemon_communication,
-            input_config,
-            clock.clone(),
-            write_events_to,
-        )
-        .wrap_err("failed to init event stream")?;
-        let drop_stream =
-            DropStream::init(dataflow_id, &node_id, &daemon_communication, clock.clone())
-                .wrap_err("failed to init drop stream")?;
-        let control_channel =
-            ControlChannel::init(dataflow_id, &node_id, &daemon_communication, clock.clone())
-                .wrap_err("failed to init control channel")?;
-        let runtime_type_checks = match RuntimeTypeCheck::from_env() {
-            RuntimeTypeCheck::Off => None,
-            mode => {
-                let registry = TypeRegistry::new();
-                let mut checks = HashMap::new();
-                for (id, urn) in &run_config.output_types {
-                    match registry.resolve_arrow_type(urn) {
-                        Some(dt) => {
-                            checks.insert(id.clone(), dt);
-                        }
-                        None => {
-                            if registry.resolve(urn).is_some() {
-                                info!(
-                                    "runtime type check: skipping complex type \"{urn}\" on output \"{id}\""
-                                );
-                            } else {
-                                warn!(
-                                    "runtime type check: unknown type URN \"{urn}\" on output \"{id}\""
-                                );
-                            }
-                        }
-                    }
-                }
-                Some((mode, checks))
-            }
-        };
-
         // Initialize zenoh session for direct node-to-node data plane.
         // The SHM provider enables zero-copy publishing for large messages.
         let shm_pool_size = std::env::var("ADORA_NODE_SHM_POOL_SIZE")
@@ -622,6 +580,49 @@ impl AdoraNode {
                     (None, None)
                 }
             };
+
+        let event_stream = EventStream::init(
+            dataflow_id,
+            &node_id,
+            &daemon_communication,
+            input_config,
+            clock.clone(),
+            write_events_to,
+            zenoh_session.as_ref(),
+        )
+        .wrap_err("failed to init event stream")?;
+        let drop_stream =
+            DropStream::init(dataflow_id, &node_id, &daemon_communication, clock.clone())
+                .wrap_err("failed to init drop stream")?;
+        let control_channel =
+            ControlChannel::init(dataflow_id, &node_id, &daemon_communication, clock.clone())
+                .wrap_err("failed to init control channel")?;
+        let runtime_type_checks = match RuntimeTypeCheck::from_env() {
+            RuntimeTypeCheck::Off => None,
+            mode => {
+                let registry = TypeRegistry::new();
+                let mut checks = HashMap::new();
+                for (id, urn) in &run_config.output_types {
+                    match registry.resolve_arrow_type(urn) {
+                        Some(dt) => {
+                            checks.insert(id.clone(), dt);
+                        }
+                        None => {
+                            if registry.resolve(urn).is_some() {
+                                info!(
+                                    "runtime type check: skipping complex type \"{urn}\" on output \"{id}\""
+                                );
+                            } else {
+                                warn!(
+                                    "runtime type check: unknown type URN \"{urn}\" on output \"{id}\""
+                                );
+                            }
+                        }
+                    }
+                }
+                Some((mode, checks))
+            }
+        };
 
         let node = Self {
             id: node_id,
