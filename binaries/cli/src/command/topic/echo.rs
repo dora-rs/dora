@@ -266,6 +266,15 @@ async fn log_to_terminal(
                 // NodeFailed events are not relevant for topic echo
                 continue;
             }
+            InterDaemonEvent::StateUpdate(_) => {
+                continue;
+            }
+            InterDaemonEvent::StateCatchUpRequest { .. } => {
+                continue;
+            }
+            InterDaemonEvent::StateCatchUpResponse { .. } => {
+                continue;
+            }
         }
     }
 
