@@ -40,6 +40,7 @@ pub async fn listener_loop(
         }
     });
     let connection = ShmemConnection(tx);
+    // `changed()` requires `&mut self`
     let mut shutdown = shutdown;
     tokio::select! {
         _ = Listener::run(connection, daemon_tx, clock, last_activity) => {}
@@ -47,8 +48,10 @@ pub async fn listener_loop(
             tracing::trace!("shmem listener shutting down");
         }
     }
-    // Dropping `tx` (inside `connection`) causes the spawn_blocking thread
-    // to exit when `rx.recv()` returns Err.
+    // Dropping `ShmemConnection(tx)` causes `rx.recv()` in the spawn_blocking
+    // thread to return Err, which exits the thread. Note: if ShmemServer::listen()
+    // is currently blocked waiting for a client message, the thread won't exit
+    // until listen() returns. This is a bounded leak (only at dataflow shutdown).
 }
 
 #[allow(clippy::large_enum_variant)]

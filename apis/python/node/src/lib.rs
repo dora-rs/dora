@@ -404,6 +404,12 @@ impl Node {
         py: Python,
     ) -> eyre::Result<String> {
         let mut parameters = pydict_to_metadata(metadata)?;
+        if parameters.contains_key(adora_message::metadata::REQUEST_ID) {
+            tracing::warn!(
+                "send_service_request: overwriting caller-provided 'request_id' \
+                 with auto-generated value"
+            );
+        }
         let request_id = adora_node_api::AdoraNode::new_request_id();
         parameters.insert(
             adora_message::metadata::REQUEST_ID.to_string(),
@@ -436,8 +442,8 @@ impl Node {
     /// :type output_id: str
     /// :param data: Arrow array or bytes payload
     /// :type data: pyarrow.Array or bytes
-    /// :param metadata: Metadata dict — must include ``request_id`` from the request
-    /// :type metadata: dict
+    /// :param metadata: Metadata dict (required) — must include ``request_id`` from the request
+    /// :type metadata: dict (required)
     /// :rtype: None
     #[pyo3(signature = (output_id, data, metadata))]
     pub fn send_service_response(
@@ -448,6 +454,13 @@ impl Node {
         py: Python,
     ) -> eyre::Result<()> {
         let parameters = pydict_to_metadata(Some(metadata))?;
+
+        if !parameters.contains_key(adora_message::metadata::REQUEST_ID) {
+            tracing::warn!(
+                "send_service_response: metadata is missing 'request_id' \
+                 — response will not be matched to a request"
+            );
+        }
 
         if let Ok(py_bytes) = data.cast_bound::<PyBytes>(py) {
             let data = py_bytes.as_bytes();

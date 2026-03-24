@@ -67,7 +67,7 @@ where
     let bytes = response
         .bytes()
         .await
-        .wrap_err("failed to read operator from `{uri}`")?;
+        .wrap_err_with(|| format!("failed to download from `{url}`"))?;
 
     // Verify integrity if a digest was provided
     if let Some(expected) = expected_sha256 {
