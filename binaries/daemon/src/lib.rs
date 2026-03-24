@@ -190,6 +190,9 @@ use crate::{extract_err_from_stderr::extract_err_from_stderr, pending::DataflowS
 const STDERR_LOG_LINES_MAX: usize = 500;
 const METRICS_INTERVAL: Duration = Duration::from_secs(2);
 const METRICS_INTERVAL_SECS: f64 = METRICS_INTERVAL.as_secs() as f64;
+/// Capacity of the Zenoh publish drain channel. Large enough for burst
+/// patterns; messages are dropped with a warning when full.
+const ZENOH_PUBLISH_CHANNEL_CAPACITY: usize = 256;
 
 /// The Daemon manages running dataflows, node communication, and inter-daemon
 /// message routing. Fields are `pub(crate)` to enable `impl Daemon` blocks in
@@ -511,13 +514,16 @@ impl Daemon {
         // Zenoh publish drain task: offloads .put().await from the main event loop.
         // The main loop sends ZenohOutbound messages via try_send; this task
         // performs the actual network I/O without blocking event processing.
-        let (zenoh_publish_tx, mut zenoh_publish_rx) = mpsc::channel::<ZenohOutbound>(256);
-        tokio::spawn(async move {
+        let (zenoh_publish_tx, mut zenoh_publish_rx) =
+            mpsc::channel::<ZenohOutbound>(ZENOH_PUBLISH_CHANNEL_CAPACITY);
+        let _zenoh_drain_handle = tokio::spawn(async move {
             while let Some(msg) = zenoh_publish_rx.recv().await {
                 if let Err(e) = msg.publisher.put(msg.serialized).await {
                     tracing::error!("zenoh publish failed: {e}");
                     continue;
                 }
+                // Relaxed ordering is correct: counters are read-only for metrics
+                // reporting and never used as synchronization guards.
                 msg.net_bytes_sent
                     .fetch_add(msg.payload_len, atomic::Ordering::Relaxed);
                 msg.net_messages_sent
@@ -687,9 +693,6 @@ impl Daemon {
                     // TODO: Full fire-and-forget requires extracting metrics into a
                     // standalone function with snapshot of running dataflow state.
                     self.collect_and_send_metrics().await?;
-                }
-                Event::MetricsSystemReturn(_system) => {
-                    // Reserved for future fire-and-forget metrics pattern
                 }
                 Event::NodeHealthCheckInterval => {
                     self.check_node_health();
@@ -2521,10 +2524,19 @@ impl Daemon {
             net_bytes_sent: dataflow.net_bytes_sent.clone(),
             net_messages_sent: dataflow.net_messages_sent.clone(),
         };
-        if let Err(mpsc::error::TrySendError::Full(_)) =
-            self.zenoh_publish_tx.try_send(outbound)
-        {
-            tracing::warn!("zenoh publish channel full (256), dropping inter-daemon message");
+        match self.zenoh_publish_tx.try_send(outbound) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                tracing::warn!(
+                    "zenoh publish channel full ({ZENOH_PUBLISH_CHANNEL_CAPACITY}), \
+                     dropping inter-daemon message"
+                );
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                tracing::error!(
+                    "zenoh drain task is gone — inter-daemon publish channel closed"
+                );
+            }
         }
 
         Ok(())
