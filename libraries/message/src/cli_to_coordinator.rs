@@ -161,4 +161,32 @@ pub enum ControlRequest {
         node_id: NodeId,
         key: String,
     },
+    // --- Dynamic Topology ---
+    /// Add a node to a running dataflow.
+    AddNode {
+        dataflow_id: Uuid,
+        node: crate::descriptor::Node,
+    },
+    /// Remove a node from a running dataflow.
+    RemoveNode {
+        dataflow_id: Uuid,
+        node_id: NodeId,
+        grace_duration: Option<std::time::Duration>,
+    },
+    /// Add a mapping (connection) between two nodes in a running dataflow.
+    AddMapping {
+        dataflow_id: Uuid,
+        source_node: NodeId,
+        source_output: DataId,
+        target_node: NodeId,
+        target_input: DataId,
+    },
+    /// Remove a mapping (connection) between two nodes in a running dataflow.
+    RemoveMapping {
+        dataflow_id: Uuid,
+        source_node: NodeId,
+        source_output: DataId,
+        target_node: NodeId,
+        target_input: DataId,
+    },
 }

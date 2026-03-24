@@ -1259,6 +1259,50 @@ impl Daemon {
                 let _ = reply_tx.send(None);
                 RunStatus::Continue
             }
+            // --- Dynamic Topology ---
+            DaemonCoordinatorEvent::AddNode { dataflow_id, node, uv } => {
+                tracing::info!(%dataflow_id, node_id = %node.id, "adding node to running dataflow");
+                // TODO: implement add_node_to_dataflow
+                let _ = reply_tx.send(None);
+                RunStatus::Continue
+            }
+            DaemonCoordinatorEvent::RemoveNode { dataflow_id, node_id, grace_duration } => {
+                tracing::info!(%dataflow_id, %node_id, "removing node from running dataflow");
+                if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
+                    let _ = dataflow.stop_single_node(&node_id, &self.clock, grace_duration);
+                }
+                let _ = reply_tx.send(None);
+                RunStatus::Continue
+            }
+            DaemonCoordinatorEvent::AddMapping { dataflow_id, source_node, source_output, target_node, target_input } => {
+                tracing::info!(%dataflow_id, "{source_node}/{source_output} -> {target_node}/{target_input}");
+                if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
+                    let output_id = OutputId(source_node, source_output);
+                    dataflow.mappings.entry(output_id).or_default().insert((target_node.clone(), target_input.clone()));
+                    dataflow.open_inputs.entry(target_node).or_default().insert(target_input);
+                }
+                let _ = reply_tx.send(None);
+                RunStatus::Continue
+            }
+            DaemonCoordinatorEvent::RemoveMapping { dataflow_id, source_node, source_output, target_node, target_input } => {
+                tracing::info!(%dataflow_id, "{source_node}/{source_output} -x- {target_node}/{target_input}");
+                if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
+                    let output_id = OutputId(source_node, source_output);
+                    if let Some(receivers) = dataflow.mappings.get_mut(&output_id) {
+                        receivers.remove(&(target_node.clone(), target_input.clone()));
+                    }
+                    // Send InputClosed to the target node
+                    if let Some(channel) = dataflow.subscribe_channels.get(&target_node) {
+                        let _ = send_with_timestamp(
+                            channel,
+                            NodeEvent::InputClosed { id: target_input },
+                            &self.clock,
+                        );
+                    }
+                }
+                let _ = reply_tx.send(None);
+                RunStatus::Continue
+            }
         };
         Ok(status)
     }

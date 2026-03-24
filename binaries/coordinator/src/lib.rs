@@ -1186,6 +1186,34 @@ async fn start_inner(
                                 .map(|()| ControlRequestReply::ParamDeleted);
                             let _ = reply_sender.send(reply);
                         }
+                        // --- Dynamic Topology ---
+                        ControlRequest::AddNode { dataflow_id, node } => {
+                            let node_id = node.id.clone();
+                            tracing::info!(%dataflow_id, %node_id, "dynamic AddNode");
+                            // TODO: resolve node, dispatch to daemon
+                            let _ = reply_sender.send(Ok(ControlRequestReply::NodeAdded {
+                                dataflow_id,
+                                node_id,
+                            }));
+                        }
+                        ControlRequest::RemoveNode { dataflow_id, node_id, grace_duration } => {
+                            tracing::info!(%dataflow_id, %node_id, "dynamic RemoveNode");
+                            // TODO: dispatch to daemon
+                            let _ = reply_sender.send(Ok(ControlRequestReply::NodeRemoved {
+                                dataflow_id,
+                                node_id,
+                            }));
+                        }
+                        ControlRequest::AddMapping { dataflow_id, source_node, source_output, target_node, target_input } => {
+                            tracing::info!(%dataflow_id, "{source_node}/{source_output} -> {target_node}/{target_input}");
+                            // TODO: dispatch to daemon(s)
+                            let _ = reply_sender.send(Ok(ControlRequestReply::MappingAdded));
+                        }
+                        ControlRequest::RemoveMapping { dataflow_id, source_node, source_output, target_node, target_input } => {
+                            tracing::info!(%dataflow_id, "{source_node}/{source_output} -x- {target_node}/{target_input}");
+                            // TODO: dispatch to daemon(s)
+                            let _ = reply_sender.send(Ok(ControlRequestReply::MappingRemoved));
+                        }
                     }
                 }
                 ControlEvent::Error(err) => tracing::error!("{err:?}"),

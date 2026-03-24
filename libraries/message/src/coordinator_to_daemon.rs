@@ -8,7 +8,7 @@ use crate::{
     BuildId, DataflowId, SessionId,
     common::{DaemonId, GitSource},
     descriptor::{Descriptor, ResolvedNode},
-    id::{NodeId, OperatorId},
+    id::{DataId, NodeId, OperatorId},
 };
 
 pub use crate::common::Timestamped;
@@ -75,6 +75,35 @@ pub enum DaemonCoordinatorEvent {
     Heartbeat,
     PeerDaemonDisconnected {
         daemon_id: DaemonId,
+    },
+    // --- Dynamic Topology ---
+    /// Add a node to a running dataflow on this daemon.
+    AddNode {
+        dataflow_id: DataflowId,
+        node: crate::descriptor::ResolvedNode,
+        uv: bool,
+    },
+    /// Remove a node from a running dataflow on this daemon.
+    RemoveNode {
+        dataflow_id: DataflowId,
+        node_id: NodeId,
+        grace_duration: Option<Duration>,
+    },
+    /// Add a mapping (connection) in a running dataflow.
+    AddMapping {
+        dataflow_id: DataflowId,
+        source_node: NodeId,
+        source_output: DataId,
+        target_node: NodeId,
+        target_input: DataId,
+    },
+    /// Remove a mapping (connection) in a running dataflow.
+    RemoveMapping {
+        dataflow_id: DataflowId,
+        source_node: NodeId,
+        source_output: DataId,
+        target_node: NodeId,
+        target_input: DataId,
     },
 }
 
