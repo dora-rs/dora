@@ -115,6 +115,19 @@ pub struct AdoraNode {
     drop_stream: DropStream,
     cache: VecDeque<ShmemHandle>,
 
+    /// Zenoh session for direct node-to-node pub/sub (data plane).
+    /// `None` in interactive/testing mode.
+    zenoh_session: Option<zenoh::Session>,
+    /// Zenoh shared memory provider for zero-copy publishing.
+    zenoh_shm_provider: Option<zenoh::shm::ShmProvider<zenoh::shm::PosixShmProviderBackend>>,
+    /// Per-output zenoh publishers (lazily created on first send).
+    /// `'static` is sound because zenoh `Publisher` internally holds `Arc<Session>`,
+    /// so it doesn't borrow from the session field on this struct.
+    /// Publishers must be dropped BEFORE the session (enforced in Drop impl).
+    zenoh_publishers: HashMap<DataId, zenoh::pubsub::Publisher<'static>>,
+    /// Threshold for using zenoh SHM vs inline bytes (default 4096).
+    zenoh_zero_copy_threshold: usize,
+
     dataflow_descriptor: serde_yaml::Result<Descriptor>,
     warned_unknown_output: BTreeSet<DataId>,
     interactive: bool,
@@ -524,6 +537,74 @@ impl AdoraNode {
             },
         };
 
+        // Initialize zenoh session for direct node-to-node data plane.
+        // Skip in interactive/testing mode (no daemon, no dataflow topology).
+        let is_standard_mode = matches!(
+            daemon_communication,
+            DaemonCommunicationWrapper::Standard(_)
+        );
+        let shm_pool_size = std::env::var("ADORA_NODE_SHM_POOL_SIZE")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(8 * 1024 * 1024); // 8 MB default
+        let zenoh_zero_copy_threshold = std::env::var("ADORA_ZERO_COPY_THRESHOLD")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(ZERO_COPY_THRESHOLD);
+        let (zenoh_session, zenoh_shm_provider) = if !is_standard_mode {
+            (None, None)
+        } else {
+            match tokio::runtime::Handle::try_current() {
+                Ok(handle) => {
+                    // Use spawn_blocking + oneshot to avoid panicking when
+                    // called from a tokio worker thread (block_on panics in
+                    // that context on current-thread runtimes).
+                    let session = std::thread::scope(|s| {
+                        match s.spawn(|| {
+                            handle.block_on(adora_core::topics::open_zenoh_session(None))
+                        }).join() {
+                            Ok(Ok(session)) => Some(session),
+                            Ok(Err(e)) => {
+                                tracing::warn!("failed to open zenoh session: {e:?}");
+                                None
+                            }
+                            Err(_panic) => {
+                                tracing::warn!("zenoh session init panicked");
+                                None
+                            }
+                        }
+                    });
+                    let provider = if session.is_some() {
+                        use zenoh::shm::ShmProviderBuilder;
+                        use zenoh::Wait;
+                        match ShmProviderBuilder::default_backend(shm_pool_size).wait() {
+                            Ok(p) => Some(p),
+                            Err(e) => {
+                                if std::env::var("ADORA_SHM_REQUIRED").is_ok() {
+                                    return Err(NodeError::Init(format!(
+                                        "failed to create zenoh SHM provider: {e} \
+                                         (ADORA_SHM_REQUIRED is set)"
+                                    )));
+                                }
+                                tracing::warn!(
+                                    "failed to create zenoh SHM provider ({e}), \
+                                     falling back to heap buffers"
+                                );
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    };
+                    (session, provider)
+                }
+                Err(_) => {
+                    tracing::warn!("no tokio runtime available — zenoh SHM disabled, using daemon path");
+                    (None, None)
+                }
+            }
+        };
+
         let event_stream = EventStream::init(
             dataflow_id,
             &node_id,
@@ -531,11 +612,18 @@ impl AdoraNode {
             input_config,
             clock.clone(),
             write_events_to,
+            zenoh_session.as_ref(),
         )
         .wrap_err("failed to init event stream")?;
-        let drop_stream =
+        // DropStream tracks custom shmem region lifecycle via DropTokens.
+        // When zenoh SHM is available, zenoh handles buffer lifecycle via
+        // reference counting — DropTokens are not needed.
+        let drop_stream = if zenoh_session.is_some() {
+            DropStream::empty()
+        } else {
             DropStream::init(dataflow_id, &node_id, &daemon_communication, clock.clone())
-                .wrap_err("failed to init drop stream")?;
+                .wrap_err("failed to init drop stream")?
+        };
         let control_channel =
             ControlChannel::init(dataflow_id, &node_id, &daemon_communication, clock.clone())
                 .wrap_err("failed to init control channel")?;
@@ -575,6 +663,10 @@ impl AdoraNode {
             sent_out_shared_memory: HashMap::new(),
             drop_stream,
             cache: VecDeque::new(),
+            zenoh_session,
+            zenoh_shm_provider,
+            zenoh_publishers: HashMap::new(),
+            zenoh_zero_copy_threshold,
             dataflow_descriptor: serde_yaml::from_value(dataflow_descriptor),
             warned_unknown_output: BTreeSet::new(),
             interactive: false,
@@ -785,7 +877,9 @@ impl AdoraNode {
         #[allow(unused_mut)] mut parameters: MetadataParameters,
         sample: Option<DataSample>,
     ) -> NodeResult<()> {
-        if !self.interactive {
+        // Process drop tokens only when using custom shmem (not zenoh SHM).
+        // With zenoh, buffer lifecycle is handled by zenoh's reference counting.
+        if !self.interactive && self.zenoh_session.is_none() {
             self.handle_finished_drop_tokens()?;
         }
 
@@ -814,13 +908,65 @@ impl AdoraNode {
             None => (None, None),
         };
 
-        self.control_channel
-            .send_message(output_id.clone(), metadata, data)
-            .wrap_err_with(|| format!("failed to send output {output_id}"))?;
+        // Try zenoh SHM publish for data-plane messages.
+        // If zenoh session is available, publish data directly via zenoh
+        // (zero-copy SHM for local subscribers, network for remote).
+        // The daemon still receives a data-less notification for routing awareness.
+        let has_zenoh = self.zenoh_session.is_some();
+        let zenoh_published = if has_zenoh {
+            if let Some(ref raw_data) = data {
+                let raw_bytes = match raw_data {
+                    DataMessage::Vec(v) => v.as_ref(),
+                    DataMessage::SharedMemory { .. } => {
+                        // Unreachable when zenoh is active (allocate_data_sample
+                        // uses Vec, not custom shmem). Fall back to daemon path
+                        // for safety.
+                        debug_assert!(
+                            !has_zenoh,
+                            "DataMessage::SharedMemory should not occur with zenoh active"
+                        );
+                        &[]
+                    }
+                };
+                if !raw_bytes.is_empty() && raw_bytes.len() >= self.zenoh_zero_copy_threshold {
+                    tracing::trace!(
+                        output = %output_id,
+                        size = raw_bytes.len(),
+                        "publishing via zenoh SHM"
+                    );
+                    match self.zenoh_publish(&output_id, &metadata, raw_bytes) {
+                        Ok(()) => true,
+                        Err(e) => {
+                            tracing::warn!("zenoh publish failed ({e}), falling back to daemon path");
+                            false
+                        }
+                    }
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        };
 
-        if let Some((shared_memory, drop_token)) = shmem {
-            self.sent_out_shared_memory
-                .insert(drop_token, shared_memory);
+        if zenoh_published {
+            // Data delivered directly via zenoh — do NOT send any notification
+            // to daemon. The daemon's send_output_to_local_receivers would
+            // fan out a data-less NodeEvent::Input to local subscribers,
+            // causing duplicate delivery (once from zenoh, once from daemon).
+            // The daemon learns about outputs at subscribe time, not per-message.
+        } else {
+            // Existing path: send data through daemon
+            self.control_channel
+                .send_message(output_id.clone(), metadata, data)
+                .wrap_err_with(|| format!("failed to send output {output_id}"))?;
+
+            if let Some((shared_memory, drop_token)) = shmem {
+                self.sent_out_shared_memory
+                    .insert(drop_token, shared_memory);
+            }
         }
 
         Ok(())
@@ -841,6 +987,73 @@ impl AdoraNode {
         self.control_channel
             .report_closed_outputs(outputs_ids)
             .wrap_err("failed to report closed outputs to daemon")?;
+
+        Ok(())
+    }
+
+    /// Publish data directly via zenoh (node-to-node, bypassing daemon for data).
+    /// Uses SHM for zero-copy when possible, falls back to heap buffer.
+    fn zenoh_publish(
+        &mut self,
+        output_id: &DataId,
+        metadata: &Metadata,
+        data: &[u8],
+    ) -> eyre::Result<()> {
+        use zenoh::Wait;
+
+        let session = self.zenoh_session.as_ref().unwrap();
+
+        // Get or create publisher for this output
+        if !self.zenoh_publishers.contains_key(output_id) {
+            let topic = adora_core::topics::zenoh_output_publish_topic(
+                self.dataflow_id,
+                &self.id,
+                output_id,
+            );
+            let key_expr = zenoh::key_expr::KeyExpr::new(topic)
+                .map_err(|e| eyre::eyre!("invalid zenoh key: {e}"))?
+                .into_owned();
+            let publisher = session
+                .declare_publisher(key_expr)
+                .wait()
+                .map_err(|e| eyre::eyre!("failed to declare zenoh publisher: {e}"))?;
+            self.zenoh_publishers.insert(output_id.clone(), publisher);
+        }
+        let publisher = self.zenoh_publishers.get(output_id).unwrap();
+
+        // Serialize metadata as zenoh attachment
+        let metadata_bytes = bincode::serialize(metadata)
+            .wrap_err("failed to serialize metadata for zenoh attachment")?;
+
+        // Try SHM allocation, fall back to heap
+        if let Some(provider) = &self.zenoh_shm_provider {
+            use zenoh::shm::{BlockOn, GarbageCollect};
+            match provider
+                .alloc(data.len())
+                .with_policy::<BlockOn<GarbageCollect>>()
+                .wait()
+            {
+                Ok(mut sbuf) => {
+                    sbuf.as_mut().copy_from_slice(data);
+                    publisher
+                        .put(sbuf)
+                        .attachment(&metadata_bytes[..])
+                        .wait()
+                        .map_err(|e| eyre::eyre!("zenoh SHM publish failed: {e}"))?;
+                    return Ok(());
+                }
+                Err(e) => {
+                    tracing::debug!("SHM alloc failed ({e}), using heap buffer");
+                }
+            }
+        }
+
+        // Fallback: publish raw bytes (no SHM)
+        publisher
+            .put(data)
+            .attachment(&metadata_bytes[..])
+            .wait()
+            .map_err(|e| eyre::eyre!("zenoh publish failed: {e}"))?;
 
         Ok(())
     }
@@ -1040,7 +1253,13 @@ impl AdoraNode {
     /// The data sample will use shared memory when suitable to enable efficient data transfer
     /// when sending an output message.
     pub fn allocate_data_sample(&mut self, data_len: usize) -> NodeResult<DataSample> {
-        let data = if data_len >= ZERO_COPY_THRESHOLD && !self.interactive {
+        // When zenoh SHM is active, always use Vec allocation (not custom shmem).
+        // Zenoh handles zero-copy via its own SHM pool in zenoh_publish().
+        // Using custom shmem would create DataMessage::SharedMemory which can't
+        // be published via zenoh, and whose DropTokens would never be drained
+        // (DropStream::empty() when zenoh is active).
+        let use_custom_shmem = self.zenoh_session.is_none();
+        let data = if data_len >= ZERO_COPY_THRESHOLD && !self.interactive && use_custom_shmem {
             // create shared memory region
             let shared_memory = self.allocate_shared_memory(data_len)?;
 
@@ -1136,6 +1355,13 @@ impl AdoraNode {
 
 impl Drop for AdoraNode {
     fn drop(&mut self) {
+        // Undeclare zenoh publishers to clean up network resources
+        // before closing daemon channels.
+        self.zenoh_publishers.clear();
+        // Drop the session explicitly (releases SHM pool + network resources)
+        self.zenoh_shm_provider.take();
+        self.zenoh_session.take();
+
         // close all outputs first to notify subscribers as early as possible
         if let Err(err) = self
             .control_channel

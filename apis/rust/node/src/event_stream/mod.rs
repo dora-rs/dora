@@ -62,8 +62,12 @@ mod thread;
 /// [`StopCause::Manual`] was received.
 pub struct EventStream {
     node_id: NodeId,
+    // Drop order: Rust drops fields in declaration order (top to bottom).
+    // receiver must drop FIRST so tx_clone.send() in subscriber threads
+    // returns Err, causing threads to exit before JoinHandles are dropped.
     receiver: flume::r#async::RecvStream<'static, EventItem>,
     _thread_handle: EventStreamThreadHandle,
+    _zenoh_thread_handles: Vec<std::thread::JoinHandle<()>>,
     close_channel: DaemonChannel,
     clock: Arc<uhlc::HLC>,
     scheduler: Scheduler,
@@ -73,7 +77,7 @@ pub struct EventStream {
 }
 
 impl EventStream {
-    #[tracing::instrument(level = "trace", skip(clock))]
+    #[tracing::instrument(level = "trace", skip(clock, zenoh_session))]
     pub(crate) fn init(
         dataflow_id: DataflowId,
         node_id: &NodeId,
@@ -81,6 +85,7 @@ impl EventStream {
         input_config: BTreeMap<DataId, Input>,
         clock: Arc<uhlc::HLC>,
         write_events_to: Option<PathBuf>,
+        zenoh_session: Option<&zenoh::Session>,
     ) -> eyre::Result<Self> {
         let channel = match daemon_communication {
             DaemonCommunicationWrapper::Standard(daemon_communication) => {
@@ -221,6 +226,8 @@ impl EventStream {
             scheduler,
             write_events_to,
             total_queue_capacity,
+            zenoh_session,
+            &input_config,
         )
     }
 
@@ -234,6 +241,8 @@ impl EventStream {
         scheduler: Scheduler,
         write_events_to: Option<WriteEventsTo>,
         channel_capacity: usize,
+        zenoh_session: Option<&zenoh::Session>,
+        input_config: &BTreeMap<DataId, Input>,
     ) -> eyre::Result<Self> {
         channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;
         let reply = channel
@@ -265,12 +274,128 @@ impl EventStream {
             _ => true,
         };
 
+        // Spawn zenoh subscribers for each input that has a source node.
+        // These feed events directly into the same flume channel as daemon events.
+        // Subscriber threads are tracked for cleanup in EventStream::drop.
+        let mut zenoh_thread_handles = Vec::new();
+        if let Some(session) = zenoh_session {
+            use zenoh::Wait;
+            for (input_id, input) in input_config {
+                let mapping = &input.mapping;
+                // Only user inputs from other nodes need zenoh subscribers
+                if let adora_message::config::InputMapping::User(user_mapping) = mapping {
+                    let source_node = &user_mapping.source;
+                    let source_output = &user_mapping.output;
+                    let topic = adora_core::topics::zenoh_output_publish_topic(
+                        dataflow_id,
+                        source_node,
+                        source_output,
+                    );
+                    let key_expr = match zenoh::key_expr::KeyExpr::new(topic.clone()) {
+                        Ok(k) => k.into_owned(),
+                        Err(e) => {
+                            tracing::warn!(input = %input_id, "invalid zenoh key ({e}), using daemon path");
+                            continue;
+                        }
+                    };
+                    let subscriber = match session.declare_subscriber(key_expr).wait() {
+                        Ok(s) => s,
+                        Err(e) => {
+                            // Graceful degradation: this input falls back to daemon delivery
+                            tracing::warn!(
+                                input = %input_id,
+                                "failed to declare zenoh subscriber ({e}), using daemon path"
+                            );
+                            continue;
+                        }
+                    };
+
+                    tracing::debug!(
+                        input = %input_id,
+                        %topic,
+                        "zenoh subscriber declared for input"
+                    );
+
+                    let tx_clone = tx.clone();
+                    let input_id = input_id.clone();
+                    // Dummy ack channel — zenoh handles buffer lifecycle via ref counting,
+                    // no DropToken needed (unlike the custom shmem path).
+                    let dummy_ack = flume::bounded(0).0;
+                    let handle = std::thread::Builder::new()
+                        .name(format!("zenoh-sub-{input_id}"))
+                        .spawn(move || {
+                            use zenoh::Wait;
+                            while let Ok(sample) = subscriber.recv() {
+                                // Extract metadata from attachment
+                                let metadata = sample
+                                    .attachment()
+                                    .and_then(|att| {
+                                        bincode::deserialize::<adora_message::metadata::Metadata>(
+                                            &att.to_bytes(),
+                                        )
+                                        .ok()
+                                    });
+                                let metadata = match metadata {
+                                    Some(m) => m,
+                                    None => {
+                                        tracing::warn!("zenoh sample missing metadata attachment");
+                                        continue;
+                                    }
+                                };
+
+                                // Extract payload bytes from zenoh sample.
+                                // TODO: Use ZShm reference directly for true zero-copy
+                                // once data_conversion.rs supports RawData::ZenohShm.
+                                let payload = sample.payload();
+                                let data_bytes = payload.to_bytes();
+                                let data = if data_bytes.is_empty() {
+                                    None
+                                } else {
+                                    Some(std::sync::Arc::new(
+                                        DataMessage::Vec(
+                                            aligned_vec::AVec::from_slice(1, &data_bytes),
+                                        ),
+                                    ))
+                                };
+
+                                let event = NodeEvent::Input {
+                                    id: input_id.clone(),
+                                    metadata: std::sync::Arc::new(metadata),
+                                    data,
+                                };
+
+                                if tx_clone
+                                    .send(EventItem::NodeEvent {
+                                        event,
+                                        ack_channel: dummy_ack.clone(),
+                                    })
+                                    .is_err()
+                                {
+                                    break; // receiver dropped
+                                }
+                            }
+                            tracing::trace!("zenoh subscriber thread exiting");
+                        })
+                        ;
+                    match handle {
+                        Ok(h) => zenoh_thread_handles.push(h),
+                        Err(e) => {
+                            tracing::warn!(
+                                "failed to spawn zenoh subscriber thread ({e}), input will use daemon path"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
         let thread_handle = thread::init(node_id.clone(), tx, channel, clock.clone())?;
 
         Ok(EventStream {
             node_id: node_id.clone(),
             receiver: rx.into_stream(),
             _thread_handle: thread_handle,
+            _zenoh_thread_handles: zenoh_thread_handles,
             close_channel,
             start_timestamp: clock.new_timestamp(),
             clock,

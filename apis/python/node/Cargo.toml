@@ -19,6 +19,7 @@ async = ["pyo3/experimental-async"]
 
 [dependencies]
 adora-node-api = { workspace = true }
+adora-message = { workspace = true }
 adora-operator-api-python = { workspace = true }
 chrono = { version = "0.4", features = ["serde"] }
 pyo3.workspace = true
