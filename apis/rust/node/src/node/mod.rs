@@ -875,13 +875,53 @@ impl AdoraNode {
             None => (None, None),
         };
 
-        self.control_channel
-            .send_message(output_id.clone(), metadata, data)
-            .wrap_err_with(|| format!("failed to send output {output_id}"))?;
+        // Try zenoh SHM publish for data-plane messages.
+        // If zenoh session is available, publish data directly via zenoh
+        // (zero-copy SHM for local subscribers, network for remote).
+        // The daemon still receives a data-less notification for routing awareness.
+        let has_zenoh = self.zenoh_session.is_some();
+        let zenoh_published = if has_zenoh {
+            if let Some(ref raw_data) = data {
+                let raw_bytes = match raw_data {
+                    DataMessage::Vec(v) => v.as_ref(),
+                    DataMessage::SharedMemory { .. } => {
+                        // For existing shmem data, fall back to daemon path
+                        &[]
+                    }
+                };
+                if !raw_bytes.is_empty() && raw_bytes.len() >= self.zenoh_zero_copy_threshold {
+                    match self.zenoh_publish(&output_id, &metadata, raw_bytes) {
+                        Ok(()) => true,
+                        Err(e) => {
+                            tracing::warn!("zenoh publish failed ({e}), falling back to daemon path");
+                            false
+                        }
+                    }
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        };
 
-        if let Some((shared_memory, drop_token)) = shmem {
-            self.sent_out_shared_memory
-                .insert(drop_token, shared_memory);
+        if zenoh_published {
+            // Send data-less notification to daemon (for logging, metrics, routing awareness)
+            self.control_channel
+                .send_message(output_id.clone(), metadata, None)
+                .wrap_err_with(|| format!("failed to send output notification for {output_id}"))?;
+        } else {
+            // Existing path: send data through daemon
+            self.control_channel
+                .send_message(output_id.clone(), metadata, data)
+                .wrap_err_with(|| format!("failed to send output {output_id}"))?;
+
+            if let Some((shared_memory, drop_token)) = shmem {
+                self.sent_out_shared_memory
+                    .insert(drop_token, shared_memory);
+            }
         }
 
         Ok(())
@@ -902,6 +942,73 @@ impl AdoraNode {
         self.control_channel
             .report_closed_outputs(outputs_ids)
             .wrap_err("failed to report closed outputs to daemon")?;
+
+        Ok(())
+    }
+
+    /// Publish data directly via zenoh (node-to-node, bypassing daemon for data).
+    /// Uses SHM for zero-copy when possible, falls back to heap buffer.
+    fn zenoh_publish(
+        &mut self,
+        output_id: &DataId,
+        metadata: &Metadata,
+        data: &[u8],
+    ) -> eyre::Result<()> {
+        use zenoh::Wait;
+
+        let session = self.zenoh_session.as_ref().unwrap();
+
+        // Get or create publisher for this output
+        if !self.zenoh_publishers.contains_key(output_id) {
+            let topic = adora_core::topics::zenoh_output_publish_topic(
+                self.dataflow_id,
+                &self.id,
+                output_id,
+            );
+            let key_expr = zenoh::key_expr::KeyExpr::new(topic)
+                .map_err(|e| eyre::eyre!("invalid zenoh key: {e}"))?
+                .into_owned();
+            let publisher = session
+                .declare_publisher(key_expr)
+                .wait()
+                .map_err(|e| eyre::eyre!("failed to declare zenoh publisher: {e}"))?;
+            self.zenoh_publishers.insert(output_id.clone(), publisher);
+        }
+        let publisher = self.zenoh_publishers.get(output_id).unwrap();
+
+        // Serialize metadata as zenoh attachment
+        let metadata_bytes = bincode::serialize(metadata)
+            .wrap_err("failed to serialize metadata for zenoh attachment")?;
+
+        // Try SHM allocation, fall back to heap
+        if let Some(provider) = &self.zenoh_shm_provider {
+            use zenoh::shm::{BlockOn, GarbageCollect};
+            match provider
+                .alloc(data.len())
+                .with_policy::<BlockOn<GarbageCollect>>()
+                .wait()
+            {
+                Ok(mut sbuf) => {
+                    sbuf.as_mut().copy_from_slice(data);
+                    publisher
+                        .put(sbuf)
+                        .attachment(&metadata_bytes[..])
+                        .wait()
+                        .map_err(|e| eyre::eyre!("zenoh SHM publish failed: {e}"))?;
+                    return Ok(());
+                }
+                Err(e) => {
+                    tracing::debug!("SHM alloc failed ({e}), using heap buffer");
+                }
+            }
+        }
+
+        // Fallback: publish raw bytes (no SHM)
+        publisher
+            .put(data)
+            .attachment(&metadata_bytes[..])
+            .wait()
+            .map_err(|e| eyre::eyre!("zenoh publish failed: {e}"))?;
 
         Ok(())
     }
