@@ -5,7 +5,7 @@
 
 id: calc-tool
 path: calc_tool.py
-inputs:
-  request: agent/tool-request
+# No inputs declared — wire explicitly after adding:
+#   adora node connect <dataflow> agent/tool-request calc-tool/request
 outputs:
   - response

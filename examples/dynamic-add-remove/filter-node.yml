@@ -8,7 +8,7 @@
 
 id: filter
 path: filter.py
-inputs:
-  input: sender/value
+# No inputs declared — wire explicitly after adding:
+#   adora node connect <dataflow> sender/value filter/input
 outputs:
   - output

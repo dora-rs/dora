@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, net::IpAddr};
 use uuid::Uuid;
 
 pub use crate::common::{LogLevel, LogMessage, NodeError, NodeErrorCause, NodeExitStatus};
-use crate::{BuildId, common::DaemonId, descriptor::Descriptor, id::NodeId};
+use crate::{BuildId, common::DaemonId, descriptor::Descriptor, id::{DataId, NodeId}};
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub enum ControlRequestReply {
@@ -71,8 +71,20 @@ pub enum ControlRequestReply {
         dataflow_id: Uuid,
         node_id: NodeId,
     },
-    MappingAdded,
-    MappingRemoved,
+    MappingAdded {
+        dataflow_id: Uuid,
+        source_node: NodeId,
+        source_output: DataId,
+        target_node: NodeId,
+        target_input: DataId,
+    },
+    MappingRemoved {
+        dataflow_id: Uuid,
+        source_node: NodeId,
+        source_output: DataId,
+        target_node: NodeId,
+        target_input: DataId,
+    },
     ParamList {
         params: Vec<(String, serde_json::Value)>,
     },

@@ -26,9 +26,11 @@ def main():
                 if request.get("tool") == "calc":
                     expression = request.get("expression", "0")
                     try:
-                        # Safe eval for simple arithmetic only
-                        result = eval(expression, {"__builtins__": {}})  # noqa: S307
-                    except Exception as e:
+                        # Use ast.literal_eval for safe numeric parsing.
+                        # For actual arithmetic, use a proper parser like simpleeval.
+                        import ast
+                        result = ast.literal_eval(expression)
+                    except (ValueError, SyntaxError) as e:
                         result = f"error: {e}"
 
                     response = json.dumps({

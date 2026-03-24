@@ -1261,8 +1261,8 @@ impl Daemon {
             }
             // --- Dynamic Topology ---
             DaemonCoordinatorEvent::AddNode { dataflow_id, node, uv } => {
-                tracing::info!(%dataflow_id, node_id = %node.id, "adding node to running dataflow");
-                // TODO: implement add_node_to_dataflow
+                // FIXME: implement full node spawning (spawn_node + listener + subscribe)
+                tracing::warn!(%dataflow_id, node_id = %node.id, "AddNode not yet implemented — node will not be spawned");
                 let _ = reply_tx.send(None);
                 RunStatus::Continue
             }
@@ -1270,6 +1270,33 @@ impl Daemon {
                 tracing::info!(%dataflow_id, %node_id, "removing node from running dataflow");
                 if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
                     let _ = dataflow.stop_single_node(&node_id, &self.clock, grace_duration);
+
+                    // Clean up routing tables: remove all mappings where this
+                    // node is a source, and close inputs on downstream nodes.
+                    let outputs_to_remove: Vec<OutputId> = dataflow
+                        .mappings
+                        .keys()
+                        .filter(|oid| oid.0 == node_id)
+                        .cloned()
+                        .collect();
+                    for output_id in outputs_to_remove {
+                        if let Some(receivers) = dataflow.mappings.remove(&output_id) {
+                            for (receiver_id, input_id) in receivers {
+                                close_input(dataflow, &receiver_id, &input_id, &self.clock);
+                            }
+                        }
+                    }
+
+                    // Remove all mappings where this node is a receiver.
+                    for receivers in dataflow.mappings.values_mut() {
+                        receivers.retain(|(nid, _)| nid != &node_id);
+                    }
+
+                    // Clean up remaining state for this node.
+                    dataflow.open_inputs.remove(&node_id);
+                    dataflow.subscribe_channels.remove(&node_id);
+                    dataflow.drop_channels.remove(&node_id);
+                    dataflow.pending_messages.remove(&node_id);
                 }
                 let _ = reply_tx.send(None);
                 RunStatus::Continue
@@ -1278,8 +1305,10 @@ impl Daemon {
                 tracing::info!(%dataflow_id, "{source_node}/{source_output} -> {target_node}/{target_input}");
                 if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
                     let output_id = OutputId(source_node, source_output);
-                    dataflow.mappings.entry(output_id).or_default().insert((target_node.clone(), target_input.clone()));
-                    dataflow.open_inputs.entry(target_node).or_default().insert(target_input);
+                    dataflow.mappings.entry(output_id).or_default()
+                        .insert((target_node.clone(), target_input.clone()));
+                    dataflow.open_inputs.entry(target_node).or_default()
+                        .insert(target_input);
                 }
                 let _ = reply_tx.send(None);
                 RunStatus::Continue
@@ -1291,14 +1320,8 @@ impl Daemon {
                     if let Some(receivers) = dataflow.mappings.get_mut(&output_id) {
                         receivers.remove(&(target_node.clone(), target_input.clone()));
                     }
-                    // Send InputClosed to the target node
-                    if let Some(channel) = dataflow.subscribe_channels.get(&target_node) {
-                        let _ = send_with_timestamp(
-                            channel,
-                            NodeEvent::InputClosed { id: target_input },
-                            &self.clock,
-                        );
-                    }
+                    // Use close_input for proper cleanup (open_inputs, AllInputsClosed, etc.)
+                    close_input(dataflow, &target_node, &target_input, &self.clock);
                 }
                 let _ = reply_tx.send(None);
                 RunStatus::Continue

@@ -42,19 +42,21 @@ The receiver logs all integers from the sender.
 adora node add --from-yaml examples/dynamic-add-remove/filter-node.yml --dataflow demo
 ```
 
-The filter node starts and begins receiving from `sender/value`.
-Even numbers pass through to `filter/output`.
+The filter node is registered in the dataflow but not yet wired.
 
-### Step 3: Wire filter output to receiver
+### Step 3: Wire the filter into the pipeline
 
 ```bash
-# Connect filter's output to receiver's new input
-adora node connect demo filter/output receiver/filtered
+# Connect sender's output to filter's input
+adora node connect --dataflow demo sender/value filter/input
+
+# Connect filter's output to receiver
+adora node connect --dataflow demo filter/output receiver/filtered
 ```
 
 Now the receiver sees both:
 - `value` (all integers, from sender directly)
-- `filtered` (even only, from filter)
+- `filtered` (even only, from filter via the new mapping)
 
 ### Step 4: Remove the filter
 

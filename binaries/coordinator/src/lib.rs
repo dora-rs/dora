@@ -1187,32 +1187,51 @@ async fn start_inner(
                             let _ = reply_sender.send(reply);
                         }
                         // --- Dynamic Topology ---
+                        // FIXME: These handlers validate the dataflow exists but do not
+                        // yet dispatch to daemons. Full implementation requires resolving
+                        // the target daemon and forwarding the event.
                         ControlRequest::AddNode { dataflow_id, node } => {
-                            let node_id = node.id.clone();
-                            tracing::info!(%dataflow_id, %node_id, "dynamic AddNode");
-                            // TODO: resolve node, dispatch to daemon
-                            let _ = reply_sender.send(Ok(ControlRequestReply::NodeAdded {
-                                dataflow_id,
-                                node_id,
-                            }));
+                            if !running_dataflows.contains_key(&dataflow_id) {
+                                let _ = reply_sender.send(Err(eyre!("no running dataflow with ID {dataflow_id}")));
+                            } else {
+                                let node_id = node.id.clone();
+                                tracing::warn!(%dataflow_id, %node_id, "AddNode: not yet dispatched to daemon");
+                                let _ = reply_sender.send(Ok(ControlRequestReply::NodeAdded {
+                                    dataflow_id,
+                                    node_id,
+                                }));
+                            }
                         }
                         ControlRequest::RemoveNode { dataflow_id, node_id, grace_duration } => {
-                            tracing::info!(%dataflow_id, %node_id, "dynamic RemoveNode");
-                            // TODO: dispatch to daemon
-                            let _ = reply_sender.send(Ok(ControlRequestReply::NodeRemoved {
-                                dataflow_id,
-                                node_id,
-                            }));
+                            if !running_dataflows.contains_key(&dataflow_id) {
+                                let _ = reply_sender.send(Err(eyre!("no running dataflow with ID {dataflow_id}")));
+                            } else {
+                                tracing::warn!(%dataflow_id, %node_id, "RemoveNode: not yet dispatched to daemon");
+                                let _ = reply_sender.send(Ok(ControlRequestReply::NodeRemoved {
+                                    dataflow_id,
+                                    node_id,
+                                }));
+                            }
                         }
                         ControlRequest::AddMapping { dataflow_id, source_node, source_output, target_node, target_input } => {
-                            tracing::info!(%dataflow_id, "{source_node}/{source_output} -> {target_node}/{target_input}");
-                            // TODO: dispatch to daemon(s)
-                            let _ = reply_sender.send(Ok(ControlRequestReply::MappingAdded));
+                            if !running_dataflows.contains_key(&dataflow_id) {
+                                let _ = reply_sender.send(Err(eyre!("no running dataflow with ID {dataflow_id}")));
+                            } else {
+                                tracing::warn!(%dataflow_id, "AddMapping: not yet dispatched to daemon");
+                                let _ = reply_sender.send(Ok(ControlRequestReply::MappingAdded {
+                                    dataflow_id, source_node, source_output, target_node, target_input,
+                                }));
+                            }
                         }
                         ControlRequest::RemoveMapping { dataflow_id, source_node, source_output, target_node, target_input } => {
-                            tracing::info!(%dataflow_id, "{source_node}/{source_output} -x- {target_node}/{target_input}");
-                            // TODO: dispatch to daemon(s)
-                            let _ = reply_sender.send(Ok(ControlRequestReply::MappingRemoved));
+                            if !running_dataflows.contains_key(&dataflow_id) {
+                                let _ = reply_sender.send(Err(eyre!("no running dataflow with ID {dataflow_id}")));
+                            } else {
+                                tracing::warn!(%dataflow_id, "RemoveMapping: not yet dispatched to daemon");
+                                let _ = reply_sender.send(Ok(ControlRequestReply::MappingRemoved {
+                                    dataflow_id, source_node, source_output, target_node, target_input,
+                                }));
+                            }
                         }
                     }
                 }

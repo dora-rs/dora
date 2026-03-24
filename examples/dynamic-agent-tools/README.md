@@ -49,7 +49,14 @@ Calc requests go unanswered (no calc tool yet).
 adora node add --from-yaml examples/dynamic-agent-tools/calc-tool-node.yml --dataflow agent-demo
 ```
 
-Now the agent receives responses for both echo AND calc requests.
+After wiring the calc tool's response to the agent:
+```bash
+adora node connect --dataflow agent-demo calc-tool/response agent/tool-response
+```
+
+The agent now receives responses from both tools on the same `tool-response`
+input (fan-in). Multiple sources can map to the same target input — messages
+from all sources are interleaved in arrival order.
 
 ### Step 3: Remove calculator tool
 
