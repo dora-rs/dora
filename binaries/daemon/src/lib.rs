@@ -9,7 +9,7 @@ use dora_core::{
     },
     topics::{
         DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, LOCALHOST, open_zenoh_session,
-        zenoh_output_publish_topic,
+        zenoh_dataflow_state_topic, zenoh_output_publish_topic,
     },
     uhlc::HLC,
 };
@@ -22,7 +22,7 @@ use dora_message::{
     coordinator_to_cli::DataflowResult,
     coordinator_to_daemon::SpawnDataflowNodes,
     daemon_to_coordinator::DataflowDaemonResult,
-    daemon_to_daemon::InterDaemonEvent,
+    daemon_to_daemon::{InterDaemonEvent, StateUpdate},
     daemon_to_node::{DaemonReply, NodeConfig, NodeDropEvent, NodeEvent},
     descriptor::{NodeSource, RestartPolicy},
     metadata::{self, ArrowTypeInfo},
@@ -79,6 +79,7 @@ mod pending;
 mod socket_stream_utils;
 mod spawn;
 pub(crate) mod state;
+mod state_semantics;
 
 #[cfg(feature = "telemetry")]
 use dora_tracing::telemetry::serialize_context;
@@ -980,6 +981,17 @@ impl Daemon {
                 }
                 Ok(())
             }
+            InterDaemonEvent::StateUpdate(update) => {
+                if !self.state.running.contains_key(&update.dataflow_id) {
+                    tracing::debug!(
+                        "ignoring StateUpdate for non-running dataflow {}",
+                        update.dataflow_id
+                    );
+                    return Ok(());
+                }
+                let _changed = self.state.state_store.apply_replicated_update(update);
+                Ok(())
+            }
         }
     }
 
@@ -1113,6 +1125,50 @@ impl Daemon {
                 bail!("there is already a running dataflow with ID `{dataflow_id}`")
             }
         };
+        self.state.state_store.ensure_dataflow(dataflow_id);
+
+        if let (Some(tx), Some(zenoh)) = (
+            self.state.remote_daemon_events_tx.clone(),
+            self.state.zenoh_session.as_ref(),
+        ) {
+            let state_topic = zenoh_dataflow_state_topic(dataflow_id);
+            let mut finished_rx = dataflow.finished_tx.subscribe();
+            tracing::debug!("declaring state subscriber on {state_topic}");
+            let state_subscriber = zenoh
+                .declare_subscriber(state_topic)
+                .await
+                .map_err(|e| eyre!(e))
+                .wrap_err_with(|| {
+                    format!("failed to subscribe to state topic for {dataflow_id}")
+                })?;
+            tokio::spawn(async move {
+                let mut finished = pin!(finished_rx.recv());
+                loop {
+                    let finished_or_next =
+                        futures::future::select(finished, state_subscriber.recv_async());
+                    match finished_or_next.await {
+                        future::Either::Left((finished, _)) => match finished {
+                            Err(broadcast::error::RecvError::Closed) => break,
+                            other => {
+                                tracing::warn!(
+                                    "unexpected return value of dataflow finished_rx channel: {other:?}"
+                                );
+                                break;
+                            }
+                        },
+                        future::Either::Right((sample, f)) => {
+                            finished = f;
+                            let event = sample.map_err(|e| eyre!(e)).and_then(|s| {
+                                Timestamped::deserialize_inter_daemon_event(&s.payload().to_bytes())
+                            });
+                            if tx.send_async(event).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+            });
+        }
 
         let mut stopped = Vec::new();
 
@@ -1692,7 +1748,110 @@ impl Daemon {
                 };
                 let _ = reply_sender.send(DaemonReply::Result(reply));
             }
+            DaemonNodeEvent::StateGet { key, reply_sender } => {
+                if !self.state.running.contains_key(&dataflow_id) {
+                    let _ = reply_sender.send(DaemonReply::Result(Err(format!(
+                        "state get failed: no running dataflow with ID `{dataflow_id}`"
+                    ))));
+                    return Ok(());
+                }
+                let (value, revision) = self.state.state_store.get(dataflow_id, &key);
+                let _ = reply_sender.send(DaemonReply::StateGet { value, revision });
+            }
+            DaemonNodeEvent::StateSet {
+                key,
+                value,
+                reply_sender,
+            } => {
+                if !self.state.running.contains_key(&dataflow_id) {
+                    let _ = reply_sender.send(DaemonReply::Result(Err(format!(
+                        "state set failed: no running dataflow with ID `{dataflow_id}`"
+                    ))));
+                    return Ok(());
+                }
+                let daemon_id = self.state.daemon_id().clone();
+                let (result, update) =
+                    self.state
+                        .state_store
+                        .set(dataflow_id, key, value, daemon_id);
+                if let Err(err) = self.publish_state_update(update).await {
+                    tracing::warn!("failed to publish state update: {err:?}");
+                }
+                let _ = reply_sender.send(DaemonReply::StateWrite(result));
+            }
+            DaemonNodeEvent::StateCompareAndSet {
+                key,
+                expected_revision,
+                value,
+                reply_sender,
+            } => {
+                if !self.state.running.contains_key(&dataflow_id) {
+                    let _ = reply_sender.send(DaemonReply::Result(Err(format!(
+                        "state compare_and_set failed: no running dataflow with ID `{dataflow_id}`"
+                    ))));
+                    return Ok(());
+                }
+                let daemon_id = self.state.daemon_id().clone();
+                let (result, update) = self.state.state_store.compare_and_set(
+                    dataflow_id,
+                    key,
+                    expected_revision,
+                    value,
+                    daemon_id,
+                );
+                match update {
+                    Some(update) => {
+                        if let Err(err) = self.publish_state_update(update).await {
+                            tracing::warn!("failed to publish state update: {err:?}");
+                        }
+                        let _ = reply_sender.send(DaemonReply::StateWrite(result));
+                    }
+                    None => {
+                        let _ = reply_sender.send(DaemonReply::StateWrite(result));
+                    }
+                }
+            }
         }
+        Ok(())
+    }
+
+    async fn publish_state_update(&mut self, update: StateUpdate) -> eyre::Result<()> {
+        let zenoh = self
+            .state
+            .zenoh_session
+            .as_ref()
+            .wrap_err("no zenoh session")?;
+        if !self
+            .state
+            .state_publishers
+            .contains_key(&update.dataflow_id)
+        {
+            let topic = zenoh_dataflow_state_topic(update.dataflow_id);
+            let publisher = zenoh
+                .declare_publisher(topic)
+                .await
+                .map_err(|e| eyre!(e))
+                .context("failed to create state publisher")?;
+            self.state
+                .state_publishers
+                .insert(update.dataflow_id, publisher);
+        }
+
+        let serialized_event = Timestamped {
+            inner: InterDaemonEvent::StateUpdate(update.clone()),
+            timestamp: self.state.clock.new_timestamp(),
+        }
+        .serialize();
+        let publisher = self
+            .state
+            .state_publishers
+            .get(&update.dataflow_id)
+            .wrap_err("state publisher disappeared")?;
+        publisher
+            .put(serialized_event)
+            .await
+            .map_err(|e| eyre!(e))
+            .context("zenoh put failed for state update")?;
         Ok(())
     }
 
@@ -2294,6 +2453,8 @@ impl Daemon {
             });
         }
         self.state.running.remove(&dataflow_id);
+        self.state.state_store.remove_dataflow(dataflow_id);
+        self.state.state_publishers.remove(&dataflow_id);
 
         Ok(())
     }
@@ -3463,6 +3624,21 @@ pub enum DaemonNodeEvent {
         tokens: Vec<DropToken>,
     },
     EventStreamDropped {
+        reply_sender: oneshot::Sender<DaemonReply>,
+    },
+    StateGet {
+        key: String,
+        reply_sender: oneshot::Sender<DaemonReply>,
+    },
+    StateSet {
+        key: String,
+        value: Vec<u8>,
+        reply_sender: oneshot::Sender<DaemonReply>,
+    },
+    StateCompareAndSet {
+        key: String,
+        expected_revision: u64,
+        value: Option<Vec<u8>>,
         reply_sender: oneshot::Sender<DaemonReply>,
     },
 }

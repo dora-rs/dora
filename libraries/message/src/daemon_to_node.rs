@@ -51,11 +51,32 @@ pub enum DaemonCommunication {
 #[allow(clippy::large_enum_variant)]
 pub enum DaemonReply {
     Result(Result<(), String>),
-    PreparedMessage { shared_memory_id: SharedMemoryId },
+    PreparedMessage {
+        shared_memory_id: SharedMemoryId,
+    },
     NextEvents(Vec<Timestamped<NodeEvent>>),
     NextDropEvents(Vec<Timestamped<NodeDropEvent>>),
-    NodeConfig { result: Result<NodeConfig, String> },
+    NodeConfig {
+        result: Result<NodeConfig, String>,
+    },
+    StateGet {
+        value: Option<Vec<u8>>,
+        revision: u64,
+    },
+    StateWrite(StateWriteResult),
     Empty,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum StateWriteResult {
+    Applied {
+        value: Option<Vec<u8>>,
+        revision: u64,
+    },
+    Conflict {
+        value: Option<Vec<u8>>,
+        revision: u64,
+    },
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

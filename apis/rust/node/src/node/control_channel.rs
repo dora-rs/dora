@@ -7,7 +7,7 @@ use dora_core::{
 };
 use dora_message::{
     DataflowId,
-    daemon_to_node::{DaemonCommunication, DaemonReply},
+    daemon_to_node::{DaemonCommunication, DaemonReply, StateWriteResult},
     metadata::Metadata,
     node_to_daemon::{DaemonRequest, DataMessage, Timestamped},
 };
@@ -123,6 +123,60 @@ impl ControlChannel {
         match reply {
             DaemonReply::Empty => Ok(()),
             other => bail!("unexpected SendMessage reply: {other:?}"),
+        }
+    }
+
+    pub fn state_get(&mut self, key: String) -> eyre::Result<(Option<Vec<u8>>, u64)> {
+        let reply = self
+            .channel
+            .request(&Timestamped {
+                inner: DaemonRequest::StateGet { key },
+                timestamp: self.clock.new_timestamp(),
+            })
+            .wrap_err("failed to send StateGet request to dora-daemon")?;
+        match reply {
+            DaemonReply::StateGet { value, revision } => Ok((value, revision)),
+            DaemonReply::Result(Err(err)) => bail!("state get failed: {err}"),
+            other => bail!("unexpected StateGet reply: {other:?}"),
+        }
+    }
+
+    pub fn state_set(&mut self, key: String, value: Vec<u8>) -> eyre::Result<StateWriteResult> {
+        let reply = self
+            .channel
+            .request(&Timestamped {
+                inner: DaemonRequest::StateSet { key, value },
+                timestamp: self.clock.new_timestamp(),
+            })
+            .wrap_err("failed to send StateSet request to dora-daemon")?;
+        match reply {
+            DaemonReply::StateWrite(result) => Ok(result),
+            DaemonReply::Result(Err(err)) => bail!("state set failed: {err}"),
+            other => bail!("unexpected StateSet reply: {other:?}"),
+        }
+    }
+
+    pub fn state_compare_and_set(
+        &mut self,
+        key: String,
+        expected_revision: u64,
+        value: Option<Vec<u8>>,
+    ) -> eyre::Result<StateWriteResult> {
+        let reply = self
+            .channel
+            .request(&Timestamped {
+                inner: DaemonRequest::StateCompareAndSet {
+                    key,
+                    expected_revision,
+                    value,
+                },
+                timestamp: self.clock.new_timestamp(),
+            })
+            .wrap_err("failed to send StateCompareAndSet request to dora-daemon")?;
+        match reply {
+            DaemonReply::StateWrite(result) => Ok(result),
+            DaemonReply::Result(Err(err)) => bail!("state compare_and_set failed: {err}"),
+            other => bail!("unexpected StateCompareAndSet reply: {other:?}"),
         }
     }
 }

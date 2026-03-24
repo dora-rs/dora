@@ -16,7 +16,7 @@ use dora_message::{
 use tokio::sync::{Mutex, mpsc};
 use uuid::Uuid;
 
-use crate::{Event, InterDaemonEvent, RunningDataflow};
+use crate::{Event, InterDaemonEvent, RunningDataflow, state_semantics::StateStore};
 
 /// Shared daemon state accessible from both the event loop and the RPC server.
 ///
@@ -44,6 +44,10 @@ pub(crate) struct DaemonState {
     pub(crate) git_manager: Mutex<GitManager>,
     /// Zenoh session for inter-daemon communication.
     pub(crate) zenoh_session: Option<zenoh::Session>,
+    /// Revisioned state store shared across nodes of each running dataflow.
+    pub(crate) state_store: StateStore,
+    /// One state publisher per dataflow for replicated state updates.
+    pub(crate) state_publishers: dashmap::DashMap<DataflowId, zenoh::pubsub::Publisher<'static>>,
     /// Channel to send remote daemon events into the event loop.
     pub(crate) remote_daemon_events_tx:
         Option<flume::Sender<eyre::Result<Timestamped<InterDaemonEvent>>>>,
@@ -69,6 +73,8 @@ impl DaemonState {
             last_coordinator_heartbeat: Mutex::new(Instant::now()),
             git_manager: Mutex::new(Default::default()),
             zenoh_session,
+            state_store: Default::default(),
+            state_publishers: Default::default(),
             remote_daemon_events_tx,
         }
     }
@@ -100,6 +106,8 @@ impl DaemonState {
             last_coordinator_heartbeat: Mutex::new(Instant::now()),
             git_manager: Mutex::new(Default::default()),
             zenoh_session: Some(zenoh_session),
+            state_store: Default::default(),
+            state_publishers: Default::default(),
             remote_daemon_events_tx: None,
         };
         let _ = state.daemon_id.set(daemon_id);
@@ -162,6 +170,8 @@ impl DaemonState {
             });
         }
         self.running.remove(&dataflow_id);
+        self.state_store.remove_dataflow(dataflow_id);
+        self.state_publishers.remove(&dataflow_id);
 
         Ok(())
     }

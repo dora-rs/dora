@@ -24,7 +24,7 @@ use dora_core::{
 };
 use dora_message::{
     DataflowId,
-    daemon_to_node::{DaemonCommunication, DaemonReply, NodeConfig},
+    daemon_to_node::{DaemonCommunication, DaemonReply, NodeConfig, StateWriteResult},
     metadata::{ArrowTypeInfo, Metadata, MetadataParameters},
     node_to_daemon::{DaemonRequest, DataMessage, DropToken, Timestamped},
 };
@@ -706,6 +706,40 @@ impl DoraNode {
             .wrap_err("failed to report closed outputs to daemon")?;
 
         Ok(())
+    }
+
+    /// Read a value from shared dataflow state.
+    ///
+    /// Returns `(value, revision)`, where `revision` is `0` for a missing key.
+    pub fn state_get(&mut self, key: impl Into<String>) -> eyre::Result<(Option<Vec<u8>>, u64)> {
+        self.control_channel
+            .state_get(key.into())
+            .wrap_err("failed to get state")
+    }
+
+    /// Set a value in shared dataflow state and increment its revision.
+    pub fn state_set(
+        &mut self,
+        key: impl Into<String>,
+        value: Vec<u8>,
+    ) -> eyre::Result<StateWriteResult> {
+        self.control_channel
+            .state_set(key.into(), value)
+            .wrap_err("failed to set state")
+    }
+
+    /// Conditionally write a value if the current revision matches `expected_revision`.
+    ///
+    /// Pass `None` as `value` to delete the key while still advancing the revision.
+    pub fn state_compare_and_set(
+        &mut self,
+        key: impl Into<String>,
+        expected_revision: u64,
+        value: Option<Vec<u8>>,
+    ) -> eyre::Result<StateWriteResult> {
+        self.control_channel
+            .state_compare_and_set(key.into(), expected_revision, value)
+            .wrap_err("failed to compare-and-set state")
     }
 
     /// Returns the ID of the node as specified in the dataflow configuration file.

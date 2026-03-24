@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fs::File,
     io::Write,
     sync::Arc,
@@ -36,6 +37,7 @@ pub struct IntegrationTestingEvents {
     start_timestamp: uhlc::Timestamp,
     start_time: Instant,
     options: TestingOptions,
+    state: BTreeMap<String, (Option<Vec<u8>>, u64)>,
 }
 
 impl IntegrationTestingEvents {
@@ -78,6 +80,7 @@ impl IntegrationTestingEvents {
             start_timestamp,
             start_time,
             options,
+            state: BTreeMap::new(),
         })
     }
 
@@ -86,6 +89,49 @@ impl IntegrationTestingEvents {
             DaemonRequest::Register(_) => DaemonReply::Result(Ok(())),
             DaemonRequest::Subscribe => DaemonReply::Result(Ok(())),
             DaemonRequest::SubscribeDrop => DaemonReply::Result(Ok(())),
+            DaemonRequest::StateGet { key } => {
+                let (value, revision) = self.state.get(key).cloned().unwrap_or((None, 0));
+                DaemonReply::StateGet { value, revision }
+            }
+            DaemonRequest::StateSet { key, value } => {
+                let revision = self
+                    .state
+                    .get(key)
+                    .map(|(_, revision)| revision.saturating_add(1))
+                    .unwrap_or(1);
+                let value = Some(value.clone());
+                self.state.insert(key.clone(), (value.clone(), revision));
+                DaemonReply::StateWrite(dora_message::daemon_to_node::StateWriteResult::Applied {
+                    value,
+                    revision,
+                })
+            }
+            DaemonRequest::StateCompareAndSet {
+                key,
+                expected_revision,
+                value,
+            } => {
+                let (current_value, current_revision) =
+                    self.state.get(key).cloned().unwrap_or((None, 0));
+                if *expected_revision == current_revision {
+                    let next_revision = current_revision.saturating_add(1);
+                    self.state
+                        .insert(key.clone(), (value.clone(), next_revision));
+                    DaemonReply::StateWrite(
+                        dora_message::daemon_to_node::StateWriteResult::Applied {
+                            value: value.clone(),
+                            revision: next_revision,
+                        },
+                    )
+                } else {
+                    DaemonReply::StateWrite(
+                        dora_message::daemon_to_node::StateWriteResult::Conflict {
+                            value: current_value,
+                            revision: current_revision,
+                        },
+                    )
+                }
+            }
             DaemonRequest::NextEvent { .. } => {
                 let events = if let Some(event) = self.next_event()? {
                     vec![event]

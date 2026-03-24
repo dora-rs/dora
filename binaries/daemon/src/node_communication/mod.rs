@@ -400,6 +400,46 @@ impl Listener {
                 .await?;
                 self.subscribed_drop_events = Some(rx);
             }
+            DaemonRequest::StateGet { key } => {
+                let (reply_sender, reply) = oneshot::channel();
+                self.process_daemon_event(
+                    DaemonNodeEvent::StateGet { key, reply_sender },
+                    Some(reply),
+                    connection,
+                )
+                .await?;
+            }
+            DaemonRequest::StateSet { key, value } => {
+                let (reply_sender, reply) = oneshot::channel();
+                self.process_daemon_event(
+                    DaemonNodeEvent::StateSet {
+                        key,
+                        value,
+                        reply_sender,
+                    },
+                    Some(reply),
+                    connection,
+                )
+                .await?;
+            }
+            DaemonRequest::StateCompareAndSet {
+                key,
+                expected_revision,
+                value,
+            } => {
+                let (reply_sender, reply) = oneshot::channel();
+                self.process_daemon_event(
+                    DaemonNodeEvent::StateCompareAndSet {
+                        key,
+                        expected_revision,
+                        value,
+                        reply_sender,
+                    },
+                    Some(reply),
+                    connection,
+                )
+                .await?;
+            }
             DaemonRequest::NextEvent { drop_tokens } => {
                 self.report_drop_tokens(drop_tokens).await?;
 

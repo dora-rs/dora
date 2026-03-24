@@ -12,6 +12,18 @@ use crate::{
 pub enum DaemonRequest {
     Register(NodeRegisterRequest),
     Subscribe,
+    StateGet {
+        key: String,
+    },
+    StateSet {
+        key: String,
+        value: Vec<u8>,
+    },
+    StateCompareAndSet {
+        key: String,
+        expected_revision: u64,
+        value: Option<Vec<u8>>,
+    },
     SendMessage {
         output_id: DataId,
         metadata: Metadata,
@@ -44,6 +56,9 @@ impl DaemonRequest {
             | DaemonRequest::ReportDropTokens { .. } => false,
             DaemonRequest::Register(NodeRegisterRequest { .. })
             | DaemonRequest::Subscribe
+            | DaemonRequest::StateGet { .. }
+            | DaemonRequest::StateSet { .. }
+            | DaemonRequest::StateCompareAndSet { .. }
             | DaemonRequest::CloseOutputs(_)
             | DaemonRequest::OutputsDone
             | DaemonRequest::NextEvent { .. }
@@ -59,6 +74,9 @@ impl DaemonRequest {
             DaemonRequest::NodeConfig { .. } => true,
             DaemonRequest::Register(NodeRegisterRequest { .. })
             | DaemonRequest::Subscribe
+            | DaemonRequest::StateGet { .. }
+            | DaemonRequest::StateSet { .. }
+            | DaemonRequest::StateCompareAndSet { .. }
             | DaemonRequest::CloseOutputs(_)
             | DaemonRequest::OutputsDone
             | DaemonRequest::NextEvent { .. }
