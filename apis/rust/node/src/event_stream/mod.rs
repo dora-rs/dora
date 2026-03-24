@@ -62,6 +62,9 @@ mod thread;
 /// [`StopCause::Manual`] was received.
 pub struct EventStream {
     node_id: NodeId,
+    // Drop order: Rust drops fields in declaration order (top to bottom).
+    // receiver must drop FIRST so tx_clone.send() in subscriber threads
+    // returns Err, causing threads to exit before JoinHandles are dropped.
     receiver: flume::r#async::RecvStream<'static, EventItem>,
     _thread_handle: EventStreamThreadHandle,
     _zenoh_thread_handles: Vec<std::thread::JoinHandle<()>>,
@@ -373,9 +376,14 @@ impl EventStream {
                             }
                             tracing::trace!("zenoh subscriber thread exiting");
                         })
-                        .ok();
-                    if let Some(h) = handle {
-                        zenoh_thread_handles.push(h);
+                        ;
+                    match handle {
+                        Ok(h) => zenoh_thread_handles.push(h),
+                        Err(e) => {
+                            tracing::warn!(
+                                "failed to spawn zenoh subscriber thread ({e}), input will use daemon path"
+                            );
+                        }
                     }
                 }
             }

@@ -560,9 +560,19 @@ impl AdoraNode {
                     // called from a tokio worker thread (block_on panics in
                     // that context on current-thread runtimes).
                     let session = std::thread::scope(|s| {
-                        s.spawn(|| {
+                        match s.spawn(|| {
                             handle.block_on(adora_core::topics::open_zenoh_session(None))
-                        }).join().ok().and_then(|r| r.ok())
+                        }).join() {
+                            Ok(Ok(session)) => Some(session),
+                            Ok(Err(e)) => {
+                                tracing::warn!("failed to open zenoh session: {e:?}");
+                                None
+                            }
+                            Err(_panic) => {
+                                tracing::warn!("zenoh session init panicked");
+                                None
+                            }
+                        }
                     });
                     let provider = if session.is_some() {
                         use zenoh::shm::ShmProviderBuilder;
@@ -589,7 +599,7 @@ impl AdoraNode {
                     (session, provider)
                 }
                 Err(_) => {
-                    tracing::debug!("no tokio runtime — zenoh SHM disabled");
+                    tracing::warn!("no tokio runtime available — zenoh SHM disabled, using daemon path");
                     (None, None)
                 }
             }
@@ -908,11 +918,22 @@ impl AdoraNode {
                 let raw_bytes = match raw_data {
                     DataMessage::Vec(v) => v.as_ref(),
                     DataMessage::SharedMemory { .. } => {
-                        // For existing shmem data, fall back to daemon path
+                        // Unreachable when zenoh is active (allocate_data_sample
+                        // uses Vec, not custom shmem). Fall back to daemon path
+                        // for safety.
+                        debug_assert!(
+                            !has_zenoh,
+                            "DataMessage::SharedMemory should not occur with zenoh active"
+                        );
                         &[]
                     }
                 };
                 if !raw_bytes.is_empty() && raw_bytes.len() >= self.zenoh_zero_copy_threshold {
+                    tracing::trace!(
+                        output = %output_id,
+                        size = raw_bytes.len(),
+                        "publishing via zenoh SHM"
+                    );
                     match self.zenoh_publish(&output_id, &metadata, raw_bytes) {
                         Ok(()) => true,
                         Err(e) => {
@@ -1232,7 +1253,13 @@ impl AdoraNode {
     /// The data sample will use shared memory when suitable to enable efficient data transfer
     /// when sending an output message.
     pub fn allocate_data_sample(&mut self, data_len: usize) -> NodeResult<DataSample> {
-        let data = if data_len >= ZERO_COPY_THRESHOLD && !self.interactive {
+        // When zenoh SHM is active, always use Vec allocation (not custom shmem).
+        // Zenoh handles zero-copy via its own SHM pool in zenoh_publish().
+        // Using custom shmem would create DataMessage::SharedMemory which can't
+        // be published via zenoh, and whose DropTokens would never be drained
+        // (DropStream::empty() when zenoh is active).
+        let use_custom_shmem = self.zenoh_session.is_none();
+        let data = if data_len >= ZERO_COPY_THRESHOLD && !self.interactive && use_custom_shmem {
             // create shared memory region
             let shared_memory = self.allocate_shared_memory(data_len)?;
 
