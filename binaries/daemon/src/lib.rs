@@ -234,49 +234,81 @@ impl Daemon {
         local_listen_port: u16,
     ) -> eyre::Result<()> {
         let clock = Arc::new(HLC::default());
-
         let mut ctrlc_events = set_up_ctrlc_handler(clock.clone())?;
-        // Sized for bursts of inter-daemon events (e.g. high-frequency Zenoh
-        // messages); 10 caused blocking under load.
-        let (remote_daemon_events_tx, remote_daemon_events_rx) = flume::bounded(100);
-        let (daemon_id, coordinator_sender, incoming_events) = {
-            let incoming_events = set_up_event_stream(
-                coordinator_ws_addr,
-                &machine_id,
-                labels,
-                &clock,
-                remote_daemon_events_rx,
-                local_listen_port,
-            );
+        let mut reconnect_attempt = 0u32;
 
-            // finish early if ctrl-c is is pressed during event stream setup
-            let ctrl_c = pin!(ctrlc_events.recv());
-            match futures::future::select(ctrl_c, pin!(incoming_events)).await {
-                future::Either::Left((_ctrl_c, _)) => {
-                    tracing::info!("received ctrl-c signal -> stopping daemon");
-                    return Ok(());
+        loop {
+            // Sized for bursts of inter-daemon events
+            let (remote_daemon_events_tx, remote_daemon_events_rx) = flume::bounded(100);
+
+            let connect_result = {
+                let incoming_events = set_up_event_stream(
+                    coordinator_ws_addr,
+                    &machine_id,
+                    labels.clone(),
+                    &clock,
+                    remote_daemon_events_rx,
+                    local_listen_port,
+                );
+
+                let ctrl_c = pin!(ctrlc_events.recv());
+                match futures::future::select(ctrl_c, pin!(incoming_events)).await {
+                    future::Either::Left((_ctrl_c, _)) => {
+                        tracing::info!("received ctrl-c signal -> stopping daemon");
+                        return Ok(());
+                    }
+                    future::Either::Right((events, _)) => events,
                 }
-                future::Either::Right((events, _)) => events?,
+            };
+
+            match connect_result {
+                Ok((daemon_id, coordinator_sender, incoming_events)) => {
+                    reconnect_attempt = 0;
+                    let log_destination = LogDestination::Coordinator {
+                        sender: coordinator_sender.clone(),
+                    };
+
+                    let result = Self::run_general(
+                        (ReceiverStream::new(ctrlc_events), incoming_events).merge(),
+                        Some(coordinator_sender),
+                        daemon_id,
+                        None,
+                        clock.clone(),
+                        Some(remote_daemon_events_tx),
+                        Default::default(),
+                        log_destination,
+                        None,
+                    )
+                    .await;
+
+                    match result {
+                        Ok(_) => return Ok(()),
+                        Err(e) => {
+                            tracing::warn!(
+                                "daemon disconnected from coordinator: {e:#}. \
+                                 Attempting reconnect..."
+                            );
+                            // Re-create ctrlc handler for next iteration
+                            ctrlc_events = set_up_ctrlc_handler(clock.clone())?;
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        attempt = reconnect_attempt,
+                        "failed to connect to coordinator: {e:#}"
+                    );
+                }
             }
-        };
 
-        let log_destination = LogDestination::Coordinator {
-            sender: coordinator_sender.clone(),
-        };
-
-        Self::run_general(
-            (ReceiverStream::new(ctrlc_events), incoming_events).merge(),
-            Some(coordinator_sender),
-            daemon_id,
-            None,
-            clock.clone(),
-            Some(remote_daemon_events_tx),
-            Default::default(),
-            log_destination,
-            None, // coordinator-managed daemon uses default health check interval
-        )
-        .await
-        .map(|_| ())
+            // Exponential backoff: 1s, 2s, 4s, 8s, max 30s
+            reconnect_attempt += 1;
+            let delay = Duration::from_secs(
+                (1u64 << reconnect_attempt.min(5)).min(30),
+            );
+            tracing::info!("reconnecting in {delay:?}...");
+            tokio::time::sleep(delay).await;
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -561,7 +593,14 @@ impl Daemon {
 
         // Send status report to coordinator so it can reconcile dataflow state.
         if let Some(sender) = &self.coordinator_sender {
-            let running_dataflows: Vec<_> = self.running.keys().copied().collect();
+            let running_dataflows: Vec<_> = self
+                .running
+                .iter()
+                .map(|(id, df)| adora_message::daemon_to_coordinator::DataflowStatusEntry {
+                    dataflow_id: *id,
+                    running_nodes: df.running_nodes.keys().cloned().collect(),
+                })
+                .collect();
             let event = DaemonEvent::StatusReport { running_dataflows };
             let stamped = Timestamped {
                 inner: CoordinatorRequest::Event {
@@ -628,7 +667,9 @@ impl Daemon {
                             .wrap_err("failed to send watchdog message to adora-coordinator")?;
 
                         if self.last_coordinator_heartbeat.elapsed() > Duration::from_secs(20) {
-                            bail!("lost connection to coordinator")
+                            // Return error to trigger reconnection loop in run().
+                            // Running dataflows continue — nodes are separate processes.
+                            bail!("coordinator heartbeat timeout (20s)")
                         }
                     }
                 }

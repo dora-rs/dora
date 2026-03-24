@@ -7,6 +7,13 @@ use crate::{
     BuildId, DataflowId, common::DaemonId, current_crate_version, id::NodeId, versions_compatible,
 };
 
+/// Per-dataflow status reported by a daemon after (re-)registration.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DataflowStatusEntry {
+    pub dataflow_id: uuid::Uuid,
+    pub running_nodes: Vec<NodeId>,
+}
+
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum CoordinatorRequest {
@@ -75,7 +82,7 @@ pub enum DaemonEvent {
     /// Sent by the daemon after registration to report its current state.
     /// Enables coordinator-daemon reconciliation on reconnect.
     StatusReport {
-        running_dataflows: Vec<DataflowId>,
+        running_dataflows: Vec<DataflowStatusEntry>,
     },
     Log(LogMessage),
     Exit,

@@ -1,3 +1,4 @@
+
 mod in_memory;
 
 #[cfg(feature = "redb-backend")]
@@ -53,6 +54,13 @@ pub struct DataflowRecord {
     pub descriptor_json: String,
     pub status: DataflowStatus,
     pub daemon_ids: Vec<DaemonId>,
+    /// Per-node daemon assignment: node_id -> daemon machine_id.
+    /// Used for state reconstruction after coordinator restart.
+    #[serde(default)]
+    pub node_to_daemon: BTreeMap<String, String>,
+    /// Whether the dataflow was started with Python UV support.
+    #[serde(default)]
+    pub uv: bool,
     /// Monotonically increasing version; bumped on every persist.
     pub generation: u64,
     /// Unix epoch milliseconds.
@@ -65,6 +73,9 @@ pub struct DataflowRecord {
 pub enum DataflowStatus {
     Pending,
     Running,
+    /// Coordinator restarted; waiting for daemons to reconnect and report.
+    /// Transitions to Running once all daemons reconnect, or Failed after timeout.
+    Recovering,
     Stopping,
     Succeeded,
     Failed { error: String },

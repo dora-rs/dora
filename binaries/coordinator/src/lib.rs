@@ -278,15 +278,19 @@ async fn start_inner(
                 match record.status {
                     StoreDataflowStatus::Pending
                     | StoreDataflowStatus::Running
-                    | StoreDataflowStatus::Stopping => {
+                    | StoreDataflowStatus::Stopping
+                    | StoreDataflowStatus::Recovering => {
+                        // Mark as Recovering instead of Failed — give daemons
+                        // 60s to reconnect and report their running state.
+                        // Dataflows that are not reclaimed transition to Failed
+                        // via the recovery timeout in the event loop.
                         tracing::info!(
-                            "recovering stale dataflow {} ({:?}) -> marking as Failed",
+                            "coordinator restarted: dataflow {} ({:?}) -> Recovering \
+                             (waiting for daemon reconnect)",
                             record.uuid,
                             record.name
                         );
-                        record.status = StoreDataflowStatus::Failed {
-                            error: "coordinator restarted".into(),
-                        };
+                        record.status = StoreDataflowStatus::Recovering;
                         record.generation += 1;
                         record.updated_at = state::now_millis();
                         if let Err(e) = store.put_dataflow(&record) {
@@ -324,13 +328,16 @@ async fn start_inner(
                         Some(id) => daemon_connections.get_matching_daemon_id(id),
                         None => daemon_connections.unnamed().next(),
                     };
-                    let existing_result = if existing.is_some() {
-                        Err(format!(
-                            "There is already a connected daemon with machine ID `{machine_id:?}`"
-                        ))
-                    } else {
-                        Ok(())
-                    };
+                    // Allow re-registration: if a daemon with the same machine_id
+                    // reconnects (e.g., after coordinator restart), replace the old
+                    // connection. DaemonConnections::add() handles this.
+                    if existing.is_some() {
+                        tracing::info!(
+                            ?machine_id,
+                            "daemon re-registering (replacing stale connection)"
+                        );
+                    }
+                    let existing_result: Result<(), String> = Ok(());
 
                     // assign a unique ID to the daemon
                     let daemon_id = DaemonId::new(machine_id);
@@ -1531,14 +1538,19 @@ async fn start_inner(
                     reported_dataflows.len()
                 );
                 // Reconcile: if daemon reports a dataflow as running and it exists in
-                // the store as Pending/Failed, update it to Running.
-                for df_id in &reported_dataflows {
+                // the store as Pending/Failed/Recovering, update it to Running.
+                for entry in &reported_dataflows {
+                    let df_id = &entry.dataflow_id;
                     match store.get_dataflow(df_id) {
                         Ok(Some(mut record)) => match record.status {
-                            StoreDataflowStatus::Failed { .. } | StoreDataflowStatus::Pending => {
+                            StoreDataflowStatus::Failed { .. }
+                            | StoreDataflowStatus::Pending
+                            | StoreDataflowStatus::Recovering => {
                                 tracing::info!(
-                                    "reconciling dataflow {df_id}: {:?} -> Running (daemon reports active)",
-                                    record.status
+                                    "reconciling dataflow {df_id}: {:?} -> Running \
+                                     (daemon reports {} active node(s))",
+                                    record.status,
+                                    entry.running_nodes.len(),
                                 );
                                 record.status = StoreDataflowStatus::Running;
                                 record.generation += 1;
@@ -1568,7 +1580,7 @@ async fn start_inner(
                 // avoid infinite re-spawn loops for crash-looping nodes.
                 const RECOVERY_BACKOFF: Duration = Duration::from_secs(30);
                 let reported_set: BTreeSet<DataflowId> =
-                    reported_dataflows.iter().copied().collect();
+                    reported_dataflows.iter().map(|e| e.dataflow_id).collect();
                 let now = Instant::now();
                 for (uuid, df) in &mut running_dataflows {
                     if !df.daemons.contains(&daemon_id) {
