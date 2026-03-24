@@ -59,7 +59,9 @@ pub(super) async fn path_spawn_command(
             let mut cmd = match resolved_path.extension().map(|ext| ext.to_str()) {
                 Some(Some("py")) => {
                     let mut cmd = if uv {
-                        if let Some(python_env_dir) = python_env_dir {
+                        if let Some(python_env_dir) =
+                            python_env_dir.filter(|_| node.build.is_some())
+                        {
                             // Reuse the interpreter from Dora's prepared env so
                             // custom Python nodes see the dependencies built there.
                             let python = managed_python_interpreter(python_env_dir);
@@ -82,6 +84,8 @@ pub(super) async fn path_spawn_command(
                                 .await;
                             Command::new(python)
                         } else {
+                            // Nodes without build-time Python setup still rely on
+                            // the caller's active uv environment for imports.
                             let mut cmd = Command::new("uv");
                             cmd = cmd.arg("run");
                             cmd = cmd.arg("python");
