@@ -310,6 +310,15 @@ adora up
 
 Spawns `adora coordinator` and `adora daemon` as background processes. Waits for both to be ready before returning. Idempotent: if already running, does nothing.
 
+When running the daemon directly (e.g., for distributed deployments), additional flags are available:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--worker-threads <N>` | num_cpus | Tokio worker thread count |
+| `--rt` | false | Real-time profile: mlockall + SCHED_FIFO (Linux). See [tuning guide](realtime-tuning.md). |
+| `--machine-id <ID>` | | Unique machine identifier for distributed mode |
+| `--allow-shell-nodes` | false | Enable shell-based node execution |
+
 #### `adora down` (alias: `adora destroy`)
 
 Tear down coordinator and daemon. Stops all running dataflows first.
@@ -684,6 +693,49 @@ adora node stop <NODE> [OPTIONS]
 | `<NODE>` | required | Node ID to stop |
 | `-d <DATAFLOW>`, `--dataflow` | interactive | Dataflow UUID or name |
 | `--grace <DURATION>` | | Grace period before force-killing the node |
+
+##### `adora node add`
+
+Add a node to a running dataflow dynamically.
+
+```
+adora node add --from-yaml <FILE> [OPTIONS]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--from-yaml <FILE>` | required | YAML file containing a single node definition |
+| `-d <DATAFLOW>`, `--dataflow` | interactive | Dataflow UUID or name |
+
+##### `adora node remove`
+
+Remove a node from a running dataflow (stops the node and cleans up mappings).
+
+```
+adora node remove <NODE> [OPTIONS]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `<NODE>` | required | Node ID to remove |
+| `-d <DATAFLOW>`, `--dataflow` | interactive | Dataflow UUID or name |
+| `--grace <SECS>` | | Grace period in seconds before force-killing |
+
+##### `adora node connect`
+
+Add a live mapping between two nodes in a running dataflow.
+
+```
+adora node connect <SOURCE/OUTPUT> <TARGET/INPUT> [OPTIONS]
+```
+
+##### `adora node disconnect`
+
+Remove a live mapping between two nodes in a running dataflow.
+
+```
+adora node disconnect <SOURCE/OUTPUT> <TARGET/INPUT> [OPTIONS]
+```
 
 #### `adora topic pub`
 

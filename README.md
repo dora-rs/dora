@@ -29,7 +29,9 @@
 ### Performance
 
 - **10-17x faster than ROS2 Python** -- 100% Rust internals with zero-copy shared memory IPC for messages >4KB, flat latency from 4KB to 4MB payloads
+- **Zenoh SHM data plane** -- nodes publish directly via [Zenoh](https://zenoh.io/) shared memory, bypassing the daemon for 35% lower latency and 3-10x higher throughput on large payloads; automatic network fallback for cross-machine
 - **Apache Arrow native** -- columnar memory format end-to-end with zero serialization overhead; shared across all language bindings
+- **Non-blocking event loop** -- Zenoh publishes offloaded to a dedicated drain task; control commands respond in <500ms even under high data throughput
 
 ### Developer experience
 
@@ -44,7 +46,9 @@
 
 - **Fault tolerance** -- per-node restart policies (never/on-failure/always), exponential backoff, health monitoring, circuit breakers with configurable input timeouts
 - **Distributed by default** -- local shared memory between co-located nodes, automatic [Zenoh](https://zenoh.io/) pub-sub for cross-machine communication, SSH-based [cluster management](docs/distributed-deployment.md) with label scheduling, rolling upgrades, and auto-recovery
-- **Coordinator persistence** -- optional redb-backed state store survives coordinator crashes and restarts
+- **Coordinator HA** -- persistent redb-backed state store (default), daemon auto-reconnect with exponential backoff, dataflow state reconstruction on coordinator restart
+- **Dynamic topology** -- add and remove nodes from running dataflows via CLI (`adora node add/remove/connect/disconnect`) without restarting
+- **Soft real-time** -- optional `--rt` flag for mlockall + SCHED_FIFO; comprehensive [tuning guide](docs/realtime-tuning.md) for CPU affinity, memory locking, kernel params, and container deployment
 - **OpenTelemetry** -- built-in structured logging with rotation/routing, metrics, distributed tracing, and zero-setup trace viewing via CLI
 
 ### Debugging and observability
@@ -106,7 +110,7 @@ powershell -ExecutionPolicy ByPass -c "irm https://github.com/dora-rs/adora/rele
 | `tracing` | OpenTelemetry tracing support | Yes |
 | `metrics` | OpenTelemetry metrics collection | Yes |
 | `python` | Python operator support (PyO3) | Yes |
-| `redb-backend` | Persistent coordinator state (redb) | No |
+| `redb-backend` | Persistent coordinator state (redb) | Yes |
 | `prometheus` | Prometheus `/metrics` endpoint on coordinator | No |
 
 ```bash
@@ -226,6 +230,10 @@ See the [Distributed Deployment Guide](docs/distributed-deployment.md) for clust
 | `adora topic info <TOPIC>` | Show topic type and metadata |
 | `adora node list` | List nodes in a dataflow |
 | `adora node info <NODE>` | Show detailed node status, inputs, outputs, and metrics |
+| `adora node add --from-yaml <FILE>` | Add a node to a running dataflow |
+| `adora node remove <NODE>` | Remove a node from a running dataflow |
+| `adora node connect <SRC> <DST>` | Add a live mapping between nodes |
+| `adora node disconnect <SRC> <DST>` | Remove a live mapping between nodes |
 | `adora node restart <NODE>` | Restart a single node within a running dataflow |
 | `adora node stop <NODE>` | Stop a single node within a running dataflow |
 | `adora topic pub <TOPIC> <DATA>` | Publish JSON data to a topic |
@@ -345,12 +353,13 @@ CLI  -->  Coordinator  -->  Daemon(s)  -->  Nodes / Operators
 | CLI <-> Coordinator | WebSocket (port 6013) | Build, run, stop commands |
 | Coordinator <-> Daemon | WebSocket | Node spawning, dataflow lifecycle |
 | Daemon <-> Daemon | Zenoh | Distributed cross-machine communication |
-| Daemon <-> Node | Shared memory / TCP | Zero-copy IPC for data >4KB, TCP for small messages |
+| Node <-> Node | Zenoh SHM | Direct zero-copy data plane for messages >4KB |
+| Daemon <-> Node | Shared memory / TCP | Control plane + small message delivery |
 
 ### Key components
 
-- **Coordinator** -- orchestrates dataflow lifecycle across daemons. Supports in-memory or persistent (redb) state store.
-- **Daemon** -- spawns and manages nodes on a single machine. Handles shared memory allocation and message routing.
+- **Coordinator** -- orchestrates dataflow lifecycle across daemons. Persistent redb state store by default; daemons auto-reconnect on coordinator restart.
+- **Daemon** -- spawns and manages nodes on a single machine. Routes messages and manages Zenoh SHM data plane.
 - **Runtime** -- in-process operator execution engine. Operators run inside the runtime process, avoiding per-operator process overhead.
 - **Nodes** -- standalone processes that communicate via inputs/outputs. Written in Rust, Python, C, or C++.
 - **Operators** -- lightweight functions that run inside the runtime. Faster than nodes for simple transformations.
@@ -438,8 +447,16 @@ examples/               # Example dataflows
 |---------|----------|-------------|
 | [service-example](examples/service-example) | Rust | Request/reply with `request_id` correlation |
 | [action-example](examples/action-example) | Rust | Goal/feedback/result with cancellation |
+| [streaming-example](examples/streaming-example) | Python | Token-by-token generation with session/seq/fin metadata |
 
 See [docs/patterns.md](docs/patterns.md) for the full guide.
+
+### Dynamic topology
+
+| Example | Language | Description |
+|---------|----------|-------------|
+| [dynamic-add-remove](examples/dynamic-add-remove) | Python | Add/remove nodes from running dataflows |
+| [dynamic-agent-tools](examples/dynamic-agent-tools) | Python | AI agent with dynamically-added tools |
 
 ### Advanced patterns
 

@@ -30,6 +30,8 @@
 - [Fault Tolerance](operations/fault-tolerance.md)
 - [Distributed Deployment](operations/distributed.md)
 - [Performance](operations/performance.md)
+- [Real-Time Tuning](operations/realtime-tuning.md)
+- [Dynamic Topology](operations/dynamic-topology.md)
 
 # Advanced
 

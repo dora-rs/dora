@@ -245,18 +245,29 @@ Nodes are standalone processes that communicate with the daemon.
 
 **Coordinator commands (coordinator → daemon):** `Build`, `Spawn`, `AllNodesReady`, `StopDataflow`, `ReloadDataflow`, `Logs`, `Destroy`, `Heartbeat`.
 
-### Daemon to Node (Local)
+### Node to Node (Zenoh SHM Data Plane)
+
+Since v0.2, nodes publish data directly to each other via Zenoh shared memory,
+bypassing the daemon for the data plane:
+
+- Each node opens a Zenoh session with an 8MB SHM pool (configurable via `ADORA_NODE_SHM_POOL_SIZE`)
+- Messages >= 4KB (`ADORA_ZERO_COPY_THRESHOLD`) are published via Zenoh SHM
+- Local subscribers receive zero-copy `ZShm` references; remote subscribers get network copies
+- The daemon receives only lifecycle notifications (no data copies through daemon)
+- Falls back to heap buffers if SHM provider creation fails
+
+### Daemon to Node (Control Plane)
 
 Three transport options, configured via `LocalCommunicationConfig`:
 
 **TCP** (default):
 - Binds `127.0.0.1:0` (ephemeral port), `TCP_NODELAY` enabled
-- Frame format: `[8-byte u64 LE length][bincode payload]`
+- Frame format: single `write_all` with `[8-byte u64 LE length][payload]`
 - Max message: 64 MiB, read timeout: 30s
 
-**Shared Memory** (zero-copy):
+**Shared Memory** (legacy, used for control messages):
 - Four 4 KiB regions per node: control, events, drop tokens, events-close
-- Used for messages >= 4096 bytes (`ZERO_COPY_THRESHOLD`)
+- Used for daemon-node control protocol
 - Atomic synchronization with acquire/release ordering
 
 **Unix Domain Socket** (Unix only):
