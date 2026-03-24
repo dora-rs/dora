@@ -2,7 +2,7 @@
 
 **Based on**: audit-report-2026-03-21.md (combined audit)
 **Created**: 2026-03-23
-**Updated**: 2026-03-24
+**Updated**: 2026-03-24 (final)
 
 ---
 
@@ -12,11 +12,11 @@
 |--------|------|----------|-------|
 | Sprint 1 | 8 | 1 | 9 |
 | Sprint 2 | 11 | 0 | 11 |
-| Sprint 3 | 10 | 2 | 12 |
+| Sprint 3 | 11 | 1 | 12 |
 | Sprint 4 | 6 | 2 | 8 |
 | Sprint 5 | 6 | 6 | 12 |
-| Review fixes | 9 | — | 9 |
-| **Total** | **50** | **11** | **61** |
+| Review fixes | 16 | — | 16 |
+| **Total** | **58** | **10** | **68** |
 
 ---
 
@@ -65,6 +65,13 @@
 | R7 | — | IndexMap dep added to coordinator | DONE | `da58d8e` |
 | R8 | — | Control event `.is_ok()` -> `.ok() == Some(true)` (9 call sites) | DONE | `3df9f59` |
 | R9 | — | Drop channels reverted to unbounded (shmem leak prevention) | DONE | `3df9f59` |
+| R10 | — | `send_service_response` warns when `request_id` missing | DONE | `795d96f` |
+| R11 | — | Download error message fix: literal `{uri}` -> format `{url}` | DONE | `795d96f` |
+| R12 | — | `send_service_request` warns on overwritten `request_id` | DONE | `795d96f` |
+| R13 | — | Shmem `spawn_blocking` bounded leak documented | DONE | `795d96f` |
+| R14 | — | `send_service_response` docstring: metadata is required | DONE | `795d96f` |
+| R15 | — | Zenoh version `1.8.0` -> `~1.8` (allow patch updates) | DONE | `795d96f` |
+| R16 | — | Shmem `mut shutdown` comment added | DONE | `795d96f` |
 
 ---
 
@@ -72,7 +79,7 @@
 
 | # | ID | Task | Status | Commit |
 |---|-----|------|--------|--------|
-| 21 | DC2 | Cancellation token for listener loops | DEFERRED | M effort — async lifecycle redesign |
+| 21 | DC2 | Listener loop shutdown via watch channel | DONE | `904131f` (TCP/UDS select!, shmem select!) |
 | 22 | DC4 | `try_send` for log-related daemon_tx sends | DONE | `8064b83` |
 | 23 | DC5 | Remove per-line `sync_all()` from log writer | DONE | `8064b83` |
 | 24 | DC6 | Recursive child process aggregation | DONE | `8064b83` |
@@ -121,13 +128,12 @@
 
 ---
 
-## Deferred Items (11 remaining)
+## Deferred Items (10 remaining)
 
 ### Medium Priority (v0.2+)
 
 | # | ID | Task | Effort | Blocker |
 |---|-----|------|--------|---------|
-| 21 | DC2 | Listener loop cancellation tokens | M | Async lifecycle redesign |
 | 25 | CM3 | Signal shmem client on server drop | S | Shmem channel internals |
 | 33 | P4 | Split shmem protocol (metadata + raw bytes) | L | Protocol change, compat |
 | 35 | P8 | Separate Zenoh metadata from payload | M | Coupled with P4 |
