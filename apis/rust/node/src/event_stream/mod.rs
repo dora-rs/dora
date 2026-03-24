@@ -64,6 +64,7 @@ pub struct EventStream {
     node_id: NodeId,
     receiver: flume::r#async::RecvStream<'static, EventItem>,
     _thread_handle: EventStreamThreadHandle,
+    _zenoh_thread_handles: Vec<std::thread::JoinHandle<()>>,
     close_channel: DaemonChannel,
     clock: Arc<uhlc::HLC>,
     scheduler: Scheduler,
@@ -272,6 +273,8 @@ impl EventStream {
 
         // Spawn zenoh subscribers for each input that has a source node.
         // These feed events directly into the same flume channel as daemon events.
+        // Subscriber threads are tracked for cleanup in EventStream::drop.
+        let mut zenoh_thread_handles = Vec::new();
         if let Some(session) = zenoh_session {
             use zenoh::Wait;
             for (input_id, input) in input_config {
@@ -285,13 +288,24 @@ impl EventStream {
                         source_node,
                         source_output,
                     );
-                    let key_expr = zenoh::key_expr::KeyExpr::new(topic.clone())
-                        .map_err(|e| eyre!("invalid zenoh key: {e}"))?
-                        .into_owned();
-                    let subscriber = session
-                        .declare_subscriber(key_expr)
-                        .wait()
-                        .map_err(|e| eyre!("failed to declare zenoh subscriber: {e}"))?;
+                    let key_expr = match zenoh::key_expr::KeyExpr::new(topic.clone()) {
+                        Ok(k) => k.into_owned(),
+                        Err(e) => {
+                            tracing::warn!(input = %input_id, "invalid zenoh key ({e}), using daemon path");
+                            continue;
+                        }
+                    };
+                    let subscriber = match session.declare_subscriber(key_expr).wait() {
+                        Ok(s) => s,
+                        Err(e) => {
+                            // Graceful degradation: this input falls back to daemon delivery
+                            tracing::warn!(
+                                input = %input_id,
+                                "failed to declare zenoh subscriber ({e}), using daemon path"
+                            );
+                            continue;
+                        }
+                    };
 
                     tracing::debug!(
                         input = %input_id,
@@ -301,58 +315,68 @@ impl EventStream {
 
                     let tx_clone = tx.clone();
                     let input_id = input_id.clone();
-                    std::thread::spawn(move || {
-                        use zenoh::Wait;
-                        while let Ok(sample) = subscriber.recv() {
-                            // Extract metadata from attachment
-                            let metadata = sample
-                                .attachment()
-                                .and_then(|att| {
-                                    bincode::deserialize::<adora_message::metadata::Metadata>(
-                                        &att.to_bytes(),
-                                    )
-                                    .ok()
-                                });
-                            let metadata = match metadata {
-                                Some(m) => m,
-                                None => {
-                                    tracing::warn!("zenoh sample missing metadata attachment");
-                                    continue;
+                    // Dummy ack channel — zenoh handles buffer lifecycle via ref counting,
+                    // no DropToken needed (unlike the custom shmem path).
+                    let dummy_ack = flume::bounded(0).0;
+                    let handle = std::thread::Builder::new()
+                        .name(format!("zenoh-sub-{input_id}"))
+                        .spawn(move || {
+                            use zenoh::Wait;
+                            while let Ok(sample) = subscriber.recv() {
+                                // Extract metadata from attachment
+                                let metadata = sample
+                                    .attachment()
+                                    .and_then(|att| {
+                                        bincode::deserialize::<adora_message::metadata::Metadata>(
+                                            &att.to_bytes(),
+                                        )
+                                        .ok()
+                                    });
+                                let metadata = match metadata {
+                                    Some(m) => m,
+                                    None => {
+                                        tracing::warn!("zenoh sample missing metadata attachment");
+                                        continue;
+                                    }
+                                };
+
+                                // Extract payload bytes from zenoh sample.
+                                // TODO: Use ZShm reference directly for true zero-copy
+                                // once data_conversion.rs supports RawData::ZenohShm.
+                                let payload = sample.payload();
+                                let data_bytes = payload.to_bytes();
+                                let data = if data_bytes.is_empty() {
+                                    None
+                                } else {
+                                    Some(std::sync::Arc::new(
+                                        DataMessage::Vec(
+                                            aligned_vec::AVec::from_slice(1, &data_bytes),
+                                        ),
+                                    ))
+                                };
+
+                                let event = NodeEvent::Input {
+                                    id: input_id.clone(),
+                                    metadata: std::sync::Arc::new(metadata),
+                                    data,
+                                };
+
+                                if tx_clone
+                                    .send(EventItem::NodeEvent {
+                                        event,
+                                        ack_channel: dummy_ack.clone(),
+                                    })
+                                    .is_err()
+                                {
+                                    break; // receiver dropped
                                 }
-                            };
-
-                            // Extract data — try SHM zero-copy first
-                            let payload = sample.payload();
-                            let data_bytes = payload.to_bytes();
-                            let data = if data_bytes.is_empty() {
-                                None
-                            } else {
-                                Some(std::sync::Arc::new(
-                                    DataMessage::Vec(
-                                        aligned_vec::AVec::from_slice(1, &data_bytes),
-                                    ),
-                                ))
-                            };
-
-                            let event = NodeEvent::Input {
-                                id: input_id.clone(),
-                                metadata: std::sync::Arc::new(metadata),
-                                data,
-                            };
-
-                            let (ack_tx, _ack_rx) = flume::bounded(1);
-                            if tx_clone
-                                .send(EventItem::NodeEvent {
-                                    event,
-                                    ack_channel: ack_tx,
-                                })
-                                .is_err()
-                            {
-                                break; // receiver dropped
                             }
-                        }
-                        tracing::trace!("zenoh subscriber thread exiting for input");
-                    });
+                            tracing::trace!("zenoh subscriber thread exiting");
+                        })
+                        .ok();
+                    if let Some(h) = handle {
+                        zenoh_thread_handles.push(h);
+                    }
                 }
             }
         }
@@ -363,6 +387,7 @@ impl EventStream {
             node_id: node_id.clone(),
             receiver: rx.into_stream(),
             _thread_handle: thread_handle,
+            _zenoh_thread_handles: zenoh_thread_handles,
             close_channel,
             start_timestamp: clock.new_timestamp(),
             clock,

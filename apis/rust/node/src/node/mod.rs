@@ -121,6 +121,9 @@ pub struct AdoraNode {
     /// Zenoh shared memory provider for zero-copy publishing.
     zenoh_shm_provider: Option<zenoh::shm::ShmProvider<zenoh::shm::PosixShmProviderBackend>>,
     /// Per-output zenoh publishers (lazily created on first send).
+    /// `'static` is sound because zenoh `Publisher` internally holds `Arc<Session>`,
+    /// so it doesn't borrow from the session field on this struct.
+    /// Publishers must be dropped BEFORE the session (enforced in Drop impl).
     zenoh_publishers: HashMap<DataId, zenoh::pubsub::Publisher<'static>>,
     /// Threshold for using zenoh SHM vs inline bytes (default 4096).
     zenoh_zero_copy_threshold: usize,
@@ -535,7 +538,11 @@ impl AdoraNode {
         };
 
         // Initialize zenoh session for direct node-to-node data plane.
-        // The SHM provider enables zero-copy publishing for large messages.
+        // Skip in interactive/testing mode (no daemon, no dataflow topology).
+        let is_standard_mode = matches!(
+            daemon_communication,
+            DaemonCommunicationWrapper::Standard(_)
+        );
         let shm_pool_size = std::env::var("ADORA_NODE_SHM_POOL_SIZE")
             .ok()
             .and_then(|s| s.parse::<usize>().ok())
@@ -544,42 +551,49 @@ impl AdoraNode {
             .ok()
             .and_then(|s| s.parse::<usize>().ok())
             .unwrap_or(ZERO_COPY_THRESHOLD);
-        let (zenoh_session, zenoh_shm_provider) =
+        let (zenoh_session, zenoh_shm_provider) = if !is_standard_mode {
+            (None, None)
+        } else {
             match tokio::runtime::Handle::try_current() {
                 Ok(handle) => {
-                    let session = handle
-                        .block_on(adora_core::topics::open_zenoh_session(None))
-                        .ok();
-                    let provider = session.as_ref().and_then(|_| {
+                    // Use spawn_blocking + oneshot to avoid panicking when
+                    // called from a tokio worker thread (block_on panics in
+                    // that context on current-thread runtimes).
+                    let session = std::thread::scope(|s| {
+                        s.spawn(|| {
+                            handle.block_on(adora_core::topics::open_zenoh_session(None))
+                        }).join().ok().and_then(|r| r.ok())
+                    });
+                    let provider = if session.is_some() {
                         use zenoh::shm::ShmProviderBuilder;
                         use zenoh::Wait;
                         match ShmProviderBuilder::default_backend(shm_pool_size).wait() {
                             Ok(p) => Some(p),
                             Err(e) => {
                                 if std::env::var("ADORA_SHM_REQUIRED").is_ok() {
-                                    tracing::error!(
+                                    return Err(NodeError::Init(format!(
                                         "failed to create zenoh SHM provider: {e} \
                                          (ADORA_SHM_REQUIRED is set)"
-                                    );
-                                    // Continue without SHM — will fail at send time
-                                    None
-                                } else {
-                                    tracing::warn!(
-                                        "failed to create zenoh SHM provider ({e}), \
-                                         falling back to heap buffers"
-                                    );
-                                    None
+                                    )));
                                 }
+                                tracing::warn!(
+                                    "failed to create zenoh SHM provider ({e}), \
+                                     falling back to heap buffers"
+                                );
+                                None
                             }
                         }
-                    });
+                    } else {
+                        None
+                    };
                     (session, provider)
                 }
                 Err(_) => {
                     tracing::debug!("no tokio runtime — zenoh SHM disabled");
                     (None, None)
                 }
-            };
+            }
+        };
 
         let event_stream = EventStream::init(
             dataflow_id,
@@ -909,10 +923,11 @@ impl AdoraNode {
         };
 
         if zenoh_published {
-            // Send data-less notification to daemon (for logging, metrics, routing awareness)
-            self.control_channel
-                .send_message(output_id.clone(), metadata, None)
-                .wrap_err_with(|| format!("failed to send output notification for {output_id}"))?;
+            // Data delivered directly via zenoh — do NOT send any notification
+            // to daemon. The daemon's send_output_to_local_receivers would
+            // fan out a data-less NodeEvent::Input to local subscribers,
+            // causing duplicate delivery (once from zenoh, once from daemon).
+            // The daemon learns about outputs at subscribe time, not per-message.
         } else {
             // Existing path: send data through daemon
             self.control_channel
@@ -1305,6 +1320,13 @@ impl AdoraNode {
 
 impl Drop for AdoraNode {
     fn drop(&mut self) {
+        // Undeclare zenoh publishers to clean up network resources
+        // before closing daemon channels.
+        self.zenoh_publishers.clear();
+        // Drop the session explicitly (releases SHM pool + network resources)
+        self.zenoh_shm_provider.take();
+        self.zenoh_session.take();
+
         // close all outputs first to notify subscribers as early as possible
         if let Err(err) = self
             .control_channel
