@@ -226,8 +226,24 @@ impl EventStream {
         {
             let registry = adora_core::types::TypeRegistry::new();
             for (input_id, type_urn) in input_types {
-                if let Some(dt) = registry.resolve_arrow_type(type_urn) {
-                    input_type_checks.insert(input_id.clone(), dt);
+                match registry.resolve_arrow_type(type_urn) {
+                    Some(dt) => {
+                        input_type_checks.insert(input_id.clone(), dt);
+                    }
+                    None => {
+                        // Complex or custom types not resolvable to a simple Arrow DataType
+                        if registry.resolve(type_urn).is_some() {
+                            tracing::debug!(
+                                input = %input_id,
+                                "skipping type check for complex type \"{type_urn}\""
+                            );
+                        } else {
+                            tracing::warn!(
+                                input = %input_id,
+                                "unknown input type URN \"{type_urn}\" — skipping type check"
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -504,7 +520,9 @@ impl EventStream {
         if let Some(Event::Input { ref id, ref data, .. }) = event {
             if let Some(expected) = self.input_type_checks.remove(id) {
                 let actual = data.data_type();
-                if *actual != expected {
+                // Skip check for Null type (timer ticks, empty payloads)
+                // to avoid spurious warnings on annotated timer inputs.
+                if *actual != arrow_schema::DataType::Null && *actual != expected {
                     tracing::warn!(
                         input = %id,
                         expected = ?expected,
@@ -784,9 +802,27 @@ impl Stream for EventStream {
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
-        self.receiver
+        let poll = self
+            .receiver
             .poll_next_unpin(cx)
-            .map(|item| item.map(Self::convert_event_item))
+            .map(|item| item.map(Self::convert_event_item));
+
+        // Run first-message type check on the Stream path too.
+        if let std::task::Poll::Ready(Some(Event::Input { ref id, ref data, .. })) = poll {
+            if let Some(expected) = self.input_type_checks.remove(id) {
+                let actual = data.data_type();
+                if *actual != arrow_schema::DataType::Null && *actual != expected {
+                    tracing::warn!(
+                        input = %id,
+                        expected = ?expected,
+                        actual = ?actual,
+                        "input type mismatch on first message (Stream path)"
+                    );
+                }
+            }
+        }
+
+        poll
     }
 }
 

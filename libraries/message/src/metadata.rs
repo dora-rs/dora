@@ -60,8 +60,8 @@ pub struct ArrowTypeInfo {
     /// without full Arrow IPC framing).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub field_names: Option<Vec<String>>,
-    /// Hash of the full Arrow schema for fast type matching.
-    /// Populated when type annotations are present; receivers can compare
+    /// Hash of the full Arrow schema for fast type matching (future use).
+    /// Currently always `None`. When populated, receivers can compare
     /// this O(1) before doing a full type check.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema_hash: Option<u64>,
