@@ -2,7 +2,7 @@
 
 **Based on**: audit-report-2026-03-21.md (combined audit)
 **Created**: 2026-03-23
-**Updated**: 2026-03-24 (final)
+**Updated**: 2026-03-24 (v0.1.1 sprints complete; see roadmap-v0.2.md for sprints 6-12)
 
 ---
 

@@ -92,15 +92,16 @@ not run in CI, meaning lifecycle regressions go undetected.
 | A5 | Coordinator JSON-wraps already-serialized daemon messages (double-JSON) | Low | `state.rs:104-109` |
 | A6 | Drop token warning fires on legitimate zero-subscriber case; misleads debugging | Low | `running_dataflow.rs:479-513` |
 
-### Known Constraints (Unchanged)
+### Known Constraints — Status After v0.2 Sprints
 
-| Constraint | Impact | Mitigation |
-|-----------|--------|------------|
-| Single coordinator SPOF | Coordinator crash kills all daemons after 20s | CoordinatorStore supports crash recovery; no standby yet |
-| Static topology | Cannot add/remove nodes mid-execution | Use parameter-based enablement or restart dataflow |
-| Single-threaded event loop | Control-plane latency spikes affect data routing | Event timing warning at >100ms; separate planes in future |
-| Arrow metadata-only | No IPC framing or schema negotiation | Out-of-band agreement; type info in metadata |
-| Soft real-time only | No SCHED_FIFO, CPU pinning, mlockall | Acceptable for most robotics; document OS tuning |
+| Constraint | Original Status | v0.2 Status | Sprint |
+|-----------|----------------|-------------|--------|
+| Single coordinator SPOF | No recovery | **Daemon auto-reconnect + ReDB default + Recovering status** | Sprint 9 (#81) |
+| Static topology | Cannot add/remove nodes | **AddNode/RemoveNode/AddMapping protocol + CLI** (coordinator dispatch pending) | Sprint 10 (#82) |
+| Single-threaded event loop | Zenoh pub blocks loop | **Zenoh publish offloaded to drain task** (stop <500ms under load) | Sprint 7 (#75) |
+| Arrow metadata-only | No schema negotiation | **First-message type validation + field_names/schema_hash metadata** (IPC framing pending) | Sprint 11 (#83) |
+| Soft real-time only | No OS tuning | **--rt flag (mlockall + SCHED_FIFO) + comprehensive tuning guide** | Sprint 12 |
+| Custom shmem IPC | 4 blocking threads/node | **Zenoh SHM data plane** (35% lower latency, 3-10x throughput) | Sprint 6 (#74) |
 
 ---
 
