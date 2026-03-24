@@ -610,6 +610,7 @@ impl AdoraNode {
             &node_id,
             &daemon_communication,
             input_config,
+            &run_config.input_types,
             clock.clone(),
             write_events_to,
             zenoh_session.as_ref(),

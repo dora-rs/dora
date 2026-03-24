@@ -136,7 +136,7 @@ pub mod bench_support {
             validity: None,
             offset: 0,
             buffer_offsets: vec![],
-            child_data: vec![],
+            child_data: vec![], field_names: None, schema_hash: None,
         };
         RoutingFixture {
             sender_id: "sender".to_string().into(),
@@ -3565,7 +3565,7 @@ pub(crate) fn empty_type_info() -> ArrowTypeInfo {
         validity: None,
         offset: 0,
         buffer_offsets: Vec::new(),
-        child_data: Vec::new(),
+        child_data: Vec::new(), field_names: None, schema_hash: None,
     }
 }
 
@@ -3952,7 +3952,7 @@ mod fault_tolerance_tests {
                 validity: None,
                 offset: 0,
                 buffer_offsets: vec![],
-                child_data: vec![],
+                child_data: vec![], field_names: None, schema_hash: None,
             },
         );
 
@@ -4052,7 +4052,7 @@ mod fault_tolerance_tests {
                 validity: None,
                 offset: 0,
                 buffer_offsets: vec![],
-                child_data: vec![],
+                child_data: vec![], field_names: None, schema_hash: None,
             },
         );
 
