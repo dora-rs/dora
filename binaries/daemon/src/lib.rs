@@ -268,8 +268,11 @@ impl Daemon {
                         sender: coordinator_sender.clone(),
                     };
 
-                    let result = Self::run_general(
-                        (ReceiverStream::new(ctrlc_events), incoming_events).merge(),
+                    // Don't pass ctrlc_events into run_general — keep it in
+                    // the outer loop so Ctrl+C works across reconnect cycles.
+                    // (ctrlc::set_handler can only be called once per process)
+                    let run_future = Self::run_general(
+                        incoming_events,
                         Some(coordinator_sender),
                         daemon_id,
                         None,
@@ -278,8 +281,15 @@ impl Daemon {
                         Default::default(),
                         log_destination,
                         None,
-                    )
-                    .await;
+                    );
+
+                    let result = tokio::select! {
+                        r = run_future => r,
+                        _ = ctrlc_events.recv() => {
+                            tracing::info!("received ctrl-c signal -> stopping daemon");
+                            return Ok(());
+                        }
+                    };
 
                     match result {
                         Ok(_) => return Ok(()),
@@ -288,8 +298,6 @@ impl Daemon {
                                 "daemon disconnected from coordinator: {e:#}. \
                                  Attempting reconnect..."
                             );
-                            // Re-create ctrlc handler for next iteration
-                            ctrlc_events = set_up_ctrlc_handler(clock.clone())?;
                         }
                     }
                 }
@@ -301,11 +309,11 @@ impl Daemon {
                 }
             }
 
-            // Exponential backoff: 1s, 2s, 4s, 8s, max 30s
-            reconnect_attempt += 1;
+            // Exponential backoff: 1s, 2s, 4s, 8s, 16s, 30s, 30s...
             let delay = Duration::from_secs(
                 (1u64 << reconnect_attempt.min(5)).min(30),
             );
+            reconnect_attempt += 1;
             tracing::info!("reconnecting in {delay:?}...");
             tokio::time::sleep(delay).await;
         }

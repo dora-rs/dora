@@ -337,13 +337,14 @@ async fn start_inner(
                             "daemon re-registering (replacing stale connection)"
                         );
                     }
-                    let existing_result: Result<(), String> = Ok(());
-
-                    // assign a unique ID to the daemon
-                    let daemon_id = DaemonId::new(machine_id);
+                    // Reuse existing DaemonId if daemon is re-registering (#5 fix)
+                    let daemon_id = match existing {
+                        Some(existing_id) => existing_id.clone(),
+                        None => DaemonId::new(machine_id),
+                    };
 
                     let reply: Timestamped<RegisterResult> = Timestamped {
-                        inner: match version_check_result.as_ref().and(existing_result.as_ref()) {
+                        inner: match version_check_result.as_ref() {
                             Ok(_) => RegisterResult::Ok {
                                 daemon_id: daemon_id.clone(),
                             },
@@ -358,7 +359,6 @@ async fn start_inner(
                         .context("failed to send register reply");
                     match version_check_result
                         .map_err(|e| eyre!(e))
-                        .and(existing_result.map_err(|e| eyre!(e)))
                         .and(send_result)
                     {
                         Ok(()) => {
@@ -1366,6 +1366,40 @@ async fn start_inner(
                         persist_failures = persist_failure_count,
                         "store persistence failures since startup"
                     );
+                }
+
+                // Recovery timeout: transition stale Recovering dataflows to Failed.
+                // Dataflows are marked Recovering on coordinator startup and should
+                // be reclaimed by reconnecting daemons within 60 seconds.
+                const RECOVERY_TIMEOUT_SECS: u64 = 60;
+                let now_ms = state::now_millis();
+                match store.list_dataflows() {
+                    Ok(records) => {
+                        for mut record in records {
+                            if record.status == StoreDataflowStatus::Recovering {
+                                let age_ms = now_ms.saturating_sub(record.updated_at);
+                                if age_ms > RECOVERY_TIMEOUT_SECS * 1000 {
+                                    tracing::warn!(
+                                        uuid = %record.uuid,
+                                        age_secs = age_ms / 1000,
+                                        "recovery timeout: Recovering -> Failed"
+                                    );
+                                    record.status = StoreDataflowStatus::Failed {
+                                        error: format!(
+                                            "recovery timeout ({RECOVERY_TIMEOUT_SECS}s): \
+                                             no daemon reconnected"
+                                        ),
+                                    };
+                                    record.generation += 1;
+                                    record.updated_at = now_ms;
+                                    if let Err(e) = store.put_dataflow(&record) {
+                                        tracing::warn!("failed to mark dataflow as Failed: {e}");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => tracing::warn!("failed to list dataflows for recovery check: {e}"),
                 }
             }
             Event::CtrlC => {

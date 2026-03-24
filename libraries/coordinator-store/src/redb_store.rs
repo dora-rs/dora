@@ -17,7 +17,7 @@ const BUILDS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("builds");
 const NODE_PARAMS: TableDefinition<&str, &[u8]> = TableDefinition::new("node_params");
 
 /// Bump this when the serialization format of any stored record changes.
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2; // Sprint 9: added node_to_daemon, uv, Recovering status
 const SCHEMA_VERSION_KEY: &str = "schema_version";
 
 /// Run `f` with umask set to `0o077` (owner-only) on Unix, restoring afterwards.
@@ -448,7 +448,7 @@ mod tests {
             status: crate::BuildStatus::Pending,
             errors: vec![],
             created_at: 2000,
-            updated_at: 2000, node_to_daemon: Default::default(), uv: false,
+            updated_at: 2000,
         };
 
         store.put_build(&record).unwrap();
@@ -503,7 +503,7 @@ mod tests {
                 daemon_ids: vec![],
                 generation: 1,
                 created_at: 1000,
-                updated_at: 2000, node_to_daemon: Default::default(), uv: false,
+                updated_at: 2000,
             };
             store.put_dataflow(&record).unwrap();
         }
