@@ -62,6 +62,17 @@ pub enum ControlRequestReply {
         node_id: NodeId,
     },
     TopicPublished,
+    // --- Dynamic Topology ---
+    NodeAdded {
+        dataflow_id: Uuid,
+        node_id: NodeId,
+    },
+    NodeRemoved {
+        dataflow_id: Uuid,
+        node_id: NodeId,
+    },
+    MappingAdded,
+    MappingRemoved,
     ParamList {
         params: Vec<(String, serde_json::Value)>,
     },
