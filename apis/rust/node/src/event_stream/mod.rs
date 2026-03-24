@@ -74,6 +74,9 @@ pub struct EventStream {
     write_events_to: Option<WriteEventsTo>,
     start_timestamp: uhlc::Timestamp,
     use_scheduler: bool,
+    /// Expected input types from YAML descriptor (for first-message validation).
+    /// Each input is checked once; after the first message, the entry is removed.
+    input_type_checks: HashMap<DataId, arrow_schema::DataType>,
 }
 
 impl EventStream {
@@ -83,6 +86,7 @@ impl EventStream {
         node_id: &NodeId,
         daemon_communication: &DaemonCommunicationWrapper,
         input_config: BTreeMap<DataId, Input>,
+        input_types: &BTreeMap<DataId, String>,
         clock: Arc<uhlc::HLC>,
         write_events_to: Option<PathBuf>,
         zenoh_session: Option<&zenoh::Session>,
@@ -217,6 +221,17 @@ impl EventStream {
             None => None,
         };
 
+        // Resolve input type URNs to Arrow DataTypes for first-message validation.
+        let mut input_type_checks = HashMap::new();
+        {
+            let registry = adora_core::types::TypeRegistry::new();
+            for (input_id, type_urn) in input_types {
+                if let Some(dt) = registry.resolve_arrow_type(type_urn) {
+                    input_type_checks.insert(input_id.clone(), dt);
+                }
+            }
+        }
+
         Self::init_on_channel(
             dataflow_id,
             node_id,
@@ -225,6 +240,7 @@ impl EventStream {
             clock,
             scheduler,
             write_events_to,
+            input_type_checks,
             total_queue_capacity,
             zenoh_session,
             &input_config,
@@ -240,6 +256,7 @@ impl EventStream {
         clock: Arc<uhlc::HLC>,
         scheduler: Scheduler,
         write_events_to: Option<WriteEventsTo>,
+        input_type_checks: HashMap<DataId, arrow_schema::DataType>,
         channel_capacity: usize,
         zenoh_session: Option<&zenoh::Session>,
         input_config: &BTreeMap<DataId, Input>,
@@ -402,6 +419,7 @@ impl EventStream {
             scheduler,
             write_events_to,
             use_scheduler,
+            input_type_checks,
         })
     }
 
@@ -461,25 +479,43 @@ impl EventStream {
     /// [`StreamExt::next`] method with a custom timeout future instead
     /// ([`EventStream`] implements the [`Stream`] trait).
     pub async fn recv_async(&mut self) -> Option<Event> {
-        if !self.use_scheduler {
-            return self.receiver.next().await.map(Self::convert_event_item);
-        }
-        loop {
-            if self.scheduler.is_empty() {
-                if let Some(event) = self.receiver.next().await {
-                    self.add_event(event);
+        let event = if !self.use_scheduler {
+            self.receiver.next().await.map(Self::convert_event_item)
+        } else {
+            loop {
+                if self.scheduler.is_empty() {
+                    if let Some(event) = self.receiver.next().await {
+                        self.add_event(event);
+                    } else {
+                        break;
+                    }
                 } else {
-                    break;
+                    match self.receiver.next().now_or_never().flatten() {
+                        Some(event) => self.add_event(event),
+                        None => break, // no other ready events
+                    };
                 }
-            } else {
-                match self.receiver.next().now_or_never().flatten() {
-                    Some(event) => self.add_event(event),
-                    None => break, // no other ready events
-                };
+            }
+            self.scheduler.next().map(Self::convert_event_item)
+        };
+
+        // First-message type validation: check once per input, then remove.
+        // Zero cost after first message per input.
+        if let Some(Event::Input { ref id, ref data, .. }) = event {
+            if let Some(expected) = self.input_type_checks.remove(id) {
+                let actual = data.data_type();
+                if *actual != expected {
+                    tracing::warn!(
+                        input = %id,
+                        expected = ?expected,
+                        actual = ?actual,
+                        "input type mismatch on first message"
+                    );
+                }
             }
         }
-        let event = self.scheduler.next();
-        event.map(Self::convert_event_item)
+
+        event
     }
 
     /// Check if there are any buffered events in the scheduler or the receiver.

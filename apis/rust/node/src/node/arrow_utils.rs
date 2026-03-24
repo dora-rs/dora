@@ -77,7 +77,7 @@ fn copy_array_into_sample_inner(
         validity: arrow_array.nulls().map(|b| b.validity().to_owned()),
         offset: arrow_array.offset(),
         buffer_offsets,
-        child_data,
+        child_data, field_names: None, schema_hash: None,
     }
 }
 

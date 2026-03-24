@@ -56,6 +56,15 @@ pub struct ArrowTypeInfo {
     pub offset: usize,
     pub buffer_offsets: Vec<BufferOffset>,
     pub child_data: Vec<ArrowTypeInfo>,
+    /// Optional field names for struct types (enables schema introspection
+    /// without full Arrow IPC framing).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field_names: Option<Vec<String>>,
+    /// Hash of the full Arrow schema for fast type matching.
+    /// Populated when type annotations are present; receivers can compare
+    /// this O(1) before doing a full type check.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_hash: Option<u64>,
 }
 
 /// A metadata parameter that can be sent as part of output messages.
