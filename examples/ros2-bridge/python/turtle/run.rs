@@ -9,7 +9,17 @@ fn main() -> eyre::Result<()> {
     std::env::set_current_dir(root.join(file!()).parent().unwrap())
         .wrap_err("failed to set working dir")?;
 
-    build("dataflow.yml".to_string(), None, None, true, true, false, false, false, None)?;
+    build(
+        "dataflow.yml".to_string(),
+        None,
+        None,
+        true,
+        true,
+        false,
+        false,
+        false,
+        None,
+    )?;
 
     let dataflow_task = std::thread::spawn(|| {
         adora_run("dataflow.yml".to_string(), true).unwrap();

@@ -122,6 +122,7 @@ impl Executable for Build {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn build(
     dataflow: String,
     coordinator_addr: Option<IpAddr>,
