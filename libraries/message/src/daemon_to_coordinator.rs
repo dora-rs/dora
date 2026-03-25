@@ -37,14 +37,18 @@ pub struct DaemonRegisterRequest {
     /// even behind NAT.
     #[serde(default)]
     pub machine_uid: Option<String>,
+    /// Zenoh ZID reported by the daemon's local zenoh::Session, if one was opened.
+    #[serde(default)]
+    pub zenoh_peer_id: Option<String>,
 }
 
 impl DaemonRegisterRequest {
-    pub fn new(machine_id: Option<String>) -> Self {
+    pub fn new(machine_id: Option<String>, zenoh_peer_id: Option<String>) -> Self {
         Self {
             dora_version: current_crate_version(),
             machine_id,
             machine_uid: crate::common::machine_uid(),
+            zenoh_peer_id,
         }
     }
 

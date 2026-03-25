@@ -366,6 +366,7 @@ async fn start_inner(
                 DaemonRequest::Register {
                     machine_id,
                     machine_uid,
+                    zenoh_peer_id,
                     mut connection,
                     version_check_result,
                 } => {
@@ -425,6 +426,7 @@ async fn start_inner(
                                     last_heartbeat: Instant::now(),
                                     peer_addr,
                                     machine_uid,
+                                    zenoh_peer_id,
                                 },
                             );
                         }
@@ -636,6 +638,7 @@ pub(crate) struct DaemonConnection {
     peer_addr: Option<SocketAddr>,
     /// System-level machine identifier reported by the daemon at registration.
     machine_uid: Option<String>,
+    pub(crate) zenoh_peer_id: Option<String>,
 }
 
 async fn handle_destroy(
@@ -1188,6 +1191,7 @@ pub enum DaemonRequest {
     Register {
         machine_id: Option<String>,
         machine_uid: Option<String>,
+        zenoh_peer_id: Option<String>,
         connection: TcpStream,
         version_check_result: Result<(), String>,
     },

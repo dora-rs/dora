@@ -121,3 +121,13 @@ pub struct VersionInfo {
     /// The dora-message crate version used by the coordinator (e.g. "0.7.0")
     pub message_format_version: String,
 }
+
+/// Information about a single connected daemon, returned by `list_daemons`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DaemonInfo {
+    pub daemon_id: DaemonId,
+    /// Whether the daemon opened a Zenoh session.
+    pub zenoh_ready: bool,
+    /// The Zenoh ZID of the daemon's session, if open.
+    pub zenoh_peer_id: Option<String>,
+}

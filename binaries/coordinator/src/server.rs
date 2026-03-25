@@ -6,8 +6,9 @@ use dora_message::{
     cli_to_coordinator::{BuildRequest, CoordinatorControl, StartRequest},
     common::DaemonId,
     coordinator_to_cli::{
-        CheckDataflowReply, DataflowIdAndName, DataflowInfo, DataflowList, DataflowListEntry,
-        DataflowResult, DataflowStatus, NodeInfo, NodeMetricsInfo, StopDataflowReply, VersionInfo,
+        CheckDataflowReply, DaemonInfo, DataflowIdAndName, DataflowInfo, DataflowList,
+        DataflowListEntry, DataflowResult, DataflowStatus, NodeInfo, NodeMetricsInfo,
+        StopDataflowReply, VersionInfo,
     },
     tarpc::context::Context,
 };
@@ -399,5 +400,18 @@ impl CoordinatorControl for CoordinatorControlServer {
             }
         }
         Ok(node_infos)
+    }
+
+    async fn list_daemons(self, _ctx: Context) -> Result<Vec<DaemonInfo>, String> {
+        Ok(self
+            .state
+            .daemon_connections
+            .iter()
+            .map(|r| DaemonInfo {
+                daemon_id: r.key().clone(),
+                zenoh_ready: r.value().zenoh_peer_id.is_some(),
+                zenoh_peer_id: r.value().zenoh_peer_id.clone(),
+            })
+            .collect())
     }
 }

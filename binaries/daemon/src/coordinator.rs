@@ -74,9 +74,11 @@ pub async fn register(
         .set_nodelay(true)
         .wrap_err("failed to set TCP_NODELAY")?;
 
+    let zenoh_peer_id = state.zenoh_session.as_ref().map(|s| s.zid().to_string());
+
     // Registration handshake (raw length-prefixed JSON)
     let register = serde_json::to_vec(&Timestamped {
-        inner: CoordinatorRequest::Register(DaemonRegisterRequest::new(machine_id)),
+        inner: CoordinatorRequest::Register(DaemonRegisterRequest::new(machine_id, zenoh_peer_id)),
         timestamp: clock.new_timestamp(),
     })?;
     socket_stream_send(&mut stream, &register)

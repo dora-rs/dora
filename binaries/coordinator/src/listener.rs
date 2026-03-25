@@ -78,6 +78,7 @@ pub async fn handle_connection(
                     version_check_result: register_request.check_version(),
                     machine_id: register_request.machine_id,
                     machine_uid: register_request.machine_uid,
+                    zenoh_peer_id: register_request.zenoh_peer_id,
                 };
                 let _ = events_tx.send(Event::Daemon(event)).await;
                 break;
