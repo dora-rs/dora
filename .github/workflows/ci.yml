@@ -12,6 +12,8 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # Pin Rust to 1.92 until static_init (zenoh-shm dep) is fixed for 1.94+
+  RUST_VERSION: "1.92.0"
 
 jobs:
   fmt:
@@ -19,8 +21,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ env.RUST_VERSION }}
           components: rustfmt
       - run: cargo fmt --all -- --check
 
@@ -29,8 +32,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ env.RUST_VERSION }}
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - run: >
@@ -49,7 +53,9 @@ jobs:
       fail-fast: false
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
       - run: >
           cargo test --all
@@ -67,7 +73,9 @@ jobs:
     needs: test
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
       - name: Build CLI
         run: cargo build -p adora-cli --release

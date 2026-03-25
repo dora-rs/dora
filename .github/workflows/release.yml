@@ -11,6 +11,8 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # Pin Rust to 1.92 until static_init (zenoh-shm dep) is fixed for 1.94+
+  RUST_VERSION: "1.92.0"
 
 jobs:
   # ── 1. Publish Rust crates to crates.io ──────────────────────────────────
@@ -19,7 +21,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
       - name: Publish in dependency order
         env:
@@ -143,8 +147,9 @@ jobs:
           - { target: x86_64-pc-windows-msvc,    runner: windows-2022 }
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ env.RUST_VERSION }}
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
       - name: Install cross-compilation tools (aarch64-linux)

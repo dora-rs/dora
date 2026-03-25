@@ -13,3 +13,5 @@ ratatui = "ratatui"
 # valid English words flagged by typos
 criticals = "criticals"
 unparseable = "unparseable"
+# abbreviation for "serialize"
+ser = "ser"
