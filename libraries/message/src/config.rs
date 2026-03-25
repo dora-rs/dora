@@ -243,7 +243,6 @@ pub struct CommunicationConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum LocalCommunicationConfig {
     Tcp,
-    Shmem,
     UnixDomain,
 }
 
