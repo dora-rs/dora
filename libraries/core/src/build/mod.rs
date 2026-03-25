@@ -111,15 +111,18 @@ async fn build_node(
     build: &String,
     uv: bool,
 ) -> eyre::Result<()> {
-    logger
-        .log_message(
-            LogLevel::Info,
-            format!(
-                "running build command: `{build}` in {}",
-                working_dir.display()
-            ),
+    let build_log_message = if build.contains('\n') {
+        format!(
+            "running build commands in {}:\n{build}",
+            working_dir.display()
         )
-        .await;
+    } else {
+        format!(
+            "running build command: `{build}` in {}",
+            working_dir.display()
+        )
+    };
+    logger.log_message(LogLevel::Info, build_log_message).await;
     let build = build.to_owned();
     let node_env = node_env.clone();
     let mut logger = logger.try_clone().await.context("failed to clone logger")?;
