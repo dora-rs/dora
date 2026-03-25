@@ -60,7 +60,10 @@ pub fn main() -> eyre::Result<()> {
             event,
         });
 
-    let tokio_runtime = Builder::new_current_thread()
+    // Zenoh requires a multi-thread tokio scheduler; using worker_threads=1
+    // keeps overhead similar to single-threaded while satisfying the requirement.
+    let tokio_runtime = Builder::new_multi_thread()
+        .worker_threads(1)
         .enable_all()
         .build()
         .wrap_err("Could not build a tokio runtime.")?;

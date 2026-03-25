@@ -29,10 +29,7 @@ fn main() -> eyre::Result<()> {
                     current_size = 0;
                     n = 0;
                     latencies.clear();
-                    println!(
-                        "Latency (median / p99 / mean, {n_desc}):",
-                        n_desc = "50 samples per size"
-                    );
+                    println!("Latency (median / p99 / mean, 50 samples per size):");
                     continue;
                 }
 
@@ -90,7 +87,7 @@ fn main() -> eyre::Result<()> {
     Ok(())
 }
 
-fn print_latency(size: usize, latencies: &mut Vec<Duration>) {
+fn print_latency(size: usize, latencies: &mut [Duration]) {
     if latencies.is_empty() {
         return;
     }
