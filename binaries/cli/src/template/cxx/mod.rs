@@ -69,7 +69,12 @@ fn create_cmakefile(root: PathBuf, use_path_deps: bool) -> Result<(), eyre::ErrR
             .context("Could not get manifest parent folder")?
             .parent()
             .context("Could not get manifest grandparent folder")?;
-        CMAKEFILE.replace("__DORA_PATH__", workspace_dir.to_str().unwrap())
+        CMAKEFILE.replace(
+            "__DORA_PATH__",
+            workspace_dir
+                .to_str()
+                .context("workspace directory path is not valid UTF-8")?,
+        )
     } else {
         CMAKEFILE.replace("__DORA_PATH__", "")
     };
