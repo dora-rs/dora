@@ -82,11 +82,13 @@ impl Builder {
                     }
                     None => self.base_working_dir,
                 };
-                python_env_dir = managed_python_env_dir(&node, &node_working_dir);
+                python_env_dir =
+                    managed_python_env_dir(&node, &node_working_dir).filter(|_| n.build.is_some());
                 if self.uv {
                     if let Some(python_env_dir) = &python_env_dir {
-                        // Materialize Dora's managed Python env before any build commands run so
-                        // later `pip`/`python` resolution does not drift to ambient machine state.
+                        // Only build-backed custom Python nodes use Dora's managed env today, so
+                        // skip preparing one for script-only nodes that still run in the caller's
+                        // ambient uv environment.
                         prepare_python_env(
                             logger,
                             &node.env,
