@@ -184,6 +184,7 @@ pub fn attach_dataflow(
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 enum AttachEvent {
     Control(ControlRequest),
     Log(eyre::Result<LogMessage>),

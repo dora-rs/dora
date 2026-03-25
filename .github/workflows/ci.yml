@@ -80,7 +80,7 @@ jobs:
       - name: Build CLI
         run: cargo build -p adora-cli --release
       - name: Install CLI
-        run: cp target/release/adora-cli /usr/local/bin/adora
+        run: cp target/release/adora /usr/local/bin/adora
       - name: Run E2E tests
         run: >
           cargo test --test ws-cli-e2e -- --test-threads=1

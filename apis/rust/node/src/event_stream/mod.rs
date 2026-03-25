@@ -80,6 +80,7 @@ pub struct EventStream {
 }
 
 impl EventStream {
+    #[allow(clippy::too_many_arguments)]
     #[tracing::instrument(level = "trace", skip(clock, zenoh_session))]
     pub(crate) fn init(
         dataflow_id: DataflowId,

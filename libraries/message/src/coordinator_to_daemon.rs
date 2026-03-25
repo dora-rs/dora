@@ -31,6 +31,7 @@ impl RegisterResult {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub enum DaemonCoordinatorEvent {
     Build(BuildDataflowNodes),

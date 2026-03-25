@@ -70,7 +70,7 @@ pub fn run_operator(
 }
 
 #[derive(Debug)]
-#[allow(dead_code)]
+#[allow(dead_code, clippy::large_enum_variant)]
 pub enum OperatorEvent {
     AllocateOutputSample {
         len: usize,

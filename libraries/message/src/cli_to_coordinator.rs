@@ -9,6 +9,7 @@ use crate::{
     id::{DataId, NodeId, OperatorId},
 };
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub enum ControlRequest {
     Build {

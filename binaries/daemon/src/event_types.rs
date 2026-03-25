@@ -28,6 +28,7 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct OutputId(pub NodeId, pub DataId);
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum Event {
     Node {
@@ -169,6 +170,7 @@ pub(crate) const CONTROL_EVENT_HEADROOM: usize = 50;
 
 /// Send a node event with timestamp. Returns Ok(true) if delivered,
 /// Ok(false) if dropped (channel full/headroom), Err if channel closed.
+#[allow(clippy::result_large_err)]
 pub(crate) fn send_with_timestamp(
     sender: &mpsc::Sender<Timestamped<NodeEvent>>,
     event: NodeEvent,
