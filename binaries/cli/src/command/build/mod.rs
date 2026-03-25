@@ -211,7 +211,6 @@ pub async fn build_async(
                 .context("failed to write out dataflow session file")?;
         }
         BuildKind::ThroughCoordinator { coordinator_client } => {
-            let coord = coordinator_socket(coordinator_addr, coordinator_port);
             let local_working_dir =
                 local_working_dir(&dataflow_path, &dataflow_descriptor, &coordinator_client)
                     .await?;
@@ -224,27 +223,19 @@ pub async fn build_async(
                 uv,
             )
             .await?;
-
-            dataflow_session.git_sources = git_sources;
-            dataflow_session
-                .write_out_for_dataflow(&dataflow_path)
-                .context("failed to write out dataflow session file")?;
-
-            // wait until dataflow build is finished
-
-            wait_until_dataflow_built(
+            let wait_result = wait_until_dataflow_built(
                 build_id,
                 &coordinator_client,
                 coordinator_socket(coordinator_addr, coordinator_port),
                 log::LevelFilter::Info,
             )
-            .await?;
-
-            dataflow_session.build_id = Some(build_id);
-            dataflow_session.local_build = None;
-            dataflow_session
-                .write_out_for_dataflow(&dataflow_path)
-                .context("failed to write out dataflow session file")?;
+            .await;
+            finalize_distributed_build_session(
+                &mut dataflow_session,
+                &dataflow_path,
+                git_sources,
+                wait_result,
+            )?;
         }
     };
 
@@ -274,4 +265,94 @@ fn coordinator_socket(
     let coordinator_addr = coordinator_addr.unwrap_or(LOCALHOST);
     let coordinator_port = coordinator_port.unwrap_or(DORA_COORDINATOR_PORT_CONTROL_DEFAULT);
     (coordinator_addr, coordinator_port).into()
+}
+
+fn finalize_distributed_build_session(
+    dataflow_session: &mut DataflowSession,
+    dataflow_path: &std::path::Path,
+    git_sources: BTreeMap<dora_message::id::NodeId, dora_message::common::GitSource>,
+    wait_result: eyre::Result<BuildId>,
+) -> eyre::Result<()> {
+    let build_id = wait_result?;
+    dataflow_session.git_sources = git_sources;
+    dataflow_session.build_id = Some(build_id);
+    dataflow_session.local_build = None;
+    dataflow_session
+        .write_out_for_dataflow(dataflow_path)
+        .context("failed to write out dataflow session file")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::BTreeMap, fs, path::PathBuf};
+
+    use dora_message::{BuildId, SessionId, common::GitSource, id::NodeId};
+
+    use super::finalize_distributed_build_session;
+    use crate::session::DataflowSession;
+
+    fn test_session_file_path(dataflow_path: &std::path::Path) -> PathBuf {
+        let stem = dataflow_path
+            .file_stem()
+            .expect("dataflow path should have file stem")
+            .to_string_lossy();
+        dataflow_path
+            .with_file_name("out")
+            .join(format!("{stem}.dora-session.yaml"))
+    }
+
+    #[test]
+    fn distributed_build_failure_does_not_persist_new_git_sources() {
+        let temp_root =
+            std::env::temp_dir().join(format!("dora-cli-build-test-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp_root).expect("failed to create temp test dir");
+        let dataflow_path = temp_root.join("dataflow.yml");
+        fs::write(&dataflow_path, "nodes: []\n").expect("failed to write test dataflow");
+
+        let old_source = GitSource {
+            repo: "https://example.com/old.git".to_string(),
+            commit_hash: "1111111".to_string(),
+        };
+        let old_sources = BTreeMap::from([(NodeId::from("node-a".to_string()), old_source)]);
+        let mut session = DataflowSession {
+            build_id: Some(BuildId::generate()),
+            session_id: SessionId::generate(),
+            git_sources: old_sources.clone(),
+            local_build: None,
+        };
+        session
+            .write_out_for_dataflow(&dataflow_path)
+            .expect("failed to write initial session");
+
+        let session_file = test_session_file_path(&dataflow_path);
+        let before =
+            fs::read_to_string(&session_file).expect("failed to read initial session file");
+
+        let new_source = GitSource {
+            repo: "https://example.com/new.git".to_string(),
+            commit_hash: "2222222".to_string(),
+        };
+        let new_sources = BTreeMap::from([(NodeId::from("node-a".to_string()), new_source)]);
+
+        let result = finalize_distributed_build_session(
+            &mut session,
+            &dataflow_path,
+            new_sources,
+            Err(eyre::eyre!("remote build failed")),
+        );
+        assert!(result.is_err(), "expected failure to be propagated");
+        assert_eq!(
+            session.git_sources, old_sources,
+            "in-memory session should not be mutated on failed distributed build"
+        );
+
+        let after =
+            fs::read_to_string(&session_file).expect("failed to read session file after failure");
+        assert_eq!(
+            after, before,
+            "session file should remain unchanged on failed distributed build"
+        );
+
+        let _ = fs::remove_dir_all(&temp_root);
+    }
 }
