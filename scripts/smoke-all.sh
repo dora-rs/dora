@@ -205,6 +205,9 @@ if [ "$RUN_PYTHON" = true ]; then
     run_networked "python-logging"         "examples/python-logging/dataflow.yml" 15
     run_networked "python-multiple-arrays" "examples/python-multiple-arrays/dataflow.yml" 15
     run_networked "python-concurrent-rw"   "examples/python-concurrent-rw/dataflow.yml" 15
+    run_networked "log-aggregator"          "examples/log-aggregator/dataflow.yml" 15
+    run_networked "typed-dataflow"          "examples/typed-dataflow/dataflow.yml" 15
+    run_networked "streaming-example"       "examples/streaming-example/dataflow.yml" 15
 
     echo ""
     echo "=== Python examples (local) ==="
@@ -215,6 +218,9 @@ if [ "$RUN_PYTHON" = true ]; then
     run_local "local-python-logging"         "examples/python-logging/dataflow.yml" 10
     run_local "local-python-multiple-arrays" "examples/python-multiple-arrays/dataflow.yml" 10
     run_local "local-python-concurrent-rw"   "examples/python-concurrent-rw/dataflow.yml" 10
+    run_local "local-log-aggregator"          "examples/log-aggregator/dataflow.yml" 10
+    run_local "local-typed-dataflow"          "examples/typed-dataflow/dataflow.yml" 10
+    run_local "local-streaming-example"       "examples/streaming-example/dataflow.yml" 10
 fi
 
 # ---------------------------------------------------------------------------
@@ -234,6 +240,8 @@ log_skip "c++-dataflow" "C++ compiler"
 log_skip "c++-arrow-dataflow" "C++ + Arrow libs"
 log_skip "cmake-dataflow" "CMake + C++"
 log_skip "python-dataflow-builder" "no YAML (API-based)"
+log_skip "dynamic-add-remove" "interactive dynamic topology CLI"
+log_skip "dynamic-agent-tools" "interactive dynamic topology CLI"
 
 # ---------------------------------------------------------------------------
 # Summary

@@ -423,6 +423,24 @@ fn smoke_python_concurrent_rw() {
     );
 }
 
+#[test]
+fn smoke_typed_dataflow() {
+    run_smoke_test(
+        "typed-dataflow",
+        "examples/typed-dataflow/dataflow.yml",
+        Duration::from_secs(15),
+    );
+}
+
+#[test]
+fn smoke_streaming_example() {
+    run_smoke_test(
+        "streaming-example",
+        "examples/streaming-example/dataflow.yml",
+        Duration::from_secs(15),
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Local-mode tests (adora run --stop-after)
 //
@@ -563,6 +581,24 @@ fn smoke_local_log_aggregator() {
     run_smoke_test_local(
         "local-log-aggregator",
         "examples/log-aggregator/dataflow.yml",
+        10,
+    );
+}
+
+#[test]
+fn smoke_local_typed_dataflow() {
+    run_smoke_test_local(
+        "local-typed-dataflow",
+        "examples/typed-dataflow/dataflow.yml",
+        10,
+    );
+}
+
+#[test]
+fn smoke_local_streaming_example() {
+    run_smoke_test_local(
+        "local-streaming-example",
+        "examples/streaming-example/dataflow.yml",
         10,
     );
 }
