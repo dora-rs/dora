@@ -29,7 +29,7 @@ pub fn fetch_commit_hash(repo_url: String, rev: Option<GitRepoRev>) -> eyre::Res
     if commit_hash.is_none() {
         if let Some(GitRepoRev::Rev(rev)) = &rev {
             // rev might be a commit hash instead of a reference
-            if rev.is_ascii() && rev.bytes().all(|b| b.is_ascii_alphanumeric()) {
+            if is_commit_hash_candidate(rev) {
                 commit_hash = Some(rev.clone());
             }
         }
@@ -41,5 +41,29 @@ pub fn fetch_commit_hash(repo_url: String, rev: Option<GitRepoRev>) -> eyre::Res
             commit_hash,
         }),
         None => eyre::bail!("no matching commit for `{rev:?}`"),
+    }
+}
+
+fn is_commit_hash_candidate(rev: &str) -> bool {
+    !rev.is_empty() && rev.is_ascii() && rev.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_commit_hash_candidate;
+
+    #[test]
+    fn accepts_hex_commit_hash_candidates() {
+        assert!(is_commit_hash_candidate("deadbeef"));
+        assert!(is_commit_hash_candidate("0123456789abcdef"));
+        assert!(is_commit_hash_candidate("ABCDEF1234"));
+    }
+
+    #[test]
+    fn rejects_non_hex_commit_hash_candidates() {
+        assert!(!is_commit_hash_candidate(""));
+        assert!(!is_commit_hash_candidate("release1"));
+        assert!(!is_commit_hash_candidate("abcdefg"));
+        assert!(!is_commit_hash_candidate("abc-def"));
     }
 }
