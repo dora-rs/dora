@@ -8,9 +8,11 @@
 use super::Executable;
 use crate::{
     common::{handle_dataflow_result, resolve_dataflow, write_events_to},
+    lockfile::validate_locked_dataflow,
     output::print_log_message,
     session::DataflowSession,
 };
+use dora_core::descriptor::{Descriptor, DescriptorExt};
 use dora_daemon::{Daemon, LogDestination, flume};
 use duration_str::parse as parse_duration_str;
 use eyre::Context;
@@ -40,6 +42,12 @@ pub struct Run {
     #[clap(long, value_name = "DURATION", verbatim_doc_comment)]
     #[arg(value_parser = parse_duration_str)]
     pub stop_after: Option<Duration>,
+    /// Require lockfile-consistent dependency state before running.
+    ///
+    /// With this flag, `dora run` fails if `dora.lock` is missing or if lockfile,
+    /// descriptor, and current session git sources diverge.
+    #[clap(long, action)]
+    pub locked: bool,
 }
 
 impl Run {
@@ -48,6 +56,7 @@ impl Run {
             dataflow,
             uv: false,
             stop_after: None,
+            locked: false,
         }
     }
 }
@@ -84,8 +93,14 @@ impl Executable for Run {
         let dataflow_path = resolve_dataflow(self.dataflow)
             .await
             .context("could not resolve dataflow")?;
+        let dataflow_descriptor =
+            Descriptor::blocking_read(&dataflow_path).wrap_err("Failed to read yaml dataflow")?;
         let dataflow_session = DataflowSession::read_session(&dataflow_path)
             .context("failed to read DataflowSession")?;
+        if self.locked {
+            validate_locked_dataflow(&dataflow_path, &dataflow_descriptor, &dataflow_session)
+                .wrap_err("`--locked` validation failed")?;
+        }
 
         let (log_tx, log_rx) = flume::bounded(100);
         std::thread::spawn(move || {

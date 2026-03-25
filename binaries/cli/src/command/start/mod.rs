@@ -10,6 +10,7 @@ use crate::{
         connect_and_check_version, local_working_dir, long_context, resolve_dataflow, rpc,
         write_events_to,
     },
+    lockfile::validate_locked_dataflow,
     output::print_log_message,
     session::DataflowSession,
 };
@@ -58,6 +59,12 @@ pub struct Start {
     // Use UV to run nodes.
     #[clap(long, action)]
     uv: bool,
+    /// Require lockfile-consistent dependency state before starting.
+    ///
+    /// With this flag, `dora start` fails if `dora.lock` is missing or if lockfile,
+    /// descriptor, and current session git sources diverge.
+    #[clap(long, action)]
+    locked: bool,
 }
 
 impl Executable for Start {
@@ -65,8 +72,14 @@ impl Executable for Start {
         default_tracing()?;
         let coordinator_socket: SocketAddr = (self.coordinator_addr, self.coordinator_port).into();
 
-        let (dataflow, dataflow_descriptor, client, dataflow_id) =
-            start_dataflow(self.dataflow, self.name, coordinator_socket, self.uv).await?;
+        let (dataflow, dataflow_descriptor, client, dataflow_id) = start_dataflow(
+            self.dataflow,
+            self.name,
+            coordinator_socket,
+            self.uv,
+            self.locked,
+        )
+        .await?;
 
         let attach = match (self.attach, self.detach) {
             (true, true) => eyre::bail!("both `--attach` and `--detach` are given"),
@@ -115,6 +128,7 @@ async fn start_dataflow(
     name: Option<String>,
     coordinator_socket: SocketAddr,
     uv: bool,
+    locked: bool,
 ) -> Result<(PathBuf, Descriptor, CoordinatorControlClient, Uuid), eyre::Error> {
     let dataflow = resolve_dataflow(dataflow)
         .await
@@ -123,6 +137,10 @@ async fn start_dataflow(
         Descriptor::blocking_read(&dataflow).wrap_err("Failed to read yaml dataflow")?;
     let dataflow_session =
         DataflowSession::read_session(&dataflow).context("failed to read DataflowSession")?;
+    if locked {
+        validate_locked_dataflow(&dataflow, &dataflow_descriptor, &dataflow_session)
+            .wrap_err("`--locked` validation failed")?;
+    }
 
     let client = connect_and_check_version(coordinator_socket.ip(), coordinator_socket.port())
         .await
