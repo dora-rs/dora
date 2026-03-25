@@ -4,13 +4,16 @@ use std::time::Duration;
 
 const LATENCY_WARMUP: usize = 5;
 const LATENCY_SAMPLES: usize = 50;
-const THROUGHPUT_BASE_COUNT: usize = 1000;
+const THROUGHPUT_BASE_COUNT: usize = 5000;
 
 fn main() -> eyre::Result<()> {
     let latency = DataId::from("latency".to_owned());
     let throughput = DataId::from("throughput".to_owned());
 
     let (mut node, _events) = DoraNode::init_from_env()?;
+
+    println!("DORA_ZERO_COPY_THRESHOLD={}", node.zero_copy_threshold());
+
     let sizes: &[usize] = &[0, 8, 64, 512, 2048, 4096, 4 * 4096, 10 * 4096, 100 * 4096];
 
     let data: Vec<Vec<u8>> = sizes

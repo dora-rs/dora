@@ -13,4 +13,4 @@ nodes:
       latency: rust-node/latency
       throughput:
         source: rust-node/throughput
-        queue_size: 2000
+        queue_size: 10000

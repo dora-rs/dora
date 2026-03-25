@@ -66,7 +66,7 @@ pub struct DoraNode {
     publishers: HashMap<DataId, zenoh::pubsub::Publisher<'static>>,
     /// Messages smaller than this threshold are sent as plain bytes through
     /// zenoh (no SHM allocation). Configurable via `DORA_ZERO_COPY_THRESHOLD`
-    /// env var. Default: 4096 bytes.
+    /// env var. Default: 2048 bytes.
     zero_copy_threshold: usize,
 }
 
@@ -541,7 +541,8 @@ impl DoraNode {
         let zero_copy_threshold: usize = std::env::var("DORA_ZERO_COPY_THRESHOLD")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(4096);
+            .unwrap_or(2048);
+        info!(zero_copy_threshold, "SHM zero-copy threshold");
 
         let node = Self {
             id: node_id,
@@ -805,6 +806,14 @@ impl DoraNode {
     /// Returns the ID of the node as specified in the dataflow configuration file.
     pub fn id(&self) -> &NodeId {
         &self.id
+    }
+
+    /// Returns the zero-copy SHM threshold in bytes.
+    ///
+    /// Messages smaller than this are sent as plain bytes; larger messages
+    /// use shared memory. Configured via `DORA_ZERO_COPY_THRESHOLD` env var.
+    pub fn zero_copy_threshold(&self) -> usize {
+        self.zero_copy_threshold
     }
 
     /// Returns the unique identifier for the running dataflow instance.
