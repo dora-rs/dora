@@ -1,4 +1,8 @@
-"""TODO: Add docstring."""
+"""Package initialization for the dora-rs Python node template.
+
+This module attempts to load the package's documentation from the README.md
+file located in the parent directory.
+"""
 
 import os
 
