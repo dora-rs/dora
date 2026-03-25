@@ -100,11 +100,27 @@ run_networked() {
 }
 
 # Run a dataflow with adora run --stop-after (local/in-process mode).
+# Uses a hard kill timeout (2x stop-after) to prevent hangs.
 run_local() {
     local name="$1" yaml="$2" timeout="${3:-15}"
-    echo "=> $name (local, ${timeout}s)"
-    if "$ADORA" run "$ROOT/$yaml" --stop-after "${timeout}s" \
-        > /dev/null 2>&1; then
+    local hard_timeout=$((timeout * 2 + 5))
+    echo "=> $name (local, ${timeout}s, hard-kill ${hard_timeout}s)"
+    "$ADORA" run "$ROOT/$yaml" --stop-after "${timeout}s" \
+        > /dev/null 2>&1 &
+    local pid=$!
+    local elapsed=0
+    while kill -0 "$pid" 2>/dev/null; do
+        if [ "$elapsed" -ge "$hard_timeout" ]; then
+            kill -9 "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+            log_fail "$name (hard-killed after ${hard_timeout}s)"
+            return
+        fi
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+    wait "$pid" 2>/dev/null
+    if [ $? -eq 0 ]; then
         log_pass "$name"
     else
         log_fail "$name"
