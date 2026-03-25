@@ -26,12 +26,6 @@ impl DropStream {
         let channel = match daemon_communication {
             DaemonCommunicationWrapper::Standard(daemon_communication) => {
                 match daemon_communication {
-                    DaemonCommunication::Shmem {
-                        daemon_drop_region_id,
-                        ..
-                    } => unsafe { DaemonChannel::new_shmem(daemon_drop_region_id) }.wrap_err_with(
-                        || format!("failed to create shmem drop stream for node `{node_id}`"),
-                    )?,
                     DaemonCommunication::Tcp { socket_addr } => {
                         DaemonChannel::new_tcp(*socket_addr).wrap_err_with(|| {
                             format!("failed to connect drop stream for node `{node_id}`")
