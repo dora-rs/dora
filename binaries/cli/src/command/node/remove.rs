@@ -3,9 +3,7 @@ use crate::{
     common::{CoordinatorOptions, resolve_dataflow_identifier_interactive, send_control_request},
 };
 use adora_message::{
-    cli_to_coordinator::ControlRequest,
-    coordinator_to_cli::ControlRequestReply,
-    id::NodeId,
+    cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply, id::NodeId,
 };
 use eyre::bail;
 
@@ -28,7 +26,10 @@ impl Executable for Remove {
         let session = self.coordinator.connect()?;
         let dataflow_id =
             resolve_dataflow_identifier_interactive(&session, self.dataflow.as_deref())?;
-        let node_id: NodeId = self.node.parse().map_err(|e| eyre::eyre!("invalid node ID: {e}"))?;
+        let node_id: NodeId = self
+            .node
+            .parse()
+            .map_err(|e| eyre::eyre!("invalid node ID: {e}"))?;
 
         let reply = send_control_request(
             &session,

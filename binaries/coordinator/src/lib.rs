@@ -26,10 +26,10 @@ pub use events::{DaemonRequest, DataflowEvent, Event};
 use eyre::{Result, WrapErr, bail, eyre};
 use futures::{Future, Stream, StreamExt, stream::FuturesUnordered};
 use futures_concurrency::stream::Merge;
+use indexmap::IndexMap;
 use log_subscriber::LogSubscriber;
 use petname::petname;
 pub(crate) use state::DaemonConnections;
-use indexmap::IndexMap;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     net::SocketAddr,
@@ -357,10 +357,7 @@ async fn start_inner(
                         .send(&serde_json::to_vec(&reply)?)
                         .await
                         .context("failed to send register reply");
-                    match version_check_result
-                        .map_err(|e| eyre!(e))
-                        .and(send_result)
-                    {
+                    match version_check_result.map_err(|e| eyre!(e)).and(send_result) {
                         Ok(()) => {
                             let _ = daemon_id_tx.send(daemon_id.clone());
                             daemon_connections.add(daemon_id.clone(), connection);
@@ -1197,19 +1194,35 @@ async fn start_inner(
                                 node.id
                             )));
                         }
-                        ControlRequest::RemoveNode { dataflow_id, node_id, grace_duration } => {
+                        ControlRequest::RemoveNode {
+                            dataflow_id,
+                            node_id,
+                            grace_duration: _,
+                        } => {
                             let _ = reply_sender.send(Err(eyre!(
                                 "RemoveNode not yet implemented (node '{node_id}' on dataflow {dataflow_id})"
                             )));
                         }
-                        ControlRequest::AddMapping { dataflow_id, source_node, source_output, target_node, target_input } => {
+                        ControlRequest::AddMapping {
+                            dataflow_id,
+                            source_node,
+                            source_output,
+                            target_node,
+                            target_input,
+                        } => {
                             let _ = reply_sender.send(Err(eyre!(
-                                "AddMapping not yet implemented ({source_node}/{source_output} -> {target_node}/{target_input})"
+                                "AddMapping not yet implemented on dataflow {dataflow_id} ({source_node}/{source_output} -> {target_node}/{target_input})"
                             )));
                         }
-                        ControlRequest::RemoveMapping { dataflow_id, source_node, source_output, target_node, target_input } => {
+                        ControlRequest::RemoveMapping {
+                            dataflow_id,
+                            source_node,
+                            source_output,
+                            target_node,
+                            target_input,
+                        } => {
                             let _ = reply_sender.send(Err(eyre!(
-                                "RemoveMapping not yet implemented ({source_node}/{source_output} -x- {target_node}/{target_input})"
+                                "RemoveMapping not yet implemented on dataflow {dataflow_id} ({source_node}/{source_output} -x- {target_node}/{target_input})"
                             )));
                         }
                     }

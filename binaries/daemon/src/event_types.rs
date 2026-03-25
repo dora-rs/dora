@@ -1,13 +1,11 @@
 //! Event types and channel helpers for the daemon event loop.
 
 use std::{
-    sync::{
-        Arc,
-        atomic::{self, AtomicU64},
-    },
+    sync::{Arc, atomic::AtomicU64},
     time::Duration,
 };
 
+use adora_core::uhlc::HLC;
 use adora_message::{
     BuildId, DataflowId, SessionId,
     common::{DataMessage, DropToken, LogMessage},
@@ -16,7 +14,6 @@ use adora_message::{
     metadata,
     node_to_daemon::Timestamped,
 };
-use adora_core::uhlc::HLC;
 use tokio::sync::{mpsc, oneshot};
 
 use adora_core::build::BuildInfo;
@@ -24,8 +21,7 @@ use adora_message::common::{NodeError, NodeExitStatus};
 pub use adora_message::daemon_to_daemon::InterDaemonEvent;
 
 use crate::{
-    coordinator::CoordinatorEvent,
-    local_listener::DynamicNodeEventWrapper,
+    coordinator::CoordinatorEvent, local_listener::DynamicNodeEventWrapper,
     running_dataflow::RunningNode,
 };
 
@@ -185,7 +181,9 @@ pub(crate) fn send_with_timestamp(
     };
 
     if !is_control && sender.capacity() < CONTROL_EVENT_HEADROOM {
-        tracing::warn!("event channel low on capacity, dropping data event to preserve control headroom");
+        tracing::warn!(
+            "event channel low on capacity, dropping data event to preserve control headroom"
+        );
         return Ok(false);
     }
 
@@ -226,4 +224,3 @@ pub(crate) struct ZenohOutbound {
     pub net_bytes_sent: Arc<AtomicU64>,
     pub net_messages_sent: Arc<AtomicU64>,
 }
-

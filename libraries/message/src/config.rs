@@ -5,9 +5,9 @@ use std::{
     time::Duration,
 };
 
-use std::sync::OnceLock;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
 
 pub use crate::id::{DataId, NodeId, OperatorId};
 

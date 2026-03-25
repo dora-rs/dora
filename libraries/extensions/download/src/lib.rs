@@ -75,9 +75,7 @@ where
         hasher.update(&bytes);
         let actual = format!("{:x}", hasher.finalize());
         if actual != expected {
-            eyre::bail!(
-                "SHA-256 mismatch for `{url}`: expected {expected}, got {actual}"
-            );
+            eyre::bail!("SHA-256 mismatch for `{url}`: expected {expected}, got {actual}");
         }
     }
 

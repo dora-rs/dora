@@ -37,8 +37,13 @@ pub enum Event<'a> {
         metadata: &'a types::Metadata,
         data: ArrowData,
     },
-    InputParseError { id: &'a str, error: String },
-    InputClosed { id: &'a str },
+    InputParseError {
+        id: &'a str,
+        error: String,
+    },
+    InputClosed {
+        id: &'a str,
+    },
     Stop,
 }
 

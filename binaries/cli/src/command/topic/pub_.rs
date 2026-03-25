@@ -106,8 +106,12 @@ fn parse_topic(topic: &str) -> eyre::Result<(NodeId, DataId)> {
     if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
         bail!("invalid topic format: expected 'node_id/output_id', got '{topic}'");
     }
-    let node_id = parts[0].parse::<NodeId>().map_err(|e| eyre::eyre!("invalid node ID: {e}"))?;
-    let data_id = parts[1].parse::<DataId>().map_err(|e| eyre::eyre!("invalid output ID: {e}"))?;
+    let node_id = parts[0]
+        .parse::<NodeId>()
+        .map_err(|e| eyre::eyre!("invalid node ID: {e}"))?;
+    let data_id = parts[1]
+        .parse::<DataId>()
+        .map_err(|e| eyre::eyre!("invalid output ID: {e}"))?;
     Ok((node_id, data_id))
 }
 

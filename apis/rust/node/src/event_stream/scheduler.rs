@@ -229,7 +229,9 @@ mod tests {
             validity: None,
             offset: 0,
             buffer_offsets: vec![],
-            child_data: vec![], field_names: None, schema_hash: None,
+            child_data: vec![],
+            field_names: None,
+            schema_hash: None,
         };
         let ts = uhlc::HLC::default().new_timestamp();
         let metadata = Metadata::from_parameters(ts, type_info, params);

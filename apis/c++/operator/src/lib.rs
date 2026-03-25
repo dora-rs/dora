@@ -72,7 +72,11 @@ impl AdoraOperator for OperatorWrapper {
         output_sender: &mut AdoraOutputSender,
     ) -> Result<AdoraStatus, std::string::String> {
         match event {
-            Event::Input { id, metadata: _, data } => {
+            Event::Input {
+                id,
+                metadata: _,
+                data,
+            } => {
                 let operator = self.operator.as_mut().unwrap();
                 let mut output_sender = OutputSender(output_sender);
                 let data: &[u8] = data

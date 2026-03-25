@@ -1,5 +1,5 @@
-use adora_message::id::{DataId, NodeId};
 use crate::command::Executable;
+use adora_message::id::{DataId, NodeId};
 
 mod add;
 mod connect;
@@ -11,8 +11,12 @@ pub(crate) fn parse_node_port(s: &str) -> eyre::Result<(NodeId, DataId)> {
     if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
         eyre::bail!("expected 'node_id/port_id', got '{s}'");
     }
-    let node: NodeId = parts[0].parse().map_err(|e| eyre::eyre!("invalid node ID: {e}"))?;
-    let port: DataId = parts[1].parse().map_err(|e| eyre::eyre!("invalid port ID: {e}"))?;
+    let node: NodeId = parts[0]
+        .parse()
+        .map_err(|e| eyre::eyre!("invalid node ID: {e}"))?;
+    let port: DataId = parts[1]
+        .parse()
+        .map_err(|e| eyre::eyre!("invalid port ID: {e}"))?;
     Ok((node, port))
 }
 mod info;

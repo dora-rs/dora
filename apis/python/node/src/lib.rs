@@ -702,11 +702,13 @@ impl Events {
     fn drain(&self) -> Option<Vec<PyEvent>> {
         let mut inner = self.inner.blocking_lock();
         match &mut *inner {
-            EventsInner::Adora(events) => events.drain().map(|items| items
-                .into_iter()
-                .map(MergedEvent::Adora)
-                .map(|event| PyEvent { event })
-                .collect()),
+            EventsInner::Adora(events) => events.drain().map(|items| {
+                items
+                    .into_iter()
+                    .map(MergedEvent::Adora)
+                    .map(|event| PyEvent { event })
+                    .collect()
+            }),
             EventsInner::Merged(_events) => {
                 // drain is not supported on merged event streams; return
                 // empty list (stream is still open, None would signal closed).

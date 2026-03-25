@@ -241,7 +241,9 @@ impl RunningDataflow {
             descriptor_json,
             status,
             daemon_ids: self.daemons.iter().cloned().collect(),
-            node_to_daemon: self.node_to_daemon.iter()
+            node_to_daemon: self
+                .node_to_daemon
+                .iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect(),
             uv: self.uv,

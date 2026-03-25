@@ -3,7 +3,12 @@ use std::{collections::BTreeMap, net::IpAddr};
 use uuid::Uuid;
 
 pub use crate::common::{LogLevel, LogMessage, NodeError, NodeErrorCause, NodeExitStatus};
-use crate::{BuildId, common::DaemonId, descriptor::Descriptor, id::{DataId, NodeId}};
+use crate::{
+    BuildId,
+    common::DaemonId,
+    descriptor::Descriptor,
+    id::{DataId, NodeId},
+};
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub enum ControlRequestReply {

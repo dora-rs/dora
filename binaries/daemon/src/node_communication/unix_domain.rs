@@ -20,7 +20,10 @@ use crate::{
 
 use super::{Connection, Listener};
 
-#[tracing::instrument(skip(listener, daemon_tx, clock, last_activity, shutdown), level = "trace")]
+#[tracing::instrument(
+    skip(listener, daemon_tx, clock, last_activity, shutdown),
+    level = "trace"
+)]
 pub async fn listener_loop(
     listener: UnixListener,
     daemon_tx: mpsc::Sender<Timestamped<Event>>,

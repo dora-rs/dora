@@ -132,7 +132,9 @@ mod tests {
             validity: None,
             offset: 0,
             buffer_offsets: vec![],
-            child_data: vec![], field_names: None, schema_hash: None,
+            child_data: vec![],
+            field_names: None,
+            schema_hash: None,
         };
         Metadata::new(adora_core::uhlc::HLC::default().new_timestamp(), type_info)
     }

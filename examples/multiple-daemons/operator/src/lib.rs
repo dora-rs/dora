@@ -18,7 +18,11 @@ impl AdoraOperator for ExampleOperator {
         output_sender: &mut AdoraOutputSender,
     ) -> Result<AdoraStatus, String> {
         match event {
-            Event::Input { id, metadata: _, data } => match *id {
+            Event::Input {
+                id,
+                metadata: _,
+                data,
+            } => match *id {
                 "tick" => {
                     self.ticks += 1;
                 }

@@ -114,7 +114,9 @@ fn info(
     dataflow_filter: Option<&str>,
     format: OutputFormat,
 ) -> eyre::Result<()> {
-    let node_id: NodeId = node_name.parse::<NodeId>().map_err(|e| eyre::eyre!("invalid node ID: {e}"))?;
+    let node_id: NodeId = node_name
+        .parse::<NodeId>()
+        .map_err(|e| eyre::eyre!("invalid node ID: {e}"))?;
 
     // Resolve the dataflow
     let dataflow_uuid = resolve_dataflow_identifier_interactive(session, dataflow_filter)?;

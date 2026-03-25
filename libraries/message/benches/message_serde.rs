@@ -18,7 +18,9 @@ fn make_metadata(payload_size: usize) -> Metadata {
         validity: None,
         offset: 0,
         buffer_offsets: vec![],
-        child_data: vec![], field_names: None, schema_hash: None,
+        child_data: vec![],
+        field_names: None,
+        schema_hash: None,
     };
     Metadata::new(clock.new_timestamp(), type_info)
 }

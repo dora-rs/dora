@@ -1,4 +1,3 @@
-
 mod in_memory;
 
 #[cfg(feature = "redb-backend")]
@@ -78,7 +77,9 @@ pub enum DataflowStatus {
     Recovering,
     Stopping,
     Succeeded,
-    Failed { error: String },
+    Failed {
+        error: String,
+    },
 }
 
 /// Persistable build record.

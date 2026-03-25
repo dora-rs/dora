@@ -31,7 +31,9 @@ impl ArrowTypeInfoExt for ArrowTypeInfo {
             validity: None,
             offset: 0,
             buffer_offsets: Vec::new(),
-            child_data: Vec::new(), field_names: None, schema_hash: None,
+            child_data: Vec::new(),
+            field_names: None,
+            schema_hash: None,
         }
     }
 
@@ -46,7 +48,9 @@ impl ArrowTypeInfoExt for ArrowTypeInfo {
                 offset: 0,
                 len: data_len,
             }],
-            child_data: Vec::new(), field_names: None, schema_hash: None,
+            child_data: Vec::new(),
+            field_names: None,
+            schema_hash: None,
         }
     }
 

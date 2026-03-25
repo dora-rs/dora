@@ -560,9 +560,10 @@ impl AdoraNode {
                     // called from a tokio worker thread (block_on panics in
                     // that context on current-thread runtimes).
                     let session = std::thread::scope(|s| {
-                        match s.spawn(|| {
-                            handle.block_on(adora_core::topics::open_zenoh_session(None))
-                        }).join() {
+                        match s
+                            .spawn(|| handle.block_on(adora_core::topics::open_zenoh_session(None)))
+                            .join()
+                        {
                             Ok(Ok(session)) => Some(session),
                             Ok(Err(e)) => {
                                 tracing::warn!("failed to open zenoh session: {e:?}");
@@ -575,8 +576,8 @@ impl AdoraNode {
                         }
                     });
                     let provider = if session.is_some() {
-                        use zenoh::shm::ShmProviderBuilder;
                         use zenoh::Wait;
+                        use zenoh::shm::ShmProviderBuilder;
                         match ShmProviderBuilder::default_backend(shm_pool_size).wait() {
                             Ok(p) => Some(p),
                             Err(e) => {
@@ -599,7 +600,9 @@ impl AdoraNode {
                     (session, provider)
                 }
                 Err(_) => {
-                    tracing::warn!("no tokio runtime available — zenoh SHM disabled, using daemon path");
+                    tracing::warn!(
+                        "no tokio runtime available — zenoh SHM disabled, using daemon path"
+                    );
                     (None, None)
                 }
             }
@@ -938,7 +941,9 @@ impl AdoraNode {
                     match self.zenoh_publish(&output_id, &metadata, raw_bytes) {
                         Ok(()) => true,
                         Err(e) => {
-                            tracing::warn!("zenoh publish failed ({e}), falling back to daemon path");
+                            tracing::warn!(
+                                "zenoh publish failed ({e}), falling back to daemon path"
+                            );
                             false
                         }
                     }

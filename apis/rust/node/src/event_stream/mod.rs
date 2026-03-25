@@ -357,17 +357,14 @@ impl EventStream {
                     let handle = std::thread::Builder::new()
                         .name(format!("zenoh-sub-{input_id}"))
                         .spawn(move || {
-                            use zenoh::Wait;
                             while let Ok(sample) = subscriber.recv() {
                                 // Extract metadata from attachment
-                                let metadata = sample
-                                    .attachment()
-                                    .and_then(|att| {
-                                        bincode::deserialize::<adora_message::metadata::Metadata>(
-                                            &att.to_bytes(),
-                                        )
-                                        .ok()
-                                    });
+                                let metadata = sample.attachment().and_then(|att| {
+                                    bincode::deserialize::<adora_message::metadata::Metadata>(
+                                        &att.to_bytes(),
+                                    )
+                                    .ok()
+                                });
                                 let metadata = match metadata {
                                     Some(m) => m,
                                     None => {
@@ -384,11 +381,9 @@ impl EventStream {
                                 let data = if data_bytes.is_empty() {
                                     None
                                 } else {
-                                    Some(std::sync::Arc::new(
-                                        DataMessage::Vec(
-                                            aligned_vec::AVec::from_slice(1, &data_bytes),
-                                        ),
-                                    ))
+                                    Some(std::sync::Arc::new(DataMessage::Vec(
+                                        aligned_vec::AVec::from_slice(1, &data_bytes),
+                                    )))
                                 };
 
                                 let event = NodeEvent::Input {
@@ -408,8 +403,7 @@ impl EventStream {
                                 }
                             }
                             tracing::trace!("zenoh subscriber thread exiting");
-                        })
-                        ;
+                        });
                     match handle {
                         Ok(h) => zenoh_thread_handles.push(h),
                         Err(e) => {
@@ -517,7 +511,10 @@ impl EventStream {
 
         // First-message type validation: check once per input, then remove.
         // Zero cost after first message per input.
-        if let Some(Event::Input { ref id, ref data, .. }) = event {
+        if let Some(Event::Input {
+            ref id, ref data, ..
+        }) = event
+        {
             if let Some(expected) = self.input_type_checks.remove(id) {
                 let actual = data.data_type();
                 // Skip check for Null type (timer ticks, empty payloads)
@@ -727,7 +724,7 @@ impl EventStream {
                 NodeEvent::InputRecovered { id } => Event::InputRecovered { id },
                 NodeEvent::NodeRestarted { id } => Event::NodeRestarted { id },
                 NodeEvent::Input { id, metadata, data } => {
-                    let data_inner = data.map(|arc| Arc::unwrap_or_clone(arc));
+                    let data_inner = data.map(Arc::unwrap_or_clone);
                     let result = data_to_arrow_array(data_inner, &metadata, ack_channel);
                     match result {
                         Ok(data) => Event::Input {
@@ -808,7 +805,10 @@ impl Stream for EventStream {
             .map(|item| item.map(Self::convert_event_item));
 
         // Run first-message type check on the Stream path too.
-        if let std::task::Poll::Ready(Some(Event::Input { ref id, ref data, .. })) = poll {
+        if let std::task::Poll::Ready(Some(Event::Input {
+            ref id, ref data, ..
+        })) = poll
+        {
             if let Some(expected) = self.input_type_checks.remove(id) {
                 let actual = data.data_type();
                 if *actual != arrow_schema::DataType::Null && *actual != expected {

@@ -442,7 +442,9 @@ async fn publish_topic(
             offset: 0,
             len: data_bytes.len(),
         }],
-        child_data: vec![], field_names: None, schema_hash: None,
+        child_data: vec![],
+        field_names: None,
+        schema_hash: None,
     };
 
     let timestamp = clock.new_timestamp();

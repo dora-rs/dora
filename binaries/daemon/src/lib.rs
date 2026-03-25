@@ -14,15 +14,14 @@ use adora_core::{
 use adora_message::{
     BuildId, DataflowId, SessionId,
     common::{
-        DaemonId, DataMessage, DropToken, GitSource, LogLevel, NodeError, NodeErrorCause,
-        NodeExitStatus,
+        DaemonId, DataMessage, GitSource, LogLevel, NodeError, NodeErrorCause, NodeExitStatus,
     },
     coordinator_to_cli::DataflowResult,
     coordinator_to_daemon::{BuildDataflowNodes, DaemonCoordinatorEvent, SpawnDataflowNodes},
     daemon_to_coordinator::{
         CoordinatorRequest, DaemonCoordinatorReply, DaemonEvent, DataflowDaemonResult,
     },
-    daemon_to_node::{DaemonReply, NodeConfig, NodeDropEvent, NodeEvent},
+    daemon_to_node::{DaemonReply, NodeConfig, NodeEvent},
     descriptor::{NodeSource, RestartPolicy},
     metadata::{self, ArrowTypeInfo},
     node_to_daemon::{DynamicNodeEvent, Timestamped},
@@ -48,7 +47,7 @@ use std::{
     pin::pin,
     sync::{
         Arc,
-        atomic::{self, AtomicU64},
+        atomic::{self},
     },
     time::{Duration, Instant},
 };
@@ -136,7 +135,9 @@ pub mod bench_support {
             validity: None,
             offset: 0,
             buffer_offsets: vec![],
-            child_data: vec![], field_names: None, schema_hash: None,
+            child_data: vec![],
+            field_names: None,
+            schema_hash: None,
         };
         RoutingFixture {
             sender_id: "sender".to_string().into(),
@@ -175,9 +176,9 @@ mod socket_stream_utils;
 mod spawn;
 
 pub(crate) use event_types::{
-    AdoraEvent, DaemonNodeEvent, Event, InterDaemonEvent, OutputId, RunStatus, ZenohOutbound,
-    CONTROL_EVENT_HEADROOM, NODE_EVENT_CHANNEL_CAPACITY,
-    send_drop_with_timestamp, send_with_timestamp,
+    AdoraEvent, CONTROL_EVENT_HEADROOM, DaemonNodeEvent, Event, InterDaemonEvent,
+    NODE_EVENT_CHANNEL_CAPACITY, OutputId, RunStatus, ZenohOutbound, send_drop_with_timestamp,
+    send_with_timestamp,
 };
 pub(crate) use fault_tolerance::{CascadingErrorCauses, FaultToleranceStats};
 pub(crate) use running_dataflow::{
@@ -212,14 +213,14 @@ pub struct Daemon {
     pub(crate) ft_stats: Arc<FaultToleranceStats>,
     pub(crate) zenoh_session: zenoh::Session,
     pub(crate) zenoh_publish_tx: mpsc::Sender<ZenohOutbound>,
-    pub(crate) remote_daemon_events_tx: Option<flume::Sender<eyre::Result<Timestamped<InterDaemonEvent>>>>,
+    pub(crate) remote_daemon_events_tx:
+        Option<flume::Sender<eyre::Result<Timestamped<InterDaemonEvent>>>>,
     pub(crate) logger: DaemonLogger,
     pub(crate) sessions: BTreeMap<SessionId, BuildId>,
     pub(crate) builds: BTreeMap<BuildId, BuildInfo>,
     pub(crate) git_manager: GitManager,
     pub(crate) metrics_system: sysinfo::System,
 }
-
 
 type DaemonRunResult = BTreeMap<Uuid, BTreeMap<NodeId, Result<(), NodeError>>>;
 
@@ -313,9 +314,7 @@ impl Daemon {
             }
 
             // Exponential backoff: 1s, 2s, 4s, 8s, 16s, 30s, 30s...
-            let delay = Duration::from_secs(
-                (1u64 << reconnect_attempt.min(5)).min(30),
-            );
+            let delay = Duration::from_secs((1u64 << reconnect_attempt.min(5)).min(30));
             reconnect_attempt += 1;
             tracing::info!("reconnecting in {delay:?}...");
             tokio::time::sleep(delay).await;
@@ -610,10 +609,12 @@ impl Daemon {
             let running_dataflows: Vec<_> = self
                 .running
                 .iter()
-                .map(|(id, df)| adora_message::daemon_to_coordinator::DataflowStatusEntry {
-                    dataflow_id: *id,
-                    running_nodes: df.running_nodes.keys().cloned().collect(),
-                })
+                .map(
+                    |(id, df)| adora_message::daemon_to_coordinator::DataflowStatusEntry {
+                        dataflow_id: *id,
+                        running_nodes: df.running_nodes.keys().cloned().collect(),
+                    },
+                )
                 .collect();
             let event = DaemonEvent::StatusReport { running_dataflows };
             let stamped = Timestamped {
@@ -1271,13 +1272,21 @@ impl Daemon {
                 RunStatus::Continue
             }
             // --- Dynamic Topology ---
-            DaemonCoordinatorEvent::AddNode { dataflow_id, node, uv } => {
+            DaemonCoordinatorEvent::AddNode {
+                dataflow_id,
+                node,
+                uv: _,
+            } => {
                 // FIXME: implement full node spawning (spawn_node + listener + subscribe)
                 tracing::warn!(%dataflow_id, node_id = %node.id, "AddNode not yet implemented — node will not be spawned");
                 let _ = reply_tx.send(None);
                 RunStatus::Continue
             }
-            DaemonCoordinatorEvent::RemoveNode { dataflow_id, node_id, grace_duration } => {
+            DaemonCoordinatorEvent::RemoveNode {
+                dataflow_id,
+                node_id,
+                grace_duration,
+            } => {
                 tracing::info!(%dataflow_id, %node_id, "removing node from running dataflow");
                 if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
                     let _ = dataflow.stop_single_node(&node_id, &self.clock, grace_duration);
@@ -1313,19 +1322,37 @@ impl Daemon {
                 let _ = reply_tx.send(None);
                 RunStatus::Continue
             }
-            DaemonCoordinatorEvent::AddMapping { dataflow_id, source_node, source_output, target_node, target_input } => {
+            DaemonCoordinatorEvent::AddMapping {
+                dataflow_id,
+                source_node,
+                source_output,
+                target_node,
+                target_input,
+            } => {
                 tracing::info!(%dataflow_id, "{source_node}/{source_output} -> {target_node}/{target_input}");
                 if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
                     let output_id = OutputId(source_node, source_output);
-                    dataflow.mappings.entry(output_id).or_default()
+                    dataflow
+                        .mappings
+                        .entry(output_id)
+                        .or_default()
                         .insert((target_node.clone(), target_input.clone()));
-                    dataflow.open_inputs.entry(target_node).or_default()
+                    dataflow
+                        .open_inputs
+                        .entry(target_node)
+                        .or_default()
                         .insert(target_input);
                 }
                 let _ = reply_tx.send(None);
                 RunStatus::Continue
             }
-            DaemonCoordinatorEvent::RemoveMapping { dataflow_id, source_node, source_output, target_node, target_input } => {
+            DaemonCoordinatorEvent::RemoveMapping {
+                dataflow_id,
+                source_node,
+                source_output,
+                target_node,
+                target_input,
+            } => {
                 tracing::info!(%dataflow_id, "{source_node}/{source_output} -x- {target_node}/{target_input}");
                 if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
                     let output_id = OutputId(source_node, source_output);
@@ -2534,9 +2561,7 @@ impl Daemon {
                 );
             }
             Err(mpsc::error::TrySendError::Closed(_)) => {
-                tracing::error!(
-                    "zenoh drain task is gone — inter-daemon publish channel closed"
-                );
+                tracing::error!("zenoh drain task is gone — inter-daemon publish channel closed");
             }
         }
 
@@ -2611,7 +2636,9 @@ impl Daemon {
                     id: input_id.clone(),
                 },
                 clock,
-            ).ok() == Some(true)
+            )
+            .ok()
+                == Some(true)
             {
                 dataflow.inc_pending(&node_id);
             }
@@ -2623,8 +2650,8 @@ impl Daemon {
             if let Some(node) = dataflow.descriptor.nodes.iter().find(|n| n.id == node_id) {
                 if node.inputs.is_empty() {
                     // do not send AllInputsClosed for source nodes
-                } else if send_with_timestamp(&event_sender, NodeEvent::AllInputsClosed, clock)
-                   .ok() == Some(true)
+                } else if send_with_timestamp(&event_sender, NodeEvent::AllInputsClosed, clock).ok()
+                    == Some(true)
                 {
                     dataflow.inc_pending(&node_id);
                 }
@@ -3494,7 +3521,8 @@ fn close_input(
                 },
                 clock,
             )
-           .ok() == Some(true)
+            .ok()
+                == Some(true)
         {
             dataflow.inc_pending(receiver_id);
         }
@@ -3535,7 +3563,8 @@ fn break_input(
             },
             clock,
         )
-       .ok() == Some(true)
+        .ok()
+            == Some(true)
         {
             dataflow.inc_pending(receiver_id);
         }
@@ -3566,7 +3595,9 @@ pub(crate) fn empty_type_info() -> ArrowTypeInfo {
         validity: None,
         offset: 0,
         buffer_offsets: Vec::new(),
-        child_data: Vec::new(), field_names: None, schema_hash: None,
+        child_data: Vec::new(),
+        field_names: None,
+        schema_hash: None,
     }
 }
 
@@ -3953,13 +3984,16 @@ mod fault_tolerance_tests {
                 validity: None,
                 offset: 0,
                 buffer_offsets: vec![],
-                child_data: vec![], field_names: None, schema_hash: None,
+                child_data: vec![],
+                field_names: None,
+                schema_hash: None,
             },
         );
 
-        let result =
-            send_output_to_local_receivers(sender, output, &mut df, &metadata, None, &clock, None, false)
-                .await;
+        let result = send_output_to_local_receivers(
+            sender, output, &mut df, &metadata, None, &clock, None, false,
+        )
+        .await;
         assert!(result.is_ok());
 
         // Assert: broken input recovered
@@ -4053,13 +4087,16 @@ mod fault_tolerance_tests {
                 validity: None,
                 offset: 0,
                 buffer_offsets: vec![],
-                child_data: vec![], field_names: None, schema_hash: None,
+                child_data: vec![],
+                field_names: None,
+                schema_hash: None,
             },
         );
 
-        let result =
-            send_output_to_local_receivers(sender, output, &mut df, &metadata, None, &clock, None, false)
-                .await;
+        let result = send_output_to_local_receivers(
+            sender, output, &mut df, &metadata, None, &clock, None, false,
+        )
+        .await;
         assert!(result.is_ok());
 
         // Verify recovered state

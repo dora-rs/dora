@@ -3,10 +3,7 @@ use crate::{
     command::{Executable, default_tracing},
     common::{CoordinatorOptions, resolve_dataflow_identifier_interactive, send_control_request},
 };
-use adora_message::{
-    cli_to_coordinator::ControlRequest,
-    coordinator_to_cli::ControlRequestReply,
-};
+use adora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply};
 use eyre::bail;
 
 /// Disconnect two nodes in a running dataflow (remove a mapping).
@@ -24,7 +21,6 @@ pub struct Disconnect {
     /// Target in "node/input" format.
     target: String,
 }
-
 
 impl Executable for Disconnect {
     fn execute(self) -> eyre::Result<()> {
