@@ -509,7 +509,7 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
 name = "benchmark-example-node"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "dora-node-api",
  "eyre",
@@ -520,7 +520,7 @@ dependencies = [
 
 [[package]]
 name = "benchmark-example-sink"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "dora-node-api",
  "eyre",
@@ -830,7 +830,7 @@ dependencies = [
 
 [[package]]
 name = "communication-layer-request-reply"
-version = "0.4.1"
+version = "0.5.0"
 
 [[package]]
 name = "compact_str"
@@ -1520,7 +1520,7 @@ dependencies = [
 
 [[package]]
 name = "dora-arrow-convert"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "arrow",
  "chrono",
@@ -1531,7 +1531,7 @@ dependencies = [
 
 [[package]]
 name = "dora-cli"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "arrow",
  "arrow-json",
@@ -1585,7 +1585,7 @@ dependencies = [
 
 [[package]]
 name = "dora-coordinator"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "ctrlc",
  "dashmap",
@@ -1607,7 +1607,7 @@ dependencies = [
 
 [[package]]
 name = "dora-core"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "dora-message",
  "dunce",
@@ -1635,7 +1635,7 @@ dependencies = [
 
 [[package]]
 name = "dora-daemon"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "aligned-vec",
  "async-trait",
@@ -1679,7 +1679,7 @@ dependencies = [
 
 [[package]]
 name = "dora-download"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "eyre",
  "reqwest",
@@ -1711,7 +1711,7 @@ dependencies = [
 
 [[package]]
 name = "dora-message"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "aligned-vec",
  "arrow-data",
@@ -1736,7 +1736,7 @@ dependencies = [
 
 [[package]]
 name = "dora-metrics"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "eyre",
  "opentelemetry 0.31.0",
@@ -1747,7 +1747,7 @@ dependencies = [
 
 [[package]]
 name = "dora-node-api"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "aligned-vec",
  "arrow",
@@ -1777,7 +1777,7 @@ dependencies = [
 
 [[package]]
 name = "dora-node-api-c"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "arrow-array",
  "dora-node-api",
@@ -1787,7 +1787,7 @@ dependencies = [
 
 [[package]]
 name = "dora-node-api-cxx"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "arrow",
  "chrono",
@@ -1808,7 +1808,7 @@ dependencies = [
 
 [[package]]
 name = "dora-node-api-python"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "arrow",
  "dora-cli",
@@ -1831,7 +1831,7 @@ dependencies = [
 
 [[package]]
 name = "dora-operator-api"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "dora-arrow-convert",
  "dora-operator-api-macros",
@@ -1840,14 +1840,14 @@ dependencies = [
 
 [[package]]
 name = "dora-operator-api-c"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "dora-operator-api-types",
 ]
 
 [[package]]
 name = "dora-operator-api-cxx"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "cxx",
  "cxx-build",
@@ -1856,7 +1856,7 @@ dependencies = [
 
 [[package]]
 name = "dora-operator-api-macros"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1865,7 +1865,7 @@ dependencies = [
 
 [[package]]
 name = "dora-operator-api-python"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "aligned-vec",
  "arrow",
@@ -1882,7 +1882,7 @@ dependencies = [
 
 [[package]]
 name = "dora-operator-api-types"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "arrow",
  "dora-arrow-convert",
@@ -1891,7 +1891,7 @@ dependencies = [
 
 [[package]]
 name = "dora-ros2-bridge"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "array-init",
  "dora-cli",
@@ -1917,7 +1917,7 @@ dependencies = [
 
 [[package]]
 name = "dora-ros2-bridge-msg-gen"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "glob",
@@ -1935,7 +1935,7 @@ dependencies = [
 
 [[package]]
 name = "dora-ros2-bridge-python"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "arrow",
  "dora-ros2-bridge",
@@ -1950,7 +1950,7 @@ dependencies = [
 
 [[package]]
 name = "dora-runtime"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "aligned-vec",
  "arrow",
@@ -1978,7 +1978,7 @@ dependencies = [
 
 [[package]]
 name = "dora-tracing"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "eyre",
  "opentelemetry 0.31.0",
@@ -3746,7 +3746,7 @@ dependencies = [
 
 [[package]]
 name = "multiple-daemons-example-node"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "dora-node-api",
  "eyre",
@@ -3757,14 +3757,14 @@ dependencies = [
 
 [[package]]
 name = "multiple-daemons-example-operator"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "dora-operator-api",
 ]
 
 [[package]]
 name = "multiple-daemons-example-sink"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "dora-node-api",
  "eyre",
@@ -5042,7 +5042,7 @@ checksum = "f2ff9a1f06a88b01621b7ae906ef0211290d1c8a168a15542486a8f61c0833b9"
 
 [[package]]
 name = "receive_data"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "chrono",
  "dora-node-api",
@@ -5268,7 +5268,7 @@ dependencies = [
 
 [[package]]
 name = "rust-dataflow-example-node"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "dora-node-api",
  "eyre",
@@ -5281,7 +5281,7 @@ dependencies = [
 
 [[package]]
 name = "rust-dataflow-example-sink"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "dora-node-api",
  "eyre",
@@ -5289,7 +5289,7 @@ dependencies = [
 
 [[package]]
 name = "rust-dataflow-example-sink-dynamic"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "dora-node-api",
  "eyre",
@@ -5297,7 +5297,7 @@ dependencies = [
 
 [[package]]
 name = "rust-dataflow-example-status-node"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "dora-node-api",
  "eyre",
@@ -5316,7 +5316,7 @@ dependencies = [
 
 [[package]]
 name = "rust-ros2-example-node"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "dora-node-api",
  "dora-ros2-bridge",
