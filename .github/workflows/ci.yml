@@ -59,6 +59,7 @@ jobs:
       - name: Free disk Space (Windows)
         if: runner.os == 'Windows'
         run: |
+          $ErrorActionPreference = 'SilentlyContinue'
           docker system prune --all -f 2>$null; $true
           docker builder prune -af 2>$null; $true
           Remove-Item "C:\Android" -Force -Recurse -ErrorAction SilentlyContinue
@@ -128,6 +129,7 @@ jobs:
       - name: Free disk Space (Windows)
         if: runner.os == 'Windows'
         run: |
+          $ErrorActionPreference = 'SilentlyContinue'
           docker system prune --all -f 2>$null; $true
           docker builder prune -af 2>$null; $true
           Remove-Item "C:\Android" -Force -Recurse -ErrorAction SilentlyContinue
