@@ -762,6 +762,7 @@ impl EventStream {
                 }
                 NodeEvent::AllInputsClosed => Event::Stop(event::StopCause::AllInputsClosed),
                 NodeEvent::ParamUpdate { key, value } => Event::ParamUpdate { key, value },
+                NodeEvent::ParamDeleted { key } => Event::ParamDeleted { key },
                 other => {
                     tracing::warn!("ignoring unrecognized NodeEvent variant: {other:?}");
                     Event::Error(format!("unrecognized node event: {other:?}"))
@@ -936,6 +937,21 @@ mod tests {
                 assert_eq!(value, serde_json::json!(60));
             }
             other => panic!("expected ParamUpdate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn convert_param_deleted() {
+        let item = EventItem::NodeEvent {
+            event: NodeEvent::ParamDeleted { key: "fps".into() },
+            ack_channel: dummy_ack(),
+        };
+        let event = EventStream::convert_event_item(item);
+        match event {
+            Event::ParamDeleted { key } => {
+                assert_eq!(key, "fps");
+            }
+            other => panic!("expected ParamDeleted, got {other:?}"),
         }
     }
 

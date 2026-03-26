@@ -72,6 +72,11 @@ pub enum DaemonCoordinatorEvent {
         key: String,
         value: serde_json::Value,
     },
+    DeleteParam {
+        dataflow_id: DataflowId,
+        node_id: NodeId,
+        key: String,
+    },
     Destroy,
     Heartbeat,
     PeerDaemonDisconnected {

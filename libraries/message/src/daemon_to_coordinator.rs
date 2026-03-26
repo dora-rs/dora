@@ -191,4 +191,5 @@ pub enum DaemonCoordinatorReply {
     RestartNodeResult(Result<(), String>),
     StopNodeResult(Result<(), String>),
     SetParamResult(Result<(), String>),
+    DeleteParamResult(Result<(), String>),
 }

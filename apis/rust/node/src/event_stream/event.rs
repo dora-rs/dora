@@ -86,6 +86,13 @@ pub enum Event {
         /// The new JSON value.
         value: serde_json::Value,
     },
+    /// A runtime parameter has been deleted via `adora param delete`.
+    ///
+    /// Nodes can use this to remove local overrides and fall back to defaults.
+    ParamDeleted {
+        /// The parameter key that was deleted.
+        key: String,
+    },
     /// Notifies the node about an unexpected error that happened inside Adora.
     ///
     /// It's a good idea to output or log this error for debugging.

@@ -1187,9 +1187,38 @@ async fn start_inner(
                             node_id,
                             key,
                         } => {
-                            let reply = store
-                                .delete_node_param(&dataflow_id, &node_id, &key)
-                                .map(|()| ControlRequestReply::ParamDeleted);
+                            let reply = match store.delete_node_param(&dataflow_id, &node_id, &key)
+                            {
+                                Ok(()) => {
+                                    // Best-effort forward to daemon if the node is running.
+                                    if let Some(daemon_id) = running_dataflows
+                                        .get(&dataflow_id)
+                                        .and_then(|df| df.node_to_daemon.get(&node_id))
+                                    {
+                                        if let Ok(msg) = serde_json::to_vec(&Timestamped {
+                                            inner: DaemonCoordinatorEvent::DeleteParam {
+                                                dataflow_id,
+                                                node_id: node_id.clone(),
+                                                key: key.clone(),
+                                            },
+                                            timestamp: clock.new_timestamp(),
+                                        }) {
+                                            if let Some(conn) =
+                                                daemon_connections.get_mut(daemon_id)
+                                            {
+                                                if let Err(e) = conn.send_and_receive(&msg).await {
+                                                    tracing::warn!(
+                                                        %node_id,
+                                                        "param deleted but daemon delivery failed: {e}"
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Ok(ControlRequestReply::ParamDeleted)
+                                }
+                                Err(e) => Err(e),
+                            };
                             let _ = reply_sender.send(reply);
                         }
                         // --- Dynamic Topology ---
