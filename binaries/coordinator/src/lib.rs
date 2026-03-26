@@ -1206,9 +1206,12 @@ async fn start_inner(
                                         };
                                         match tmp_desc.resolve_aliases_and_set_defaults() {
                                             Ok(mut resolved_map) => {
-                                                let (node_id, resolved_node) = resolved_map
-                                                    .pop_first()
-                                                    .expect("single-node descriptor must resolve");
+                                                let (node_id, resolved_node) =
+                                                    resolved_map.pop_first().ok_or_else(|| {
+                                                        eyre!(
+                                                            "node descriptor resolved to empty map"
+                                                        )
+                                                    })?;
                                                 // Pick the first daemon (single-daemon case)
                                                 // TODO: use machine label or load balancing for multi-daemon
                                                 let daemon_id =
@@ -1221,6 +1224,7 @@ async fn start_inner(
                                                                     DaemonCoordinatorEvent::AddNode {
                                                                         dataflow_id,
                                                                         node: resolved_node,
+                                                                        // FIXME: thread `uv` from ControlRequest::AddNode when available
                                                                         uv: false,
                                                                     },
                                                                 timestamp: clock.new_timestamp(),
@@ -1260,15 +1264,11 @@ async fn start_inner(
                                                     )),
                                                 }
                                             }
-                                            Err(e) => {
-                                                Err(eyre!("failed to resolve node: {e}"))
-                                            }
+                                            Err(e) => Err(eyre!("failed to resolve node: {e}")),
                                         }
                                     }
                                 }
-                                None => {
-                                    Err(eyre!("no running dataflow with ID {dataflow_id}"))
-                                }
+                                None => Err(eyre!("no running dataflow with ID {dataflow_id}")),
                             };
                             let _ = reply_sender.send(result);
                         }
@@ -1293,6 +1293,15 @@ async fn start_inner(
                                                 Some(conn) => {
                                                     match conn.send_and_receive(&msg).await {
                                                         Ok(_) => {
+                                                            // Clean up coordinator state
+                                                            if let Some(dataflow) =
+                                                                running_dataflows
+                                                                    .get_mut(&dataflow_id)
+                                                            {
+                                                                dataflow
+                                                                    .node_to_daemon
+                                                                    .remove(&node_id);
+                                                            }
                                                             Ok(ControlRequestReply::NodeRemoved {
                                                                 dataflow_id,
                                                                 node_id,
@@ -1313,9 +1322,7 @@ async fn start_inner(
                                         )),
                                     }
                                 }
-                                None => {
-                                    Err(eyre!("no running dataflow with ID {dataflow_id}"))
-                                }
+                                None => Err(eyre!("no running dataflow with ID {dataflow_id}")),
                             };
                             let _ = reply_sender.send(result);
                         }
@@ -1327,49 +1334,39 @@ async fn start_inner(
                             target_input,
                         } => {
                             let result = match running_dataflows.get(&dataflow_id) {
-                                Some(dataflow) => {
-                                    match dataflow.node_to_daemon.get(&target_node) {
-                                        Some(daemon_id) => {
-                                            let msg = serde_json::to_vec(&Timestamped {
-                                                inner: DaemonCoordinatorEvent::AddMapping {
+                                Some(dataflow) => match dataflow.node_to_daemon.get(&target_node) {
+                                    Some(daemon_id) => {
+                                        let msg = serde_json::to_vec(&Timestamped {
+                                            inner: DaemonCoordinatorEvent::AddMapping {
+                                                dataflow_id,
+                                                source_node: source_node.clone(),
+                                                source_output: source_output.clone(),
+                                                target_node: target_node.clone(),
+                                                target_input: target_input.clone(),
+                                            },
+                                            timestamp: clock.new_timestamp(),
+                                        })?;
+                                        match daemon_connections.get_mut(daemon_id) {
+                                            Some(conn) => match conn.send_and_receive(&msg).await {
+                                                Ok(_) => Ok(ControlRequestReply::MappingAdded {
                                                     dataflow_id,
-                                                    source_node: source_node.clone(),
-                                                    source_output: source_output.clone(),
-                                                    target_node: target_node.clone(),
-                                                    target_input: target_input.clone(),
-                                                },
-                                                timestamp: clock.new_timestamp(),
-                                            })?;
-                                            match daemon_connections.get_mut(daemon_id) {
-                                                Some(conn) => {
-                                                    match conn.send_and_receive(&msg).await {
-                                                        Ok(_) => {
-                                                            Ok(ControlRequestReply::MappingAdded {
-                                                                dataflow_id,
-                                                                source_node,
-                                                                source_output,
-                                                                target_node,
-                                                                target_input,
-                                                            })
-                                                        }
-                                                        Err(e) => Err(eyre!(
-                                                            "daemon dispatch failed: {e}"
-                                                        )),
-                                                    }
-                                                }
-                                                None => Err(eyre!(
-                                                    "no connection for daemon {daemon_id}"
-                                                )),
+                                                    source_node,
+                                                    source_output,
+                                                    target_node,
+                                                    target_input,
+                                                }),
+                                                Err(e) => Err(eyre!("daemon dispatch failed: {e}")),
+                                            },
+                                            None => {
+                                                Err(eyre!("no connection for daemon {daemon_id}"))
                                             }
                                         }
-                                        None => Err(eyre!(
-                                            "target node '{target_node}' not found in dataflow {dataflow_id}"
-                                        )),
                                     }
-                                }
-                                None => {
-                                    Err(eyre!("no running dataflow with ID {dataflow_id}"))
-                                }
+                                    None => Err(eyre!(
+                                        "target node '{target_node}' not found in dataflow {dataflow_id}"
+                                    )),
+                                },
+                                None => Err(eyre!("no running dataflow with ID {dataflow_id}")),
                             };
                             let _ = reply_sender.send(result);
                         }
@@ -1381,51 +1378,39 @@ async fn start_inner(
                             target_input,
                         } => {
                             let result = match running_dataflows.get(&dataflow_id) {
-                                Some(dataflow) => {
-                                    match dataflow.node_to_daemon.get(&target_node) {
-                                        Some(daemon_id) => {
-                                            let msg = serde_json::to_vec(&Timestamped {
-                                                inner: DaemonCoordinatorEvent::RemoveMapping {
+                                Some(dataflow) => match dataflow.node_to_daemon.get(&target_node) {
+                                    Some(daemon_id) => {
+                                        let msg = serde_json::to_vec(&Timestamped {
+                                            inner: DaemonCoordinatorEvent::RemoveMapping {
+                                                dataflow_id,
+                                                source_node: source_node.clone(),
+                                                source_output: source_output.clone(),
+                                                target_node: target_node.clone(),
+                                                target_input: target_input.clone(),
+                                            },
+                                            timestamp: clock.new_timestamp(),
+                                        })?;
+                                        match daemon_connections.get_mut(daemon_id) {
+                                            Some(conn) => match conn.send_and_receive(&msg).await {
+                                                Ok(_) => Ok(ControlRequestReply::MappingRemoved {
                                                     dataflow_id,
-                                                    source_node: source_node.clone(),
-                                                    source_output: source_output.clone(),
-                                                    target_node: target_node.clone(),
-                                                    target_input: target_input.clone(),
-                                                },
-                                                timestamp: clock.new_timestamp(),
-                                            })?;
-                                            match daemon_connections.get_mut(daemon_id) {
-                                                Some(conn) => {
-                                                    match conn.send_and_receive(&msg).await {
-                                                        Ok(_) => {
-                                                            Ok(
-                                                                ControlRequestReply::MappingRemoved {
-                                                                    dataflow_id,
-                                                                    source_node,
-                                                                    source_output,
-                                                                    target_node,
-                                                                    target_input,
-                                                                },
-                                                            )
-                                                        }
-                                                        Err(e) => Err(eyre!(
-                                                            "daemon dispatch failed: {e}"
-                                                        )),
-                                                    }
-                                                }
-                                                None => Err(eyre!(
-                                                    "no connection for daemon {daemon_id}"
-                                                )),
+                                                    source_node,
+                                                    source_output,
+                                                    target_node,
+                                                    target_input,
+                                                }),
+                                                Err(e) => Err(eyre!("daemon dispatch failed: {e}")),
+                                            },
+                                            None => {
+                                                Err(eyre!("no connection for daemon {daemon_id}"))
                                             }
                                         }
-                                        None => Err(eyre!(
-                                            "target node '{target_node}' not found in dataflow {dataflow_id}"
-                                        )),
                                     }
-                                }
-                                None => {
-                                    Err(eyre!("no running dataflow with ID {dataflow_id}"))
-                                }
+                                    None => Err(eyre!(
+                                        "target node '{target_node}' not found in dataflow {dataflow_id}"
+                                    )),
+                                },
+                                None => Err(eyre!("no running dataflow with ID {dataflow_id}")),
                             };
                             let _ = reply_sender.send(result);
                         }

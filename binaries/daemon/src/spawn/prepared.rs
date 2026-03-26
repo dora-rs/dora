@@ -396,7 +396,12 @@ impl PreparedNode {
                         std_command.pre_exec(move || {
                             let mut set: libc::cpu_set_t = std::mem::zeroed();
                             libc::CPU_ZERO(&mut set);
+                            const MAX_CPU: usize = std::mem::size_of::<libc::cpu_set_t>() * 8;
                             for &core in &cores {
+                                if core >= MAX_CPU {
+                                    eprintln!("warning: cpu_affinity core {core} out of range (max {}), skipping", MAX_CPU - 1);
+                                    continue;
+                                }
                                 libc::CPU_SET(core, &mut set);
                             }
                             let ret = libc::sched_setaffinity(

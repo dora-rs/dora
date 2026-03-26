@@ -401,7 +401,7 @@ async fn collect_and_send_metrics_bg(
                 let ms = df.net_messages_sent.load(atomic::Ordering::Relaxed);
                 let mr = df.net_messages_received.load(atomic::Ordering::Relaxed);
                 let pf = df.net_publish_failures.load(atomic::Ordering::Relaxed);
-                if bs > 0 || br > 0 || pf > 0 {
+                if bs > 0 || br > 0 || ms > 0 || mr > 0 || pf > 0 {
                     Some(adora_message::daemon_to_coordinator::NetworkMetrics {
                         bytes_sent: bs,
                         bytes_received: br,
@@ -424,10 +424,10 @@ async fn collect_and_send_metrics_bg(
                 },
                 timestamp: clock.new_timestamp(),
             })?;
-            sender
-                .send_event(&msg)
-                .await
-                .wrap_err("failed to send metrics to coordinator")?;
+            if let Err(e) = sender.send_event(&msg).await {
+                tracing::warn!("failed to send metrics for dataflow: {e}");
+                continue;
+            }
         }
     }
 
@@ -1566,10 +1566,10 @@ impl Daemon {
                 if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
                     let output_id = OutputId(source_node, source_output);
                     if let Some(receivers) = dataflow.mappings.get_mut(&output_id) {
-                        receivers.remove(&(target_node.clone(), target_input.clone()));
+                        if receivers.remove(&(target_node.clone(), target_input.clone())) {
+                            close_input(dataflow, &target_node, &target_input, &self.clock);
+                        }
                     }
-                    // Use close_input for proper cleanup (open_inputs, AllInputsClosed, etc.)
-                    close_input(dataflow, &target_node, &target_input, &self.clock);
                 }
                 let _ = reply_tx.send(None);
                 RunStatus::Continue
