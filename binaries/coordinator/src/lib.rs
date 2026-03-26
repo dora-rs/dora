@@ -19,7 +19,7 @@ use adora_message::{
         DataflowStatus, LogLevel, LogMessage,
     },
     coordinator_to_daemon::{DaemonCoordinatorEvent, RegisterResult, Timestamped},
-    daemon_to_coordinator::DataflowDaemonResult,
+    daemon_to_coordinator::{DaemonCoordinatorReply, DataflowDaemonResult},
 };
 pub use control::ControlEvent;
 pub use events::{DaemonRequest, DataflowEvent, Event};
@@ -29,6 +29,7 @@ use futures_concurrency::stream::Merge;
 use indexmap::IndexMap;
 use log_subscriber::LogSubscriber;
 use petname::petname;
+use serde::de::IgnoredAny;
 pub(crate) use state::DaemonConnections;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -320,7 +321,7 @@ async fn start_inner(
                 DaemonRequest::Register {
                     machine_id,
                     labels,
-                    mut connection,
+                    connection,
                     version_check_result,
                     daemon_id_tx,
                 } => {
@@ -421,6 +422,14 @@ async fn start_inner(
                                         )
                                     })?;
                                 }
+
+                                schedule_param_replay_for_ready_dataflow(
+                                    uuid,
+                                    dataflow,
+                                    &mut daemon_connections,
+                                    store.clone(),
+                                    clock.clone(),
+                                );
                             }
                         }
                         std::collections::hash_map::Entry::Vacant(_) => {
@@ -1918,6 +1927,406 @@ async fn start_inner(
     tracing::info!("stopped");
 
     Ok(())
+}
+
+struct ParamReplayItem {
+    node_id: adora_core::config::NodeId,
+    key: String,
+    value_json: Vec<u8>,
+}
+
+fn collect_param_replay_items(
+    dataflow_id: DataflowId,
+    node_ids_on_daemon: &[adora_core::config::NodeId],
+    store: &dyn adora_coordinator_store::CoordinatorStore,
+) -> Vec<ParamReplayItem> {
+    let mut items = Vec::new();
+    for node_id in node_ids_on_daemon {
+        let params = match store.list_node_params(&dataflow_id, node_id) {
+            Ok(params) => params,
+            Err(err) => {
+                tracing::warn!(
+                    "failed to load persisted params for {dataflow_id}/{node_id}: {err}"
+                );
+                continue;
+            }
+        };
+        for (key, bytes) in params {
+            items.push(ParamReplayItem {
+                node_id: node_id.clone(),
+                key,
+                value_json: bytes,
+            });
+        }
+    }
+    items
+}
+
+fn build_set_param_message_from_raw_json(
+    dataflow_id: DataflowId,
+    node_id: &adora_core::config::NodeId,
+    key: &str,
+    value_json: &[u8],
+    timestamp: adora_core::uhlc::Timestamp,
+) -> eyre::Result<Vec<u8>> {
+    // Validate payload is valid JSON without allocating a full Value.
+    serde_json::from_slice::<IgnoredAny>(value_json)
+        .map_err(|e| eyre!("invalid persisted param JSON: {e}"))?;
+
+    let value_json = std::str::from_utf8(value_json)
+        .map_err(|e| eyre!("persisted param is not valid UTF-8 JSON: {e}"))?;
+
+    let dataflow_id_json = serde_json::to_string(&dataflow_id)?;
+    let node_id_json = serde_json::to_string(node_id)?;
+    let key_json = serde_json::to_string(key)?;
+    let timestamp_json = serde_json::to_string(&timestamp)?;
+
+    Ok(format!(
+        r#"{{"inner":{{"SetParam":{{"dataflow_id":{dataflow_id_json},"node_id":{node_id_json},"key":{key_json},"value":{value_json}}}}},"timestamp":{timestamp_json}}}"#
+    )
+    .into_bytes())
+}
+
+fn schedule_param_replay_for_ready_dataflow(
+    dataflow_id: DataflowId,
+    dataflow: &RunningDataflow,
+    daemon_connections: &mut DaemonConnections,
+    store: Arc<dyn adora_coordinator_store::CoordinatorStore>,
+    clock: Arc<HLC>,
+) {
+    // Replay persisted runtime parameters once nodes are ready.
+    // This restores desired node state after restart/recovery.
+    let daemon_ids: Vec<_> = dataflow.daemons.iter().cloned().collect();
+    for daemon_id in daemon_ids {
+        let Some(connection) = daemon_connections.get_mut(&daemon_id).cloned() else {
+            tracing::warn!(
+                "cannot replay params for dataflow {dataflow_id}: no connection for daemon {daemon_id}"
+            );
+            continue;
+        };
+        let node_ids_on_daemon: Vec<_> = dataflow
+            .node_to_daemon
+            .iter()
+            .filter(|(_, node_daemon_id)| *node_daemon_id == &daemon_id)
+            .map(|(node_id, _)| node_id.clone())
+            .collect();
+        let store = store.clone();
+        let clock = clock.clone();
+        tokio::spawn(async move {
+            replay_persisted_params_for_daemon(
+                dataflow_id,
+                daemon_id,
+                node_ids_on_daemon,
+                store,
+                connection,
+                clock,
+            )
+            .await;
+        });
+    }
+}
+
+async fn replay_persisted_params_for_daemon(
+    dataflow_id: DataflowId,
+    daemon_id: DaemonId,
+    node_ids_on_daemon: Vec<adora_core::config::NodeId>,
+    store: Arc<dyn adora_coordinator_store::CoordinatorStore>,
+    connection: crate::state::DaemonConnection,
+    clock: Arc<HLC>,
+) {
+    let replay_items = collect_param_replay_items(dataflow_id, &node_ids_on_daemon, store.as_ref());
+    if replay_items.is_empty() {
+        return;
+    }
+
+    tracing::debug!(
+        "replaying {} persisted params for dataflow {} on daemon {}",
+        replay_items.len(),
+        dataflow_id,
+        daemon_id
+    );
+
+    for item in replay_items {
+        let message = match build_set_param_message_from_raw_json(
+            dataflow_id,
+            &item.node_id,
+            &item.key,
+            &item.value_json,
+            clock.new_timestamp(),
+        ) {
+            Ok(msg) => msg,
+            Err(err) => {
+                tracing::warn!(
+                    "skipping corrupt persisted param {dataflow_id}/{}/{}: {err}",
+                    item.node_id,
+                    item.key
+                );
+                continue;
+            }
+        };
+
+        let reply_raw = match connection.send_and_receive(&message).await {
+            Ok(reply) => reply,
+            Err(err) => {
+                tracing::warn!(
+                    "failed to replay param {dataflow_id}/{}/{} to daemon {daemon_id}: {err}",
+                    item.node_id,
+                    item.key
+                );
+                continue;
+            }
+        };
+
+        match serde_json::from_slice(&reply_raw) {
+            Ok(DaemonCoordinatorReply::SetParamResult(Ok(()))) => {}
+            Ok(DaemonCoordinatorReply::SetParamResult(Err(err))) => {
+                tracing::warn!(
+                    "daemon rejected replayed param {dataflow_id}/{}/{}: {err}",
+                    item.node_id,
+                    item.key
+                );
+            }
+            Ok(other) => {
+                tracing::warn!(
+                    "unexpected daemon reply while replaying param {dataflow_id}/{}/{}: {other:?}",
+                    item.node_id,
+                    item.key
+                );
+            }
+            Err(err) => {
+                tracing::warn!(
+                    "failed to deserialize daemon reply while replaying param {dataflow_id}/{}/{}: {err}",
+                    item.node_id,
+                    item.key
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use adora_message::descriptor::Descriptor;
+    use std::collections::HashMap;
+    use tokio::time::{Duration as TokioDuration, timeout};
+    use uuid::Uuid;
+
+    fn test_running_dataflow(
+        dataflow_id: DataflowId,
+        daemon_id: DaemonId,
+        node_id: adora_core::config::NodeId,
+    ) -> RunningDataflow {
+        let mut daemons = BTreeSet::new();
+        daemons.insert(daemon_id.clone());
+
+        let mut node_to_daemon = BTreeMap::new();
+        node_to_daemon.insert(node_id, daemon_id);
+
+        RunningDataflow {
+            name: None,
+            uuid: dataflow_id,
+            descriptor: Descriptor {
+                nodes: vec![],
+                communication: Default::default(),
+                deploy: None,
+                debug: Default::default(),
+                health_check_interval: None,
+                strict_types: None,
+                type_rules: vec![],
+            },
+            daemons,
+            pending_daemons: BTreeSet::new(),
+            exited_before_subscribe: vec![],
+            nodes: BTreeMap::new(),
+            node_to_daemon,
+            node_metrics: BTreeMap::new(),
+            network_metrics: None,
+            spawn_result: CachedResult::default(),
+            stop_reply_senders: vec![],
+            buffered_log_messages: vec![],
+            log_subscribers: vec![],
+            pending_spawn_results: BTreeSet::new(),
+            created_at: 0,
+            store_generation: 0,
+            last_recovery_attempt: BTreeMap::new(),
+            uv: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn replay_replays_persisted_param_to_daemon_connection() {
+        #[derive(serde::Deserialize)]
+        struct OutboundRaw {
+            id: String,
+            method: String,
+            params: Timestamped<DaemonCoordinatorEvent>,
+        }
+
+        let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let daemon_id = DaemonId::new(Some("m1".to_string()));
+        let node_id: adora_core::config::NodeId = "camera".to_string().into();
+
+        let value_bytes = serde_json::to_vec(&serde_json::json!(42)).unwrap();
+        store
+            .put_node_param(&dataflow_id, &node_id, "threshold", &value_bytes)
+            .unwrap();
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(8);
+        let pending_replies = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let connection =
+            crate::state::DaemonConnection::new(tx, pending_replies.clone(), BTreeMap::new());
+
+        let node_id_for_assert = node_id.clone();
+        let daemon_task = tokio::spawn(async move {
+            let outbound = rx
+                .recv()
+                .await
+                .expect("daemon should receive replay command");
+            let outbound_raw: OutboundRaw = serde_json::from_str(&outbound).unwrap();
+            assert_eq!(outbound_raw.method, "daemon_command");
+
+            let request_id = Uuid::parse_str(&outbound_raw.id).expect("valid request id");
+
+            match outbound_raw.params.inner {
+                DaemonCoordinatorEvent::SetParam {
+                    dataflow_id: replay_df,
+                    node_id: replay_node,
+                    key,
+                    value,
+                } => {
+                    assert_eq!(replay_df, dataflow_id);
+                    assert_eq!(replay_node, node_id_for_assert);
+                    assert_eq!(key, "threshold");
+                    assert_eq!(value, serde_json::json!(42));
+                }
+                other => panic!("unexpected replay event: {other:?}"),
+            }
+
+            let reply =
+                serde_json::to_string(&DaemonCoordinatorReply::SetParamResult(Ok(()))).unwrap();
+            let reply_tx = pending_replies
+                .lock()
+                .await
+                .remove(&request_id)
+                .expect("pending reply sender should exist");
+            let _ = reply_tx.send(reply);
+        });
+
+        replay_persisted_params_for_daemon(
+            dataflow_id,
+            daemon_id,
+            vec![node_id],
+            store,
+            connection,
+            Arc::new(HLC::default()),
+        )
+        .await;
+
+        daemon_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn replay_skips_when_no_persisted_params() {
+        let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let daemon_id = DaemonId::new(Some("m1".to_string()));
+        let node_id: adora_core::config::NodeId = "camera".to_string().into();
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(8);
+        let pending_replies = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let connection = crate::state::DaemonConnection::new(tx, pending_replies, BTreeMap::new());
+
+        replay_persisted_params_for_daemon(
+            dataflow_id,
+            daemon_id,
+            vec![node_id],
+            store,
+            connection,
+            Arc::new(HLC::default()),
+        )
+        .await;
+
+        let recv = timeout(TokioDuration::from_millis(50), rx.recv()).await;
+        assert!(
+            matches!(recv, Err(_) | Ok(None)),
+            "no replay command should be sent for empty persisted params"
+        );
+    }
+
+    #[tokio::test]
+    async fn ready_boundary_schedules_replay_for_daemon_nodes() {
+        #[derive(serde::Deserialize)]
+        struct OutboundRaw {
+            id: String,
+            method: String,
+            params: Timestamped<DaemonCoordinatorEvent>,
+        }
+
+        let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let daemon_id = DaemonId::new(Some("m1".to_string()));
+        let node_id: adora_core::config::NodeId = "camera".to_string().into();
+
+        let value_bytes = serde_json::to_vec(&serde_json::json!(123)).unwrap();
+        store
+            .put_node_param(&dataflow_id, &node_id, "gain", &value_bytes)
+            .unwrap();
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(8);
+        let pending_replies = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let connection =
+            crate::state::DaemonConnection::new(tx, pending_replies.clone(), BTreeMap::new());
+        let mut daemon_connections = DaemonConnections::default();
+        daemon_connections.add(daemon_id.clone(), connection);
+
+        let running_dataflow =
+            test_running_dataflow(dataflow_id, daemon_id.clone(), node_id.clone());
+
+        let daemon_task = tokio::spawn(async move {
+            let outbound = rx
+                .recv()
+                .await
+                .expect("daemon should receive replay command from ready-boundary scheduler");
+            let outbound_raw: OutboundRaw = serde_json::from_str(&outbound).unwrap();
+            assert_eq!(outbound_raw.method, "daemon_command");
+            match outbound_raw.params.inner {
+                DaemonCoordinatorEvent::SetParam {
+                    dataflow_id: replay_df,
+                    node_id: replay_node,
+                    key,
+                    value,
+                } => {
+                    assert_eq!(replay_df, dataflow_id);
+                    assert_eq!(replay_node, node_id);
+                    assert_eq!(key, "gain");
+                    assert_eq!(value, serde_json::json!(123));
+                }
+                other => panic!("unexpected replay event: {other:?}"),
+            }
+
+            let request_id = Uuid::parse_str(&outbound_raw.id).expect("valid request id");
+            let reply =
+                serde_json::to_string(&DaemonCoordinatorReply::SetParamResult(Ok(()))).unwrap();
+            let reply_tx = pending_replies
+                .lock()
+                .await
+                .remove(&request_id)
+                .expect("pending reply sender should exist");
+            let _ = reply_tx.send(reply);
+        });
+
+        schedule_param_replay_for_ready_dataflow(
+            dataflow_id,
+            &running_dataflow,
+            &mut daemon_connections,
+            store,
+            Arc::new(HLC::default()),
+        );
+
+        daemon_task.await.unwrap();
+    }
 }
 
 #[cfg(feature = "tracing")]
