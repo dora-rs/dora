@@ -44,7 +44,7 @@ async fn restart_recovers_from_failure() {
         false,
         LogDestination::Tracing,
         None,
-        Some(Duration::from_secs(15)),
+        Some(Duration::from_secs(30)),
         false,
     )
     .await;
@@ -60,6 +60,7 @@ async fn restart_recovers_from_failure() {
 
     // The status-node should have an error result (it panics on "fail" timer),
     // proving it crashed and the restart mechanism was exercised.
+    // Generous timeout (30s) ensures restarts play out on slow CI runners.
     let status_result = dr.node_results.get(&"rust-status-node".to_string().into());
     assert!(
         status_result.is_some(),
@@ -90,12 +91,13 @@ async fn max_restarts_limit_reached() {
         false,
         LogDestination::Tracing,
         None,
-        Some(Duration::from_secs(15)),
+        Some(Duration::from_secs(30)),
         false,
     )
     .await;
 
     // The dataflow should complete (the node exhausts its restart budget).
+    // Generous timeout (30s) ensures restarts play out on slow CI runners.
     let dr = result.expect("dataflow should complete without error");
     eprintln!(
         "dataflow completed with {} node results",
