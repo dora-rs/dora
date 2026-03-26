@@ -8,11 +8,11 @@ use notify::event::ModifyKind;
 use notify::{Config, Event as NotifyEvent, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::time::Duration;
 use std::{collections::HashMap, path::PathBuf};
+use tokio::task::JoinHandle;
 use tracing::info;
 use uuid::Uuid;
 
 use crate::common::{handle_dataflow_result, long_context, rpc};
-use crate::output::subscribe_and_print_logs;
 
 pub async fn attach_dataflow(
     dataflow: Descriptor,
@@ -20,8 +20,7 @@ pub async fn attach_dataflow(
     dataflow_id: Uuid,
     client: &CoordinatorControlClient,
     hot_reload: bool,
-    zenoh_session: &zenoh::Session,
-    log_level: log::LevelFilter,
+    _log_task: JoinHandle<()>,
 ) -> Result<(), eyre::ErrReport> {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
 
@@ -29,8 +28,6 @@ pub async fn attach_dataflow(
     let mut node_path_lookup = HashMap::new();
 
     let nodes = dataflow.resolve_aliases_and_set_defaults()?;
-
-    let print_daemon_name = nodes.values().any(|n| n.deploy.is_some());
 
     let working_dir = dataflow_path
         .canonicalize()
@@ -118,20 +115,6 @@ pub async fn attach_dataflow(
         }
     })
     .wrap_err("failed to set ctrl-c handler")?;
-
-    // Subscribe to log messages via zenoh — prints directly without routing
-    // through the event channel, since log display is fire-and-forget.
-    // The zenoh session was opened by the caller *before* the start RPC
-    // to avoid missing early log messages.
-    let base_topic = dora_core::topics::zenoh_log_base_topic_for_dataflow(dataflow_id);
-    let _log_task = subscribe_and_print_logs(
-        zenoh_session,
-        &base_topic,
-        log_level,
-        false,
-        print_daemon_name,
-    )
-    .await?;
 
     loop {
         let event: AttachLoopEvent =

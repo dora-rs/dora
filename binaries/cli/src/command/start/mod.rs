@@ -25,6 +25,7 @@ use std::{
     net::{IpAddr, SocketAddr},
     path::PathBuf,
 };
+use tokio::task::JoinHandle;
 use uuid::{NoContext, Timestamp, Uuid};
 
 mod attach;
@@ -68,22 +69,6 @@ impl Executable for Start {
         // no early log messages are missed.
         let dataflow_id = Uuid::new_v7(Timestamp::now(NoContext));
 
-        // Open the zenoh session and subscribe to logs early, before the
-        // start RPC triggers the daemon to begin publishing.
-        let zenoh_session = dora_core::topics::open_zenoh_session(Some(self.coordinator_addr))
-            .await
-            .wrap_err("failed to open zenoh session for log subscription")?;
-        let base_log_topic = dora_core::topics::zenoh_log_base_topic_for_dataflow(dataflow_id);
-
-        let (dataflow, dataflow_descriptor, client) = start_dataflow(
-            self.dataflow,
-            self.name,
-            coordinator_socket,
-            self.uv,
-            dataflow_id,
-        )
-        .await?;
-
         let attach = match (self.attach, self.detach) {
             (true, true) => eyre::bail!("both `--attach` and `--detach` are given"),
             (true, false) => true,
@@ -94,45 +79,80 @@ impl Executable for Start {
             }
         };
 
-        if attach {
-            let log_level = env_logger::Builder::new()
+        // Prepare the dataflow descriptor and coordinator connection before
+        // subscribing, so we have `print_daemon_name` available.
+        let (dataflow_path, dataflow_descriptor, dataflow_session, client) =
+            prepare_dataflow(self.dataflow, coordinator_socket).await?;
+
+        let print_daemon_name = dataflow_descriptor.nodes.iter().any(|n| n.deploy.is_some());
+        let log_level = if attach {
+            env_logger::Builder::new()
                 .filter_level(log::LevelFilter::Info)
                 .parse_default_env()
                 .build()
-                .filter();
+                .filter()
+        } else {
+            log::LevelFilter::Info
+        };
 
+        // Open the zenoh session and subscribe to logs *before* the start
+        // RPC so that no early log messages are missed.
+        let zenoh_session = dora_core::topics::open_zenoh_session(Some(self.coordinator_addr))
+            .await
+            .wrap_err("failed to open zenoh session for log subscription")?;
+        let base_log_topic = dora_core::topics::zenoh_log_base_topic_for_dataflow(dataflow_id);
+        let log_task = subscribe_and_print_logs(
+            &zenoh_session,
+            &base_log_topic,
+            log_level,
+            false,
+            print_daemon_name,
+        )
+        .await?;
+
+        // Now send the start RPC — the subscription is already active.
+        send_start_rpc(
+            &dataflow_path,
+            &dataflow_descriptor,
+            &dataflow_session,
+            &client,
+            self.name,
+            self.uv,
+            dataflow_id,
+        )
+        .await?;
+
+        if attach {
             attach_dataflow(
                 dataflow_descriptor,
-                dataflow,
+                dataflow_path,
                 dataflow_id,
                 &client,
                 self.hot_reload,
-                &zenoh_session,
-                log_level,
+                log_task,
             )
             .await
         } else {
-            let print_daemon_name = dataflow_descriptor.nodes.iter().any(|n| n.deploy.is_some());
-            wait_until_dataflow_started(
-                dataflow_id,
-                &client,
-                &zenoh_session,
-                &base_log_topic,
-                log::LevelFilter::Info,
-                print_daemon_name,
-            )
-            .await
+            wait_until_dataflow_started(dataflow_id, &client, log_task).await
         }
     }
 }
 
-async fn start_dataflow(
+/// Resolve the dataflow descriptor and connect to the coordinator, but do
+/// not send the start RPC yet.  This lets the caller set up log
+/// subscriptions before the daemon starts publishing.
+async fn prepare_dataflow(
     dataflow: String,
-    name: Option<String>,
     coordinator_socket: SocketAddr,
-    uv: bool,
-    dataflow_id: Uuid,
-) -> Result<(PathBuf, Descriptor, CoordinatorControlClient), eyre::Error> {
+) -> Result<
+    (
+        PathBuf,
+        Descriptor,
+        DataflowSession,
+        CoordinatorControlClient,
+    ),
+    eyre::Error,
+> {
     let dataflow = resolve_dataflow(dataflow)
         .await
         .context("could not resolve dataflow")?;
@@ -145,7 +165,21 @@ async fn start_dataflow(
         .await
         .wrap_err("failed to connect to dora coordinator")?;
 
-    let local_working_dir = local_working_dir(&dataflow, &dataflow_descriptor, &client).await?;
+    Ok((dataflow, dataflow_descriptor, dataflow_session, client))
+}
+
+/// Send the start RPC to the coordinator.  The caller should have already
+/// subscribed to zenoh log topics before calling this.
+async fn send_start_rpc(
+    dataflow: &PathBuf,
+    dataflow_descriptor: &Descriptor,
+    dataflow_session: &DataflowSession,
+    client: &CoordinatorControlClient,
+    name: Option<String>,
+    uv: bool,
+    dataflow_id: Uuid,
+) -> Result<(), eyre::Error> {
+    let local_working_dir = local_working_dir(dataflow, dataflow_descriptor, client).await?;
 
     let returned_id = rpc(
         "start dataflow",
@@ -166,21 +200,14 @@ async fn start_dataflow(
     .await?;
     eprintln!("dataflow start triggered: {returned_id}");
 
-    Ok((dataflow, dataflow_descriptor, client))
+    Ok(())
 }
 
 async fn wait_until_dataflow_started(
     dataflow_id: Uuid,
     client: &CoordinatorControlClient,
-    zenoh_session: &zenoh::Session,
-    log_topic: &str,
-    log_level: log::LevelFilter,
-    print_daemon_id: bool,
+    log_task: JoinHandle<()>,
 ) -> eyre::Result<()> {
-    let log_task =
-        subscribe_and_print_logs(zenoh_session, log_topic, log_level, false, print_daemon_id)
-            .await?;
-
     let result = rpc(
         "wait for dataflow spawn",
         client.wait_for_spawn(long_context(), dataflow_id),
