@@ -1271,3 +1271,64 @@ pub struct Ros2QosConfig {
     #[serde(default)]
     pub keep_all: bool,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn output_framing_defaults_to_raw() {
+        let yaml = r#"
+nodes:
+  - id: test
+    path: test.py
+    outputs:
+      - data
+"#;
+        let desc: Descriptor = serde_yaml::from_str(yaml).unwrap();
+        assert!(desc.nodes[0].output_framing.is_empty());
+    }
+
+    #[test]
+    fn output_framing_parses_arrow_ipc() {
+        let yaml = r#"
+nodes:
+  - id: test
+    path: test.py
+    outputs:
+      - data
+    output_framing:
+      data: arrow-ipc
+"#;
+        let desc: Descriptor = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(
+            desc.nodes[0]
+                .output_framing
+                .get::<DataId>(&"data".into()),
+            Some(&OutputFraming::ArrowIpc)
+        );
+    }
+
+    #[test]
+    fn cpu_affinity_parses() {
+        let yaml = r#"
+nodes:
+  - id: test
+    path: test.py
+    cpu_affinity: [0, 2, 4]
+"#;
+        let desc: Descriptor = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(desc.nodes[0].cpu_affinity, Some(vec![0, 2, 4]));
+    }
+
+    #[test]
+    fn cpu_affinity_defaults_to_none() {
+        let yaml = r#"
+nodes:
+  - id: test
+    path: test.py
+"#;
+        let desc: Descriptor = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(desc.nodes[0].cpu_affinity, None);
+    }
+}

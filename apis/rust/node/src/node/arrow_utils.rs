@@ -281,4 +281,61 @@ mod tests {
         let h2 = compute_schema_hash(&dt);
         assert_eq!(h1, h2);
     }
+
+    #[test]
+    fn ipc_roundtrip_empty_array() {
+        let array = UInt64Array::from(Vec::<u64>::new());
+        let data = array.into_data();
+        let encoded = encode_arrow_ipc(&data).unwrap();
+        let decoded = decode_arrow_ipc(&encoded).unwrap();
+        assert_eq!(data.len(), decoded.len());
+    }
+
+    #[test]
+    fn ipc_roundtrip_with_nulls() {
+        let array = UInt64Array::from(vec![Some(1), None, Some(3)]);
+        let data = array.into_data();
+        let encoded = encode_arrow_ipc(&data).unwrap();
+        let decoded = decode_arrow_ipc(&encoded).unwrap();
+        assert_eq!(data, decoded);
+    }
+
+    #[test]
+    fn buffer_into_arrow_array_rejects_deep_nesting() {
+        use std::sync::Arc;
+
+        let mut info = ArrowTypeInfo {
+            data_type: arrow_schema::DataType::UInt8,
+            len: 0,
+            null_count: 0,
+            validity: None,
+            offset: 0,
+            buffer_offsets: vec![],
+            child_data: vec![],
+            field_names: None,
+            schema_hash: None,
+        };
+        // Nest 40 levels deep (exceeds MAX_TYPE_DEPTH of 32)
+        for _ in 0..40 {
+            info = ArrowTypeInfo {
+                data_type: arrow_schema::DataType::List(Arc::new(arrow_schema::Field::new(
+                    "item",
+                    arrow_schema::DataType::UInt8,
+                    true,
+                ))),
+                len: 0,
+                null_count: 0,
+                validity: None,
+                offset: 0,
+                buffer_offsets: vec![],
+                child_data: vec![info],
+                field_names: None,
+                schema_hash: None,
+            };
+        }
+        let buf = arrow::buffer::Buffer::from(vec![0u8; 1024]);
+        let result = buffer_into_arrow_array(&buf, &info);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("depth"));
+    }
 }
