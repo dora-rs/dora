@@ -31,12 +31,12 @@ CLI (WS:6013) --> Coordinator --> Daemon(s) --> Nodes / Operators
 
 All inter-component messages are in `libraries/message/src/`. Key types:
 
-| Message | Direction | Purpose |
-|---------|-----------|---------|
-| `DaemonRequest` / `DaemonReply` | Node <-> Daemon | Data send/recv, subscribe, register |
-| `DaemonCoordinatorEvent` | Daemon -> Coordinator | Status, logs, node results |
-| `CoordinatorRequest` | Coordinator -> Daemon | Spawn/stop nodes, reload |
-| `InterDaemonEvent` | Daemon <-> Daemon | Cross-machine message routing |
+| Message | Direction | File | Purpose |
+|---------|-----------|------|---------|
+| `DaemonRequest` / `DaemonReply` | Node <-> Daemon | `node_to_daemon.rs` / `daemon_to_node.rs` | Data send/recv, subscribe, register |
+| `DaemonCoordinatorEvent` | Coordinator -> Daemon | `coordinator_to_daemon.rs` | Spawn/stop nodes, reload |
+| `CoordinatorRequest` | Daemon -> Coordinator | `daemon_to_coordinator.rs` | Status, logs, node results |
+| `InterDaemonEvent` | Daemon <-> Daemon | `daemon_to_daemon.rs` | Cross-machine message routing |
 
 Messages are versioned. Version check happens at connection init.
 
@@ -52,19 +52,23 @@ Messages are versioned. Version check happens at connection init.
 ## Key Abstractions
 
 ```rust
-// Node API (apis/rust/node/)
+// Node API (apis/rust/node/src/node/mod.rs)
 pub struct AdoraNode { /* ... */ }
 impl AdoraNode {
-    pub fn init() -> Result<(Self, Events)>;       // Standard init
-    pub fn init_from_env() -> Result<(Self, Events)>; // From RuntimeConfig env var
-    pub fn send_output(id, data, metadata) -> Result<()>;
-    pub fn send_service_request(...) -> Result<()>;
-    pub fn send_service_response(...) -> Result<()>;
+    pub fn init(node_config: NodeConfig) -> NodeResult<(Self, EventStream)>;
+    pub fn init_from_env() -> NodeResult<(Self, EventStream)>;
+    pub fn init_from_node_id(node_id: NodeId) -> NodeResult<(Self, EventStream)>;
+    pub fn init_flexible(node_id: NodeId) -> NodeResult<(Self, EventStream)>;
+    pub fn init_interactive() -> NodeResult<(Self, EventStream)>;
+
+    pub fn send_output(&mut self, output_id: DataId, parameters: MetadataParameters, data: impl Array) -> NodeResult<()>;
+    pub fn send_service_request(&mut self, output_id: DataId, parameters: MetadataParameters, data: impl Array) -> NodeResult<String>;  // returns auto-generated request_id
+    pub fn send_service_response(&mut self, output_id: DataId, parameters: MetadataParameters, data: impl Array) -> NodeResult<()>;
 }
 
-// Operator API (apis/rust/operator/)
-pub trait DoraOperator {
-    fn on_event(&mut self, event: &Event, send: &mut SendOutput) -> DoraStatus;
+// Operator API (apis/rust/operator/src/lib.rs)
+pub trait AdoraOperator: Default {
+    fn on_event(&mut self, event: &Event, output_sender: &mut AdoraOutputSender) -> Result<AdoraStatus, String>;
 }
 ```
 
@@ -82,24 +86,29 @@ nodes:
   my-node:
     path: path/to/executable        # or "shell:" or Python script
     inputs:
-      input_name: other-node/output  # Subscribe to another node's output
+      input_name: other-node/output  # Simple form
+      input_with_opts:               # Extended form
+        source: other-node/output
+        queue_size: 10
+        queue_policy: drop_oldest    # drop_oldest (default) | backpressure
     outputs:
       - output_name
     env:
       KEY: value
-    args: [--flag, value]
-    restart_policy: on_failure       # never | on_failure | always
-    queue_size: 10                   # Bounded channel size
-    queue_policy: latest             # latest (drop old) | blocking
-    labels:
-      machine: gpu-server            # For distributed placement
-    health_check:
-      interval_secs: 5
-      timeout_secs: 2
+    args: "-v --some-flag foo"       # String, not a list
+    restart_policy: on-failure       # never | on-failure | always
+    health_check_timeout: 2.0        # seconds (per node)
+    _unstable_deploy:                # unstable, may change
+      machine: gpu-server
+```
+
+Top-level descriptor fields:
+```yaml
+health_check_interval: 5.0           # seconds (global)
 ```
 
 **Virtual inputs** (daemon-generated):
-- `adora/timer/secs/<N>` or `adora/timer/millis/<N>` or `adora/timer/hz/<N>`
+- `adora/timer/secs/<N>` or `adora/timer/millis/<N>`
 - `adora/logs`, `adora/logs/<level>`, `adora/logs/<level>/<node>`
 
 ## Communication Patterns
@@ -109,11 +118,18 @@ Standard pub/sub. Node sends output, all subscribers receive.
 
 ### Service (Request/Reply)
 ```rust
-// Client
-node.send_service_request("service_input", data, request_id)?;
-// Server
-if let Some(req_id) = metadata.get("request_id") {
-    node.send_service_response("response_output", result, req_id)?;
+// Client: request_id is auto-generated and returned
+let request_id = node.send_service_request(
+    "service_output".into(),
+    MetadataParameters::default(),
+    data,
+)?;
+
+// Server: pass through request_id from incoming metadata
+if let Some(req_id) = metadata.get(adora_message::metadata::REQUEST_ID) {
+    let mut params = MetadataParameters::default();
+    params.insert(REQUEST_ID.to_string(), req_id.clone());
+    node.send_service_response("response_output".into(), params, result)?;
 }
 ```
 
@@ -138,7 +154,7 @@ Uses `goal_id` and `goal_status` metadata keys. Supports cancellation.
 ## Error Handling Patterns
 
 - `eyre::Result` for application errors (with `.context()` chains)
-- `NodeErrorCause` enum: `GraceTimeout`, `Cascading`, `SpawnFailure`, `Other`
+- `NodeErrorCause` enum: `GraceDuration`, `Cascading`, `FailedToSpawn`, `Other`
 - Restart policies with exponential backoff (configurable window)
 - Cascading error tracking: which node caused which failure
 
@@ -154,7 +170,7 @@ Uses `goal_id` and `goal_status` metadata keys. Supports cancellation.
 
 **Smoke test helpers**:
 - `run_smoke_test(name, yaml, timeout)` -- networked mode (up/start/poll/stop/down)
-- `run_smoke_test_local(name, yaml, stop_after)` -- local mode (run --stop-after)
+- `run_smoke_test_local(name, yaml, stop_after_secs)` -- local mode (run --stop-after)
 
 **Integration test setup**: `setup_integration_testing()` with JSON inputs via `ADORA_TEST_WITH_INPUTS` env var.
 

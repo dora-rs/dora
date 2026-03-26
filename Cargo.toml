@@ -58,7 +58,7 @@ members = [
 edition = "2024"
 rust-version = "1.85.0"
 # Python packages derive version from CARGO_PKG_VERSION automatically.
-version = "0.1.0"
+version = "0.2.0"
 description = "`adora` goal is to be a low latency, composable, and distributed data flow."
 documentation = "https://adora-rs.ai"
 readme = "./README.md"
@@ -66,31 +66,31 @@ license = "Apache-2.0"
 repository = "https://github.com/dora-rs/adora/"
 
 [workspace.dependencies]
-adora-node-api = { version = "0.1.0", path = "apis/rust/node", default-features = false }
-adora-node-api-python = { version = "0.1.0", path = "apis/python/node", default-features = false }
-adora-operator-api = { version = "0.1.0", path = "apis/rust/operator", default-features = false }
-adora-operator-api-macros = { version = "0.1.0", path = "apis/rust/operator/macros" }
-adora-operator-api-types = { version = "0.1.0", path = "apis/rust/operator/types" }
-adora-operator-api-python = { version = "0.1.0", path = "apis/python/operator" }
-adora-operator-api-c = { version = "0.1.0", path = "apis/c/operator" }
-adora-node-api-c = { version = "0.1.0", path = "apis/c/node" }
-adora-core = { version = "0.1.0", path = "libraries/core" }
-adora-recording = { version = "0.1.0", path = "libraries/recording" }
-adora-arrow-convert = { version = "0.1.0", path = "libraries/arrow-convert" }
-adora-tracing = { version = "0.1.0", path = "libraries/extensions/telemetry/tracing" }
-adora-metrics = { version = "0.1.0", path = "libraries/extensions/telemetry/metrics" }
-adora-download = { version = "0.1.0", path = "libraries/extensions/download" }
-adora-log-utils = { version = "0.1.0", path = "libraries/log-utils" }
-shared-memory-server = { version = "0.1.0", path = "libraries/shared-memory-server" }
-adora-coordinator-store = { version = "0.1.0", path = "libraries/coordinator-store" }
-adora-cli = { version = "0.1.0", path = "binaries/cli" }
-adora-runtime = { version = "0.1.0", path = "binaries/runtime" }
-adora-daemon = { version = "0.1.0", path = "binaries/daemon" }
-adora-coordinator = { version = "0.1.0", path = "binaries/coordinator" }
-adora-ros2-bridge = { version = "0.1.0", path = "libraries/extensions/ros2-bridge" }
-adora-ros2-bridge-msg-gen = { version = "0.1.0", path = "libraries/extensions/ros2-bridge/msg-gen" }
+adora-node-api = { version = "0.2.0", path = "apis/rust/node", default-features = false }
+adora-node-api-python = { version = "0.2.0", path = "apis/python/node", default-features = false }
+adora-operator-api = { version = "0.2.0", path = "apis/rust/operator", default-features = false }
+adora-operator-api-macros = { version = "0.2.0", path = "apis/rust/operator/macros" }
+adora-operator-api-types = { version = "0.2.0", path = "apis/rust/operator/types" }
+adora-operator-api-python = { version = "0.2.0", path = "apis/python/operator" }
+adora-operator-api-c = { version = "0.2.0", path = "apis/c/operator" }
+adora-node-api-c = { version = "0.2.0", path = "apis/c/node" }
+adora-core = { version = "0.2.0", path = "libraries/core" }
+adora-recording = { version = "0.2.0", path = "libraries/recording" }
+adora-arrow-convert = { version = "0.2.0", path = "libraries/arrow-convert" }
+adora-tracing = { version = "0.2.0", path = "libraries/extensions/telemetry/tracing" }
+adora-metrics = { version = "0.2.0", path = "libraries/extensions/telemetry/metrics" }
+adora-download = { version = "0.2.0", path = "libraries/extensions/download" }
+adora-log-utils = { version = "0.2.0", path = "libraries/log-utils" }
+shared-memory-server = { version = "0.2.0", path = "libraries/shared-memory-server" }
+adora-coordinator-store = { version = "0.2.0", path = "libraries/coordinator-store" }
+adora-cli = { version = "0.2.0", path = "binaries/cli" }
+adora-runtime = { version = "0.2.0", path = "binaries/runtime" }
+adora-daemon = { version = "0.2.0", path = "binaries/daemon" }
+adora-coordinator = { version = "0.2.0", path = "binaries/coordinator" }
+adora-ros2-bridge = { version = "0.2.0", path = "libraries/extensions/ros2-bridge" }
+adora-ros2-bridge-msg-gen = { version = "0.2.0", path = "libraries/extensions/ros2-bridge/msg-gen" }
 adora-ros2-bridge-python = { path = "libraries/extensions/ros2-bridge/python" }
-adora-message = { version = "0.1.0", path = "libraries/message" }
+adora-message = { version = "0.2.0", path = "libraries/message" }
 arrow = { version = "58", default-features = false }
 arrow-schema = { version = "58" }
 arrow-data = { version = "58" }

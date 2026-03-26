@@ -185,6 +185,9 @@ out/
 # MacOS DS_Store
 .DS_Store
 
+# Claude Code local settings (machine-specific)
+.claude/settings.local.json
+
 # macOS debug symbol bundles
 *.dSYM/
 
