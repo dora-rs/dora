@@ -1,5 +1,7 @@
 use std::io::Write;
 
+use chrono::Utc;
+
 use super::{Executable, default_tracing};
 use crate::{
     common::{
@@ -65,6 +67,38 @@ pub async fn logs(
     follow: bool,
     coordinator_addr: std::net::IpAddr,
 ) -> Result<()> {
+    // When following, subscribe to zenoh *before* fetching historical logs
+    // so that messages published during the RPC are buffered.  We record
+    // the current time as a dedup cutoff: the subscriber will silently
+    // drop messages with a timestamp before this point, since they are
+    // already covered by the historical fetch.
+    let log_task = if follow {
+        let log_level = env_logger::Builder::new()
+            .filter_level(log::LevelFilter::Info)
+            .parse_default_env()
+            .build()
+            .filter();
+
+        let zenoh_session = dora_core::topics::open_zenoh_session(Some(coordinator_addr))
+            .await
+            .wrap_err("failed to open zenoh session for log subscription")?;
+        let base_topic = dora_core::topics::zenoh_log_base_topic_for_dataflow_node(uuid, &node);
+        let drop_before = Utc::now();
+        Some(
+            subscribe_and_print_logs(
+                &zenoh_session,
+                &base_topic,
+                log_level,
+                false,
+                false,
+                Some(drop_before),
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+
     let logs = rpc(
         "retrieve logs",
         client.logs(long_context(), Some(uuid), None, node.to_string(), tail),
@@ -75,25 +109,10 @@ pub async fn logs(
         .write_all(&logs)
         .expect("failed to write logs to stdout");
 
-    if !follow {
-        return Ok(());
+    if let Some(log_task) = log_task {
+        // Block until the task ends (subscriber closes).
+        let _ = log_task.await;
     }
-    let log_level = env_logger::Builder::new()
-        .filter_level(log::LevelFilter::Info)
-        .parse_default_env()
-        .build()
-        .filter();
-
-    // Subscribe to log messages via zenoh
-    let zenoh_session = dora_core::topics::open_zenoh_session(Some(coordinator_addr))
-        .await
-        .wrap_err("failed to open zenoh session for log subscription")?;
-    let base_topic = dora_core::topics::zenoh_log_base_topic_for_dataflow_node(uuid, &node);
-    let log_task =
-        subscribe_and_print_logs(&zenoh_session, &base_topic, log_level, false, false).await?;
-
-    // Block until the task ends (subscriber closes).
-    let _ = log_task.await;
 
     Ok(())
 }

@@ -1,7 +1,7 @@
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::time::Duration;
 
-use chrono::Local;
+use chrono::{DateTime, Local, Utc};
 use colored::{Color, Colorize};
 use dora_core::build::LogLevelOrStdout;
 use dora_message::common::LogMessage;
@@ -14,12 +14,17 @@ use tokio::task::JoinHandle;
 /// One subscriber is declared per matching level suffix (including stdout).
 /// All subscribers share the same channel via the `callback` method so that
 /// a single receiver task can print messages in arrival order.
+///
+/// If `drop_before` is `Some(t)`, messages with `timestamp < t` are silently
+/// skipped.  This is used to deduplicate against historical logs that were
+/// fetched separately.
 pub async fn subscribe_and_print_logs(
     zenoh_session: &zenoh::Session,
     base_topic: &str,
     log_level: log::LevelFilter,
     print_dataflow_id: bool,
     print_daemon_name: bool,
+    drop_before: Option<DateTime<Utc>>,
 ) -> eyre::Result<JoinHandle<()>> {
     let suffixes = dora_core::topics::log_level_suffixes_for_filter(log_level);
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<LogMessage>();
@@ -57,6 +62,11 @@ pub async fn subscribe_and_print_logs(
         // Move subscribers into the task so they stay alive.
         let _subscribers = _subscribers;
         while let Some(log_message) = rx.recv().await {
+            if let Some(cutoff) = drop_before {
+                if log_message.timestamp < cutoff {
+                    continue;
+                }
+            }
             print_log_message(log_message, print_dataflow_id, print_daemon_name);
         }
     }))

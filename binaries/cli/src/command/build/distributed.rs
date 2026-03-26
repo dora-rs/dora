@@ -37,7 +37,7 @@ pub async fn build_distributed_dataflow(
         .wrap_err("failed to open zenoh session for build log subscription")?;
     let base_topic = dora_core::topics::zenoh_log_base_topic_for_build(&build_id);
     let log_task =
-        subscribe_and_print_logs(&zenoh_session, &base_topic, log_level, false, true).await?;
+        subscribe_and_print_logs(&zenoh_session, &base_topic, log_level, false, true, None).await?;
 
     // Now trigger the build — the daemon may start publishing logs
     // immediately, but our subscriber is already active.

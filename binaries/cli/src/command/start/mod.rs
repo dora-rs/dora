@@ -107,6 +107,7 @@ impl Executable for Start {
             log_level,
             false,
             print_daemon_name,
+            None,
         )
         .await?;
 
