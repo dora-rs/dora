@@ -26,6 +26,7 @@ pub use events::{DaemonRequest, DataflowEvent, Event};
 use eyre::{Result, WrapErr, bail, eyre};
 use futures::{Future, Stream, StreamExt, stream::FuturesUnordered};
 use futures_concurrency::stream::Merge;
+use indexmap::IndexMap;
 use log_subscriber::LogSubscriber;
 use petname::petname;
 use serde::de::IgnoredAny;
