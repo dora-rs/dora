@@ -47,7 +47,7 @@ use std::{
     pin::pin,
     sync::{
         Arc,
-        atomic::{self},
+        atomic::{self, AtomicU32, AtomicU64},
     },
     time::{Duration, Instant},
 };
@@ -219,7 +219,7 @@ pub struct Daemon {
     pub(crate) sessions: BTreeMap<SessionId, BuildId>,
     pub(crate) builds: BTreeMap<BuildId, BuildInfo>,
     pub(crate) git_manager: GitManager,
-    pub(crate) metrics_system: sysinfo::System,
+    pub(crate) metrics_system: Arc<std::sync::Mutex<sysinfo::System>>,
 }
 
 type DaemonRunResult = BTreeMap<Uuid, BTreeMap<NodeId, Result<(), NodeError>>>;
@@ -228,6 +228,217 @@ struct NodeBuildTask<F> {
     node_id: NodeId,
     dynamic_node: bool,
     task: F,
+}
+
+/// Snapshot of a single node for background metrics collection.
+struct NodeSnapshot {
+    node_id: NodeId,
+    pid: Option<Arc<AtomicU32>>,
+    restart_count: Arc<AtomicU32>,
+    restarts_disabled: bool,
+    broken_inputs: Vec<String>,
+    pending_messages: u64,
+}
+
+/// Snapshot of a running dataflow for background metrics collection.
+struct DataflowMetricsSnapshot {
+    dataflow_id: DataflowId,
+    nodes: Vec<NodeSnapshot>,
+    net_bytes_sent: Arc<AtomicU64>,
+    net_bytes_received: Arc<AtomicU64>,
+    net_messages_sent: Arc<AtomicU64>,
+    net_messages_received: Arc<AtomicU64>,
+    net_publish_failures: Arc<AtomicU64>,
+}
+
+/// Collect and send metrics in the background. Errors are returned to the
+/// caller (the spawned task logs them).
+async fn collect_and_send_metrics_bg(
+    dataflows: Vec<DataflowMetricsSnapshot>,
+    metrics_system: Arc<std::sync::Mutex<sysinfo::System>>,
+    sender: coordinator::CoordinatorSender,
+    daemon_id: DaemonId,
+    clock: Arc<uhlc::HLC>,
+) -> eyre::Result<()> {
+    use adora_message::daemon_to_coordinator::NodeMetrics;
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate};
+
+    let has_any_running = dataflows
+        .iter()
+        .any(|df| df.nodes.iter().any(|n| n.pid.is_some()));
+
+    // Refresh sysinfo on a blocking thread if any nodes are running.
+    // Use try_lock to skip if a previous collection is still in progress.
+    let refreshed_system = if has_any_running {
+        let sys = match metrics_system.try_lock() {
+            Ok(mut guard) => std::mem::take(&mut *guard),
+            Err(_) => {
+                tracing::debug!("metrics: skipping, previous collection still running");
+                return Ok(());
+            }
+        };
+        let refresh_kind = ProcessRefreshKind::nothing()
+            .with_cpu()
+            .with_memory()
+            .with_disk_usage();
+        let sys = tokio::task::spawn_blocking(move || {
+            let mut sys = sys;
+            sys.refresh_processes_specifics(ProcessesToUpdate::All, true, refresh_kind);
+            sys
+        })
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!("sysinfo refresh panicked: {e}");
+            sysinfo::System::new()
+        });
+        Some(sys)
+    } else {
+        None
+    };
+
+    for df in &dataflows {
+        let mut metrics = BTreeMap::new();
+
+        if let Some(ref sys) = refreshed_system {
+            // Pre-build parent->children map once per refresh.
+            let mut children_map: HashMap<sysinfo::Pid, Vec<sysinfo::Pid>> = HashMap::new();
+            for (pid, proc_info) in sys.processes() {
+                if let Some(parent) = proc_info.parent() {
+                    children_map.entry(parent).or_default().push(*pid);
+                }
+            }
+
+            for node in &df.nodes {
+                if let Some(pid_arc) = node.pid.as_ref() {
+                    let pid = pid_arc.load(atomic::Ordering::Acquire);
+                    let sys_pid = Pid::from_u32(pid);
+                    if let Some(process) = sys.process(sys_pid) {
+                        let mut cpu_usage = process.cpu_usage();
+                        let mut memory_bytes = process.memory();
+                        let disk_usage = process.disk_usage();
+                        let mut disk_read = disk_usage.read_bytes;
+                        let mut disk_written = disk_usage.written_bytes;
+
+                        // Recursively aggregate all descendants.
+                        let mut stack = vec![sys_pid];
+                        while let Some(parent) = stack.pop() {
+                            if let Some(kids) = children_map.get(&parent) {
+                                for &child_pid in kids {
+                                    if let Some(child) = sys.processes().get(&child_pid) {
+                                        cpu_usage += child.cpu_usage();
+                                        memory_bytes += child.memory();
+                                        let child_disk = child.disk_usage();
+                                        disk_read += child_disk.read_bytes;
+                                        disk_written += child_disk.written_bytes;
+                                    }
+                                    stack.push(child_pid);
+                                }
+                            }
+                        }
+
+                        let restart_count = node.restart_count.load(atomic::Ordering::Acquire);
+                        let status = if !node.broken_inputs.is_empty() {
+                            adora_message::daemon_to_coordinator::NodeStatus::Degraded
+                        } else {
+                            adora_message::daemon_to_coordinator::NodeStatus::Running
+                        };
+
+                        metrics.insert(
+                            node.node_id.clone(),
+                            NodeMetrics {
+                                pid,
+                                cpu_usage,
+                                memory_bytes,
+                                disk_read_bytes: Some(
+                                    (disk_read as f64 / METRICS_INTERVAL_SECS) as u64,
+                                ),
+                                disk_write_bytes: Some(
+                                    (disk_written as f64 / METRICS_INTERVAL_SECS) as u64,
+                                ),
+                                restart_count,
+                                broken_inputs: node.broken_inputs.clone(),
+                                status,
+                                pending_messages: node.pending_messages,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+
+        // Second pass: report nodes without a running process.
+        for node in &df.nodes {
+            if !metrics.contains_key(&node.node_id) {
+                let restart_count = node.restart_count.load(atomic::Ordering::Acquire);
+                let status = if node.restarts_disabled {
+                    adora_message::daemon_to_coordinator::NodeStatus::Failed
+                } else if restart_count > 0 {
+                    adora_message::daemon_to_coordinator::NodeStatus::Restarting
+                } else {
+                    continue;
+                };
+                metrics.insert(
+                    node.node_id.clone(),
+                    NodeMetrics {
+                        pid: 0,
+                        cpu_usage: 0.0,
+                        memory_bytes: 0,
+                        disk_read_bytes: None,
+                        disk_write_bytes: None,
+                        restart_count,
+                        broken_inputs: Vec::new(),
+                        status,
+                        pending_messages: node.pending_messages,
+                    },
+                );
+            }
+        }
+
+        if !metrics.is_empty() {
+            let network = {
+                let bs = df.net_bytes_sent.load(atomic::Ordering::Relaxed);
+                let br = df.net_bytes_received.load(atomic::Ordering::Relaxed);
+                let ms = df.net_messages_sent.load(atomic::Ordering::Relaxed);
+                let mr = df.net_messages_received.load(atomic::Ordering::Relaxed);
+                let pf = df.net_publish_failures.load(atomic::Ordering::Relaxed);
+                if bs > 0 || br > 0 || pf > 0 {
+                    Some(adora_message::daemon_to_coordinator::NetworkMetrics {
+                        bytes_sent: bs,
+                        bytes_received: br,
+                        messages_sent: ms,
+                        messages_received: mr,
+                        publish_failures: pf,
+                    })
+                } else {
+                    None
+                }
+            };
+            let msg = serde_json::to_vec(&Timestamped {
+                inner: CoordinatorRequest::Event {
+                    daemon_id: daemon_id.clone(),
+                    event: DaemonEvent::NodeMetrics {
+                        dataflow_id: df.dataflow_id,
+                        metrics,
+                        network,
+                    },
+                },
+                timestamp: clock.new_timestamp(),
+            })?;
+            sender
+                .send_event(&msg)
+                .await
+                .wrap_err("failed to send metrics to coordinator")?;
+        }
+    }
+
+    // Return the refreshed System to the shared mutex for reuse.
+    if let Some(sys) = refreshed_system {
+        if let Ok(mut guard) = metrics_system.lock() {
+            *guard = sys;
+        }
+    }
+
+    Ok(())
 }
 
 impl Daemon {
@@ -519,6 +730,8 @@ impl Daemon {
             while let Some(msg) = zenoh_publish_rx.recv().await {
                 if let Err(e) = msg.publisher.put(msg.serialized).await {
                     tracing::error!("zenoh publish failed: {e}");
+                    msg.net_publish_failures
+                        .fetch_add(1, atomic::Ordering::Relaxed);
                     continue;
                 }
                 // Relaxed ordering is correct: counters are read-only for metrics
@@ -555,7 +768,7 @@ impl Daemon {
             git_manager: Default::default(),
             builds,
             sessions: Default::default(),
-            metrics_system: sysinfo::System::new(),
+            metrics_system: Arc::new(std::sync::Mutex::new(sysinfo::System::new())),
         };
 
         let adora_events = ReceiverStream::new(adora_events_rx);
@@ -689,11 +902,7 @@ impl Daemon {
                     }
                 }
                 Event::MetricsInterval => {
-                    // Metrics collection uses spawn_blocking for sysinfo refresh.
-                    // The await is brief for the remaining work (node iteration + send).
-                    // TODO: Full fire-and-forget requires extracting metrics into a
-                    // standalone function with snapshot of running dataflow state.
-                    self.collect_and_send_metrics().await?;
+                    self.spawn_metrics_collection();
                 }
                 Event::NodeHealthCheckInterval => {
                     self.check_node_health();
@@ -1433,206 +1642,66 @@ impl Daemon {
         }
     }
 
-    async fn collect_and_send_metrics(&mut self) -> eyre::Result<()> {
-        use adora_message::daemon_to_coordinator::NodeMetrics;
-        use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate};
+    /// Snapshot running dataflow state and spawn metrics collection as a
+    /// background task so it never blocks the event loop.
+    fn spawn_metrics_collection(&self) {
+        let sender = match &self.coordinator_sender {
+            Some(s) => s.clone(),
+            None => return,
+        };
 
-        if self.coordinator_sender.is_none() {
-            return Ok(());
-        }
+        // Snapshot per-dataflow data needed for metrics.
+        let dataflow_snapshots: Vec<DataflowMetricsSnapshot> = self
+            .running
+            .iter()
+            .map(|(id, df)| DataflowMetricsSnapshot {
+                dataflow_id: *id,
+                nodes: df
+                    .running_nodes
+                    .iter()
+                    .map(|(nid, rn)| NodeSnapshot {
+                        node_id: nid.clone(),
+                        pid: rn.pid.clone(),
+                        restart_count: rn.restart_count.clone(),
+                        restarts_disabled: rn.restarts_disabled(),
+                        broken_inputs: df
+                            .broken_inputs
+                            .keys()
+                            .filter(|(n, _)| n == nid)
+                            .map(|(_, d)| d.to_string())
+                            .collect(),
+                        pending_messages: df
+                            .pending_messages
+                            .get(nid)
+                            .map(|c| c.load(atomic::Ordering::Relaxed))
+                            .unwrap_or(0),
+                    })
+                    .collect(),
+                net_bytes_sent: df.net_bytes_sent.clone(),
+                net_bytes_received: df.net_bytes_received.clone(),
+                net_messages_sent: df.net_messages_sent.clone(),
+                net_messages_received: df.net_messages_received.clone(),
+                net_publish_failures: df.net_publish_failures.clone(),
+            })
+            .collect();
 
-        // Reuse system instance for metrics collection
-        let system = &mut self.metrics_system;
+        let metrics_system = self.metrics_system.clone();
+        let daemon_id = self.daemon_id.clone();
+        let clock = self.clock.clone();
 
-        // Rate divisor derived from METRICS_INTERVAL
-
-        // Collect metrics for all running dataflows
-        for (dataflow_id, dataflow) in &self.running {
-            let mut metrics = BTreeMap::new();
-
-            let has_running_nodes = dataflow
-                .running_nodes
-                .values()
-                .any(|node| node.pid.is_some());
-
-            if has_running_nodes {
-                let refresh_kind = ProcessRefreshKind::nothing()
-                    .with_cpu()
-                    .with_memory()
-                    .with_disk_usage();
-                let mut sys = std::mem::take(system);
-                sys = tokio::task::spawn_blocking(move || {
-                    sys.refresh_processes_specifics(ProcessesToUpdate::All, true, refresh_kind);
-                    sys
-                })
-                .await
-                .unwrap_or_else(|e| {
-                    tracing::error!("sysinfo refresh panicked: {e}");
-                    sysinfo::System::new()
-                });
-                *system = sys;
-
-                // Pre-build parent->children map once per refresh for O(P+N*D)
-                // child aggregation instead of O(N*P) per-node scanning.
-                let mut children_map: HashMap<sysinfo::Pid, Vec<sysinfo::Pid>> = HashMap::new();
-                for (pid, proc_info) in system.processes() {
-                    if let Some(parent) = proc_info.parent() {
-                        children_map.entry(parent).or_default().push(*pid);
-                    }
-                }
-
-                // Collect metrics for each node
-                for (node_id, running_node) in &dataflow.running_nodes {
-                    if let Some(pid) = running_node.pid.as_ref() {
-                        let pid = pid.load(atomic::Ordering::Acquire);
-                        let sys_pid = Pid::from_u32(pid);
-                        if let Some(process) = system.process(sys_pid) {
-                            // Aggregate metrics across the process and all
-                            // its descendants (e.g. uv -> python).
-                            let mut cpu_usage = process.cpu_usage();
-                            let mut memory_bytes = process.memory();
-                            let disk_usage = process.disk_usage();
-                            let mut disk_read = disk_usage.read_bytes;
-                            let mut disk_written = disk_usage.written_bytes;
-
-                            // Recursively aggregate all descendants using the
-                            // pre-built parent->children map (O(descendants)
-                            // instead of O(all_processes) per node).
-                            let mut stack = vec![sys_pid];
-                            while let Some(parent) = stack.pop() {
-                                if let Some(kids) = children_map.get(&parent) {
-                                    for &child_pid in kids {
-                                        if let Some(child) = system.processes().get(&child_pid) {
-                                            cpu_usage += child.cpu_usage();
-                                            memory_bytes += child.memory();
-                                            let child_disk = child.disk_usage();
-                                            disk_read += child_disk.read_bytes;
-                                            disk_written += child_disk.written_bytes;
-                                        }
-                                        stack.push(child_pid);
-                                    }
-                                }
-                            }
-
-                            // Collect broken inputs for this node
-                            let broken_inputs: Vec<String> = dataflow
-                                .broken_inputs
-                                .keys()
-                                .filter(|(nid, _)| nid == node_id)
-                                .map(|(_, data_id)| data_id.to_string())
-                                .collect();
-
-                            let restart_count =
-                                running_node.restart_count.load(atomic::Ordering::Acquire);
-
-                            // Derive status from current state
-                            let status = if !broken_inputs.is_empty() {
-                                adora_message::daemon_to_coordinator::NodeStatus::Degraded
-                            } else {
-                                adora_message::daemon_to_coordinator::NodeStatus::Running
-                            };
-
-                            // Divide by metrics_interval to get per-second averages
-                            metrics.insert(
-                                node_id.clone(),
-                                NodeMetrics {
-                                    pid,
-                                    cpu_usage,
-                                    memory_bytes,
-                                    disk_read_bytes: Some(
-                                        (disk_read as f64 / METRICS_INTERVAL_SECS) as u64,
-                                    ),
-                                    disk_write_bytes: Some(
-                                        (disk_written as f64 / METRICS_INTERVAL_SECS) as u64,
-                                    ),
-                                    restart_count,
-                                    broken_inputs,
-                                    status,
-                                    pending_messages: dataflow
-                                        .pending_messages
-                                        .get(node_id)
-                                        .map(|c| c.load(atomic::Ordering::Relaxed))
-                                        .unwrap_or(0),
-                                },
-                            );
-                        }
-                    }
-                }
+        tokio::spawn(async move {
+            if let Err(e) = collect_and_send_metrics_bg(
+                dataflow_snapshots,
+                metrics_system,
+                sender,
+                daemon_id,
+                clock,
+            )
+            .await
+            {
+                tracing::warn!("metrics collection failed: {e}");
             }
-
-            // Second pass: report nodes without a running process
-            for (node_id, running_node) in &dataflow.running_nodes {
-                if !metrics.contains_key(node_id) {
-                    let restart_count = running_node.restart_count.load(atomic::Ordering::Acquire);
-                    let status = if running_node.restarts_disabled() {
-                        adora_message::daemon_to_coordinator::NodeStatus::Failed
-                    } else if restart_count > 0 {
-                        adora_message::daemon_to_coordinator::NodeStatus::Restarting
-                    } else {
-                        continue;
-                    };
-                    metrics.insert(
-                        node_id.clone(),
-                        NodeMetrics {
-                            pid: 0,
-                            cpu_usage: 0.0,
-                            memory_bytes: 0,
-                            disk_read_bytes: None,
-                            disk_write_bytes: None,
-                            restart_count,
-                            broken_inputs: Vec::new(),
-                            status,
-                            pending_messages: dataflow
-                                .pending_messages
-                                .get(node_id)
-                                .map(|c| c.load(atomic::Ordering::Relaxed))
-                                .unwrap_or(0),
-                        },
-                    );
-                }
-            }
-
-            // Send metrics to coordinator if we have any
-            if !metrics.is_empty() {
-                if let Some(sender) = &self.coordinator_sender {
-                    let network = {
-                        let bs = dataflow.net_bytes_sent.load(atomic::Ordering::Relaxed);
-                        let br = dataflow.net_bytes_received.load(atomic::Ordering::Relaxed);
-                        let ms = dataflow.net_messages_sent.load(atomic::Ordering::Relaxed);
-                        let mr = dataflow
-                            .net_messages_received
-                            .load(atomic::Ordering::Relaxed);
-                        if bs > 0 || br > 0 {
-                            Some(adora_message::daemon_to_coordinator::NetworkMetrics {
-                                bytes_sent: bs,
-                                bytes_received: br,
-                                messages_sent: ms,
-                                messages_received: mr,
-                            })
-                        } else {
-                            None
-                        }
-                    };
-                    let msg = serde_json::to_vec(&Timestamped {
-                        inner: CoordinatorRequest::Event {
-                            daemon_id: self.daemon_id.clone(),
-                            event: DaemonEvent::NodeMetrics {
-                                dataflow_id: *dataflow_id,
-                                metrics,
-                                network,
-                            },
-                        },
-                        timestamp: self.clock.new_timestamp(),
-                    })?;
-                    sender
-                        .send_event(&msg)
-                        .await
-                        .wrap_err("failed to send metrics to coordinator")?;
-                }
-            }
-        }
-
-        Ok(())
+        });
     }
 
     async fn handle_inter_daemon_event(&mut self, event: InterDaemonEvent) -> eyre::Result<()> {
@@ -2551,6 +2620,7 @@ impl Daemon {
             payload_len,
             net_bytes_sent: dataflow.net_bytes_sent.clone(),
             net_messages_sent: dataflow.net_messages_sent.clone(),
+            net_publish_failures: dataflow.net_publish_failures.clone(),
         };
         match self.zenoh_publish_tx.try_send(outbound) {
             Ok(()) => {}

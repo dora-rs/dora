@@ -370,7 +370,8 @@ impl PreparedNode {
     ) -> eyre::Result<NodeKind> {
         let mut child = match &mut self.command {
             Some(command) => {
-                let std_command = command.to_std();
+                #[allow(unused_mut)]
+                let mut std_command = command.to_std();
                 logger
                     .log(
                         LogLevel::Info,
@@ -385,6 +386,35 @@ impl PreparedNode {
                         ),
                     )
                     .await;
+
+                #[cfg(target_os = "linux")]
+                if let Some(ref cores) = self.node.cpu_affinity {
+                    use std::os::unix::process::CommandExt;
+                    let cores = cores.clone();
+                    // SAFETY: sched_setaffinity is async-signal-safe on Linux.
+                    unsafe {
+                        std_command.pre_exec(move || {
+                            let mut set: libc::cpu_set_t = std::mem::zeroed();
+                            libc::CPU_ZERO(&mut set);
+                            for &core in &cores {
+                                libc::CPU_SET(core, &mut set);
+                            }
+                            let ret = libc::sched_setaffinity(
+                                0,
+                                std::mem::size_of::<libc::cpu_set_t>(),
+                                &set,
+                            );
+                            if ret != 0 {
+                                eprintln!(
+                                    "warning: sched_setaffinity failed: {}",
+                                    std::io::Error::last_os_error()
+                                );
+                            }
+                            Ok(())
+                        });
+                    }
+                }
+
                 let mut command =
                     TokioCommandWrap::from(tokio::process::Command::from(std_command));
 

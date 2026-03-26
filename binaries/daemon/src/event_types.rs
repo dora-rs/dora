@@ -225,4 +225,5 @@ pub(crate) struct ZenohOutbound {
     pub payload_len: u64,
     pub net_bytes_sent: Arc<AtomicU64>,
     pub net_messages_sent: Arc<AtomicU64>,
+    pub net_publish_failures: Arc<AtomicU64>,
 }

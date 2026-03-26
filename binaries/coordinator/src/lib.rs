@@ -9,7 +9,7 @@ use crate::{
 };
 use adora_coordinator_store::DataflowStatus as StoreDataflowStatus;
 pub use adora_coordinator_store::{self, CoordinatorStore, InMemoryStore};
-use adora_core::uhlc::HLC;
+use adora_core::{descriptor::DescriptorExt, uhlc::HLC};
 use adora_message::{
     BuildId, DataflowId,
     cli_to_coordinator::ControlRequest,
@@ -1184,24 +1184,140 @@ async fn start_inner(
                             let _ = reply_sender.send(reply);
                         }
                         // --- Dynamic Topology ---
-                        // FIXME: These handlers validate the dataflow exists but do not
-                        // yet dispatch to daemons. Full implementation requires resolving
-                        // the target daemon and forwarding the event.
                         ControlRequest::AddNode { dataflow_id, node } => {
-                            // FIXME: not yet implemented — coordinator-to-daemon dispatch needed
-                            let _ = reply_sender.send(Err(eyre!(
-                                "AddNode not yet implemented (node '{}' on dataflow {dataflow_id})",
-                                node.id
-                            )));
+                            let result = match running_dataflows.get_mut(&dataflow_id) {
+                                Some(dataflow) => {
+                                    if dataflow.node_to_daemon.contains_key(&node.id) {
+                                        Err(eyre!(
+                                            "node '{}' already exists in dataflow {dataflow_id}",
+                                            node.id
+                                        ))
+                                    } else {
+                                        // Resolve the Node into a ResolvedNode via a
+                                        // temporary single-node descriptor.
+                                        let tmp_desc = adora_message::descriptor::Descriptor {
+                                            nodes: vec![node],
+                                            communication: Default::default(),
+                                            deploy: None,
+                                            debug: Default::default(),
+                                            health_check_interval: None,
+                                            strict_types: None,
+                                            type_rules: Vec::new(),
+                                        };
+                                        match tmp_desc.resolve_aliases_and_set_defaults() {
+                                            Ok(mut resolved_map) => {
+                                                let (node_id, resolved_node) = resolved_map
+                                                    .pop_first()
+                                                    .expect("single-node descriptor must resolve");
+                                                // Pick the first daemon (single-daemon case)
+                                                // TODO: use machine label or load balancing for multi-daemon
+                                                let daemon_id =
+                                                    dataflow.daemons.iter().next().cloned();
+                                                match daemon_id {
+                                                    Some(did) => {
+                                                        let msg =
+                                                            serde_json::to_vec(&Timestamped {
+                                                                inner:
+                                                                    DaemonCoordinatorEvent::AddNode {
+                                                                        dataflow_id,
+                                                                        node: resolved_node,
+                                                                        uv: false,
+                                                                    },
+                                                                timestamp: clock.new_timestamp(),
+                                                            })?;
+                                                        match daemon_connections.get_mut(&did) {
+                                                            Some(conn) => {
+                                                                match conn
+                                                                    .send_and_receive(&msg)
+                                                                    .await
+                                                                {
+                                                                    Ok(_) => {
+                                                                        dataflow
+                                                                            .node_to_daemon
+                                                                            .insert(
+                                                                                node_id.clone(),
+                                                                                did,
+                                                                            );
+                                                                        Ok(
+                                                                            ControlRequestReply::NodeAdded {
+                                                                                dataflow_id,
+                                                                                node_id,
+                                                                            },
+                                                                        )
+                                                                    }
+                                                                    Err(e) => Err(eyre!(
+                                                                        "daemon dispatch failed: {e}"
+                                                                    )),
+                                                                }
+                                                            }
+                                                            None => Err(eyre!(
+                                                                "no connection for daemon {did}"
+                                                            )),
+                                                        }
+                                                    }
+                                                    None => Err(eyre!(
+                                                        "no daemons registered for dataflow {dataflow_id}"
+                                                    )),
+                                                }
+                                            }
+                                            Err(e) => {
+                                                Err(eyre!("failed to resolve node: {e}"))
+                                            }
+                                        }
+                                    }
+                                }
+                                None => {
+                                    Err(eyre!("no running dataflow with ID {dataflow_id}"))
+                                }
+                            };
+                            let _ = reply_sender.send(result);
                         }
                         ControlRequest::RemoveNode {
                             dataflow_id,
                             node_id,
-                            grace_duration: _,
+                            grace_duration,
                         } => {
-                            let _ = reply_sender.send(Err(eyre!(
-                                "RemoveNode not yet implemented (node '{node_id}' on dataflow {dataflow_id})"
-                            )));
+                            let result = match running_dataflows.get(&dataflow_id) {
+                                Some(dataflow) => {
+                                    match dataflow.node_to_daemon.get(&node_id) {
+                                        Some(daemon_id) => {
+                                            let msg = serde_json::to_vec(&Timestamped {
+                                                inner: DaemonCoordinatorEvent::RemoveNode {
+                                                    dataflow_id,
+                                                    node_id: node_id.clone(),
+                                                    grace_duration,
+                                                },
+                                                timestamp: clock.new_timestamp(),
+                                            })?;
+                                            match daemon_connections.get_mut(daemon_id) {
+                                                Some(conn) => {
+                                                    match conn.send_and_receive(&msg).await {
+                                                        Ok(_) => {
+                                                            Ok(ControlRequestReply::NodeRemoved {
+                                                                dataflow_id,
+                                                                node_id,
+                                                            })
+                                                        }
+                                                        Err(e) => Err(eyre!(
+                                                            "daemon dispatch failed: {e}"
+                                                        )),
+                                                    }
+                                                }
+                                                None => Err(eyre!(
+                                                    "no connection for daemon {daemon_id}"
+                                                )),
+                                            }
+                                        }
+                                        None => Err(eyre!(
+                                            "node '{node_id}' not found in dataflow {dataflow_id}"
+                                        )),
+                                    }
+                                }
+                                None => {
+                                    Err(eyre!("no running dataflow with ID {dataflow_id}"))
+                                }
+                            };
+                            let _ = reply_sender.send(result);
                         }
                         ControlRequest::AddMapping {
                             dataflow_id,
@@ -1210,9 +1326,52 @@ async fn start_inner(
                             target_node,
                             target_input,
                         } => {
-                            let _ = reply_sender.send(Err(eyre!(
-                                "AddMapping not yet implemented on dataflow {dataflow_id} ({source_node}/{source_output} -> {target_node}/{target_input})"
-                            )));
+                            let result = match running_dataflows.get(&dataflow_id) {
+                                Some(dataflow) => {
+                                    match dataflow.node_to_daemon.get(&target_node) {
+                                        Some(daemon_id) => {
+                                            let msg = serde_json::to_vec(&Timestamped {
+                                                inner: DaemonCoordinatorEvent::AddMapping {
+                                                    dataflow_id,
+                                                    source_node: source_node.clone(),
+                                                    source_output: source_output.clone(),
+                                                    target_node: target_node.clone(),
+                                                    target_input: target_input.clone(),
+                                                },
+                                                timestamp: clock.new_timestamp(),
+                                            })?;
+                                            match daemon_connections.get_mut(daemon_id) {
+                                                Some(conn) => {
+                                                    match conn.send_and_receive(&msg).await {
+                                                        Ok(_) => {
+                                                            Ok(ControlRequestReply::MappingAdded {
+                                                                dataflow_id,
+                                                                source_node,
+                                                                source_output,
+                                                                target_node,
+                                                                target_input,
+                                                            })
+                                                        }
+                                                        Err(e) => Err(eyre!(
+                                                            "daemon dispatch failed: {e}"
+                                                        )),
+                                                    }
+                                                }
+                                                None => Err(eyre!(
+                                                    "no connection for daemon {daemon_id}"
+                                                )),
+                                            }
+                                        }
+                                        None => Err(eyre!(
+                                            "target node '{target_node}' not found in dataflow {dataflow_id}"
+                                        )),
+                                    }
+                                }
+                                None => {
+                                    Err(eyre!("no running dataflow with ID {dataflow_id}"))
+                                }
+                            };
+                            let _ = reply_sender.send(result);
                         }
                         ControlRequest::RemoveMapping {
                             dataflow_id,
@@ -1221,9 +1380,54 @@ async fn start_inner(
                             target_node,
                             target_input,
                         } => {
-                            let _ = reply_sender.send(Err(eyre!(
-                                "RemoveMapping not yet implemented on dataflow {dataflow_id} ({source_node}/{source_output} -x- {target_node}/{target_input})"
-                            )));
+                            let result = match running_dataflows.get(&dataflow_id) {
+                                Some(dataflow) => {
+                                    match dataflow.node_to_daemon.get(&target_node) {
+                                        Some(daemon_id) => {
+                                            let msg = serde_json::to_vec(&Timestamped {
+                                                inner: DaemonCoordinatorEvent::RemoveMapping {
+                                                    dataflow_id,
+                                                    source_node: source_node.clone(),
+                                                    source_output: source_output.clone(),
+                                                    target_node: target_node.clone(),
+                                                    target_input: target_input.clone(),
+                                                },
+                                                timestamp: clock.new_timestamp(),
+                                            })?;
+                                            match daemon_connections.get_mut(daemon_id) {
+                                                Some(conn) => {
+                                                    match conn.send_and_receive(&msg).await {
+                                                        Ok(_) => {
+                                                            Ok(
+                                                                ControlRequestReply::MappingRemoved {
+                                                                    dataflow_id,
+                                                                    source_node,
+                                                                    source_output,
+                                                                    target_node,
+                                                                    target_input,
+                                                                },
+                                                            )
+                                                        }
+                                                        Err(e) => Err(eyre!(
+                                                            "daemon dispatch failed: {e}"
+                                                        )),
+                                                    }
+                                                }
+                                                None => Err(eyre!(
+                                                    "no connection for daemon {daemon_id}"
+                                                )),
+                                            }
+                                        }
+                                        None => Err(eyre!(
+                                            "target node '{target_node}' not found in dataflow {dataflow_id}"
+                                        )),
+                                    }
+                                }
+                                None => {
+                                    Err(eyre!("no running dataflow with ID {dataflow_id}"))
+                                }
+                            };
+                            let _ = reply_sender.send(result);
                         }
                     }
                 }

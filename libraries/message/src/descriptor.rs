@@ -755,6 +755,19 @@ pub struct Node {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub params: BTreeMap<String, String>,
 
+    /// CPU cores to pin this node's process to (Linux only, ignored on other platforms).
+    ///
+    /// ## Example
+    ///
+    /// ```yaml
+    /// nodes:
+    ///   - id: fast_node
+    ///     path: ./fast_node
+    ///     cpu_affinity: [0, 1]
+    /// ```
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_affinity: Option<Vec<usize>>,
+
     /// Unstable machine deployment configuration
     #[schemars(skip)]
     #[serde(rename = "_unstable_deploy")]
@@ -768,6 +781,9 @@ pub struct ResolvedNode {
     pub name: Option<String>,
     pub description: Option<String>,
     pub env: Option<BTreeMap<String, EnvValue>>,
+
+    #[serde(default)]
+    pub cpu_affinity: Option<Vec<usize>>,
 
     #[serde(default)]
     pub deploy: Option<Deploy>,

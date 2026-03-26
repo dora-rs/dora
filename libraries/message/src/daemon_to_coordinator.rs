@@ -160,6 +160,8 @@ pub struct NetworkMetrics {
     pub bytes_received: u64,
     pub messages_sent: u64,
     pub messages_received: u64,
+    #[serde(default)]
+    pub publish_failures: u64,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]

@@ -193,6 +193,7 @@ impl DescriptorExt for Descriptor {
                     name: node.name,
                     description: node.description,
                     env: node.env,
+                    cpu_affinity: node.cpu_affinity,
                     deploy: node.deploy,
                     kind,
                 },
