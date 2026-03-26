@@ -217,7 +217,8 @@ pub(crate) async fn check_coordinator_version(
         bail!(
             "CLI message format (v{local}) is not compatible with \
              coordinator message format (v{remote}). \
-             Please ensure CLI and coordinator are the same version."
+             Please rebuild or reinstall the CLI and coordinator from the same \
+             dora checkout or release."
         );
     }
     Ok(())

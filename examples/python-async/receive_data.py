@@ -17,11 +17,17 @@ signal.signal(signal.SIGTERM, handle_sigterm)
 
 async def main():
     node = Node()
-    for _ in range(50):
+    while True:
         event = await node.recv_async()
-        if event["type"] == "STOP":
+        event_type = event.get("type")
+
+        if event_type == "STOP":
             break
-        del event
+
+        if event_type == "INPUT":
+            # Process inputs here if needed; this example just discards them.
+            continue
+
     print("done!")
 
 

@@ -243,9 +243,23 @@ jobs:
           # only save caches for `main` branch
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      - name: Cache ROS apt packages
+        uses: actions/cache@v3
+        with:
+          path: /var/cache/apt/archives
+          key: ${{ runner.os }}-ros-apt-${{ hashFiles('.github/workflows/ci.yml') }}
+
       - uses: ros-tooling/setup-ros@v0.7
         with:
           required-ros-distributions: humble
+          install-ros: false
+
+      - name: Install minimal ROS 2 packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ros-humble-ros-base
+
       - run: 'source /opt/ros/humble/setup.bash && echo AMENT_PREFIX_PATH=${AMENT_PREFIX_PATH} >> "$GITHUB_ENV"'
       - name: Install the latest version of uv
         uses: astral-sh/setup-uv@v6
