@@ -29,7 +29,8 @@ use futures_concurrency::stream::Merge;
 use indexmap::IndexMap;
 use log_subscriber::LogSubscriber;
 use petname::petname;
-use serde::de::IgnoredAny;
+use serde::Serialize;
+use serde_json::value::RawValue;
 pub(crate) use state::DaemonConnections;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -1998,22 +1999,38 @@ fn build_set_param_message_from_raw_json(
     value_json: &[u8],
     timestamp: adora_core::uhlc::Timestamp,
 ) -> eyre::Result<Vec<u8>> {
-    // Validate payload is valid JSON without allocating a full Value.
-    serde_json::from_slice::<IgnoredAny>(value_json)
+    #[derive(Serialize)]
+    struct SetParamPayloadRaw<'a> {
+        dataflow_id: DataflowId,
+        node_id: &'a adora_core::config::NodeId,
+        key: &'a str,
+        value: &'a RawValue,
+    }
+    #[derive(Serialize)]
+    enum DaemonCoordinatorEventRaw<'a> {
+        SetParam(SetParamPayloadRaw<'a>),
+    }
+    #[derive(Serialize)]
+    struct TimestampedDaemonEventRaw<'a> {
+        inner: DaemonCoordinatorEventRaw<'a>,
+        timestamp: adora_core::uhlc::Timestamp,
+    }
+
+    // Parse persisted bytes as raw JSON once, then rely on serde for
+    // envelope serialization instead of manual string JSON assembly.
+    let value = serde_json::from_slice::<Box<RawValue>>(value_json)
         .map_err(|e| eyre!("invalid persisted param JSON: {e}"))?;
 
-    let value_json = std::str::from_utf8(value_json)
-        .map_err(|e| eyre!("persisted param is not valid UTF-8 JSON: {e}"))?;
-
-    let dataflow_id_json = serde_json::to_string(&dataflow_id)?;
-    let node_id_json = serde_json::to_string(node_id)?;
-    let key_json = serde_json::to_string(key)?;
-    let timestamp_json = serde_json::to_string(&timestamp)?;
-
-    Ok(format!(
-        r#"{{"inner":{{"SetParam":{{"dataflow_id":{dataflow_id_json},"node_id":{node_id_json},"key":{key_json},"value":{value_json}}}}},"timestamp":{timestamp_json}}}"#
-    )
-    .into_bytes())
+    serde_json::to_vec(&TimestampedDaemonEventRaw {
+        inner: DaemonCoordinatorEventRaw::SetParam(SetParamPayloadRaw {
+            dataflow_id,
+            node_id,
+            key,
+            value: value.as_ref(),
+        }),
+        timestamp,
+    })
+    .map_err(Into::into)
 }
 
 fn schedule_param_replay_for_ready_dataflow(

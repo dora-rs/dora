@@ -99,7 +99,11 @@ impl DaemonConnection {
     ///
     /// Embeds raw JSON bytes directly to preserve u128 fidelity
     /// for uhlc::ID inside timestamps.
-    /// Maximum number of in-flight requests per daemon connection.
+    /// Maximum number of in-flight requests per `DaemonConnection` clone.
+    ///
+    /// `DaemonConnection` is cloneable and each clone keeps an independent
+    /// pending-reply map, so this cap is enforced per clone rather than
+    /// globally per WebSocket connection.
     const MAX_PENDING_REPLIES: usize = 256;
 
     pub(crate) async fn send_and_receive(&self, message: &[u8]) -> eyre::Result<Vec<u8>> {
