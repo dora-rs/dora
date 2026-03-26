@@ -79,10 +79,16 @@ impl Executable for Start {
             }
         };
 
-        // Prepare the dataflow descriptor and coordinator connection before
-        // subscribing, so we have `print_daemon_name` available.
-        let (dataflow_path, dataflow_descriptor, dataflow_session, client) =
-            prepare_dataflow(self.dataflow, coordinator_socket).await?;
+        let dataflow_path = resolve_dataflow(self.dataflow)
+            .await
+            .context("could not resolve dataflow")?;
+        let dataflow_descriptor =
+            Descriptor::blocking_read(&dataflow_path).wrap_err("Failed to read yaml dataflow")?;
+        let dataflow_session = DataflowSession::read_session(&dataflow_path)
+            .context("failed to read DataflowSession")?;
+        let client = connect_and_check_version(coordinator_socket.ip(), coordinator_socket.port())
+            .await
+            .wrap_err("failed to connect to dora coordinator")?;
 
         let print_daemon_name = dataflow_descriptor.nodes.iter().any(|n| n.deploy.is_some());
         let log_level = if attach {
@@ -137,36 +143,6 @@ impl Executable for Start {
             wait_until_dataflow_started(dataflow_id, &client, log_task).await
         }
     }
-}
-
-/// Resolve the dataflow descriptor and connect to the coordinator, but do
-/// not send the start RPC yet.  This lets the caller set up log
-/// subscriptions before the daemon starts publishing.
-async fn prepare_dataflow(
-    dataflow: String,
-    coordinator_socket: SocketAddr,
-) -> Result<
-    (
-        PathBuf,
-        Descriptor,
-        DataflowSession,
-        CoordinatorControlClient,
-    ),
-    eyre::Error,
-> {
-    let dataflow = resolve_dataflow(dataflow)
-        .await
-        .context("could not resolve dataflow")?;
-    let dataflow_descriptor =
-        Descriptor::blocking_read(&dataflow).wrap_err("Failed to read yaml dataflow")?;
-    let dataflow_session =
-        DataflowSession::read_session(&dataflow).context("failed to read DataflowSession")?;
-
-    let client = connect_and_check_version(coordinator_socket.ip(), coordinator_socket.port())
-        .await
-        .wrap_err("failed to connect to dora coordinator")?;
-
-    Ok((dataflow, dataflow_descriptor, dataflow_session, client))
 }
 
 /// Send the start RPC to the coordinator.  The caller should have already
