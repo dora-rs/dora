@@ -7,7 +7,7 @@ use crate::{
     common::{
         connect_and_check_version, long_context, resolve_dataflow_identifier_interactive, rpc,
     },
-    output::subscribe_and_print_logs,
+    output::subscribe_to_logs,
 };
 use clap::Args;
 use dora_core::topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST};
@@ -68,11 +68,10 @@ pub async fn logs(
     coordinator_addr: std::net::IpAddr,
 ) -> Result<()> {
     // When following, subscribe to zenoh *before* fetching historical logs
-    // so that messages published during the RPC are buffered.  We record
-    // the current time as a dedup cutoff: the subscriber will silently
-    // drop messages with a timestamp before this point, since they are
-    // already covered by the historical fetch.
-    let log_task = if follow {
+    // so that messages published during the RPC are buffered.  The printer
+    // is only started after the historical output is flushed, with a
+    // timestamp cutoff to deduplicate the overlap window.
+    let subscription = if follow {
         let log_level = env_logger::Builder::new()
             .filter_level(log::LevelFilter::Info)
             .parse_default_env()
@@ -83,18 +82,7 @@ pub async fn logs(
             .await
             .wrap_err("failed to open zenoh session for log subscription")?;
         let base_topic = dora_core::topics::zenoh_log_base_topic_for_dataflow_node(uuid, &node);
-        let drop_before = Utc::now();
-        Some(
-            subscribe_and_print_logs(
-                &zenoh_session,
-                &base_topic,
-                log_level,
-                false,
-                false,
-                Some(drop_before),
-            )
-            .await?,
-        )
+        Some(subscribe_to_logs(&zenoh_session, &base_topic, log_level).await?)
     } else {
         None
     };
@@ -104,12 +92,17 @@ pub async fn logs(
         client.logs(long_context(), Some(uuid), None, node.to_string(), tail),
     )
     .await?;
+    // The daemon read the log file at approximately this instant.
+    // Zenoh messages with an earlier timestamp are already covered
+    // by the historical output, so we use this as the dedup cutoff.
+    let drop_before = Utc::now();
 
     std::io::stdout()
         .write_all(&logs)
         .expect("failed to write logs to stdout");
 
-    if let Some(log_task) = log_task {
+    if let Some(subscription) = subscription {
+        let log_task = subscription.spawn_printer(false, false, Some(drop_before));
         // Block until the task ends (subscriber closes).
         let _ = log_task.await;
     }
