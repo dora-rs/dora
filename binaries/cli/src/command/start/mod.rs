@@ -128,7 +128,7 @@ impl Executable for Start {
         )
         .await?;
 
-        if attach {
+        let result = if attach {
             attach_dataflow(
                 dataflow_descriptor,
                 dataflow_path,
@@ -140,7 +140,12 @@ impl Executable for Start {
             .await
         } else {
             wait_until_dataflow_started(dataflow_id, &client, log_task).await
-        }
+        };
+        // Close the zenoh session explicitly for clean shutdown.
+        // Note: zenoh 1.8.0 may still emit "Unable to publish transport
+        // event: session closed" — see https://github.com/eclipse-zenoh/zenoh/issues/2492
+        let _ = zenoh_session.close().await;
+        result
     }
 }
 

@@ -121,6 +121,20 @@ pub async fn abort_log_task_with_grace(task: JoinHandle<()>) {
     let _ = task.await;
 }
 
+/// Gracefully shut down a log printer task by closing the zenoh session first.
+///
+/// Closing the session invalidates the subscriber callbacks, which drops all
+/// channel senders and causes the printer loop to exit naturally.
+///
+/// Note: zenoh 1.8.0 still emits spurious "Unable to publish transport event:
+/// session closed" errors during `close()` due to an internal race — see
+/// <https://github.com/eclipse-zenoh/zenoh/issues/2492>.
+pub async fn close_log_session_and_wait(zenoh_session: zenoh::Session, task: JoinHandle<()>) {
+    let _ = zenoh_session.close().await;
+    // Give the printer a short window to drain remaining buffered messages.
+    let _ = tokio::time::timeout(Duration::from_millis(200), task).await;
+}
+
 pub fn print_log_message(
     log_message: LogMessage,
     print_dataflow_id: bool,
