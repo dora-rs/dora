@@ -1,4 +1,10 @@
-"""TODO: Add docstring."""
+"""LLM-based operator for dora-rs dataflow.
+
+This operator integrates Large Language Models (LLMs) to modify code,
+format messages as JSON, or act as a general assistant within a dora-rs
+robotic pipeline. It uses the Transformers library for model inference
+and supports several distinct prompting templates.
+"""
 
 import json
 import os
@@ -187,14 +193,25 @@ def replace_code_in_source(source_code, replacement_block: str):
 
 
 class Operator:
-    """TODO: Add docstring."""
+    """Dora operator for LLM tasks like code modification and assistant replies."""
 
     def on_event(
         self,
         dora_event,
         send_output,
     ) -> DoraStatus:
-        """TODO: Add docstring."""
+        """Dispatch incoming events to appropriate LLM tasks.
+
+        Args:
+            dora_event (dict): The event from dora-rs, representing
+                code modification requests, message formatting, or
+                assistant queries.
+            send_output (Callable): Callback to emit LLM responses or
+                modified data back to the dataflow.
+
+        Returns:
+            DoraStatus: CONTINUE to allow further event processing.
+        """
         if dora_event["type"] == "INPUT" and dora_event["id"] == "code_modifier":
             input = dora_event["value"][0].as_py()
 
@@ -267,7 +284,14 @@ class Operator:
 
         # Generate output
         # prompt = PROMPT_TEMPLATE.format(system_message=system_message, prompt=prompt))
-        """TODO: Add docstring."""
+        """Generate a response from the LLM based on the provided prompt.
+
+        Args:
+            prompt (str): The input text to the model.
+
+        Returns:
+            str: The generated text from the model, skipping the initial prompt.
+        """
         input = tokenizer(prompt, return_tensors="pt")
         input_ids = input.input_ids.cuda()
 

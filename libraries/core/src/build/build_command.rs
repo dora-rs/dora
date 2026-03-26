@@ -17,7 +17,14 @@ pub async fn run_build_command(
 ) -> eyre::Result<()> {
     std::fs::create_dir_all(working_dir).context("failed to create working directory")?;
 
-    let lines = build.lines().collect::<Vec<_>>();
+    let lines = build
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+    if lines.is_empty() {
+        return Err(eyre!("build command is empty"));
+    }
     for build_line in lines {
         let mut split = splitty::split_unquoted_whitespace(build_line).unwrap_quotes(true);
 
@@ -52,7 +59,7 @@ pub async fn run_build_command(
 
         let mut child = cmd
             .spawn()
-            .wrap_err_with(|| format!("failed to spawn `{build}`"))?;
+            .wrap_err_with(|| format!("failed to spawn `{build_line}`"))?;
 
         let child_stdout = BufReader::new(child.stdout.take().expect("failed to take stdout"));
         let child_stderr = BufReader::new(child.stderr.take().expect("failed to take stderr"));
@@ -65,7 +72,7 @@ pub async fn run_build_command(
         let exit_status = child
             .wait()
             .await
-            .wrap_err_with(|| format!("failed to run `{build}`"))?;
+            .wrap_err_with(|| format!("failed to run `{build_line}`"))?;
         if !exit_status.success() {
             return Err(eyre!("build command `{build_line}` returned {exit_status}"));
         }
@@ -92,7 +99,15 @@ async fn forward_build_output<R1, R2>(
 
 #[cfg(test)]
 mod tests {
-    use super::forward_build_output;
+    use super::{forward_build_output, run_build_command};
+    use dora_message::descriptor::EnvValue;
+    use std::{
+        collections::BTreeMap,
+        fs,
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+    use tempfile::tempdir;
     use tokio::io::{AsyncWriteExt, BufReader};
 
     #[tokio::test]
@@ -167,5 +182,90 @@ mod tests {
         assert_eq!(lines.len(), 256);
         assert_eq!(lines.first().map(String::as_str), Some("line-0"));
         assert_eq!(lines.last().map(String::as_str), Some("line-255"));
+    }
+
+    #[tokio::test]
+    async fn reports_the_failing_line_for_multi_line_build_errors() {
+        let working_dir = test_working_dir();
+        let first_line = format!(
+            "\"{}\" --help",
+            std::env::current_exe()
+                .expect("failed to locate test binary")
+                .display()
+        );
+        let failing_line = "definitely-not-a-real-command";
+        let build = format!("{first_line}\n{failing_line}");
+        let envs = Some(BTreeMap::new());
+        let (stdout_tx, _stdout_rx) = tokio::sync::mpsc::channel(4);
+
+        let err = run_build_command(&build, &working_dir, false, &envs, stdout_tx)
+            .await
+            .expect_err("missing executable should fail");
+        let msg = format!("{err:#}");
+
+        assert!(msg.contains(failing_line));
+        assert!(
+            !msg.contains(&first_line),
+            "error should reference the failing line instead of the full build block: {msg}"
+        );
+
+        let _ = fs::remove_dir_all(&working_dir);
+    }
+
+    #[tokio::test]
+    async fn ignores_blank_lines_in_multi_line_build_commands() {
+        let working_dir = tempdir().unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+
+        run_build_command(
+            "cargo --version\n\ncargo --version\n",
+            working_dir.path(),
+            false,
+            &None::<BTreeMap<String, EnvValue>>,
+            tx,
+        )
+        .await
+        .unwrap();
+
+        let mut lines = Vec::new();
+        while let Some(line) = rx.recv().await {
+            lines.push(line.unwrap());
+        }
+
+        assert!(
+            lines.iter().any(|line| line.contains("cargo")),
+            "expected cargo output to be forwarded"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_truly_empty_build_commands() {
+        let working_dir = tempdir().unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+
+        let err = run_build_command(
+            "\n   \n",
+            working_dir.path(),
+            false,
+            &None::<BTreeMap<String, EnvValue>>,
+            tx,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(err.to_string().contains("build command is empty"));
+    }
+
+    fn test_working_dir() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "dora-build-command-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).expect("failed to create test working dir");
+        dir
     }
 }

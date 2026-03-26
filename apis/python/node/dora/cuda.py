@@ -1,4 +1,10 @@
-"""TODO: Add docstring."""
+"""CUDA memory utilities for dora-rs dataflow nodes.
+
+Provides helper functions for managing CUDA Inter-Process Communication (IPC)
+memory handles. These utilities enable zero-copy GPU data transfer between
+dora-rs nodes using PyTorch and Numba, facilitating high-performance
+robotic applications.
+"""
 
 import pyarrow as pa
 

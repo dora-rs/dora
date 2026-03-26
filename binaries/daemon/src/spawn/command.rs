@@ -39,8 +39,18 @@ pub(super) async fn path_spawn_command(
                     .wrap_err("failed to download custom node")?
             } else {
                 let source = shellexpand::env(source)?;
-                resolve_path(source.as_ref(), working_dir)
-                    .wrap_err_with(|| format!("failed to resolve node source `{source}`"))?
+                resolve_path(source.as_ref(), working_dir).wrap_err_with(|| {
+                    if let Some(build_cmd) = &node.build {
+                        format!(
+                            "failed to resolve node source `{source}`\n  \
+                                Hint: this node defines a `build` command:\n    \
+                                {build_cmd}\n  \
+                                Did you forget to run `dora build <dataflow.yml>` first?"
+                        )
+                    } else {
+                        format!("failed to resolve node source `{source}`")
+                    }
+                })?
             };
 
             // If extension is .py, use python to run the script
