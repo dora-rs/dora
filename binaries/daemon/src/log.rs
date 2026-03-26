@@ -287,15 +287,16 @@ impl Logger {
                 // Re-use an existing publisher or create one with a
                 // matching listener so we only serialize + send when at
                 // least one subscriber is listening on this topic.
-                let entry = publishers.entry(topic.clone());
+                let entry = publishers.entry(topic);
                 let pub_entry = match entry {
                     std::collections::hash_map::Entry::Occupied(o) => o.into_mut(),
                     std::collections::hash_map::Entry::Vacant(v) => {
-                        match Self::create_publisher(session, &topic).await {
+                        match Self::create_publisher(session, v.key()).await {
                             Ok(pe) => v.insert(pe),
                             Err(err) => {
                                 tracing::warn!(
-                                    "failed to create zenoh publisher for {topic}: {err}"
+                                    "failed to create zenoh publisher for {}: {err}",
+                                    v.key()
                                 );
                                 return;
                             }
