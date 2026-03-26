@@ -561,7 +561,7 @@ pub(crate) async fn start_dataflow(
 
 async fn destroy_daemon(
     daemon_id: DaemonId,
-    mut daemon_connection: DaemonConnection,
+    daemon_connection: DaemonConnection,
     timestamp: uhlc::Timestamp,
 ) -> eyre::Result<()> {
     let message = serde_json::to_vec(&Timestamped {

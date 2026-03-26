@@ -69,6 +69,7 @@ impl DaemonConnections {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct DaemonConnection {
     pub(crate) sender: mpsc::Sender<String>,
     /// Shared with the ws_daemon handler task to resolve correlation-based replies.
@@ -101,7 +102,7 @@ impl DaemonConnection {
     /// Maximum number of in-flight requests per daemon connection.
     const MAX_PENDING_REPLIES: usize = 256;
 
-    pub(crate) async fn send_and_receive(&mut self, message: &[u8]) -> eyre::Result<Vec<u8>> {
+    pub(crate) async fn send_and_receive(&self, message: &[u8]) -> eyre::Result<Vec<u8>> {
         let id = Uuid::new_v4();
         let params_str =
             std::str::from_utf8(message).map_err(|e| eyre!("outgoing message not UTF-8: {e}"))?;
@@ -140,7 +141,7 @@ impl DaemonConnection {
     ///
     /// Embeds raw JSON bytes directly to preserve u128 fidelity
     /// for uhlc::ID inside timestamps.
-    pub(crate) async fn send(&mut self, message: &[u8]) -> eyre::Result<()> {
+    pub(crate) async fn send(&self, message: &[u8]) -> eyre::Result<()> {
         let params_str =
             std::str::from_utf8(message).map_err(|e| eyre!("outgoing message not UTF-8: {e}"))?;
         let id = Uuid::new_v4();
