@@ -97,10 +97,10 @@ not run in CI, meaning lifecycle regressions go undetected.
 | Constraint | Original Status | v0.2 Status | Sprint |
 |-----------|----------------|-------------|--------|
 | Single coordinator SPOF | No recovery | **Daemon auto-reconnect + ReDB default + Recovering status** | Sprint 9 (#81) |
-| Static topology | Cannot add/remove nodes | **AddNode/RemoveNode/AddMapping protocol + CLI** (coordinator dispatch pending) | Sprint 10 (#82) |
-| Single-threaded event loop | Zenoh pub blocks loop | **Zenoh publish offloaded to drain task** (stop <500ms under load) | Sprint 7 (#75) |
-| Arrow metadata-only | No schema negotiation | **First-message type validation + field_names/schema_hash metadata** (IPC framing pending) | Sprint 11 (#83) |
-| Soft real-time only | No OS tuning | **--rt flag (mlockall + SCHED_FIFO) + comprehensive tuning guide** | Sprint 12 |
+| Static topology | Cannot add/remove nodes | **AddNode/RemoveNode/AddMapping protocol + CLI + coordinator dispatch** | Sprint 10 + Phase 3 |
+| Single-threaded event loop | Zenoh pub blocks loop | **Zenoh publish offloaded to drain task + fire-and-forget metrics** | Sprint 7 + Phase 3 |
+| Arrow metadata-only | No schema negotiation | **First-message type validation + Arrow IPC framing + schema_hash** | Sprint 11 + Phase 2 |
+| Soft real-time only | No OS tuning | **--rt flag (mlockall + SCHED_FIFO) + cpu_affinity YAML + tuning guide** | Sprint 12 + Phase 3 |
 | Custom shmem IPC | 4 blocking threads/node | **Zenoh SHM data plane** (35% lower latency, 3-10x throughput) | Sprint 6 (#74) |
 
 ---

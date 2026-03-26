@@ -7,10 +7,12 @@ Adora achieves 10-17x lower latency than ROS2 Python through zero-copy shared me
 | Layer | Adora | ROS2 (rclpy) |
 |-------|-------|---------------|
 | Runtime | Rust async (tokio) | Python + C++ middleware |
-| IPC (>4KB) | Zero-copy shared memory | DDS serialization + copy |
+| IPC (>4KB) | Zenoh SHM zero-copy | DDS serialization + copy |
 | IPC (<4KB) | TCP with bincode | DDS serialization + copy |
-| Data format | Apache Arrow (zero-serde) | CDR serialization |
+| Data format | Apache Arrow (zero-serde) + optional IPC framing | CDR serialization |
 | Threading | Lock-free channels (flume) | GIL-bound callbacks |
+| Fan-out | Arc-wrapped (O(1) per receiver) | Per-receiver copy |
+| Metrics | Fire-and-forget (spawned task) | Inline |
 
 ## Benchmark Suite
 

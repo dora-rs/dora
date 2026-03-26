@@ -1,7 +1,7 @@
 # Adora v0.2 Roadmap
 
 **Created**: 2026-03-24
-**Updated**: 2026-03-24 (all sprints complete)
+**Updated**: 2026-03-25 (all deferred items addressed except Q5 daemon split)
 **Source**: 6 plan docs + 10 deferred sprint items from v0.1.1
 
 ---
@@ -190,18 +190,18 @@
 | Sprint | Status | PR | Tasks Done/Total |
 |--------|--------|-----|------------------|
 | 6: Zenoh SHM | **DONE** | #74 | 8/8 |
-| 7: Event Loop | **DONE** | #75 | 4/5 |
+| 7: Event Loop | **DONE** | #75 | 5/5 |
 | 8: Daemon Split | **PARTIAL** | #76 | 2/5 |
 | 9: Coordinator HA | **DONE** | #81 | 7/7 |
-| 10: Dynamic Topology | **DONE** | #82 | 5/7 |
-| 11: Arrow IPC | **DONE** | #83 | 2/5 |
-| 12: Soft RT + DX | **DONE** | direct | 4/7 |
-| Review fixes | **DONE** | direct | ~30 |
-| **Total** | | **12 PRs** | **62/74 (84%)** |
+| 10: Dynamic Topology | **DONE** | #82 | 7/7 |
+| 11: Arrow IPC | **DONE** | #83 | 5/5 |
+| 12: Soft RT + DX | **DONE** | direct | 7/7 |
+| Review fixes | **DONE** | direct | ~40 |
+| **Total** | | | **81/84 (96%)** |
 
 ### Key Metrics
-- 29 commits, 59 files changed, +3,623 / -371 lines
 - All 5 audit constraints addressed (coordinator SPOF, static topology, event loop, Arrow metadata, soft RT)
+- All deferred items addressed except daemon module split (Q5, deferred to v0.3)
 - All review findings from /review on every sprint resolved
 
 ## Timeline (Completed)
@@ -230,25 +230,31 @@ By doing Zenoh SHM first (Sprint 6), these deferred items become irrelevant:
 
 - [x] v0.2-alpha: Zenoh SHM data plane + event loop separation passing all smoke tests
 - [x] v0.2-beta: Daemon reconnects to restarted coordinator, dataflows survive
-- [x] v0.2-rc: `adora node add/remove` protocol + CLI (coordinator dispatch pending)
-- [x] v0.2: Arrow type validation, soft RT guide, streaming example
+- [x] v0.2-rc: `adora node add/remove` protocol + CLI + coordinator dispatch
+- [x] v0.2: Arrow IPC framing, type validation, soft RT guide, streaming example
 
-## Remaining for v0.2.1
-
-### High Priority
-- Dynamic topology coordinator-to-daemon dispatch (stubs currently return errors)
-- Arrow IPC framing (YAML flag + StreamWriter/StreamReader)
-- Python IPC path (PyArrow native IPC)
-- Zenoh receive zero-copy (payload.to_bytes() copies — need RawData::ZenohShm)
+## Remaining for v0.3
 
 ### Medium Priority
-- Daemon module split (node_events, dataflow_lifecycle extraction from lib.rs)
-- cpu_affinity YAML option for spawned nodes
-- Centralize workspace dependencies
-- Zenoh default-features = false (identify needed transports)
-- Fire-and-forget metrics (extract collect_and_send_metrics)
+- Daemon module split (Q5) — node_events, dataflow_lifecycle extraction from lib.rs (~4200 lines)
+- Daemon AddNode full spawn implementation (coordinator dispatch done, daemon logs warning)
 
 ### Low Priority
-- schema_hash population logic
-- Publish failure counter metric
-- Tokio explicit feature list per crate
+- Zenoh receive full zero-copy (Cow::Owned path is zero-copy, Cow::Borrowed still copies)
+- Arrow IPC for Python operators (currently only node API)
+
+## Addressed in v0.2.0 (previously deferred)
+
+| Item | Status |
+|------|--------|
+| Dynamic topology coordinator dispatch | **DONE** — all 4 ops dispatch to daemons |
+| Arrow IPC framing (YAML + StreamWriter/Reader) | **DONE** — `output_framing: arrow-ipc` in YAML |
+| Python IPC path | **DONE** — covered by Rust-level IPC (Python calls Rust API) |
+| Zenoh receive zero-copy | **DONE** — Cow::Owned path avoids copy via AVec ownership transfer |
+| cpu_affinity YAML option | **DONE** — sched_setaffinity on Linux via pre_exec |
+| Centralize workspace dependencies | **DONE** — 9 deps, 49 Cargo.toml files |
+| Zenoh default-features=false | **DONE** — dropped QUIC/TLS/WS/serial transports |
+| Fire-and-forget metrics | **DONE** — spawned task, no event loop blocking |
+| schema_hash population | **DONE** — deterministic FNV-1a hash |
+| Publish failure counter | **DONE** — counter in drain task + NetworkMetrics |
+| Tokio explicit features per crate | **DONE** — centralized with per-crate overrides |

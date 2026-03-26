@@ -30,7 +30,7 @@
 
 - **10-17x faster than ROS2 Python** -- 100% Rust internals with zero-copy shared memory IPC for messages >4KB, flat latency from 4KB to 4MB payloads
 - **Zenoh SHM data plane** -- nodes publish directly via [Zenoh](https://zenoh.io/) shared memory, bypassing the daemon for 35% lower latency and 3-10x higher throughput on large payloads; automatic network fallback for cross-machine
-- **Apache Arrow native** -- columnar memory format end-to-end with zero serialization overhead; shared across all language bindings
+- **Apache Arrow native** -- columnar memory format end-to-end with zero serialization overhead; optional [Arrow IPC framing](docs/yaml-spec.md) for self-describing wire format; shared across all language bindings
 - **Non-blocking event loop** -- Zenoh publishes offloaded to a dedicated drain task; control commands respond in <500ms even under high data throughput
 
 ### Developer experience
@@ -48,7 +48,7 @@
 - **Distributed by default** -- local shared memory between co-located nodes, automatic [Zenoh](https://zenoh.io/) pub-sub for cross-machine communication, SSH-based [cluster management](docs/distributed-deployment.md) with label scheduling, rolling upgrades, and auto-recovery
 - **Coordinator HA** -- persistent redb-backed state store (default), daemon auto-reconnect with exponential backoff, dataflow state reconstruction on coordinator restart
 - **Dynamic topology** -- add and remove nodes from running dataflows via CLI (`adora node add/remove/connect/disconnect`) without restarting
-- **Soft real-time** -- optional `--rt` flag for mlockall + SCHED_FIFO; comprehensive [tuning guide](docs/realtime-tuning.md) for CPU affinity, memory locking, kernel params, and container deployment
+- **Soft real-time** -- optional `--rt` flag for mlockall + SCHED_FIFO; per-node `cpu_affinity` pinning in YAML; comprehensive [tuning guide](docs/realtime-tuning.md) for memory locking, kernel params, and container deployment
 - **OpenTelemetry** -- built-in structured logging with rotation/routing, metrics, distributed tracing, and zero-setup trace viewing via CLI
 
 ### Debugging and observability
@@ -503,7 +503,7 @@ See [docs/patterns.md](docs/patterns.md) for the full guide.
 
 ## Development
 
-**Rust edition 2024, MSRV 1.85.0, workspace version 0.1.0.**
+**Rust edition 2024, MSRV 1.85.0, workspace version 0.2.0.**
 
 ### Build
 

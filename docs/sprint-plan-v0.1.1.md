@@ -128,26 +128,21 @@
 
 ---
 
-## Deferred Items (10 remaining)
+## Deferred Items — Updated v0.2.0
 
-### Medium Priority (v0.2+)
+Most deferred items were addressed in v0.2.0 Phases 1-3. Remaining:
 
-| # | ID | Task | Effort | Blocker |
-|---|-----|------|--------|---------|
-| 25 | CM3 | Signal shmem client on server drop | S | Shmem channel internals |
-| 33 | P4 | Split shmem protocol (metadata + raw bytes) | L | Protocol change, compat |
-| 35 | P8 | Separate Zenoh metadata from payload | M | Coupled with P4 |
-| 45 | — | Streaming pattern example | M | Working code needed |
-| 46 | DEP4 | Zenoh default-features = false | S | Transport identification |
-| 49 | DEP8 | Move `inquire` behind feature flag | S | Needs `#[cfg]` on DaemonChannel enum |
-| 51 | — | Centralize workspace deps | M | Wide-reaching Cargo.toml changes |
-
-### Low Priority (v0.3+)
-
-| # | ID | Task | Effort | Blocker |
-|---|-----|------|--------|---------|
-| 40 | Q5 | Split daemon lib.rs (4081 lines) | L | Large refactor, no behavior change |
-| 47 | DEP3 | Tokio explicit feature list | S | Too invasive for quick sprint |
+| # | ID | Task | Status |
+|---|-----|------|--------|
+| 25 | CM3 | Signal shmem client on server drop | **Eliminated** — Zenoh SHM replaced custom shmem |
+| 33 | P4 | Split shmem protocol | **Eliminated** — Zenoh SHM replaced custom shmem |
+| 35 | P8 | Separate Zenoh metadata from payload | **Eliminated** — zenoh attachments handle this |
+| 45 | — | Streaming pattern example | **DONE** (Sprint 12) |
+| 46 | DEP4 | Zenoh default-features = false | **DONE** (Phase 1) |
+| 49 | DEP8 | Move `inquire` behind feature flag | REVERTED — too invasive |
+| 51 | — | Centralize workspace deps | **DONE** (Phase 1) |
+| 40 | Q5 | Split daemon lib.rs | **Deferred to v0.3** |
+| 47 | DEP3 | Tokio explicit feature list | **DONE** (Phase 1) |
 
 ---
 

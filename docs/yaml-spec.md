@@ -281,6 +281,37 @@ Example with exponential backoff:
   health_check_timeout: 30.0
 ```
 
+### Arrow IPC Framing
+
+By default, outputs use a raw Arrow buffer layout (zero-copy, no schema overhead). For self-describing wire format with full schema metadata, enable Arrow IPC framing per output:
+
+```yaml
+- id: sensor
+  path: ./sensor
+  outputs:
+    - image
+  output_framing:
+    image: arrow-ipc
+```
+
+When `arrow-ipc` framing is set, data is serialized as Arrow IPC stream format (schema + record batches). Receivers automatically detect the framing mode via a `_framing` metadata key and decode accordingly. This is useful when consumers need schema introspection or when interoperating with external Arrow tools.
+
+Values: `raw` (default) or `arrow-ipc`.
+
+### CPU Affinity
+
+Pin a node's process to specific CPU cores (Linux only, ignored on other platforms):
+
+```yaml
+- id: realtime-controller
+  path: ./controller
+  cpu_affinity: [0, 1]
+  inputs:
+    sensor: sensor/data
+```
+
+The daemon applies `sched_setaffinity` before exec. Core indices must be less than the system's `CPU_SETSIZE` (typically 1024). Out-of-range cores are skipped with a warning.
+
 ### Deployment
 
 Assign nodes to specific machines using `_unstable_deploy`:

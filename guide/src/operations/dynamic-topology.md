@@ -40,7 +40,7 @@ After adding, wire inputs explicitly with `adora node connect`.
 
 ## Current Limitations
 
-- Node spawning requires coordinator-to-daemon dispatch (in progress)
+- Daemon-side node spawning for `AddNode` is pending (coordinator dispatch works, daemon logs a warning)
 - Cross-daemon dynamic topology not yet supported
 - Dynamic nodes are not persisted across dataflow restart
 
