@@ -10,7 +10,7 @@ use eyre::Context;
 use std::{collections::BTreeMap, net::IpAddr};
 
 use crate::common::{long_context, rpc};
-use crate::output::{abort_log_task_with_grace, subscribe_and_print_logs};
+use crate::output::{close_log_session_and_wait, subscribe_and_print_logs};
 use crate::session::DataflowSession;
 
 /// Trigger a distributed build and wait for it to complete.
@@ -65,7 +65,7 @@ pub async fn build_distributed_dataflow(
         client.wait_for_build(long_context(), build_id),
     )
     .await;
-    abort_log_task_with_grace(log_task).await;
+    close_log_session_and_wait(zenoh_session, log_task).await;
     result?;
     eprintln!("dataflow build finished successfully");
     Ok(build_id)

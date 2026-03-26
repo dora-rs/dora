@@ -38,12 +38,19 @@ fn build_zenoh_config(coordinator_addr: Option<IpAddr>, listen_port: Option<u16>
     }
 
     if let Some(addr) = coordinator_addr {
-        zenoh_config
-            .insert_json5(
-                "connect/endpoints",
-                &format!(r#"["tcp/{}:{}"]"#, addr, DORA_ZENOH_PEER_PORT_DEFAULT),
-            )
-            .unwrap();
+        // Skip connect endpoint when the daemon is already listening on the
+        // same port on this machine — connecting to ourselves causes
+        // CONNECTION_TO_SELF errors from zenoh.
+        let would_connect_to_self =
+            listen_port == Some(DORA_ZENOH_PEER_PORT_DEFAULT) && addr.is_loopback();
+        if !would_connect_to_self {
+            zenoh_config
+                .insert_json5(
+                    "connect/endpoints",
+                    &format!(r#"["tcp/{}:{}"]"#, addr, DORA_ZENOH_PEER_PORT_DEFAULT),
+                )
+                .unwrap();
+        }
     }
     zenoh_config
 }

@@ -147,6 +147,36 @@ impl BuildLogger for NodeBuildLogger<'_> {
     }
 }
 
+/// A build logger that publishes to zenoh when available, falling back to
+/// tracing. Used by the RPC server path where we need to dynamically choose
+/// between a zenoh-backed logger and a tracing-only stub.
+pub enum RpcBuildLogger {
+    Zenoh(NodeBuildLogger<'static>),
+    Tracing(dora_core::build::TracingBuildLogger),
+}
+
+impl BuildLogger for RpcBuildLogger {
+    type Clone = RpcBuildLogger;
+
+    async fn log_message(
+        &mut self,
+        level: impl Into<LogLevelOrStdout> + Send,
+        message: impl Into<String> + Send,
+    ) {
+        match self {
+            RpcBuildLogger::Zenoh(l) => l.log_message(level, message).await,
+            RpcBuildLogger::Tracing(l) => l.log_message(level, message).await,
+        }
+    }
+
+    async fn try_clone(&self) -> eyre::Result<Self::Clone> {
+        match self {
+            RpcBuildLogger::Zenoh(l) => Ok(RpcBuildLogger::Zenoh(l.try_clone().await?)),
+            RpcBuildLogger::Tracing(l) => Ok(RpcBuildLogger::Tracing(l.try_clone().await?)),
+        }
+    }
+}
+
 pub struct DaemonLogger {
     daemon_id: DaemonId,
     logger: Logger,
