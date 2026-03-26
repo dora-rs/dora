@@ -220,14 +220,25 @@ def replace_code_in_source(source_code, replacement_block: str):
 
 
 class Operator:
-    """TODO: Add docstring."""
+    """Dora operator for LLM tasks like code modification and assistant replies."""
 
     def on_event(
         self,
         dora_event,
         send_output,
     ) -> DoraStatus:
-        """TODO: Add docstring."""
+        """Dispatch incoming events to appropriate LLM tasks.
+
+        Args:
+            dora_event (dict): The event from dora-rs, representing
+                code modification requests, message formatting, or
+                assistant queries.
+            send_output (Callable): Callback to emit LLM responses or
+                modified data back to the dataflow.
+
+        Returns:
+            DoraStatus: CONTINUE to allow further event processing.
+        """
         if dora_event["type"] == "INPUT" and dora_event["id"] == "code_modifier":
             input = dora_event["value"][0].as_py()
 

@@ -28,6 +28,7 @@ ros2-bridge = [
 [dependencies]
 cxx = "1.0.73"
 dora-node-api = { workspace = true }
+dora-message = { workspace = true }
 eyre = "0.6.8"
 dora-ros2-bridge = { workspace = true, optional = true }
 futures-lite = { version = "2.2" }

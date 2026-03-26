@@ -1,4 +1,8 @@
-"""TODO: Add docstring."""
+"""Utility constants for dora-rs Python operators.
+
+This module contains shared constants, such as the COCO dataset labels used
+by object detection and plotting operators in the dataflow examples.
+"""
 
 LABELS = [
     "person",

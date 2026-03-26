@@ -1,4 +1,9 @@
-"""TODO: Add docstring."""
+"""Plotting and visualization operator for dora-rs dataflow.
+
+This operator aggregates images, bounding boxes, keyboard inputs, and
+assistant messages to create a composite visualization. It uses OpenCV
+to render overlays and display the result in a window.
+"""
 
 import os
 
@@ -18,7 +23,7 @@ class Operator:
     """Plot image and bounding box."""
 
     def __init__(self):
-        """TODO: Add docstring."""
+        """Initializes the Plot operator with empty lists for tracking state."""
         self.bboxs = []
         self.buffer = ""
         self.submitted = []
@@ -29,7 +34,21 @@ class Operator:
         dora_event,
         send_output,
     ):
-        """TODO: Add docstring."""
+        """Process incoming events and update the visualization buffer.
+
+        Handles "image", "bbox", "keyboard_buffer", "line", and "message"
+        inputs. Images are decorated with bounding boxes and text overlays
+        before being displayed.
+
+        Args:
+            dora_event (dict): The event from dora-rs.
+            send_output (Callable): Callback (not used for output emission
+                in this specific operator, but part of the interface).
+
+        Returns:
+            DoraStatus: CONTINUE to keep plotting, or STOP if the display
+                window is closed.
+        """
         if dora_event["type"] == "INPUT":
             id = dora_event["id"]
             value = dora_event["value"]

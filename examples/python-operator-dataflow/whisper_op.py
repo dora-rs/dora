@@ -1,4 +1,9 @@
-"""TODO: Add docstring."""
+"""Speech-to-text operator for dora-rs dataflow using OpenAI Whisper.
+
+This operator receives audio data, transcribes it into text using the
+OpenAI Whisper 'base' model, and emits the resulting text to the "text"
+output.
+"""
 
 import pyarrow as pa
 import whisper
@@ -15,7 +20,16 @@ class Operator:
         dora_event,
         send_output,
     ) -> DoraStatus:
-        """TODO: Add docstring."""
+        """Transcribe incoming audio data into text.
+
+        Args:
+            dora_event (dict): The event from dora-rs, expected to contain
+                a raw audio buffer.
+            send_output (Callable): Callback to emit the transcribed text.
+
+        Returns:
+            DoraStatus: CONTINUE to allow further audio processing.
+        """
         if dora_event["type"] == "INPUT":
             audio = dora_event["value"].to_numpy()
             audio = whisper.pad_or_trim(audio)
