@@ -1302,9 +1302,7 @@ nodes:
 "#;
         let desc: Descriptor = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(
-            desc.nodes[0]
-                .output_framing
-                .get::<DataId>(&"data".into()),
+            desc.nodes[0].output_framing.get::<DataId>(&"data".into()),
             Some(&OutputFraming::ArrowIpc)
         );
     }
