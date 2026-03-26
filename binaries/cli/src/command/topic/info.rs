@@ -190,6 +190,15 @@ async fn info(
                         // Node failed, stop collecting statistics
                         break;
                     }
+                    InterDaemonEvent::StateUpdate(_) => {
+                        continue;
+                    }
+                    InterDaemonEvent::StateCatchUpRequest { .. } => {
+                        continue;
+                    }
+                    InterDaemonEvent::StateCatchUpResponse { .. } => {
+                        continue;
+                    }
                 }
             }
             Err(_) => break,

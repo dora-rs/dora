@@ -1,5 +1,6 @@
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Instant};
 
+use crate::{Event, InterDaemonEvent, RunningDataflow, state_replication::ReplicationLogStore};
 use dashmap::DashMap;
 use dora_core::{
     build::{BuildInfo, GitManager},
@@ -14,9 +15,6 @@ use dora_message::{
     tarpc,
 };
 use tokio::sync::{Mutex, mpsc};
-use uuid::Uuid;
-
-use crate::{Event, InterDaemonEvent, RunningDataflow};
 
 /// Shared daemon state accessible from both the event loop and the RPC server.
 ///
@@ -47,6 +45,8 @@ pub(crate) struct DaemonState {
     /// Channel to send remote daemon events into the event loop.
     pub(crate) remote_daemon_events_tx:
         Option<flume::Sender<eyre::Result<Timestamped<InterDaemonEvent>>>>,
+    /// In-memory replicated state with a bounded operation log for catch-up.
+    pub(crate) replication_state: ReplicationLogStore,
 }
 
 impl DaemonState {
@@ -70,6 +70,7 @@ impl DaemonState {
             git_manager: Mutex::new(Default::default()),
             zenoh_session,
             remote_daemon_events_tx,
+            replication_state: Default::default(),
         }
     }
 
@@ -101,6 +102,7 @@ impl DaemonState {
             git_manager: Mutex::new(Default::default()),
             zenoh_session: Some(zenoh_session),
             remote_daemon_events_tx: None,
+            replication_state: Default::default(),
         };
         let _ = state.daemon_id.set(daemon_id);
         state
@@ -162,6 +164,7 @@ impl DaemonState {
             });
         }
         self.running.remove(&dataflow_id);
+        self.replication_state.remove_dataflow(dataflow_id);
 
         Ok(())
     }

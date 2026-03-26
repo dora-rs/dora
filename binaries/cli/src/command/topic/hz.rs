@@ -333,6 +333,15 @@ async fn subscribe_output(
                 // NodeFailed events are not relevant for topic hz
                 continue;
             }
+            InterDaemonEvent::StateUpdate(_) => {
+                continue;
+            }
+            InterDaemonEvent::StateCatchUpRequest { .. } => {
+                continue;
+            }
+            InterDaemonEvent::StateCatchUpResponse { .. } => {
+                continue;
+            }
         }
     }
 

@@ -77,3 +77,9 @@ pub fn zenoh_output_publish_topic(
     let network_id = "default";
     format!("dora/{network_id}/{dataflow_id}/output/{node_id}/{output_id}")
 }
+
+#[cfg(feature = "zenoh")]
+pub fn zenoh_dataflow_state_topic(dataflow_id: uuid::Uuid) -> String {
+    let network_id = "default";
+    format!("dora/{network_id}/{dataflow_id}/state")
+}
