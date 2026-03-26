@@ -48,7 +48,7 @@ adora run examples/python-dataflow/dataflow.yml --uv --stop-after 10s
 
 ## Workspace Layout
 
-- **Rust edition 2024, MSRV 1.85.0, version 0.1.0** (all crates share workspace version)
+- **Rust edition 2024, MSRV 1.85.0, version 0.2.0** (all crates share workspace version)
 - Python packages use PyO3 0.28 and are built with **maturin**, not cargo
 
 ### Key crates
@@ -98,15 +98,44 @@ Internal transport:
 
 ## CI Checks
 
+### Pre-commit local CI (MANDATORY)
+
+**Run these checks locally before every commit.** Remote CI failures waste time and block other work. Do not push code that has not passed all of these:
+
+```bash
+# 1. Format (must pass — CI rejects formatting diffs)
+cargo fmt --all -- --check
+
+# 2. Clippy with warnings-as-errors (must pass — CI uses -D warnings)
+cargo clippy --all \
+  --exclude adora-node-api-python \
+  --exclude adora-operator-api-python \
+  --exclude adora-ros2-bridge-python \
+  -- -D warnings
+
+# 3. Tests (must pass — run at minimum the affected crate)
+cargo test --all \
+  --exclude adora-node-api-python \
+  --exclude adora-operator-api-python \
+  --exclude adora-ros2-bridge-python \
+  --exclude adora-cli-api-python \
+  --exclude adora-examples
+
+# Quick single-crate check when iterating:
+# cargo test -p <crate-name>
+```
+
+If you add new example dataflows, also run `./scripts/smoke-all.sh --rust-only` to verify smoke tests pass.
+
+### Remote CI jobs
+
 CI runs on Ubuntu, macOS, and Windows. Key jobs:
-- `cargo check --all`
-- `cargo build` / `cargo test` (excluding Python packages)
-- `cargo clippy --all`
 - `cargo fmt --all -- --check`
+- `cargo clippy --all -- -D warnings` (excluding Python packages)
+- `cargo test --all` (excluding Python packages, on all 3 platforms)
+- E2E tests: `ws-cli-e2e` + `fault-tolerance-e2e`
 - Typo checking via `crate-ci/typos` (config: `_typos.toml`)
-- License compatibility via `cargo-lichking`
-- Cross-compilation checks for arm32, arm64, musl, mingw targets
-- MSRV check via `cargo hack check --rust-version`
+- Rust toolchain pinned to 1.92 (see `.github/workflows/ci.yml`)
 
 ## Test-Driven Development
 
