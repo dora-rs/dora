@@ -19,5 +19,5 @@ opentelemetry-otlp = { version = "0.31", features = [
     "grpc-tonic",
 ] }
 opentelemetry_sdk = { version = "0.31", features = ["rt-tokio", "metrics"] }
-eyre = "0.6.12"
+eyre = { workspace = true }
 opentelemetry-system-metrics = { version = "0.31.0" }

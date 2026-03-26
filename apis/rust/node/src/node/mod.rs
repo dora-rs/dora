@@ -8,7 +8,9 @@ use crate::{
 };
 
 use self::{
-    arrow_utils::{copy_array_into_sample, required_data_size},
+    arrow_utils::{
+        compute_schema_hash, copy_array_into_sample, encode_arrow_ipc, required_data_size,
+    },
     control_channel::ControlChannel,
     drop_stream::DropStream,
 };
@@ -23,9 +25,10 @@ use adora_core::{
 use adora_message::{
     DataflowId,
     daemon_to_node::{DaemonCommunication, DaemonReply, NodeConfig},
+    descriptor::OutputFraming,
     metadata::{
-        ArrowTypeInfo, FIN, FLUSH, Metadata, MetadataParameters, Parameter, SEGMENT_ID, SEQ,
-        SESSION_ID,
+        ArrowTypeInfo, FIN, FLUSH, FRAMING, FRAMING_ARROW_IPC, Metadata, MetadataParameters,
+        Parameter, SEGMENT_ID, SEQ, SESSION_ID,
     },
     node_to_daemon::{DaemonRequest, DataMessage, DropToken, Timestamped},
 };
@@ -425,6 +428,7 @@ impl AdoraNode {
                 inputs: Default::default(),
                 outputs: Default::default(),
                 output_types: Default::default(),
+                output_framing: Default::default(),
                 input_types: Default::default(),
             },
             daemon_communication: Some(DaemonCommunication::Interactive),
@@ -459,6 +463,7 @@ impl AdoraNode {
                 inputs: Default::default(),
                 outputs: Default::default(),
                 output_types: Default::default(),
+                output_framing: Default::default(),
                 input_types: Default::default(),
             },
             daemon_communication: None,
@@ -809,13 +814,51 @@ impl AdoraNode {
             }
         }
 
-        let total_len = required_data_size(&arrow_array);
+        let framing = self
+            .node_config
+            .output_framing
+            .get(&output_id)
+            .copied()
+            .unwrap_or_default();
 
-        let mut sample = self.allocate_data_sample(total_len)?;
-        let type_info = copy_array_into_sample(&mut sample, &arrow_array);
+        match framing {
+            OutputFraming::Raw => {
+                let total_len = required_data_size(&arrow_array);
+                let mut sample = self.allocate_data_sample(total_len)?;
+                let type_info = copy_array_into_sample(&mut sample, &arrow_array);
 
-        self.send_output_sample(output_id, type_info, parameters, Some(sample))
-            .wrap_err("failed to send output")?;
+                self.send_output_sample(output_id, type_info, parameters, Some(sample))
+                    .wrap_err("failed to send output")?;
+            }
+            OutputFraming::ArrowIpc => {
+                let ipc_buf = encode_arrow_ipc(&arrow_array)
+                    .map_err(|e| NodeError::Output(format!("Arrow IPC encode: {e}")))?;
+
+                let mut sample = self.allocate_data_sample(ipc_buf.len())?;
+                sample.copy_from_slice(&ipc_buf);
+
+                let type_info = ArrowTypeInfo {
+                    data_type: arrow_array.data_type().clone(),
+                    len: arrow_array.len(),
+                    null_count: arrow_array.null_count(),
+                    validity: None,
+                    offset: 0,
+                    buffer_offsets: vec![],
+                    child_data: vec![],
+                    field_names: None,
+                    schema_hash: Some(compute_schema_hash(arrow_array.data_type())),
+                };
+
+                let mut parameters = parameters;
+                parameters.insert(
+                    FRAMING.to_string(),
+                    Parameter::String(FRAMING_ARROW_IPC.to_string()),
+                );
+
+                self.send_output_sample(output_id, type_info, parameters, Some(sample))
+                    .wrap_err("failed to send output")?;
+            }
+        }
 
         Ok(())
     }

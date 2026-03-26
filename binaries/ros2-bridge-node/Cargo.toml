@@ -9,17 +9,17 @@ name = "adora-ros2-bridge-node"
 path = "src/main.rs"
 
 [dependencies]
-adora-node-api = { path = "../../apis/rust/node" }
+adora-node-api = { workspace = true }
 adora-ros2-bridge = { path = "../../libraries/extensions/ros2-bridge", default-features = false }
 adora-ros2-bridge-arrow = { path = "../../libraries/extensions/ros2-bridge/arrow" }
-adora-ros2-bridge-msg-gen = { path = "../../libraries/extensions/ros2-bridge/msg-gen" }
-adora-message = { path = "../../libraries/message" }
+adora-ros2-bridge-msg-gen = { workspace = true }
+adora-message = { workspace = true }
 arrow = { workspace = true }
-eyre = "0.6"
+eyre = { workspace = true }
 flume = "0.11"
-futures = "0.3"
+futures = { workspace = true }
 futures-timer = "3"
-serde = "1"
-serde_json = "1"
-tracing = "0.1"
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
 tracing-subscriber = "0.3"

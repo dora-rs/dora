@@ -60,9 +60,9 @@ pub struct ArrowTypeInfo {
     /// without full Arrow IPC framing).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub field_names: Option<Vec<String>>,
-    /// Hash of the full Arrow schema for fast type matching (future use).
-    /// Currently always `None`. When populated, receivers can compare
-    /// this O(1) before doing a full type check.
+    /// Hash of the full Arrow schema for fast type matching.
+    /// Populated when data is sent via the raw buffer path or Arrow IPC framing.
+    /// Receivers can compare this O(1) value before doing a full type check.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema_hash: Option<u64>,
 }
@@ -147,6 +147,13 @@ pub const FIN: &str = "fin";
 
 /// Metadata key to discard older queued messages on this input (`true` to flush).
 pub const FLUSH: &str = "flush";
+
+/// Metadata key indicating the wire framing of the data payload.
+/// When set to `"arrow-ipc"`, the payload is an Arrow IPC stream.
+pub const FRAMING: &str = "_framing";
+
+/// Value for [`FRAMING`] indicating Arrow IPC stream framing.
+pub const FRAMING_ARROW_IPC: &str = "arrow-ipc";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BufferOffset {

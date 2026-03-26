@@ -16,7 +16,7 @@ path = "src/main.rs"
 adora-node-api = { workspace = true, default-features = false }
 adora-recording = { workspace = true }
 adora-message = { workspace = true }
-eyre = "0.6.8"
+eyre = { workspace = true }
 aligned-vec = { version = "0.5.0", features = ["serde"] }
 serde_json = { workspace = true }
-uuid = { version = "1", features = ["v4"] }
+uuid = { workspace = true, features = ["v4"] }

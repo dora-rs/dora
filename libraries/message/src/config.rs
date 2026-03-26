@@ -9,6 +9,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 
+use crate::descriptor;
 pub use crate::id::{DataId, NodeId, OperatorId};
 
 /// Filter for the `adora/logs` virtual input.
@@ -75,6 +76,9 @@ pub struct NodeRunConfig {
     /// Optional type annotations for outputs
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub output_types: BTreeMap<DataId, String>,
+    /// Per-output framing overrides (default: Raw for all).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub output_framing: BTreeMap<DataId, descriptor::OutputFraming>,
     /// Optional type annotations for inputs
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub input_types: BTreeMap<DataId, String>,

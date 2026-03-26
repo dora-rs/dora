@@ -20,8 +20,8 @@ default = ["tracing"]
 tracing = ["adora-node-api/tracing"]
 
 [dependencies]
-eyre = "0.6.8"
-tracing = "0.1.33"
+eyre = { workspace = true }
+tracing = { workspace = true }
 arrow-array = { workspace = true }
 
 [dependencies.adora-node-api]

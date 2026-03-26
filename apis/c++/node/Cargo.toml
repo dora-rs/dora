@@ -28,11 +28,11 @@ ros2-bridge = [
 [dependencies]
 cxx = "1.0.73"
 adora-node-api = { workspace = true }
-eyre = "0.6.8"
+eyre = { workspace = true }
 adora-ros2-bridge = { workspace = true, optional = true }
 futures-lite = { version = "2.2" }
-serde = { version = "1.0.164", features = ["derive"] }
-serde_json = { version = "1.0" }
+serde = { workspace = true }
+serde_json = { workspace = true }
 serde-big-array = { version = "0.5.1", optional = true }
 arrow = { workspace = true, features = ["ffi"] }
 chrono = { version = "0.4", features = ["serde"] }

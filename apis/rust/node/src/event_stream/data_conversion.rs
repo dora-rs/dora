@@ -6,7 +6,7 @@ use aligned_vec::{AVec, ConstAlign};
 use eyre::Context;
 use shared_memory_server::{Shmem, ShmemConf};
 
-use crate::arrow_utils::buffer_into_arrow_array;
+use crate::arrow_utils::{buffer_into_arrow_array, decode_arrow_ipc};
 
 pub enum RawData {
     Empty,
@@ -18,7 +18,12 @@ impl RawData {
     pub fn into_arrow_array(
         self,
         type_info: &ArrowTypeInfo,
+        is_ipc: bool,
     ) -> eyre::Result<arrow::array::ArrayData> {
+        if is_ipc {
+            return self.decode_ipc();
+        }
+
         let raw_buffer = match self {
             RawData::Empty => return Ok(().into_arrow().into()),
             RawData::Vec(data) => {
@@ -36,6 +41,15 @@ impl RawData {
         };
 
         buffer_into_arrow_array(&raw_buffer, type_info)
+    }
+
+    fn decode_ipc(&self) -> eyre::Result<arrow::array::ArrayData> {
+        let bytes: &[u8] = match self {
+            RawData::Empty => return Ok(().into_arrow().into()),
+            RawData::Vec(data) => data,
+            RawData::SharedMemory(data) => &data.data,
+        };
+        decode_arrow_ipc(bytes)
     }
 }
 

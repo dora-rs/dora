@@ -13,6 +13,17 @@ use std::{
     path::PathBuf,
 };
 
+/// Wire framing mode for an output.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum OutputFraming {
+    /// Raw Arrow buffer layout (default, current behavior).
+    #[default]
+    Raw,
+    /// Arrow IPC stream format — self-describing, schema + record batches.
+    ArrowIpc,
+}
+
 /// Source identifier for shell-based nodes.
 pub const SHELL_SOURCE: &str = "shell";
 /// Set the [`Node::path`] field to this value to treat the node as a
@@ -397,6 +408,13 @@ pub struct Node {
     /// Only annotated outputs are type-checked; unannotated outputs remain dynamic.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub output_types: BTreeMap<DataId, String>,
+
+    /// Per-output framing overrides (default: Raw for all).
+    ///
+    /// Maps output identifiers to their wire framing mode.
+    /// Outputs not listed here use the default `Raw` framing.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub output_framing: BTreeMap<DataId, OutputFraming>,
 
     /// Input data connections from other nodes.
     ///
@@ -833,6 +851,10 @@ pub struct OperatorConfig {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub output_types: BTreeMap<DataId, String>,
 
+    /// Per-output framing overrides (default: Raw for all).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub output_framing: BTreeMap<DataId, OutputFraming>,
+
     /// Optional type annotations for inputs
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub input_types: BTreeMap<DataId, String>,
@@ -930,6 +952,9 @@ pub struct PythonOperatorConfig {
     pub inputs: BTreeMap<DataId, InputMapping>,
     #[serde(default)]
     pub outputs: BTreeSet<DataId>,
+    /// Per-output framing overrides (default: Raw for all).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub output_framing: BTreeMap<DataId, OutputFraming>,
 }
 
 #[allow(missing_docs)]

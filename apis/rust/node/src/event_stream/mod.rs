@@ -360,14 +360,22 @@ impl EventStream {
                         .spawn(move || {
                             while let Ok(sample) = subscriber.recv() {
                                 // Extract metadata from attachment
-                                let metadata = sample.attachment().and_then(|att| {
-                                    bincode::deserialize::<adora_message::metadata::Metadata>(
-                                        &att.to_bytes(),
-                                    )
-                                    .ok()
-                                });
-                                let metadata = match metadata {
-                                    Some(m) => m,
+                                let metadata = match sample.attachment() {
+                                    Some(att) => {
+                                        match bincode::deserialize::<
+                                            adora_message::metadata::Metadata,
+                                        >(
+                                            &att.to_bytes()
+                                        ) {
+                                            Ok(m) => m,
+                                            Err(e) => {
+                                                tracing::warn!(
+                                                    "zenoh metadata deserialization failed: {e}"
+                                                );
+                                                continue;
+                                            }
+                                        }
+                                    }
                                     None => {
                                         tracing::warn!("zenoh sample missing metadata attachment");
                                         continue;
@@ -382,9 +390,25 @@ impl EventStream {
                                 let data = if data_bytes.is_empty() {
                                     None
                                 } else {
-                                    Some(std::sync::Arc::new(DataMessage::Vec(
-                                        aligned_vec::AVec::from_slice(1, &data_bytes),
-                                    )))
+                                    let avec = match data_bytes {
+                                        std::borrow::Cow::Owned(vec) => {
+                                            // Convert Vec<u8> to AVec without copying.
+                                            // SAFETY: Vec's allocation is always at least
+                                            // 1-byte aligned, which matches the runtime
+                                            // alignment we request.
+                                            let mut vec = std::mem::ManuallyDrop::new(vec);
+                                            let ptr = vec.as_mut_ptr();
+                                            let len = vec.len();
+                                            let cap = vec.capacity();
+                                            unsafe {
+                                                aligned_vec::AVec::from_raw_parts(ptr, 1, len, cap)
+                                            }
+                                        }
+                                        std::borrow::Cow::Borrowed(slice) => {
+                                            aligned_vec::AVec::from_slice(1, slice)
+                                        }
+                                    };
+                                    Some(std::sync::Arc::new(DataMessage::Vec(avec)))
                                 };
 
                                 let event = NodeEvent::Input {
@@ -785,10 +809,15 @@ pub fn data_to_arrow_array(
         },
     };
 
+    let is_ipc = adora_message::metadata::get_string_param(
+        &metadata.parameters,
+        adora_message::metadata::FRAMING,
+    ) == Some(adora_message::metadata::FRAMING_ARROW_IPC);
+
     data.and_then(|data| {
         let raw_data = data.unwrap_or(RawData::Empty);
         raw_data
-            .into_arrow_array(&metadata.type_info)
+            .into_arrow_array(&metadata.type_info, is_ipc)
             .map(arrow::array::make_array)
     })
 }

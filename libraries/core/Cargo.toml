@@ -18,17 +18,17 @@ type-inference = ["dep:syn"]
 
 [dependencies]
 adora-message = { workspace = true }
-eyre = "0.6.8"
-serde = { version = "1.0.136", features = ["derive"] }
+eyre = { workspace = true }
+serde = { workspace = true }
 serde_yaml = { workspace = true }
 arrow-schema = { workspace = true }
 which = "7"
-uuid = { version = "1.7", features = ["serde", "v7"] }
-tracing = "0.1"
+uuid = { workspace = true }
+tracing = { workspace = true }
 serde-with-expand-env = "1.1.0"
-tokio = { version = "1.24.1", features = ["fs", "process", "sync", "rt"] }
+tokio = { workspace = true, features = ["fs", "process", "sync", "rt"] }
 schemars = "1.0.4"
-serde_json = "1.0.117"
+serde_json = { workspace = true }
 log = { version = "0.4.21", features = ["serde"] }
 dunce = "1.0.5"
 itertools = "0.14"
@@ -40,4 +40,4 @@ zenoh = { workspace = true, optional = true }
 syn = { version = "2", features = ["full", "visit"], optional = true }
 
 [dev-dependencies]
-tempfile = "3.26.0"
+tempfile = { workspace = true }

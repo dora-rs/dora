@@ -11,5 +11,5 @@ license.workspace = true
 
 [dependencies]
 adora-node-api = { workspace = true, features = ["tracing"] }
-eyre = "0.6.8"
+eyre = { workspace = true }
 chrono = "0.4"

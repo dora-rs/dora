@@ -12,10 +12,10 @@ repository.workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-eyre = "0.6.8"
+eyre = { workspace = true }
 reqwest = { version = "0.12.4", default-features = false, features = [
     "rustls-tls",
 ] }
 sha2 = "0.10"
-tokio = { version = "1.24.2", features = ["fs"] }
-tracing = "0.1.36"
+tokio = { workspace = true, features = ["fs"] }
+tracing = { workspace = true }

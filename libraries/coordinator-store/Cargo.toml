@@ -15,11 +15,11 @@ redb-backend = ["dep:redb", "dep:bincode", "dep:libc"]
 [dependencies]
 adora-message = { workspace = true }
 bincode = { version = "2.0", features = ["serde"], optional = true }
-eyre = "0.6.8"
+eyre = { workspace = true }
 libc = { version = "0.2", optional = true }
 redb = { version = "2", optional = true }
-serde = { version = "1", features = ["derive"] }
-uuid = { version = "1.7", features = ["serde"] }
+serde = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = { workspace = true }

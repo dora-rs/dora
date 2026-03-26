@@ -9,8 +9,8 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-uuid = { version = "1.7", features = ["v7", "serde"] }
-eyre = "0.6.8"
+uuid = { workspace = true }
+eyre = { workspace = true }
 
 [dev-dependencies]
-tempfile = "3.23.0"
+tempfile = { workspace = true }

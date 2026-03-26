@@ -7,5 +7,5 @@ publish = false
 
 [dependencies]
 adora-node-api = { workspace = true }
-eyre = "0.6.8"
+eyre = { workspace = true }
 arrow = { workspace = true }

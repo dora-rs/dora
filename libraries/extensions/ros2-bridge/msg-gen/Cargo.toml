@@ -17,7 +17,7 @@ regex = "1"
 syn = "1.0"
 thiserror = "1.0"
 glob = "0.3.1"
-tracing = "0.1.33"
+tracing = { workspace = true }
 rust-format = { version = "0.3.4", features = [
     "pretty_please",
 ]}

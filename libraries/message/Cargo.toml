@@ -13,11 +13,11 @@ repository.workspace = true
 
 [dependencies]
 arrow-data = { workspace = true }
-serde = { version = "1.0.136", features = ["derive"] }
-eyre = "0.6.8"
+serde = { workspace = true }
+eyre = { workspace = true }
 arrow-schema = { workspace = true, features = ["serde"] }
-tokio = { version = "1.39.2", features = ["sync"] }
-uuid = { version = "1.7", features = ["serde", "v7"] }
+tokio = { workspace = true, features = ["sync"] }
+uuid = { workspace = true }
 log = { version = "0.4.21", features = ["serde"] }
 aligned-vec = { version = "0.5.0", features = ["serde"] }
 semver = { version = "1.0.23", features = ["serde"] }
@@ -25,7 +25,7 @@ schemars = "1.0.4"
 uhlc = "0.5.1"
 serde_yaml = { workspace = true }
 serde-with-expand-env = "1.1.0"
-bincode = "1.3.3"
+bincode = { workspace = true }
 serde_json = { workspace = true }
 chrono = { version = "0.4", features = ["serde"] }
 getrandom = "0.2"
@@ -35,7 +35,7 @@ dirs = "6"
 libc = "0.2"
 
 [dev-dependencies]
-tempfile = "3.23.0"
+tempfile = { workspace = true }
 criterion = { version = "0.5", features = ["html_reports"] }
 
 [[bench]]
