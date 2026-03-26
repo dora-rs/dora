@@ -14,9 +14,20 @@ use futures::{Stream, StreamExt};
 use futures_concurrency::stream::Merge as _;
 use pyo3::{
     prelude::*,
+    sync::GILOnceCell,
     types::{IntoPyDict, PyBool, PyDict, PyFloat, PyInt, PyList, PyModule, PyString, PyTuple},
 };
 use std::time::UNIX_EPOCH;
+
+static DATETIME_MODULE: GILOnceCell<Py<PyModule>> = GILOnceCell::new();
+
+fn cached_datetime_module<'py>(py: Python<'py>) -> PyResult<&'py Bound<'py, PyModule>> {
+    Ok(DATETIME_MODULE
+        .get_or_try_init(py, || {
+            PyModule::import(py, "datetime").map(|module| module.unbind())
+        })?
+        .bind(py))
+}
 
 /// Dora Event
 pub struct PyEvent {
@@ -236,7 +247,7 @@ pub fn pydict_to_metadata(dict: Option<Bound<'_, PyDict>>) -> Result<MetadataPar
                 parameters.insert(key, Parameter::ListString(list))
             } else {
                 // Check if it's a datetime.datetime object
-                let datetime_module = PyModule::import(value.py(), "datetime")
+                let datetime_module = cached_datetime_module(value.py())
                     .context("Failed to import datetime module")?;
                 let datetime_class = datetime_module.getattr("datetime")?;
 
@@ -297,8 +308,7 @@ pub fn metadata_to_pydict<'a>(
     // Get UTC timezone from Python's datetime module and create timezone-aware datetime
     // We use Python's datetime.fromtimestamp() to create a UTC-aware datetime object
     // This avoids float precision loss by using integer seconds and microseconds
-    let datetime_module =
-        PyModule::import(py, "datetime").context("Failed to import datetime module")?;
+    let datetime_module = cached_datetime_module(py).context("Failed to import datetime module")?;
     let datetime_class = datetime_module.getattr("datetime")?;
     let utc_timezone = datetime_module.getattr("timezone")?.getattr("utc")?;
 
@@ -344,7 +354,7 @@ pub fn metadata_to_pydict<'a>(
 
                 // Get UTC timezone from Python's datetime module
                 let datetime_module =
-                    PyModule::import(py, "datetime").context("Failed to import datetime module")?;
+                    cached_datetime_module(py).context("Failed to import datetime module")?;
                 let datetime_class = datetime_module.getattr("datetime")?;
                 let utc_timezone = datetime_module.getattr("timezone")?.getattr("utc")?;
 
