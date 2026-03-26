@@ -2608,8 +2608,32 @@ impl Daemon {
                 builder.base_working_dir = builder.base_working_dir.join(node_working_dir);
             }
 
-            // Use a tracing-only logger stub for the RPC path
-            let logger = build::TracingBuildLogger::new(build_id, node_id.clone());
+            // Use a zenoh-backed logger when available so build output is
+            // streamed to the CLI subscriber; fall back to tracing-only.
+            let logger = if let (Some(session), Some(daemon_id)) =
+                (state.zenoh_session.as_ref(), state.try_daemon_id())
+            {
+                let dest = log::LogDestination::Zenoh {
+                    session: session.clone(),
+                    publishers: std::collections::HashMap::new(),
+                };
+                let inner_logger = log::Logger {
+                    destination: dest,
+                    clock: state.clock.clone(),
+                };
+                let mut daemon_logger = inner_logger.for_daemon(daemon_id.clone());
+                log::RpcBuildLogger::Zenoh(
+                    daemon_logger
+                        .for_node_build(build_id, node_id.clone())
+                        .try_clone_impl()
+                        .await?,
+                )
+            } else {
+                log::RpcBuildLogger::Tracing(build::TracingBuildLogger::new(
+                    build_id,
+                    node_id.clone(),
+                ))
+            };
 
             let mut git_manager = state.git_manager.lock().await;
             match builder
