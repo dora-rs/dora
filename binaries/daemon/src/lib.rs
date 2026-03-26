@@ -1422,10 +1422,11 @@ impl Daemon {
                                 NodeEvent::ParamDeleted { key },
                                 &self.clock,
                             ) {
-                                Ok(()) => {
+                                Ok(true) => {
                                     dataflow.inc_pending(&node_id);
                                     Ok(())
                                 }
+                                Ok(false) => Ok(()), // event dropped (channel full)
                                 Err(_) => Err(eyre::eyre!("node `{node_id}` channel closed")),
                             }
                         } else {
@@ -4278,7 +4279,7 @@ mod fault_tolerance_tests {
     #[test]
     fn param_delete_delivered_to_node() {
         let clock = test_clock();
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
 
         let result = send_with_timestamp(
             &tx,
@@ -4302,7 +4303,7 @@ mod fault_tolerance_tests {
     #[test]
     fn param_delete_fails_on_closed_channel() {
         let clock = test_clock();
-        let (tx, rx) = mpsc::unbounded_channel::<Timestamped<NodeEvent>>();
+        let (tx, rx) = mpsc::channel::<Timestamped<NodeEvent>>(NODE_EVENT_CHANNEL_CAPACITY);
         drop(rx); // close the receiver
 
         let result =
