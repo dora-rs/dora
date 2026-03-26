@@ -1,11 +1,11 @@
 use crate::{
     ArchivedDataflow, BuildFinishedResult, CachedResult, DaemonRequest, Event, dataflow_result,
-    send_log_message, state, tcp_utils::tcp_receive,
+    state, tcp_utils::tcp_receive,
 };
 use dora_core::uhlc::HLC;
 use dora_message::{
     common::DaemonId,
-    coordinator_to_cli::{DataflowResult, LogLevel, LogMessage, StopDataflowReply},
+    coordinator_to_cli::{DataflowResult, StopDataflowReply},
     daemon_to_coordinator::{
         CoordinatorNotify, CoordinatorRequest, DataflowDaemonResult, NodeMetrics, Timestamped,
     },
@@ -89,15 +89,6 @@ pub async fn handle_connection(
                 };
                 let _ = events_tx.send(Event::Daemon(event)).await;
                 break;
-            }
-            CoordinatorRequest::Log {
-                daemon_id: _,
-                message,
-            } => {
-                let event = Event::Log(message);
-                if events_tx.send(event).await.is_err() {
-                    break;
-                }
             }
         };
     }
@@ -201,26 +192,8 @@ impl CoordinatorNotify for CoordinatorNotifyServer {
                         .archived_dataflows
                         .entry(dataflow_id)
                         .or_insert_with(|| ArchivedDataflow::from(entry.get()));
-                    let mut finished_dataflow = entry.remove();
+                    let finished_dataflow = entry.remove();
                     let clock = &self.coordinator_state.clock;
-                    send_log_message(
-                        &mut finished_dataflow.log_subscribers,
-                        &LogMessage {
-                            build_id: None,
-                            dataflow_id: Some(dataflow_id),
-                            node_id: None,
-                            daemon_id: None,
-                            level: LogLevel::Info.into(),
-                            target: Some("coordinator".into()),
-                            module_path: None,
-                            file: None,
-                            line: None,
-                            message: "dataflow finished".into(),
-                            timestamp: clock.new_timestamp().get_time().to_system_time().into(),
-                            fields: None,
-                        },
-                    )
-                    .await;
 
                     let reply = StopDataflowReply {
                         uuid: dataflow_id,
@@ -254,30 +227,6 @@ impl CoordinatorNotify for CoordinatorNotifyServer {
             .get_mut(&self.daemon_id)
         {
             connection_ref.last_heartbeat = Instant::now();
-        }
-    }
-
-    async fn log(self, _ctx: tarpc::context::Context, message: LogMessage) {
-        if let Some(dataflow_id) = &message.dataflow_id {
-            if let Some(mut dataflow) = self
-                .coordinator_state
-                .running_dataflows
-                .get_mut(dataflow_id)
-            {
-                if dataflow.log_subscribers.is_empty() {
-                    dataflow.buffered_log_messages.push(message);
-                } else {
-                    send_log_message(&mut dataflow.log_subscribers, &message).await;
-                }
-            }
-        } else if let Some(build_id) = &message.build_id {
-            if let Some(mut build) = self.coordinator_state.running_builds.get_mut(build_id) {
-                if build.log_subscribers.is_empty() {
-                    build.buffered_log_messages.push(message);
-                } else {
-                    send_log_message(&mut build.log_subscribers, &message).await;
-                }
-            }
         }
     }
 

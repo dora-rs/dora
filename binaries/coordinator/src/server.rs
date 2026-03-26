@@ -71,8 +71,14 @@ pub(crate) struct CoordinatorControlServer {
 
 impl CoordinatorControl for CoordinatorControlServer {
     async fn build(self, _context: Context, request: BuildRequest) -> Result<BuildId, String> {
-        // assign a random build id
-        let build_id = BuildId::generate();
+        let build_id = request.build_id.unwrap_or_else(BuildId::generate);
+
+        // Reject duplicate build IDs.
+        if self.state.running_builds.contains_key(&build_id)
+            || self.state.finished_builds.contains_key(&build_id)
+        {
+            return Err(format!("duplicate build id {build_id}"));
+        }
 
         let result = build_dataflow(request, build_id, &self.state.daemon_connections).await;
         match result {
@@ -103,6 +109,7 @@ impl CoordinatorControl for CoordinatorControlServer {
 
     async fn start(self, _context: Context, request: StartRequest) -> Result<Uuid, String> {
         let StartRequest {
+            dataflow_id,
             build_id,
             session_id,
             dataflow,
@@ -128,6 +135,7 @@ impl CoordinatorControl for CoordinatorControlServer {
             }
         }
         let uuid = start_dataflow(
+            dataflow_id,
             build_id,
             session_id,
             dataflow,
@@ -236,7 +244,7 @@ impl CoordinatorControl for CoordinatorControlServer {
         name: Option<String>,
         node: String,
         tail: Option<usize>,
-    ) -> Result<Vec<u8>, String> {
+    ) -> Result<dora_message::common::LogsResponse, String> {
         let dataflow_uuid = if let Some(uuid) = uuid {
             Ok(uuid)
         } else if let Some(name) = name {

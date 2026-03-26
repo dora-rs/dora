@@ -23,6 +23,7 @@ use uuid::{NoContext, Timestamp, Uuid};
 /// each node group. The actual spawn commands are prepared but not sent.
 #[tracing::instrument(skip(daemon_connections))]
 pub(super) fn plan_dataflow(
+    dataflow_id: Option<Uuid>,
     build_id: Option<BuildId>,
     session_id: SessionId,
     dataflow: &Descriptor,
@@ -32,7 +33,7 @@ pub(super) fn plan_dataflow(
     write_events_to: Option<PathBuf>,
 ) -> eyre::Result<DataflowPlan> {
     let nodes = dataflow.resolve_aliases_and_set_defaults()?;
-    let uuid = Uuid::new_v7(Timestamp::now(NoContext));
+    let uuid = dataflow_id.unwrap_or_else(|| Uuid::new_v7(Timestamp::now(NoContext)));
 
     let nodes_by_daemon = nodes
         .values()

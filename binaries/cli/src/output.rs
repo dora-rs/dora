@@ -1,9 +1,126 @@
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::time::Duration;
 
-use chrono::Local;
+use chrono::{DateTime, Local, Utc};
 use colored::{Color, Colorize};
 use dora_core::build::LogLevelOrStdout;
 use dora_message::common::LogMessage;
+use eyre::Context;
+use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
+
+/// A zenoh log subscription that buffers incoming messages.
+///
+/// Messages are collected into an internal channel as they arrive.  Call
+/// [`LogSubscription::spawn_printer`] to start draining and printing them.
+/// Until then they are silently buffered, which is useful when the caller
+/// needs to fetch and display historical logs before live messages.
+pub struct LogSubscription {
+    rx: mpsc::UnboundedReceiver<LogMessage>,
+    /// Subscriber handles – must stay alive for the subscription to remain
+    /// active.  They are moved into the printer task by `spawn_printer`.
+    _subscribers: Vec<zenoh::pubsub::Subscriber<()>>,
+}
+
+impl LogSubscription {
+    /// Spawn a background task that drains buffered (and future) messages
+    /// and prints them.
+    ///
+    /// If `drop_before` is `Some(t)`, messages with `timestamp < t` are
+    /// silently skipped.  This is used to deduplicate against historical
+    /// logs that were fetched separately.
+    pub fn spawn_printer(
+        self,
+        print_dataflow_id: bool,
+        print_daemon_name: bool,
+        drop_before: Option<DateTime<Utc>>,
+    ) -> JoinHandle<()> {
+        let Self {
+            mut rx,
+            _subscribers,
+        } = self;
+        tokio::spawn(async move {
+            // Move subscribers into the task so they stay alive.
+            let _subscribers = _subscribers;
+            while let Some(log_message) = rx.recv().await {
+                if let Some(cutoff) = drop_before {
+                    if log_message.timestamp < cutoff {
+                        continue;
+                    }
+                }
+                print_log_message(log_message, print_dataflow_id, print_daemon_name);
+            }
+        })
+    }
+}
+
+/// Subscribe to zenoh log topics for each level that passes `log_level`.
+///
+/// Returns a [`LogSubscription`] that buffers incoming messages.  The
+/// caller decides when to start printing by calling
+/// [`LogSubscription::spawn_printer`].
+pub async fn subscribe_to_logs(
+    zenoh_session: &zenoh::Session,
+    base_topic: &str,
+    log_level: log::LevelFilter,
+) -> eyre::Result<LogSubscription> {
+    let suffixes = dora_core::topics::log_level_suffixes_for_filter(log_level);
+    let (tx, rx) = mpsc::unbounded_channel::<LogMessage>();
+
+    let mut _subscribers = Vec::new();
+
+    for suffix in &suffixes {
+        let topic = format!("{base_topic}/{suffix}");
+        let tx = tx.clone();
+        let subscriber = zenoh_session
+            .declare_subscriber(&topic)
+            .callback(move |sample| {
+                let payload = sample.payload().to_bytes();
+                match serde_json::from_slice::<LogMessage>(&payload) {
+                    Ok(log_message) => {
+                        let _ = tx.send(log_message);
+                    }
+                    Err(err) => {
+                        tracing::warn!("failed to parse log message: {err:?}");
+                    }
+                }
+            })
+            .await
+            .map_err(|e| eyre::eyre!(e))
+            .wrap_err_with(|| format!("failed to subscribe to log topic {topic}"))?;
+        _subscribers.push(subscriber);
+    }
+
+    // Drop the sender so the receiver will end when all subscriber
+    // callbacks are gone (i.e. when the subscribers are dropped).
+    drop(tx);
+
+    Ok(LogSubscription { rx, _subscribers })
+}
+
+/// Convenience: subscribe and immediately start printing.
+///
+/// Equivalent to calling [`subscribe_to_logs`] followed by
+/// [`LogSubscription::spawn_printer`] with `drop_before: None`.
+pub async fn subscribe_and_print_logs(
+    zenoh_session: &zenoh::Session,
+    base_topic: &str,
+    log_level: log::LevelFilter,
+    print_dataflow_id: bool,
+    print_daemon_name: bool,
+) -> eyre::Result<JoinHandle<()>> {
+    let subscription = subscribe_to_logs(zenoh_session, base_topic, log_level).await?;
+    Ok(subscription.spawn_printer(print_dataflow_id, print_daemon_name, None))
+}
+
+/// Abort a log printer task with a short grace period to allow in-flight
+/// messages to be printed before cancellation.
+pub async fn abort_log_task_with_grace(task: JoinHandle<()>) {
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    task.abort();
+    let _ = task.await;
+}
+
 pub fn print_log_message(
     log_message: LogMessage,
     print_dataflow_id: bool,
