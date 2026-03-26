@@ -191,6 +191,23 @@ ADORA_RUNTIME_TYPE_CHECK=warn adora run dataflow.yml
 
 Types also appear on `adora graph` edge labels when annotated.
 
+### Arrow IPC Framing
+
+Per-output wire framing override. Default is `raw` (Arrow buffer layout). Set to `arrow-ipc` for self-describing Arrow IPC stream format.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `output_framing` | map | `{}` | Per-output framing: `raw` (default) or `arrow-ipc` |
+
+```yaml
+- id: sensor
+  path: ./sensor
+  outputs:
+    - image
+  output_framing:
+    image: arrow-ipc
+```
+
 ### Module Parameters
 
 When using `module:`, pass configuration values via `params:`:
@@ -312,6 +329,20 @@ Assign nodes to specific machines using `_unstable_deploy`:
 | `distribute` | string | `local` | How built binaries reach the target daemon: **`local`** -- each daemon builds from source independently; **`scp`** -- CLI pushes the built binary via SSH/SCP before spawn; **`http`** -- daemon pulls the binary from the coordinator's HTTP artifact store |
 
 When nodes are on different machines, communication automatically switches from shared memory to Zenoh pub/sub.
+
+### CPU Affinity
+
+Pin a node's process to specific CPU cores (Linux only).
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `cpu_affinity` | list of int | -- | CPU core indices to pin the node process to |
+
+```yaml
+- id: controller
+  path: ./controller
+  cpu_affinity: [0, 1]
+```
 
 ## Operator Nodes
 

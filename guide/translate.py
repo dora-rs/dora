@@ -199,6 +199,32 @@ def build_translations():
         "**录制/回放** -- 将数据流消息捕获到 `.adorec` 文件，可以任意速度离线回放"
     t["**Built-in observability** -- `adora top` TUI, topic inspection, trace viewing, structured logging with rotation"] = \
         "**内置可观测性** -- `adora top` TUI 监控、主题检查、追踪查看、结构化日志轮转"
+    # v0.2 additions to introduction
+    t["**Zenoh SHM data plane** -- nodes publish directly via Zenoh shared memory for zero-copy data transfer; automatic network fallback for cross-machine"] = \
+        "**Zenoh SHM 数据面** -- 节点通过 Zenoh 共享内存直接发布，零拷贝数据传输；跨机自动网络回退"
+    t["**Non-blocking event loop** -- Zenoh publishes offloaded to drain task; metrics collection runs in background"] = \
+        "**非阻塞事件循环** -- Zenoh 发布卸载到排水任务；指标收集在后台运行"
+    t["**Coordinator HA** -- persistent redb state store, daemon auto-reconnect, dataflow state reconstruction on coordinator restart"] = \
+        "**协调器高可用** -- 持久化 redb 状态存储，守护进程自动重连，协调器重启时数据流状态重建"
+    t["**Dynamic topology** -- add and remove nodes from running dataflows via CLI without restarting"] = \
+        "**动态拓扑** -- 通过 CLI 在运行中的数据流上添加和删除节点，无需重启"
+    t["**Soft real-time** -- optional `--rt` flag for mlockall + SCHED_FIFO; per-node `cpu_affinity` pinning"] = \
+        "**软实时** -- 可选 `--rt` 标志启用 mlockall + SCHED_FIFO；每节点 `cpu_affinity` 绑核"
+    t["Performance"] = "性能"
+    t["Developer Experience"] = "开发者体验"
+    t["Production Readiness"] = "生产就绪"
+    t["Debugging and Observability"] = "调试和可观测性"
+    t["Ecosystem"] = "生态系统"
+    t["Type Annotations"] = "类型注解"
+    t["Modules"] = "模块"
+    t["Dynamic Topology"] = "动态拓扑"
+    t["Real-Time Tuning"] = "实时调优"
+
+    # concepts/dataflow-yaml.md additions
+    t["Arrow IPC Framing"] = "Arrow IPC 帧格式"
+    t["CPU Affinity"] = "CPU 亲和性"
+    t["Per-Node CPU Affinity"] = "每节点 CPU 亲和性"
+
     t["Next Steps"] = "下一步"
     t["[Install Adora](getting-started/installation.md)"] = \
         "[安装 Adora](getting-started/installation.md)"

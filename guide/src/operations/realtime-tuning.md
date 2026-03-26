@@ -21,6 +21,24 @@ taskset -c 2,3 adora daemon --rt
 - `SCHED_FIFO` priority 50 (Linux only) — real-time scheduling for the main thread
 - Requires `CAP_SYS_NICE` + `CAP_IPC_LOCK` capabilities
 
+## Per-Node CPU Affinity
+
+Instead of pinning the entire daemon with `taskset`, you can pin individual nodes to specific CPU cores via the dataflow YAML:
+
+```yaml
+- id: controller
+  path: ./controller
+  cpu_affinity: [2, 3]
+
+- id: sensor
+  path: ./sensor
+  cpu_affinity: [4, 5]
+```
+
+The daemon calls `sched_setaffinity` on the spawned process. This is Linux only; on other platforms the field is silently ignored.
+
+Combine with `--rt` for best results: the daemon gets real-time scheduling while each node is pinned to dedicated cores, avoiding contention.
+
 ## Full Guide
 
 See the comprehensive [Real-Time Tuning Guide](../../../docs/realtime-tuning.md) for:

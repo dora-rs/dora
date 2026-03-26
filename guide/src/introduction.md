@@ -8,6 +8,8 @@
 
 - **10-17x faster than ROS2 Python** -- 100% Rust internals with zero-copy shared memory IPC for messages >4KB, flat latency from 4KB to 4MB payloads
 - **Apache Arrow native** -- columnar memory format end-to-end with zero serialization overhead; shared across all language bindings
+- **Zenoh SHM data plane** -- nodes publish directly via Zenoh shared memory for zero-copy data transfer; automatic network fallback for cross-machine
+- **Non-blocking event loop** -- Zenoh publishes offloaded to drain task; metrics collection runs in background
 
 ### Developer Experience
 
@@ -21,7 +23,10 @@
 
 - **Fault tolerance** -- per-node restart policies (never/on-failure/always), exponential backoff, health monitoring, circuit breakers with configurable input timeouts
 - **Distributed by default** -- local shared memory between co-located nodes, automatic [Zenoh](https://zenoh.io/) pub-sub for cross-machine communication, SSH-based cluster management with label scheduling
+- **Coordinator HA** -- persistent redb state store, daemon auto-reconnect, dataflow state reconstruction on coordinator restart
+- **Dynamic topology** -- add and remove nodes from running dataflows via CLI without restarting
 - **Configurable queue policies** -- `drop_oldest` (default) or `backpressure` per input, with metrics on dropped messages
+- **Soft real-time** -- optional `--rt` flag for mlockall + SCHED_FIFO; per-node `cpu_affinity` pinning
 - **OpenTelemetry** -- built-in structured logging with rotation/routing, metrics, distributed tracing
 
 ### Debugging and Observability
