@@ -139,8 +139,15 @@ impl GitManager {
         repo_url: &Url,
         commit_hash: &String,
     ) -> eyre::Result<PathBuf> {
-        let mut path = base_dir.join(repo_url.host_str().context("git URL has no hostname")?);
-        path.extend(repo_url.path_segments().context("no path in git URL")?);
+        // For file:// URLs, use the path directly; for other URLs, use host + path
+        let path = if repo_url.scheme() == "file" {
+            // file:// URLs don't have a hostname, use the path directly
+            PathBuf::from(repo_url.path())
+        } else {
+            let mut path = base_dir.join(repo_url.host_str().context("git URL has no hostname")?);
+            path.extend(repo_url.path_segments().context("no path in git URL")?);
+            path
+        };
         let path = path.join(commit_hash);
         Ok(dunce::simplified(&path).to_owned())
     }

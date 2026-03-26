@@ -13,6 +13,7 @@ use std::{
     path::PathBuf,
 };
 
+/// Shell source identifier constant
 pub const SHELL_SOURCE: &str = "shell";
 /// Set the [`Node::path`] field to this value to treat the node as a
 /// [_dynamic node_](https://docs.rs/dora-node-api/latest/dora_node_api/).
@@ -129,6 +130,7 @@ pub enum RestartPolicy {
     Always,
 }
 
+/// Deployment configuration for distributed dataflows (unstable)
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Deploy {
@@ -138,6 +140,7 @@ pub struct Deploy {
     pub working_dir: Option<PathBuf>,
 }
 
+/// Debug options for development and troubleshooting (unstable)
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct Debug {
     /// Whether to publish all messages to Zenoh for debugging
@@ -513,21 +516,29 @@ pub struct Node {
     pub deploy: Option<Deploy>,
 }
 
+/// Resolved node configuration with git information
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResolvedNode {
+    /// Unique node identifier
     pub id: NodeId,
+    /// Human-readable node name
     pub name: Option<String>,
+    /// Detailed node description
     pub description: Option<String>,
+    /// Environment variables
     pub env: Option<BTreeMap<String, EnvValue>>,
 
     #[serde(default)]
+    /// Deployment configuration
     pub deploy: Option<Deploy>,
 
     #[serde(flatten)]
+    /// Core node type (runtime or custom)
     pub kind: CoreNodeKind,
 }
 
 impl ResolvedNode {
+    /// Returns true if this node has a git source
     pub fn has_git_source(&self) -> bool {
         self.kind
             .as_custom()
@@ -536,17 +547,20 @@ impl ResolvedNode {
     }
 }
 
+/// Core node type enumeration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 #[allow(clippy::large_enum_variant)]
 pub enum CoreNodeKind {
-    /// Dora runtime node
+    /// Dora runtime node containing operators
     #[serde(rename = "operators")]
     Runtime(RuntimeNode),
+    /// Custom node with external source
     Custom(CustomNode),
 }
 
 impl CoreNodeKind {
+    /// Returns a reference to the custom node if this is a custom node variant
     pub fn as_custom(&self) -> Option<&CustomNode> {
         match self {
             CoreNodeKind::Runtime(_) => None,
@@ -555,6 +569,7 @@ impl CoreNodeKind {
     }
 }
 
+/// Runtime node containing multiple operators
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(transparent)]
 pub struct RuntimeNode {
@@ -562,22 +577,27 @@ pub struct RuntimeNode {
     pub operators: Vec<OperatorDefinition>,
 }
 
+/// Operator definition with unique identifier
 #[derive(Debug, Serialize, Deserialize, JsonSchema, Clone)]
 pub struct OperatorDefinition {
     /// Unique operator identifier within the runtime
     pub id: OperatorId,
     #[serde(flatten)]
+    /// Operator configuration
     pub config: OperatorConfig,
 }
 
+/// Single operator definition (convenience wrapper)
 #[derive(Debug, Serialize, Deserialize, JsonSchema, Clone)]
 pub struct SingleOperatorDefinition {
     /// Operator identifier (optional for single operators)
     pub id: Option<OperatorId>,
     #[serde(flatten)]
+    /// Operator configuration
     pub config: OperatorConfig,
 }
 
+/// Operator configuration with inputs, outputs, and source
 #[derive(Debug, Serialize, Deserialize, JsonSchema, Clone)]
 pub struct OperatorConfig {
     /// Human-readable operator name
@@ -604,27 +624,40 @@ pub struct OperatorConfig {
     pub send_stdout_as: Option<String>,
 }
 
+/// Operator source type specification
 #[derive(Debug, Serialize, Deserialize, JsonSchema, Clone)]
 #[serde(rename_all = "kebab-case")]
 pub enum OperatorSource {
+    /// Shared library path
     SharedLibrary(String),
+    /// Python source configuration
     Python(PythonSource),
+    /// WebAssembly module (experimental)
     #[schemars(skip)]
     Wasm(String),
 }
+
+/// Python source configuration
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(from = "PythonSourceDef", into = "PythonSourceDef")]
 pub struct PythonSource {
+    /// Path to Python source file
     pub source: String,
+    /// Optional conda environment name
     pub conda_env: Option<String>,
 }
 
+/// Python source definition variants
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum PythonSourceDef {
+    /// Source-only specification
     SourceOnly(String),
+    /// Source with additional options
     WithOptions {
+        /// Path to Python source file
         source: String,
+        /// Optional conda environment name
         conda_env: Option<String>,
     },
 }
@@ -653,16 +686,21 @@ impl From<PythonSourceDef> for PythonSource {
     }
 }
 
+/// Python operator configuration
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct PythonOperatorConfig {
+    /// Path to Python script
     pub path: PathBuf,
     #[serde(default)]
+    /// Input mappings
     pub inputs: BTreeMap<DataId, InputMapping>,
     #[serde(default)]
+    /// Output identifiers
     pub outputs: BTreeSet<DataId>,
 }
 
+/// Custom node configuration
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CustomNode {
     /// Path of the source code
@@ -676,6 +714,7 @@ pub struct CustomNode {
     ///
     /// Source can match any executable in PATH.
     pub path: String,
+    /// Node source location (local or git)
     pub source: NodeSource,
     /// Args for the executable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -685,56 +724,82 @@ pub struct CustomNode {
     /// Deprecated, use outer-level `env` field instead.
     pub envs: Option<BTreeMap<String, EnvValue>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Build commands
     pub build: Option<String>,
     /// Send stdout and stderr to another node
     #[serde(skip_serializing_if = "Option::is_none")]
     pub send_stdout_as: Option<String>,
 
     #[serde(default)]
+    /// Restart policy for this node
     pub restart_policy: RestartPolicy,
 
     #[serde(flatten)]
+    /// Runtime configuration
     pub run_config: NodeRunConfig,
 }
 
+/// Node source location specification
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub enum NodeSource {
+    /// Local source
     Local,
+    /// Git repository source
     GitBranch {
+        /// Repository URL
         repo: String,
+        /// Git revision specification (branch, tag, or commit)
         rev: Option<GitRepoRev>,
     },
 }
 
 impl NodeSource {
+    /// Returns true if this source is from git
     pub fn is_git(&self) -> bool {
         matches!(self, Self::GitBranch { .. })
     }
 }
 
+/// Resolved node source after git checkout
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub enum ResolvedNodeSource {
+    /// Local source
     Local,
-    GitCommit { repo: String, commit_hash: String },
+    /// Git commit source
+    GitCommit {
+        /// Repository URL
+        repo: String,
+        /// Commit hash
+        commit_hash: String,
+    },
 }
 
+/// Git revision specification type
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub enum GitRepoRev {
+    /// Branch name
     Branch(String),
+    /// Tag name
     Tag(String),
+    /// Revision hash
     Rev(String),
 }
 
+/// Environment variable value types
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum EnvValue {
     #[serde(deserialize_with = "with_expand_envs")]
+    /// Boolean value
     Bool(bool),
     #[serde(deserialize_with = "with_expand_envs")]
+    /// Integer value
     Integer(i64),
     #[serde(deserialize_with = "with_expand_envs")]
+    /// Float value
     Float(f64),
     #[serde(deserialize_with = "with_expand_envs")]
+    /// String value
     String(String),
 }
 
