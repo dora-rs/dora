@@ -1,7 +1,5 @@
 use std::io::Write;
 
-use chrono::Utc;
-
 use super::{Executable, default_tracing};
 use crate::{
     common::{
@@ -87,22 +85,20 @@ pub async fn logs(
         None
     };
 
-    let logs = rpc(
+    let response = rpc(
         "retrieve logs",
         client.logs(long_context(), Some(uuid), None, node.to_string(), tail),
     )
     .await?;
-    // The daemon read the log file at approximately this instant.
-    // Zenoh messages with an earlier timestamp are already covered
-    // by the historical output, so we use this as the dedup cutoff.
-    let drop_before = Utc::now();
 
     std::io::stdout()
-        .write_all(&logs)
+        .write_all(&response.content)
         .expect("failed to write logs to stdout");
 
     if let Some(subscription) = subscription {
-        let log_task = subscription.spawn_printer(false, false, Some(drop_before));
+        // Use the daemon-side timestamp as the dedup cutoff: messages
+        // with an earlier timestamp are already in the historical output.
+        let log_task = subscription.spawn_printer(false, false, Some(response.daemon_timestamp));
         // Block until the task ends (subscriber closes).
         let _ = log_task.await;
     }

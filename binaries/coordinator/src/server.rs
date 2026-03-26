@@ -244,7 +244,7 @@ impl CoordinatorControl for CoordinatorControlServer {
         name: Option<String>,
         node: String,
         tail: Option<usize>,
-    ) -> Result<Vec<u8>, String> {
+    ) -> Result<dora_message::common::LogsResponse, String> {
         let dataflow_uuid = if let Some(uuid) = uuid {
             Ok(uuid)
         } else if let Some(name) = name {

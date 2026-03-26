@@ -773,7 +773,7 @@ async fn retrieve_logs(
     node_id: NodeId,
     daemon_connections: &DaemonConnections,
     tail: Option<usize>,
-) -> eyre::Result<Vec<u8>> {
+) -> eyre::Result<dora_message::common::LogsResponse> {
     let nodes = if let Some(dataflow) = archived_dataflows.get(&dataflow_id) {
         dataflow.nodes.clone()
     } else if let Some(dataflow) = running_dataflows.get(&dataflow_id) {
