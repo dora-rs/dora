@@ -7,7 +7,7 @@ use eyre::Context as _;
 use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::{daemon_to_daemon::InterDaemonEvent, id::NodeId, BuildId, DataflowId};
+use crate::{BuildId, DataflowId, daemon_to_daemon::InterDaemonEvent, id::NodeId};
 
 pub use log::Level as LogLevel;
 
@@ -57,24 +57,22 @@ impl From<LogMessageHelper> for LogMessage {
             node_id: helper.node_id.or(fields
                 .and_then(|f| f.get("node_id").cloned())
                 .map(|id| NodeId(id))),
-            daemon_id: helper
-                .daemon_id
-                .or(fields
-                    .and_then(|f| f.get("daemon_id").cloned())
-                    .and_then(|id| {
-                        let parts: Vec<&str> = id.splitn(2, '-').collect();
-                        if parts.len() == 2 {
-                            Uuid::parse_str(parts[1]).ok().map(|uuid| DaemonId {
-                                machine_id: Some(parts[0].to_string()),
-                                uuid,
-                            })
-                        } else {
-                            Uuid::parse_str(&parts[0]).ok().map(|uuid| DaemonId {
-                                machine_id: None,
-                                uuid,
-                            })
-                        }
-                    })),
+            daemon_id: helper.daemon_id.or(fields
+                .and_then(|f| f.get("daemon_id").cloned())
+                .and_then(|id| {
+                    let parts: Vec<&str> = id.splitn(2, '-').collect();
+                    if parts.len() == 2 {
+                        Uuid::parse_str(parts[1]).ok().map(|uuid| DaemonId {
+                            machine_id: Some(parts[0].to_string()),
+                            uuid,
+                        })
+                    } else {
+                        Uuid::parse_str(&parts[0]).ok().map(|uuid| DaemonId {
+                            machine_id: None,
+                            uuid,
+                        })
+                    }
+                })),
             level: helper.level,
             target: helper
                 .target
