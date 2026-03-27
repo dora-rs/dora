@@ -2,14 +2,14 @@ use aligned_vec::{AVec, ConstAlign};
 use crossbeam::queue::ArrayQueue;
 use dora_core::{
     build::{self, BuildInfo, PrevGitSource, TracingBuildLogger},
-    config::{DataId, Input, InputMapping, NodeId, NodeRunConfig, OperatorId},
+    config::{DataId, Input, InputMapping, NodeId, NodeRunConfig},
     descriptor::{
         CoreNodeKind, DYNAMIC_SOURCE, Descriptor, DescriptorExt, ResolvedNode, RuntimeNode,
         read_as_descriptor,
     },
     topics::{
         DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, LOCALHOST, open_zenoh_session,
-        zenoh_output_publish_topic,
+        open_zenoh_session_as_daemon, zenoh_output_publish_topic,
     },
     uhlc::HLC,
 };
@@ -127,7 +127,7 @@ impl Daemon {
         // Use a large channel capacity to prevent deadlock
         let (dora_events_tx, dora_events_rx) = mpsc::channel(1000);
 
-        let zenoh_session = open_zenoh_session(Some(coordinator_addr.ip()))
+        let zenoh_session = open_zenoh_session_as_daemon(Some(coordinator_addr.ip()))
             .await
             .wrap_err("failed to open zenoh session")?;
 
@@ -164,16 +164,16 @@ impl Daemon {
         daemon_state.set_daemon_id(daemon_id.clone());
         daemon_state.set_coordinator_client(coordinator_client);
 
-        let log_destination = {
-            // additional connection for logging
-            let stream = TcpStream::connect(coordinator_addr)
-                .await
-                .wrap_err("failed to connect log to dora-coordinator")?;
-            stream
-                .set_nodelay(true)
-                .wrap_err("failed to set TCP_NODELAY")?;
-            LogDestination::Coordinator {
-                coordinator_connection: stream,
+        let log_destination = match daemon_state.zenoh_session.as_ref() {
+            Some(session) => LogDestination::Zenoh {
+                session: session.clone(),
+                publishers: std::collections::HashMap::new(),
+            },
+            None => {
+                tracing::warn!(
+                    "no zenoh session available; log messages will only be printed locally"
+                );
+                LogDestination::Tracing
             }
         };
 
@@ -383,7 +383,6 @@ impl Daemon {
         let daemon = Self {
             logger: Logger {
                 destination: log_destination,
-                daemon_id: daemon_id.clone(),
                 clock: clock.clone(),
             }
             .for_daemon(daemon_id.clone()),
@@ -981,100 +980,6 @@ impl Daemon {
                 Ok(())
             }
         }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    async fn build_dataflow(
-        &mut self,
-        build_id: BuildId,
-        session_id: SessionId,
-        base_working_dir: PathBuf,
-        git_sources: BTreeMap<NodeId, GitSource>,
-        prev_git_sources: BTreeMap<NodeId, GitSource>,
-        dataflow_descriptor: Descriptor,
-        local_nodes: BTreeSet<NodeId>,
-        uv: bool,
-    ) -> eyre::Result<impl Future<Output = eyre::Result<BuildInfo>> + use<>> {
-        let builder = build::Builder {
-            session_id,
-            base_working_dir,
-            uv,
-        };
-        {
-            let mut git_manager = self.state.git_manager.lock().await;
-            git_manager.clear_planned_builds(session_id);
-        }
-
-        let nodes = dataflow_descriptor.resolve_aliases_and_set_defaults()?;
-
-        let mut tasks = Vec::new();
-
-        // build nodes
-        for node in nodes.into_values().filter(|n| local_nodes.contains(&n.id)) {
-            let dynamic_node = node.kind.dynamic();
-
-            let node_id = node.id.clone();
-            let mut logger = self.logger.for_node_build(build_id, node_id.clone());
-            logger.log(LogLevel::Debug, "building").await;
-            let git_source = git_sources.get(&node_id).cloned();
-            let prev_git_source = prev_git_sources.get(&node_id).cloned();
-            let prev_git = prev_git_source.map(|prev_source| PrevGitSource {
-                still_needed_for_this_build: git_sources.values().any(|s| s == &prev_source),
-                git_source: prev_source,
-            });
-
-            let logger_cloned = logger
-                .try_clone_impl()
-                .await
-                .wrap_err("failed to clone logger")?;
-
-            let mut builder = builder.clone();
-            if let Some(node_working_dir) =
-                node.deploy.as_ref().and_then(|d| d.working_dir.as_deref())
-            {
-                builder.base_working_dir = builder.base_working_dir.join(node_working_dir);
-            }
-
-            let mut git_manager = self.state.git_manager.lock().await;
-            match builder
-                .build_node(node, git_source, prev_git, logger_cloned, &mut git_manager)
-                .await
-                .wrap_err_with(|| format!("failed to build node `{node_id}`"))
-            {
-                Ok(result) => {
-                    tasks.push(NodeBuildTask {
-                        node_id,
-                        task: result,
-                        dynamic_node,
-                    });
-                }
-                Err(err) => {
-                    logger.log(LogLevel::Error, format!("{err:?}")).await;
-                    return Err(err);
-                }
-            }
-        }
-
-        let task = async move {
-            let mut info = BuildInfo {
-                node_working_dirs: Default::default(),
-            };
-            for task in tasks {
-                let NodeBuildTask {
-                    node_id,
-                    dynamic_node: _,
-                    task,
-                } = task;
-                let node = task
-                    .await
-                    .with_context(|| format!("failed to build node `{node_id}`"))?;
-                info.node_working_dirs
-                    .insert(node_id, node.node_working_dir);
-            }
-            Ok(info)
-        };
-
-        Ok(task)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1691,30 +1596,6 @@ impl Daemon {
                     None => Err(format!("no running dataflow with ID `{dataflow_id}`")),
                 };
                 let _ = reply_sender.send(DaemonReply::Result(reply));
-            }
-        }
-        Ok(())
-    }
-
-    async fn send_reload(
-        &mut self,
-        dataflow_id: Uuid,
-        node_id: NodeId,
-        operator_id: Option<OperatorId>,
-    ) -> Result<(), eyre::ErrReport> {
-        let mut dataflow = self.state.running.get_mut(&dataflow_id).wrap_err_with(|| {
-            format!("Reload failed: no running dataflow with ID `{dataflow_id}`")
-        })?;
-        if let Some(channel) = dataflow.subscribe_channels.get(&node_id) {
-            match send_with_timestamp(
-                channel,
-                NodeEvent::Reload { operator_id },
-                &self.state.clock,
-            ) {
-                Ok(()) => {}
-                Err(_) => {
-                    dataflow.subscribe_channels.remove(&node_id);
-                }
             }
         }
         Ok(())
@@ -2528,14 +2409,6 @@ impl Daemon {
         Ok(())
     }
 
-    fn base_working_dir(
-        &self,
-        local_working_dir: Option<PathBuf>,
-        session_id: SessionId,
-    ) -> eyre::Result<PathBuf> {
-        Self::base_working_dir_static(local_working_dir, session_id)
-    }
-
     /// Static version of `base_working_dir`, usable without a `Daemon` instance.
     pub(crate) fn base_working_dir_static(
         local_working_dir: Option<PathBuf>,
@@ -2609,8 +2482,32 @@ impl Daemon {
                 builder.base_working_dir = builder.base_working_dir.join(node_working_dir);
             }
 
-            // Use a tracing-only logger stub for the RPC path
-            let logger = build::TracingBuildLogger::new(build_id, node_id.clone());
+            // Use a zenoh-backed logger when available so build output is
+            // streamed to the CLI subscriber; fall back to tracing-only.
+            let logger = if let (Some(session), Some(daemon_id)) =
+                (state.zenoh_session.as_ref(), state.try_daemon_id())
+            {
+                let dest = log::LogDestination::Zenoh {
+                    session: session.clone(),
+                    publishers: std::collections::HashMap::new(),
+                };
+                let inner_logger = log::Logger {
+                    destination: dest,
+                    clock: state.clock.clone(),
+                };
+                let mut daemon_logger = inner_logger.for_daemon(daemon_id.clone());
+                log::RpcBuildLogger::Zenoh(
+                    daemon_logger
+                        .for_node_build(build_id, node_id.clone())
+                        .try_clone_impl()
+                        .await?,
+                )
+            } else {
+                log::RpcBuildLogger::Tracing(build::TracingBuildLogger::new(
+                    build_id,
+                    node_id.clone(),
+                ))
+            };
 
             let mut git_manager = state.git_manager.lock().await;
             match builder
@@ -3488,12 +3385,6 @@ pub enum DoraEvent {
         /// Whether the node will be restarted
         restart: bool,
     },
-}
-
-#[must_use]
-enum RunStatus {
-    Continue,
-    Exit,
 }
 
 fn send_with_timestamp<T>(

@@ -62,9 +62,6 @@ pub fn run_operator(
                 "Dora runtime tried spawning Python Operator outside of python environment."
             );
         }
-        OperatorSource::Wasm(_) => {
-            tracing::error!("WASM operators are not supported yet");
-        }
     }
     Ok(())
 }

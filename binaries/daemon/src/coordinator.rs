@@ -74,9 +74,11 @@ pub async fn register(
         .set_nodelay(true)
         .wrap_err("failed to set TCP_NODELAY")?;
 
+    let zenoh_peer_id = state.zenoh_session.as_ref().map(|s| s.zid().to_string());
+
     // Registration handshake (raw length-prefixed JSON)
     let register = serde_json::to_vec(&Timestamped {
-        inner: CoordinatorRequest::Register(DaemonRegisterRequest::new(machine_id)),
+        inner: CoordinatorRequest::Register(DaemonRegisterRequest::new(machine_id, zenoh_peer_id)),
         timestamp: clock.new_timestamp(),
     })?;
     socket_stream_send(&mut stream, &register)
@@ -389,7 +391,7 @@ impl DaemonControl for DaemonControlServer {
         dataflow_id: DataflowId,
         node_id: NodeId,
         tail: Option<usize>,
-    ) -> Result<Vec<u8>, String> {
+    ) -> Result<dora_message::common::LogsResponse, String> {
         let working_dir = self
             .state
             .working_dir
@@ -408,7 +410,7 @@ impl DaemonControl for DaemonControlServer {
                         )
                     })?;
 
-            let mut contents = match tail {
+            let mut content = match tail {
                 None | Some(0) => {
                     let mut contents = vec![];
                     file.read_to_end(&mut contents).await.map(|_| contents)
@@ -416,10 +418,14 @@ impl DaemonControl for DaemonControlServer {
                 Some(tail) => read_last_n_lines(&mut file, tail).await,
             }
             .map_err(|err| eyre::eyre!("Could not read log file: {err}"))?;
-            if !contents.ends_with(b"\n") {
-                contents.push(b'\n');
+            if !content.ends_with(b"\n") {
+                content.push(b'\n');
             }
-            Result::<Vec<u8>, eyre::Report>::Ok(contents)
+            let daemon_timestamp = chrono::Utc::now();
+            Result::<_, eyre::Report>::Ok(dora_message::common::LogsResponse {
+                content,
+                daemon_timestamp,
+            })
         }
         .await
         .map_err(|err| format!("{err:?}"))
