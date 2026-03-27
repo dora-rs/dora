@@ -7,7 +7,7 @@ use eyre::Context as _;
 use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::{BuildId, DataflowId, daemon_to_daemon::InterDaemonEvent, id::NodeId};
+use crate::{daemon_to_daemon::InterDaemonEvent, id::NodeId, BuildId, DataflowId};
 
 pub use log::Level as LogLevel;
 
