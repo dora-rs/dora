@@ -12,7 +12,6 @@ use dora_message::{
 };
 use eyre::{Context, eyre};
 use futures::{Future, future, task};
-use shared_memory_server::{ShmemConf, ShmemServer};
 use std::{
     collections::{BTreeMap, VecDeque},
     mem,
@@ -29,8 +28,6 @@ use tokio::{
     },
 };
 
-// TODO unify and avoid duplication;
-pub mod shmem;
 pub mod tcp;
 #[cfg(unix)]
 pub mod unix_domain;
@@ -42,7 +39,7 @@ pub async fn spawn_listener_loop(
     config: LocalCommunicationConfig,
     queue_sizes: BTreeMap<DataId, usize>,
     clock: Arc<uhlc::HLC>,
-) -> eyre::Result<DaemonCommunication> {
+) -> eyre::Result<(DaemonCommunication, Option<tokio::task::AbortHandle>)> {
     match config {
         LocalCommunicationConfig::Tcp => {
             let socket = match TcpListener::bind((LOCALHOST, 0)).await {
@@ -59,90 +56,13 @@ pub async fn spawn_listener_loop(
 
             let event_loop_node_id = format!("{dataflow_id}/{node_id}");
             let daemon_tx = daemon_tx.clone();
-            tokio::spawn(async move {
+            let handle = tokio::spawn(async move {
                 tcp::listener_loop(socket, daemon_tx, queue_sizes, clock).await;
                 tracing::debug!("event listener loop finished for `{event_loop_node_id}`");
             });
+            let abort_handle = handle.abort_handle();
 
-            Ok(DaemonCommunication::Tcp { socket_addr })
-        }
-        LocalCommunicationConfig::Shmem => {
-            let daemon_control_region = ShmemConf::new()
-                .size(4096)
-                .create()
-                .wrap_err("failed to allocate daemon_control_region")?;
-            let daemon_events_region = ShmemConf::new()
-                .size(4096)
-                .create()
-                .wrap_err("failed to allocate daemon_events_region")?;
-            let daemon_drop_region = ShmemConf::new()
-                .size(4096)
-                .create()
-                .wrap_err("failed to allocate daemon_drop_region")?;
-            let daemon_events_close_region = ShmemConf::new()
-                .size(4096)
-                .create()
-                .wrap_err("failed to allocate daemon_drop_region")?;
-            let daemon_control_region_id = daemon_control_region.get_os_id().to_owned();
-            let daemon_events_region_id = daemon_events_region.get_os_id().to_owned();
-            let daemon_drop_region_id = daemon_drop_region.get_os_id().to_owned();
-            let daemon_events_close_region_id = daemon_events_close_region.get_os_id().to_owned();
-
-            {
-                let server = unsafe { ShmemServer::new(daemon_control_region) }
-                    .wrap_err("failed to create control server")?;
-                let daemon_tx = daemon_tx.clone();
-                let queue_sizes = queue_sizes.clone();
-                let clock = clock.clone();
-                tokio::spawn(shmem::listener_loop(server, daemon_tx, queue_sizes, clock));
-            }
-
-            {
-                let server = unsafe { ShmemServer::new(daemon_events_region) }
-                    .wrap_err("failed to create events server")?;
-                let event_loop_node_id = format!("{dataflow_id}/{node_id}");
-                let daemon_tx = daemon_tx.clone();
-                let queue_sizes = queue_sizes.clone();
-                let clock = clock.clone();
-                tokio::task::spawn(async move {
-                    shmem::listener_loop(server, daemon_tx, queue_sizes, clock).await;
-                    tracing::debug!("event listener loop finished for `{event_loop_node_id}`");
-                });
-            }
-
-            {
-                let server = unsafe { ShmemServer::new(daemon_drop_region) }
-                    .wrap_err("failed to create drop server")?;
-                let drop_loop_node_id = format!("{dataflow_id}/{node_id}");
-                let daemon_tx = daemon_tx.clone();
-                let queue_sizes = queue_sizes.clone();
-                let clock = clock.clone();
-                tokio::task::spawn(async move {
-                    shmem::listener_loop(server, daemon_tx, queue_sizes, clock).await;
-                    tracing::debug!("drop listener loop finished for `{drop_loop_node_id}`");
-                });
-            }
-
-            {
-                let server = unsafe { ShmemServer::new(daemon_events_close_region) }
-                    .wrap_err("failed to create events close server")?;
-                let drop_loop_node_id = format!("{dataflow_id}/{node_id}");
-                let daemon_tx = daemon_tx.clone();
-                let clock = clock.clone();
-                tokio::task::spawn(async move {
-                    shmem::listener_loop(server, daemon_tx, queue_sizes, clock).await;
-                    tracing::debug!(
-                        "events close listener loop finished for `{drop_loop_node_id}`"
-                    );
-                });
-            }
-
-            Ok(DaemonCommunication::Shmem {
-                daemon_control_region_id,
-                daemon_events_region_id,
-                daemon_drop_region_id,
-                daemon_events_close_region_id,
-            })
+            Ok((DaemonCommunication::Tcp { socket_addr }, Some(abort_handle)))
         }
         #[cfg(unix)]
         LocalCommunicationConfig::UnixDomain => {
@@ -163,12 +83,16 @@ pub async fn spawn_listener_loop(
 
             let event_loop_node_id = format!("{dataflow_id}/{node_id}");
             let daemon_tx = daemon_tx.clone();
-            tokio::spawn(async move {
+            let handle = tokio::spawn(async move {
                 unix_domain::listener_loop(socket, daemon_tx, queue_sizes, clock).await;
                 tracing::debug!("event listener loop finished for `{event_loop_node_id}`");
             });
+            let abort_handle = handle.abort_handle();
 
-            Ok(DaemonCommunication::UnixDomain { socket_file })
+            Ok((
+                DaemonCommunication::UnixDomain { socket_file },
+                Some(abort_handle),
+            ))
         }
         #[cfg(not(unix))]
         LocalCommunicationConfig::UnixDomain => {

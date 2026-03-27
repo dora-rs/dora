@@ -11,7 +11,7 @@ use dora_message::{
     metadata::{ArrowTypeInfo, BufferOffset, Parameter},
 };
 use eyre::{Context, eyre};
-use tokio::{runtime::Builder, task::JoinSet};
+use tokio::task::JoinSet;
 use uuid::Uuid;
 
 use crate::{
@@ -61,54 +61,48 @@ pub struct Echo {
 }
 
 impl Executable for Echo {
-    fn execute(self) -> eyre::Result<()> {
+    async fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
 
-        inspect(self.coordinator, self.selector, self.format)
+        inspect(self.coordinator, self.selector, self.format).await
     }
 }
 
-fn inspect(
+async fn inspect(
     coordinator: CoordinatorOptions,
     selector: TopicSelector,
     format: OutputFormat,
 ) -> eyre::Result<()> {
-    let mut session = coordinator.connect()?;
-    let (dataflow_id, topics) = selector.resolve(session.as_mut())?;
+    let client = coordinator.connect_rpc().await?;
+    let (dataflow_id, topics) = selector.resolve(&client).await?;
 
-    let rt = Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .context("tokio runtime failed")?;
-    rt.block_on(async move {
-        let zenoh_session = open_zenoh_session(Some(coordinator.coordinator_addr))
-            .await
-            .context("failed to open zenoh session")?;
+    let zenoh_session = open_zenoh_session(Some(coordinator.coordinator_addr))
+        .await
+        .context("failed to open zenoh session")?;
 
-        let mut join_set = JoinSet::new();
-        for TopicIdentifier { node_id, data_id } in topics {
-            join_set.spawn(log_to_terminal(
-                zenoh_session.clone(),
-                dataflow_id,
-                node_id,
-                data_id,
-                format,
-            ));
-        }
-        while let Some(res) = join_set.join_next().await {
-            match res {
-                Ok(Ok(())) => {}
-                Ok(Err(e)) => {
-                    eprintln!("Error while inspecting output: {e}");
-                }
-                Err(e) => {
-                    eprintln!("Join error: {e}");
-                }
+    let mut join_set = JoinSet::new();
+    for TopicIdentifier { node_id, data_id } in topics {
+        join_set.spawn(log_to_terminal(
+            zenoh_session.clone(),
+            dataflow_id,
+            node_id,
+            data_id,
+            format,
+        ));
+    }
+    while let Some(res) = join_set.join_next().await {
+        match res {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                eprintln!("Error while inspecting output: {e}");
+            }
+            Err(e) => {
+                eprintln!("Join error: {e}");
             }
         }
+    }
 
-        Result::<_, eyre::Error>::Ok(())
-    })
+    Ok(())
 }
 
 fn buffer_into_arrow_array(
@@ -229,6 +223,7 @@ async fn log_to_terminal(
                             Parameter::Float(value) => serde_json::to_string(value).unwrap(),
                             Parameter::ListFloat(value) => serde_json::to_string(value).unwrap(),
                             Parameter::ListString(value) => serde_json::to_string(value).unwrap(),
+                            Parameter::Timestamp(dt) => serde_json::to_string(dt).unwrap(),
                         };
                         write!(output, "{}:{value}", serde_json::Value::String(k.clone()),)
                             .unwrap();
@@ -266,6 +261,10 @@ async fn log_to_terminal(
             InterDaemonEvent::OutputClosed { .. } => {
                 eprintln!("Output {node_id}/{output_id} closed");
                 break;
+            }
+            InterDaemonEvent::NodeFailed { .. } => {
+                // NodeFailed events are not relevant for topic echo
+                continue;
             }
         }
     }

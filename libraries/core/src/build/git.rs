@@ -176,14 +176,18 @@ impl GitFolder {
                     )
                     .await;
                 let clone_target = target_dir.clone();
-                let checkout_result = tokio::task::spawn_blocking(move || {
-                    let repository = clone_into(repo_url.clone(), &clone_target)
-                        .with_context(|| format!("failed to clone git repo from `{repo_url}`"))?;
-                    checkout_tree(&repository, &commit_hash)
-                        .with_context(|| format!("failed to checkout commit `{commit_hash}`"))
-                })
-                .await
-                .unwrap();
+                let checkout_result = await_git_worker(
+                    tokio::task::spawn_blocking(move || {
+                        let repository =
+                            clone_into(repo_url.clone(), &clone_target).with_context(|| {
+                                format!("failed to clone git repo from `{repo_url}`")
+                            })?;
+                        checkout_tree(&repository, &commit_hash)
+                            .with_context(|| format!("failed to checkout commit `{commit_hash}`"))
+                    }),
+                    "git clone/checkout worker task failed",
+                )
+                .await;
 
                 match checkout_result {
                     Ok(()) => target_dir,
@@ -275,6 +279,13 @@ impl GitFolder {
         };
         Ok(clone_dir)
     }
+}
+
+async fn await_git_worker<T>(
+    worker: tokio::task::JoinHandle<eyre::Result<T>>,
+    context: &'static str,
+) -> eyre::Result<T> {
+    worker.await.wrap_err(context)?
 }
 
 #[derive(Debug)]
@@ -371,4 +382,22 @@ fn checkout_tree(repository: &git2::Repository, commit_hash: &str) -> eyre::Resu
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::await_git_worker;
+
+    #[tokio::test]
+    async fn returns_error_when_git_worker_join_fails() {
+        let worker = tokio::spawn(async { Ok::<(), eyre::Error>(()) });
+        worker.abort();
+
+        let err = await_git_worker(worker, "git clone/checkout worker task failed")
+            .await
+            .expect_err("aborted worker should return an error");
+
+        let msg = format!("{err:#}");
+        assert!(msg.contains("git clone/checkout worker task failed"));
+    }
 }

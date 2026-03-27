@@ -28,6 +28,7 @@ ros2-bridge = [
 [dependencies]
 cxx = "1.0.73"
 dora-node-api = { workspace = true }
+dora-message = { workspace = true }
 eyre = "0.6.8"
 dora-ros2-bridge = { workspace = true, optional = true }
 futures-lite = { version = "2.2" }
@@ -35,6 +36,7 @@ serde = { version = "1.0.164", features = ["derive"] }
 serde_json = { version = "1.0" }
 serde-big-array = { version = "0.5.1", optional = true }
 arrow = { workspace = true, features = ["ffi"] }
+chrono = { version = "0.4", features = ["serde"] }
 
 [build-dependencies]
 cxx-build = "1.0.73"

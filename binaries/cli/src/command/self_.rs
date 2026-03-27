@@ -20,7 +20,7 @@ pub enum SelfSubCommand {
 }
 
 impl Executable for SelfSubCommand {
-    fn execute(self) -> eyre::Result<()> {
+    async fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
 
         match self {

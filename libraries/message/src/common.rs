@@ -109,6 +109,19 @@ impl From<LogLevel> for LogLevelOrStdout {
     }
 }
 
+/// Response from the `logs` RPC, containing the raw log file contents and
+/// the timestamp of the last log entry read by the daemon.  The CLI uses
+/// `last_timestamp` as a dedup cutoff when switching from historical to
+/// live (zenoh) log output.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct LogsResponse {
+    pub content: Vec<u8>,
+    /// Timestamp captured on the daemon right after reading the log file.
+    /// Zenoh messages with an earlier timestamp are already covered by
+    /// `content`.
+    pub daemon_timestamp: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct NodeError {
     pub timestamp: uhlc::Timestamp,
@@ -300,7 +313,9 @@ impl DropToken {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize, Hash,
+)]
 pub struct DaemonId {
     machine_id: Option<String>,
     uuid: Uuid,
@@ -333,6 +348,15 @@ impl std::fmt::Display for DaemonId {
         }
         write!(f, "{}", self.uuid)
     }
+}
+
+/// Returns a system-level unique machine identifier.
+///
+/// This is used to reliably determine whether two processes (e.g. CLI and
+/// daemon) are running on the same physical/virtual machine, even when a
+/// NAT maps multiple machines to the same public IP address.
+pub fn machine_uid() -> Option<String> {
+    machine_uid::get().ok()
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize, Clone, PartialEq, Eq)]

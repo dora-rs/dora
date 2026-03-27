@@ -1,7 +1,5 @@
 pub mod status;
 
-pub use status::check_environment;
-
 use super::Executable;
 use status::Status;
 
@@ -12,9 +10,9 @@ pub enum System {
 }
 
 impl Executable for System {
-    fn execute(self) -> eyre::Result<()> {
+    async fn execute(self) -> eyre::Result<()> {
         match self {
-            System::Status(args) => args.execute(),
+            System::Status(args) => args.execute().await,
         }
     }
 }

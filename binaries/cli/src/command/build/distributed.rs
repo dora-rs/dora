@@ -1,107 +1,72 @@
-use communication_layer_request_reply::{TcpConnection, TcpRequestReplyConnection};
 use dora_core::descriptor::Descriptor;
 use dora_message::{
     BuildId,
-    cli_to_coordinator::ControlRequest,
-    common::{GitSource, LogMessage},
-    coordinator_to_cli::ControlRequestReply,
+    cli_to_coordinator::{BuildRequest, CoordinatorControlClient},
+    common::GitSource,
     id::NodeId,
+    tarpc,
 };
-use eyre::{Context, bail};
-use std::{
-    collections::BTreeMap,
-    net::{SocketAddr, TcpStream},
-};
+use eyre::Context;
+use std::{collections::BTreeMap, net::IpAddr};
 
-use crate::{output::print_log_message, session::DataflowSession};
+use crate::common::{long_context, rpc};
+use crate::output::{close_log_session_and_wait, subscribe_and_print_logs};
+use crate::session::DataflowSession;
 
-pub fn build_distributed_dataflow(
-    session: &mut TcpRequestReplyConnection,
+/// Trigger a distributed build and wait for it to complete.
+///
+/// The build ID is generated on the CLI side so we can subscribe to the
+/// zenoh log topic *before* sending the build RPC, ensuring no early log
+/// messages are missed.
+pub async fn build_distributed_dataflow(
+    client: &CoordinatorControlClient,
     dataflow: Descriptor,
     git_sources: &BTreeMap<NodeId, GitSource>,
     dataflow_session: &DataflowSession,
     local_working_dir: Option<std::path::PathBuf>,
     uv: bool,
-) -> eyre::Result<BuildId> {
-    let build_id = {
-        let reply_raw = session
-            .request(
-                &serde_json::to_vec(&ControlRequest::Build {
-                    session_id: dataflow_session.session_id,
-                    dataflow,
-                    git_sources: git_sources.clone(),
-                    prev_git_sources: dataflow_session.git_sources.clone(),
-                    local_working_dir,
-                    uv,
-                })
-                .unwrap(),
-            )
-            .wrap_err("failed to send start dataflow message")?;
-
-        let result: ControlRequestReply =
-            serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-        match result {
-            ControlRequestReply::DataflowBuildTriggered { build_id } => {
-                eprintln!("dataflow build triggered: {build_id}");
-                build_id
-            }
-            ControlRequestReply::Error(err) => bail!("{err}"),
-            other => bail!("unexpected start dataflow reply: {other:?}"),
-        }
-    };
-    Ok(build_id)
-}
-
-pub fn wait_until_dataflow_built(
-    build_id: BuildId,
-    session: &mut TcpRequestReplyConnection,
-    coordinator_socket: SocketAddr,
+    coordinator_addr: IpAddr,
     log_level: log::LevelFilter,
 ) -> eyre::Result<BuildId> {
-    // subscribe to log messages
-    let mut log_session = TcpConnection {
-        stream: TcpStream::connect(coordinator_socket)
-            .wrap_err("failed to connect to dora coordinator")?,
-    };
-    log_session
-        .send(
-            &serde_json::to_vec(&ControlRequest::BuildLogSubscribe {
-                build_id,
-                level: log_level,
-            })
-            .wrap_err("failed to serialize message")?,
-        )
-        .wrap_err("failed to send build log subscribe request to coordinator")?;
-    std::thread::spawn(move || {
-        while let Ok(raw) = log_session.receive() {
-            let parsed: eyre::Result<LogMessage> =
-                serde_json::from_slice(&raw).context("failed to parse log message");
-            match parsed {
-                Ok(log_message) => {
-                    print_log_message(log_message, false, true);
-                }
-                Err(err) => {
-                    tracing::warn!("failed to parse log message: {err:?}")
-                }
-            }
-        }
-    });
+    let build_id = BuildId::generate();
 
-    let reply_raw = session
-        .request(&serde_json::to_vec(&ControlRequest::WaitForBuild { build_id }).unwrap())
-        .wrap_err("failed to send WaitForBuild message")?;
+    // Subscribe to build log messages via zenoh *before* triggering the
+    // build so we don't miss early messages.
+    let zenoh_session = dora_core::topics::open_zenoh_session(Some(coordinator_addr))
+        .await
+        .wrap_err("failed to open zenoh session for build log subscription")?;
+    let base_topic = dora_core::topics::zenoh_log_base_topic_for_build(&build_id);
+    let log_task =
+        subscribe_and_print_logs(&zenoh_session, &base_topic, log_level, false, true).await?;
 
-    let result: ControlRequestReply =
-        serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-    match result {
-        ControlRequestReply::DataflowBuildFinished { build_id, result } => match result {
-            Ok(()) => {
-                eprintln!("dataflow build finished successfully");
-                Ok(build_id)
-            }
-            Err(err) => bail!("{err}"),
-        },
-        ControlRequestReply::Error(err) => bail!("{err}"),
-        other => bail!("unexpected start dataflow reply: {other:?}"),
-    }
+    // Now trigger the build — the daemon may start publishing logs
+    // immediately, but our subscriber is already active.
+    rpc(
+        "trigger build",
+        client.build(
+            tarpc::context::current(),
+            BuildRequest {
+                build_id: Some(build_id),
+                session_id: dataflow_session.session_id,
+                dataflow,
+                git_sources: git_sources.clone(),
+                prev_git_sources: dataflow_session.git_sources.clone(),
+                local_working_dir,
+                uv,
+            },
+        ),
+    )
+    .await?;
+    eprintln!("dataflow build triggered: {build_id}");
+
+    // Wait for the build to finish, then clean up the log subscriber.
+    let result = rpc(
+        "wait for build",
+        client.wait_for_build(long_context(), build_id),
+    )
+    .await;
+    close_log_session_and_wait(zenoh_session, log_task).await;
+    result?;
+    eprintln!("dataflow build finished successfully");
+    Ok(build_id)
 }

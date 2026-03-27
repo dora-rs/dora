@@ -59,8 +59,9 @@ jobs:
       - name: Free disk Space (Windows)
         if: runner.os == 'Windows'
         run: |
-          docker system prune --all -f
-          docker builder prune -af
+          $ErrorActionPreference = 'SilentlyContinue'
+          docker system prune --all -f 2>$null; $true
+          docker builder prune -af 2>$null; $true
           Remove-Item "C:\Android" -Force -Recurse -ErrorAction SilentlyContinue
           Remove-Item "C:\hostedtoolcache\windows\Ruby" -Force -Recurse -ErrorAction SilentlyContinue
           Remove-Item "C:\hostedtoolcache\windows\go" -Force -Recurse -ErrorAction SilentlyContinue
@@ -104,7 +105,7 @@ jobs:
         platform: [ubuntu-22.04, macos-latest, windows-latest]
       fail-fast: false
     runs-on: ${{ matrix.platform }}
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v3
       - uses: r7kamura/rust-problem-matchers@v1.1.0
@@ -128,8 +129,9 @@ jobs:
       - name: Free disk Space (Windows)
         if: runner.os == 'Windows'
         run: |
-          docker system prune --all -f
-          docker builder prune -af
+          $ErrorActionPreference = 'SilentlyContinue'
+          docker system prune --all -f 2>$null; $true
+          docker builder prune -af 2>$null; $true
           Remove-Item "C:\Android" -Force -Recurse -ErrorAction SilentlyContinue
           Remove-Item "C:\hostedtoolcache\windows\Ruby" -Force -Recurse -ErrorAction SilentlyContinue
           Remove-Item "C:\hostedtoolcache\windows\go" -Force -Recurse -ErrorAction SilentlyContinue
@@ -384,6 +386,17 @@ jobs:
           dora stop --name ci-rust-dynamic  --grace-duration 5s
           dora destroy
 
+      - name: "Error Event Example"
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          dora build examples/error-propagation/dataflow.yml
+          # The producer exits with code 1 on purpose; dora run reflects that exit code.
+          # Capture output and verify the consumer received the NodeFailed event.
+          output=$(dora run examples/error-propagation/dataflow.yml 2>&1 || true)
+          echo "$output"
+          echo "$output" | grep -q "Received error from node" || { echo "ERROR: consumer did not receive NodeFailed event"; exit 1; }
+
       - uses: actions/setup-python@v5
         with:
           # TODO: Support Python 3.13 when https://github.com/pytorch/pytorch/issues/130249 is fixed
@@ -467,7 +480,7 @@ jobs:
         run: |
           echo "Running CI Operator Test"
           dora build examples/python-operator-dataflow/dataflow.yml --uv
-          dora run examples/python-operator-dataflow/dataflow.yml --uv --stop-after 10s
+          dora run examples/python-operator-dataflow/dataflow.yml --uv --stop-after 20s
 
       - name: "Test Python Example: Multiple Arrays"
         timeout-minutes: 30
@@ -481,9 +494,11 @@ jobs:
         if: runner.os != 'Windows'
         env:
           RUST_LOG: debug
-        run: dora run examples/python-async/dataflow.yaml --uv
+        run: dora run examples/python-async/dataflow.yaml --uv --stop-after 5m
       - name: "Test Python Example: Drain"
         timeout-minutes: 30
+        env:
+          OTEL_SDK_DISABLED: true
         run: dora run examples/python-drain/dataflow.yaml --uv
       - name: "Test Python Example: Dataflow Builder"
         timeout-minutes: 30

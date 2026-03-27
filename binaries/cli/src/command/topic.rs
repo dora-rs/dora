@@ -19,12 +19,12 @@ pub enum Topic {
 }
 
 impl Executable for Topic {
-    fn execute(self) -> eyre::Result<()> {
+    async fn execute(self) -> eyre::Result<()> {
         match self {
-            Topic::List(cmd) => cmd.execute(),
-            Topic::Echo(cmd) => cmd.execute(),
-            Topic::Hz(cmd) => cmd.execute(),
-            Topic::Info(cmd) => cmd.execute(),
+            Topic::List(cmd) => cmd.execute().await,
+            Topic::Echo(cmd) => cmd.execute().await,
+            Topic::Hz(cmd) => cmd.execute().await,
+            Topic::Info(cmd) => cmd.execute().await,
         }
     }
 }

@@ -4,6 +4,16 @@
   "description": "The main configuration structure for defining a Dora dataflow. Dataflows are\nspecified through YAML files that describe the nodes, their connections, and\nexecution parameters.\n\n## Structure\n\nA dataflow consists of:\n- **Nodes**: The computational units that process data\n- **Communication**: Optional communication configuration\n- **Deployment**: Optional deployment configuration (unstable)\n- **Debug options**: Optional development and debugging settings (unstable)\n\n## Example\n\n```yaml\nnodes:\n - id: webcam\n    operator:\n      python: webcam.py\n      inputs:\n        tick: dora/timer/millis/100\n      outputs:\n        - image\n  - id: plot\n    operator:\n      python: plot.py\n      inputs:\n        image: webcam/image\n```",
   "type": "object",
   "properties": {
+    "env": {
+      "description": "Global Environment variables inherited by all nodes (optional)\n\n## Example\n\n```yaml\nenv:\n    MY_VAR: \"my_var\"\n\nnodes:\n  - id: foo\n    path: path/to/the/executable\n    # ... (see below)\n  - id: bar\n    path: path/to/another/executable\n    # ... (see below)\n```\n\nNote that, If there is an env at the node level, Node level env will have more priority than the global env",
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": {
+        "$ref": "#/$defs/EnvValue"
+      }
+    },
     "nodes": {
       "description": "List of nodes in the dataflow\n\nThis is the most important field of the dataflow specification.\nEach node must be identified by a unique `id`:\n\n## Example\n\n```yaml\nnodes:\n  - id: foo\n    path: path/to/the/executable\n    # ... (see below)\n  - id: bar\n    path: path/to/another/executable\n    # ... (see below)\n```\n\nFor each node, you need to specify the `path` of the executable or script that Dora should run when starting the node.\nMost of the other node fields are optional, but you typically want to specify at least some `inputs` and/or `outputs`.",
       "type": "array",

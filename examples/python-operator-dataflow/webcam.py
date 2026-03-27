@@ -1,4 +1,9 @@
-"""TODO: Add docstring."""
+"""Webcam operator for dora-rs dataflow.
+
+This operator captures video frames from a local webcam using OpenCV and
+emits them as raw image buffers to the "image" output. It includes basic
+error handling for cases where the camera is unavailable.
+"""
 
 import os
 import time
@@ -20,7 +25,7 @@ class Operator:
     """Sending image from webcam to the dataflow."""
 
     def __init__(self):
-        """TODO: Add docstring."""
+        """Initializes the webcam capture at the specified camera index."""
         self.video_capture = cv2.VideoCapture(CAMERA_INDEX)
         self.start_time = time.time()
         self.video_capture.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
@@ -32,7 +37,16 @@ class Operator:
         dora_event: str,
         send_output,
     ) -> DoraStatus:
-        """TODO: Add docstring."""
+        """Capture a frame from the webcam and push it to the dataflow.
+
+        Args:
+            dora_event (dict): The event from dora-rs.
+            send_output (Callable): Callback to emit the captured image frame.
+
+        Returns:
+            DoraStatus: CONTINUE to keep capturing, or STOP if the runtime
+                signals a shutdown.
+        """
         event_type = dora_event["type"]
         if event_type == "INPUT":
             ret, frame = self.video_capture.read()
@@ -71,5 +85,5 @@ class Operator:
         return DoraStatus.STOP
 
     def __del__(self):
-        """TODO: Add docstring."""
+        """Releases the webcam resources upon operator destruction."""
         self.video_capture.release()

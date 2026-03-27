@@ -8,7 +8,6 @@ use dora_tracing::TracingBuilder;
 
 use eyre::Context;
 use std::net::{IpAddr, SocketAddr};
-use tokio::runtime::Builder;
 use tracing::level_filters::LevelFilter;
 
 #[derive(Debug, clap::Args)]
@@ -32,7 +31,7 @@ pub struct Coordinator {
 }
 
 impl Executable for Coordinator {
-    fn execute(self) -> eyre::Result<()> {
+    async fn execute(self) -> eyre::Result<()> {
         #[cfg(feature = "tracing")]
         {
             let name = "dora-coordinator";
@@ -46,21 +45,13 @@ impl Executable for Coordinator {
                 .wrap_err("failed to set up tracing subscriber")?;
         }
 
-        let rt = Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .context("tokio runtime failed")?;
-        rt.block_on(async {
-            let bind = SocketAddr::new(self.interface, self.port);
-            let bind_control = SocketAddr::new(self.control_interface, self.control_port);
-            let (port, task) =
-                dora_coordinator::start(bind, bind_control, futures::stream::empty::<Event>())
-                    .await?;
-            if !self.quiet {
-                println!("Listening for incoming daemon connection on {port}");
-            }
-            task.await
-        })
-        .context("failed to run dora-coordinator")
+        let bind = SocketAddr::new(self.interface, self.port);
+        let bind_control = SocketAddr::new(self.control_interface, self.control_port);
+        let (port, task) =
+            dora_coordinator::start(bind, bind_control, futures::stream::empty::<Event>()).await?;
+        if !self.quiet {
+            println!("Listening for incoming daemon connection on {port}");
+        }
+        task.await.context("failed to run dora-coordinator")
     }
 }

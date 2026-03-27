@@ -19,7 +19,7 @@ use std::{
     panic::{AssertUnwindSafe, catch_unwind},
     path::Path,
 };
-use tokio::sync::{mpsc::Sender, oneshot};
+use tokio::sync::oneshot;
 use tracing::{error, field, span, warn};
 
 fn traceback(err: pyo3::PyErr) -> eyre::Report {
@@ -36,7 +36,7 @@ pub fn run(
     node_id: &NodeId,
     operator_id: &OperatorId,
     python_source: &PythonSource,
-    events_tx: Sender<OperatorEvent>,
+    events_tx: flume::Sender<OperatorEvent>,
     incoming_events: flume::Receiver<Event>,
     init_done: oneshot::Sender<Result<()>>,
     dataflow_descriptor: &Descriptor,
@@ -266,13 +266,13 @@ pub fn run(
 
     match catch_unwind(closure) {
         Ok(Ok(reason)) => {
-            let _ = events_tx.blocking_send(OperatorEvent::Finished { reason });
+            let _ = events_tx.send(OperatorEvent::Finished { reason });
         }
         Ok(Err(err)) => {
-            let _ = events_tx.blocking_send(OperatorEvent::Error(err));
+            let _ = events_tx.send(OperatorEvent::Error(err));
         }
         Err(panic) => {
-            let _ = events_tx.blocking_send(OperatorEvent::Panic(panic));
+            let _ = events_tx.send(OperatorEvent::Panic(panic));
         }
     }
 
@@ -282,7 +282,7 @@ pub fn run(
 #[pyclass]
 #[derive(Clone)]
 struct SendOutputCallback {
-    events_tx: Sender<OperatorEvent>,
+    events_tx: flume::Sender<OperatorEvent>,
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -350,7 +350,7 @@ mod callback_impl {
                 if data_len > ZERO_COPY_THRESHOLD {
                     let (tx, rx) = oneshot::channel();
                     self.events_tx
-                        .blocking_send(OperatorEvent::AllocateOutputSample {
+                        .send(OperatorEvent::AllocateOutputSample {
                             len: data_len,
                             sample: tx,
                         })
@@ -389,7 +389,7 @@ mod callback_impl {
                     data: Some(sample),
                 };
                 self.events_tx
-                    .blocking_send(event)
+                    .send(event)
                     .map_err(|_| eyre!("failed to send output to runtime"))
             })?;
 

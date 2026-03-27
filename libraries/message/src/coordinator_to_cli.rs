@@ -1,53 +1,9 @@
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    net::IpAddr,
-};
+use std::collections::BTreeMap;
 
 use uuid::Uuid;
 
 pub use crate::common::{LogLevel, LogMessage, NodeError, NodeErrorCause, NodeExitStatus};
-use crate::{BuildId, common::DaemonId, descriptor::Descriptor, id::NodeId};
-
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-pub enum ControlRequestReply {
-    Error(String),
-    CoordinatorStopped,
-    DataflowBuildTriggered {
-        build_id: BuildId,
-    },
-    DataflowBuildFinished {
-        build_id: BuildId,
-        result: Result<(), String>,
-    },
-    DataflowStartTriggered {
-        uuid: Uuid,
-    },
-    DataflowSpawned {
-        uuid: Uuid,
-    },
-    DataflowReloaded {
-        uuid: Uuid,
-    },
-    DataflowStopped {
-        uuid: Uuid,
-        result: DataflowResult,
-    },
-    DataflowList(DataflowList),
-    DataflowInfo {
-        uuid: Uuid,
-        name: Option<String>,
-        descriptor: Descriptor,
-    },
-    DestroyOk,
-    DaemonConnected(bool),
-    ConnectedDaemons(BTreeSet<DaemonId>),
-    Logs(Vec<u8>),
-    CliAndDefaultDaemonIps {
-        default_daemon: Option<IpAddr>,
-        cli: Option<IpAddr>,
-    },
-    NodeInfoList(Vec<NodeInfo>),
-}
+use crate::{common::DaemonId, descriptor::Descriptor, id::NodeId};
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct NodeInfo {
@@ -134,4 +90,44 @@ impl std::fmt::Display for DataflowIdAndName {
             write!(f, "[<unnamed>] {}", self.uuid)
         }
     }
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct DataflowInfo {
+    pub uuid: Uuid,
+    pub name: Option<String>,
+    pub descriptor: Descriptor,
+}
+
+/// Reply for the `check` RPC method.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub enum CheckDataflowReply {
+    Running { uuid: Uuid },
+    Stopped { uuid: Uuid, result: DataflowResult },
+}
+
+/// Reply for the `stop` and `stop_by_name` RPC methods.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct StopDataflowReply {
+    pub uuid: Uuid,
+    pub result: DataflowResult,
+}
+
+/// Reply for the `get_version` RPC method.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct VersionInfo {
+    /// The coordinator's dora crate version (e.g. "0.4.1")
+    pub coordinator_version: String,
+    /// The dora-message crate version used by the coordinator (e.g. "0.7.0")
+    pub message_format_version: String,
+}
+
+/// Information about a single connected daemon, returned by `list_daemons`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DaemonInfo {
+    pub daemon_id: DaemonId,
+    /// Whether the daemon opened a Zenoh session.
+    pub zenoh_ready: bool,
+    /// The Zenoh ZID of the daemon's session, if open.
+    pub zenoh_peer_id: Option<String>,
 }

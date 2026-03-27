@@ -23,14 +23,14 @@ use std::{
     path::Path,
     sync::Arc,
 };
-use tokio::sync::{mpsc::Sender, oneshot};
+use tokio::sync::oneshot;
 use tracing::{field, span};
 
 pub fn run(
     _node_id: &NodeId,
     _operator_id: &OperatorId,
     source: &str,
-    events_tx: Sender<OperatorEvent>,
+    events_tx: flume::Sender<OperatorEvent>,
     incoming_events: flume::Receiver<Event>,
     init_done: oneshot::Sender<Result<()>>,
 ) -> eyre::Result<()> {
@@ -76,13 +76,13 @@ pub fn run(
     });
     match catch_unwind(closure) {
         Ok(Ok(reason)) => {
-            let _ = events_tx.blocking_send(OperatorEvent::Finished { reason });
+            let _ = events_tx.send(OperatorEvent::Finished { reason });
         }
         Ok(Err(err)) => {
-            let _ = events_tx.blocking_send(OperatorEvent::Error(err));
+            let _ = events_tx.send(OperatorEvent::Error(err));
         }
         Err(panic) => {
-            let _ = events_tx.blocking_send(OperatorEvent::Panic(panic));
+            let _ = events_tx.send(OperatorEvent::Panic(panic));
         }
     }
 
@@ -91,7 +91,7 @@ pub fn run(
 
 struct SharedLibraryOperator<'lib> {
     incoming_events: flume::Receiver<Event>,
-    events_tx: Sender<OperatorEvent>,
+    events_tx: flume::Sender<OperatorEvent>,
 
     bindings: Bindings<'lib>,
 }
@@ -152,7 +152,7 @@ impl SharedLibraryOperator<'_> {
 
             let result = self
                 .events_tx
-                .blocking_send(event)
+                .send(event)
                 .map_err(|_| eyre!("failed to send output to runtime"));
 
             match result {

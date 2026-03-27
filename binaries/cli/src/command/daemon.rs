@@ -10,7 +10,6 @@ use std::{
     net::{IpAddr, SocketAddr},
     path::PathBuf,
 };
-use tokio::runtime::Builder;
 use tracing::level_filters::LevelFilter;
 
 #[derive(Debug, clap::Args)]
@@ -36,16 +35,9 @@ pub struct Daemon {
 }
 
 impl Executable for Daemon {
-    fn execute(self) -> eyre::Result<()> {
-        let rt = Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .context("tokio runtime failed")?;
-
+    async fn execute(self) -> eyre::Result<()> {
         #[cfg(feature = "tracing")]
         let _guard = {
-            let _enter = rt.enter();
-
             let name = "dora-daemon";
             let filename = self
                 .machine_id
@@ -68,30 +60,31 @@ impl Executable for Daemon {
             )
             .context("failed to initialize tracing")?
         };
-        rt.block_on(async {
-                match self.run_dataflow {
-                    Some(dataflow_path) => {
-                        tracing::info!("Starting dataflow `{}`", dataflow_path.display());
-                        if self.coordinator_addr != LOCALHOST {
-                            tracing::info!(
-                                "Not using coordinator addr {} as `run_dataflow` is for local dataflow only. Please use the `start` command for remote coordinator",
-                                self.coordinator_addr
-                            );
-                        }
-                        let dataflow_session =
-                            DataflowSession::read_session(&dataflow_path).context("failed to read DataflowSession")?;
+        async {
+            match self.run_dataflow {
+                Some(dataflow_path) => {
+                    tracing::info!("Starting dataflow `{}`", dataflow_path.display());
+                    if self.coordinator_addr != LOCALHOST {
+                        tracing::info!(
+                            "Not using coordinator addr {} as `run_dataflow` is for local dataflow only. Please use the `start` command for remote coordinator",
+                            self.coordinator_addr
+                        );
+                    }
+                    let dataflow_session =
+                        DataflowSession::read_session(&dataflow_path).context("failed to read DataflowSession")?;
 
-                        let result = dora_daemon::Daemon::run_dataflow(&dataflow_path,
-                            dataflow_session.build_id, dataflow_session.local_build, dataflow_session.session_id, false,
-                            LogDestination::Tracing, None, None, false,
-                        ).await?;
-                        handle_dataflow_result(result, None)
-                    }
-                    None => {
-                        dora_daemon::Daemon::run(SocketAddr::new(self.coordinator_addr, self.coordinator_port), self.machine_id, self.local_listen_port).await
-                    }
+                    let result = dora_daemon::Daemon::run_dataflow(&dataflow_path,
+                        dataflow_session.build_id, dataflow_session.local_build, dataflow_session.session_id, false,
+                        LogDestination::Tracing, None, None, false,
+                    ).await?;
+                    handle_dataflow_result(result, None)
                 }
-            })
-            .context("failed to run dora-daemon")
+                None => {
+                    dora_daemon::Daemon::run(SocketAddr::new(self.coordinator_addr, self.coordinator_port), self.machine_id, self.local_listen_port).await
+                }
+            }
+        }
+        .await
+        .context("failed to run dora-daemon")
     }
 }

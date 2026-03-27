@@ -630,7 +630,11 @@ pub fn run(dataflow_path: String, uv: Option<bool>, stop_after: Option<f64>) -> 
     if let Some(duration) = stop_after_duration {
         run.stop_after = Some(duration);
     }
-    run.execute()
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("tokio runtime failed")?;
+    rt.block_on(run.execute())
 }
 
 #[pymodule]

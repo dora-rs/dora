@@ -5,24 +5,28 @@
 use super::{Executable, default_tracing};
 use crate::{
     command::start::attach::attach_dataflow,
-    common::{connect_to_coordinator, local_working_dir, resolve_dataflow, write_events_to},
-    output::print_log_message,
+    common::{
+        connect_and_check_version, local_working_dir, long_context, resolve_dataflow, rpc,
+        write_events_to,
+    },
+    output::{abort_log_task_with_grace, subscribe_and_print_logs},
     session::DataflowSession,
 };
-use communication_layer_request_reply::{TcpConnection, TcpRequestReplyConnection};
 use dora_core::{
     descriptor::{Descriptor, DescriptorExt},
     topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST},
 };
 use dora_message::{
-    cli_to_coordinator::ControlRequest, common::LogMessage, coordinator_to_cli::ControlRequestReply,
+    cli_to_coordinator::{CoordinatorControlClient, StartRequest},
+    tarpc,
 };
-use eyre::{Context, bail};
+use eyre::Context;
 use std::{
-    net::{IpAddr, SocketAddr, TcpStream},
+    net::{IpAddr, SocketAddr},
     path::PathBuf,
 };
-use uuid::Uuid;
+use tokio::task::JoinHandle;
+use uuid::{NoContext, Timestamp, Uuid};
 
 mod attach;
 
@@ -56,17 +60,14 @@ pub struct Start {
 }
 
 impl Executable for Start {
-    fn execute(self) -> eyre::Result<()> {
+    async fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
-        let coordinator_socket = (self.coordinator_addr, self.coordinator_port).into();
+        let coordinator_socket: SocketAddr = (self.coordinator_addr, self.coordinator_port).into();
 
-        let (_dataflow, dataflow_descriptor, mut session, dataflow_id) = start_dataflow(
-            self.dataflow,
-            self.name,
-            coordinator_socket,
-            self.uv,
-            self.hot_reload,
-        )?;
+        // Generate the dataflow ID on the CLI side so we can subscribe to
+        // zenoh log messages *before* triggering the start RPC, ensuring
+        // no early log messages are missed.
+        let dataflow_id = Uuid::new_v7(Timestamp::now(NoContext));
 
         let attach = match (self.attach, self.detach) {
             (true, true) => eyre::bail!("both `--attach` and `--detach` are given"),
@@ -78,133 +79,127 @@ impl Executable for Start {
             }
         };
 
-        if attach {
-            let log_level = env_logger::Builder::new()
+        let dataflow_path = resolve_dataflow(self.dataflow)
+            .await
+            .context("could not resolve dataflow")?;
+        let dataflow_descriptor =
+            Descriptor::blocking_read(&dataflow_path).wrap_err("Failed to read yaml dataflow")?;
+        let dataflow_session = DataflowSession::read_session(&dataflow_path)
+            .context("failed to read DataflowSession")?;
+        let client = connect_and_check_version(coordinator_socket.ip(), coordinator_socket.port())
+            .await
+            .wrap_err("failed to connect to dora coordinator")?;
+
+        let print_daemon_name = dataflow_descriptor.nodes.iter().any(|n| n.deploy.is_some());
+        let log_level = if attach {
+            env_logger::Builder::new()
                 .filter_level(log::LevelFilter::Info)
                 .parse_default_env()
                 .build()
-                .filter();
+                .filter()
+        } else {
+            log::LevelFilter::Info
+        };
 
+        // Open the zenoh session and subscribe to logs *before* the start
+        // RPC so that no early log messages are missed.
+        let zenoh_session = dora_core::topics::open_zenoh_session(Some(self.coordinator_addr))
+            .await
+            .wrap_err("failed to open zenoh session for log subscription")?;
+        let base_log_topic = dora_core::topics::zenoh_log_base_topic_for_dataflow(dataflow_id);
+        let log_task = subscribe_and_print_logs(
+            &zenoh_session,
+            &base_log_topic,
+            log_level,
+            false,
+            print_daemon_name,
+        )
+        .await?;
+
+        // Now send the start RPC — the subscription is already active.
+        send_start_rpc(
+            &dataflow_path,
+            &dataflow_descriptor,
+            &dataflow_session,
+            &client,
+            self.name,
+            self.uv,
+            self.hot_reload,
+            dataflow_id,
+        )
+        .await?;
+
+        let result = if attach {
             attach_dataflow(
                 dataflow_descriptor,
+                dataflow_path,
                 dataflow_id,
-                &mut *session,
-                coordinator_socket,
-                log_level,
+                &client,
+                self.hot_reload,
+                log_task,
             )
+            .await
         } else {
-            let print_daemon_name = dataflow_descriptor.nodes.iter().any(|n| n.deploy.is_some());
-            // wait until dataflow is started
-            wait_until_dataflow_started(
-                dataflow_id,
-                &mut session,
-                coordinator_socket,
-                log::LevelFilter::Info,
-                print_daemon_name,
-            )
-        }
+            wait_until_dataflow_started(dataflow_id, &client, log_task).await
+        };
+        // Close the zenoh session explicitly for clean shutdown.
+        // Note: zenoh 1.8.0 may still emit "Unable to publish transport
+        // event: session closed" — see https://github.com/eclipse-zenoh/zenoh/issues/2492
+        let _ = zenoh_session.close().await;
+        result
     }
 }
 
-fn start_dataflow(
-    dataflow: String,
+/// Send the start RPC to the coordinator.  The caller should have already
+/// subscribed to zenoh log topics before calling this.
+async fn send_start_rpc(
+    dataflow: &PathBuf,
+    dataflow_descriptor: &Descriptor,
+    dataflow_session: &DataflowSession,
+    client: &CoordinatorControlClient,
     name: Option<String>,
-    coordinator_socket: SocketAddr,
     uv: bool,
     hot_reload: bool,
-) -> Result<(PathBuf, Descriptor, Box<TcpRequestReplyConnection>, Uuid), eyre::Error> {
-    let dataflow = resolve_dataflow(dataflow).context("could not resolve dataflow")?;
-    let dataflow_descriptor =
-        Descriptor::blocking_read(&dataflow).wrap_err("Failed to read yaml dataflow")?;
-    let dataflow_session =
-        DataflowSession::read_session(&dataflow).context("failed to read DataflowSession")?;
+    dataflow_id: Uuid,
+) -> Result<(), eyre::Error> {
+    let local_working_dir = local_working_dir(dataflow, dataflow_descriptor, client).await?;
 
-    let mut session = connect_to_coordinator(coordinator_socket)
-        .wrap_err("failed to connect to dora coordinator")?;
+    let returned_id = rpc(
+        "start dataflow",
+        client.start(
+            tarpc::context::current(),
+            StartRequest {
+                dataflow_id: Some(dataflow_id),
+                build_id: dataflow_session.build_id,
+                session_id: dataflow_session.session_id,
+                dataflow: dataflow_descriptor.clone(),
+                name,
+                local_working_dir,
+                uv,
+                write_events_to: write_events_to(),
+                hot_reload,
+            },
+        ),
+    )
+    .await?;
+    eprintln!("dataflow start triggered: {returned_id}");
 
-    let local_working_dir = local_working_dir(&dataflow, &dataflow_descriptor, &mut *session)?;
-
-    let dataflow_id = {
-        let dataflow = dataflow_descriptor.clone();
-        let session: &mut TcpRequestReplyConnection = &mut *session;
-        let reply_raw = session
-            .request(
-                &serde_json::to_vec(&ControlRequest::Start {
-                    build_id: dataflow_session.build_id,
-                    session_id: dataflow_session.session_id,
-                    dataflow,
-                    name,
-                    local_working_dir,
-                    uv,
-                    write_events_to: write_events_to(),
-                    hot_reload,
-                })
-                .unwrap(),
-            )
-            .wrap_err("failed to send start dataflow message")?;
-
-        let result: ControlRequestReply =
-            serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-        match result {
-            ControlRequestReply::DataflowStartTriggered { uuid } => {
-                eprintln!("dataflow start triggered: {uuid}");
-                uuid
-            }
-            ControlRequestReply::Error(err) => bail!("{err}"),
-            other => bail!("unexpected start dataflow reply: {other:?}"),
-        }
-    };
-    Ok((dataflow, dataflow_descriptor, session, dataflow_id))
+    Ok(())
 }
 
-fn wait_until_dataflow_started(
+async fn wait_until_dataflow_started(
     dataflow_id: Uuid,
-    session: &mut Box<TcpRequestReplyConnection>,
-    coordinator_addr: SocketAddr,
-    log_level: log::LevelFilter,
-    print_daemon_id: bool,
+    client: &CoordinatorControlClient,
+    log_task: JoinHandle<()>,
 ) -> eyre::Result<()> {
-    // subscribe to log messages
-    let mut log_session = TcpConnection {
-        stream: TcpStream::connect(coordinator_addr)
-            .wrap_err("failed to connect to dora coordinator")?,
-    };
-    log_session
-        .send(
-            &serde_json::to_vec(&ControlRequest::LogSubscribe {
-                dataflow_id,
-                level: log_level,
-            })
-            .wrap_err("failed to serialize message")?,
-        )
-        .wrap_err("failed to send log subscribe request to coordinator")?;
-    std::thread::spawn(move || {
-        while let Ok(raw) = log_session.receive() {
-            let parsed: eyre::Result<LogMessage> =
-                serde_json::from_slice(&raw).context("failed to parse log message");
-            match parsed {
-                Ok(log_message) => {
-                    print_log_message(log_message, false, print_daemon_id);
-                }
-                Err(err) => {
-                    tracing::warn!("failed to parse log message: {err:?}")
-                }
-            }
-        }
-    });
+    let result = rpc(
+        "wait for dataflow spawn",
+        client.wait_for_spawn(long_context(), dataflow_id),
+    )
+    .await;
+    abort_log_task_with_grace(log_task).await;
+    result?;
+    eprintln!("dataflow started: {dataflow_id}");
 
-    let reply_raw = session
-        .request(&serde_json::to_vec(&ControlRequest::WaitForSpawn { dataflow_id }).unwrap())
-        .wrap_err("failed to send start dataflow message")?;
-
-    let result: ControlRequestReply =
-        serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-    match result {
-        ControlRequestReply::DataflowSpawned { uuid } => {
-            eprintln!("dataflow started: {uuid}");
-        }
-        ControlRequestReply::Error(err) => bail!("{err}"),
-        other => bail!("unexpected start dataflow reply: {other:?}"),
-    }
     Ok(())
 }

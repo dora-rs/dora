@@ -6,7 +6,7 @@ use dora_message::metadata::ArrowTypeInfo;
 use dora_node_api::{DataSample, Event, MetadataParameters};
 use eyre::{Context, Result};
 use std::any::Any;
-use tokio::sync::{mpsc::Sender, oneshot};
+use tokio::sync::oneshot;
 
 pub mod channel;
 #[cfg(feature = "python")]
@@ -18,7 +18,7 @@ pub fn run_operator(
     node_id: &NodeId,
     operator_definition: OperatorDefinition,
     incoming_events: flume::Receiver<Event>,
-    events_tx: Sender<OperatorEvent>,
+    events_tx: flume::Sender<OperatorEvent>,
     init_done: oneshot::Sender<Result<()>>,
     dataflow_descriptor: &Descriptor,
 ) -> eyre::Result<()> {
@@ -61,9 +61,6 @@ pub fn run_operator(
             tracing::error!(
                 "Dora runtime tried spawning Python Operator outside of python environment."
             );
-        }
-        OperatorSource::Wasm(_) => {
-            tracing::error!("WASM operators are not supported yet");
         }
     }
     Ok(())

@@ -1,4 +1,4 @@
-name: Update Cargo.lock
+name: Update Cargo.lock & Fix clippy warnings
 
 on:
   schedule:
@@ -45,3 +45,46 @@ jobs:
             --label "dependencies" \
             --draft \
             || gh pr edit --base main
+
+  cargo-clippy-fix:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check if PR already exists
+        id: check_pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_EXISTS=$(gh pr list --head fix-cargo-clippy --base ${{ github.ref_name }} --json number -q '.[0].number')
+          echo "exists=$([ -n "$PR_EXISTS" ] && echo 'true' || echo 'false')" >> $GITHUB_OUTPUT
+
+      - name: Run cargo clippy fix
+        if: steps.check_pr.outputs.exists == 'false'
+        run: cargo clippy --fix --allow-dirty --allow-staged --workspace --exclude rust-ros2-example-node --exclude dora-ros2-bridge --exclude dora-ros2-bridge-msg-gen --exclude dora-ros2-bridge-python --all-targets --all-features
+
+      - name: Configure git
+        if: steps.check_pr.outputs.exists == 'false'
+        run: |
+          git config user.name "Dora Bot"
+          git config user.email "dora-bot@phil-opp.com"
+
+      - name: Push fixes and create PR if changes exist
+        if: steps.check_pr.outputs.exists == 'false'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if git diff --quiet; then
+            echo "No clippy fixes needed, skipping PR"
+            exit 0
+          fi
+          git switch --force-create fix-cargo-clippy
+          git add .
+          git commit -m "chore: Fix clippy warnings"
+          git push origin fix-cargo-clippy --force
+          gh pr create \
+            --title "chore: Fix clippy warnings" \
+            --body "Automated clippy fixes applied by CI" \
+            --base ${{ github.ref_name }} \
+            --head fix-cargo-clippy

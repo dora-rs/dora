@@ -11,9 +11,9 @@ pub enum Inspect {
 }
 
 impl Executable for Inspect {
-    fn execute(self) -> eyre::Result<()> {
+    async fn execute(self) -> eyre::Result<()> {
         match self {
-            Inspect::Top(args) => args.execute(),
+            Inspect::Top(args) => args.execute().await,
         }
     }
 }

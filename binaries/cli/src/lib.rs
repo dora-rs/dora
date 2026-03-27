@@ -11,8 +11,8 @@ pub mod output;
 pub mod session;
 mod template;
 
-pub use command::build;
 pub use command::{Executable, Run as RunCommand, run, run_func};
+pub use command::{build, build_async};
 
 const LOCALHOST: IpAddr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
 const LISTEN_WILDCARD: IpAddr = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0));
@@ -33,9 +33,7 @@ fn build_version_string() -> String {
 
     let mut version_output = format!("{}\n", cli_version);
 
-    // Add dora-message version
-    // TODO: Uncomment later after publishing dora-message crate
-    // version_output.push_str(&format!("dora-message: {}\n", dora_message::VERSION));
+    version_output.push_str(&format!("dora-message: {}\n", dora_message::VERSION));
 
     // Try to detect Python dora-rs version
     match get_python_dora_version() {
@@ -59,7 +57,7 @@ fn build_version_string() -> String {
     version_output
 }
 
-fn get_python_dora_version() -> Option<String> {
+pub(crate) fn get_python_dora_version() -> Option<String> {
     // Try with uv first
     if let Ok(output) = std::process::Command::new("uv")
         .args(["pip", "show", "dora-rs"])
@@ -126,8 +124,8 @@ enum Lang {
     Cxx,
 }
 
-pub fn lib_main(args: Args) {
-    if let Err(err) = args.command.execute() {
+pub async fn lib_main(args: Args) {
+    if let Err(err) = args.command.execute().await {
         eprintln!("\n\n{}", "[ERROR]".bold().red());
         eprintln!("{err:?}");
         std::process::exit(1);
@@ -151,7 +149,13 @@ fn py_main(_py: Python) -> PyResult<()> {
     let args = std::env::args_os().skip(1).collect::<Vec<_>>();
 
     match Args::try_parse_from(args) {
-        Ok(args) => lib_main(args),
+        Ok(args) => {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("failed to create tokio runtime");
+            rt.block_on(lib_main(args));
+        }
         Err(err) => {
             eprintln!("{err}");
         }

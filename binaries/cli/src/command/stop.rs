@@ -1,11 +1,13 @@
 use super::{Executable, default_tracing};
-use crate::common::{connect_to_coordinator, handle_dataflow_result, query_running_dataflows};
-use communication_layer_request_reply::TcpRequestReplyConnection;
+use crate::common::{
+    connect_and_check_version, handle_dataflow_result, long_context, query_running_dataflows, rpc,
+};
 use dora_core::topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST};
-use dora_message::cli_to_coordinator::ControlRequest;
-use dora_message::coordinator_to_cli::ControlRequestReply;
+use dora_message::{
+    cli_to_coordinator::CoordinatorControlClient, coordinator_to_cli::StopDataflowReply,
+};
 use duration_str::parse;
-use eyre::{Context, bail};
+use eyre::Context;
 use std::net::IpAddr;
 use std::time::Duration;
 use uuid::Uuid;
@@ -46,90 +48,66 @@ pub struct Stop {
 }
 
 impl Executable for Stop {
-    fn execute(self) -> eyre::Result<()> {
+    async fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
-        let mut session =
-            connect_to_coordinator((self.coordinator_addr, self.coordinator_port).into())
-                .wrap_err("could not connect to dora coordinator")?;
+        let client = connect_and_check_version(self.coordinator_addr, self.coordinator_port)
+            .await
+            .wrap_err("could not connect to dora coordinator")?;
         match (self.uuid, self.name) {
-            (Some(uuid), _) => stop_dataflow(uuid, self.grace_duration, self.force, &mut *session),
+            (Some(uuid), _) => stop_dataflow(uuid, self.grace_duration, self.force, &client).await,
             (None, Some(name)) => {
-                stop_dataflow_by_name(name, self.grace_duration, self.force, &mut *session)
+                stop_dataflow_by_name(name, self.grace_duration, self.force, &client).await
             }
             (None, None) => {
-                stop_dataflow_interactive(self.grace_duration, self.force, &mut *session)
+                stop_dataflow_interactive(self.grace_duration, self.force, &client).await
             }
         }
     }
 }
 
-fn stop_dataflow_interactive(
+async fn stop_dataflow_interactive(
     grace_duration: Option<Duration>,
     force: bool,
-    session: &mut TcpRequestReplyConnection,
+    client: &CoordinatorControlClient,
 ) -> eyre::Result<()> {
-    let list = query_running_dataflows(session).wrap_err("failed to query running dataflows")?;
+    let list = query_running_dataflows(client)
+        .await
+        .wrap_err("failed to query running dataflows")?;
     let active = list.get_active();
     if active.is_empty() {
         eprintln!("No dataflows are running");
     } else {
         let selection = inquire::Select::new("Choose dataflow to stop:", active).prompt()?;
-        stop_dataflow(selection.uuid, grace_duration, force, session)?;
+        stop_dataflow(selection.uuid, grace_duration, force, client).await?;
     }
 
     Ok(())
 }
 
-fn stop_dataflow(
+async fn stop_dataflow(
     uuid: Uuid,
     grace_duration: Option<Duration>,
     force: bool,
-    session: &mut TcpRequestReplyConnection,
+    client: &CoordinatorControlClient,
 ) -> Result<(), eyre::ErrReport> {
-    let reply_raw = session
-        .request(
-            &serde_json::to_vec(&ControlRequest::Stop {
-                dataflow_uuid: uuid,
-                grace_duration,
-                force,
-            })
-            .unwrap(),
-        )
-        .wrap_err("failed to send dataflow stop message")?;
-    let result: ControlRequestReply =
-        serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-    match result {
-        ControlRequestReply::DataflowStopped { uuid, result } => {
-            handle_dataflow_result(result, Some(uuid))
-        }
-        ControlRequestReply::Error(err) => bail!("{err}"),
-        other => bail!("unexpected stop dataflow reply: {other:?}"),
-    }
+    let StopDataflowReply { uuid, result } = rpc(
+        "stop dataflow",
+        client.stop(long_context(), uuid, grace_duration, force),
+    )
+    .await?;
+    handle_dataflow_result(result, Some(uuid))
 }
 
-fn stop_dataflow_by_name(
+async fn stop_dataflow_by_name(
     name: String,
     grace_duration: Option<Duration>,
     force: bool,
-    session: &mut TcpRequestReplyConnection,
+    client: &CoordinatorControlClient,
 ) -> Result<(), eyre::ErrReport> {
-    let reply_raw = session
-        .request(
-            &serde_json::to_vec(&ControlRequest::StopByName {
-                name,
-                grace_duration,
-                force,
-            })
-            .unwrap(),
-        )
-        .wrap_err("failed to send dataflow stop_by_name message")?;
-    let result: ControlRequestReply =
-        serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-    match result {
-        ControlRequestReply::DataflowStopped { uuid, result } => {
-            handle_dataflow_result(result, Some(uuid))
-        }
-        ControlRequestReply::Error(err) => bail!("{err}"),
-        other => bail!("unexpected stop dataflow reply: {other:?}"),
-    }
+    let StopDataflowReply { uuid, result } = rpc(
+        "stop dataflow by name",
+        client.stop_by_name(long_context(), name, grace_duration, force),
+    )
+    .await?;
+    handle_dataflow_result(result, Some(uuid))
 }

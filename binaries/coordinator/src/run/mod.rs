@@ -1,18 +1,15 @@
-use crate::{
-    DaemonConnections,
-    tcp_utils::{tcp_receive, tcp_send},
-};
+use crate::DaemonConnections;
 
-use dora_core::{descriptor::DescriptorExt, uhlc::HLC};
+use dora_core::descriptor::DescriptorExt;
 use dora_message::{
     BuildId, SessionId,
     common::DaemonId,
-    coordinator_to_daemon::{DaemonCoordinatorEvent, SpawnDataflowNodes, Timestamped},
-    daemon_to_coordinator::DaemonCoordinatorReply,
+    coordinator_to_daemon::SpawnDataflowNodes,
     descriptor::{Descriptor, ResolvedNode},
     id::NodeId,
+    tarpc,
 };
-use eyre::{ContextCompat, WrapErr, bail, eyre};
+use eyre::{ContextCompat, WrapErr, eyre};
 use itertools::Itertools;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -20,20 +17,24 @@ use std::{
 };
 use uuid::{NoContext, Timestamp, Uuid};
 
-#[tracing::instrument(skip(daemon_connections, clock))]
-pub(super) async fn spawn_dataflow(
+/// Plan a dataflow spawn without sending any commands to daemons yet.
+///
+/// Resolves nodes, generates a UUID, and determines which daemon handles
+/// each node group. The actual spawn commands are prepared but not sent.
+#[tracing::instrument(skip(daemon_connections))]
+pub(super) fn plan_dataflow(
+    dataflow_id: Option<Uuid>,
     build_id: Option<BuildId>,
     session_id: SessionId,
-    dataflow: Descriptor,
+    dataflow: &Descriptor,
     local_working_dir: Option<PathBuf>,
-    daemon_connections: &mut DaemonConnections,
-    clock: &HLC,
+    daemon_connections: &DaemonConnections,
     uv: bool,
     write_events_to: Option<PathBuf>,
     hot_reload: bool,
-) -> eyre::Result<SpawnedDataflow> {
+) -> eyre::Result<DataflowPlan> {
     let nodes = dataflow.resolve_aliases_and_set_defaults()?;
-    let uuid = Uuid::new_v7(Timestamp::now(NoContext));
+    let uuid = dataflow_id.unwrap_or_else(|| Uuid::new_v7(Timestamp::now(NoContext)));
 
     let nodes_by_daemon = nodes
         .values()
@@ -41,12 +42,16 @@ pub(super) async fn spawn_dataflow(
 
     let mut daemons = BTreeSet::new();
     let mut node_to_daemon = BTreeMap::new();
+    let mut daemon_spawn_commands: Vec<(DaemonId, SpawnDataflowNodes)> = Vec::new();
 
     for (machine, nodes_on_machine) in &nodes_by_daemon {
         let spawn_nodes = nodes_on_machine.iter().map(|n| n.id.clone()).collect();
         tracing::debug!(
             "Spawning dataflow `{uuid}` on machine `{machine:?}` (nodes: {spawn_nodes:?})"
         );
+
+        let daemon_id = resolve_daemon_for_machine(daemon_connections, machine.map(|m| m.as_str()))
+            .wrap_err_with(|| format!("failed to resolve daemon for machine `{machine:?}`"))?;
 
         let spawn_command = SpawnDataflowNodes {
             build_id,
@@ -61,15 +66,8 @@ pub(super) async fn spawn_dataflow(
             hot_reload,
             dataflow_path: None,
         };
-        let message = serde_json::to_vec(&Timestamped {
-            inner: DaemonCoordinatorEvent::Spawn(spawn_command),
-            timestamp: clock.new_timestamp(),
-        })?;
 
-        let daemon_id =
-            spawn_dataflow_on_machine(daemon_connections, machine.map(|m| m.as_str()), &message)
-                .await
-                .wrap_err_with(|| format!("failed to spawn dataflow on machine `{machine:?}`"))?;
+        daemon_spawn_commands.push((daemon_id.clone(), spawn_command));
         daemons.insert(daemon_id.clone());
 
         // Map each node on this machine to its daemon
@@ -78,20 +76,44 @@ pub(super) async fn spawn_dataflow(
         }
     }
 
-    tracing::info!("successfully triggered dataflow spawn `{uuid}`",);
-
-    Ok(SpawnedDataflow {
+    Ok(DataflowPlan {
         uuid,
         daemons,
         nodes,
         node_to_daemon,
+        daemon_spawn_commands,
     })
 }
 
-async fn spawn_dataflow_on_machine(
-    daemon_connections: &mut DaemonConnections,
+/// Send the prepared spawn commands to the daemons via tarpc RPC calls.
+pub(super) async fn execute_dataflow_plan(
+    uuid: Uuid,
+    daemon_spawn_commands: Vec<(DaemonId, SpawnDataflowNodes)>,
+    daemon_connections: &DaemonConnections,
+) -> eyre::Result<()> {
+    for (daemon_id, spawn_command) in daemon_spawn_commands {
+        let client = daemon_connections
+            .get(&daemon_id)
+            .wrap_err_with(|| format!("no daemon connection for daemon `{daemon_id}`"))?
+            .client
+            .clone();
+        // DashMap lock is dropped — safe to do async I/O.
+        client
+            .spawn(tarpc::context::current(), spawn_command)
+            .await
+            .wrap_err("RPC transport error")?
+            .map_err(|e: String| eyre!(e))
+            .wrap_err("daemon returned an error")?;
+    }
+
+    tracing::info!("successfully triggered dataflow spawn `{uuid}`",);
+
+    Ok(())
+}
+
+fn resolve_daemon_for_machine(
+    daemon_connections: &DaemonConnections,
     machine: Option<&str>,
-    message: &[u8],
 ) -> Result<DaemonId, eyre::ErrReport> {
     let daemon_id = match machine {
         Some(machine) => daemon_connections
@@ -104,31 +126,13 @@ async fn spawn_dataflow_on_machine(
             .wrap_err("no unnamed daemon connections")?
             .clone(),
     };
-
-    let daemon_connection = daemon_connections
-        .get_mut(&daemon_id)
-        .wrap_err_with(|| format!("no daemon connection for daemon `{daemon_id}`"))?;
-    tcp_send(&mut daemon_connection.stream, message)
-        .await
-        .wrap_err("failed to send spawn message to daemon")?;
-
-    let reply_raw = tcp_receive(&mut daemon_connection.stream)
-        .await
-        .wrap_err("failed to receive spawn reply from daemon")?;
-    match serde_json::from_slice(&reply_raw)
-        .wrap_err("failed to deserialize spawn reply from daemon")?
-    {
-        DaemonCoordinatorReply::TriggerSpawnResult(result) => result
-            .map_err(|e| eyre!(e))
-            .wrap_err("daemon returned an error")?,
-        _ => bail!("unexpected reply"),
-    }
     Ok(daemon_id)
 }
 
-pub struct SpawnedDataflow {
+pub struct DataflowPlan {
     pub uuid: Uuid,
     pub daemons: BTreeSet<DaemonId>,
     pub nodes: BTreeMap<NodeId, ResolvedNode>,
     pub node_to_daemon: BTreeMap<NodeId, DaemonId>,
+    pub daemon_spawn_commands: Vec<(DaemonId, SpawnDataflowNodes)>,
 }

@@ -103,6 +103,13 @@ std::cout << "Input ID: " << input_info.id << std::endl;
 auto metadata = std::move(input_info.metadata);
 std::cout << "Metadata timestamp: " << metadata->timestamp() << std::endl;
 
+// Timestamp parameters use i64 nanoseconds since Unix epoch
+auto nanos = metadata->get_timestamp("sensor_time");
+metadata->set_timestamp("event_time", nanos);
+
+// Convert to std::chrono::utc_clock::time_point (C++20)
+auto tp = std::chrono::utc_clock::time_point(std::chrono::nanoseconds(nanos));
+
 auto keys = metadata->list_keys();
 for (std::size_t i = 0; i < keys.size(); i++) {
     const std::string key(keys[i]);

@@ -18,11 +18,12 @@ pub struct Destroy {
 }
 
 impl Executable for Destroy {
-    fn execute(self) -> eyre::Result<()> {
+    async fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
         up::destroy(
             self.config.as_deref(),
             (self.coordinator_addr, self.coordinator_port).into(),
         )
+        .await
     }
 }

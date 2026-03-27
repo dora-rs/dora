@@ -1,4 +1,9 @@
-"""TODO: Add docstring."""
+"""Asynchronous data sender example for dora-rs.
+
+This script demonstrates how to send data from a Python node to a dora-rs
+dataflow. It sends a sequence of timestamps as 64-bit unsigned integers
+to an output named "data".
+"""
 
 import time
 

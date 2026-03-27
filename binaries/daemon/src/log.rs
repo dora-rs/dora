@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     ops::{Deref, DerefMut},
     path::{Path, PathBuf},
     sync::Arc,
@@ -7,19 +8,18 @@ use std::{
 use dora_core::{
     build::{BuildLogger, LogLevelOrStdout},
     config::NodeId,
+    topics::{
+        zenoh_log_topic_for_build_daemon, zenoh_log_topic_for_build_node,
+        zenoh_log_topic_for_dataflow_daemon, zenoh_log_topic_for_dataflow_node,
+    },
     uhlc,
 };
 use dora_message::{
     BuildId,
-    common::{DaemonId, LogLevel, LogMessage, Timestamped},
-    daemon_to_coordinator::{CoordinatorRequest, DaemonEvent},
+    common::{DaemonId, LogLevel, LogMessage},
 };
-use eyre::Context;
 use flume::Sender;
-use tokio::net::TcpStream;
 use uuid::Uuid;
-
-use crate::socket_stream_utils::socket_stream_send;
 
 pub fn log_path(working_dir: &Path, dataflow_id: &Uuid, node_id: &NodeId) -> PathBuf {
     let dataflow_dir = working_dir.join("out").join(dataflow_id.to_string());
@@ -147,6 +147,36 @@ impl BuildLogger for NodeBuildLogger<'_> {
     }
 }
 
+/// A build logger that publishes to zenoh when available, falling back to
+/// tracing. Used by the RPC server path where we need to dynamically choose
+/// between a zenoh-backed logger and a tracing-only stub.
+pub enum RpcBuildLogger {
+    Zenoh(NodeBuildLogger<'static>),
+    Tracing(dora_core::build::TracingBuildLogger),
+}
+
+impl BuildLogger for RpcBuildLogger {
+    type Clone = RpcBuildLogger;
+
+    async fn log_message(
+        &mut self,
+        level: impl Into<LogLevelOrStdout> + Send,
+        message: impl Into<String> + Send,
+    ) {
+        match self {
+            RpcBuildLogger::Zenoh(l) => l.log_message(level, message).await,
+            RpcBuildLogger::Tracing(l) => l.log_message(level, message).await,
+        }
+    }
+
+    async fn try_clone(&self) -> eyre::Result<Self::Clone> {
+        match self {
+            RpcBuildLogger::Zenoh(l) => Ok(RpcBuildLogger::Zenoh(l.try_clone().await?)),
+            RpcBuildLogger::Tracing(l) => Ok(RpcBuildLogger::Tracing(l.try_clone().await?)),
+        }
+    }
+}
+
 pub struct DaemonLogger {
     daemon_id: DaemonId,
     logger: Logger,
@@ -201,7 +231,7 @@ impl DaemonLogger {
 
             fields: None,
         };
-        self.logger.log(message).await
+        self.logger.log(message, &self.daemon_id).await
     }
 
     pub async fn log_build(
@@ -232,7 +262,7 @@ impl DaemonLogger {
                 .into(),
             fields: None,
         };
-        self.logger.log(message).await
+        self.logger.log(message, &self.daemon_id).await
     }
 
     pub(crate) fn daemon_id(&self) -> &DaemonId {
@@ -249,7 +279,6 @@ impl DaemonLogger {
 
 pub struct Logger {
     pub(super) destination: LogDestination,
-    pub(super) daemon_id: DaemonId,
     pub(super) clock: Arc<uhlc::HLC>,
 }
 
@@ -261,114 +290,75 @@ impl Logger {
         }
     }
 
-    pub async fn log(&mut self, message: LogMessage) {
+    pub async fn log(&mut self, message: LogMessage, daemon_id: &DaemonId) {
         match &mut self.destination {
-            LogDestination::Coordinator {
-                coordinator_connection,
+            LogDestination::Zenoh {
+                session,
+                publishers,
             } => {
-                let message = Timestamped {
-                    inner: CoordinatorRequest::Event {
-                        daemon_id: self.daemon_id.clone(),
-                        event: DaemonEvent::Log(message.clone()),
-                    },
-                    timestamp: self.clock.new_timestamp(),
+                let topic = if let Some(dataflow_id) = &message.dataflow_id {
+                    if let Some(node_id) = &message.node_id {
+                        zenoh_log_topic_for_dataflow_node(*dataflow_id, node_id, &message.level)
+                    } else {
+                        zenoh_log_topic_for_dataflow_daemon(*dataflow_id, daemon_id, &message.level)
+                    }
+                } else if let Some(build_id) = &message.build_id {
+                    if let Some(node_id) = &message.node_id {
+                        zenoh_log_topic_for_build_node(build_id, node_id, &message.level)
+                    } else {
+                        zenoh_log_topic_for_build_daemon(build_id, daemon_id, &message.level)
+                    }
+                } else {
+                    // No dataflow or build context; fall back to tracing.
+                    Self::log_via_tracing(&message);
+                    return;
                 };
-                Self::log_to_coordinator(message, coordinator_connection).await
+
+                // Re-use an existing publisher or create one with a
+                // matching listener so we only serialize + send when at
+                // least one subscriber is listening on this topic.
+                let entry = publishers.entry(topic);
+                let pub_entry = match entry {
+                    std::collections::hash_map::Entry::Occupied(o) => o.into_mut(),
+                    std::collections::hash_map::Entry::Vacant(v) => {
+                        match Self::create_publisher(session, v.key()).await {
+                            Ok(pe) => v.insert(pe),
+                            Err(err) => {
+                                tracing::warn!(
+                                    "failed to create zenoh publisher for {}: {err}",
+                                    v.key()
+                                );
+                                return;
+                            }
+                        }
+                    }
+                };
+
+                if !pub_entry.has_matching_subscribers() {
+                    return;
+                }
+
+                let payload =
+                    serde_json::to_vec(&message).expect("failed to serialize log message");
+                if let Err(err) = pub_entry.publisher.put(payload).await {
+                    tracing::warn!("failed to publish log via zenoh: {err}");
+                }
             }
             LogDestination::Channel { sender } => {
                 let _ = sender.send_async(message).await;
             }
             LogDestination::Tracing => {
-                // log message using tracing if reporting to coordinator is not possible
-                match message.level {
-                    LogLevelOrStdout::Stdout => {
-                        tracing::info!(
-                            build_id = ?message.build_id.map(|id| id.to_string()),
-                            dataflow_id = ?message.dataflow_id.map(|id| id.to_string()),
-                            node_id = ?message.node_id.map(|id| id.to_string()),
-                            target = message.target,
-                            module_path = message.module_path,
-                            file = message.file,
-                            line = message.line,
-                            "{}",
-                            Indent(&message.message)
-                        )
-                    }
-                    LogLevelOrStdout::LogLevel(level) => match level {
-                        LogLevel::Error => {
-                            tracing::error!(
-                                build_id = ?message.build_id.map(|id| id.to_string()),
-                                dataflow_id = ?message.dataflow_id.map(|id| id.to_string()),
-                                node_id = ?message.node_id.map(|id| id.to_string()),
-                                target = message.target,
-                                module_path = message.module_path,
-                                file = message.file,
-                                line = message.line,
-                                "{}",
-                                Indent(&message.message)
-                            );
-                        }
-                        LogLevel::Warn => {
-                            tracing::warn!(
-                                build_id = ?message.build_id.map(|id| id.to_string()),
-                                dataflow_id = ?message.dataflow_id.map(|id| id.to_string()),
-                                node_id = ?message.node_id.map(|id| id.to_string()),
-                                target = message.target,
-                                module_path = message.module_path,
-                                file = message.file,
-                                line = message.line,
-                                "{}",
-                                Indent(&message.message)
-                            );
-                        }
-                        LogLevel::Info => {
-                            tracing::info!(
-                                build_id = ?message.build_id.map(|id| id.to_string()),
-                                dataflow_id = ?message.dataflow_id.map(|id| id.to_string()),
-                                node_id = ?message.node_id.map(|id| id.to_string()),
-                                target = message.target,
-                                module_path = message.module_path,
-                                file = message.file,
-                                line = message.line,
-                                "{}",
-                                Indent(&message.message)
-                            );
-                        }
-                        LogLevel::Debug => {
-                            tracing::debug!(
-                                build_id = ?message.build_id.map(|id| id.to_string()),
-                                dataflow_id = ?message.dataflow_id.map(|id| id.to_string()),
-                                node_id = ?message.node_id.map(|id| id.to_string()),
-                                target = message.target,
-                                module_path = message.module_path,
-                                file = message.file,
-                                line = message.line,
-                                "{}",
-                                Indent(&message.message)
-                            );
-                        }
-                        _ => {}
-                    },
-                }
+                Self::log_via_tracing(&message);
             }
         }
     }
 
     pub async fn try_clone(&self) -> eyre::Result<Self> {
         let destination = match &self.destination {
-            LogDestination::Coordinator {
-                coordinator_connection,
-            } => {
-                let addr = coordinator_connection
-                    .peer_addr()
-                    .context("failed to get coordinator peer addr")?;
-                let new_connection = TcpStream::connect(addr)
-                    .await
-                    .context("failed to connect to coordinator during logger clone")?;
-                LogDestination::Coordinator {
-                    coordinator_connection: new_connection,
-                }
-            }
+            LogDestination::Zenoh { session, .. } => LogDestination::Zenoh {
+                session: session.clone(),
+                publishers: std::collections::HashMap::new(),
+            },
             LogDestination::Channel { sender } => LogDestination::Channel {
                 sender: sender.clone(),
             },
@@ -377,30 +367,136 @@ impl Logger {
 
         Ok(Self {
             destination,
-            daemon_id: self.daemon_id.clone(),
             clock: self.clock.clone(),
         })
     }
 
-    async fn log_to_coordinator(
-        message: Timestamped<CoordinatorRequest>,
-        connection: &mut TcpStream,
-    ) {
-        let msg = serde_json::to_vec(&message).expect("failed to serialize log message");
-        match socket_stream_send(connection, &msg)
+    /// Create a publisher with a matching listener that tracks whether
+    /// any subscribers exist for its topic.
+    async fn create_publisher(session: &zenoh::Session, topic: &str) -> eyre::Result<LogPublisher> {
+        let topic: zenoh::key_expr::KeyExpr<'static> =
+            zenoh::key_expr::KeyExpr::try_from(topic.to_owned()).map_err(|e| eyre::eyre!("{e}"))?;
+        let publisher = session
+            .declare_publisher(topic)
             .await
-            .wrap_err("failed to send log message to dora-coordinator")
-        {
-            Ok(()) => (),
-            Err(err) => tracing::warn!("{err:?}"),
+            .map_err(|e| eyre::eyre!(e))?;
+
+        let has_subscribers = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = has_subscribers.clone();
+        let _matching_listener = publisher
+            .matching_listener()
+            .callback(move |status| {
+                flag.store(status.matching(), std::sync::atomic::Ordering::Relaxed);
+            })
+            .await
+            .map_err(|e| eyre::eyre!(e))?;
+
+        Ok(LogPublisher {
+            publisher,
+            has_subscribers,
+            _matching_listener,
+        })
+    }
+
+    fn log_via_tracing(message: &LogMessage) {
+        match message.level {
+            LogLevelOrStdout::Stdout => {
+                tracing::info!(
+                    build_id = ?message.build_id.map(|id| id.to_string()),
+                    dataflow_id = ?message.dataflow_id.map(|id| id.to_string()),
+                    node_id = ?message.node_id.as_ref().map(|id| id.to_string()),
+                    target = message.target,
+                    module_path = message.module_path,
+                    file = message.file,
+                    line = message.line,
+                    "{}",
+                    Indent(&message.message)
+                )
+            }
+            LogLevelOrStdout::LogLevel(level) => match level {
+                LogLevel::Error => {
+                    tracing::error!(
+                        build_id = ?message.build_id.map(|id| id.to_string()),
+                        dataflow_id = ?message.dataflow_id.map(|id| id.to_string()),
+                        node_id = ?message.node_id.as_ref().map(|id| id.to_string()),
+                        target = message.target,
+                        module_path = message.module_path,
+                        file = message.file,
+                        line = message.line,
+                        "{}",
+                        Indent(&message.message)
+                    );
+                }
+                LogLevel::Warn => {
+                    tracing::warn!(
+                        build_id = ?message.build_id.map(|id| id.to_string()),
+                        dataflow_id = ?message.dataflow_id.map(|id| id.to_string()),
+                        node_id = ?message.node_id.as_ref().map(|id| id.to_string()),
+                        target = message.target,
+                        module_path = message.module_path,
+                        file = message.file,
+                        line = message.line,
+                        "{}",
+                        Indent(&message.message)
+                    );
+                }
+                LogLevel::Info => {
+                    tracing::info!(
+                        build_id = ?message.build_id.map(|id| id.to_string()),
+                        dataflow_id = ?message.dataflow_id.map(|id| id.to_string()),
+                        node_id = ?message.node_id.as_ref().map(|id| id.to_string()),
+                        target = message.target,
+                        module_path = message.module_path,
+                        file = message.file,
+                        line = message.line,
+                        "{}",
+                        Indent(&message.message)
+                    );
+                }
+                LogLevel::Debug => {
+                    tracing::debug!(
+                        build_id = ?message.build_id.map(|id| id.to_string()),
+                        dataflow_id = ?message.dataflow_id.map(|id| id.to_string()),
+                        node_id = ?message.node_id.as_ref().map(|id| id.to_string()),
+                        target = message.target,
+                        module_path = message.module_path,
+                        file = message.file,
+                        line = message.line,
+                        "{}",
+                        Indent(&message.message)
+                    );
+                }
+                _ => {}
+            },
         }
     }
 }
 
 pub enum LogDestination {
-    Coordinator { coordinator_connection: TcpStream },
-    Channel { sender: Sender<LogMessage> },
+    Zenoh {
+        session: zenoh::Session,
+        publishers: HashMap<String, LogPublisher>,
+    },
+    Channel {
+        sender: Sender<LogMessage>,
+    },
     Tracing,
+}
+
+/// A zenoh publisher paired with a matching listener that tracks
+/// whether any subscribers are currently listening.
+pub struct LogPublisher {
+    publisher: zenoh::pubsub::Publisher<'static>,
+    has_subscribers: Arc<std::sync::atomic::AtomicBool>,
+    /// Kept alive so the matching callback stays registered.
+    _matching_listener: zenoh::matching::MatchingListener<()>,
+}
+
+impl LogPublisher {
+    fn has_matching_subscribers(&self) -> bool {
+        self.has_subscribers
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
 }
 
 enum CowMut<'a, T> {
