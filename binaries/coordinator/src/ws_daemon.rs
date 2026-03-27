@@ -237,6 +237,14 @@ fn translate_daemon_event(daemon_id: DaemonId, event: DaemonEvent) -> Option<Eve
             daemon_id,
             running_dataflows,
         }),
+        DaemonEvent::StateCatchUpAck {
+            dataflow_id,
+            ack_sequence,
+        } => Some(Event::DaemonStateCatchUpAck {
+            daemon_id,
+            dataflow_id,
+            ack_sequence,
+        }),
     }
 }
 

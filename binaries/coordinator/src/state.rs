@@ -4,6 +4,7 @@ use adora_core::config::NodeId;
 use adora_message::{
     common::DaemonId,
     coordinator_to_cli::{ControlRequestReply, LogMessage},
+    coordinator_to_daemon::{StateCatchUpEntry, StateCatchUpOperation},
     daemon_to_coordinator::{FaultToleranceSnapshot, NodeMetrics},
     descriptor::{Descriptor, ResolvedNode},
 };
@@ -203,6 +204,14 @@ pub(crate) struct RunningDataflow {
 
     /// Whether UV was used for this dataflow (needed for restart).
     pub(crate) uv: bool,
+
+    // --- State catch-up replication log ---
+    /// Monotonically increasing sequence counter for state mutations.
+    pub(crate) state_log_sequence: u64,
+    /// In-memory replication log of state mutations for incremental catch-up.
+    pub(crate) state_log: Vec<StateCatchUpEntry>,
+    /// Last state_log sequence acknowledged by each daemon.
+    pub(crate) daemon_ack_sequence: BTreeMap<DaemonId, u64>,
 }
 
 pub(crate) fn now_millis() -> u64 {
@@ -227,7 +236,60 @@ fn truncate_str(s: &str, max_bytes: usize) -> &str {
     &s[..end]
 }
 
+/// Maximum number of entries in the replication log before pruning.
+const MAX_STATE_LOG_ENTRIES: usize = 10_000;
+
 impl RunningDataflow {
+    /// Append a state mutation to the replication log.
+    pub(crate) fn append_state_log(&mut self, operation: StateCatchUpOperation) {
+        self.state_log_sequence += 1;
+        self.state_log.push(StateCatchUpEntry {
+            sequence: self.state_log_sequence,
+            operation,
+        });
+        // Hard-cap: drop oldest entries if the log is too large.
+        if self.state_log.len() > MAX_STATE_LOG_ENTRIES {
+            let drain_count = self.state_log.len() - MAX_STATE_LOG_ENTRIES;
+            tracing::warn!(
+                "state replication log exceeded {MAX_STATE_LOG_ENTRIES} entries, \
+                 dropping {drain_count} oldest (disconnected daemons will need full replay)"
+            );
+            self.state_log.drain(..drain_count);
+        }
+    }
+
+    /// Prune log entries that all daemons have acknowledged.
+    pub(crate) fn prune_state_log(&mut self) {
+        let min_ack = self
+            .daemon_ack_sequence
+            .values()
+            .copied()
+            .min()
+            .unwrap_or(0);
+        self.state_log.retain(|entry| entry.sequence > min_ack);
+    }
+
+    /// Return the entries a daemon has missed since `last_ack`.
+    /// Returns `None` if the log has been pruned past `last_ack` (caller
+    /// should fall back to a full param replay).
+    pub(crate) fn state_log_delta(&self, last_ack: u64) -> Option<Vec<StateCatchUpEntry>> {
+        if self.state_log.is_empty() {
+            return Some(Vec::new());
+        }
+        let oldest = self.state_log[0].sequence;
+        if last_ack.saturating_add(1) < oldest {
+            // There's a gap: entries between last_ack and oldest were pruned.
+            return None;
+        }
+        Some(
+            self.state_log
+                .iter()
+                .filter(|e| e.sequence > last_ack)
+                .cloned()
+                .collect(),
+        )
+    }
+
     /// Create a persistable [`DataflowRecord`] snapshot of this dataflow.
     /// Increments `store_generation` on each call.
     pub(crate) fn make_record(&mut self, status: DataflowStatus) -> eyre::Result<DataflowRecord> {

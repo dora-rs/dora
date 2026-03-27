@@ -92,6 +92,11 @@ pub enum DaemonEvent {
         #[serde(default)]
         network: Option<NetworkMetrics>,
     },
+    /// Daemon acknowledges state catch-up through a given sequence number.
+    StateCatchUpAck {
+        dataflow_id: DataflowId,
+        ack_sequence: u64,
+    },
 }
 
 /// Health status of a node

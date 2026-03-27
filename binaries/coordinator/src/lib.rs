@@ -18,7 +18,9 @@ use adora_message::{
         ControlRequestReply, DataflowIdAndName, DataflowList, DataflowListEntry, DataflowResult,
         DataflowStatus, LogLevel, LogMessage,
     },
-    coordinator_to_daemon::{DaemonCoordinatorEvent, RegisterResult, Timestamped},
+    coordinator_to_daemon::{
+        DaemonCoordinatorEvent, RegisterResult, StateCatchUpOperation, Timestamped,
+    },
     daemon_to_coordinator::{DaemonCoordinatorReply, DataflowDaemonResult},
 };
 pub use control::ControlEvent;
@@ -1146,6 +1148,18 @@ async fn start_inner(
                                     match store.put_node_param(&dataflow_id, &node_id, &key, &bytes)
                                     {
                                         Ok(()) => {
+                                            // Record in replication log for catch-up
+                                            if let Some(df) =
+                                                running_dataflows.get_mut(&dataflow_id)
+                                            {
+                                                df.append_state_log(
+                                                    StateCatchUpOperation::SetParam {
+                                                        node_id: node_id.clone(),
+                                                        key: key.clone(),
+                                                        value: value.clone(),
+                                                    },
+                                                );
+                                            }
                                             // Best-effort forward to daemon if the node is running
                                             if let Some(daemon_id) = running_dataflows
                                                 .get(&dataflow_id)
@@ -1191,6 +1205,13 @@ async fn start_inner(
                             let reply = match store.delete_node_param(&dataflow_id, &node_id, &key)
                             {
                                 Ok(()) => {
+                                    // Record in replication log for catch-up
+                                    if let Some(df) = running_dataflows.get_mut(&dataflow_id) {
+                                        df.append_state_log(StateCatchUpOperation::DeleteParam {
+                                            node_id: node_id.clone(),
+                                            key: key.clone(),
+                                        });
+                                    }
                                     // Best-effort forward to daemon if the node is running.
                                     if let Some(daemon_id) = running_dataflows
                                         .get(&dataflow_id)
@@ -1941,6 +1962,98 @@ async fn start_inner(
                         }
                     }
                 }
+
+                // State catch-up: for dataflows the daemon reports as running,
+                // send any state mutations it missed while disconnected.
+                for (uuid, df) in &mut running_dataflows {
+                    if !df.daemons.contains(&daemon_id) || !reported_set.contains(uuid) {
+                        continue;
+                    }
+                    let last_ack = df.daemon_ack_sequence.get(&daemon_id).copied().unwrap_or(0);
+                    if last_ack >= df.state_log_sequence {
+                        continue; // already up to date
+                    }
+                    match df.state_log_delta(last_ack) {
+                        Some(entries) if entries.is_empty() => {}
+                        Some(entries) => {
+                            tracing::info!(
+                                "state catch-up: sending {} entry(ies) for dataflow {uuid} \
+                                 to daemon {daemon_id} (seq {last_ack}..{})",
+                                entries.len(),
+                                df.state_log_sequence,
+                            );
+                            let event = DaemonCoordinatorEvent::StateCatchUp {
+                                dataflow_id: *uuid,
+                                entries,
+                            };
+                            if let Ok(msg) = serde_json::to_vec(&Timestamped {
+                                inner: event,
+                                timestamp: clock.new_timestamp(),
+                            }) {
+                                if let Some(conn) = daemon_connections.get_mut(&daemon_id) {
+                                    if let Err(e) = conn.send(&msg).await {
+                                        tracing::warn!(
+                                            "failed to send state catch-up to daemon {daemon_id}: {e}"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        None => {
+                            // Log was pruned past this daemon's ack — fall back to full
+                            // param replay from the store.
+                            tracing::info!(
+                                "state catch-up: log pruned for dataflow {uuid}, \
+                                 falling back to full param replay for daemon {daemon_id}"
+                            );
+                            let node_ids: Vec<_> = df
+                                .node_to_daemon
+                                .iter()
+                                .filter(|(_, did)| **did == daemon_id)
+                                .map(|(nid, _)| nid.clone())
+                                .collect();
+                            if let Some(conn) = daemon_connections.get_mut(&daemon_id) {
+                                replay_persisted_params_for_daemon(
+                                    *uuid,
+                                    daemon_id.clone(),
+                                    node_ids,
+                                    store.clone(),
+                                    conn.clone(),
+                                    clock.clone(),
+                                )
+                                .await;
+                            }
+                            // Mark daemon as caught up: the full replay sends
+                            // the complete current state from the store (source
+                            // of truth). Individual SetParam events don't
+                            // trigger StateCatchUpAck, so without this the
+                            // coordinator would re-trigger full replay on every
+                            // status-report cycle.
+                            df.daemon_ack_sequence
+                                .insert(daemon_id.clone(), df.state_log_sequence);
+                        }
+                    }
+                }
+            }
+            Event::DaemonStateCatchUpAck {
+                daemon_id,
+                dataflow_id,
+                ack_sequence,
+            } => {
+                if let Some(df) = running_dataflows.get_mut(&dataflow_id) {
+                    if !df.daemons.contains(&daemon_id) {
+                        tracing::warn!(
+                            "ignoring StateCatchUpAck from daemon {daemon_id} \
+                             not in dataflow {dataflow_id}"
+                        );
+                    } else {
+                        // Clamp: monotonically increasing, bounded by log sequence.
+                        let current = df.daemon_ack_sequence.get(&daemon_id).copied().unwrap_or(0);
+                        let clamped = ack_sequence.min(df.state_log_sequence).max(current);
+                        df.daemon_ack_sequence.insert(daemon_id, clamped);
+                        df.prune_state_log();
+                    }
+                }
             }
         }
 
@@ -2197,6 +2310,9 @@ mod tests {
             store_generation: 0,
             last_recovery_attempt: BTreeMap::new(),
             uv: false,
+            state_log_sequence: 0,
+            state_log: Vec::new(),
+            daemon_ack_sequence: BTreeMap::new(),
         }
     }
 
@@ -2372,6 +2488,114 @@ mod tests {
         );
 
         daemon_task.await.unwrap();
+    }
+
+    #[test]
+    fn state_log_append_and_sequence() {
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let daemon_id = DaemonId::new(Some("m1".to_string()));
+        let node_id: adora_core::config::NodeId = "camera".to_string().into();
+
+        let mut df = test_running_dataflow(dataflow_id, daemon_id, node_id.clone());
+        assert_eq!(df.state_log_sequence, 0);
+        assert!(df.state_log.is_empty());
+
+        df.append_state_log(StateCatchUpOperation::SetParam {
+            node_id: node_id.clone(),
+            key: "threshold".to_string(),
+            value: serde_json::json!(42),
+        });
+        assert_eq!(df.state_log_sequence, 1);
+        assert_eq!(df.state_log.len(), 1);
+        assert_eq!(df.state_log[0].sequence, 1);
+
+        df.append_state_log(StateCatchUpOperation::DeleteParam {
+            node_id,
+            key: "threshold".to_string(),
+        });
+        assert_eq!(df.state_log_sequence, 2);
+        assert_eq!(df.state_log.len(), 2);
+    }
+
+    #[test]
+    fn state_log_delta_returns_missed_entries() {
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let daemon_id = DaemonId::new(Some("m1".to_string()));
+        let node_id: adora_core::config::NodeId = "camera".to_string().into();
+
+        let mut df = test_running_dataflow(dataflow_id, daemon_id, node_id.clone());
+        for i in 0..5 {
+            df.append_state_log(StateCatchUpOperation::SetParam {
+                node_id: node_id.clone(),
+                key: format!("key_{i}"),
+                value: serde_json::json!(i),
+            });
+        }
+
+        // Daemon acked up to seq 2 — should get entries 3, 4, 5
+        let delta = df.state_log_delta(2).expect("delta should be available");
+        assert_eq!(delta.len(), 3);
+        assert_eq!(delta[0].sequence, 3);
+        assert_eq!(delta[2].sequence, 5);
+
+        // Daemon fully caught up — empty delta
+        let delta = df.state_log_delta(5).expect("delta should be available");
+        assert!(delta.is_empty());
+    }
+
+    #[test]
+    fn state_log_prune_removes_acked_entries() {
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let d1 = DaemonId::new(Some("m1".to_string()));
+        let d2 = DaemonId::new(Some("m2".to_string()));
+        let node_id: adora_core::config::NodeId = "camera".to_string().into();
+
+        let mut df = test_running_dataflow(dataflow_id, d1.clone(), node_id.clone());
+        df.daemons.insert(d2.clone());
+        for i in 0..5 {
+            df.append_state_log(StateCatchUpOperation::SetParam {
+                node_id: node_id.clone(),
+                key: format!("key_{i}"),
+                value: serde_json::json!(i),
+            });
+        }
+
+        // d1 acked 3, d2 acked 5 — min is 3, so entries 1-3 should be pruned
+        df.daemon_ack_sequence.insert(d1, 3);
+        df.daemon_ack_sequence.insert(d2, 5);
+        df.prune_state_log();
+        assert_eq!(df.state_log.len(), 2);
+        assert_eq!(df.state_log[0].sequence, 4);
+    }
+
+    #[test]
+    fn state_log_delta_returns_none_when_pruned() {
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let d1 = DaemonId::new(Some("m1".to_string()));
+        let d2 = DaemonId::new(Some("m2".to_string()));
+        let node_id: adora_core::config::NodeId = "camera".to_string().into();
+
+        let mut df = test_running_dataflow(dataflow_id, d1.clone(), node_id.clone());
+        df.daemons.insert(d2.clone());
+        for i in 0..10 {
+            df.append_state_log(StateCatchUpOperation::SetParam {
+                node_id: node_id.clone(),
+                key: format!("key_{i}"),
+                value: serde_json::json!(i),
+            });
+        }
+
+        // Simulate pruning: both acked up to 7
+        df.daemon_ack_sequence.insert(d1, 7);
+        df.daemon_ack_sequence.insert(d2, 7);
+        df.prune_state_log();
+        // Log now starts at seq 8
+
+        // A daemon that was at seq 2 cannot catch up incrementally
+        assert!(df.state_log_delta(2).is_none());
+        // But a daemon at seq 7 can
+        let delta = df.state_log_delta(7).expect("should succeed");
+        assert_eq!(delta.len(), 3); // entries 8, 9, 10
     }
 }
 

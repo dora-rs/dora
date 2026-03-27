@@ -551,11 +551,14 @@ pub(crate) async fn start_dataflow(
         stop_reply_senders: Vec::new(),
         buffered_log_messages: Vec::new(),
         log_subscribers: Vec::new(),
+        daemon_ack_sequence: daemons.iter().map(|d| (d.clone(), 0)).collect(),
         pending_spawn_results: daemons,
         created_at: state::now_millis(),
         store_generation: 0,
         last_recovery_attempt: BTreeMap::new(),
         uv,
+        state_log_sequence: 0,
+        state_log: Vec::new(),
     })
 }
 

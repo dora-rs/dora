@@ -2,7 +2,7 @@ use crate::control::ControlEvent;
 use crate::state::DaemonConnection;
 use adora_core::config::NodeId;
 use adora_message::{
-    BuildId,
+    BuildId, DataflowId,
     common::DaemonId,
     coordinator_to_cli::LogMessage,
     daemon_to_coordinator::{
@@ -53,6 +53,11 @@ pub enum Event {
         daemon_id: DaemonId,
         running_dataflows: Vec<adora_message::daemon_to_coordinator::DataflowStatusEntry>,
     },
+    DaemonStateCatchUpAck {
+        daemon_id: DaemonId,
+        dataflow_id: DataflowId,
+        ack_sequence: u64,
+    },
 }
 
 impl Event {
@@ -79,6 +84,7 @@ impl Event {
             Event::DataflowSpawnResult { .. } => "DataflowSpawnResult",
             Event::NodeMetrics { .. } => "NodeMetrics",
             Event::DaemonStatusReport { .. } => "DaemonStatusReport",
+            Event::DaemonStateCatchUpAck { .. } => "DaemonStateCatchUpAck",
         }
     }
 }

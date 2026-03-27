@@ -17,7 +17,9 @@ use adora_message::{
         DaemonId, DataMessage, GitSource, LogLevel, NodeError, NodeErrorCause, NodeExitStatus,
     },
     coordinator_to_cli::DataflowResult,
-    coordinator_to_daemon::{BuildDataflowNodes, DaemonCoordinatorEvent, SpawnDataflowNodes},
+    coordinator_to_daemon::{
+        BuildDataflowNodes, DaemonCoordinatorEvent, SpawnDataflowNodes, StateCatchUpOperation,
+    },
     daemon_to_coordinator::{
         CoordinatorRequest, DaemonCoordinatorReply, DaemonEvent, DataflowDaemonResult,
     },
@@ -1606,6 +1608,87 @@ impl Daemon {
                     if let Some(receivers) = dataflow.mappings.get_mut(&output_id) {
                         if receivers.remove(&(target_node.clone(), target_input.clone())) {
                             close_input(dataflow, &target_node, &target_input, &self.clock);
+                        }
+                    }
+                }
+                let _ = reply_tx.send(None);
+                RunStatus::Continue
+            }
+            DaemonCoordinatorEvent::StateCatchUp {
+                dataflow_id,
+                entries,
+            } => {
+                let max_seq = entries.last().map(|e| e.sequence).unwrap_or(0);
+                tracing::info!(
+                    %dataflow_id,
+                    "state catch-up: applying {} entry(ies) (up to seq {max_seq})",
+                    entries.len(),
+                );
+                for entry in &entries {
+                    match &entry.operation {
+                        StateCatchUpOperation::SetParam {
+                            node_id,
+                            key,
+                            value,
+                        } => {
+                            if let Some(dataflow) = self.running.get(&dataflow_id) {
+                                if let Some(channel) = dataflow.subscribe_channels.get(node_id) {
+                                    match send_with_timestamp(
+                                        channel,
+                                        NodeEvent::ParamUpdate {
+                                            key: key.clone(),
+                                            value: value.clone(),
+                                        },
+                                        &self.clock,
+                                    ) {
+                                        Ok(true) => dataflow.inc_pending(node_id),
+                                        Ok(false) => {} // dropped (channel full)
+                                        Err(_) => tracing::warn!(
+                                            "catch-up: node `{node_id}` channel closed"
+                                        ),
+                                    }
+                                }
+                            }
+                        }
+                        StateCatchUpOperation::DeleteParam { node_id, key } => {
+                            if let Some(dataflow) = self.running.get(&dataflow_id) {
+                                if let Some(channel) = dataflow.subscribe_channels.get(node_id) {
+                                    match send_with_timestamp(
+                                        channel,
+                                        NodeEvent::ParamDeleted { key: key.clone() },
+                                        &self.clock,
+                                    ) {
+                                        Ok(true) => dataflow.inc_pending(node_id),
+                                        Ok(false) => {}
+                                        Err(_) => tracing::warn!(
+                                            "catch-up: node `{node_id}` channel closed"
+                                        ),
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                // Send ack back to coordinator so it can prune the log.
+                if max_seq > 0 {
+                    if let Some(sender) = &self.coordinator_sender {
+                        let ack = DaemonEvent::StateCatchUpAck {
+                            dataflow_id,
+                            ack_sequence: max_seq,
+                        };
+                        let stamped = Timestamped {
+                            inner: CoordinatorRequest::Event {
+                                daemon_id: self.daemon_id.clone(),
+                                event: ack,
+                            },
+                            timestamp: self.clock.new_timestamp(),
+                        };
+                        if let Ok(bytes) = serde_json::to_vec(&stamped) {
+                            if let Err(err) = sender.send_event(&bytes).await {
+                                tracing::warn!(
+                                    "failed to send state catch-up ack to coordinator: {err}"
+                                );
+                            }
                         }
                     }
                 }

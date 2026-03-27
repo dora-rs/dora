@@ -11,6 +11,31 @@ use crate::{
     id::{DataId, NodeId, OperatorId},
 };
 
+// ---------------------------------------------------------------------------
+// State catch-up types (incremental replay for reconnecting daemons)
+// ---------------------------------------------------------------------------
+
+/// A single state mutation that a reconnecting daemon may have missed.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct StateCatchUpEntry {
+    pub sequence: u64,
+    pub operation: StateCatchUpOperation,
+}
+
+/// The kind of state mutation recorded in the replication log.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum StateCatchUpOperation {
+    SetParam {
+        node_id: NodeId,
+        key: String,
+        value: serde_json::Value,
+    },
+    DeleteParam {
+        node_id: NodeId,
+        key: String,
+    },
+}
+
 pub use crate::common::Timestamped;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -110,6 +135,13 @@ pub enum DaemonCoordinatorEvent {
         source_output: DataId,
         target_node: NodeId,
         target_input: DataId,
+    },
+    /// Incremental state catch-up: replays missed state mutations to a
+    /// reconnecting daemon.
+    StateCatchUp {
+        dataflow_id: DataflowId,
+        /// The entries the daemon missed, ordered by sequence number.
+        entries: Vec<StateCatchUpEntry>,
     },
 }
 
