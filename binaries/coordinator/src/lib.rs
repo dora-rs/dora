@@ -1,5 +1,4 @@
 use crate::{server::CoordinatorControlServer, tcp_utils::tcp_send};
-pub use control::ControlEvent;
 use dashmap::{
     DashMap,
     mapref::one::{Ref, RefMut},
@@ -16,7 +15,7 @@ use dora_message::{
         CoordinatorControlResponse,
     },
     common::DaemonId,
-    coordinator_to_cli::{DataflowResult, LogMessage, StopDataflowReply},
+    coordinator_to_cli::{DataflowResult, StopDataflowReply},
     coordinator_to_daemon::{
         BuildDataflowNodes, DaemonControlClient, DaemonControlRequest, DaemonControlResponse,
         RegisterResult, Timestamped,
@@ -33,7 +32,6 @@ use eyre::{ContextCompat, Result, WrapErr, bail, eyre};
 use futures::{Future, Stream, StreamExt, future, stream::FuturesUnordered};
 use futures_concurrency::stream::Merge;
 use itertools::Itertools;
-use log_subscriber::LogSubscriber;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -50,9 +48,7 @@ use tokio::{
 use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
 
-mod control;
 mod listener;
-mod log_subscriber;
 mod run;
 mod server;
 mod state;
@@ -66,12 +62,9 @@ pub async fn start(
     external_events: impl Stream<Item = Event> + Unpin,
 ) -> Result<(u16, impl Future<Output = eyre::Result<()>>), eyre::ErrReport> {
     let tasks = FuturesUnordered::new();
-    let control_events = control::control_events(bind_control, &tasks)
-        .await
-        .wrap_err("failed to create control events")?;
 
     let (daemon_port, coordinator_state, future) =
-        init_coordinator(bind, external_events, control_events, tasks).await?;
+        init_coordinator(bind, external_events, tasks).await?;
 
     // Bind the tarpc RPC server on the same interface
     let rpc_bind = SocketAddr::new(
@@ -115,7 +108,7 @@ pub async fn start_with_channel_rpc(
     let tasks = FuturesUnordered::new();
 
     let (_daemon_port, coordinator_state, future) =
-        init_coordinator(bind, external_events, futures::stream::empty(), tasks).await?;
+        init_coordinator(bind, external_events, tasks).await?;
 
     // Create an in-process channel-based client (no TCP overhead)
     let (client_transport, server_transport) = tarpc::transport::channel::unbounded();
@@ -134,7 +127,6 @@ pub async fn start_with_channel_rpc(
 async fn init_coordinator(
     bind: SocketAddr,
     external_events: impl Stream<Item = Event> + Unpin,
-    control_events: impl Stream<Item = Event> + Unpin,
     mut tasks: FuturesUnordered<JoinHandle<()>>,
 ) -> Result<(
     u16,
@@ -157,13 +149,7 @@ async fn init_coordinator(
     // Setup ctrl-c handler
     let ctrlc_events = set_up_ctrlc_handler()?;
 
-    let events = (
-        external_events,
-        new_daemon_connections,
-        control_events,
-        ctrlc_events,
-    )
-        .merge();
+    let events = (external_events, new_daemon_connections, ctrlc_events).merge();
 
     let daemon_heartbeat_interval =
         tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(Duration::from_secs(3)))
@@ -366,6 +352,7 @@ async fn start_inner(
                 DaemonRequest::Register {
                     machine_id,
                     machine_uid,
+                    zenoh_peer_id,
                     mut connection,
                     version_check_result,
                 } => {
@@ -425,6 +412,7 @@ async fn start_inner(
                                     last_heartbeat: Instant::now(),
                                     peer_addr,
                                     machine_uid,
+                                    zenoh_peer_id,
                                 },
                             );
                         }
@@ -465,41 +453,6 @@ async fn start_inner(
                     tracing::info!(
                         "reverse-channel RPC server established for daemon `{daemon_id}`"
                     );
-                }
-            },
-            Event::Control(event) => match event {
-                ControlEvent::Error(err) => tracing::error!("{err:?}"),
-                ControlEvent::LogSubscribe {
-                    dataflow_id,
-                    level,
-                    connection,
-                } => {
-                    if let Some(mut dataflow) =
-                        coordinator_state.running_dataflows.get_mut(&dataflow_id)
-                    {
-                        dataflow
-                            .log_subscribers
-                            .push(LogSubscriber::new(level, connection));
-                        let buffered = std::mem::take(&mut dataflow.buffered_log_messages);
-                        for message in buffered {
-                            send_log_message(&mut dataflow.log_subscribers, &message).await;
-                        }
-                    }
-                }
-                ControlEvent::BuildLogSubscribe {
-                    build_id,
-                    level,
-                    connection,
-                } => {
-                    if let Some(mut build) = coordinator_state.running_builds.get_mut(&build_id) {
-                        build
-                            .log_subscribers
-                            .push(LogSubscriber::new(level, connection));
-                        let buffered = std::mem::take(&mut build.buffered_log_messages);
-                        for message in buffered {
-                            send_log_message(&mut build.log_subscribers, &message).await;
-                        }
-                    }
                 }
             },
             Event::DaemonHeartbeatInterval => {
@@ -555,29 +508,6 @@ async fn start_inner(
                 tracing::info!("Destroying coordinator after receiving Ctrl-C signal");
                 handle_destroy(&coordinator_state).await?;
             }
-            Event::Log(message) => {
-                if let Some(dataflow_id) = &message.dataflow_id {
-                    if let Some(mut dataflow) =
-                        coordinator_state.running_dataflows.get_mut(dataflow_id)
-                    {
-                        if dataflow.log_subscribers.is_empty() {
-                            // buffer log message until there are subscribers
-                            dataflow.buffered_log_messages.push(message);
-                        } else {
-                            send_log_message(&mut dataflow.log_subscribers, &message).await;
-                        }
-                    }
-                } else if let Some(build_id) = &message.build_id {
-                    if let Some(mut build) = coordinator_state.running_builds.get_mut(build_id) {
-                        if build.log_subscribers.is_empty() {
-                            // buffer log message until there are subscribers
-                            build.buffered_log_messages.push(message);
-                        } else {
-                            send_log_message(&mut build.log_subscribers, &message).await;
-                        }
-                    }
-                }
-            }
         }
 
         // warn if event handling took too long -> the main loop should never be blocked for too long
@@ -593,21 +523,6 @@ async fn start_inner(
     tracing::info!("stopped");
 
     Ok(())
-}
-
-pub(crate) async fn send_log_message(
-    log_subscribers: &mut Vec<LogSubscriber>,
-    message: &LogMessage,
-) {
-    for subscriber in log_subscribers.iter_mut() {
-        let send_result =
-            tokio::time::timeout(Duration::from_millis(100), subscriber.send_message(message));
-
-        if send_result.await.is_err() {
-            subscriber.close();
-        }
-    }
-    log_subscribers.retain(|s| !s.is_closed());
 }
 
 pub(crate) fn dataflow_result(
@@ -636,6 +551,7 @@ pub(crate) struct DaemonConnection {
     peer_addr: Option<SocketAddr>,
     /// System-level machine identifier reported by the daemon at registration.
     machine_uid: Option<String>,
+    pub(crate) zenoh_peer_id: Option<String>,
 }
 
 async fn handle_destroy(
@@ -675,10 +591,6 @@ pub(crate) struct RunningBuild {
     pub(crate) errors: Vec<String>,
     pub(crate) build_result: CachedResult<BuildFinishedResult>,
 
-    /// Buffer for log messages that were sent before there were any subscribers.
-    pub(crate) buffered_log_messages: Vec<LogMessage>,
-    pub(crate) log_subscribers: Vec<LogSubscriber>,
-
     pub(crate) pending_build_results: BTreeSet<DaemonId>,
 }
 
@@ -700,10 +612,6 @@ pub(crate) struct RunningDataflow {
     pub(crate) spawn_result: CachedResult<Uuid>,
     pub(crate) stop_reply_senders:
         Vec<tokio::sync::oneshot::Sender<eyre::Result<StopDataflowReply>>>,
-
-    /// Buffer for log messages that were sent before there were any subscribers.
-    pub(crate) buffered_log_messages: Vec<LogMessage>,
-    pub(crate) log_subscribers: Vec<LogSubscriber>,
 
     pub(crate) pending_spawn_results: BTreeSet<DaemonId>,
 }
@@ -868,7 +776,7 @@ async fn retrieve_logs(
     node_id: NodeId,
     daemon_connections: &DaemonConnections,
     tail: Option<usize>,
-) -> eyre::Result<Vec<u8>> {
+) -> eyre::Result<dora_message::common::LogsResponse> {
     let nodes = if let Some(dataflow) = archived_dataflows.get(&dataflow_id) {
         dataflow.nodes.clone()
     } else if let Some(dataflow) = running_dataflows.get(&dataflow_id) {
@@ -934,6 +842,7 @@ async fn build_dataflow(
     daemon_connections: &DaemonConnections,
 ) -> eyre::Result<RunningBuild> {
     let BuildRequest {
+        build_id: _, // already extracted by the RPC handler above
         session_id,
         dataflow,
         git_sources,
@@ -1000,8 +909,6 @@ async fn build_dataflow(
     Ok(RunningBuild {
         errors: Vec::new(),
         build_result: CachedResult::default(),
-        buffered_log_messages: Vec::new(),
-        log_subscribers: Vec::new(),
         pending_build_results: daemons,
     })
 }
@@ -1040,6 +947,7 @@ async fn build_dataflow_on_machine(
 
 #[allow(clippy::too_many_arguments)]
 async fn start_dataflow(
+    dataflow_id: Option<Uuid>,
     build_id: Option<BuildId>,
     session_id: SessionId,
     dataflow: Descriptor,
@@ -1051,6 +959,7 @@ async fn start_dataflow(
     write_events_to: Option<PathBuf>,
 ) -> eyre::Result<Uuid> {
     let plan = run::plan_dataflow(
+        dataflow_id,
         build_id,
         session_id,
         &dataflow,
@@ -1094,8 +1003,6 @@ async fn start_dataflow(
             node_metrics: BTreeMap::new(),
             spawn_result: CachedResult::default(),
             stop_reply_senders: Vec::new(),
-            buffered_log_messages: Vec::new(),
-            log_subscribers: Vec::new(),
             pending_spawn_results: daemons,
         },
     );
@@ -1151,11 +1058,9 @@ async fn destroy_daemons(daemon_connections: &DaemonConnections) -> eyre::Result
 pub enum Event {
     NewDaemonConnection(TcpStream),
     DaemonConnectError(eyre::Report),
-    Control(ControlEvent),
     Daemon(DaemonRequest),
     DaemonHeartbeatInterval,
     CtrlC,
-    Log(LogMessage),
     Close,
 }
 
@@ -1173,11 +1078,9 @@ impl Event {
         match self {
             Event::NewDaemonConnection(_) => "NewDaemonConnection",
             Event::DaemonConnectError(_) => "DaemonConnectError",
-            Event::Control(_) => "Control",
             Event::Daemon(_) => "Daemon",
             Event::DaemonHeartbeatInterval => "DaemonHeartbeatInterval",
             Event::CtrlC => "CtrlC",
-            Event::Log(_) => "Log",
             Event::Close => "Close",
         }
     }
@@ -1188,6 +1091,7 @@ pub enum DaemonRequest {
     Register {
         machine_id: Option<String>,
         machine_uid: Option<String>,
+        zenoh_peer_id: Option<String>,
         connection: TcpStream,
         version_check_result: Result<(), String>,
     },

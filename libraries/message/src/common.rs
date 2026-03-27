@@ -109,6 +109,19 @@ impl From<LogLevel> for LogLevelOrStdout {
     }
 }
 
+/// Response from the `logs` RPC, containing the raw log file contents and
+/// the timestamp of the last log entry read by the daemon.  The CLI uses
+/// `last_timestamp` as a dedup cutoff when switching from historical to
+/// live (zenoh) log output.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct LogsResponse {
+    pub content: Vec<u8>,
+    /// Timestamp captured on the daemon right after reading the log file.
+    /// Zenoh messages with an earlier timestamp are already covered by
+    /// `content`.
+    pub daemon_timestamp: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct NodeError {
     pub timestamp: uhlc::Timestamp,

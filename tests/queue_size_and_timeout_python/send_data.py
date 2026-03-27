@@ -1,4 +1,9 @@
-"""TODO: Add docstring."""
+"""Sender node for the queue size and timeout test in dora-rs.
+
+This script emits a stream of timestamps and sequence numbers to the "ts"
+output for a fixed duration (10 seconds). It is used to test the
+interplay between queue sizes and timeouts in the dora-rs messaging system.
+"""
 
 import time
 
@@ -7,7 +12,7 @@ from dora import Node
 
 
 def main() -> None:
-    """TODO: Add docstring."""
+    """Run the message sending loop for the duration of the test."""
     dora_node = Node()
     start = time.time()
     i = 0

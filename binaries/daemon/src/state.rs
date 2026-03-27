@@ -118,6 +118,11 @@ impl DaemonState {
             .expect("daemon_id accessed before registration")
     }
 
+    /// Get the daemon ID if it has been set.
+    pub(crate) fn try_daemon_id(&self) -> Option<&DaemonId> {
+        self.daemon_id.get()
+    }
+
     /// Set the coordinator client after registration. Can only be called once.
     pub(crate) fn set_coordinator_client(&self, client: CoordinatorNotifyClient) {
         let _ = self.coordinator_client.set(client);

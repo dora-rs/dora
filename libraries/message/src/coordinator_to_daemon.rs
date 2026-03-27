@@ -97,7 +97,7 @@ pub trait DaemonControl {
         dataflow_id: DataflowId,
         node_id: NodeId,
         tail: Option<usize>,
-    ) -> DaemonResult<Vec<u8>>;
+    ) -> DaemonResult<crate::common::LogsResponse>;
     /// Destroy the daemon (shut it down).
     async fn destroy() -> DaemonResult<()>;
     /// Heartbeat check.

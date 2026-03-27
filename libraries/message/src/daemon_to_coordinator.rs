@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 pub use crate::common::{
-    DataMessage, LogLevel, LogMessage, NodeError, NodeErrorCause, NodeExitStatus, Timestamped,
+    DataMessage, LogLevel, NodeError, NodeErrorCause, NodeExitStatus, Timestamped,
 };
 use crate::{
     BuildId, DataflowId, common::DaemonId, current_crate_version, id::NodeId, versions_compatible,
@@ -18,14 +18,6 @@ pub enum CoordinatorRequest {
     RegisterNotificationChannel {
         daemon_id: DaemonId,
     },
-    /// Forward a log message from a daemon over the legacy raw-TCP path.
-    ///
-    /// All other daemon→coordinator communication now uses the
-    /// `CoordinatorNotify` tarpc service on the notification channel.
-    Log {
-        daemon_id: DaemonId,
-        message: LogMessage,
-    },
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -37,14 +29,18 @@ pub struct DaemonRegisterRequest {
     /// even behind NAT.
     #[serde(default)]
     pub machine_uid: Option<String>,
+    /// Zenoh ZID reported by the daemon's local zenoh::Session, if one was opened.
+    #[serde(default)]
+    pub zenoh_peer_id: Option<String>,
 }
 
 impl DaemonRegisterRequest {
-    pub fn new(machine_id: Option<String>) -> Self {
+    pub fn new(machine_id: Option<String>, zenoh_peer_id: Option<String>) -> Self {
         Self {
             dora_version: current_crate_version(),
             machine_id,
             machine_uid: crate::common::machine_uid(),
+            zenoh_peer_id,
         }
     }
 
@@ -104,8 +100,6 @@ pub trait CoordinatorNotify {
     async fn all_nodes_finished(dataflow_id: DataflowId, result: DataflowDaemonResult);
     /// Daemon heartbeat.
     async fn heartbeat();
-    /// Forward a log message to the coordinator.
-    async fn log(message: LogMessage);
     /// Notify the coordinator that this daemon is exiting.
     async fn daemon_exit();
     /// Report resource metrics for running nodes.

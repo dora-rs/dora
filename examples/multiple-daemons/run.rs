@@ -142,6 +142,7 @@ async fn start_dataflow(dataflow: &Path, client: &CoordinatorControlClient) -> e
         .start(
             tarpc::context::current(),
             StartRequest {
+                dataflow_id: None,
                 build_id: dataflow_session.build_id,
                 session_id: dataflow_session.session_id,
                 dataflow: dataflow_descriptor,
