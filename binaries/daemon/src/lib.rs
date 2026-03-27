@@ -9,7 +9,7 @@ use dora_core::{
     },
     topics::{
         DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, LOCALHOST, open_zenoh_session,
-        open_zenoh_session_as_daemon, zenoh_output_publish_topic,
+        open_zenoh_session_as_daemon, zenoh_daemon_control_topic,
     },
     uhlc::HLC,
 };
@@ -1170,8 +1170,8 @@ impl Daemon {
                         .wrap_err("no remote_daemon_events_tx channel")?;
                     let mut finished_rx = dataflow.finished_tx.subscribe();
                     let subscribe_topic =
-                        zenoh_output_publish_topic(dataflow.id, &output_id.0, &output_id.1);
-                    tracing::debug!("declaring subscriber on {subscribe_topic}");
+                        zenoh_daemon_control_topic(dataflow.id, &output_id.0, &output_id.1);
+                    tracing::debug!("declaring control subscriber on {subscribe_topic}");
                     let zenoh = self
                         .state
                         .zenoh_session
@@ -1580,17 +1580,11 @@ impl Daemon {
         let remote_receivers = dataflow.open_external_mappings.contains(&output_id)
             || dataflow.publish_all_messages_to_zenoh;
         drop(dataflow);
-        if remote_receivers {
-            let event = InterDaemonEvent::Output {
-                dataflow_id,
-                node_id: output_id.0.clone(),
-                output_id: output_id.1.clone(),
-                metadata,
-                data: data_bytes,
-            };
-            self.send_to_remote_receivers(dataflow_id, &output_id, event)
-                .await?;
-        }
+        // Nodes publish data directly via zenoh; the daemon does not forward
+        // output data to remote daemons. In the fallback path (Interactive /
+        // Testing mode), `data` is Some but there are no remote receivers, so
+        // no forwarding is needed either.
+        let _ = (remote_receivers, data_bytes);
 
         Ok(())
     }
@@ -1735,10 +1729,10 @@ impl Daemon {
                     let dataflow = self.state.running.get(&dataflow_id).wrap_err_with(|| {
                         format!("send out failed: no running dataflow with ID `{dataflow_id}`")
                     })?;
-                    zenoh_output_publish_topic(dataflow.id, &output_id.0, &output_id.1)
+                    zenoh_daemon_control_topic(dataflow.id, &output_id.0, &output_id.1)
                 };
                 // DashMap lock dropped — safe to do async I/O.
-                tracing::debug!("declaring publisher on {publish_topic}");
+                tracing::debug!("declaring control publisher on {publish_topic}");
                 let zenoh = self
                     .state
                     .zenoh_session

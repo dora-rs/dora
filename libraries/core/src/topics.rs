@@ -214,6 +214,19 @@ pub fn zenoh_output_publish_topic(
     format!("dora/{network_id}/{dataflow_id}/output/{node_id}/{output_id}")
 }
 
+/// Zenoh topic used by daemons for inter-daemon control messages
+/// (`OutputClosed`, `NodeFailed`). Separate from the data topic so that
+/// node-published data samples never interfere with daemon control messages.
+#[cfg(feature = "zenoh")]
+pub fn zenoh_daemon_control_topic(
+    dataflow_id: uuid::Uuid,
+    node_id: &dora_message::id::NodeId,
+    output_id: &dora_message::id::DataId,
+) -> String {
+    let network_id = "default";
+    format!("dora/{network_id}/{dataflow_id}/control/{node_id}/{output_id}")
+}
+
 /// Return the zenoh topic suffix for a given log level.
 ///
 /// The suffix is appended to the base topic so that subscribers can

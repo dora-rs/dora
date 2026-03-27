@@ -739,9 +739,15 @@ impl DoraNode {
     ) -> eyre::Result<()> {
         let metadata = Metadata::from_parameters(self.clock.new_timestamp(), type_info, parameters);
 
-        // If we have a zenoh publisher for this output, publish via zenoh and
-        // notify the daemon with a data-less control message. Otherwise fall back
-        // to sending the full payload through the control channel.
+        // Normal path: publish data directly via zenoh to subscribing nodes,
+        // then send a data-less notification to the daemon so it can track the
+        // output for bookkeeping (e.g. knowing when to close downstream inputs).
+        //
+        // Fallback path: when no zenoh publisher exists (Interactive or Testing
+        // mode — see `is_interactive` in `DoraNode::init`), the full payload is
+        // sent through the TCP control channel to the daemon instead. This only
+        // happens in single-daemon scenarios where there are no remote receivers,
+        // so the daemon never needs to forward the data to another daemon.
         let data = if let Some(publisher) = self.publishers.get(&output_id) {
             if let Some(sample) = sample {
                 use zenoh::Wait;
@@ -770,10 +776,8 @@ impl DoraNode {
                     }
                 }
             }
-            // Data was (or would have been) sent via zenoh; daemon only needs the notification.
             None
         } else {
-            // Fallback: send via control channel only (interactive/testing mode)
             sample.map(|s| s.finalize())
         };
 
