@@ -609,8 +609,6 @@ pub struct OperatorConfig {
 pub enum OperatorSource {
     SharedLibrary(String),
     Python(PythonSource),
-    #[schemars(skip)]
-    Wasm(String),
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(from = "PythonSourceDef", into = "PythonSourceDef")]
