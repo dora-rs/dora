@@ -110,6 +110,21 @@ pub fn check_dataflow(
                                 ));
                             }
                         }
+                        OperatorSource::Wasm(path) => {
+                            if source_is_url(path) {
+                                if let Err(err) = check_url(path) {
+                                    errors.push(format!(
+                                        "node `{}`, operator `{}`: {err}",
+                                        node.id, operator_definition.id,
+                                    ));
+                                }
+                            } else if !working_dir.join(path).exists() {
+                                errors.push(format!(
+                                    "node `{}`, operator `{}`: no WASM library at `{path}`",
+                                    node.id, operator_definition.id,
+                                ));
+                            }
+                        }
                     }
                 }
             }

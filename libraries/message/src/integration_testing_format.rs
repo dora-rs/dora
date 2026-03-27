@@ -212,16 +212,24 @@ pub struct TimedIncomingEvent {
 #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type")]
 pub enum IncomingEvent {
+    /// Stop the node
     Stop,
+    /// Incoming input data
     Input {
+        /// The input ID
         id: DataId,
+        /// The metadata for the input
         metadata: Option<MetadataParameters>,
+        /// The payload of the input
         #[serde(flatten)]
         data: Option<Box<InputData>>,
     },
+    /// The input with the given ID was closed
     InputClosed {
+        /// The input ID
         id: DataId,
     },
+    /// All inputs have been closed
     AllInputsClosed,
 }
 
