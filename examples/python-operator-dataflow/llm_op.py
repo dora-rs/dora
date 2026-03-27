@@ -186,9 +186,7 @@ def replace_code_in_source(source_code, replacement_block: str):
     start_index, end_index = find_best_match_location(source_code, replacement_block)
     if start_index != -1 and end_index != -1:
         # Replace the best matching part with the replacement block
-        return (
-            source_code[:start_index] + replacement_block + source_code[end_index:]
-        )
+        return source_code[:start_index] + replacement_block + source_code[end_index:]
     return source_code
 
 
@@ -281,7 +279,6 @@ class Operator:
         return DoraStatus.CONTINUE
 
     def ask_llm(self, prompt):
-
         # Generate output
         # prompt = PROMPT_TEMPLATE.format(system_message=system_message, prompt=prompt))
         """Generate a response from the LLM based on the provided prompt.
@@ -323,7 +320,7 @@ if __name__ == "__main__":
     # Directory of the current file
     current_directory = os.path.dirname(current_file_path)
 
-    path = current_directory + "object_detection.py"
+    path = os.path.join(current_directory, "object_detection.py")
     with open(path, encoding="utf8") as f:
         raw = f.read()
 
