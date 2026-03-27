@@ -1665,6 +1665,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "cross-language-rust-receiver"
+version = "0.2.0"
+dependencies = [
+ "adora-node-api",
+ "eyre",
+]
+
+[[package]]
+name = "cross-language-rust-sender"
+version = "0.2.0"
+dependencies = [
+ "adora-node-api",
+ "eyre",
+]
+
+[[package]]
 name = "crossbeam"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"

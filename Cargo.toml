@@ -36,6 +36,8 @@ members = [
     "examples/log-sink-tcp",
     "examples/log-sink-file",
     "examples/log-sink-alert",
+    "examples/cross-language/rust-sender",
+    "examples/cross-language/rust-receiver",
     "libraries/arrow-convert",
     "libraries/log-utils",
     "libraries/coordinator-store",

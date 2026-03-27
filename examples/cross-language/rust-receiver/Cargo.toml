@@ -1,0 +1,10 @@
+[package]
+name = "cross-language-rust-receiver"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+adora-node-api = { workspace = true }
+eyre = { workspace = true }

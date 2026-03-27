@@ -240,6 +240,30 @@ if [ "$RUN_PYTHON" = true ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Cross-language examples (Rust + Python, requires both)
+# ---------------------------------------------------------------------------
+
+if [ "$RUN_RUST" = true ] && [ "$RUN_PYTHON" = true ]; then
+    echo "Building cross-language nodes..."
+    cargo build \
+        -p cross-language-rust-sender \
+        -p cross-language-rust-receiver \
+        2>&1 | tail -1
+
+    echo ""
+    echo "=== Cross-language examples (networked) ==="
+    run_networked "cross-language-rust-to-python" "examples/cross-language/rust-to-python.yml" 30
+    run_networked "cross-language-python-to-rust" "examples/cross-language/python-to-rust.yml" 30
+
+    echo ""
+    echo "=== Cross-language examples (local) ==="
+    run_local "local-cross-language-rust-to-python" "examples/cross-language/rust-to-python.yml" 15
+    run_local "local-cross-language-python-to-rust" "examples/cross-language/python-to-rust.yml" 15
+else
+    log_skip "cross-language" "requires both Rust and Python"
+fi
+
+# ---------------------------------------------------------------------------
 # Skipped examples
 # ---------------------------------------------------------------------------
 

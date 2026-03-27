@@ -20,6 +20,7 @@ static BUILD_BENCHMARK_NODES: Once = Once::new();
 static BUILD_LOG_SINK_NODES: Once = Once::new();
 static BUILD_SERVICE_NODES: Once = Once::new();
 static BUILD_ACTION_NODES: Once = Once::new();
+static BUILD_CROSS_LANGUAGE_NODES: Once = Once::new();
 
 fn adora_bin() -> String {
     let manifest = env!("CARGO_MANIFEST_DIR");
@@ -600,5 +601,65 @@ fn smoke_local_streaming_example() {
         "local-streaming-example",
         "examples/streaming-example/dataflow.yml",
         10,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Cross-language interoperability tests (Rust <-> Python)
+// ---------------------------------------------------------------------------
+
+fn ensure_cross_language_nodes_built() {
+    BUILD_CROSS_LANGUAGE_NODES.call_once(|| {
+        let status = Command::new("cargo")
+            .args([
+                "build",
+                "-p",
+                "cross-language-rust-sender",
+                "-p",
+                "cross-language-rust-receiver",
+            ])
+            .status()
+            .expect("failed to run cargo build for cross-language nodes");
+        assert!(status.success(), "failed to build cross-language nodes");
+    });
+}
+
+#[test]
+fn smoke_cross_language_rust_to_python() {
+    ensure_cross_language_nodes_built();
+    run_smoke_test(
+        "cross-language-rust-to-python",
+        "examples/cross-language/rust-to-python.yml",
+        Duration::from_secs(30),
+    );
+}
+
+#[test]
+fn smoke_cross_language_python_to_rust() {
+    ensure_cross_language_nodes_built();
+    run_smoke_test(
+        "cross-language-python-to-rust",
+        "examples/cross-language/python-to-rust.yml",
+        Duration::from_secs(30),
+    );
+}
+
+#[test]
+fn smoke_local_cross_language_rust_to_python() {
+    ensure_cross_language_nodes_built();
+    run_smoke_test_local(
+        "local-cross-language-rust-to-python",
+        "examples/cross-language/rust-to-python.yml",
+        15,
+    );
+}
+
+#[test]
+fn smoke_local_cross_language_python_to_rust() {
+    ensure_cross_language_nodes_built();
+    run_smoke_test_local(
+        "local-cross-language-python-to-rust",
+        "examples/cross-language/python-to-rust.yml",
+        15,
     );
 }
