@@ -21,6 +21,7 @@ static BUILD_LOG_SINK_NODES: Once = Once::new();
 static BUILD_SERVICE_NODES: Once = Once::new();
 static BUILD_ACTION_NODES: Once = Once::new();
 static BUILD_CROSS_LANGUAGE_NODES: Once = Once::new();
+static BUILD_VALIDATED_PIPELINE_NODES: Once = Once::new();
 
 fn adora_bin() -> String {
     let manifest = env!("CARGO_MANIFEST_DIR");
@@ -682,6 +683,48 @@ fn smoke_local_python_recv_async() {
     run_smoke_test_local(
         "local-python-recv-async",
         "examples/python-recv-async/dataflow.yml",
+        15,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Validated pipeline: deterministic source -> transform -> sink with assertions
+// ---------------------------------------------------------------------------
+
+fn ensure_validated_pipeline_nodes_built() {
+    BUILD_VALIDATED_PIPELINE_NODES.call_once(|| {
+        let status = Command::new("cargo")
+            .args([
+                "build",
+                "-p",
+                "validated-pipeline-source",
+                "-p",
+                "validated-pipeline-transform",
+                "-p",
+                "validated-pipeline-sink",
+            ])
+            .status()
+            .expect("failed to run cargo build for validated-pipeline nodes");
+        assert!(status.success(), "failed to build validated-pipeline nodes");
+    });
+}
+
+#[test]
+fn smoke_validated_pipeline() {
+    ensure_validated_pipeline_nodes_built();
+    run_smoke_test(
+        "validated-pipeline",
+        "examples/validated-pipeline/dataflow.yml",
+        Duration::from_secs(30),
+    );
+}
+
+#[test]
+fn smoke_local_validated_pipeline() {
+    ensure_validated_pipeline_nodes_built();
+    run_smoke_test_local(
+        "local-validated-pipeline",
+        "examples/validated-pipeline/dataflow.yml",
         15,
     );
 }

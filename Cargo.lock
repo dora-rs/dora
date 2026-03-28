@@ -7095,6 +7095,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "validated-pipeline-sink"
+version = "0.2.0"
+dependencies = [
+ "adora-node-api",
+ "eyre",
+]
+
+[[package]]
+name = "validated-pipeline-source"
+version = "0.2.0"
+dependencies = [
+ "adora-node-api",
+ "eyre",
+]
+
+[[package]]
+name = "validated-pipeline-transform"
+version = "0.2.0"
+dependencies = [
+ "adora-node-api",
+ "eyre",
+]
+
+[[package]]
 name = "validated_struct"
 version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

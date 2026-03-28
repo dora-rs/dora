@@ -170,6 +170,13 @@ if [ "$RUN_RUST" = true ]; then
         -p action-example-client \
         -p action-example-server \
         2>&1 | tail -1
+
+    echo "Building validated-pipeline nodes..."
+    cargo build \
+        -p validated-pipeline-source \
+        -p validated-pipeline-transform \
+        -p validated-pipeline-sink \
+        2>&1 | tail -1
 fi
 
 # ---------------------------------------------------------------------------
@@ -200,6 +207,11 @@ if [ "$RUN_RUST" = true ]; then
     echo "=== Service/Action examples (local) ==="
     run_local "local-service-example" "examples/service-example/dataflow.yml" 10
     run_local "local-action-example"  "examples/action-example/dataflow.yml" 15
+
+    echo ""
+    echo "=== Validated pipeline (deterministic source -> transform -> sink) ==="
+    run_networked "validated-pipeline"       "examples/validated-pipeline/dataflow.yml" 30
+    run_local "local-validated-pipeline" "examples/validated-pipeline/dataflow.yml" 15
 fi
 
 # ---------------------------------------------------------------------------
