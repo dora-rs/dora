@@ -22,6 +22,7 @@ static BUILD_SERVICE_NODES: Once = Once::new();
 static BUILD_ACTION_NODES: Once = Once::new();
 static BUILD_CROSS_LANGUAGE_NODES: Once = Once::new();
 static BUILD_VALIDATED_PIPELINE_NODES: Once = Once::new();
+static BUILD_QUEUE_LATEST_RUST: Once = Once::new();
 
 fn adora_bin() -> String {
     let manifest = env!("CARGO_MANIFEST_DIR");
@@ -726,5 +727,48 @@ fn smoke_local_validated_pipeline() {
         "local-validated-pipeline",
         "examples/validated-pipeline/dataflow.yml",
         15,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Queue/timeout regression tests (timing-sensitive, local mode only)
+// Guards against previously-fixed bugs in daemon event scheduling.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn smoke_local_queue_size_and_timeout() {
+    run_smoke_test_local(
+        "local-queue-size-and-timeout",
+        "tests/queue_size_and_timeout_python/dataflow.yaml",
+        20,
+    );
+}
+
+#[test]
+fn smoke_local_queue_size_latest_data_python() {
+    run_smoke_test_local(
+        "local-queue-size-latest-data-python",
+        "tests/queue_size_latest_data_python/dataflow.yaml",
+        20,
+    );
+}
+
+fn ensure_queue_latest_rust_built() {
+    BUILD_QUEUE_LATEST_RUST.call_once(|| {
+        let status = Command::new("cargo")
+            .args(["build", "-p", "receive_data"])
+            .status()
+            .expect("failed to run cargo build for receive_data");
+        assert!(status.success(), "failed to build receive_data");
+    });
+}
+
+#[test]
+fn smoke_local_queue_size_latest_data_rust() {
+    ensure_queue_latest_rust_built();
+    run_smoke_test_local(
+        "local-queue-size-latest-data-rust",
+        "tests/queue_size_latest_data_rust/dataflow.yaml",
+        20,
     );
 }

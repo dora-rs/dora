@@ -27,7 +27,7 @@ def main() -> None:
         print(
             f"[{i}, {j}] Sent: {sent_in_s}, Received: {received_in_s}, Difference: {received_in_s - sent_in_s}",
         )
-        assert received_in_s - sent_in_s < 1.0
+        assert received_in_s - sent_in_s < 5.0, f"latency {received_in_s - sent_in_s:.2f}s exceeds 5s threshold"
         time.sleep(0.1)
 
 

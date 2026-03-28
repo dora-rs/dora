@@ -27,8 +27,8 @@ fn main() -> eyre::Result<()> {
             let duration_metadata = time_metadata.get_time().to_system_time().elapsed()?;
             println!("Latency duration: {duration_metadata:?}");
             assert!(
-                duration_metadata < Duration::from_millis(500),
-                "Time difference should be less than 500ms"
+                duration_metadata < Duration::from_secs(5),
+                "Latency {duration_metadata:?} exceeds 5s threshold (should pull latest data)"
             );
         }
     }

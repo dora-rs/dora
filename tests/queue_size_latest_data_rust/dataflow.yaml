@@ -7,8 +7,8 @@ nodes:
       - data
 
   - id: receive_data_with_sleep
-    path: ../../target/release/receive_data
-    build: cargo build -p receive_data --release
+    path: ../../target/debug/receive_data
+    build: cargo build -p receive_data
     inputs:
       tick:
         source: send_data/data

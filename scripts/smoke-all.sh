@@ -251,6 +251,22 @@ if [ "$RUN_PYTHON" = true ]; then
     run_local "local-typed-dataflow"          "examples/typed-dataflow/dataflow.yml" 10
     run_local "local-streaming-example"       "examples/streaming-example/dataflow.yml" 10
     run_local "local-python-recv-async"    "examples/python-recv-async/dataflow.yml" 15
+
+    echo ""
+    echo "=== Queue/timeout regression tests (local, timing-sensitive) ==="
+    run_local "local-queue-size-and-timeout"         "tests/queue_size_and_timeout_python/dataflow.yaml" 20
+    run_local "local-queue-size-latest-data-python"  "tests/queue_size_latest_data_python/dataflow.yaml" 20
+fi
+
+# ---------------------------------------------------------------------------
+# Queue/timeout regression with Rust receiver (requires both Rust + Python)
+# ---------------------------------------------------------------------------
+
+if [ "$RUN_RUST" = true ] && [ "$RUN_PYTHON" = true ]; then
+    echo "Building queue_size_latest_data Rust receiver..."
+    cargo build -p receive_data 2>&1 | tail -1
+
+    run_local "local-queue-size-latest-data-rust" "tests/queue_size_latest_data_rust/dataflow.yaml" 20
 fi
 
 # ---------------------------------------------------------------------------

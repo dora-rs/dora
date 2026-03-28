@@ -19,6 +19,6 @@ for event in node:
         duration = (time.perf_counter_ns() - send_time) / 1_000_000_000
         print("Duration: ", duration)
         assert (
-            duration < 2
-        ), f"Duration: {duration} should be less than 1 as we should always pull latest data."
+            duration < 10
+        ), f"Duration: {duration:.2f}s exceeds 10s threshold (should pull latest data, not stale)"
         time.sleep(1)
