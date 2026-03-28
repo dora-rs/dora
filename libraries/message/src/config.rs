@@ -9,6 +9,7 @@ use once_cell::sync::OnceCell;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::descriptor::ServiceEndpoint;
 pub use crate::id::{DataId, NodeId, OperatorId};
 
 /// Contains the input and output configuration of the node.
@@ -35,6 +36,17 @@ pub struct NodeRunConfig {
     ///  - output_2
     #[serde(default)]
     pub outputs: BTreeSet<DataId>,
+
+    /// Service endpoints for request-reply communication.
+    ///
+    /// e.g.
+    ///
+    /// services:
+    ///
+    ///   get_image:
+    ///     type: server
+    #[serde(default)]
+    pub services: BTreeMap<String, ServiceEndpoint>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

@@ -76,6 +76,21 @@ pub enum NodeEvent {
         error: String,
         source_node_id: NodeId,
     },
+
+    /// A service request received by a server node.
+    ///
+    /// The daemon creates this event when a client sends a request to a service
+    /// declared by this node. The server should process the request and reply
+    /// using [`DaemonRequest::SendServiceReply`](crate::node_to_daemon::DaemonRequest::SendServiceReply).
+    ServiceRequest {
+        /// The service name (e.g., `"get_image"`).
+        id: DataId,
+        /// Metadata for this request, including the correlation ID used to
+        /// route the reply back to the correct client.
+        metadata: Metadata,
+        /// The request payload.
+        data: Option<DataMessage>,
+    },
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

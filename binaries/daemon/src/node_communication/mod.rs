@@ -290,6 +290,21 @@ impl Listener {
                 };
                 self.process_daemon_event(event, None, connection).await?;
             }
+            DaemonRequest::SendServiceReply {
+                service_name,
+                metadata,
+                data,
+            } => {
+                // route via the synthetic __service_reply_ output channel
+                let output_id =
+                    DataId::from(format!("__service_reply_{}", service_name.as_str()));
+                let event = crate::DaemonNodeEvent::SendOut {
+                    output_id,
+                    metadata,
+                    data,
+                };
+                self.process_daemon_event(event, None, connection).await?;
+            }
             DaemonRequest::Subscribe => {
                 let (tx, rx) = mpsc::unbounded_channel();
                 let (reply_sender, reply) = oneshot::channel();

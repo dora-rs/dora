@@ -119,6 +119,14 @@ impl IntegrationTestingEvents {
                 println!("{}", "node reports EventStreamDropped".blue());
                 DaemonReply::Result(Ok(()))
             }
+            DaemonRequest::SendServiceReply {
+                service_name,
+                metadata: _,
+                data: _,
+            } => {
+                println!("{} service reply for {service_name}", "node sends".blue());
+                DaemonReply::Empty
+            }
             DaemonRequest::NodeConfig { .. } => {
                 eyre::bail!("unexpected NodeConfig in interactive mode")
             }

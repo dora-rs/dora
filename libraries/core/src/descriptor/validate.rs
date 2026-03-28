@@ -12,6 +12,7 @@ use dora_message::{
 use eyre::{Context, bail, eyre};
 use std::{collections::BTreeMap, path::Path, process::Command, time::Duration};
 use tracing::info;
+use dora_message::descriptor::ServiceEndpoint;
 
 use super::{Descriptor, DescriptorExt, resolve_path};
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -156,6 +157,49 @@ pub fn check_dataflow(
     if has_python_operator {
         if let Err(err) = check_python_runtime() {
             errors.push(format!("{err}"));
+        }
+    }
+
+    // check that all service client references point to a valid server
+    for node in &dataflow.nodes {
+        for (service_name, endpoint) in &node.services {
+            if let ServiceEndpoint::Client { server } = endpoint {
+                let Some((server_node_str, server_service_name)) = server.split_once('/') else {
+                    errors.push(format!(
+                        "node `{}`, service `{service_name}`: invalid server reference `{server}`, \
+                         expected format `node_id/service_name`",
+                        node.id
+                    ));
+                    continue;
+                };
+                let server_node_id = NodeId::from(server_node_str.to_string());
+                let Some(server_node) = dataflow.nodes.iter().find(|n| n.id == server_node_id)
+                else {
+                    errors.push(format!(
+                        "node `{}`, service `{service_name}`: server node \
+                         `{server_node_str}` not found",
+                        node.id
+                    ));
+                    continue;
+                };
+                match server_node.services.get(server_service_name) {
+                    Some(ServiceEndpoint::Server) => {} // valid
+                    Some(ServiceEndpoint::Client { .. }) => {
+                        errors.push(format!(
+                            "node `{}`, service `{service_name}`: `{server}` is a client, \
+                             not a server",
+                            node.id
+                        ));
+                    }
+                    None => {
+                        errors.push(format!(
+                            "node `{}`, service `{service_name}`: server `{server_node_str}` \
+                             does not declare service `{server_service_name}`",
+                            node.id
+                        ));
+                    }
+                }
+            }
         }
     }
 

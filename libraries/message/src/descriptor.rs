@@ -129,6 +129,40 @@ pub enum RestartPolicy {
     Always,
 }
 
+/// Defines a service endpoint for the request-reply pattern.
+///
+/// A service endpoint is either a server (which receives requests and sends replies)
+/// or a client (which sends requests and receives replies). Both sides must declare
+/// their service endpoints in the dataflow YAML.
+///
+/// ## Example
+///
+/// ```yaml
+/// nodes:
+///   - id: webcam
+///     services:
+///       get_image:
+///         type: server
+///   - id: detector
+///     services:
+///       get_image:
+///         type: client
+///         server: webcam/get_image
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+#[serde(tag = "type")]
+pub enum ServiceEndpoint {
+    /// This node provides the service and handles incoming requests.
+    #[serde(rename = "server")]
+    Server,
+    /// This node consumes the service by sending requests.
+    #[serde(rename = "client")]
+    Client {
+        /// Reference to the server endpoint in the format `node_id/service_name`.
+        server: String,
+    },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Deploy {
@@ -511,6 +545,31 @@ pub struct Node {
     #[schemars(skip)]
     #[serde(rename = "_unstable_deploy")]
     pub deploy: Option<Deploy>,
+
+    /// Service endpoints declared by this node.
+    ///
+    /// Defines the request-reply services that this node provides or consumes.
+    /// Each service must have a unique name within the node. Server endpoints handle
+    /// incoming requests, while client endpoints send requests to a specified server.
+    ///
+    /// ## Example
+    ///
+    /// ```yaml
+    /// nodes:
+    ///   - id: webcam
+    ///     path: ./webcam.py
+    ///     services:
+    ///       get_image:
+    ///         type: server
+    ///   - id: detector
+    ///     path: ./detector.py
+    ///     services:
+    ///       get_image:
+    ///         type: client
+    ///         server: webcam/get_image
+    /// ```
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub services: BTreeMap<String, ServiceEndpoint>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -591,6 +650,10 @@ pub struct OperatorConfig {
     /// Output data identifiers
     #[serde(default)]
     pub outputs: BTreeSet<DataId>,
+
+    /// Service endpoints for request-reply communication
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub services: BTreeMap<String, ServiceEndpoint>,
 
     /// Operator source configuration (Python, shared library, etc.)
     #[serde(flatten)]

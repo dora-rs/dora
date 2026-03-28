@@ -1,5 +1,5 @@
 use crate::{
-    DaemonCommunicationWrapper, EventStream,
+    ArrowData, DaemonCommunicationWrapper, Event, EventStream,
     daemon_connection::{DaemonChannel, IntegrationTestingEvents},
     integration_testing::{
         TestingCommunication, TestingInput, TestingOptions, TestingOutput,
@@ -25,7 +25,7 @@ use dora_core::{
 use dora_message::{
     DataflowId,
     daemon_to_node::{DaemonCommunication, DaemonReply, NodeConfig},
-    metadata::{ArrowTypeInfo, Metadata, MetadataParameters},
+    metadata::{ArrowTypeInfo, Metadata, MetadataParameters, Parameter},
     node_to_daemon::{DaemonRequest, DataMessage, DropToken, Timestamped},
 };
 use eyre::{WrapErr, bail};
@@ -65,6 +65,13 @@ mod drop_stream;
 /// shared memory. Messages that are smaller than this threshold are sent through
 /// TCP.
 pub const ZERO_COPY_THRESHOLD: usize = 4096;
+
+/// Metadata key used to carry service correlation IDs.
+///
+/// The client generates a [`Uuid::now_v7`](uuid::Uuid::now_v7) value, inserts it under this key,
+/// and sends the request. The server forwards it back in the reply metadata so the client can
+/// match replies to outstanding requests and discard stale responses.
+pub const SERVICE_CORRELATION_ID_KEY: &str = "__service_correlation_id";
 
 /// Allows sending outputs and retrieving node information.
 ///
@@ -359,6 +366,7 @@ impl DoraNode {
             run_config: NodeRunConfig {
                 inputs: Default::default(),
                 outputs: Default::default(),
+                services: Default::default(),
             },
             daemon_communication: Some(DaemonCommunication::Interactive),
             dataflow_descriptor: serde_yaml::Value::Null,
@@ -388,6 +396,7 @@ impl DoraNode {
             run_config: NodeRunConfig {
                 inputs: Default::default(),
                 outputs: Default::default(),
+                services: Default::default(),
             },
             daemon_communication: None,
             dataflow_descriptor: serde_yaml::Value::Null,
@@ -626,6 +635,99 @@ impl DoraNode {
         })
     }
 
+    /// Sends a reply to a service request (server-side).
+    ///
+    /// The `parameters` argument should contain the metadata from the received
+    /// [`Event::ServiceRequest`] -- it carries the correlation ID that the daemon
+    /// uses to route the reply back to the correct client.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use dora_node_api::{DoraNode, Event, MetadataParameters};
+    /// # let (mut node, mut events) = DoraNode::init_from_env().unwrap();
+    /// if let Some(Event::ServiceRequest { id, metadata, data }) = events.recv() {
+    ///     let reply = process_request(&data);
+    ///     node.send_service_reply(id, metadata.parameters.clone(), reply)
+    ///         .expect("failed to send service reply");
+    /// }
+    /// # fn process_request(_: &dora_node_api::ArrowData) -> arrow::array::ArrayRef { todo!() }
+    /// ```
+    pub fn send_service_reply(
+        &mut self,
+        service_name: DataId,
+        parameters: MetadataParameters,
+        data: impl Array,
+    ) -> eyre::Result<()> {
+        let arrow_array = data.to_data();
+        let total_len = required_data_size(&arrow_array);
+        let mut sample = self.allocate_data_sample(total_len)?;
+        let type_info = copy_array_into_sample(&mut sample, &arrow_array);
+        let output_id = DataId::from(format!("__service_reply_{service_name}"));
+        self.send_output_sample(output_id, type_info, parameters, Some(sample))
+    }
+
+    /// Sends a service request and blocks until a matching reply arrives.
+    ///
+    /// Events received while waiting (regular inputs, stop signals, etc.) are
+    /// buffered internally and will be returned by subsequent
+    /// [`EventStream::recv`] calls, so no messages are lost.
+    ///
+    /// The `events` parameter must be the [`EventStream`] associated with this
+    /// node -- it is needed to receive the reply.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a [`Event::Stop`] is received or the event stream
+    /// closes before a reply arrives.
+    pub fn send_request(
+        &mut self,
+        service_name: DataId,
+        parameters: MetadataParameters,
+        data: impl Array,
+        events: &mut EventStream,
+    ) -> eyre::Result<ServiceReply> {
+        let correlation_id = uuid::Uuid::now_v7().to_string();
+        let mut params = parameters;
+        params.insert(
+            SERVICE_CORRELATION_ID_KEY.to_string(),
+            Parameter::String(correlation_id.clone()),
+        );
+
+        // send via the synthetic __service_request_ output channel
+        let output_id = DataId::from(format!("__service_request_{service_name}"));
+        self.send_output(output_id, params, data)?;
+
+        // block until a reply with a matching correlation ID arrives
+        let reply_input_id = format!("__service_reply_{service_name}");
+        loop {
+            match events.recv() {
+                Some(Event::Input { id, metadata, data })
+                    if id.as_str() == reply_input_id =>
+                {
+                    let reply_corr = metadata
+                        .get(SERVICE_CORRELATION_ID_KEY)
+                        .and_then(|p| String::try_from(p).ok());
+                    if reply_corr.as_deref() == Some(&correlation_id) {
+                        return Ok(ServiceReply { metadata, data });
+                    }
+                    // stale reply from a timed-out request - discard
+                }
+                Some(Event::Stop(_)) => {
+                    eyre::bail!("received Stop while waiting for service reply");
+                }
+                Some(other) => {
+                    events.buffer_event(other);
+                }
+                None => {
+                    eyre::bail!("event stream closed while waiting for service reply");
+                }
+            }
+        }
+    }
+
+    
+
     /// Send the give raw byte data with the provided type information.
     ///
     /// It is recommended to use a function like [`send_output`][Self::send_output] instead.
@@ -812,6 +914,16 @@ impl DoraNode {
             ),
         }
     }
+}
+
+/// Reply received from a service request.
+///
+/// Returned by [`DoraNode::send_request`].
+pub struct ServiceReply {
+    /// Metadata from the server's reply.
+    pub metadata: Metadata,
+    /// The reply payload in Apache Arrow format.
+    pub data: ArrowData,
 }
 
 impl Drop for DoraNode {

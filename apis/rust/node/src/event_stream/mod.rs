@@ -69,6 +69,12 @@ pub struct EventStream {
     write_events_to: Option<WriteEventsTo>,
     start_timestamp: uhlc::Timestamp,
     use_scheduler: bool,
+    /// Events buffered during a blocking [`DoraNode::send_request`] call.
+    ///
+    /// While the node blocks waiting for a service reply, other events (inputs,
+    /// stop, etc.) may arrive. They are stored here and drained first on the
+    /// next call to [`recv`](Self::recv).
+    buffered_events: VecDeque<Event>,
 }
 
 impl EventStream {
@@ -238,6 +244,7 @@ impl EventStream {
             scheduler,
             write_events_to,
             use_scheduler,
+            buffered_events: VecDeque::new(),
         })
     }
 
@@ -258,6 +265,11 @@ impl EventStream {
     /// asynchronous [`StreamExt::next`] method instead ([`EventStream`] implements the
     /// [`Stream`] trait).
     pub fn recv(&mut self) -> Option<Event> {
+        // drain events that were buffered during a blocking send_request call
+        if let Some(event) = self.buffered_events.pop_front() {
+            return Some(event);
+        }
+
         futures::executor::block_on(self.recv_async())
     }
 
@@ -280,6 +292,11 @@ impl EventStream {
     /// asynchronous [`StreamExt::next`] method instead ([`EventStream`] implements the
     /// [`Stream`] trait).
     pub fn recv_timeout(&mut self, dur: Duration) -> Option<Event> {
+        // drain events that were buffered during a blocking send_request call
+        if let Some(event) = self.buffered_events.pop_front() {
+            return Some(event);
+        }
+
         futures::executor::block_on(self.recv_async_timeout(dur))
     }
 
@@ -297,6 +314,11 @@ impl EventStream {
     /// [`StreamExt::next`] method with a custom timeout future instead
     /// ([`EventStream`] implements the [`Stream`] trait).
     pub async fn recv_async(&mut self) -> Option<Event> {
+        // drain events that were buffered during a blocking send_request call
+        if let Some(event) = self.buffered_events.pop_front() {
+            return Some(event);
+        }
+
         if !self.use_scheduler {
             return self.receiver.next().await.map(Self::convert_event_item);
         }
@@ -326,6 +348,14 @@ impl EventStream {
     fn add_event(&mut self, event: EventItem) {
         self.record_event(&event).unwrap();
         self.scheduler.add_event(event);
+    }
+
+    /// Buffer an event to be returned on the next [`recv`](Self::recv) call.
+    ///
+    /// This is used internally during blocking [`DoraNode::send_request`] calls
+    /// to preserve events that arrive while waiting for a service reply.
+    pub(crate) fn buffer_event(&mut self, event: Event) {
+        self.buffered_events.push_back(event);
     }
 
     fn record_event(&mut self, event: &EventItem) -> eyre::Result<()> {
@@ -396,6 +426,7 @@ impl EventStream {
                         });
                         Some(event_json)
                     }
+                    NodeEvent::ServiceRequest { .. } => None,
                 },
                 _ => None,
             };
@@ -507,8 +538,19 @@ impl EventStream {
                         },
                         Err(err) => Event::Error(format!("{err:?}")),
                     }
-                }
+                },
                 NodeEvent::AllInputsClosed => Event::Stop(event::StopCause::AllInputsClosed),
+                NodeEvent::ServiceRequest { id, metadata, data } => {
+                    let data = data_to_arrow_array(data, &metadata, ack_channel);
+                    match data {
+                        Ok(data) => Event::ServiceRequest {
+                            id,
+                            metadata,
+                            data: data.into(),
+                        },
+                        Err(err) => Event::Error(format!("{err:?}")),
+                    }
+                },
             },
 
             EventItem::FatalError(err) => {

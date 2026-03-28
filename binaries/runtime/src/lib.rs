@@ -231,6 +231,9 @@ async fn run(
                         .wrap_err("failed to wait for send_output task")?;
                         result.wrap_err("failed to send node output")?;
                     }
+                    OperatorEvent::ServiceReply { .. } => {
+                        // TODO: implement operator service reply forwarding later, gonna test first
+                    }
                 }
             }
             RuntimeEvent::Event(Event::Stop(cause)) => {
@@ -318,6 +321,37 @@ async fn run(
                         open_operator_inputs.remove(&operator_id);
                         operator_channels.remove(&operator_id);
                     }
+                }
+            }
+            RuntimeEvent::Event(Event::ServiceRequest { id, metadata, data }) => {
+                let Some((operator_id_str, service_name)) = id.as_str().split_once('/') else {
+                    tracing::warn!("received service request for non-operator: {id}");
+                    continue;
+                };
+                let operator_id = OperatorId::from(operator_id_str.to_owned());
+                let service_name = DataId::from(service_name.to_owned());
+
+                let Some(operator_channel) = operator_channels.get(&operator_id) else {
+                    tracing::warn!(
+                        "received service request for unknown operator `{operator_id}`"
+                    );
+                    continue;
+                };
+                if let Err(err) = operator_channel
+                    .send_async(Event::ServiceRequest {
+                        id: service_name.clone(),
+                        metadata,
+                        data,
+                    })
+                    .await
+                    .wrap_err_with(|| {
+                        format!(
+                            "failed to send ServiceRequest({service_name}) \
+                             to operator `{operator_id}`"
+                        )
+                    })
+                {
+                    tracing::warn!("{err}");
                 }
             }
             RuntimeEvent::Event(Event::Error(err)) => eyre::bail!("received error event: {err}"),

@@ -74,6 +74,21 @@ pub enum Event {
         /// There is currently no case where `operator_id` is `None`.
         operator_id: Option<OperatorId>,
     },
+    /// A service request was received by this node (server-side).
+    ///
+    /// This event is sent when a client calls
+    /// [`DoraNode::send_request`](crate::DoraNode::send_request) targeting a service
+    /// declared by this node. The server should handle the request and call
+    /// [`DoraNode::send_service_reply`](crate::DoraNode::send_service_reply) to respond.
+    ServiceRequest {
+        /// The service name, as declared in the dataflow YAML file.
+        id: DataId,
+        /// Metadata including the correlation ID. This should be forwarded
+        /// back in the reply to ensure proper routing.
+        metadata: Metadata,
+        /// The request payload in Apache Arrow format.
+        data: ArrowData,
+    },
     /// Notifies the node about an unexpected error that happened inside Dora.
     ///
     /// It's a good idea to output or log this error for debugging.

@@ -166,6 +166,29 @@ class Node:
         ```
         """
 
+    def send_service_reply(
+        self, service_name: str, data: pyarrow.Array, metadata: dict = None
+    ) -> None:
+        """`send_service_reply` sends a reply to a service request (server-side).
+
+        ```python
+        node.send_service_reply("get_image", image_data, event["metadata"])
+        ```
+        """
+
+    def send_request(
+        self, service_name: str, data: pyarrow.Array, metadata: dict = None
+    ) -> dict:
+        """`send_request` sends a service request and blocks until the reply arrives.
+
+        Returns a dict with 'value' (pyarrow.Array) and 'metadata' (dict).
+
+        ```python
+        reply = node.send_request("get_image", pa.array([]))
+        image = reply["value"]
+        ```
+        """
+
     def __iter__(self) -> typing.Any:
         """Implement iter(self)."""
 
