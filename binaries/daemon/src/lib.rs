@@ -3575,7 +3575,26 @@ impl CoreNodeKindExt for CoreNodeKind {
                 outputs: runtime_node_outputs(n),
                 services: BTreeMap::new(),
             },
-            CoreNodeKind::Custom(n) => n.run_config.clone(),
+            CoreNodeKind::Custom(n) => {
+                let mut config = n.run_config.clone();
+                for (service_name, endpoint) in &config.services {
+                    match endpoint {
+                        ServiceEndpoint::Client { .. } => {
+                            // client sends requests via this synthetic output
+                            config.outputs.insert(
+                                DataId::from(format!("__service_request_{service_name}"))
+                            );
+                        }
+                        ServiceEndpoint::Server => {
+                            // server sends replies via this synthetic output
+                            config.outputs.insert(
+                                DataId::from(format!("__service_reply_{service_name}"))
+                            );
+                        }
+                    }
+                }
+                config
+            },
         }
     }
 

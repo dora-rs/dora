@@ -1,18 +1,15 @@
 nodes:
-  # The "service" node: receives a request and sends back a reply.
-  # It acts like a server — it listens for tick inputs and replies with computed data.
   - id: service-node
     path: service_node.py
-    inputs:
-      request: dora/timer/millis/100   # simulates receiving a tick/request trigger
-    outputs:
-      - reply
+    services:
+      compute:
+        type: server
 
-  # The "requester" node: sends a request and blocks until it receives a reply.
   - id: requester-node
     path: requester_node.py
     inputs:
       tick: dora/timer/millis/200
-      reply: service-node/reply
-    outputs:
-      - request
+    services:
+      compute:
+        type: client
+        server: service-node/compute
