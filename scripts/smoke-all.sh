@@ -224,6 +224,7 @@ if [ "$RUN_PYTHON" = true ]; then
     run_networked "log-aggregator"          "examples/log-aggregator/dataflow.yml" 15
     run_networked "typed-dataflow"          "examples/typed-dataflow/dataflow.yml" 15
     run_networked "streaming-example"       "examples/streaming-example/dataflow.yml" 15
+    run_networked "python-recv-async"      "examples/python-recv-async/dataflow.yml" 30
 
     echo ""
     echo "=== Python examples (local) ==="
@@ -237,6 +238,7 @@ if [ "$RUN_PYTHON" = true ]; then
     run_local "local-log-aggregator"          "examples/log-aggregator/dataflow.yml" 10
     run_local "local-typed-dataflow"          "examples/typed-dataflow/dataflow.yml" 10
     run_local "local-streaming-example"       "examples/streaming-example/dataflow.yml" 10
+    run_local "local-python-recv-async"    "examples/python-recv-async/dataflow.yml" 15
 fi
 
 # ---------------------------------------------------------------------------

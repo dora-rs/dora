@@ -663,3 +663,25 @@ fn smoke_local_cross_language_python_to_rust() {
         15,
     );
 }
+
+// ---------------------------------------------------------------------------
+// Python recv_async() smoke test (GIL/async deadlock regression)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn smoke_python_recv_async() {
+    run_smoke_test(
+        "python-recv-async",
+        "examples/python-recv-async/dataflow.yml",
+        Duration::from_secs(30),
+    );
+}
+
+#[test]
+fn smoke_local_python_recv_async() {
+    run_smoke_test_local(
+        "local-python-recv-async",
+        "examples/python-recv-async/dataflow.yml",
+        15,
+    );
+}
