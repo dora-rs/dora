@@ -6,6 +6,8 @@ def main():
     print("[service-node] Starting up, waiting for requests...")
 
     for event in node:
+        print(f"[service-node] Got event: type={event['type']}, id={event.get('id', 'N/A')}")
+
         if event["type"] == "SERVICE_REQUEST":
             request_data = event["value"]
             request_value = request_data[0].as_py()

@@ -8,7 +8,8 @@ nodes:
   - id: requester-node
     path: requester_node.py
     inputs:
-      tick: dora/timer/millis/200
+      request_tick: dora/timer/millis/200
+      tick: dora/timer/millis/50
     services:
       compute:
         type: client
