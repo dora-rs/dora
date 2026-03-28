@@ -2,6 +2,8 @@ use std::net::{IpAddr, Ipv4Addr};
 
 pub const LOCALHOST: IpAddr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
 pub const ADORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT: u16 = 53291;
+/// Env var to override the daemon's local listener port for dynamic nodes.
+pub const ADORA_DAEMON_LOCAL_LISTEN_PORT_ENV: &str = "ADORA_DAEMON_LOCAL_LISTEN_PORT";
 pub const ADORA_COORDINATOR_PORT_WS_DEFAULT: u16 = 6013;
 
 pub const MANUAL_STOP: &str = "adora/stop";

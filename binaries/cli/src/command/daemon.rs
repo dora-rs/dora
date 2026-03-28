@@ -1,7 +1,8 @@
 use super::Executable;
 use crate::{common::handle_dataflow_result, session::DataflowSession};
 use adora_core::topics::{
-    ADORA_COORDINATOR_PORT_WS_DEFAULT, ADORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, LOCALHOST,
+    ADORA_COORDINATOR_PORT_WS_DEFAULT, ADORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT,
+    ADORA_DAEMON_LOCAL_LISTEN_PORT_ENV, LOCALHOST,
 };
 
 use adora_daemon::LogDestination;
@@ -61,6 +62,15 @@ impl Executable for Daemon {
             // SAFETY: Called before spawning any threads (tokio runtime not yet built),
             // so there are no concurrent reads of environment variables.
             unsafe { std::env::set_var("ADORA_ALLOW_SHELL_NODES", "true") };
+        }
+        // Export the listen port so dynamic nodes (and spawned child processes)
+        // can discover it via env var.
+        // SAFETY: Called before the tokio runtime is built (no threads yet).
+        unsafe {
+            std::env::set_var(
+                ADORA_DAEMON_LOCAL_LISTEN_PORT_ENV,
+                self.local_listen_port.to_string(),
+            );
         }
 
         let mut builder = Builder::new_multi_thread();
