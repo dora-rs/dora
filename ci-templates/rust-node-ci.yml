@@ -1,0 +1,39 @@
+# CI workflow for Rust adora node crates.
+# Copy this file to your project's .github/workflows/ directory.
+#
+# Prerequisites: your Cargo.toml depends on adora-node-api.
+
+name: Rust Node CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Check & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --all -- -D warnings
+
+      - name: Test
+        run: cargo test --all
