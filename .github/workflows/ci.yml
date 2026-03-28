@@ -59,9 +59,20 @@ jobs:
       - name: Free disk Space (Windows)
         if: runner.os == 'Windows'
         run: |
-          $ErrorActionPreference = 'SilentlyContinue'
-          docker system prune --all -f 2>$null; $true
-          docker builder prune -af 2>$null; $true
+          if (Get-Command docker -ErrorAction SilentlyContinue) {
+            docker system prune --all -f 2>$null
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "docker system prune failed; continuing with Windows cleanup"
+              $global:LASTEXITCODE = 0
+            }
+            docker builder prune -af 2>$null
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "docker builder prune failed; continuing with Windows cleanup"
+              $global:LASTEXITCODE = 0
+            }
+          } else {
+            Write-Host "docker is not available; skipping docker cleanup"
+          }
           Remove-Item "C:\Android" -Force -Recurse -ErrorAction SilentlyContinue
           Remove-Item "C:\hostedtoolcache\windows\Ruby" -Force -Recurse -ErrorAction SilentlyContinue
           Remove-Item "C:\hostedtoolcache\windows\go" -Force -Recurse -ErrorAction SilentlyContinue
@@ -129,9 +140,20 @@ jobs:
       - name: Free disk Space (Windows)
         if: runner.os == 'Windows'
         run: |
-          $ErrorActionPreference = 'SilentlyContinue'
-          docker system prune --all -f 2>$null; $true
-          docker builder prune -af 2>$null; $true
+          if (Get-Command docker -ErrorAction SilentlyContinue) {
+            docker system prune --all -f 2>$null
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "docker system prune failed; continuing with Windows cleanup"
+              $global:LASTEXITCODE = 0
+            }
+            docker builder prune -af 2>$null
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "docker builder prune failed; continuing with Windows cleanup"
+              $global:LASTEXITCODE = 0
+            }
+          } else {
+            Write-Host "docker is not available; skipping docker cleanup"
+          }
           Remove-Item "C:\Android" -Force -Recurse -ErrorAction SilentlyContinue
           Remove-Item "C:\hostedtoolcache\windows\Ruby" -Force -Recurse -ErrorAction SilentlyContinue
           Remove-Item "C:\hostedtoolcache\windows\go" -Force -Recurse -ErrorAction SilentlyContinue
