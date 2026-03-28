@@ -20,6 +20,37 @@ use tracing::info;
 use super::{Descriptor, DescriptorExt, resolve_path};
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Validate input/output wiring without checking path existence.
+///
+/// This is safe to run before building nodes. It verifies every input
+/// reference points to a declared output on the source node.
+pub fn check_wiring(dataflow: &Descriptor) -> eyre::Result<()> {
+    let nodes = dataflow.resolve_aliases_and_set_defaults()?;
+
+    for node in nodes.values() {
+        match &node.kind {
+            descriptor::CoreNodeKind::Custom(custom_node) => {
+                for (input_id, input) in &custom_node.run_config.inputs {
+                    check_input(input, &nodes, &format!("{}/{input_id}", node.id))?;
+                }
+            }
+            descriptor::CoreNodeKind::Runtime(runtime_node) => {
+                for operator_definition in &runtime_node.operators {
+                    for (input_id, input) in &operator_definition.config.inputs {
+                        check_input(
+                            input,
+                            &nodes,
+                            &format!("{}/{}/{input_id}", operator_definition.id, node.id),
+                        )?;
+                    }
+                }
+            }
+        };
+    }
+
+    Ok(())
+}
+
 pub fn check_dataflow(
     dataflow: &Descriptor,
     working_dir: &Path,
@@ -107,26 +138,7 @@ pub fn check_dataflow(
     }
 
     // check that all inputs mappings point to an existing output
-    for node in nodes.values() {
-        match &node.kind {
-            descriptor::CoreNodeKind::Custom(custom_node) => {
-                for (input_id, input) in &custom_node.run_config.inputs {
-                    check_input(input, &nodes, &format!("{}/{input_id}", node.id))?;
-                }
-            }
-            descriptor::CoreNodeKind::Runtime(runtime_node) => {
-                for operator_definition in &runtime_node.operators {
-                    for (input_id, input) in &operator_definition.config.inputs {
-                        check_input(
-                            input,
-                            &nodes,
-                            &format!("{}/{}/{input_id}", operator_definition.id, node.id),
-                        )?;
-                    }
-                }
-            }
-        };
-    }
+    check_wiring(dataflow)?;
 
     // Check that nodes can resolve `send_stdout_as`, `send_logs_as`, `min_log_level`
     for node in nodes.values() {
@@ -1853,5 +1865,62 @@ nodes:
         let err = validate_ros2_config(&NodeId::from("n".to_owned()), &config, &inputs, &outputs)
             .unwrap_err();
         assert!(err.to_string().contains("lease_duration"));
+    }
+
+    // --- Wiring validation tests ---
+
+    #[test]
+    fn wiring_valid_dataflow() {
+        let yaml = r#"
+nodes:
+  - id: source
+    path: source.py
+    outputs:
+      - data
+  - id: sink
+    path: sink.py
+    inputs:
+      data: source/data
+"#;
+        let descriptor: Descriptor = serde_yaml::from_str(yaml).unwrap();
+        check_wiring(&descriptor).unwrap();
+    }
+
+    #[test]
+    fn wiring_rejects_nonexistent_source_node() {
+        let yaml = r#"
+nodes:
+  - id: sink
+    path: sink.py
+    inputs:
+      data: nonexistent/data
+"#;
+        let descriptor: Descriptor = serde_yaml::from_str(yaml).unwrap();
+        let err = check_wiring(&descriptor).unwrap_err();
+        assert!(
+            err.to_string().contains("nonexistent"),
+            "expected error about missing node, got: {err}"
+        );
+    }
+
+    #[test]
+    fn wiring_rejects_nonexistent_output() {
+        let yaml = r#"
+nodes:
+  - id: source
+    path: source.py
+    outputs:
+      - data
+  - id: sink
+    path: sink.py
+    inputs:
+      data: source/typo
+"#;
+        let descriptor: Descriptor = serde_yaml::from_str(yaml).unwrap();
+        let err = check_wiring(&descriptor).unwrap_err();
+        assert!(
+            err.to_string().contains("typo"),
+            "expected error about missing output, got: {err}"
+        );
     }
 }

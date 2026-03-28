@@ -1,6 +1,9 @@
 use super::Executable;
 use adora_core::{
-    descriptor::{Descriptor, DescriptorExt, validate::check_type_annotations_full},
+    descriptor::{
+        Descriptor, DescriptorExt,
+        validate::{check_type_annotations_full, check_wiring},
+    },
     types::TypeRegistry,
 };
 use eyre::{Context, bail};
@@ -37,6 +40,10 @@ impl Executable for Validate {
             })?
             .expand(working_dir)
             .context("failed to expand modules in dataflow descriptor")?;
+
+        // Check input/output wiring (no build required)
+        check_wiring(&descriptor).context("wiring check failed")?;
+        println!("Input/output wiring OK.");
 
         let strict = self.strict_types || descriptor.strict_types.unwrap_or(false);
 
