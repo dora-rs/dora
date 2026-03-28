@@ -90,6 +90,59 @@ jobs:
           cargo test --test fault-tolerance-e2e -- --test-threads=1
         timeout-minutes: 15
 
+  bench:
+    name: Benchmark regression check
+    runs-on: ubuntu-latest
+    needs: test
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+
+      # Restore baseline from the most recent main-branch run.
+      # The key uses a fixed prefix; restore-keys enables prefix matching
+      # so the most recent main-branch save is found.
+      - name: Restore baseline
+        id: cache-baseline
+        uses: actions/cache/restore@v4
+        with:
+          path: target/criterion
+          key: bench-baseline-${{ runner.os }}-not-used
+          restore-keys: bench-baseline-${{ runner.os }}-
+
+      # Compile benchmarks first (separates build errors from bench issues)
+      - name: Compile benchmarks
+        run: |
+          cargo bench -p adora-message -p shared-memory-server --no-run
+          cargo bench -p adora-daemon --features bench --no-run
+
+      # Run benchmarks. Criterion automatically compares against any
+      # existing data in target/criterion/ (restored from cache above).
+      - name: Run benchmarks
+        run: |
+          cargo bench -p adora-message -p shared-memory-server 2>/dev/null | tee bench-output.txt
+          cargo bench -p adora-daemon --features bench 2>/dev/null | tee -a bench-output.txt
+
+      # Always post results to step summary
+      - name: Post results
+        if: always()
+        run: |
+          echo "## Benchmark Results" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat bench-output.txt >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "(no output)" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      # On main branch: save criterion data as the new baseline
+      - name: Cache baseline
+        if: github.ref == 'refs/heads/main' && success()
+        uses: actions/cache/save@v4
+        with:
+          path: target/criterion
+          key: bench-baseline-${{ runner.os }}-${{ github.sha }}
+
   typos:
     name: Typos
     runs-on: ubuntu-latest
