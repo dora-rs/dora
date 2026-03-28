@@ -19,9 +19,18 @@ async def main():
     node = Node()
     while True:
         event = await node.recv_async()
+
+        # recv_async returns None when the event stream is closed
+        # (e.g. all upstream senders have exited / AllInputsClosed)
+        if event is None:
+            break
+
         event_type = event.get("type")
 
         if event_type == "STOP":
+            break
+
+        if event_type in ("ERROR", "INPUT_CLOSED"):
             break
 
         if event_type == "INPUT":

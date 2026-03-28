@@ -171,6 +171,8 @@ jobs:
       - name: "Rust Dataflow example"
         timeout-minutes: 30
         run: cargo run --example rust-dataflow
+      - name: "Fetch full git history for rust-dataflow-git"
+        run: git fetch --unshallow || true
       - name: "Rust Git Dataflow example"
         timeout-minutes: 30
         run: cargo run --example rust-dataflow-git

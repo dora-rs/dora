@@ -21,7 +21,8 @@ use opentelemetry_system_metrics::init_process_observer;
 /// TODO: Make Opentelemetry configurable
 ///
 pub fn init_metrics() -> Option<SdkMeterProvider> {
-    if std::env::var("DORA_OTLP_ENDPOINT").is_err() && std::env::var("DORA_JAEGER_TRACING").is_err() {
+    if std::env::var("DORA_OTLP_ENDPOINT").is_err() && std::env::var("DORA_JAEGER_TRACING").is_err()
+    {
         return None;
     }
 
@@ -35,9 +36,11 @@ pub fn init_metrics() -> Option<SdkMeterProvider> {
         .build()
         .expect("Failed to create metric exporter");
 
-    Some(SdkMeterProvider::builder()
-        .with_periodic_exporter(exporter)
-        .build())
+    Some(
+        SdkMeterProvider::builder()
+            .with_periodic_exporter(exporter)
+            .build(),
+    )
 }
 
 pub async fn run_metrics_monitor(meter_id: String) -> Result<()> {
