@@ -2287,8 +2287,18 @@ impl Daemon {
                     )
                     .await;
 
+                let stop_sent = self
+                    .state
+                    .running
+                    .get(&dataflow_id)
+                    .map_or(false, |d| d.stop_sent);
+
                 let node_result = match exit_status {
                     NodeExitStatus::Success => Ok(()),
+                    // Exit code 143 (128 + SIGTERM) is the conventional exit code used by
+                    // processes that catch SIGTERM and exit explicitly (e.g. Python nodes).
+                    // When a stop was already requested for the dataflow, treat this as success.
+                    NodeExitStatus::ExitCode(143) if stop_sent => Ok(()),
                     exit_status => {
                         // Extract all needed info from the dataflow Ref in one shot
                         let (caused_by_node, grace_duration_kill, stderr_lines) =
