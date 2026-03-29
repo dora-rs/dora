@@ -86,7 +86,7 @@ pub struct Build {
     // Run build on local machine
     #[clap(long, action)]
     local: bool,
-    /// Build mode: `sequential` or `parallel`. Defaults to `sequential` for backward compatibility
+    /// Build mode sequential or parallel. Defaults to sequential
     #[clap(long, value_enum, default_value_t = BuildMode::Sequential)]
     mode: BuildMode,
 }
