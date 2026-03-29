@@ -173,7 +173,10 @@ impl PyEvent {
     fn value(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
         match &self.event {
             MergedEvent::Adora(Event::Input { data, .. }) => {
-                // TODO: Does this call leak data?&
+                // Ownership transfer: to_data() clones buffer Arcs, to_pyarrow()
+                // creates an FFI_ArrowArray with a release callback. PyArrow's
+                // _import_from_c takes ownership and calls release when the Python
+                // object is GC'd, which drops the cloned Arcs. No leak.
                 let array_data = data.to_data().to_pyarrow(py)?.unbind();
                 Ok(Some(array_data))
             }
