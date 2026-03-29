@@ -1,39 +1,89 @@
 # Python Dataflow Example
 
-This examples shows how to create and connect dora nodes in Python.
+This example shows how to create and connect dora nodes in Python. It is a good starting point for understanding
+how data flows between nodes in a dora application.
 
 ## Overview
 
-The [`dataflow.yml`](./dataflow.yml) defines a simple dataflow graph with the following three nodes:
+The [`dataflow.yml`](./dataflow.yml) defines a simple dataflow graph with three nodes:
 
-- a webcam node, that connects to your webcam and feed the dataflow with webcam frame as jpeg compressed bytearray.
-- a window plotting node, that will retrieve the webcam image and plot it.
+- **sender** — sends 100 integer messages (0 to 99), one every 100ms, then exits.
+- **transformer** — receives each integer and produces a struct with three fields: the value doubled, a string label, and an even/odd flag.
+- **receiver** — receives both the raw integer from `sender` and the transformed struct from `transformer`, and logs them.
 
-The same dataflow is implemented for a `dynamic-node` in [`dataflow_dynamic.yml`](./dataflow_dynamic.yml). It contains
-the same nodes as the previous dataflow, but the plot node is a dynamic node. See the next section for more
-information on how to start such a dataflow.
+```
+sender ──► transformer ──► receiver
+  │                            ▲
+  └────────────────────────────┘
+```
+
+Both `sender/message` and `transformer/transformed` are wired to `receiver` as separate inputs.
+
+### Dynamic node variant
+
+[`dataflow_dynamic.yml`](./dataflow_dynamic.yml) is a separate example that uses a webcam (`opencv-video-capture`)
+and a dynamic plot node (`opencv-plot`). It requires a connected webcam. See the
+[Getting started (dynamic)](#getting-started-dynamic-node) section below.
 
 ## Getting started
 
-After installing Rust, `dora-cli` and `uv` (if you installed the cli without pip), you will need to install the dependencies:
+After installing `dora-cli` and `uv`, install the Python node API and build the dataflow:
 
 ```bash
 cd examples/python-dataflow
 uv pip install -e ../../apis/python/node --reinstall
-dora build ./dataflow.yml --uv (or dora build ./dataflow_dynamic.yml --uv)
+dora build ./dataflow.yml --uv
 ```
 
-It will install the required dependencies for the Python nodes.
-
-Then you can run the dataflow:
+Then run the dataflow:
 
 ```bash
-dora run ./dataflow.yml --uv (or dora start ./dataflow_dynamic.yml --uv)
+dora run ./dataflow.yml --uv
 ```
 
-**Note**: if you're running the dynamic dataflow, you will need to start manually the opencv-plot node:
+The dataflow runs until `sender` finishes sending all 100 messages and the nodes receive a `STOP` event.
+Logs are written to `out/<session-id>/log_<node>.txt`.
+
+## Expected output
+
+**sender** (log_sender.txt):
+```
+INFO Sent message 0
+INFO Sent message 1
+...
+INFO Sent message 99
+INFO Sender finished
+```
+
+**transformer** (log_transformer.txt):
+```
+INFO Transformed message 0 -> struct with doubled=0
+INFO Transformed message 1 -> struct with doubled=2
+INFO Transformed message 2 -> struct with doubled=4
+...
+```
+
+**receiver** (log_receiver.txt):
+```
+INFO Received message: [0]
+INFO Received transformed: [{'doubled': 0, 'description': 'Message #0', 'is_even': True}]
+INFO Received message: [1]
+INFO Received transformed: [{'doubled': 2, 'description': 'Message #1', 'is_even': False}]
+...
+```
+
+## Getting started (dynamic node)
+
+`dataflow_dynamic.yml` requires a webcam. Build and start it with:
 
 ```bash
-# activate your virtual environment in another terminal
-python opencv-plot --uv
+dora build ./dataflow_dynamic.yml --uv
+dora start ./dataflow_dynamic.yml --uv
+```
+
+Then manually start the `opencv-plot` dynamic node in a second terminal:
+
+```bash
+# Make sure your virtual environment is activated
+python -m opencv_plot
 ```
