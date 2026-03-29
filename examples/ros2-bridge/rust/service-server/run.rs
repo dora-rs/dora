@@ -1,4 +1,4 @@
-use dora_cli::{build, run};
+use dora_cli::{build, run, BuildMode};
 use eyre::Context;
 use std::{path::Path, sync::mpsc};
 use tokio;
@@ -10,7 +10,7 @@ fn main() -> eyre::Result<()> {
     std::env::set_current_dir(root.join("../../../").join(file!()).parent().unwrap())
         .wrap_err("failed to set working dir")?;
 
-    build("dataflow.yml".to_string(), None, None, false, true)?;
+    build("dataflow.yml".to_string(), None, None, false, true, BuildMode::Sequential)?;
 
     let (finish_tx, finish_rx) = mpsc::channel();
     let dataflow_task = std::thread::spawn(move || {
