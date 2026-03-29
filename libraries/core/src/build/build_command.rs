@@ -494,7 +494,15 @@ mod tests {
                 .expect("interpreter should have parent"),
         )
         .expect("failed to create fake env dir");
-        std::fs::write(&interpreter, b"").expect("failed to create fake interpreter");
+        let stub_source = temp_root.join("fake_python.rs");
+        std::fs::write(&stub_source, "fn main() {}\n").expect("failed to write fake interpreter");
+        let status = std::process::Command::new("rustc")
+            .arg(&stub_source)
+            .arg("-o")
+            .arg(&interpreter)
+            .status()
+            .expect("failed to run rustc for fake interpreter");
+        assert!(status.success(), "failed to compile fake interpreter");
 
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         prepare_managed_python_env(&working_dir, &env_dir, &None, tx)
