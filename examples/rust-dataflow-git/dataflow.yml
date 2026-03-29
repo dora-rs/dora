@@ -2,7 +2,7 @@ nodes:
   - id: rust-node
     git: https://github.com/dora-rs/dora.git
     # FIXME: update to a release tag once the zenoh SHM changes are released
-    rev: 0dc4f6e0
+    rev: a2ae6bdb
     build: cargo build -p rust-dataflow-example-node
     path: target/debug/rust-dataflow-example-node
     inputs:
@@ -13,7 +13,7 @@ nodes:
   - id: rust-status-node
     git: https://github.com/dora-rs/dora.git
     # FIXME: update to a release tag once the zenoh SHM changes are released
-    rev: 0dc4f6e0
+    rev: a2ae6bdb
     build: cargo build -p rust-dataflow-example-status-node
     path: target/debug/rust-dataflow-example-status-node
     inputs:
@@ -25,7 +25,7 @@ nodes:
   - id: rust-sink
     git: https://github.com/dora-rs/dora.git
     # FIXME: update to a release tag once the zenoh SHM changes are released
-    rev: 0dc4f6e0
+    rev: a2ae6bdb
     build: cargo build -p rust-dataflow-example-sink
     path: target/debug/rust-dataflow-example-sink
     inputs:
