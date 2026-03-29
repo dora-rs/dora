@@ -1,13 +1,13 @@
 use std::{
     collections::BTreeMap,
-    io::Write,
+    fs::OpenOptions,
     path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 use dora_core::build::BuildInfo;
 use dora_message::{BuildId, SessionId, common::GitSource, id::NodeId};
 use eyre::{Context, ContextCompat};
+use fs2::FileExt;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct DataflowSession {
@@ -34,23 +34,33 @@ impl Default for DataflowSession {
 impl DataflowSession {
     pub fn read_session(dataflow_path: &Path) -> eyre::Result<Self> {
         let session_file = session_file_path(dataflow_path)?;
-        if session_file.exists() {
-            return deserialize(&session_file).wrap_err_with(|| {
-                format!(
-                    "failed to parse existing dataflow session at `{}`; \
-remove or fix the file and run `dora build` to regenerate it",
-                    session_file.display()
-                )
-            });
-        }
+        with_session_file_lock(&session_file, || {
+            if session_file.exists() {
+                match deserialize(&session_file) {
+                    Ok(parsed) => return Ok(parsed),
+                    Err(err) => {
+                        tracing::warn!(
+                            "failed to parse dataflow session at `{}` ({err:#}); regenerating",
+                            session_file.display()
+                        );
+                    }
+                }
+            }
 
-        let default_session = DataflowSession::default();
-        default_session.write_out_for_dataflow(dataflow_path)?;
-        Ok(default_session)
+            let default_session = DataflowSession::default();
+            default_session.write_out_for_session_file(&session_file)?;
+            Ok(default_session)
+        })
     }
 
     pub fn write_out_for_dataflow(&self, dataflow_path: &Path) -> eyre::Result<()> {
         let session_file = session_file_path(dataflow_path)?;
+        with_session_file_lock(&session_file, || {
+            self.write_out_for_session_file(&session_file)
+        })
+    }
+
+    fn write_out_for_session_file(&self, session_file: &Path) -> eyre::Result<()> {
         let filename = session_file
             .file_name()
             .context("session file has no file name")?
@@ -59,8 +69,8 @@ remove or fix the file and run `dora build` to regenerate it",
         if let Some(parent) = session_file.parent() {
             std::fs::create_dir_all(parent).context("failed to create out dir")?;
         }
-        write_atomic(&session_file, self.serialize()?.as_bytes())
-            .context("failed to write dataflow session file atomically")?;
+        std::fs::write(session_file, self.serialize()?)
+            .context("failed to write dataflow session file")?;
         let gitignore = session_file.with_file_name(".gitignore");
         if gitignore.exists() {
             let existing =
@@ -92,67 +102,42 @@ fn deserialize(session_file: &Path) -> eyre::Result<DataflowSession> {
         })
 }
 
-fn write_atomic(path: &Path, bytes: &[u8]) -> eyre::Result<()> {
-    let parent = path
-        .parent()
-        .context("output path has no parent directory")?;
-    let filename = path
-        .file_name()
-        .context("output path has no file name")?
-        .to_string_lossy();
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let tmp_path = parent.join(format!(".{filename}.{nanos}.tmp"));
-
-    let write_result = (|| -> eyre::Result<()> {
-        let mut tmp_file = std::fs::OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&tmp_path)
-            .with_context(|| format!("failed to create temporary file `{}`", tmp_path.display()))?;
-        tmp_file
-            .write_all(bytes)
-            .with_context(|| format!("failed to write temporary file `{}`", tmp_path.display()))?;
-        tmp_file
-            .sync_all()
-            .with_context(|| format!("failed to sync temporary file `{}`", tmp_path.display()))?;
-        drop(tmp_file);
-
-        if let Err(err) = std::fs::rename(&tmp_path, path) {
-            if err.kind() == std::io::ErrorKind::AlreadyExists {
-                std::fs::remove_file(path).with_context(|| {
-                    format!(
-                        "failed to replace existing output file `{}`",
-                        path.display()
-                    )
-                })?;
-                std::fs::rename(&tmp_path, path).with_context(|| {
-                    format!(
-                        "failed to move temporary file `{}` to `{}`",
-                        tmp_path.display(),
-                        path.display()
-                    )
-                })?;
-            } else {
-                return Err(err).with_context(|| {
-                    format!(
-                        "failed to move temporary file `{}` to `{}`",
-                        tmp_path.display(),
-                        path.display()
-                    )
-                });
-            }
-        }
-
-        Ok(())
-    })();
-
-    if write_result.is_err() {
-        let _ = std::fs::remove_file(&tmp_path);
+fn with_session_file_lock<T>(
+    session_file: &Path,
+    f: impl FnOnce() -> eyre::Result<T>,
+) -> eyre::Result<T> {
+    let lock_file = session_lock_file_path(session_file)?;
+    if let Some(parent) = lock_file.parent() {
+        std::fs::create_dir_all(parent).context("failed to create out dir")?;
     }
-    write_result
+
+    let lock = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(&lock_file)
+        .with_context(|| format!("failed to open session lock file `{}`", lock_file.display()))?;
+
+    lock.lock_exclusive()
+        .with_context(|| format!("failed to lock session lock file `{}`", lock_file.display()))?;
+
+    let result = f();
+    lock.unlock().with_context(|| {
+        format!(
+            "failed to unlock session lock file `{}`",
+            lock_file.display()
+        )
+    })?;
+    result
+}
+
+fn session_lock_file_path(session_file: &Path) -> eyre::Result<PathBuf> {
+    let file_name = session_file
+        .file_name()
+        .wrap_err("session path has no file name")?
+        .to_str()
+        .wrap_err("session file name is not valid utf-8")?;
+    Ok(session_file.with_file_name(format!("{file_name}.lock")))
 }
 
 fn session_file_path(dataflow_path: &Path) -> eyre::Result<PathBuf> {
@@ -205,7 +190,7 @@ mod tests {
     }
 
     #[test]
-    fn read_session_errors_on_invalid_yaml() {
+    fn read_session_regenerates_on_invalid_yaml() {
         let root = test_root();
         let dataflow_path = test_dataflow_path(&root);
         let session_file = session_file_for(&dataflow_path);
@@ -217,28 +202,26 @@ mod tests {
         .expect("failed to create out dir");
         fs::write(&session_file, "session_id: [\n").expect("failed to write invalid session file");
 
-        let result = DataflowSession::read_session(&dataflow_path);
+        let result = DataflowSession::read_session(&dataflow_path)
+            .expect("invalid yaml should be replaced with a default session");
 
-        let err = result.expect_err("invalid yaml must fail instead of regenerating");
-        let msg = format!("{err:#}");
-        assert!(
-            msg.contains("failed to parse existing dataflow session"),
-            "error should explain parse failure, got: {msg}"
-        );
-        assert!(
-            msg.contains("run `dora build`"),
-            "error should contain recovery guidance, got: {msg}"
-        );
+        assert!(result.build_id.is_none());
+        assert!(result.git_sources.is_empty());
+        assert!(result.local_build.is_none());
 
         let after = fs::read_to_string(&session_file).expect("failed to read session file");
-        assert_eq!(
+        assert!(
+            after.contains("session_id:"),
+            "session file should be regenerated"
+        );
+        assert_ne!(
             after, "session_id: [\n",
-            "invalid session file should not be silently overwritten"
+            "invalid session file must be replaced"
         );
     }
 
     #[test]
-    fn read_session_errors_on_truncated_yaml() {
+    fn read_session_regenerates_on_truncated_yaml() {
         let root = test_root();
         let dataflow_path = test_dataflow_path(&root);
         let session_file = session_file_for(&dataflow_path);
@@ -254,19 +237,21 @@ mod tests {
         )
         .expect("failed to write truncated session file");
 
-        let result = DataflowSession::read_session(&dataflow_path);
+        let result = DataflowSession::read_session(&dataflow_path)
+            .expect("truncated yaml should be replaced with a default session");
 
-        let err = result.expect_err("truncated yaml must fail instead of regenerating");
-        let msg = format!("{err:#}");
-        assert!(
-            msg.contains("failed to parse existing dataflow session"),
-            "error should explain parse failure, got: {msg}"
-        );
+        assert!(result.build_id.is_none());
+        assert!(result.git_sources.is_empty());
+        assert!(result.local_build.is_none());
 
         let after = fs::read_to_string(&session_file).expect("failed to read session file");
         assert!(
-            after.contains("session_id"),
-            "truncated session file should stay unchanged"
+            after.contains("session_id:"),
+            "session file should be regenerated"
+        );
+        assert!(
+            !after.contains("git_sources: ["),
+            "broken/truncated session content should be replaced"
         );
     }
 

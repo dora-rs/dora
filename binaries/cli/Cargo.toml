@@ -26,6 +26,7 @@ arrow-schema = { workspace = true }
 clap = { version = "4.0.3", features = ["derive", "string"] }
 clap_complete = "4.5.61"
 eyre = "0.6.8"
+fs2 = "0.4.3"
 dora-core = { workspace = true, features = ["zenoh"] }
 dora-message = { workspace = true }
 dora-node-api-c = { workspace = true }
