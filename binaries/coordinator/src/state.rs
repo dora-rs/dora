@@ -14,6 +14,7 @@ use crate::{
 
 pub struct CoordinatorState {
     pub clock: Arc<HLC>,
+    pub zenoh_session: Arc<zenoh::Session>,
     pub running_builds: DashMap<BuildId, RunningBuild>,
     pub finished_builds: DashMap<BuildId, CachedResult<BuildFinishedResult>>,
     pub running_dataflows: DashMap<DataflowId, RunningDataflow>,

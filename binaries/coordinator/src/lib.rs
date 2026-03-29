@@ -6,6 +6,7 @@ use dashmap::{
 use dora_core::{
     config::{NodeId, OperatorId},
     descriptor::DescriptorExt,
+    topics::open_zenoh_session,
     uhlc::{self, HLC},
 };
 use dora_message::{
@@ -135,6 +136,13 @@ async fn init_coordinator(
 )> {
     use tokio_stream::wrappers::TcpListenerStream;
 
+    let zenoh_session = Arc::new(
+        open_zenoh_session(Some(bind.ip()))
+            .await
+            .wrap_err("failed to open Zenoh session for coordinator")?,
+    );
+    tracing::info!("coordinator Zenoh peer ID: {}", zenoh_session.zid());
+
     let daemon_listener = listener::create_listener(bind).await?;
     let daemon_port = daemon_listener
         .local_addr()
@@ -162,6 +170,7 @@ async fn init_coordinator(
     let (daemon_events_tx, daemon_events) = tokio::sync::mpsc::channel(100);
     let coordinator_state = Arc::new(state::CoordinatorState {
         clock: Arc::new(HLC::default()),
+        zenoh_session,
         running_builds: Default::default(),
         finished_builds: Default::default(),
         running_dataflows: Default::default(),
