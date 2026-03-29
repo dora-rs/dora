@@ -108,6 +108,7 @@ jobs:
     timeout-minutes: 90
     env:
       DORA_SHM_REQUIRED: "1"
+      DORA_NODE_SHM_POOL_SIZE: "2097152"
     steps:
       - uses: actions/checkout@v3
       - uses: r7kamura/rust-problem-matchers@v1.1.0
@@ -242,6 +243,7 @@ jobs:
     timeout-minutes: 45
     env:
       DORA_SHM_REQUIRED: "1"
+      DORA_NODE_SHM_POOL_SIZE: "2097152"
     steps:
       - uses: actions/checkout@v3
       - uses: r7kamura/rust-problem-matchers@v1.1.0
@@ -335,6 +337,7 @@ jobs:
     timeout-minutes: 60
     env:
       DORA_SHM_REQUIRED: "1"
+      DORA_NODE_SHM_POOL_SIZE: "2097152"
     steps:
       - uses: actions/checkout@v3
       - uses: r7kamura/rust-problem-matchers@v1.1.0
@@ -363,6 +366,7 @@ jobs:
     timeout-minutes: 60
     env:
       DORA_SHM_REQUIRED: "1"
+      DORA_NODE_SHM_POOL_SIZE: "2097152"
     steps:
       - uses: actions/checkout@v3
       - uses: r7kamura/rust-problem-matchers@v1.1.0
