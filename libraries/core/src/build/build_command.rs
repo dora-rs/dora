@@ -483,14 +483,17 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time should be after unix epoch")
             .as_nanos();
-        let temp_root =
-            std::env::temp_dir().join(format!("dora-managed-python-env-test-{unique}"));
+        let temp_root = std::env::temp_dir().join(format!("dora-managed-python-env-test-{unique}"));
         let working_dir = temp_root.join("workdir");
         let env_dir = temp_root.join("env");
         let interpreter = managed_python_interpreter(&env_dir);
 
-        std::fs::create_dir_all(interpreter.parent().expect("interpreter should have parent"))
-            .expect("failed to create fake env dir");
+        std::fs::create_dir_all(
+            interpreter
+                .parent()
+                .expect("interpreter should have parent"),
+        )
+        .expect("failed to create fake env dir");
         std::fs::write(&interpreter, b"").expect("failed to create fake interpreter");
 
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
@@ -499,7 +502,10 @@ mod tests {
             .expect("existing interpreter should be reused without error");
 
         assert!(interpreter.is_file());
-        assert!(rx.try_recv().is_err(), "reused env should not emit build output");
+        assert!(
+            rx.try_recv().is_err(),
+            "reused env should not emit build output"
+        );
 
         let _ = std::fs::remove_dir_all(&temp_root);
     }
