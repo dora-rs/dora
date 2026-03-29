@@ -1,4 +1,4 @@
-use dora_cli::{build, run, BuildMode};
+use dora_cli::{BuildMode, build, run};
 use eyre::Context;
 use std::path::Path;
 
@@ -14,7 +14,14 @@ fn main() -> eyre::Result<()> {
         "dataflow.yml".to_string()
     };
 
-    build(dataflow.clone(), None, None, false, true, BuildMode::Sequential)?;
+    build(
+        dataflow.clone(),
+        None,
+        None,
+        false,
+        true,
+        BuildMode::Sequential,
+    )?;
 
     run(dataflow, false)?;
 
