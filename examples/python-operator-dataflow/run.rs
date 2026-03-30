@@ -17,6 +17,7 @@ fn main() -> eyre::Result<()> {
         false,
         false,
         None,
+        false,
     )?;
 
     adora_run("dataflow.yml".to_string(), true)?;

@@ -14,13 +14,13 @@ use futures::{Stream, StreamExt};
 use futures_concurrency::stream::Merge as _;
 use pyo3::{
     prelude::*,
-    sync::GILOnceCell,
+    sync::PyOnceLock,
     types::{IntoPyDict, PyBool, PyDict, PyFloat, PyInt, PyList, PyModule, PyString, PyTuple},
 };
 use std::time::UNIX_EPOCH;
 
 /// Cached Python `datetime` module to avoid repeated `PyModule::import` on the hot path.
-static DATETIME_MODULE: GILOnceCell<Py<PyModule>> = GILOnceCell::new();
+static DATETIME_MODULE: PyOnceLock<Py<PyModule>> = PyOnceLock::new();
 
 fn datetime_module<'py>(py: Python<'py>) -> PyResult<&'py Bound<'py, PyModule>> {
     Ok(DATETIME_MODULE
@@ -249,9 +249,9 @@ pub fn pydict_to_metadata(dict: Option<Bound<'_, PyDict>>) -> Result<MetadataPar
                 parameters.insert(key, Parameter::ListString(list))
             } else {
                 // Check if it's a datetime.datetime object
-                let datetime_module =
+                let dt_module =
                     datetime_module(value.py()).context("Failed to import datetime module")?;
-                let datetime_class = datetime_module.getattr("datetime")?;
+                let datetime_class = dt_module.getattr("datetime")?;
 
                 if value.is_instance(datetime_class.as_ref())? {
                     // Extract timestamp using timestamp() method
@@ -310,9 +310,9 @@ pub fn metadata_to_pydict<'a>(
     // Get UTC timezone from Python's datetime module and create timezone-aware datetime
     // We use Python's datetime.fromtimestamp() to create a UTC-aware datetime object
     // This avoids float precision loss by using integer seconds and microseconds
-    let datetime_module = datetime_module(py).context("Failed to import datetime module")?;
-    let datetime_class = datetime_module.getattr("datetime")?;
-    let utc_timezone = datetime_module.getattr("timezone")?.getattr("utc")?;
+    let dt_module = datetime_module(py).context("Failed to import datetime module")?;
+    let datetime_class = dt_module.getattr("datetime")?;
+    let utc_timezone = dt_module.getattr("timezone")?.getattr("utc")?;
 
     // Create timezone-aware datetime using fromtimestamp
     // We compute total_seconds as float (required by fromtimestamp) but preserve
@@ -355,10 +355,9 @@ pub fn metadata_to_pydict<'a>(
                 let microseconds = dt.timestamp_subsec_micros();
 
                 // Get UTC timezone from Python's datetime module
-                let datetime_module =
-                    datetime_module(py).context("Failed to import datetime module")?;
-                let datetime_class = datetime_module.getattr("datetime")?;
-                let utc_timezone = datetime_module.getattr("timezone")?.getattr("utc")?;
+                let dt_module = datetime_module(py).context("Failed to import datetime module")?;
+                let datetime_class = dt_module.getattr("datetime")?;
+                let utc_timezone = dt_module.getattr("timezone")?.getattr("utc")?;
 
                 // Create timezone-aware datetime using fromtimestamp
                 let total_seconds = timestamp as f64 + microseconds as f64 / 1_000_000.0;

@@ -19,6 +19,7 @@ fn main() -> eyre::Result<()> {
         false,
         false,
         None,
+        false,
     )?;
 
     let dataflow_task = std::thread::spawn(|| {

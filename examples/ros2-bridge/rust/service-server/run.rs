@@ -20,6 +20,7 @@ fn main() -> eyre::Result<()> {
         false,
         false,
         None,
+        false,
     )?;
 
     let (finish_tx, finish_rx) = mpsc::channel();
