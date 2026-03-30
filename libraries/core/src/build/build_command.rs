@@ -53,8 +53,18 @@ pub async fn run_build_command(
             .spawn()
             .wrap_err_with(|| format!("failed to spawn `{build}`"))?;
 
-        let child_stdout = BufReader::new(child.stdout.take().expect("failed to take stdout"));
-        let child_stderr = BufReader::new(child.stderr.take().expect("failed to take stderr"));
+        let child_stdout = BufReader::new(
+            child
+                .stdout
+                .take()
+                .ok_or_else(|| eyre!("failed to capture stdout pipe from build command"))?,
+        );
+        let child_stderr = BufReader::new(
+            child
+                .stderr
+                .take()
+                .ok_or_else(|| eyre!("failed to capture stderr pipe from build command"))?,
+        );
         let stdout_tx = stdout_tx.clone();
 
         tokio::spawn(async move {
