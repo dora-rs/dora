@@ -273,6 +273,28 @@ impl EventStream {
         futures::executor::block_on(self.recv_async())
     }
 
+    /// Receives the next event directly from the underlying channel,
+    /// bypassing the scheduler. Used internally by `send_request` to
+    /// ensure service reply events are never held behind queued inputs.
+    pub(crate) fn recv_raw(&mut self) -> Option<Event> {
+        futures::executor::block_on(self.receiver.next()).map(Self::convert_event_item)
+    }
+
+    /// Like `recv_raw` but with a timeout. Returns `None` if no event
+    /// arrives within the given duration.
+    pub(crate) fn recv_raw_timeout(&mut self, timeout: Duration) -> Option<Event> {
+        use futures::future::Either;
+        use std::pin::pin;
+
+        let fut = async {
+            match select(Delay::new(timeout), pin!(self.receiver.next())).await {
+                Either::Left((_elapsed, _)) => None,
+                Either::Right((item, _)) => item.map(Self::convert_event_item),
+            }
+        };
+        futures::executor::block_on(fut)
+    }
+
     /// Receives the next incoming [`Event`] synchronously with a timeout.
     ///
     /// Blocks the thread until the next event arrives or the timeout is reached.

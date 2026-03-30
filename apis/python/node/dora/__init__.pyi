@@ -177,14 +177,14 @@ class Node:
         """
 
     def send_request(
-        self, service_name: str, data: pyarrow.Array, metadata: dict = None
+        self, service_name: str, data: pyarrow.Array, metadata: dict = None, timeout: float = None
     ) -> dict:
         """`send_request` sends a service request and blocks until the reply arrives.
 
         Returns a dict with 'value' (pyarrow.Array) and 'metadata' (dict).
-
+        If timeout (in seconds) is provided and expires, raises an error.
         ```python
-        reply = node.send_request("get_image", pa.array([]))
+        reply = node.send_request("get_image", pa.array([]), timeout=5.0)
         image = reply["value"]
         ```
         """

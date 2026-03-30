@@ -686,6 +686,7 @@ impl DoraNode {
         parameters: MetadataParameters,
         data: impl Array,
         events: &mut EventStream,
+        timeout: Option<Duration>,
     ) -> eyre::Result<ServiceReply> {
         let correlation_id = uuid::Uuid::now_v7().to_string();
         let mut params = parameters;
@@ -700,8 +701,20 @@ impl DoraNode {
 
         // block until a reply with a matching correlation ID arrives
         let reply_input_id = format!("__service_reply_{service_name}");
+        let deadline = timeout.map(|t| std::time::Instant::now() + t);
+
         loop {
-            match events.recv() {
+            let event = if let Some(deadline) = deadline {
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                if remaining.is_zero() {
+                    eyre::bail!("service request timed out waiting for reply");
+                }
+                events.recv_raw_timeout(remaining)
+            } else {
+                events.recv_raw()
+            };
+
+            match event {
                 Some(Event::Input { id, metadata, data })
                     if id.as_str() == reply_input_id =>
                 {
@@ -711,7 +724,6 @@ impl DoraNode {
                     if reply_corr.as_deref() == Some(&correlation_id) {
                         return Ok(ServiceReply { metadata, data });
                     }
-                    // stale reply from a timed-out request - discard
                 }
                 Some(Event::Stop(_)) => {
                     eyre::bail!("received Stop while waiting for service reply");
@@ -720,6 +732,9 @@ impl DoraNode {
                     events.buffer_event(other);
                 }
                 None => {
+                    if deadline.is_some() {
+                        eyre::bail!("service request timed out waiting for reply");
+                    }
                     eyre::bail!("event stream closed while waiting for service reply");
                 }
             }

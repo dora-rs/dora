@@ -456,15 +456,17 @@ impl Node {
     /// :type data: pyarrow.Array
     /// :type metadata: dict, optional
     /// :rtype: dict
-    #[pyo3(signature = (service_name, data, metadata=None))]
+    #[pyo3(signature = (service_name, data, metadata=None, timeout=None))]
     pub fn send_request(
         &self,
         service_name: String,
         data: PyObject,
         metadata: Option<Bound<'_, PyDict>>,
+        timeout: Option<f32>,
         py: Python,
     ) -> eyre::Result<Py<PyDict>> {
         let parameters = pydict_to_metadata(metadata)?;
+        let timeout_duration = timeout.map(Duration::from_secs_f32);
 
         let arrow_data = if let Ok(py_bytes) = data.downcast_bound::<PyBytes>(py) {
             arrow::array::make_array(
@@ -485,7 +487,7 @@ impl Node {
             let mut inner = self.events.inner.blocking_lock();
             match &mut *inner {
                 EventsInner::Dora(events) => {
-                    node.send_request(service_name_id, parameters, arrow_data, events)
+                    node.send_request(service_name_id, parameters, arrow_data, events, timeout_duration)
                 }
                 EventsInner::Merged(_) => {
                     eyre::bail!("send_request is not supported with merged external event streams")
