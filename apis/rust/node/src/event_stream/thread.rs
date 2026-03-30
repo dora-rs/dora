@@ -119,18 +119,21 @@ fn event_stream_loop(
             Ok(DaemonReply::Result(Err(err))) => {
                 let err = eyre!(err).wrap_err("error in incoming event");
                 tracing::error!("{err:?}");
+                // Back off to avoid spinning on persistent daemon errors
+                std::thread::sleep(Duration::from_millis(100));
                 continue;
             }
 
             Ok(other) => {
                 let err = eyre!("unexpected control reply: {other:?}");
                 tracing::warn!("{err:?}");
+                std::thread::sleep(Duration::from_millis(100));
                 continue;
             }
             Err(err) => {
-                let err = err.wrap_err("failed to receive incoming event");
-                tracing::warn!("{err:?}");
-                continue;
+                // Channel error means the daemon connection is broken.
+                // Break instead of retrying a dead connection.
+                break Err(err.wrap_err("daemon channel broken"));
             }
         };
         for Timestamped { inner, timestamp } in events {
