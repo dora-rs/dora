@@ -322,6 +322,39 @@ impl CoordinatorControl for CoordinatorControlServer {
         Ok(DataflowList(running))
     }
 
+    async fn clean(self, _context: Context) -> Result<DataflowList, String> {
+        let finished_failed: Vec<_> = self
+            .state
+            .dataflow_results
+            .iter()
+            .map(|r| {
+                let uuid = *r.key();
+                let name = self
+                    .state
+                    .archived_dataflows
+                    .remove(&uuid)
+                    .and_then(|(_, d)| d.name.clone());
+                let id = DataflowIdAndName { uuid, name };
+                let status = if r.value().values().all(|r| r.is_ok()) {
+                    DataflowStatus::Finished
+                } else {
+                    DataflowStatus::Failed
+                };
+                DataflowListEntry { id, status }
+            })
+            .collect();
+        for entry in &finished_failed {
+            self.state.dataflow_results.remove(&entry.id.uuid);
+        }
+        self.state.finished_builds.clear();
+
+        let sort_key = |e: &DataflowListEntry| (e.id.name.clone(), e.id.uuid);
+        let mut finished_failed = finished_failed;
+        finished_failed.sort_by_key(sort_key);
+
+        Ok(DataflowList(finished_failed))
+    }
+
     async fn info(self, _context: Context, dataflow_uuid: Uuid) -> Result<DataflowInfo, String> {
         if let Some(dataflow) = self.state.running_dataflows.get(&dataflow_uuid) {
             Ok(DataflowInfo {

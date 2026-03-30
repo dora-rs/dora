@@ -96,6 +96,7 @@ pub trait CoordinatorControl {
     ) -> Result<crate::common::LogsResponse>;
     async fn destroy() -> Result<()>;
     async fn list() -> Result<DataflowList>;
+    async fn clean() -> Result<DataflowList>;
     async fn info(dataflow_uuid: Uuid) -> Result<DataflowInfo>;
     async fn daemon_connected() -> Result<bool>;
     async fn connected_machines() -> Result<BTreeSet<DaemonId>>;
