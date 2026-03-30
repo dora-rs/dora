@@ -14,9 +14,19 @@ use futures::{Stream, StreamExt};
 use futures_concurrency::stream::Merge as _;
 use pyo3::{
     prelude::*,
+    sync::GILOnceCell,
     types::{IntoPyDict, PyBool, PyDict, PyFloat, PyInt, PyList, PyModule, PyString, PyTuple},
 };
 use std::time::UNIX_EPOCH;
+
+/// Cached Python `datetime` module to avoid repeated `PyModule::import` on the hot path.
+static DATETIME_MODULE: GILOnceCell<Py<PyModule>> = GILOnceCell::new();
+
+fn datetime_module<'py>(py: Python<'py>) -> PyResult<&'py Bound<'py, PyModule>> {
+    Ok(DATETIME_MODULE
+        .get_or_try_init(py, || PyModule::import(py, "datetime").map(|m| m.unbind()))?
+        .bind(py))
+}
 
 /// Adora Event
 pub struct PyEvent {
@@ -239,8 +249,8 @@ pub fn pydict_to_metadata(dict: Option<Bound<'_, PyDict>>) -> Result<MetadataPar
                 parameters.insert(key, Parameter::ListString(list))
             } else {
                 // Check if it's a datetime.datetime object
-                let datetime_module = PyModule::import(value.py(), "datetime")
-                    .context("Failed to import datetime module")?;
+                let datetime_module =
+                    datetime_module(value.py()).context("Failed to import datetime module")?;
                 let datetime_class = datetime_module.getattr("datetime")?;
 
                 if value.is_instance(datetime_class.as_ref())? {
@@ -300,8 +310,7 @@ pub fn metadata_to_pydict<'a>(
     // Get UTC timezone from Python's datetime module and create timezone-aware datetime
     // We use Python's datetime.fromtimestamp() to create a UTC-aware datetime object
     // This avoids float precision loss by using integer seconds and microseconds
-    let datetime_module =
-        PyModule::import(py, "datetime").context("Failed to import datetime module")?;
+    let datetime_module = datetime_module(py).context("Failed to import datetime module")?;
     let datetime_class = datetime_module.getattr("datetime")?;
     let utc_timezone = datetime_module.getattr("timezone")?.getattr("utc")?;
 
@@ -347,7 +356,7 @@ pub fn metadata_to_pydict<'a>(
 
                 // Get UTC timezone from Python's datetime module
                 let datetime_module =
-                    PyModule::import(py, "datetime").context("Failed to import datetime module")?;
+                    datetime_module(py).context("Failed to import datetime module")?;
                 let datetime_class = datetime_module.getattr("datetime")?;
                 let utc_timezone = datetime_module.getattr("timezone")?.getattr("utc")?;
 
