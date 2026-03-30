@@ -9,19 +9,12 @@ def main():
 
     for event in node:
         if event["type"] == "SERVICE_REQUEST":
-            request_data = event["value"]
-            request_value = request_data[0].as_py()
             requests_handled += 1
-
-            reply_value = request_value * 2
-            print(
-                f"[service-node] Request #{requests_handled}: "
-                f"received {request_value}, replying {reply_value}"
-            )
+            print(f"[service-node] Request #{requests_handled}: type={event['value'].type}")
 
             node.send_service_reply(
                 event["id"],
-                pa.array([reply_value], type=pa.int64()),
+                event["value"],
                 event["metadata"],
             )
         elif event["type"] == "STOP":

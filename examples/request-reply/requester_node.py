@@ -4,65 +4,62 @@ from dora import Node
 
 def main():
     node = Node()
-    counter = 0
     ticks = 0
-    total_rounds = 10
     all_passed = True
+    phase = "data_types"
     print("[requester-node] Starting up...")
 
     for event in node:
         if event["type"] == "INPUT":
             if event["id"] == "request_tick":
-                counter += 1
-                request_value = counter * 10
-                print(f"[requester-node] Sending request #{counter} with value: {request_value}")
-                print(f"[requester-node] Ticks buffered so far: {ticks}")
+                if phase == "data_types":
+                    phase = "buffering"
 
-                reply = node.send_request(
-                    "compute",
-                    pa.array([request_value], type=pa.int64()),
-                    timeout=5.0,
-                )
-                reply_value = reply["value"][0].as_py()
-                expected = request_value * 2
+                    print("[requester-node] --- Data type tests ---")
+                    test_cases = [
+                        ("int64", pa.array([10, 20, 30], type=pa.int64())),
+                        ("float64", pa.array([1.5, 2.7, 3.14], type=pa.float64())),
+                        ("uint8", pa.array([0, 127, 255], type=pa.uint8())),
+                        ("string", pa.array(["hello", "world"])),
+                        ("bool", pa.array([True, False, True])),
+                        ("int32", pa.array([42], type=pa.int32())),
+                        ("empty", pa.array([], type=pa.int64())),
+                    ]
 
-                if reply_value == expected:
-                    print(
-                        f"[requester-node] PASS -- Reply {reply_value} matches expected {expected}"
-                    )
-                else:
-                    print(
-                        f"[requester-node] FAIL -- Reply {reply_value} does NOT match expected {expected}"
-                    )
-                    all_passed = False
+                    for name, data in test_cases:
+                        try:
+                            reply = node.send_request("compute", data, timeout=5.0)
+                            if reply["value"] == data:
+                                print(f"[requester-node] PASS -- {name}")
+                            else:
+                                print(f"[requester-node] FAIL -- {name} mismatch")
+                                all_passed = False
+                        except Exception as e:
+                            print(f"[requester-node] FAIL -- {name}: {e}")
+                            all_passed = False
 
-                if counter >= total_rounds:
-                    print(f"[requester-node] --- Final results ---")
-                    print(f"[requester-node] Round-trips completed: {counter}/{total_rounds}")
+                elif phase == "buffering":
+                    phase = "done"
+
+                    print(f"[requester-node] --- Buffering test ---")
+                    print(f"[requester-node] Ticks buffered: {ticks}")
                     if ticks > 0:
-                        print(
-                            f"[requester-node] PASS -- {ticks} ticks buffered during blocking requests"
-                        )
+                        print(f"[requester-node] PASS -- {ticks} ticks not lost")
                     else:
-                        print(
-                            f"[requester-node] FAIL -- No ticks received, event buffering may be broken"
-                        )
+                        print(f"[requester-node] FAIL -- no ticks buffered")
                         all_passed = False
 
-                    # Test timeout: send a request with a short timeout
-                    # and no server to reply (service already handled all
-                    # requests but we send one more with a 1s timeout)
-                    print(f"[requester-node] Testing timeout (1s)...")
+                    print(f"[requester-node] --- Timeout test ---")
                     try:
                         node.send_request(
                             "nonexistent_service",
                             pa.array([0], type=pa.int64()),
                             timeout=1.0,
                         )
-                        print(f"[requester-node] FAIL -- Should have timed out")
+                        print(f"[requester-node] FAIL -- should have timed out")
                         all_passed = False
-                    except Exception as e:
-                        print(f"[requester-node] PASS -- Timed out as expected: {e}")
+                    except Exception:
+                        print(f"[requester-node] PASS -- timed out as expected")
 
                     if all_passed:
                         print(f"[requester-node] ALL TESTS PASSED")

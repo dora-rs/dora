@@ -1076,9 +1076,11 @@ impl Daemon {
 
         // build service mappings (request and reply channels)
         for node in nodes.values() {
-            let services = match &node.kind {
-                CoreNodeKind::Custom(n) => &n.run_config.services,
-                CoreNodeKind::Runtime(_) => continue, // TODO: operator services ( CURRENTLY ONLY CUSTOM NODES )
+            let services: Vec<(String, &ServiceEndpoint)> = match &node.kind {
+                CoreNodeKind::Custom(n) => n.run_config.services.iter().map(|(k, v)| (k.clone(), v)).collect(),
+                CoreNodeKind::Runtime(n) => n.operators.iter().flat_map(|op| {
+                    op.config.services.iter().map(move |(k, v)| (format!("{}/{k}", op.id), v))
+                }).collect(),
             };
             for (service_name, endpoint) in services {
                 if let ServiceEndpoint::Client { server } = endpoint {
@@ -2781,10 +2783,13 @@ fn node_inputs(node: &ResolvedNode) -> BTreeMap<DataId, Input> {
 
     // register synthetic inputs for service endpoints so that the daemon
     // creates receive channels for service request/reply messages
-    let services = match &node.kind {
-        CoreNodeKind::Custom(n) => &n.run_config.services,
-        CoreNodeKind::Runtime(_) => return inputs, // operator services handled separately
+    let services: Vec<(String, &ServiceEndpoint)> = match &node.kind {
+        CoreNodeKind::Custom(n) => n.run_config.services.iter().map(|(k, v)| (k.clone(), v)).collect(),
+        CoreNodeKind::Runtime(n) => n.operators.iter().flat_map(|op| {
+            op.config.services.iter().map(move |(k, v)| (format!("{}/{k}", op.id), v))
+        }).collect(),
     };
+    
     for (service_name, endpoint) in services {
         let synthetic_id = match endpoint {
             ServiceEndpoint::Server => {
@@ -3570,10 +3575,25 @@ trait CoreNodeKindExt {
 impl CoreNodeKindExt for CoreNodeKind {
     fn run_config(&self) -> NodeRunConfig {
         match self {
-            CoreNodeKind::Runtime(n) => NodeRunConfig {
-                inputs: runtime_node_inputs(n),
-                outputs: runtime_node_outputs(n),
-                services: BTreeMap::new(),
+            CoreNodeKind::Runtime(n) => {
+                let inputs = runtime_node_inputs(n);
+                let mut outputs = runtime_node_outputs(n);
+                let mut services = BTreeMap::new();
+                for operator in &n.operators {
+                    for (service_name, endpoint) in &operator.config.services {
+                        let prefixed_name = format!("{}/{service_name}", operator.id);
+                        services.insert(prefixed_name.clone(), endpoint.clone());
+                        match endpoint {
+                            ServiceEndpoint::Client { .. } => {
+                                outputs.insert(DataId::from(format!("__service_request_{prefixed_name}")));
+                            }
+                            ServiceEndpoint::Server => {
+                                outputs.insert(DataId::from(format!("__service_reply_{prefixed_name}")));
+                            }
+                        }
+                    }
+                }
+                NodeRunConfig { inputs, outputs, services }
             },
             CoreNodeKind::Custom(n) => {
                 let mut config = n.run_config.clone();
