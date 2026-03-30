@@ -169,6 +169,7 @@ impl Executable for Run {
             self.locked,
             self.write_lockfile,
             self.lockfile.clone(),
+            false, // sequential build for `adora run`
         )
         .context("failed to build dataflow before run")?;
         let dataflow_session = DataflowSession::read_session(&dataflow_path)

@@ -16,6 +16,7 @@ pub fn build_dataflow_locally(
     dataflow_session: &DataflowSession,
     working_dir: PathBuf,
     uv: bool,
+    parallel: bool,
 ) -> eyre::Result<BuildInfo> {
     let runtime = tokio::runtime::Runtime::new()?;
 
@@ -25,6 +26,7 @@ pub fn build_dataflow_locally(
         dataflow_session,
         working_dir,
         uv,
+        parallel,
     ))
 }
 
@@ -34,6 +36,7 @@ async fn build_dataflow(
     dataflow_session: &DataflowSession,
     base_working_dir: PathBuf,
     uv: bool,
+    parallel: bool,
 ) -> eyre::Result<BuildInfo> {
     let builder = Builder {
         session_id: dataflow_session.session_id,
@@ -47,7 +50,7 @@ async fn build_dataflow(
 
     let mut tasks = Vec::new();
 
-    // build nodes
+    // Resolve git sources and prepare build tasks (sequential due to &mut git_manager)
     for node in nodes.into_values() {
         let node_id = node.id.clone();
         let git_source = git_sources.get(&node_id).cloned();
@@ -76,13 +79,33 @@ async fn build_dataflow(
     let mut info = BuildInfo {
         node_working_dirs: Default::default(),
     };
-    for (node_id, task) in tasks {
-        let node = task
-            .await
-            .with_context(|| format!("failed to build node `{node_id}`"))?;
-        info.node_working_dirs
-            .insert(node_id, node.node_working_dir);
+
+    if parallel && tasks.len() > 1 {
+        tracing::info!("Building {} nodes in parallel", tasks.len());
+        let mut join_set = tokio::task::JoinSet::new();
+        for (node_id, task) in tasks {
+            join_set.spawn(async move {
+                let node = task.await?;
+                Ok::<_, eyre::Report>((node_id, node))
+            });
+        }
+        while let Some(result) = join_set.join_next().await {
+            let (node_id, node) = result
+                .context("build task panicked")?
+                .with_context(|| "node build failed")?;
+            info.node_working_dirs
+                .insert(node_id, node.node_working_dir);
+        }
+    } else {
+        for (node_id, task) in tasks {
+            let node = task
+                .await
+                .with_context(|| format!("failed to build node `{node_id}`"))?;
+            info.node_working_dirs
+                .insert(node_id, node.node_working_dir);
+        }
     }
+
     Ok(info)
 }
 

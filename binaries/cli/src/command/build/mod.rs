@@ -103,6 +103,9 @@ pub struct Build {
     /// Path to build lockfile (defaults to `<dataflow-stem>.adora-lock.yaml`).
     #[clap(long, value_name = "PATH")]
     lockfile: Option<PathBuf>,
+    /// Build nodes concurrently (faster on multi-core machines).
+    #[clap(long, action)]
+    parallel: bool,
 }
 
 impl Executable for Build {
@@ -118,6 +121,7 @@ impl Executable for Build {
             self.locked,
             self.write_lockfile,
             self.lockfile,
+            self.parallel,
         )
     }
 }
@@ -133,6 +137,7 @@ pub fn build(
     locked: bool,
     write_lockfile: bool,
     lockfile_override: Option<PathBuf>,
+    parallel: bool,
 ) -> eyre::Result<()> {
     let dataflow_path = resolve_dataflow(dataflow).context("could not resolve dataflow")?;
     if lockfile_override.is_some() && !(locked || write_lockfile) {
@@ -283,6 +288,7 @@ pub fn build(
                 &dataflow_session,
                 local_working_dir,
                 uv,
+                parallel,
             )?;
 
             dataflow_session.git_sources = git_sources;
