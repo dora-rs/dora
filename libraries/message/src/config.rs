@@ -231,7 +231,9 @@ pub struct CommunicationConfig {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum LocalCommunicationConfig {
+    #[serde(rename = "tcp")]
     Tcp,
+    #[serde(rename = "unixdomain")]
     UnixDomain,
 }
 
@@ -242,18 +244,32 @@ impl Default for LocalCommunicationConfig {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(deny_unknown_fields, rename_all = "lowercase")]
+#[serde(deny_unknown_fields)]
 pub enum RemoteCommunicationConfig {
+    #[serde(rename = "tcp")]
     Tcp,
-    // TODO:a
-    // Zenoh {
-    //     config: Option<serde_yaml::Value>,
-    //     prefix: String,
-    // },
 }
 
 impl Default for RemoteCommunicationConfig {
     fn default() -> Self {
         Self::Tcp
+    }
+}
+
+
+impl fmt::Display for LocalCommunicationConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            LocalCommunicationConfig::Tcp => write!(f, "tcp"),
+            LocalCommunicationConfig::UnixDomain => write!(f, "unixdomain"),
+        }
+    }
+}
+
+impl fmt::Display for RemoteCommunicationConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RemoteCommunicationConfig::Tcp => write!(f, "tcp"),
+        }
     }
 }
