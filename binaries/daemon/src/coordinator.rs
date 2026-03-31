@@ -173,10 +173,6 @@ impl DaemonControl for DaemonControlServer {
             uv,
         } = request;
 
-        match dataflow_descriptor.communication.remote {
-            dora_core::config::RemoteCommunicationConfig::Tcp => {}
-        }
-
         let base_working_dir =
             crate::Daemon::base_working_dir_static(local_working_dir, session_id)
                 .map_err(|err| format!("{err:?}"))?;
@@ -246,10 +242,6 @@ impl DaemonControl for DaemonControlServer {
             uv,
             write_events_to,
         } = request;
-
-        match dataflow_descriptor.communication.remote {
-            dora_core::config::RemoteCommunicationConfig::Tcp => {}
-        }
 
         // For spawn, we still route through the event loop because spawn_dataflow
         // needs mutable access to the logger and complex event loop integration.

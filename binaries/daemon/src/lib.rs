@@ -709,10 +709,6 @@ impl Daemon {
         uv: bool,
         write_events_to: Option<PathBuf>,
     ) -> Result<(), String> {
-        match dataflow_descriptor.communication.remote {
-            dora_core::config::RemoteCommunicationConfig::Tcp => {}
-        }
-
         // Resolve base working dir — for spawn we use the daemon's working dir
         let base_working_dir = match local_working_dir {
             Some(working_dir) => {
