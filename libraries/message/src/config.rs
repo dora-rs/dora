@@ -222,14 +222,9 @@ pub struct CommunicationConfig {
     pub local: LocalCommunicationConfig,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
 pub enum LocalCommunicationConfig {
+    #[default]
     Tcp,
     UnixDomain,
-}
-
-impl Default for LocalCommunicationConfig {
-    fn default() -> Self {
-        Self::Tcp
-    }
 }
