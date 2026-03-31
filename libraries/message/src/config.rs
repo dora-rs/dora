@@ -229,12 +229,28 @@ pub struct CommunicationConfig {
     pub remote: RemoteCommunicationConfig,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum LocalCommunicationConfig {
-    #[serde(rename = "tcp")]
     Tcp,
-    #[serde(rename = "unixdomain")]
     UnixDomain,
+}
+
+impl<'de> Deserialize<'de> for LocalCommunicationConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+
+        match value.as_str() {
+            "Tcp" | "tcp" => Ok(Self::Tcp),
+            "UnixDomain" | "unixdomain" => Ok(Self::UnixDomain),
+            other => Err(serde::de::Error::unknown_variant(
+                other,
+                &["Tcp", "tcp", "UnixDomain", "unixdomain"],
+            )),
+        }
+    }
 }
 
 impl Default for LocalCommunicationConfig {
@@ -243,11 +259,23 @@ impl Default for LocalCommunicationConfig {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Serialize, Clone)]
 pub enum RemoteCommunicationConfig {
-    #[serde(rename = "tcp")]
     Tcp,
+}
+
+impl<'de> Deserialize<'de> for RemoteCommunicationConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+
+        match value.as_str() {
+            "Tcp" | "tcp" => Ok(Self::Tcp),
+            other => Err(serde::de::Error::unknown_variant(other, &["Tcp", "tcp"])),
+        }
+    }
 }
 
 impl Default for RemoteCommunicationConfig {
