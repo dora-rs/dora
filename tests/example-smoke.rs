@@ -289,16 +289,6 @@ fn smoke_rust_dataflow_dynamic() {
 }
 
 #[test]
-fn smoke_rust_dataflow_socket() {
-    ensure_rust_nodes_built();
-    run_smoke_test(
-        "rust-dataflow-socket",
-        "examples/rust-dataflow/dataflow_socket.yml",
-        Duration::from_secs(30),
-    );
-}
-
-#[test]
 fn smoke_rust_dataflow_url() {
     ensure_rust_nodes_built();
     run_smoke_test(

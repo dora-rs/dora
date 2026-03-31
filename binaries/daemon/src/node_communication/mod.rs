@@ -22,8 +22,6 @@ use std::{
     },
     task::Poll,
 };
-#[cfg(unix)]
-use tokio::net::UnixListener;
 use tokio::{
     net::TcpListener,
     sync::{
@@ -35,8 +33,6 @@ use tokio::{
 // TODO unify and avoid duplication;
 pub mod shmem;
 pub mod tcp;
-#[cfg(unix)]
-pub mod unix_domain;
 
 pub fn current_millis() -> u64 {
     std::time::SystemTime::now()
@@ -189,46 +185,6 @@ pub async fn spawn_listener_loop(
                 daemon_drop_region_id,
                 daemon_events_close_region_id,
             })
-        }
-        #[cfg(unix)]
-        LocalCommunicationConfig::UnixDomain => {
-            use std::os::unix::fs::PermissionsExt;
-            use std::path::Path;
-            let tmpfile_dir = Path::new("/tmp");
-            let tmpfile_dir = tmpfile_dir.join(dataflow_id.to_string());
-            if !tmpfile_dir.exists() {
-                std::fs::create_dir_all(&tmpfile_dir).context("could not create tmp dir")?;
-            }
-            // Restrict directory to owner-only access
-            if let Err(e) =
-                std::fs::set_permissions(&tmpfile_dir, std::fs::Permissions::from_mode(0o700))
-            {
-                tracing::warn!(
-                    "failed to set permissions on {}: {e}",
-                    tmpfile_dir.display()
-                );
-            }
-            let socket_file = tmpfile_dir.join(format!("{node_id}.sock"));
-            let socket = match UnixListener::bind(&socket_file) {
-                Ok(socket) => socket,
-                Err(err) => {
-                    return Err(eyre::Report::new(err)
-                        .wrap_err("failed to create local Unix domain socket"));
-                }
-            };
-
-            let event_loop_node_id = format!("{dataflow_id}/{node_id}");
-            let daemon_tx = daemon_tx.clone();
-            tokio::spawn(async move {
-                unix_domain::listener_loop(socket, daemon_tx, clock, last_activity, shutdown).await;
-                tracing::debug!("event listener loop finished for `{event_loop_node_id}`");
-            });
-
-            Ok(DaemonCommunication::UnixDomain { socket_file })
-        }
-        #[cfg(not(unix))]
-        LocalCommunicationConfig::UnixDomain => {
-            eyre::bail!("Communication via UNIX domain sockets is only supported on UNIX systems")
         }
     }
 }

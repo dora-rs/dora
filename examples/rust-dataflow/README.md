@@ -23,7 +23,6 @@ timer (100ms) ---------------------------------->
 |------|-----------------|
 | `dataflow.yml` | Standard: shared memory IPC, pre-built local binaries |
 | `dataflow_dynamic.yml` | Dynamic sink: uses `path: dynamic` for runtime-discovered nodes, 100ms timer on source |
-| `dataflow_socket.yml` | Unix domain socket IPC: `communication._unstable_local: UnixDomain` instead of shared memory |
 
 ## Run
 
@@ -38,9 +37,6 @@ adora run dataflow.yml
 # Dynamic variant
 cargo build -p rust-dataflow-example-sink-dynamic
 adora run dataflow_dynamic.yml
-
-# Unix socket variant
-adora run dataflow_socket.yml
 ```
 
 ## What This Demonstrates
@@ -50,6 +46,5 @@ adora run dataflow_socket.yml
 | Multi-stage Rust pipeline | All three nodes |
 | Timer inputs (`millis/10`, `millis/100`) | YAML |
 | Shared memory IPC (default) | `dataflow.yml` |
-| Unix domain socket IPC | `dataflow_socket.yml` |
 | Dynamic node loading | `dataflow_dynamic.yml` |
 | `build:` for pre-run compilation | YAML |

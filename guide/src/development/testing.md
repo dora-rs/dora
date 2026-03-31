@@ -139,7 +139,6 @@ A bash script is also available for quick local validation:
 |------|---------|---------|
 | `smoke_rust_dataflow` | rust-dataflow/dataflow.yml | 30s |
 | `smoke_rust_dataflow_dynamic` | rust-dataflow/dataflow_dynamic.yml | 30s |
-| `smoke_rust_dataflow_socket` | rust-dataflow/dataflow_socket.yml | 30s |
 | `smoke_rust_dataflow_url` | rust-dataflow-url/dataflow.yml | 30s |
 | `smoke_benchmark` | benchmark/dataflow.yml | 30s |
 | `smoke_log_sink_file` | log-sink-file/dataflow.yml | 30s |

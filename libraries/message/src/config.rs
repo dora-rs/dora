@@ -403,7 +403,6 @@ pub enum LocalCommunicationConfig {
     #[default]
     Tcp,
     Shmem,
-    UnixDomain,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

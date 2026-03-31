@@ -8,8 +8,6 @@ use adora_message::{
 use eyre::{Context, bail, eyre};
 pub use node_integration_testing::IntegrationTestingEvents;
 use shared_memory_server::{ShmemClient, ShmemConf};
-#[cfg(unix)]
-use std::os::unix::net::UnixStream;
 use std::{
     net::{SocketAddr, TcpStream},
     time::Duration,
@@ -19,16 +17,12 @@ use tokio::sync::oneshot;
 mod interactive;
 pub(crate) mod node_integration_testing;
 mod tcp;
-#[cfg(unix)]
-mod unix_domain;
 
 mod json_to_arrow;
 
 pub enum DaemonChannel {
     Shmem(ShmemClient<Timestamped<DaemonRequest>, DaemonReply>),
     Tcp(TcpStream),
-    #[cfg(unix)]
-    UnixDomain(UnixStream),
     Interactive(InteractiveEvents),
     IntegrationTestChannel(
         tokio::sync::mpsc::Sender<(
@@ -59,13 +53,6 @@ impl DaemonChannel {
         Ok(channel)
     }
 
-    #[cfg(unix)]
-    #[tracing::instrument(level = "trace")]
-    pub fn new_unix_socket(path: &std::path::PathBuf) -> eyre::Result<Self> {
-        let stream = UnixStream::connect(path).wrap_err("failed to open Unix socket")?;
-        Ok(DaemonChannel::UnixDomain(stream))
-    }
-
     pub fn register(
         &mut self,
         dataflow_id: DataflowId,
@@ -93,8 +80,6 @@ impl DaemonChannel {
         match self {
             DaemonChannel::Shmem(client) => client.request(request),
             DaemonChannel::Tcp(stream) => tcp::request(stream, request),
-            #[cfg(unix)]
-            DaemonChannel::UnixDomain(stream) => unix_domain::request(stream, request),
             DaemonChannel::Interactive(events) => events.request(request),
             DaemonChannel::IntegrationTestChannel(channel) => {
                 let (reply_tx, reply) = oneshot::channel();

@@ -44,10 +44,6 @@ pub enum DaemonCommunication {
     Tcp {
         socket_addr: SocketAddr,
     },
-    #[cfg(unix)]
-    UnixDomain {
-        socket_file: PathBuf,
-    },
     Interactive,
 }
 

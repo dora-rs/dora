@@ -188,7 +188,6 @@ if [ "$RUN_RUST" = true ]; then
     echo "=== Rust examples (networked) ==="
     run_networked "rust-dataflow"         "examples/rust-dataflow/dataflow.yml"
     run_networked "rust-dataflow-dynamic" "examples/rust-dataflow/dataflow_dynamic.yml"
-    run_networked "rust-dataflow-socket"  "examples/rust-dataflow/dataflow_socket.yml"
     run_networked "rust-dataflow-url"     "examples/rust-dataflow-url/dataflow.yml"
     run_networked "benchmark"             "examples/benchmark/dataflow.yml"
 

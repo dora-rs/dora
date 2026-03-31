@@ -155,7 +155,7 @@ The daemon runs one per machine and manages the lifecycle of all nodes on that m
 
 **Node spawning:**
 1. Create working directory for the node
-2. Set up communication channel (TCP, shmem, or Unix domain socket)
+2. Set up communication channel (TCP or shmem)
 3. Serialize `NodeConfig` to environment variable
 4. Spawn process with sanitized environment (blocks `LD_PRELOAD`, `DYLD_INSERT_LIBRARIES`, etc.)
 5. Monitor via `ProcessHandle`
@@ -269,11 +269,6 @@ Three transport options, configured via `LocalCommunicationConfig`:
 - Four 4 KiB regions per node: control, events, drop tokens, events-close
 - Used for daemon-node control protocol
 - Atomic synchronization with acquire/release ordering
-
-**Unix Domain Socket** (Unix only):
-- Socket at `/tmp/{dataflow_id}/{node_id}.sock`
-- Permissions: `0o700`
-- Same bincode frame format as TCP
 
 **Node → Daemon requests:** `Register`, `Subscribe`, `SendMessage`, `CloseOutputs`, `OutputsDone`, `NextEvent`, `ReportDropTokens`, `SubscribeDrop`, `NodeConfig`.
 
