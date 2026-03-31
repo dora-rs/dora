@@ -349,15 +349,13 @@ fn ui(f: &mut Frame, app: &mut App, refresh_duration: Duration) {
         }
     };
 
-    let header_strings = vec![
-        format!("NODE{}", sort_indicator(SortColumn::Node)),
+    let header_strings = [format!("NODE{}", sort_indicator(SortColumn::Node)),
         "DATAFLOW".to_string(),
         "PID".to_string(),
         format!("CPU%{}", sort_indicator(SortColumn::Cpu)),
         format!("MEMORY (MB){}", sort_indicator(SortColumn::Memory)),
         "I/O READ (MB/s)".to_string(),
-        "I/O WRITE (MB/s)".to_string(),
-    ];
+        "I/O WRITE (MB/s)".to_string()];
 
     let header_cells = header_strings.iter().map(|h| {
         Cell::from(h.as_str()).style(

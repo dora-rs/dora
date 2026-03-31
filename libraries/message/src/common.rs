@@ -53,10 +53,10 @@ impl From<LogMessageHelper> for LogMessage {
                 .and_then(|id| Uuid::parse_str(&id).ok().map(BuildId))),
             dataflow_id: helper.dataflow_id.or(fields
                 .and_then(|f| f.get("dataflow_id").cloned())
-                .and_then(|id| Uuid::parse_str(&id).ok().map(DataflowId::from))),
+                .and_then(|id| Uuid::parse_str(&id).ok())),
             node_id: helper.node_id.or(fields
                 .and_then(|f| f.get("node_id").cloned())
-                .map(|id| NodeId(id))),
+                .map(NodeId)),
             daemon_id: helper.daemon_id.or(fields
                 .and_then(|f| f.get("daemon_id").cloned())
                 .and_then(|id| {
@@ -67,7 +67,7 @@ impl From<LogMessageHelper> for LogMessage {
                             uuid,
                         })
                     } else {
-                        Uuid::parse_str(&parts[0]).ok().map(|uuid| DaemonId {
+                        Uuid::parse_str(parts[0]).ok().map(|uuid| DaemonId {
                             machine_id: None,
                             uuid,
                         })

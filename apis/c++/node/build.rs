@@ -72,9 +72,9 @@ fn origin_dir() -> PathBuf {
 
 #[cfg(feature = "ros2-bridge")]
 mod ros2 {
-    use super::origin_dir;
+    
     use std::{
-        io::{BufRead, BufReader},
+        io::BufRead,
         path::{Component, Path, PathBuf},
     };
 
@@ -173,7 +173,7 @@ mod ros2 {
     }
 
     pub fn generate_ros2_message_header(target_path: &Path) {
-        use std::io::Write as _;
+        
 
         let default_target = std::env::var("CARGO_TARGET_DIR")
             .map(PathBuf::from)
@@ -185,7 +185,7 @@ mod ros2 {
                 root.join("target")
             });
         let out_dir_str = std::env::var("OUT_DIR").unwrap();
-        let out_dir = PathBuf::from(&out_dir_str);
+        let _out_dir = PathBuf::from(&out_dir_str);
         let relative_dir = PathBuf::from(out_dir_str.strip_prefix("/").unwrap());
         let header_path = default_target
             .join("cxxbridge")

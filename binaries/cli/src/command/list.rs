@@ -11,7 +11,7 @@ use dora_core::topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT;
 use dora_message::{
     cli_to_coordinator::CoordinatorControlClient, coordinator_to_cli::DataflowStatus, tarpc,
 };
-use eyre::{Context, eyre};
+use eyre::Context;
 use serde::Serialize;
 use tabwriter::TabWriter;
 use uuid::Uuid;
@@ -91,7 +91,7 @@ async fn list(
     for node_info in node_infos {
         let metrics = dataflow_metrics
             .entry(node_info.dataflow_id)
-            .or_insert_with(DataflowMetrics::default);
+            .or_default();
         metrics.node_count += 1;
 
         if let Some(node_metrics) = node_info.metrics {
@@ -182,7 +182,7 @@ async fn list(
         OutputFormat::Table => {
             let mut tw = TabWriter::new(std::io::stdout().lock());
             // Header
-            tw.write_all(format!("UUID\tName\tStatus\tNodes\tCPU\tMemory\n").as_bytes())?;
+            tw.write_all("UUID\tName\tStatus\tNodes\tCPU\tMemory\n".to_string().as_bytes())?;
             for entry in entries {
                 let status = match entry.status {
                     DataflowStatus::Running => "Running",
