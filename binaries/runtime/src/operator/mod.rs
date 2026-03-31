@@ -86,6 +86,7 @@ pub enum OperatorEvent {
     },
     ServiceReply {
         service_name: DataId,
+        type_info: ArrowTypeInfo,
         parameters: MetadataParameters,
         data: Option<DataSample>,
     },

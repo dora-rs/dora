@@ -1,5 +1,5 @@
 use dora_core::{
-    config::{NodeId, DataId},
+    config::{DataId, NodeId},
     uhlc::{self, Timestamp},
 };
 use dora_message::{

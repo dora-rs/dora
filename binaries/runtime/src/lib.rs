@@ -231,8 +231,23 @@ async fn run(
                         .wrap_err("failed to wait for send_output task")?;
                         result.wrap_err("failed to send node output")?;
                     }
-                    OperatorEvent::ServiceReply { .. } => {
-                        // TODO: implement operator service reply forwarding later, gonna test first
+                    OperatorEvent::ServiceReply {
+                        service_name,
+                        type_info,
+                        parameters,
+                        data,
+                    } => {
+                        let output_id =
+                            DataId::from(format!("__service_reply_{operator_id}/{service_name}"));
+                        let result;
+                        (node, result) = tokio::task::spawn_blocking(move || {
+                            let result =
+                                node.send_output_sample(output_id, type_info, parameters, data);
+                            (node, result)
+                        })
+                        .await
+                        .wrap_err("failed to wait for send_service_reply task")?;
+                        result.wrap_err("failed to send operator service reply")?;
                     }
                 }
             }
@@ -332,9 +347,7 @@ async fn run(
                 let service_name = DataId::from(service_name.to_owned());
 
                 let Some(operator_channel) = operator_channels.get(&operator_id) else {
-                    tracing::warn!(
-                        "received service request for unknown operator `{operator_id}`"
-                    );
+                    tracing::warn!("received service request for unknown operator `{operator_id}`");
                     continue;
                 };
                 if let Err(err) = operator_channel

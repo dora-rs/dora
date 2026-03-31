@@ -296,8 +296,7 @@ impl Listener {
                 data,
             } => {
                 // route via the synthetic __service_reply_ output channel
-                let output_id =
-                    DataId::from(format!("__service_reply_{}", service_name.as_str()));
+                let output_id = DataId::from(format!("__service_reply_{}", service_name.as_str()));
                 let event = crate::DaemonNodeEvent::SendOut {
                     output_id,
                     metadata,

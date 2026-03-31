@@ -560,7 +560,7 @@ impl EventStream {
                         },
                         Err(err) => Event::Error(format!("{err:?}")),
                     }
-                },
+                }
                 NodeEvent::AllInputsClosed => Event::Stop(event::StopCause::AllInputsClosed),
                 NodeEvent::ServiceRequest { id, metadata, data } => {
                     let data = data_to_arrow_array(data, &metadata, ack_channel);
@@ -572,7 +572,7 @@ impl EventStream {
                         },
                         Err(err) => Event::Error(format!("{err:?}")),
                     }
-                },
+                }
             },
 
             EventItem::FatalError(err) => {

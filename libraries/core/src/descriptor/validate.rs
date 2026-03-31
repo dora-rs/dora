@@ -4,6 +4,7 @@ use crate::{
     get_python_path,
 };
 
+use dora_message::descriptor::ServiceEndpoint;
 use dora_message::{
     config::{Input, InputMapping, UserInputMapping},
     descriptor::{CoreNodeKind, DYNAMIC_SOURCE, OperatorSource, ResolvedNode, SHELL_SOURCE},
@@ -12,7 +13,6 @@ use dora_message::{
 use eyre::{Context, bail, eyre};
 use std::{collections::BTreeMap, path::Path, process::Command, time::Duration};
 use tracing::info;
-use dora_message::descriptor::ServiceEndpoint;
 
 use super::{Descriptor, DescriptorExt, resolve_path};
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -182,7 +182,27 @@ pub fn check_dataflow(
                     ));
                     continue;
                 };
-                match server_node.services.get(server_service_name) {
+                let found = server_node.services.get(server_service_name).or_else(|| {
+                    // Check operator services for runtime nodes
+                    let (op_id, svc_name) = server_service_name.split_once('/')?;
+                    // Check `operators` field (multiple operators)
+                    if let Some(runtime) = &server_node.operators {
+                        for op in &runtime.operators {
+                            if op.id.as_ref() == op_id {
+                                return op.config.services.get(svc_name);
+                            }
+                        }
+                    }
+                    // Check `operator` field (single operator)
+                    if let Some(op) = &server_node.operator {
+                        let id = op.id.as_ref().map(|i| i.as_ref()).unwrap_or("op");
+                        if id == op_id {
+                            return op.config.services.get(svc_name);
+                        }
+                    }
+                    None
+                });
+                match found {
                     Some(ServiceEndpoint::Server) => {} // valid
                     Some(ServiceEndpoint::Client { .. }) => {
                         errors.push(format!(

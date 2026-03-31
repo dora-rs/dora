@@ -6,14 +6,16 @@ use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use tokio::sync::Mutex;
 
-use arrow::pyarrow::{FromPyArrow, ToPyArrow};
 use arrow::array::Array;
+use arrow::pyarrow::{FromPyArrow, ToPyArrow};
 use dora_download::download_file;
 use dora_node_api::dora_core::config::{DataId, NodeId};
 use dora_node_api::dora_core::descriptor::source_is_url;
 use dora_node_api::merged::{MergeExternalSend, MergedEvent};
 use dora_node_api::{DataflowId, DoraNode, EventStream, TryRecvError, init_tracing};
-use dora_operator_api_python::{DelayedCleanup, NodeCleanupHandle, PyEvent, pydict_to_metadata, metadata_to_pydict};
+use dora_operator_api_python::{
+    DelayedCleanup, NodeCleanupHandle, PyEvent, metadata_to_pydict, pydict_to_metadata,
+};
 use dora_ros2_bridge_python::Ros2Subscription;
 use eyre::{Context, ContextCompat};
 
@@ -419,9 +421,7 @@ impl Node {
                 .get_mut()
                 .send_service_reply(service_name.into(), parameters, array)
                 .wrap_err("failed to send service reply")?;
-        } else if let Ok(arrow_array) =
-            arrow::array::ArrayData::from_pyarrow_bound(data.bind(py))
-        {
+        } else if let Ok(arrow_array) = arrow::array::ArrayData::from_pyarrow_bound(data.bind(py)) {
             self.node.get_mut().send_service_reply(
                 service_name.into(),
                 parameters,
@@ -472,9 +472,7 @@ impl Node {
             arrow::array::make_array(
                 arrow::array::UInt8Array::from(py_bytes.as_bytes().to_vec()).to_data(),
             )
-        } else if let Ok(arrow_array) =
-            arrow::array::ArrayData::from_pyarrow_bound(data.bind(py))
-        {
+        } else if let Ok(arrow_array) = arrow::array::ArrayData::from_pyarrow_bound(data.bind(py)) {
             arrow::array::make_array(arrow_array)
         } else {
             eyre::bail!("invalid `data` type, must be `PyBytes` or arrow array")
@@ -486,9 +484,13 @@ impl Node {
             let mut node = self.node.get_mut();
             let mut inner = self.events.inner.blocking_lock();
             match &mut *inner {
-                EventsInner::Dora(events) => {
-                    node.send_request(service_name_id, parameters, arrow_data, events, timeout_duration)
-                }
+                EventsInner::Dora(events) => node.send_request(
+                    service_name_id,
+                    parameters,
+                    arrow_data,
+                    events,
+                    timeout_duration,
+                ),
                 EventsInner::Merged(_) => {
                     eyre::bail!("send_request is not supported with merged external event streams")
                 }
@@ -499,8 +501,7 @@ impl Node {
         result.set_item("value", reply.data.to_data().to_pyarrow(py)?)?;
         result.set_item(
             "metadata",
-            metadata_to_pydict(&reply.metadata, py)
-                .context("Issue deserializing metadata")?,
+            metadata_to_pydict(&reply.metadata, py).context("Issue deserializing metadata")?,
         )?;
         Ok(result.into())
     }

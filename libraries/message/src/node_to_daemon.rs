@@ -53,7 +53,7 @@ impl DaemonRequest {
         match self {
             DaemonRequest::SendMessage { .. }
             | DaemonRequest::NodeConfig { .. }
-            | DaemonRequest::ReportDropTokens { .. } 
+            | DaemonRequest::ReportDropTokens { .. }
             | DaemonRequest::SendServiceReply { .. } => false,
             DaemonRequest::Register(NodeRegisterRequest { .. })
             | DaemonRequest::Subscribe
@@ -79,7 +79,7 @@ impl DaemonRequest {
             | DaemonRequest::NextFinishedDropTokens
             | DaemonRequest::ReportDropTokens { .. }
             | DaemonRequest::SendMessage { .. }
-            | DaemonRequest::EventStreamDropped 
+            | DaemonRequest::EventStreamDropped
             | DaemonRequest::SendServiceReply { .. } => false,
         }
     }

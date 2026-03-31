@@ -1,0 +1,18 @@
+nodes:
+  - id: service-runtime
+    operator:
+      id: service-op
+      python: service_operator.py
+      services:
+        compute:
+          type: server
+
+  - id: requester-node
+    path: requester_node.py
+    inputs:
+      request_tick: dora/timer/millis/200
+      tick: dora/timer/millis/20
+    services:
+      compute:
+        type: client
+        server: service-runtime/service-op/compute

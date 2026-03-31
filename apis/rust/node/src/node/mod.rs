@@ -715,9 +715,7 @@ impl DoraNode {
             };
 
             match event {
-                Some(Event::Input { id, metadata, data })
-                    if id.as_str() == reply_input_id =>
-                {
+                Some(Event::Input { id, metadata, data }) if id.as_str() == reply_input_id => {
                     let reply_corr = metadata
                         .get(SERVICE_CORRELATION_ID_KEY)
                         .and_then(|p| String::try_from(p).ok());
@@ -740,8 +738,6 @@ impl DoraNode {
             }
         }
     }
-
-    
 
     /// Send the give raw byte data with the provided type information.
     ///

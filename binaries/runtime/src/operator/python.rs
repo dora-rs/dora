@@ -106,6 +106,7 @@ pub fn run(
         Result::<_, eyre::Report>::Ok(Py::from(operator))
     };
 
+    let finish_tx = events_tx.clone();
     let python_runner = move || {
         let mut operator =
             match Python::with_gil(init_operator).wrap_err("failed to init python operator") {
@@ -120,6 +121,7 @@ pub fn run(
             };
 
         let mut reload = false;
+        let service_reply_tx = events_tx.clone();
         let reason = loop {
             #[allow(unused_mut)]
             let Ok(mut event) = incoming_events.recv() else {
@@ -222,6 +224,14 @@ pub fn run(
                 .to_py_dict(py)
                 .context("Could not convert event to pydict bound")?;
 
+                let send_service_reply = SendServiceReplyCallback {
+                    events_tx: service_reply_tx.clone(),
+                };
+
+                let _ = py_event
+                    .bind(py)
+                    .set_item("send_service_reply", send_service_reply);
+
                 let status_enum = operator
                     .call_method1(py, "on_event", (py_event, send_output.clone()))
                     .map_err(traceback);
@@ -266,13 +276,13 @@ pub fn run(
 
     match catch_unwind(closure) {
         Ok(Ok(reason)) => {
-            let _ = events_tx.send(OperatorEvent::Finished { reason });
+            let _ = finish_tx.send(OperatorEvent::Finished { reason });
         }
         Ok(Err(err)) => {
-            let _ = events_tx.send(OperatorEvent::Error(err));
+            let _ = finish_tx.send(OperatorEvent::Error(err));
         }
         Err(panic) => {
-            let _ = events_tx.send(OperatorEvent::Panic(panic));
+            let _ = finish_tx.send(OperatorEvent::Panic(panic));
         }
     }
 
@@ -285,12 +295,18 @@ struct SendOutputCallback {
     events_tx: flume::Sender<OperatorEvent>,
 }
 
+#[pyclass]
+#[derive(Clone)]
+struct SendServiceReplyCallback {
+    events_tx: flume::Sender<OperatorEvent>,
+}
+
 #[allow(unsafe_op_in_unsafe_fn)]
 mod callback_impl {
 
     use crate::operator::OperatorEvent;
 
-    use super::SendOutputCallback;
+    use super::{SendOutputCallback, SendServiceReplyCallback};
     use aligned_vec::{AVec, ConstAlign};
     use arrow::{array::ArrayData, pyarrow::FromPyArrow};
     use dora_core::metadata::ArrowTypeInfoExt;
@@ -392,6 +408,50 @@ mod callback_impl {
                     .send(event)
                     .map_err(|_| eyre!("failed to send output to runtime"))
             })?;
+
+            Ok(())
+        }
+    }
+
+    /// Send a service reply from the operator:
+    /// - the first argument is the `service_name` matching the original request.
+    /// - the second argument is the data as either bytes or pyarrow.Array.
+    /// - the third argument is dora metadata forwarded from the request.
+    /// `e.g.:  send_service_reply("compute", pa.array([42], type=pa.int64()), dora_event["metadata"])`
+    #[pymethods]
+    impl SendServiceReplyCallback {
+        #[pyo3(signature = (service_name, data, metadata=None))]
+        fn __call__(
+            &mut self,
+            service_name: &str,
+            data: PyObject,
+            metadata: Option<Bound<'_, PyDict>>,
+            py: Python,
+        ) -> Result<()> {
+            let parameters = pydict_to_metadata(metadata).wrap_err("failed to parse metadata")?;
+
+            let (sample, type_info) = if let Ok(py_bytes) = data.downcast_bound::<PyBytes>(py) {
+                let data = py_bytes.as_bytes();
+                let mut sample: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, data.len());
+                sample.copy_from_slice(data);
+                (sample.into(), ArrowTypeInfo::byte_array(data.len()))
+            } else if let Ok(arrow_array) = ArrayData::from_pyarrow_bound(data.bind(py)) {
+                let total_len = required_data_size(&arrow_array);
+                let mut sample: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, total_len);
+                let type_info = copy_array_into_sample(&mut sample, &arrow_array);
+                (sample.into(), type_info)
+            } else {
+                eyre::bail!("invalid `data` type, must be `PyBytes` or arrow array")
+            };
+
+            self.events_tx
+                .send(OperatorEvent::ServiceReply {
+                    service_name: service_name.into(),
+                    type_info,
+                    parameters,
+                    data: Some(sample),
+                })
+                .map_err(|_| eyre!("failed to send service reply to runtime"))?;
 
             Ok(())
         }
