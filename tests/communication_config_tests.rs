@@ -1,5 +1,5 @@
-use serde_yaml;
 use dora_message::config::CommunicationConfig;
+use serde_yaml;
 
 #[test]
 fn test_valid_tcp_config() {

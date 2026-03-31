@@ -256,7 +256,6 @@ impl Default for RemoteCommunicationConfig {
     }
 }
 
-
 impl fmt::Display for LocalCommunicationConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
