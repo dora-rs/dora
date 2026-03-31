@@ -1,0 +1,11 @@
+[package]
+name = "dora-operator-api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Backward-compatible shim: re-exports adora-operator-api as dora-operator-api for dora-hub operators"
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+adora-operator-api = { workspace = true }

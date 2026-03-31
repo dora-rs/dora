@@ -58,6 +58,12 @@ pub trait AdoraOperator: Default {
 
 pub struct AdoraOutputSender<'a>(&'a SendOutput);
 
+// Backward-compatible aliases for dora-hub operators.
+// Trait and struct renames (DoraOperator, DoraOutputSender, DoraStatus) are
+// provided via the `dora-operator-api` shim crate under apis/rust/compat/.
+pub use AdoraStatus as DoraStatus;
+pub type DoraOutputSender<'a> = AdoraOutputSender<'a>;
+
 impl AdoraOutputSender<'_> {
     ///  Send an output from the operator:
     ///  - `id` is the `output_id` as defined in your dataflow.

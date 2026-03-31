@@ -2156,6 +2156,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "dora-node-api"
+version = "0.2.0"
+dependencies = [
+ "adora-node-api",
+]
+
+[[package]]
+name = "dora-operator-api"
+version = "0.2.0"
+dependencies = [
+ "adora-operator-api",
+]
+
+[[package]]
 name = "dtoa"
 version = "1.0.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"

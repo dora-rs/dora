@@ -126,6 +126,11 @@ mod node;
 
 pub use error::{NodeError, NodeResult};
 
+/// Backward-compatible alias for [`AdoraNode`] so that dora-hub nodes compile unchanged.
+pub type DoraNode = AdoraNode;
+/// Backward-compatible alias for [`Event`].
+pub use Event as DoraEvent;
+
 #[derive(Debug)]
 enum DaemonCommunicationWrapper {
     Standard(DaemonCommunication),
