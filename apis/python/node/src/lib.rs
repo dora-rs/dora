@@ -6,13 +6,16 @@ use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use tokio::sync::Mutex;
 
+use arrow::array::Array;
 use arrow::pyarrow::{FromPyArrow, ToPyArrow};
 use dora_download::download_file;
-use dora_node_api::dora_core::config::NodeId;
+use dora_node_api::dora_core::config::{DataId, NodeId};
 use dora_node_api::dora_core::descriptor::source_is_url;
 use dora_node_api::merged::{MergeExternalSend, MergedEvent};
 use dora_node_api::{DataflowId, DoraNode, EventStream, TryRecvError, init_tracing};
-use dora_operator_api_python::{DelayedCleanup, NodeCleanupHandle, PyEvent, pydict_to_metadata};
+use dora_operator_api_python::{
+    DelayedCleanup, NodeCleanupHandle, PyEvent, metadata_to_pydict, pydict_to_metadata,
+};
 use dora_ros2_bridge_python::Ros2Subscription;
 use eyre::{Context, ContextCompat};
 
@@ -380,6 +383,127 @@ impl Node {
         }
 
         Ok(())
+    }
+
+    /// `send_service_reply` sends a reply to a service request (server-side).
+    ///
+    /// ```python
+    /// Args:
+    ///    service_name: str,
+    ///    data: pyarrow.Array,
+    ///    metadata: Option[Dict],
+    /// ```
+    ///
+    /// ex:
+    ///
+    /// ```python
+    /// node.send_service_reply("get_image", image_data, event["metadata"])
+    /// ```
+    ///
+    /// :type service_name: str
+    /// :type data: pyarrow.Array
+    /// :type metadata: dict, optional
+    /// :rtype: None
+    #[pyo3(signature = (service_name, data, metadata=None))]
+    pub fn send_service_reply(
+        &self,
+        service_name: String,
+        data: PyObject,
+        metadata: Option<Bound<'_, PyDict>>,
+        py: Python,
+    ) -> eyre::Result<()> {
+        let parameters = pydict_to_metadata(metadata)?;
+
+        if let Ok(py_bytes) = data.downcast_bound::<PyBytes>(py) {
+            let bytes = py_bytes.as_bytes();
+            let array = arrow::array::UInt8Array::from(bytes.to_vec());
+            self.node
+                .get_mut()
+                .send_service_reply(service_name.into(), parameters, array)
+                .wrap_err("failed to send service reply")?;
+        } else if let Ok(arrow_array) = arrow::array::ArrayData::from_pyarrow_bound(data.bind(py)) {
+            self.node.get_mut().send_service_reply(
+                service_name.into(),
+                parameters,
+                arrow::array::make_array(arrow_array),
+            )?;
+        } else {
+            eyre::bail!("invalid `data` type, must be `PyBytes` or arrow array")
+        }
+
+        Ok(())
+    }
+
+    /// `send_request` sends a service request and blocks until the reply arrives.
+    ///
+    /// Returns a dict with `"value"` (pyarrow.Array) and `"metadata"` (dict).
+    ///
+    /// ```python
+    /// Args:
+    ///    service_name: str,
+    ///    data: pyarrow.Array,
+    ///    metadata: Option[Dict],
+    /// ```
+    ///
+    /// ex:
+    ///
+    /// ```python
+    /// reply = node.send_request("get_image", pa.array([]))
+    /// image = reply["value"]
+    /// ```
+    ///
+    /// :type service_name: str
+    /// :type data: pyarrow.Array
+    /// :type metadata: dict, optional
+    /// :rtype: dict
+    #[pyo3(signature = (service_name, data, metadata=None, timeout=None))]
+    pub fn send_request(
+        &self,
+        service_name: String,
+        data: PyObject,
+        metadata: Option<Bound<'_, PyDict>>,
+        timeout: Option<f32>,
+        py: Python,
+    ) -> eyre::Result<Py<PyDict>> {
+        let parameters = pydict_to_metadata(metadata)?;
+        let timeout_duration = timeout.map(Duration::from_secs_f32);
+
+        let arrow_data = if let Ok(py_bytes) = data.downcast_bound::<PyBytes>(py) {
+            arrow::array::make_array(
+                arrow::array::UInt8Array::from(py_bytes.as_bytes().to_vec()).to_data(),
+            )
+        } else if let Ok(arrow_array) = arrow::array::ArrayData::from_pyarrow_bound(data.bind(py)) {
+            arrow::array::make_array(arrow_array)
+        } else {
+            eyre::bail!("invalid `data` type, must be `PyBytes` or arrow array")
+        };
+
+        let service_name_id = DataId::from(service_name);
+
+        let reply = py.allow_threads(|| {
+            let mut node = self.node.get_mut();
+            let mut inner = self.events.inner.blocking_lock();
+            match &mut *inner {
+                EventsInner::Dora(events) => node.send_request(
+                    service_name_id,
+                    parameters,
+                    arrow_data,
+                    events,
+                    timeout_duration,
+                ),
+                EventsInner::Merged(_) => {
+                    eyre::bail!("send_request is not supported with merged external event streams")
+                }
+            }
+        })?;
+
+        let result = PyDict::new(py);
+        result.set_item("value", reply.data.to_data().to_pyarrow(py)?)?;
+        result.set_item(
+            "metadata",
+            metadata_to_pydict(&reply.metadata, py).context("Issue deserializing metadata")?,
+        )?;
+        Ok(result.into())
     }
 
     /// Returns the full dataflow descriptor that this node is part of.

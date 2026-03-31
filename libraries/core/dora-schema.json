@@ -86,6 +86,14 @@
             "null"
           ]
         },
+        "services": {
+          "description": "Service endpoints for request-reply communication.\n\ne.g.\n\nservices:\n\n  get_image:\n    type: server",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/ServiceEndpoint"
+          },
+          "default": {}
+        },
         "source": {
           "$ref": "#/$defs/NodeSource"
         }
@@ -374,6 +382,13 @@
             "null"
           ]
         },
+        "services": {
+          "description": "Service endpoints declared by this node.\n\nDefines the request-reply services that this node provides or consumes.\nEach service must have a unique name within the node. Server endpoints handle\nincoming requests, while client endpoints send requests to a specified server.\n\n## Example\n\n```yaml\nnodes:\n  - id: webcam\n    path: ./webcam.py\n    services:\n      get_image:\n        type: server\n  - id: detector\n    path: ./detector.py\n    services:\n      get_image:\n        type: client\n        server: webcam/get_image\n```",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/ServiceEndpoint"
+          }
+        },
         "tag": {
           "description": "Git tag to checkout after cloning.\n\nThe `tag` field is only allowed in combination with the [`git`](#git) field.\nIt specifies the git tag that should be checked out after cloning.\nOnly one of `branch`, `tag`, or `rev` can be specified.\n\n## Example\n\n```yaml\nnodes:\n  - id: rust-node\n    git: https://github.com/dora-rs/dora.git\n    tag: v0.3.0\n```",
           "type": [
@@ -481,6 +496,13 @@
             "string",
             "null"
           ]
+        },
+        "services": {
+          "description": "Service endpoints for request-reply communication",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/ServiceEndpoint"
+          }
         }
       },
       "oneOf": [
@@ -565,6 +587,42 @@
         "$ref": "#/$defs/OperatorDefinition"
       }
     },
+    "ServiceEndpoint": {
+      "description": "Defines a service endpoint for the request-reply pattern.\n\nA service endpoint is either a server (which receives requests and sends replies)\nor a client (which sends requests and receives replies). Both sides must declare\ntheir service endpoints in the dataflow YAML.\n\n## Example\n\n```yaml\nnodes:\n  - id: webcam\n    services:\n      get_image:\n        type: server\n  - id: detector\n    services:\n      get_image:\n        type: client\n        server: webcam/get_image\n```",
+      "oneOf": [
+        {
+          "description": "This node provides the service and handles incoming requests.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "server"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "description": "This node consumes the service by sending requests.",
+          "type": "object",
+          "properties": {
+            "server": {
+              "description": "Reference to the server endpoint in the format `node_id/service_name`.",
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "client"
+            }
+          },
+          "required": [
+            "type",
+            "server"
+          ]
+        }
+      ]
+    },
     "SingleOperatorDefinition": {
       "type": "object",
       "properties": {
@@ -623,6 +681,13 @@
             "string",
             "null"
           ]
+        },
+        "services": {
+          "description": "Service endpoints for request-reply communication",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/ServiceEndpoint"
+          }
         }
       },
       "oneOf": [

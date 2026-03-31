@@ -1,5 +1,5 @@
 use dora_core::{
-    config::NodeId,
+    config::{DataId, NodeId},
     uhlc::{self, Timestamp},
 };
 use dora_message::{
@@ -150,6 +150,19 @@ fn event_stream_loop(
 
             if let Some(tx) = tx.as_ref() {
                 let (drop_tx, drop_rx) = flume::bounded(0);
+                let inner = if let NodeEvent::Input { id, metadata, data } = inner {
+                    if let Some(service_name) = id.as_str().strip_prefix("__service_request_") {
+                        NodeEvent::ServiceRequest {
+                            id: DataId::from(service_name.to_string()),
+                            metadata,
+                            data,
+                        }
+                    } else {
+                        NodeEvent::Input { id, metadata, data }
+                    }
+                } else {
+                    inner
+                };
                 match tx.send(EventItem::NodeEvent {
                     event: inner,
                     ack_channel: drop_tx,

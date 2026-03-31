@@ -30,6 +30,18 @@ pub enum DaemonRequest {
     SubscribeDrop,
     NextFinishedDropTokens,
     EventStreamDropped,
+    /// Server sends a reply to a service request.
+    ///
+    /// The daemon routes this reply back to the requesting client using the
+    /// correlation ID in the metadata.
+    SendServiceReply {
+        /// The service name matching the original request.
+        service_name: DataId,
+        /// Metadata forwarded from the request (includes the correlation ID).
+        metadata: Metadata,
+        /// The reply payload.
+        data: Option<DataMessage>,
+    },
     NodeConfig {
         node_id: NodeId,
     },
@@ -41,7 +53,8 @@ impl DaemonRequest {
         match self {
             DaemonRequest::SendMessage { .. }
             | DaemonRequest::NodeConfig { .. }
-            | DaemonRequest::ReportDropTokens { .. } => false,
+            | DaemonRequest::ReportDropTokens { .. }
+            | DaemonRequest::SendServiceReply { .. } => false,
             DaemonRequest::Register(NodeRegisterRequest { .. })
             | DaemonRequest::Subscribe
             | DaemonRequest::CloseOutputs(_)
@@ -66,7 +79,8 @@ impl DaemonRequest {
             | DaemonRequest::NextFinishedDropTokens
             | DaemonRequest::ReportDropTokens { .. }
             | DaemonRequest::SendMessage { .. }
-            | DaemonRequest::EventStreamDropped => false,
+            | DaemonRequest::EventStreamDropped
+            | DaemonRequest::SendServiceReply { .. } => false,
         }
     }
 }

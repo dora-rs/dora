@@ -163,6 +163,7 @@ impl PyEvent {
             Event::Input { .. } => "INPUT",
             Event::InputClosed { .. } => "INPUT_CLOSED",
             Event::Error(_) => "ERROR",
+            Event::ServiceRequest { .. } => "SERVICE_REQUEST",
             _other => "UNKNOWN",
         }
     }
@@ -176,6 +177,7 @@ impl PyEvent {
                 StopCause::AllInputsClosed => Some("ALL_INPUTS_CLOSED"),
                 &_ => None,
             },
+            Event::ServiceRequest { id, .. } => Some(id),
             _ => None,
         }
     }
@@ -185,6 +187,10 @@ impl PyEvent {
         match &self.event {
             MergedEvent::Dora(Event::Input { data, .. }) => {
                 // TODO: Does this call leak data?&
+                let array_data = data.to_data().to_pyarrow(py)?;
+                Ok(Some(array_data))
+            }
+            MergedEvent::Dora(Event::ServiceRequest { data, .. }) => {
                 let array_data = data.to_data().to_pyarrow(py)?;
                 Ok(Some(array_data))
             }
@@ -199,6 +205,14 @@ impl PyEvent {
                     .context("Issue deserializing metadata")?
                     .into_pyobject(py)
                     .context("Failed to create metadata_to_pydice")?
+                    .unbind()
+                    .into(),
+            )),
+            Event::ServiceRequest { metadata, .. } => Ok(Some(
+                metadata_to_pydict(metadata, py)
+                    .context("Issue deserializing metadata")?
+                    .into_pyobject(py)
+                    .context("Failed to create metadata pydict")?
                     .unbind()
                     .into(),
             )),

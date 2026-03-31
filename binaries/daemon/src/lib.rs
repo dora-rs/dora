@@ -2,7 +2,7 @@ use aligned_vec::{AVec, ConstAlign};
 use crossbeam::queue::ArrayQueue;
 use dora_core::{
     build::{self, BuildInfo, PrevGitSource, TracingBuildLogger},
-    config::{DataId, Input, InputMapping, NodeId, NodeRunConfig},
+    config::{DataId, Input, InputMapping, NodeId, NodeRunConfig, UserInputMapping},
     descriptor::{
         CoreNodeKind, DYNAMIC_SOURCE, Descriptor, DescriptorExt, ResolvedNode, RuntimeNode,
         read_as_descriptor,
@@ -24,6 +24,7 @@ use dora_message::{
     daemon_to_coordinator::DataflowDaemonResult,
     daemon_to_daemon::InterDaemonEvent,
     daemon_to_node::{DaemonReply, NodeConfig, NodeDropEvent, NodeEvent},
+    descriptor::ServiceEndpoint,
     descriptor::{NodeSource, RestartPolicy},
     metadata::{self, ArrowTypeInfo},
     node_to_daemon::{DynamicNodeEvent, Timestamped},
@@ -1069,6 +1070,60 @@ impl Daemon {
                     dataflow
                         .open_external_mappings
                         .insert(OutputId(mapping.source, mapping.output));
+                }
+            }
+        }
+
+        // build service mappings (request and reply channels)
+        for node in nodes.values() {
+            let services: Vec<(String, &ServiceEndpoint)> = match &node.kind {
+                CoreNodeKind::Custom(n) => n
+                    .run_config
+                    .services
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v))
+                    .collect(),
+                CoreNodeKind::Runtime(n) => n
+                    .operators
+                    .iter()
+                    .flat_map(|op| {
+                        op.config
+                            .services
+                            .iter()
+                            .map(move |(k, v)| (format!("{}/{k}", op.id), v))
+                    })
+                    .collect(),
+            };
+            for (service_name, endpoint) in services {
+                if let ServiceEndpoint::Client { server } = endpoint {
+                    let Some((server_node_str, server_svc)) = server.split_once('/') else {
+                        continue;
+                    };
+                    let server_node = NodeId::from(server_node_str.to_string());
+
+                    // Client sends on __service_request_{client_service_name}
+                    let client_request_id =
+                        DataId::from(format!("__service_request_{service_name}"));
+                    // Server receives on __service_request_{server_service_name}
+                    let server_request_id = DataId::from(format!("__service_request_{server_svc}"));
+                    // Server sends on __service_reply_{server_service_name}
+                    let server_reply_id = DataId::from(format!("__service_reply_{server_svc}"));
+                    // Client receives on __service_reply_{client_service_name}
+                    let client_reply_id = DataId::from(format!("__service_reply_{service_name}"));
+
+                    // client -> server (requests)
+                    dataflow
+                        .service_mappings
+                        .entry(OutputId(node.id.clone(), client_request_id))
+                        .or_default()
+                        .insert((server_node.clone(), server_request_id));
+
+                    // server -> client (replies)
+                    dataflow
+                        .service_reply_mappings
+                        .entry(OutputId(server_node, server_reply_id))
+                        .or_default()
+                        .insert((node.id.clone(), client_reply_id));
                 }
             }
         }
@@ -2669,7 +2724,19 @@ async fn send_output_to_local_receivers(
     let timestamp = metadata.timestamp();
     let empty_set = BTreeSet::new();
     let output_id = OutputId(node_id, output_id);
-    let local_receivers = dataflow.mappings.get(&output_id).unwrap_or(&empty_set);
+    let local_receivers = if output_id.1.as_str().starts_with("__service_request_") {
+        dataflow
+            .service_mappings
+            .get(&output_id)
+            .unwrap_or(&empty_set)
+    } else if output_id.1.as_str().starts_with("__service_reply_") {
+        dataflow
+            .service_reply_mappings
+            .get(&output_id)
+            .unwrap_or(&empty_set)
+    } else {
+        dataflow.mappings.get(&output_id).unwrap_or(&empty_set)
+    };
     let OutputId(node_id, _) = output_id;
     let mut closed = Vec::new();
     for (receiver_id, input_id) in local_receivers {
@@ -2737,10 +2804,56 @@ async fn send_output_to_local_receivers(
 }
 
 fn node_inputs(node: &ResolvedNode) -> BTreeMap<DataId, Input> {
-    match &node.kind {
+    let mut inputs = match &node.kind {
         CoreNodeKind::Custom(n) => n.run_config.inputs.clone(),
         CoreNodeKind::Runtime(n) => runtime_node_inputs(n),
+    };
+
+    // register synthetic inputs for service endpoints so that the daemon
+    // creates receive channels for service request/reply messages
+    let services: Vec<(String, &ServiceEndpoint)> = match &node.kind {
+        CoreNodeKind::Custom(n) => n
+            .run_config
+            .services
+            .iter()
+            .map(|(k, v)| (k.clone(), v))
+            .collect(),
+        CoreNodeKind::Runtime(n) => n
+            .operators
+            .iter()
+            .flat_map(|op| {
+                op.config
+                    .services
+                    .iter()
+                    .map(move |(k, v)| (format!("{}/{k}", op.id), v))
+            })
+            .collect(),
+    };
+
+    for (service_name, endpoint) in services {
+        let synthetic_id = match endpoint {
+            ServiceEndpoint::Server => {
+                // server receives requests on this synthetic input
+                DataId::from(format!("__service_request_{service_name}"))
+            }
+            ServiceEndpoint::Client { .. } => {
+                // client receives replies on this synthetic input
+                DataId::from(format!("__service_reply_{service_name}"))
+            }
+        };
+        inputs.insert(
+            synthetic_id,
+            Input {
+                mapping: InputMapping::User(UserInputMapping {
+                    source: NodeId::from("__service__".to_string()),
+                    output: DataId::from("__synthetic__".to_string()),
+                }),
+                queue_size: Some(10),
+            },
+        );
     }
+
+    inputs
 }
 
 fn close_input(
@@ -2891,6 +3004,21 @@ pub struct RunningDataflow {
     subscribe_channels: HashMap<NodeId, UnboundedSender<Timestamped<NodeEvent>>>,
     drop_channels: HashMap<NodeId, UnboundedSender<Timestamped<NodeDropEvent>>>,
     mappings: HashMap<OutputId, BTreeSet<InputId>>,
+    /// Routes service requests from clients to servers.
+    ///
+    /// Key: `OutputId(client_node, "__service_request_{name}")`.
+    /// Value: `InputId(server_node, "__service_request_{name}")`.
+    ///
+    /// This map is intentionally separate from `mappings` so that `OutputClosed`
+    /// and `AllInputsClosed` lifecycle handlers never consult service channels.
+    service_mappings: HashMap<OutputId, BTreeSet<InputId>>,
+    /// Routes service replies from servers back to clients.
+    ///
+    /// Key: `OutputId(server_node, "__service_reply_{name}")`.
+    /// Value: `InputId(client_node, "__service_reply_{name}")`.
+    ///
+    /// Same lifecycle isolation rationale as `service_mappings`.
+    service_reply_mappings: HashMap<OutputId, BTreeSet<InputId>>,
     timers: BTreeMap<Duration, BTreeSet<InputId>>,
     open_inputs: BTreeMap<NodeId, BTreeSet<DataId>>,
     running_nodes: BTreeMap<NodeId, RunningNode>,
@@ -2960,6 +3088,8 @@ impl RunningDataflow {
             subscribe_channels: HashMap::new(),
             drop_channels: HashMap::new(),
             mappings: HashMap::new(),
+            service_mappings: HashMap::new(),
+            service_reply_mappings: HashMap::new(),
             timers: BTreeMap::new(),
             open_inputs: BTreeMap::new(),
             running_nodes: BTreeMap::new(),
@@ -3485,11 +3615,54 @@ trait CoreNodeKindExt {
 impl CoreNodeKindExt for CoreNodeKind {
     fn run_config(&self) -> NodeRunConfig {
         match self {
-            CoreNodeKind::Runtime(n) => NodeRunConfig {
-                inputs: runtime_node_inputs(n),
-                outputs: runtime_node_outputs(n),
-            },
-            CoreNodeKind::Custom(n) => n.run_config.clone(),
+            CoreNodeKind::Runtime(n) => {
+                let inputs = runtime_node_inputs(n);
+                let mut outputs = runtime_node_outputs(n);
+                let mut services = BTreeMap::new();
+                for operator in &n.operators {
+                    for (service_name, endpoint) in &operator.config.services {
+                        let prefixed_name = format!("{}/{service_name}", operator.id);
+                        services.insert(prefixed_name.clone(), endpoint.clone());
+                        match endpoint {
+                            ServiceEndpoint::Client { .. } => {
+                                outputs.insert(DataId::from(format!(
+                                    "__service_request_{prefixed_name}"
+                                )));
+                            }
+                            ServiceEndpoint::Server => {
+                                outputs.insert(DataId::from(format!(
+                                    "__service_reply_{prefixed_name}"
+                                )));
+                            }
+                        }
+                    }
+                }
+                NodeRunConfig {
+                    inputs,
+                    outputs,
+                    services,
+                }
+            }
+            CoreNodeKind::Custom(n) => {
+                let mut config = n.run_config.clone();
+                for (service_name, endpoint) in &config.services {
+                    match endpoint {
+                        ServiceEndpoint::Client { .. } => {
+                            // client sends requests via this synthetic output
+                            config
+                                .outputs
+                                .insert(DataId::from(format!("__service_request_{service_name}")));
+                        }
+                        ServiceEndpoint::Server => {
+                            // server sends replies via this synthetic output
+                            config
+                                .outputs
+                                .insert(DataId::from(format!("__service_reply_{service_name}")));
+                        }
+                    }
+                }
+                config
+            }
         }
     }
 

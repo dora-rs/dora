@@ -1750,6 +1750,7 @@ dependencies = [
  "shared_memory_extended",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

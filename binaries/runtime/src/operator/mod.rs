@@ -84,6 +84,12 @@ pub enum OperatorEvent {
     Finished {
         reason: StopReason,
     },
+    ServiceReply {
+        service_name: DataId,
+        type_info: ArrowTypeInfo,
+        parameters: MetadataParameters,
+        data: Option<DataSample>,
+    },
 }
 
 #[derive(Debug)]

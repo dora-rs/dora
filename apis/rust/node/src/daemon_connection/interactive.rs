@@ -82,6 +82,18 @@ impl InteractiveEvents {
                 println!("{}", "node reports EventStreamDropped".blue());
                 DaemonReply::Result(Ok(()))
             }
+            DaemonRequest::SendServiceReply {
+                service_name,
+                metadata: _,
+                data: _,
+            } => {
+                println!(
+                    "{} service reply for {}",
+                    "node sends".yellow(),
+                    service_name.bright_blue().bold()
+                );
+                DaemonReply::Empty
+            }
             DaemonRequest::NodeConfig { .. } => {
                 eyre::bail!("unexpected NodeConfig in interactive mode")
             }

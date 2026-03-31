@@ -120,4 +120,28 @@ impl ControlChannel {
             other => bail!("unexpected SendMessage reply: {other:?}"),
         }
     }
+
+    pub fn send_service_reply(
+        &mut self,
+        service_name: DataId,
+        metadata: Metadata,
+        data: Option<DataMessage>,
+    ) -> eyre::Result<()> {
+        let request = DaemonRequest::SendServiceReply {
+            service_name,
+            metadata,
+            data,
+        };
+        let reply = self
+            .channel
+            .request(&Timestamped {
+                inner: request,
+                timestamp: self.clock.new_timestamp(),
+            })
+            .wrap_err("failed to send SendServiceReply request to dora-daemon")?;
+        match reply {
+            DaemonReply::Empty => Ok(()),
+            other => bail!("unexpected SendServiceReply reply: {other:?}"),
+        }
+    }
 }

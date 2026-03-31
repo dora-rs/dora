@@ -89,6 +89,7 @@ impl DescriptorExt for Descriptor {
                     run_config: NodeRunConfig {
                         inputs: node.inputs,
                         outputs: node.outputs,
+                        services: node.services.clone(),
                     },
                     envs: None,
                     restart_policy: node.restart_policy,
