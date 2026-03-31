@@ -371,14 +371,13 @@ async fn param_list_empty() {
 }
 
 #[tokio::test]
-async fn param_set_then_get() {
+async fn param_set_rejects_unknown_target() {
     let (port, _handle) = common::start_test_coordinator().await;
     let mut ws = connect_control(port).await;
 
     let df_id = Uuid::new_v4();
     let node_id: adora_message::id::NodeId = "sensor".to_string().into();
 
-    // Set a param
     let params = serde_json::to_value(&ControlRequest::SetParam {
         dataflow_id: df_id,
         node_id: node_id.clone(),
@@ -387,86 +386,43 @@ async fn param_set_then_get() {
     })
     .unwrap();
     let resp = request_reply(&mut ws, "control", params).await;
-    assert!(resp.error.is_none(), "set failed: {:?}", resp.error);
-    assert_eq!(resp.result.unwrap(), json!("ParamSet"));
-
-    // Get the param back
-    let params = serde_json::to_value(&ControlRequest::GetParam {
-        dataflow_id: df_id,
-        node_id: node_id.clone(),
-        key: "threshold".into(),
-    })
-    .unwrap();
-    let resp = request_reply(&mut ws, "control", params).await;
-    assert!(resp.error.is_none(), "get failed: {:?}", resp.error);
-    let result = resp.result.unwrap();
-    let pv = result.get("ParamValue").expect("expected ParamValue key");
-    assert_eq!(pv.get("key").unwrap(), "threshold");
-    assert_eq!(pv.get("value").unwrap(), &json!(42));
+    assert!(
+        resp.error.is_none(),
+        "set request transport failed: {:?}",
+        resp.error
+    );
+    let result = resp.result.expect("expected control result");
+    assert!(
+        result.get("Error").is_some(),
+        "expected Error variant for unknown param target, got {result:?}"
+    );
 }
 
 #[tokio::test]
-async fn param_set_list_delete() {
+async fn param_delete_rejects_unknown_target() {
     let (port, _handle) = common::start_test_coordinator().await;
     let mut ws = connect_control(port).await;
 
     let df_id = Uuid::new_v4();
     let node_id: adora_message::id::NodeId = "camera".to_string().into();
 
-    // Set two params
-    for (key, value) in [("fps", json!(30)), ("resolution", json!("1080p"))] {
-        let params = serde_json::to_value(&ControlRequest::SetParam {
-            dataflow_id: df_id,
-            node_id: node_id.clone(),
-            key: key.into(),
-            value,
-        })
-        .unwrap();
-        let resp = request_reply(&mut ws, "control", params).await;
-        assert!(resp.error.is_none());
-    }
-
-    // List should have 2
-    let params = serde_json::to_value(&ControlRequest::GetParams {
-        dataflow_id: df_id,
-        node_id: node_id.clone(),
-    })
-    .unwrap();
-    let resp = request_reply(&mut ws, "control", params).await;
-    assert!(resp.error.is_none());
-    let result = resp.result.unwrap();
-    let param_list = result.get("ParamList").unwrap();
-    let arr = param_list.get("params").unwrap().as_array().unwrap();
-    assert_eq!(arr.len(), 2);
-
-    // Delete one
     let params = serde_json::to_value(&ControlRequest::DeleteParam {
         dataflow_id: df_id,
-        node_id: node_id.clone(),
+        node_id,
         key: "fps".into(),
     })
     .unwrap();
     let resp = request_reply(&mut ws, "control", params).await;
-    assert!(resp.error.is_none());
-    assert_eq!(resp.result.unwrap(), json!("ParamDeleted"));
-
-    // List should have 1
-    let params = serde_json::to_value(&ControlRequest::GetParams {
-        dataflow_id: df_id,
-        node_id: node_id.clone(),
-    })
-    .unwrap();
-    let resp = request_reply(&mut ws, "control", params).await;
-    let result = resp.result.unwrap();
-    let arr = result
-        .get("ParamList")
-        .unwrap()
-        .get("params")
-        .unwrap()
-        .as_array()
-        .unwrap();
-    assert_eq!(arr.len(), 1);
-    assert_eq!(arr[0].as_array().unwrap()[0], "resolution");
+    assert!(
+        resp.error.is_none(),
+        "delete request transport failed: {:?}",
+        resp.error
+    );
+    let result = resp.result.expect("expected control result");
+    assert!(
+        result.get("Error").is_some(),
+        "expected Error variant for unknown param target, got {result:?}"
+    );
 }
 
 #[tokio::test]
