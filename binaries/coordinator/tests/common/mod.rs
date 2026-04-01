@@ -1,11 +1,20 @@
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 /// Start a coordinator on a random port and return (port, background_task).
 pub async fn start_test_coordinator() -> (u16, tokio::task::JoinHandle<()>) {
+    start_test_coordinator_with_store(Arc::new(adora_coordinator::InMemoryStore::new())).await
+}
+
+/// Start a coordinator with a caller-provided store.
+pub async fn start_test_coordinator_with_store(
+    store: Arc<dyn adora_coordinator::CoordinatorStore>,
+) -> (u16, tokio::task::JoinHandle<()>) {
     let bind: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let (port, future) = adora_coordinator::start_testing(bind, futures::stream::empty())
-        .await
-        .expect("failed to start coordinator");
+    let (port, future) =
+        adora_coordinator::start_testing_with_store(bind, futures::stream::empty(), store)
+            .await
+            .expect("failed to start coordinator");
     let handle = tokio::spawn(async move {
         let _ = future.await;
     });

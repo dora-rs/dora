@@ -1,5 +1,5 @@
 use crate::log_subscriber::LogSubscriber;
-use adora_coordinator_store::{DataflowRecord, DataflowStatus};
+use adora_coordinator_store::{CoordinatorStore, DataflowRecord, DataflowStatus};
 use adora_core::config::NodeId;
 use adora_message::{
     common::DaemonId,
@@ -212,6 +212,46 @@ pub(crate) struct RunningDataflow {
     pub(crate) state_log: Vec<StateCatchUpEntry>,
     /// Last state_log sequence acknowledged by each daemon.
     pub(crate) daemon_ack_sequence: BTreeMap<DaemonId, u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ParamTarget {
+    Running { daemon_id: DaemonId },
+    PersistedOnly,
+}
+
+pub(crate) fn resolve_param_target(
+    running_dataflows: &HashMap<adora_message::DataflowId, RunningDataflow>,
+    store: &dyn CoordinatorStore,
+    dataflow_id: &adora_message::DataflowId,
+    node_id: &NodeId,
+) -> eyre::Result<ParamTarget> {
+    if let Some(dataflow) = running_dataflows.get(dataflow_id) {
+        let daemon_id = dataflow
+            .node_to_daemon
+            .get(node_id)
+            .cloned()
+            .ok_or_else(|| eyre::eyre!("node `{node_id}` not found in dataflow `{dataflow_id}`"))?;
+        return Ok(ParamTarget::Running { daemon_id });
+    }
+
+    let Some(record) = store.get_dataflow(dataflow_id)? else {
+        eyre::bail!(
+            "dataflow `{dataflow_id}` not found for node `{node_id}`; \
+             cannot operate params on unknown dataflow"
+        );
+    };
+
+    let descriptor: adora_message::descriptor::Descriptor =
+        serde_json::from_str(&record.descriptor_json).map_err(|e| {
+            eyre::eyre!("failed to parse persisted descriptor for `{dataflow_id}`: {e}")
+        })?;
+    let node_exists = descriptor.nodes.iter().any(|n| n.id == *node_id);
+    if !node_exists {
+        eyre::bail!("node `{node_id}` not found in dataflow `{dataflow_id}`");
+    }
+
+    Ok(ParamTarget::PersistedOnly)
 }
 
 pub(crate) fn now_millis() -> u64 {

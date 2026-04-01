@@ -266,10 +266,17 @@ fn cli_param_delete_rejects_unknown_target() {
 /// They must run sequentially (--test-threads=1) because they share the
 /// coordinator port. They are in a separate module to group them logically.
 mod real_dataflow {
+    use adora_cli::WsSession;
+    use adora_core::topics::{ADORA_COORDINATOR_PORT_WS_DEFAULT, LOCALHOST};
+    use adora_message::{
+        cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply,
+    };
+    use std::net::SocketAddr;
     use std::path::Path;
     use std::process::{Command, Stdio};
     use std::sync::Once;
     use std::time::Duration;
+    use uuid::Uuid;
 
     static BUILD: Once = Once::new();
 
@@ -326,6 +333,35 @@ mod real_dataflow {
             .status()
             .expect("failed to run adora up");
         assert!(status.success(), "adora up failed");
+    }
+
+    fn connect_session() -> WsSession {
+        let addr: SocketAddr = (LOCALHOST, ADORA_COORDINATOR_PORT_WS_DEFAULT).into();
+        WsSession::connect(addr).expect("failed to connect ws session to local coordinator")
+    }
+
+    fn start_rust_dataflow_detached(adora: &str) -> Uuid {
+        let yaml =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/rust-dataflow/dataflow.yml");
+        let status = Command::new(adora)
+            .args(["start", yaml.to_str().unwrap(), "--detach"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("failed to run adora start");
+        assert!(status.success(), "adora start failed");
+        std::thread::sleep(Duration::from_secs(1));
+
+        let session = connect_session();
+        let reply = super::send_request(&session, &ControlRequest::List).unwrap();
+        match reply {
+            ControlRequestReply::DataflowList(list) => list
+                .0
+                .first()
+                .map(|entry| entry.id.uuid)
+                .expect("expected a started dataflow in list"),
+            other => panic!("unexpected list reply: {other:?}"),
+        }
     }
 
     /// Full lifecycle: start -> list (shows dataflow) -> stop -> destroy
@@ -424,6 +460,148 @@ mod real_dataflow {
             || stdout.contains("Finished")
             || stdout.contains("Failed");
         assert!(has_dataflow, "second dataflow not listed: {stdout}");
+
+        cleanup(&adora);
+    }
+
+    #[test]
+    fn e2e_param_set_get_list_delete_running_dataflow() {
+        ensure_built();
+        let adora = adora_bin();
+        start_cluster(&adora);
+        let dataflow_id = start_rust_dataflow_detached(&adora);
+        let node_id: adora_message::id::NodeId = "rust-node".to_string().into();
+        let session = connect_session();
+
+        let reply = super::send_request(
+            &session,
+            &ControlRequest::SetParam {
+                dataflow_id,
+                node_id: node_id.clone(),
+                key: "rate".into(),
+                value: serde_json::json!(100),
+            },
+        )
+        .unwrap();
+        assert!(
+            matches!(reply, ControlRequestReply::ParamSet),
+            "set failed: {reply:?}"
+        );
+
+        let reply = super::send_request(
+            &session,
+            &ControlRequest::GetParam {
+                dataflow_id,
+                node_id: node_id.clone(),
+                key: "rate".into(),
+            },
+        )
+        .unwrap();
+        match reply {
+            ControlRequestReply::ParamValue { key, value } => {
+                assert_eq!(key, "rate");
+                assert_eq!(value, serde_json::json!(100));
+            }
+            other => panic!("expected ParamValue, got {other:?}"),
+        }
+
+        let reply = super::send_request(
+            &session,
+            &ControlRequest::GetParams {
+                dataflow_id,
+                node_id: node_id.clone(),
+            },
+        )
+        .unwrap();
+        match reply {
+            ControlRequestReply::ParamList { params } => {
+                assert!(
+                    params
+                        .iter()
+                        .any(|(k, v)| k == "rate" && *v == serde_json::json!(100))
+                );
+            }
+            other => panic!("expected ParamList, got {other:?}"),
+        }
+
+        let reply = super::send_request(
+            &session,
+            &ControlRequest::DeleteParam {
+                dataflow_id,
+                node_id: node_id.clone(),
+                key: "rate".into(),
+            },
+        )
+        .unwrap();
+        assert!(matches!(reply, ControlRequestReply::ParamDeleted));
+
+        let reply = super::send_request(
+            &session,
+            &ControlRequest::GetParam {
+                dataflow_id,
+                node_id,
+                key: "rate".into(),
+            },
+        )
+        .unwrap();
+        assert!(matches!(reply, ControlRequestReply::Error(_)));
+
+        cleanup(&adora);
+    }
+
+    #[test]
+    fn e2e_param_set_json_types_running_dataflow() {
+        ensure_built();
+        let adora = adora_bin();
+        start_cluster(&adora);
+        let dataflow_id = start_rust_dataflow_detached(&adora);
+        let node_id: adora_message::id::NodeId = "rust-node".to_string().into();
+        let session = connect_session();
+
+        let test_cases: Vec<(&str, serde_json::Value)> = vec![
+            ("int", serde_json::json!(42)),
+            ("float", serde_json::json!(3.14)),
+            ("string", serde_json::json!("hello")),
+            ("bool", serde_json::json!(true)),
+            ("null", serde_json::json!(null)),
+            ("array", serde_json::json!([1, 2, 3])),
+            ("object", serde_json::json!({"a": 1})),
+        ];
+
+        for (key, value) in &test_cases {
+            let reply = super::send_request(
+                &session,
+                &ControlRequest::SetParam {
+                    dataflow_id,
+                    node_id: node_id.clone(),
+                    key: key.to_string(),
+                    value: value.clone(),
+                },
+            )
+            .unwrap();
+            assert!(
+                matches!(reply, ControlRequestReply::ParamSet),
+                "set failed for {key}"
+            );
+        }
+
+        for (key, expected) in &test_cases {
+            let reply = super::send_request(
+                &session,
+                &ControlRequest::GetParam {
+                    dataflow_id,
+                    node_id: node_id.clone(),
+                    key: key.to_string(),
+                },
+            )
+            .unwrap();
+            match reply {
+                ControlRequestReply::ParamValue { value, .. } => {
+                    assert_eq!(&value, expected, "roundtrip failed for {key}");
+                }
+                other => panic!("expected ParamValue for {key}, got {other:?}"),
+            }
+        }
 
         cleanup(&adora);
     }
