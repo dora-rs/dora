@@ -145,7 +145,7 @@ mod tests {
             child_data: vec![],
         };
 
-        let raw_buffer = arrow::buffer::Buffer::from_slice_ref(&[1, 2, 3]);
+        let raw_buffer = arrow::buffer::Buffer::from_slice_ref([1, 2, 3]);
 
         let result = buffer_into_arrow_array(&raw_buffer, &type_info);
         assert!(result.is_err());

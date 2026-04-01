@@ -1,7 +1,7 @@
 use aligned_vec::{AVec, ConstAlign};
 use crossbeam::queue::ArrayQueue;
 use dora_core::{
-    build::{self, BuildInfo, PrevGitSource, TracingBuildLogger},
+    build::{self, BuildInfo, PrevGitSource},
     config::{DataId, Input, InputMapping, NodeId, NodeRunConfig},
     descriptor::{
         CoreNodeKind, DYNAMIC_SOURCE, Descriptor, DescriptorExt, ResolvedNode, RuntimeNode,
@@ -56,11 +56,10 @@ use std::{
 use tokio::{
     fs::File,
     io::{AsyncReadExt, AsyncSeekExt},
-    net::TcpStream,
     sync::{
         broadcast,
         mpsc::{self, UnboundedSender},
-        oneshot::{self, Sender},
+        oneshot::{self},
     },
 };
 use tokio_stream::{Stream, StreamExt, wrappers::ReceiverStream};
@@ -222,8 +221,7 @@ impl Daemon {
         let (events_tx, events_rx) = flume::bounded(10);
         if nodes
             .iter()
-            .find(|(_n, resolved_nodes)| resolved_nodes.kind.dynamic())
-            .is_some()
+            .any(|(_n, resolved_nodes)| resolved_nodes.kind.dynamic())
         {
             // Spawn local listener for dynamic nodes
             let _listen_port = local_listener::spawn_listener_loop(
@@ -709,10 +707,6 @@ impl Daemon {
         uv: bool,
         write_events_to: Option<PathBuf>,
     ) -> Result<(), String> {
-        match dataflow_descriptor.communication.remote {
-            dora_core::config::RemoteCommunicationConfig::Tcp => {}
-        }
-
         // Resolve base working dir — for spawn we use the daemon's working dir
         let base_working_dir = match local_working_dir {
             Some(working_dir) => {
@@ -879,7 +873,7 @@ impl Daemon {
                     send_output_to_local_receivers(
                         node_id.clone(),
                         output_id.clone(),
-                        &mut *dataflow,
+                        &mut dataflow,
                         &metadata,
                         data.map(DataMessage::Vec),
                         &self.state.clock,
@@ -921,7 +915,7 @@ impl Daemon {
                         if let Some(inputs) = dataflow.mappings.get(&output_id).cloned() {
                             for (receiver_id, input_id) in &inputs {
                                 close_input(
-                                    &mut *dataflow,
+                                    &mut dataflow,
                                     receiver_id,
                                     input_id,
                                     &self.state.clock,
@@ -1461,7 +1455,7 @@ impl Daemon {
                     }
                     Ok(mut dataflow) => {
                         Self::subscribe(
-                            &mut *dataflow,
+                            &mut dataflow,
                             node_id.clone(),
                             event_sender,
                             &self.state.clock,
@@ -1615,7 +1609,7 @@ impl Daemon {
         let data_bytes = send_output_to_local_receivers(
             node_id.clone(),
             output_id.clone(),
-            &mut *dataflow,
+            &mut dataflow,
             &metadata,
             data,
             &self.state.clock,
@@ -1846,7 +1840,7 @@ impl Daemon {
                 .cloned()
                 .collect();
             for (receiver_id, input_id) in &local_node_inputs {
-                close_input(&mut *dataflow, receiver_id, input_id, &self.state.clock);
+                close_input(&mut dataflow, receiver_id, input_id, &self.state.clock);
             }
 
             let mut closed = Vec::new();
@@ -2027,7 +2021,7 @@ impl Daemon {
 
             let df = &mut *dataflow;
             df.pending_nodes
-                .handle_node_stop_sync(node_id, &mut df.cascading_error_causes)
+                .handle_node_stop(node_id, &mut df.cascading_error_causes)
         };
         // DashMap guard is dropped — safe to do async I/O.
         if exited_before_subscribe {
@@ -2573,7 +2567,7 @@ async fn read_last_n_lines(file: &mut File, mut tail: usize) -> io::Result<Vec<u
         file.read_exact(&mut buffer[..read_len]).await?;
         let read_buf = if at_end {
             at_end = false;
-            &buffer[..read_len].trim_ascii_end()
+            buffer[..read_len].trim_ascii_end()
         } else {
             &buffer[..read_len]
         };
@@ -2986,7 +2980,7 @@ impl RunningDataflow {
         clock: &Arc<HLC>,
     ) -> eyre::Result<()> {
         for interval in self.timers.keys().copied() {
-            if self._timer_handles.get(&interval).is_some() {
+            if self._timer_handles.contains_key(&interval) {
                 continue;
             }
             let events_tx = events_tx.clone();

@@ -257,19 +257,11 @@ async fn run_app<B: Backend>(
 ) -> eyre::Result<()> {
     let mut app = App::new();
     let mut last_update = Instant::now();
-    let mut node_infos: Vec<NodeInfo> = Vec::new();
 
     // Reuse coordinator connection
     let client = connect_and_check_version(coordinator_addr, coordinator_port)
         .await
         .wrap_err("Failed to connect to coordinator")?;
-
-    // Query node info once initially
-    node_infos = rpc(
-        "get node info",
-        client.get_node_info(tarpc::context::current()),
-    )
-    .await?;
 
     loop {
         terminal.draw(|f| ui(f, &mut app, refresh_duration))?;
@@ -323,14 +315,14 @@ async fn run_app<B: Backend>(
         // Update data if refresh interval has passed
         if last_update.elapsed() >= refresh_duration {
             // Query node info every refresh interval to get updated metrics
-            node_infos = rpc(
+            let node_infos = rpc(
                 "refresh node info",
                 client.get_node_info(tarpc::context::current()),
             )
             .await?;
 
             // Update stats with current node info
-            app.update_stats(node_infos.clone());
+            app.update_stats(node_infos);
             last_update = Instant::now();
         }
     }
@@ -349,7 +341,7 @@ fn ui(f: &mut Frame, app: &mut App, refresh_duration: Duration) {
         }
     };
 
-    let header_strings = vec![
+    let header_strings = [
         format!("NODE{}", sort_indicator(SortColumn::Node)),
         "DATAFLOW".to_string(),
         "PID".to_string(),

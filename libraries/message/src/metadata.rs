@@ -454,7 +454,7 @@ mod tests {
             child_data: vec![],
         };
         let m = Metadata::from_parameters(ts, type_info, params);
-        assert_eq!(m.get_or("wait", true), false);
+        assert!(!m.get_or("wait", true));
     }
 
     #[test]
@@ -488,6 +488,6 @@ mod tests {
         let mut params = MetadataParameters::new();
         params.insert("count".into(), Parameter::Integer(5));
         let m = Metadata::from_parameters(ts, type_info, params);
-        assert_eq!(m.get_or("count", true), true);
+        assert!(m.get_or("count", true));
     }
 }

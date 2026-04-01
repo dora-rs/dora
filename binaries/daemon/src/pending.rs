@@ -95,37 +95,13 @@ impl PendingNodes {
             .await
     }
 
-    pub async fn handle_node_stop(
-        &mut self,
-        node_id: &NodeId,
-        coordinator_client: &Option<CoordinatorNotifyClient>,
-        clock: &HLC,
-        cascading_errors: &mut CascadingErrorCauses,
-        logger: &mut DataflowLogger<'_>,
-    ) -> eyre::Result<()> {
-        if self.local_nodes.remove(node_id) {
-            logger
-                .log(
-                    dora_message::daemon_to_coordinator::LogLevel::Warn,
-                    Some(node_id.clone()),
-                    Some("daemon::pending".into()),
-                    "node exited before initializing dora connection",
-                )
-                .await;
-            self.exited_before_subscribe.push(node_id.clone());
-            self.update_dataflow_status(coordinator_client, clock, cascading_errors, logger)
-                .await?;
-        }
-        Ok(())
-    }
-
     /// Synchronous part of [`handle_node_stop`] that only mutates local state
     /// without doing any async I/O. Use [`check_and_answer_subscribers`] +
     /// a manual RPC call afterwards to complete the reporting.
     ///
     /// Returns `true` if the node was pending and was removed, indicating
     /// that the caller should log the event via the logger.
-    pub fn handle_node_stop_sync(
+    pub fn handle_node_stop(
         &mut self,
         node_id: &NodeId,
         cascading_errors: &mut CascadingErrorCauses,

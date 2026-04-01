@@ -23,7 +23,7 @@ use dora_message::{
 use eyre::Context;
 use std::{
     net::{IpAddr, SocketAddr},
-    path::PathBuf,
+    path::Path,
 };
 use tokio::task::JoinHandle;
 use uuid::{NoContext, Timestamp, Uuid};
@@ -152,7 +152,7 @@ impl Executable for Start {
 /// Send the start RPC to the coordinator.  The caller should have already
 /// subscribed to zenoh log topics before calling this.
 async fn send_start_rpc(
-    dataflow: &PathBuf,
+    dataflow: &Path,
     dataflow_descriptor: &Descriptor,
     dataflow_session: &DataflowSession,
     client: &CoordinatorControlClient,

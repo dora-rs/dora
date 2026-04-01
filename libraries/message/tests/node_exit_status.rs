@@ -101,7 +101,7 @@ fn unknown_is_not_produced_for_valid_inputs() {
     }
 
     // Test I/O error
-    let io_err = io::Error::new(io::ErrorKind::Other, "test");
+    let io_err = io::Error::other("test");
     let node_status: NodeExitStatus = Err(io_err).into();
     assert!(
         !matches!(node_status, NodeExitStatus::Unknown),

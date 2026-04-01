@@ -23,7 +23,7 @@ pub fn init(
 ) -> eyre::Result<EventStreamThreadHandle> {
     let node_id_cloned = node_id.clone();
     let join_handle = std::thread::spawn(|| event_stream_loop(node_id_cloned, tx, channel, clock));
-    Ok(EventStreamThreadHandle::new(node_id, join_handle))
+    Ok(EventStreamThreadHandle::new(join_handle))
 }
 
 #[derive(Debug)]
@@ -38,20 +38,16 @@ pub enum EventItem {
 }
 
 pub struct EventStreamThreadHandle {
-    node_id: NodeId,
     handle: flume::Receiver<std::thread::Result<()>>,
 }
 
 impl EventStreamThreadHandle {
-    fn new(node_id: NodeId, join_handle: std::thread::JoinHandle<()>) -> Self {
+    fn new(join_handle: std::thread::JoinHandle<()>) -> Self {
         let (tx, rx) = flume::bounded(1);
         std::thread::spawn(move || {
             let _ = tx.send(join_handle.join());
         });
-        Self {
-            node_id,
-            handle: rx,
-        }
+        Self { handle: rx }
     }
 }
 
