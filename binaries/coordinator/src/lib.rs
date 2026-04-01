@@ -138,9 +138,8 @@ pub async fn start_embedded(
 /// Like [`start`] but without registering a ctrl-c handler.
 /// Useful for tests that run multiple coordinators in the same process.
 /// Testing-only entry point. Starts coordinator without auth.
-/// Do NOT use in production — stripped from release builds.
+/// Do NOT use in production.
 #[doc(hidden)]
-#[cfg(debug_assertions)]
 pub async fn start_testing(
     bind: SocketAddr,
     external_events: impl Stream<Item = Event> + Unpin,
@@ -151,7 +150,6 @@ pub async fn start_testing(
 
 /// Like [`start_testing`], but allows injecting a custom store.
 #[doc(hidden)]
-#[cfg(debug_assertions)]
 pub async fn start_testing_with_store(
     bind: SocketAddr,
     external_events: impl Stream<Item = Event> + Unpin,
@@ -1188,43 +1186,49 @@ async fn start_inner(
                                         ) {
                                             Ok(()) => {
                                                 if let ParamTarget::Running { daemon_id } = target {
-                                                    let df =
-                                                        running_dataflows.get_mut(&dataflow_id).expect(
-                                                            "running param target must resolve to an active dataflow",
+                                                    if let Some(df) =
+                                                        running_dataflows.get_mut(&dataflow_id)
+                                                    {
+                                                        df.append_state_log(
+                                                            StateCatchUpOperation::SetParam {
+                                                                node_id: node_id.clone(),
+                                                                key: key.clone(),
+                                                                value: value.clone(),
+                                                            },
                                                         );
-                                                    df.append_state_log(
-                                                        StateCatchUpOperation::SetParam {
-                                                            node_id: node_id.clone(),
-                                                            key: key.clone(),
-                                                            value: value.clone(),
-                                                        },
-                                                    );
 
-                                                    if let Ok(msg) =
-                                                        serde_json::to_vec(&Timestamped {
-                                                            inner:
-                                                                DaemonCoordinatorEvent::SetParam {
+                                                        if let Ok(msg) =
+                                                            serde_json::to_vec(&Timestamped {
+                                                                inner: DaemonCoordinatorEvent::SetParam {
                                                                     dataflow_id,
                                                                     node_id: node_id.clone(),
                                                                     key: key.clone(),
                                                                     value: value.clone(),
                                                                 },
-                                                            timestamp: clock.new_timestamp(),
-                                                        })
-                                                    {
-                                                        if let Some(conn) =
-                                                            daemon_connections.get_mut(&daemon_id)
+                                                                timestamp: clock.new_timestamp(),
+                                                            })
                                                         {
-                                                            if let Err(e) =
-                                                                conn.send_and_receive(&msg).await
+                                                            if let Some(conn) =
+                                                                daemon_connections.get_mut(&daemon_id)
                                                             {
-                                                                tracing::warn!(
-                                                                    %node_id,
-                                                                    %daemon_id,
-                                                                    "param persisted in store; runtime forwarding is best-effort and failed: {e}"
-                                                                );
+                                                                if let Err(e) =
+                                                                    conn.send_and_receive(&msg).await
+                                                                {
+                                                                    tracing::warn!(
+                                                                        %node_id,
+                                                                        %daemon_id,
+                                                                        "param persisted in store; runtime forwarding is best-effort and failed: {e}"
+                                                                    );
+                                                                }
                                                             }
                                                         }
+                                                    } else {
+                                                        // Dataflow may have been removed after target resolution.
+                                                        tracing::warn!(
+                                                            %dataflow_id,
+                                                            %node_id,
+                                                            "param persisted in store; running dataflow disappeared before runtime forwarding"
+                                                        );
                                                     }
                                                 }
                                                 Ok(ControlRequestReply::ParamSet)
@@ -1253,38 +1257,47 @@ async fn start_inner(
                                     match store.delete_node_param(&dataflow_id, &node_id, &key) {
                                         Ok(()) => {
                                             if let ParamTarget::Running { daemon_id } = target {
-                                                let df =
-                                                    running_dataflows.get_mut(&dataflow_id).expect(
-                                                        "running param target must resolve to an active dataflow",
+                                                if let Some(df) =
+                                                    running_dataflows.get_mut(&dataflow_id)
+                                                {
+                                                    df.append_state_log(
+                                                        StateCatchUpOperation::DeleteParam {
+                                                            node_id: node_id.clone(),
+                                                            key: key.clone(),
+                                                        },
                                                     );
-                                                df.append_state_log(
-                                                    StateCatchUpOperation::DeleteParam {
-                                                        node_id: node_id.clone(),
-                                                        key: key.clone(),
-                                                    },
-                                                );
 
-                                                if let Ok(msg) = serde_json::to_vec(&Timestamped {
-                                                    inner: DaemonCoordinatorEvent::DeleteParam {
-                                                        dataflow_id,
-                                                        node_id: node_id.clone(),
-                                                        key: key.clone(),
-                                                    },
-                                                    timestamp: clock.new_timestamp(),
-                                                }) {
-                                                    if let Some(conn) =
-                                                        daemon_connections.get_mut(&daemon_id)
+                                                    if let Ok(msg) =
+                                                        serde_json::to_vec(&Timestamped {
+                                                            inner: DaemonCoordinatorEvent::DeleteParam {
+                                                                dataflow_id,
+                                                                node_id: node_id.clone(),
+                                                                key: key.clone(),
+                                                            },
+                                                            timestamp: clock.new_timestamp(),
+                                                        })
                                                     {
-                                                        if let Err(e) =
-                                                            conn.send_and_receive(&msg).await
+                                                        if let Some(conn) =
+                                                            daemon_connections.get_mut(&daemon_id)
                                                         {
-                                                            tracing::warn!(
-                                                                %node_id,
-                                                                %daemon_id,
-                                                                "param deleted in store; runtime forwarding is best-effort and failed: {e}"
-                                                            );
+                                                            if let Err(e) =
+                                                                conn.send_and_receive(&msg).await
+                                                            {
+                                                                tracing::warn!(
+                                                                    %node_id,
+                                                                    %daemon_id,
+                                                                    "param deleted in store; runtime forwarding is best-effort and failed: {e}"
+                                                                );
+                                                            }
                                                         }
                                                     }
+                                                } else {
+                                                    // Dataflow may have been removed after target resolution.
+                                                    tracing::warn!(
+                                                        %dataflow_id,
+                                                        %node_id,
+                                                        "param deleted in store; running dataflow disappeared before runtime forwarding"
+                                                    );
                                                 }
                                             }
                                             Ok(ControlRequestReply::ParamDeleted)

@@ -217,6 +217,8 @@ pub(crate) struct RunningDataflow {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ParamTarget {
     Running { daemon_id: DaemonId },
+    // Dataflow exists in persisted store and contains the node, but is not
+    // currently running. Mutations remain allowed for pre-provisioning.
     PersistedOnly,
 }
 

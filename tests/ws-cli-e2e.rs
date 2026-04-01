@@ -8,11 +8,19 @@
 //! via `adora up` CLI to test the complete lifecycle.
 
 use adora_cli::WsSession;
+use adora_coordinator::adora_coordinator_store::{DataflowRecord, DataflowStatus};
+use adora_coordinator::{CoordinatorStore, InMemoryStore};
 use adora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply};
-use std::net::SocketAddr;
+use std::{collections::BTreeMap, net::SocketAddr, sync::Arc};
 
 /// Start a coordinator on a background tokio runtime. Returns the bound port.
 fn start_coordinator_background() -> u16 {
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    start_coordinator_background_with_store(store)
+}
+
+/// Start a coordinator with caller-provided store.
+fn start_coordinator_background_with_store(store: Arc<dyn CoordinatorStore>) -> u16 {
     let (port_tx, port_rx) = std::sync::mpsc::channel();
 
     std::thread::spawn(move || {
@@ -23,9 +31,10 @@ fn start_coordinator_background() -> u16 {
 
         rt.block_on(async {
             let bind: SocketAddr = "127.0.0.1:0".parse().unwrap();
-            let (port, future) = adora_coordinator::start_testing(bind, futures::stream::empty())
-                .await
-                .expect("failed to start coordinator");
+            let (port, future) =
+                adora_coordinator::start_testing_with_store(bind, futures::stream::empty(), store)
+                    .await
+                    .expect("failed to start coordinator");
             port_tx.send(port).unwrap();
             let _ = future.await;
         });
@@ -44,6 +53,26 @@ fn start_coordinator_background() -> u16 {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     port
+}
+
+fn seed_dataflow_record(store: &dyn CoordinatorStore, dataflow_id: uuid::Uuid, node_ids: &[&str]) {
+    let descriptor_json = serde_json::json!({
+        "nodes": node_ids.iter().map(|id| serde_json::json!({ "id": id })).collect::<Vec<_>>()
+    })
+    .to_string();
+    let record = DataflowRecord {
+        uuid: dataflow_id,
+        name: Some("seeded-dataflow".to_string()),
+        descriptor_json,
+        status: DataflowStatus::Succeeded,
+        daemon_ids: Vec::new(),
+        node_to_daemon: BTreeMap::new(),
+        uv: false,
+        generation: 1,
+        created_at: 0,
+        updated_at: 0,
+    };
+    store.put_dataflow(&record).expect("seed dataflow record");
 }
 
 /// Helper: send a ControlRequest via WsSession and deserialize the reply.
@@ -258,6 +287,168 @@ fn cli_param_delete_rejects_unknown_target() {
         matches!(reply, ControlRequestReply::Error(_)),
         "expected Error for unknown param target, got {reply:?}"
     );
+}
+
+#[test]
+fn cli_param_set_get_list_delete() {
+    let store_impl = Arc::new(InMemoryStore::new());
+    let dataflow_id = uuid::Uuid::new_v4();
+    seed_dataflow_record(store_impl.as_ref(), dataflow_id, &["sensor"]);
+    let store: Arc<dyn CoordinatorStore> = store_impl;
+    let port = start_coordinator_background_with_store(store);
+    let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+    let session = WsSession::connect(addr).expect("failed to connect WsSession");
+    let node_id: adora_message::id::NodeId = "sensor".to_string().into();
+
+    // Set params.
+    for (key, value) in [
+        ("rate", serde_json::json!(100)),
+        ("enabled", serde_json::json!(true)),
+    ] {
+        let reply = send_request(
+            &session,
+            &ControlRequest::SetParam {
+                dataflow_id,
+                node_id: node_id.clone(),
+                key: key.into(),
+                value,
+            },
+        )
+        .unwrap();
+        assert!(matches!(reply, ControlRequestReply::ParamSet));
+    }
+
+    // Get one param back.
+    let reply = send_request(
+        &session,
+        &ControlRequest::GetParam {
+            dataflow_id,
+            node_id: node_id.clone(),
+            key: "rate".into(),
+        },
+    )
+    .unwrap();
+    match reply {
+        ControlRequestReply::ParamValue { key, value } => {
+            assert_eq!(key, "rate");
+            assert_eq!(value, serde_json::json!(100));
+        }
+        other => panic!("expected ParamValue, got {other:?}"),
+    }
+
+    // List all params.
+    let reply = send_request(
+        &session,
+        &ControlRequest::GetParams {
+            dataflow_id,
+            node_id: node_id.clone(),
+        },
+    )
+    .unwrap();
+    match reply {
+        ControlRequestReply::ParamList { params } => {
+            assert_eq!(params.len(), 2);
+            assert!(
+                params
+                    .iter()
+                    .any(|(k, v)| k == "rate" && *v == serde_json::json!(100))
+            );
+            assert!(
+                params
+                    .iter()
+                    .any(|(k, v)| k == "enabled" && *v == serde_json::json!(true))
+            );
+        }
+        other => panic!("expected ParamList, got {other:?}"),
+    }
+
+    // Delete one param.
+    let reply = send_request(
+        &session,
+        &ControlRequest::DeleteParam {
+            dataflow_id,
+            node_id: node_id.clone(),
+            key: "rate".into(),
+        },
+    )
+    .unwrap();
+    assert!(matches!(reply, ControlRequestReply::ParamDeleted));
+
+    // Confirm only one remains.
+    let reply = send_request(
+        &session,
+        &ControlRequest::GetParams {
+            dataflow_id,
+            node_id,
+        },
+    )
+    .unwrap();
+    match reply {
+        ControlRequestReply::ParamList { params } => {
+            assert_eq!(params.len(), 1);
+            assert_eq!(params[0].0, "enabled");
+            assert_eq!(params[0].1, serde_json::json!(true));
+        }
+        other => panic!("expected ParamList, got {other:?}"),
+    }
+}
+
+#[test]
+fn cli_param_set_json_types() {
+    let store_impl = Arc::new(InMemoryStore::new());
+    let dataflow_id = uuid::Uuid::new_v4();
+    seed_dataflow_record(store_impl.as_ref(), dataflow_id, &["sensor"]);
+    let store: Arc<dyn CoordinatorStore> = store_impl;
+    let port = start_coordinator_background_with_store(store);
+    let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+    let session = WsSession::connect(addr).expect("failed to connect WsSession");
+    let node_id: adora_message::id::NodeId = "sensor".to_string().into();
+
+    let test_cases = [
+        ("int", serde_json::json!(42)),
+        ("float", serde_json::json!(3.14)),
+        ("string", serde_json::json!("hello")),
+        ("bool", serde_json::json!(true)),
+        ("array", serde_json::json!([1, 2, 3])),
+        ("object", serde_json::json!({"k": "v"})),
+    ];
+
+    for (key, value) in test_cases {
+        let reply = send_request(
+            &session,
+            &ControlRequest::SetParam {
+                dataflow_id,
+                node_id: node_id.clone(),
+                key: key.to_string(),
+                value: value.clone(),
+            },
+        )
+        .unwrap();
+        assert!(
+            matches!(reply, ControlRequestReply::ParamSet),
+            "set failed for {key}"
+        );
+
+        let reply = send_request(
+            &session,
+            &ControlRequest::GetParam {
+                dataflow_id,
+                node_id: node_id.clone(),
+                key: key.to_string(),
+            },
+        )
+        .unwrap();
+        match reply {
+            ControlRequestReply::ParamValue {
+                key: got_key,
+                value: got_value,
+            } => {
+                assert_eq!(got_key, key);
+                assert_eq!(got_value, value);
+            }
+            other => panic!("expected ParamValue for key {key}, got {other:?}"),
+        }
+    }
 }
 
 /// Full-stack E2E tests using coordinator + daemon + real nodes.

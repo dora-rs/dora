@@ -68,7 +68,7 @@ fn seed_dataflow_record(store: &dyn CoordinatorStore, dataflow_id: Uuid, node_id
         uuid: dataflow_id,
         name: Some("seeded-dataflow".to_string()),
         descriptor_json,
-        status: DataflowStatus::Pending,
+        status: DataflowStatus::Succeeded,
         daemon_ids: Vec::new(),
         node_to_daemon: BTreeMap::new(),
         uv: false,
