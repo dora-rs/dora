@@ -225,7 +225,7 @@ pub(crate) fn now_millis() -> u64 {
 const MAX_ERROR_BYTES: usize = 4096;
 
 /// Truncate `s` to at most `max_bytes` bytes on a UTF-8 char boundary.
-fn truncate_str(s: &str, max_bytes: usize) -> &str {
+pub(crate) fn truncate_str(s: &str, max_bytes: usize) -> &str {
     if s.len() <= max_bytes {
         return s;
     }
