@@ -5,6 +5,7 @@
 
 mod common;
 
+use adora_coordinator_store::{CoordinatorStore, DataflowRecord, DataflowStatus};
 use adora_message::{
     BuildId,
     cli_to_coordinator::ControlRequest,
@@ -12,6 +13,7 @@ use adora_message::{
 };
 use futures::{SinkExt, StreamExt};
 use serde_json::json;
+use std::{collections::BTreeMap, sync::Arc};
 use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
 
@@ -55,6 +57,26 @@ async fn request_reply(
         }
         // Skip non-text frames (pong, etc.)
     }
+}
+
+fn seed_dataflow_record(store: &dyn CoordinatorStore, dataflow_id: Uuid, node_ids: &[&str]) {
+    let descriptor_json = serde_json::json!({
+        "nodes": node_ids.iter().map(|id| serde_json::json!({ "id": id })).collect::<Vec<_>>()
+    })
+    .to_string();
+    let record = DataflowRecord {
+        uuid: dataflow_id,
+        name: Some("seeded-dataflow".to_string()),
+        descriptor_json,
+        status: DataflowStatus::Succeeded,
+        daemon_ids: Vec::new(),
+        node_to_daemon: BTreeMap::new(),
+        uv: false,
+        generation: 1,
+        created_at: 0,
+        updated_at: 0,
+    };
+    store.put_dataflow(&record).expect("seed dataflow record");
 }
 
 #[tokio::test]
@@ -352,12 +374,15 @@ async fn stop_node_nonexistent_dataflow() {
 
 #[tokio::test]
 async fn param_list_empty() {
-    let (port, _handle) = common::start_test_coordinator().await;
+    let store_impl = Arc::new(adora_coordinator::InMemoryStore::new());
+    let dataflow_id = Uuid::new_v4();
+    seed_dataflow_record(store_impl.as_ref(), dataflow_id, &["camera"]);
+    let store: Arc<dyn CoordinatorStore> = store_impl;
+    let (port, _handle) = common::start_test_coordinator_with_store(store).await;
     let mut ws = connect_control(port).await;
 
-    let fake_df = Uuid::new_v4();
     let params = serde_json::to_value(&ControlRequest::GetParams {
-        dataflow_id: fake_df,
+        dataflow_id,
         node_id: "camera".to_string().into(),
     })
     .unwrap();
@@ -372,13 +397,15 @@ async fn param_list_empty() {
 
 #[tokio::test]
 async fn param_set_then_get() {
-    let (port, _handle) = common::start_test_coordinator().await;
+    let store_impl = Arc::new(adora_coordinator::InMemoryStore::new());
+    let df_id = Uuid::new_v4();
+    seed_dataflow_record(store_impl.as_ref(), df_id, &["sensor"]);
+    let store: Arc<dyn CoordinatorStore> = store_impl;
+    let (port, _handle) = common::start_test_coordinator_with_store(store).await;
     let mut ws = connect_control(port).await;
 
-    let df_id = Uuid::new_v4();
     let node_id: adora_message::id::NodeId = "sensor".to_string().into();
 
-    // Set a param
     let params = serde_json::to_value(&ControlRequest::SetParam {
         dataflow_id: df_id,
         node_id: node_id.clone(),
@@ -390,10 +417,9 @@ async fn param_set_then_get() {
     assert!(resp.error.is_none(), "set failed: {:?}", resp.error);
     assert_eq!(resp.result.unwrap(), json!("ParamSet"));
 
-    // Get the param back
     let params = serde_json::to_value(&ControlRequest::GetParam {
         dataflow_id: df_id,
-        node_id: node_id.clone(),
+        node_id,
         key: "threshold".into(),
     })
     .unwrap();
@@ -407,13 +433,15 @@ async fn param_set_then_get() {
 
 #[tokio::test]
 async fn param_set_list_delete() {
-    let (port, _handle) = common::start_test_coordinator().await;
+    let store_impl = Arc::new(adora_coordinator::InMemoryStore::new());
+    let df_id = Uuid::new_v4();
+    seed_dataflow_record(store_impl.as_ref(), df_id, &["camera"]);
+    let store: Arc<dyn CoordinatorStore> = store_impl;
+    let (port, _handle) = common::start_test_coordinator_with_store(store).await;
     let mut ws = connect_control(port).await;
 
-    let df_id = Uuid::new_v4();
     let node_id: adora_message::id::NodeId = "camera".to_string().into();
 
-    // Set two params
     for (key, value) in [("fps", json!(30)), ("resolution", json!("1080p"))] {
         let params = serde_json::to_value(&ControlRequest::SetParam {
             dataflow_id: df_id,
@@ -423,10 +451,14 @@ async fn param_set_list_delete() {
         })
         .unwrap();
         let resp = request_reply(&mut ws, "control", params).await;
-        assert!(resp.error.is_none());
+        assert!(
+            resp.error.is_none(),
+            "set failed for {key}: {:?}",
+            resp.error
+        );
+        assert_eq!(resp.result.unwrap(), json!("ParamSet"));
     }
 
-    // List should have 2
     let params = serde_json::to_value(&ControlRequest::GetParams {
         dataflow_id: df_id,
         node_id: node_id.clone(),
@@ -435,11 +467,15 @@ async fn param_set_list_delete() {
     let resp = request_reply(&mut ws, "control", params).await;
     assert!(resp.error.is_none());
     let result = resp.result.unwrap();
-    let param_list = result.get("ParamList").unwrap();
-    let arr = param_list.get("params").unwrap().as_array().unwrap();
+    let arr = result
+        .get("ParamList")
+        .unwrap()
+        .get("params")
+        .unwrap()
+        .as_array()
+        .unwrap();
     assert_eq!(arr.len(), 2);
 
-    // Delete one
     let params = serde_json::to_value(&ControlRequest::DeleteParam {
         dataflow_id: df_id,
         node_id: node_id.clone(),
@@ -450,7 +486,6 @@ async fn param_set_list_delete() {
     assert!(resp.error.is_none());
     assert_eq!(resp.result.unwrap(), json!("ParamDeleted"));
 
-    // List should have 1
     let params = serde_json::to_value(&ControlRequest::GetParams {
         dataflow_id: df_id,
         node_id: node_id.clone(),
@@ -470,12 +505,51 @@ async fn param_set_list_delete() {
 }
 
 #[tokio::test]
-async fn param_get_nonexistent() {
+async fn param_set_rejects_unknown_target() {
     let (port, _handle) = common::start_test_coordinator().await;
     let mut ws = connect_control(port).await;
 
-    let params = serde_json::to_value(&ControlRequest::GetParam {
+    let params = serde_json::to_value(&ControlRequest::SetParam {
         dataflow_id: Uuid::new_v4(),
+        node_id: "sensor".to_string().into(),
+        key: "threshold".into(),
+        value: json!(42),
+    })
+    .unwrap();
+    let resp = request_reply(&mut ws, "control", params).await;
+    assert!(resp.error.is_none());
+    let result = resp.result.unwrap();
+    assert!(result.get("Error").is_some());
+}
+
+#[tokio::test]
+async fn param_delete_rejects_unknown_target() {
+    let (port, _handle) = common::start_test_coordinator().await;
+    let mut ws = connect_control(port).await;
+
+    let params = serde_json::to_value(&ControlRequest::DeleteParam {
+        dataflow_id: Uuid::new_v4(),
+        node_id: "camera".to_string().into(),
+        key: "fps".into(),
+    })
+    .unwrap();
+    let resp = request_reply(&mut ws, "control", params).await;
+    assert!(resp.error.is_none());
+    let result = resp.result.unwrap();
+    assert!(result.get("Error").is_some());
+}
+
+#[tokio::test]
+async fn param_get_nonexistent() {
+    let store_impl = Arc::new(adora_coordinator::InMemoryStore::new());
+    let dataflow_id = Uuid::new_v4();
+    seed_dataflow_record(store_impl.as_ref(), dataflow_id, &["node"]);
+    let store: Arc<dyn CoordinatorStore> = store_impl;
+    let (port, _handle) = common::start_test_coordinator_with_store(store).await;
+    let mut ws = connect_control(port).await;
+
+    let params = serde_json::to_value(&ControlRequest::GetParam {
+        dataflow_id,
         node_id: "node".to_string().into(),
         key: "missing".into(),
     })
@@ -486,6 +560,45 @@ async fn param_get_nonexistent() {
     assert!(
         result.get("Error").is_some(),
         "expected Error for missing param, got {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn param_get_rejects_unknown_target() {
+    let (port, _handle) = common::start_test_coordinator().await;
+    let mut ws = connect_control(port).await;
+
+    let params = serde_json::to_value(&ControlRequest::GetParam {
+        dataflow_id: Uuid::new_v4(),
+        node_id: "ghost".to_string().into(),
+        key: "missing".into(),
+    })
+    .unwrap();
+    let resp = request_reply(&mut ws, "control", params).await;
+    assert!(resp.error.is_none());
+    let result = resp.result.unwrap();
+    assert!(
+        result.get("Error").is_some(),
+        "expected Error for unknown target, got {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn param_list_rejects_unknown_target() {
+    let (port, _handle) = common::start_test_coordinator().await;
+    let mut ws = connect_control(port).await;
+
+    let params = serde_json::to_value(&ControlRequest::GetParams {
+        dataflow_id: Uuid::new_v4(),
+        node_id: "ghost".to_string().into(),
+    })
+    .unwrap();
+    let resp = request_reply(&mut ws, "control", params).await;
+    assert!(resp.error.is_none());
+    let result = resp.result.unwrap();
+    assert!(
+        result.get("Error").is_some(),
+        "expected Error for unknown target, got {result:?}"
     );
 }
 

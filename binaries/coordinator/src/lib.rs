@@ -5,7 +5,7 @@ use crate::{
         restart_node, retrieve_logs, send_heartbeat_message, send_log_message, start_dataflow,
         stop_dataflow, stop_node,
     },
-    state::{ArchivedDataflow, CachedResult, RunningBuild, RunningDataflow},
+    state::{ArchivedDataflow, CachedResult, ParamTarget, RunningBuild, RunningDataflow},
 };
 use adora_coordinator_store::DataflowStatus as StoreDataflowStatus;
 pub use adora_coordinator_store::{self, CoordinatorStore, InMemoryStore};
@@ -33,7 +33,7 @@ use log_subscriber::LogSubscriber;
 use petname::petname;
 use serde::Serialize;
 use serde_json::value::RawValue;
-pub(crate) use state::DaemonConnections;
+pub(crate) use state::{DaemonConnections, resolve_param_target};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     net::SocketAddr,
@@ -138,14 +138,23 @@ pub async fn start_embedded(
 /// Like [`start`] but without registering a ctrl-c handler.
 /// Useful for tests that run multiple coordinators in the same process.
 /// Testing-only entry point. Starts coordinator without auth.
-/// Do NOT use in production — stripped from release builds.
+/// Do NOT use in production.
 #[doc(hidden)]
-#[cfg(debug_assertions)]
 pub async fn start_testing(
     bind: SocketAddr,
     external_events: impl Stream<Item = Event> + Unpin,
 ) -> Result<(u16, impl Future<Output = eyre::Result<()>>), eyre::ErrReport> {
     let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    start_testing_with_store(bind, external_events, store).await
+}
+
+/// Like [`start_testing`], but allows injecting a custom store.
+#[doc(hidden)]
+pub async fn start_testing_with_store(
+    bind: SocketAddr,
+    external_events: impl Stream<Item = Event> + Unpin,
+    store: Arc<dyn CoordinatorStore>,
+) -> Result<(u16, impl Future<Output = eyre::Result<()>>), eyre::ErrReport> {
     // Tests run without auth by default
     #[cfg(feature = "tracing")]
     let span_store: SpanStore = None;
@@ -1108,17 +1117,25 @@ async fn start_inner(
                             dataflow_id,
                             node_id,
                         } => {
-                            let reply = match store.list_node_params(&dataflow_id, &node_id) {
-                                Ok(params) => {
-                                    let params: Vec<_> = params
-                                        .into_iter()
-                                        .filter_map(|(k, v)| {
-                                            serde_json::from_slice(&v).ok().map(|val| (k, val))
-                                        })
-                                        .collect();
-                                    Ok(ControlRequestReply::ParamList { params })
-                                }
+                            let reply = match resolve_param_target(
+                                &running_dataflows,
+                                store.as_ref(),
+                                &dataflow_id,
+                                &node_id,
+                            ) {
                                 Err(e) => Err(e),
+                                Ok(_) => match store.list_node_params(&dataflow_id, &node_id) {
+                                    Ok(params) => {
+                                        let params: Vec<_> = params
+                                            .into_iter()
+                                            .filter_map(|(k, v)| {
+                                                serde_json::from_slice(&v).ok().map(|val| (k, val))
+                                            })
+                                            .collect();
+                                        Ok(ControlRequestReply::ParamList { params })
+                                    }
+                                    Err(e) => Err(e),
+                                },
                             };
                             let _ = reply_sender.send(reply);
                         }
@@ -1127,13 +1144,23 @@ async fn start_inner(
                             node_id,
                             key,
                         } => {
-                            let reply = match store.get_node_param(&dataflow_id, &node_id, &key) {
-                                Ok(Some(bytes)) => match serde_json::from_slice(&bytes) {
-                                    Ok(value) => Ok(ControlRequestReply::ParamValue { key, value }),
-                                    Err(e) => Err(eyre::eyre!("corrupt param value: {e}")),
-                                },
-                                Ok(None) => Err(eyre::eyre!("param not found: {key}")),
+                            let reply = match resolve_param_target(
+                                &running_dataflows,
+                                store.as_ref(),
+                                &dataflow_id,
+                                &node_id,
+                            ) {
                                 Err(e) => Err(e),
+                                Ok(_) => match store.get_node_param(&dataflow_id, &node_id, &key) {
+                                    Ok(Some(bytes)) => match serde_json::from_slice(&bytes) {
+                                        Ok(value) => {
+                                            Ok(ControlRequestReply::ParamValue { key, value })
+                                        }
+                                        Err(e) => Err(eyre::eyre!("corrupt param value: {e}")),
+                                    },
+                                    Ok(None) => Err(eyre::eyre!("param not found: {key}")),
+                                    Err(e) => Err(e),
+                                },
                             };
                             let _ = reply_sender.send(reply);
                         }
@@ -1143,57 +1170,75 @@ async fn start_inner(
                             key,
                             value,
                         } => {
-                            let reply = match serde_json::to_vec(&value) {
-                                Ok(bytes) => {
-                                    match store.put_node_param(&dataflow_id, &node_id, &key, &bytes)
-                                    {
-                                        Ok(()) => {
-                                            // Record in replication log for catch-up
-                                            if let Some(df) =
-                                                running_dataflows.get_mut(&dataflow_id)
-                                            {
-                                                df.append_state_log(
-                                                    StateCatchUpOperation::SetParam {
-                                                        node_id: node_id.clone(),
-                                                        key: key.clone(),
-                                                        value: value.clone(),
-                                                    },
-                                                );
-                                            }
-                                            // Best-effort forward to daemon if the node is running
-                                            if let Some(daemon_id) = running_dataflows
-                                                .get(&dataflow_id)
-                                                .and_then(|df| df.node_to_daemon.get(&node_id))
-                                            {
-                                                if let Ok(msg) = serde_json::to_vec(&Timestamped {
-                                                    inner: DaemonCoordinatorEvent::SetParam {
-                                                        dataflow_id,
-                                                        node_id: node_id.clone(),
-                                                        key: key.clone(),
-                                                        value: value.clone(),
-                                                    },
-                                                    timestamp: clock.new_timestamp(),
-                                                }) {
-                                                    if let Some(conn) =
-                                                        daemon_connections.get_mut(daemon_id)
+                            let reply = match resolve_param_target(
+                                &running_dataflows,
+                                store.as_ref(),
+                                &dataflow_id,
+                                &node_id,
+                            ) {
+                                Ok(target) => match serde_json::to_vec(&value) {
+                                    Ok(bytes) => {
+                                        match store.put_node_param(
+                                            &dataflow_id,
+                                            &node_id,
+                                            &key,
+                                            &bytes,
+                                        ) {
+                                            Ok(()) => {
+                                                if let ParamTarget::Running { daemon_id } = target {
+                                                    if let Some(df) =
+                                                        running_dataflows.get_mut(&dataflow_id)
                                                     {
-                                                        if let Err(e) =
-                                                            conn.send_and_receive(&msg).await
+                                                        df.append_state_log(
+                                                            StateCatchUpOperation::SetParam {
+                                                                node_id: node_id.clone(),
+                                                                key: key.clone(),
+                                                                value: value.clone(),
+                                                            },
+                                                        );
+
+                                                        if let Ok(msg) =
+                                                            serde_json::to_vec(&Timestamped {
+                                                                inner: DaemonCoordinatorEvent::SetParam {
+                                                                    dataflow_id,
+                                                                    node_id: node_id.clone(),
+                                                                    key: key.clone(),
+                                                                    value: value.clone(),
+                                                                },
+                                                                timestamp: clock.new_timestamp(),
+                                                            })
                                                         {
-                                                            tracing::warn!(
-                                                                %node_id,
-                                                                "param stored but daemon delivery failed: {e}"
-                                                            );
+                                                            if let Some(conn) =
+                                                                daemon_connections.get_mut(&daemon_id)
+                                                            {
+                                                                if let Err(e) =
+                                                                    conn.send_and_receive(&msg).await
+                                                                {
+                                                                    tracing::warn!(
+                                                                        %node_id,
+                                                                        %daemon_id,
+                                                                        "param persisted in store; runtime forwarding is best-effort and failed: {e}"
+                                                                    );
+                                                                }
+                                                            }
                                                         }
+                                                    } else {
+                                                        // Dataflow may have been removed after target resolution.
+                                                        tracing::warn!(
+                                                            %dataflow_id,
+                                                            %node_id,
+                                                            "param persisted in store; running dataflow disappeared before runtime forwarding"
+                                                        );
                                                     }
                                                 }
+                                                Ok(ControlRequestReply::ParamSet)
                                             }
-                                            Ok(ControlRequestReply::ParamSet)
+                                            Err(e) => Err(e),
                                         }
-                                        Err(e) => Err(e),
                                     }
-                                }
-                                Err(e) => Err(eyre!("failed to serialize param value: {e}")),
+                                    Err(e) => Err(eyre!("failed to serialize param value: {e}")),
+                                },
+                                Err(e) => Err(e),
                             };
                             let _ = reply_sender.send(reply);
                         }
@@ -1202,42 +1247,63 @@ async fn start_inner(
                             node_id,
                             key,
                         } => {
-                            let reply = match store.delete_node_param(&dataflow_id, &node_id, &key)
-                            {
-                                Ok(()) => {
-                                    // Record in replication log for catch-up
-                                    if let Some(df) = running_dataflows.get_mut(&dataflow_id) {
-                                        df.append_state_log(StateCatchUpOperation::DeleteParam {
-                                            node_id: node_id.clone(),
-                                            key: key.clone(),
-                                        });
-                                    }
-                                    // Best-effort forward to daemon if the node is running.
-                                    if let Some(daemon_id) = running_dataflows
-                                        .get(&dataflow_id)
-                                        .and_then(|df| df.node_to_daemon.get(&node_id))
-                                    {
-                                        if let Ok(msg) = serde_json::to_vec(&Timestamped {
-                                            inner: DaemonCoordinatorEvent::DeleteParam {
-                                                dataflow_id,
-                                                node_id: node_id.clone(),
-                                                key: key.clone(),
-                                            },
-                                            timestamp: clock.new_timestamp(),
-                                        }) {
-                                            if let Some(conn) =
-                                                daemon_connections.get_mut(daemon_id)
-                                            {
-                                                if let Err(e) = conn.send_and_receive(&msg).await {
+                            let reply = match resolve_param_target(
+                                &running_dataflows,
+                                store.as_ref(),
+                                &dataflow_id,
+                                &node_id,
+                            ) {
+                                Ok(target) => {
+                                    match store.delete_node_param(&dataflow_id, &node_id, &key) {
+                                        Ok(()) => {
+                                            if let ParamTarget::Running { daemon_id } = target {
+                                                if let Some(df) =
+                                                    running_dataflows.get_mut(&dataflow_id)
+                                                {
+                                                    df.append_state_log(
+                                                        StateCatchUpOperation::DeleteParam {
+                                                            node_id: node_id.clone(),
+                                                            key: key.clone(),
+                                                        },
+                                                    );
+
+                                                    if let Ok(msg) =
+                                                        serde_json::to_vec(&Timestamped {
+                                                            inner: DaemonCoordinatorEvent::DeleteParam {
+                                                                dataflow_id,
+                                                                node_id: node_id.clone(),
+                                                                key: key.clone(),
+                                                            },
+                                                            timestamp: clock.new_timestamp(),
+                                                        })
+                                                    {
+                                                        if let Some(conn) =
+                                                            daemon_connections.get_mut(&daemon_id)
+                                                        {
+                                                            if let Err(e) =
+                                                                conn.send_and_receive(&msg).await
+                                                            {
+                                                                tracing::warn!(
+                                                                    %node_id,
+                                                                    %daemon_id,
+                                                                    "param deleted in store; runtime forwarding is best-effort and failed: {e}"
+                                                                );
+                                                            }
+                                                        }
+                                                    }
+                                                } else {
+                                                    // Dataflow may have been removed after target resolution.
                                                     tracing::warn!(
+                                                        %dataflow_id,
                                                         %node_id,
-                                                        "param deleted but daemon delivery failed: {e}"
+                                                        "param deleted in store; running dataflow disappeared before runtime forwarding"
                                                     );
                                                 }
                                             }
+                                            Ok(ControlRequestReply::ParamDeleted)
                                         }
+                                        Err(e) => Err(e),
                                     }
-                                    Ok(ControlRequestReply::ParamDeleted)
                                 }
                                 Err(e) => Err(e),
                             };
@@ -2314,6 +2380,100 @@ mod tests {
             state_log: Vec::new(),
             daemon_ack_sequence: BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn resolve_param_target_returns_running_daemon_for_active_node() {
+        let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let daemon_id = DaemonId::new(Some("m1".to_string()));
+        let node_id: adora_core::config::NodeId = "camera".to_string().into();
+
+        let mut running_dataflows = HashMap::new();
+        running_dataflows.insert(
+            dataflow_id,
+            test_running_dataflow(dataflow_id, daemon_id.clone(), node_id.clone()),
+        );
+
+        let target =
+            resolve_param_target(&running_dataflows, store.as_ref(), &dataflow_id, &node_id)
+                .unwrap();
+        match target {
+            ParamTarget::Running { daemon_id: got } => assert_eq!(got, daemon_id),
+            ParamTarget::PersistedOnly => panic!("expected running target"),
+        }
+    }
+
+    #[test]
+    fn resolve_param_target_returns_persisted_only_for_known_stopped_dataflow() {
+        let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let node_id: adora_core::config::NodeId = "camera".to_string().into();
+        let running_dataflows = HashMap::new();
+
+        let record = adora_coordinator_store::DataflowRecord {
+            uuid: dataflow_id,
+            name: Some("df".to_string()),
+            descriptor_json: serde_json::json!({
+                "nodes": [
+                    {"id": "camera"}
+                ]
+            })
+            .to_string(),
+            status: adora_coordinator_store::DataflowStatus::Succeeded,
+            daemon_ids: Vec::new(),
+            node_to_daemon: BTreeMap::new(),
+            uv: false,
+            generation: 1,
+            created_at: 0,
+            updated_at: 0,
+        };
+        store.put_dataflow(&record).unwrap();
+
+        let target =
+            resolve_param_target(&running_dataflows, store.as_ref(), &dataflow_id, &node_id)
+                .unwrap();
+        match target {
+            ParamTarget::PersistedOnly => {}
+            ParamTarget::Running { .. } => panic!("expected persisted-only target"),
+        }
+    }
+
+    #[test]
+    fn resolve_param_target_errors_for_unknown_dataflow() {
+        let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let node_id: adora_core::config::NodeId = "camera".to_string().into();
+        let running_dataflows = HashMap::new();
+
+        let err = resolve_param_target(&running_dataflows, store.as_ref(), &dataflow_id, &node_id)
+            .expect_err("unknown dataflow should fail validation");
+        assert!(err.to_string().contains("dataflow"));
+        assert!(err.to_string().contains("node"));
+    }
+
+    #[test]
+    fn resolve_param_target_errors_for_unknown_node() {
+        let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let daemon_id = DaemonId::new(Some("m1".to_string()));
+        let existing_node: adora_core::config::NodeId = "camera".to_string().into();
+        let missing_node: adora_core::config::NodeId = "ghost".to_string().into();
+
+        let mut running_dataflows = HashMap::new();
+        running_dataflows.insert(
+            dataflow_id,
+            test_running_dataflow(dataflow_id, daemon_id, existing_node),
+        );
+
+        let err = resolve_param_target(
+            &running_dataflows,
+            store.as_ref(),
+            &dataflow_id,
+            &missing_node,
+        )
+        .expect_err("unknown node should fail validation");
+        assert!(err.to_string().contains("not found in dataflow"));
     }
 
     #[tokio::test]
