@@ -133,10 +133,16 @@ pub struct Node {
 #[pymethods]
 impl Node {
     #[new]
-    #[pyo3(signature = (node_id=None))]
-    pub fn new(node_id: Option<String>) -> eyre::Result<Self> {
+    #[pyo3(signature = (node_id=None, daemon_port=None))]
+    pub fn new(node_id: Option<String>, daemon_port: Option<u16>) -> eyre::Result<Self> {
         let (node, events) = if let Some(node_id) = node_id {
-            DoraNode::init_flexible(NodeId::from(node_id))
+            let mut builder = DoraNode::builder()
+                .node_id(NodeId::from(node_id))
+                .dynamic();
+            if let Some(port) = daemon_port {
+                builder = builder.daemon_port(port);
+            }
+            builder.build()
                 .context("Could not setup node from node id. Make sure to have a running dataflow with this dynamic node")?
         } else {
             DoraNode::init_from_env().context("Could not initiate node from environment variable. For dynamic node, please add a node id in the initialization function.")?
