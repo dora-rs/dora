@@ -222,9 +222,75 @@ pub struct CommunicationConfig {
     pub local: LocalCommunicationConfig,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum LocalCommunicationConfig {
     #[default]
     Tcp,
     UnixDomain,
+}
+
+impl<'de> Deserialize<'de> for LocalCommunicationConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+
+        match value.as_str() {
+            "Tcp" | "tcp" => Ok(Self::Tcp),
+            "UnixDomain" | "unixdomain" => Ok(Self::UnixDomain),
+            other => Err(serde::de::Error::unknown_variant(
+                other,
+                &["Tcp", "tcp", "UnixDomain", "unixdomain"],
+            )),
+        }
+    }
+}
+
+impl Default for LocalCommunicationConfig {
+    fn default() -> Self {
+        Self::Tcp
+    }
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub enum RemoteCommunicationConfig {
+    Tcp,
+}
+
+impl<'de> Deserialize<'de> for RemoteCommunicationConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+
+        match value.as_str() {
+            "Tcp" | "tcp" => Ok(Self::Tcp),
+            other => Err(serde::de::Error::unknown_variant(other, &["Tcp", "tcp"])),
+        }
+    }
+}
+
+impl Default for RemoteCommunicationConfig {
+    fn default() -> Self {
+        Self::Tcp
+    }
+}
+
+impl fmt::Display for LocalCommunicationConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            LocalCommunicationConfig::Tcp => write!(f, "tcp"),
+            LocalCommunicationConfig::UnixDomain => write!(f, "unixdomain"),
+        }
+    }
+}
+
+impl fmt::Display for RemoteCommunicationConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RemoteCommunicationConfig::Tcp => write!(f, "tcp"),
+        }
+    }
 }
