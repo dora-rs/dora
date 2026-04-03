@@ -5,7 +5,6 @@ use std::{
 
 use adora_message::{common::GitSource, descriptor::GitRepoRev, id::NodeId};
 use eyre::{Context, ContextCompat};
-use sha2::{Digest, Sha256};
 
 const LOCKFILE_VERSION: u32 = 2;
 const MIN_SUPPORTED_LOCKFILE_VERSION: u32 = 1;
@@ -60,32 +59,26 @@ impl BuildLockfile {
     pub fn fingerprint_descriptor_git_sources(
         descriptor_git_sources: &BTreeMap<NodeId, DescriptorGitSource>,
     ) -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(format!("adora-lockfile-v{LOCKFILE_VERSION}\n").as_bytes());
+        let mut out = String::new();
+        out.push_str(&format!("adora-lockfile-v{LOCKFILE_VERSION}\n"));
 
         for (node_id, source) in descriptor_git_sources {
-            hasher.update(node_id.to_string().as_bytes());
-            hasher.update(b"\n");
-            hasher.update(source.repo.as_bytes());
-            hasher.update(b"\n");
+            out.push_str(node_id.as_ref());
+            out.push('\n');
+            out.push_str(&source.repo);
+            out.push('\n');
             let (kind, value) = match &source.rev {
                 Some(GitRepoRev::Branch(v)) => ("branch", v.as_str()),
                 Some(GitRepoRev::Tag(v)) => ("tag", v.as_str()),
                 Some(GitRepoRev::Rev(v)) => ("rev", v.as_str()),
                 None => ("head", ""),
             };
-            hasher.update(kind.as_bytes());
-            hasher.update(b":");
-            hasher.update(value.as_bytes());
-            hasher.update(b"\n");
+            out.push_str(kind);
+            out.push(':');
+            out.push_str(value);
+            out.push('\n');
         }
 
-        let digest = hasher.finalize();
-        let mut out = String::with_capacity(digest.len() * 2);
-        for byte in digest {
-            use std::fmt::Write as _;
-            let _ = write!(&mut out, "{byte:02x}");
-        }
         out
     }
 

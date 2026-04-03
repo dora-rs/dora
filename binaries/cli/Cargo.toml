@@ -85,7 +85,6 @@ chrono = "0.4.42"
 adora-recording = { workspace = true }
 which = "7"
 tempfile = { workspace = true }
-sha2 = "0.10"
 
 [build-dependencies]
 
