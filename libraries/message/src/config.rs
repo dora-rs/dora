@@ -218,7 +218,7 @@ pub struct CommunicationConfig {
         with = "serde_yaml::with::singleton_map",
         rename = "_unstable_local"
     )]
-    #[schemars(with = "String")]
+    #[schemars(with = "LocalCommunicationConfig")]
     pub local: LocalCommunicationConfig,
     #[serde(
         default,
@@ -229,22 +229,20 @@ pub struct CommunicationConfig {
     pub remote: RemoteCommunicationConfig,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "lowercase")]
 pub enum LocalCommunicationConfig {
+    #[default]
     Tcp,
     Shmem,
+    #[serde(rename = "unixdomain")]
     UnixDomain,
 }
 
-impl Default for LocalCommunicationConfig {
-    fn default() -> Self {
-        Self::Tcp
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 #[serde(deny_unknown_fields, rename_all = "lowercase")]
 pub enum RemoteCommunicationConfig {
+    #[default]
     Tcp,
     // TODO:a
     // Zenoh {
@@ -253,8 +251,64 @@ pub enum RemoteCommunicationConfig {
     // },
 }
 
-impl Default for RemoteCommunicationConfig {
-    fn default() -> Self {
-        Self::Tcp
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_local_communication_config_deserialization() {
+        let yaml = "_unstable_local: tcp\n";
+        let config: CommunicationConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.local, LocalCommunicationConfig::Tcp);
+
+        let yaml = "_unstable_local: shmem\n";
+        let config: CommunicationConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.local, LocalCommunicationConfig::Shmem);
+
+        let yaml = "_unstable_local: unixdomain\n";
+        let config: CommunicationConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.local, LocalCommunicationConfig::UnixDomain);
+    }
+
+    #[test]
+    fn test_remote_communication_config_deserialization() {
+        let yaml = "_unstable_remote: tcp\n";
+        let config: CommunicationConfig = serde_yaml::from_str(yaml).unwrap();
+        // RemoteCommunicationConfig doesn't derive PartialEq, so we check if it's correct manually
+        match config.remote {
+            RemoteCommunicationConfig::Tcp => {}
+        }
+    }
+
+    #[test]
+    fn test_invalid_variant() {
+        let yaml = "_unstable_local: zenoh\n";
+        let result: Result<CommunicationConfig, _> = serde_yaml::from_str(yaml);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_default_deserialization() {
+        let yaml = "{}\n";
+        let config: CommunicationConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.local, LocalCommunicationConfig::Tcp);
+        match config.remote {
+            RemoteCommunicationConfig::Tcp => {}
+        }
+    }
+
+    #[test]
+    fn test_roundtrip() {
+        let config = CommunicationConfig {
+            local: LocalCommunicationConfig::UnixDomain,
+            remote: RemoteCommunicationConfig::Tcp,
+        };
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        let decoded: CommunicationConfig = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(config.local, decoded.local);
+        match decoded.remote {
+            RemoteCommunicationConfig::Tcp => {}
+        }
     }
 }
+
