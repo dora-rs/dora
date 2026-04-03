@@ -211,9 +211,41 @@ pub fn build(
     };
 
     let mut git_sources = BTreeMap::new();
+    let mut descriptor_git_sources = BTreeMap::new();
     let resolved_nodes = dataflow_descriptor
         .resolve_aliases_and_set_defaults()
         .context("failed to resolve nodes")?;
+    // Pass 1 (fail-fast): derive descriptor git-source fingerprint and validate lockfile
+    // provenance before any per-node locked-source lookups.
+    for (node_id, node) in &resolved_nodes {
+        if let CoreNodeKind::Custom(CustomNode {
+            source: NodeSource::GitBranch { repo, rev },
+            ..
+        }) = &node.kind
+        {
+            descriptor_git_sources.insert(
+                node_id.clone(),
+                NodeSource::GitBranch {
+                    repo: repo.clone(),
+                    rev: rev.clone(),
+                },
+            );
+        }
+    }
+    let descriptor_fingerprint =
+        BuildLockfile::fingerprint_descriptor_git_sources(&descriptor_git_sources);
+    if let Some(lockfile) = &build_lockfile {
+        lockfile
+            .ensure_descriptor_fingerprint_matches(&descriptor_fingerprint)
+            .with_context(|| {
+                format!(
+                    "failed to validate lockfile against descriptor at `{}`",
+                    dataflow_path.display()
+                )
+            })?;
+    }
+    // Pass 2: resolve each node's concrete source, now that lockfile provenance
+    // has been validated (when `--locked` is enabled).
     for (node_id, node) in resolved_nodes {
         if let CoreNodeKind::Custom(CustomNode {
             source: NodeSource::GitBranch { repo, rev },
@@ -231,12 +263,13 @@ pub fn build(
         }
     }
     if write_lockfile {
-        BuildLockfile::write_git_sources(&lockfile_path, &git_sources).with_context(|| {
-            format!(
-                "failed to write build lockfile to `{}`",
-                lockfile_path.display()
-            )
-        })?;
+        BuildLockfile::write_git_sources(&lockfile_path, &git_sources, &descriptor_fingerprint)
+            .with_context(|| {
+                format!(
+                    "failed to write build lockfile to `{}`",
+                    lockfile_path.display()
+                )
+            })?;
         log::info!("wrote build lockfile to {}", lockfile_path.display());
     }
 
