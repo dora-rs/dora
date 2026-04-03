@@ -677,7 +677,7 @@ pub struct CustomNode {
     pub source: NodeSource,
     /// Args for the executable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub args: Option<String>, 
+    pub args: Option<String>,
     /// Environment variables for the custom nodes.
     #[deprecated(note = "Use the outer-level `env` field on `Node` instead")]
     pub envs: Option<BTreeMap<String, EnvValue>>,
