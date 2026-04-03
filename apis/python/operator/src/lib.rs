@@ -4,6 +4,7 @@ use std::{
 };
 
 use arrow::pyarrow::ToPyArrow;
+use chrono::{DateTime, Utc};
 use dora_node_api::{
     DoraNode, Event, EventStream, Metadata, MetadataParameters, Parameter, StopCause,
     merged::{MergeExternalSend, MergedEvent},
@@ -13,8 +14,20 @@ use futures::{Stream, StreamExt};
 use futures_concurrency::stream::Merge as _;
 use pyo3::{
     prelude::*,
-    types::{IntoPyDict, PyBool, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple},
+    sync::GILOnceCell,
+    types::{IntoPyDict, PyBool, PyDict, PyFloat, PyInt, PyList, PyModule, PyString, PyTuple},
 };
+use std::time::UNIX_EPOCH;
+
+static DATETIME_MODULE: GILOnceCell<Py<PyModule>> = GILOnceCell::new();
+
+fn cached_datetime_module<'py>(py: Python<'py>) -> PyResult<&'py Bound<'py, PyModule>> {
+    Ok(DATETIME_MODULE
+        .get_or_try_init(py, || {
+            PyModule::import(py, "datetime").map(|module| module.unbind())
+        })?
+        .bind(py))
+}
 
 /// Dora Event
 pub struct PyEvent {
@@ -233,8 +246,38 @@ pub fn pydict_to_metadata(dict: Option<Bound<'_, PyDict>>) -> Result<MetadataPar
                 let list: Vec<String> = value.extract()?;
                 parameters.insert(key, Parameter::ListString(list))
             } else {
-                println!("could not convert type {value}");
-                parameters.insert(key, Parameter::String(value.str()?.to_string()))
+                // Check if it's a datetime.datetime object
+                let datetime_module = cached_datetime_module(value.py())
+                    .context("Failed to import datetime module")?;
+                let datetime_class = datetime_module.getattr("datetime")?;
+
+                if value.is_instance(datetime_class.as_ref())? {
+                    // Extract timestamp using timestamp() method
+                    let timestamp_float: f64 = value
+                        .call_method0("timestamp")?
+                        .extract()
+                        .context("Failed to extract timestamp from datetime")?;
+
+                    // Convert to chrono::DateTime<Utc>
+                    // timestamp() returns seconds since epoch as float
+                    // Convert to SystemTime first, then to DateTime<Utc>
+                    let system_time = if timestamp_float >= 0.0 {
+                        let duration = std::time::Duration::try_from_secs_f64(timestamp_float)
+                            .context("Failed to convert timestamp to Duration")?;
+                        UNIX_EPOCH + duration
+                    } else {
+                        let duration = std::time::Duration::try_from_secs_f64(-timestamp_float)
+                            .context("Failed to convert timestamp to Duration")?;
+                        UNIX_EPOCH.checked_sub(duration).unwrap_or(UNIX_EPOCH)
+                    };
+
+                    let dt = DateTime::<Utc>::from(system_time);
+
+                    parameters.insert(key, Parameter::Timestamp(dt))
+                } else {
+                    println!("could not convert type {value}");
+                    parameters.insert(key, Parameter::String(value.str()?.to_string()))
+                }
             };
         }
     }
@@ -246,6 +289,41 @@ pub fn metadata_to_pydict<'a>(
     py: Python<'a>,
 ) -> Result<pyo3::Bound<'a, PyDict>> {
     let dict = PyDict::new(py);
+
+    // Add timestamp as timezone-aware Python datetime (UTC)
+    // Note: uhlc::Timestamp is a Hybrid Logical Clock. We use get_time().to_system_time()
+    // which extracts the physical clock component. This pattern is used consistently
+    // throughout the dora codebase (e.g., in binaries/daemon/src/log.rs, binaries/coordinator/src/lib.rs)
+    // and assumes the physical time component represents UTC wall-clock time.
+    let timestamp = metadata.timestamp();
+    let system_time = timestamp.get_time().to_system_time();
+    let duration_since_epoch = system_time
+        .duration_since(UNIX_EPOCH)
+        .context("Failed to calculate duration since epoch")?;
+
+    // Extract seconds and microseconds (Python datetime supports microsecond precision)
+    let seconds = duration_since_epoch.as_secs() as i64;
+    let microseconds = duration_since_epoch.subsec_micros() as u32;
+
+    // Get UTC timezone from Python's datetime module and create timezone-aware datetime
+    // We use Python's datetime.fromtimestamp() to create a UTC-aware datetime object
+    // This avoids float precision loss by using integer seconds and microseconds
+    let datetime_module = cached_datetime_module(py).context("Failed to import datetime module")?;
+    let datetime_class = datetime_module.getattr("datetime")?;
+    let utc_timezone = datetime_module.getattr("timezone")?.getattr("utc")?;
+
+    // Create timezone-aware datetime using fromtimestamp
+    // We compute total_seconds as float (required by fromtimestamp) but preserve
+    // precision by computing from integer seconds and microseconds separately
+    let total_seconds = seconds as f64 + microseconds as f64 / 1_000_000.0;
+    let py_datetime = datetime_class
+        .call_method1("fromtimestamp", (total_seconds, utc_timezone))
+        .context("Failed to create Python datetime from timestamp")?;
+
+    dict.set_item("timestamp", py_datetime)
+        .context("Could not insert timestamp into python dictionary")?;
+
+    // Add existing parameters
     for (k, v) in metadata.parameters.iter() {
         match v {
             Parameter::Bool(bool) => dict
@@ -269,6 +347,26 @@ pub fn metadata_to_pydict<'a>(
             Parameter::ListString(l) => dict
                 .set_item(k, l)
                 .context("Could not insert metadata into python dictionary")?,
+            Parameter::Timestamp(dt) => {
+                // Convert chrono::DateTime<Utc> to Python datetime.datetime
+                let timestamp = dt.timestamp();
+                let microseconds = dt.timestamp_subsec_micros();
+
+                // Get UTC timezone from Python's datetime module
+                let datetime_module =
+                    cached_datetime_module(py).context("Failed to import datetime module")?;
+                let datetime_class = datetime_module.getattr("datetime")?;
+                let utc_timezone = datetime_module.getattr("timezone")?.getattr("utc")?;
+
+                // Create timezone-aware datetime using fromtimestamp
+                let total_seconds = timestamp as f64 + microseconds as f64 / 1_000_000.0;
+                let py_datetime = datetime_class
+                    .call_method1("fromtimestamp", (total_seconds, utc_timezone))
+                    .context("Failed to create Python datetime from timestamp")?;
+
+                dict.set_item(k, py_datetime)
+                    .context("Could not insert timestamp into python dictionary")?
+            }
         }
     }
 

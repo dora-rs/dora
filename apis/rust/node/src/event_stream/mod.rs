@@ -84,13 +84,6 @@ impl EventStream {
         let channel = match daemon_communication {
             DaemonCommunicationWrapper::Standard(daemon_communication) => {
                 match daemon_communication {
-                    DaemonCommunication::Shmem {
-                        daemon_events_region_id,
-                        ..
-                    } => unsafe { DaemonChannel::new_shmem(daemon_events_region_id) }
-                        .wrap_err_with(|| {
-                            format!("failed to create shmem event stream for node `{node_id}`")
-                        })?,
                     DaemonCommunication::Tcp { socket_addr } => {
                         DaemonChannel::new_tcp(*socket_addr).wrap_err_with(|| {
                             format!("failed to connect event stream for node `{node_id}`")
@@ -116,15 +109,6 @@ impl EventStream {
         let close_channel = match daemon_communication {
             DaemonCommunicationWrapper::Standard(daemon_communication) => {
                 match daemon_communication {
-                    DaemonCommunication::Shmem {
-                        daemon_events_close_region_id,
-                        ..
-                    } => unsafe { DaemonChannel::new_shmem(daemon_events_close_region_id) }
-                        .wrap_err_with(|| {
-                            format!(
-                                "failed to create shmem event close channel for node `{node_id}`"
-                            )
-                        })?,
                     DaemonCommunication::Tcp { socket_addr } => {
                         DaemonChannel::new_tcp(*socket_addr).wrap_err_with(|| {
                             format!("failed to connect event close channel for node `{node_id}`")
@@ -383,6 +367,24 @@ impl EventStream {
                         });
                         Some(event_json)
                     }
+                    NodeEvent::NodeFailed {
+                        affected_input_ids,
+                        error,
+                        source_node_id,
+                    } => {
+                        let time_offset = self
+                            .clock
+                            .new_timestamp()
+                            .get_diff_duration(&self.start_timestamp);
+                        let event_json = serde_json::json!({
+                            "type": "NodeFailed",
+                            "affected_input_ids": affected_input_ids.iter().map(|id| id.to_string()).collect::<Vec<_>>(),
+                            "error": error,
+                            "source_node_id": source_node_id.to_string(),
+                            "time_offset_secs": time_offset.as_secs_f64(),
+                        });
+                        Some(event_json)
+                    }
                     NodeEvent::AllInputsClosed => {
                         let time_offset = self
                             .clock
@@ -486,6 +488,15 @@ impl EventStream {
                 NodeEvent::Stop => Event::Stop(event::StopCause::Manual),
                 NodeEvent::Reload { operator_id } => Event::Reload { operator_id },
                 NodeEvent::InputClosed { id } => Event::InputClosed { id },
+                NodeEvent::NodeFailed {
+                    affected_input_ids,
+                    error,
+                    source_node_id,
+                } => Event::NodeFailed {
+                    affected_input_ids,
+                    error,
+                    source_node_id,
+                },
                 NodeEvent::Input { id, metadata, data } => {
                     let data = data_to_arrow_array(data, &metadata, ack_channel);
                     match data {
@@ -563,7 +574,6 @@ impl Stream for EventStream {
 }
 
 impl Drop for EventStream {
-    #[tracing::instrument(skip(self), fields(%self.node_id))]
     fn drop(&mut self) {
         let request = Timestamped {
             inner: DaemonRequest::EventStreamDropped,

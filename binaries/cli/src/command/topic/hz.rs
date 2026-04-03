@@ -64,30 +64,22 @@ pub struct Hz {
 }
 
 impl Executable for Hz {
-    fn execute(self) -> eyre::Result<()> {
-        let mut session = self.coordinator.connect()?;
-        let (dataflow_id, topics) = self.selector.resolve(session.as_mut())?;
+    async fn execute(self) -> eyre::Result<()> {
+        let client = self.coordinator.connect_rpc().await?;
+        let (dataflow_id, topics) = self.selector.resolve(&client).await?;
 
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .context("tokio runtime failed")?;
         let terminal = ratatui::init();
-        rt.block_on(async move {
-            run_hz(
-                terminal,
-                self.window,
-                dataflow_id,
-                topics,
-                self.coordinator.coordinator_addr,
-            )
-            .await
-        })
-        .inspect(|_| {
+        let result = run_hz(
+            terminal,
+            self.window,
+            dataflow_id,
+            topics,
+            self.coordinator.coordinator_addr,
+        )
+        .await;
+        result.inspect(|_| {
             ratatui::restore();
-        })?;
-
-        Ok(())
+        })
     }
 }
 
@@ -337,6 +329,10 @@ async fn subscribe_output(
             InterDaemonEvent::OutputClosed { .. } => {
                 break;
             }
+            InterDaemonEvent::NodeFailed { .. } => {
+                // NodeFailed events are not relevant for topic hz
+                continue;
+            }
         }
     }
 
@@ -351,16 +347,6 @@ fn ui(
     start: Instant,
     window_dur: Duration,
 ) {
-    // Layout: table | charts | footer
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage(55),
-            Constraint::Percentage(44),
-            Constraint::Length(1),
-        ])
-        .split(f.area());
-
     // Table header: interval stats in ms + derived avg Hz
     let header = Row::new([
         "Output", "Avg (ms)", "Avg (Hz)", "Min (ms)", "Max (ms)", "Std (ms)",

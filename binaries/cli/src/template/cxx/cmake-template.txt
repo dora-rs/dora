@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 project(cxx-dataflow LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_FLAGS "-fPIC")
 
 set(DORA_ROOT_DIR "__DORA_PATH__" CACHE FILEPATH "Path to the root of dora")

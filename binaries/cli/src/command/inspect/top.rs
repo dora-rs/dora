@@ -5,17 +5,17 @@ use std::{
 
 use clap::Args;
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+    },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use dora_core::topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT;
-use dora_message::{
-    cli_to_coordinator::ControlRequest,
-    coordinator_to_cli::{ControlRequestReply, NodeInfo},
-    id::NodeId,
-};
-use eyre::{Context, eyre};
+use dora_message::{coordinator_to_cli::NodeInfo, id::NodeId, tarpc};
+use eyre::Context;
+
+use crate::common::{connect_and_check_version, rpc};
 use ratatui::{
     Frame, Terminal,
     backend::{Backend, CrosstermBackend},
@@ -25,7 +25,7 @@ use ratatui::{
 };
 use uuid::Uuid;
 
-use crate::{LOCALHOST, common::connect_to_coordinator};
+use crate::LOCALHOST;
 
 use super::super::{Executable, default_tracing};
 
@@ -52,7 +52,7 @@ pub struct Top {
 }
 
 impl Executable for Top {
-    fn execute(self) -> eyre::Result<()> {
+    async fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
 
         // Setup terminal
@@ -69,7 +69,8 @@ impl Executable for Top {
             self.coordinator_addr,
             self.coordinator_port,
             refresh_duration,
-        );
+        )
+        .await;
 
         // Restore terminal
         disable_raw_mode()?;
@@ -248,7 +249,7 @@ impl App {
     }
 }
 
-fn run_app<B: Backend>(
+async fn run_app<B: Backend>(
     terminal: &mut Terminal<B>,
     coordinator_addr: std::net::IpAddr,
     coordinator_port: u16,
@@ -256,30 +257,11 @@ fn run_app<B: Backend>(
 ) -> eyre::Result<()> {
     let mut app = App::new();
     let mut last_update = Instant::now();
-    let mut node_infos: Vec<NodeInfo> = Vec::new();
 
     // Reuse coordinator connection
-    let mut session = connect_to_coordinator((coordinator_addr, coordinator_port).into())
+    let client = connect_and_check_version(coordinator_addr, coordinator_port)
+        .await
         .wrap_err("Failed to connect to coordinator")?;
-
-    // Query node info once initially
-    let request = ControlRequest::GetNodeInfo;
-    let reply_raw = session
-        .request(&serde_json::to_vec(&request).unwrap())
-        .wrap_err("failed to send initial request to coordinator")?;
-
-    let reply: ControlRequestReply =
-        serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-
-    node_infos = match reply {
-        ControlRequestReply::NodeInfoList(infos) => infos,
-        ControlRequestReply::Error(err) => {
-            return Err(eyre!("coordinator error: {err}"));
-        }
-        _ => {
-            return Err(eyre!("unexpected reply from coordinator"));
-        }
-    };
 
     loop {
         terminal.draw(|f| ui(f, &mut app, refresh_duration))?;
@@ -288,36 +270,44 @@ fn run_app<B: Backend>(
             .checked_sub(last_update.elapsed())
             .unwrap_or(Duration::from_millis(100));
 
-        if event::poll(timeout)? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
-                    match key.code {
-                        KeyCode::Char('q') | KeyCode::Esc => {
-                            return Ok(());
-                        }
-                        KeyCode::Down | KeyCode::Char('j') => {
-                            app.next();
-                        }
-                        KeyCode::Up | KeyCode::Char('k') => {
-                            app.previous();
-                        }
-                        KeyCode::Char('n') => {
-                            app.toggle_sort(SortColumn::Node);
-                        }
-                        KeyCode::Char('c') => {
-                            app.toggle_sort(SortColumn::Cpu);
-                        }
-                        KeyCode::Char('m') => {
-                            app.toggle_sort(SortColumn::Memory);
-                        }
-                        KeyCode::Char('r') => {
-                            // Force refresh by resetting last_update
-                            last_update = Instant::now()
-                                .checked_sub(refresh_duration)
-                                .unwrap_or(Instant::now());
-                        }
-                        _ => {}
+        let key_event: Option<KeyEvent> = tokio::task::spawn_blocking(move || {
+            if event::poll(timeout)? {
+                if let Event::Key(key) = event::read()? {
+                    return Ok(Some(key));
+                }
+            }
+            Ok::<_, std::io::Error>(None)
+        })
+        .await??;
+
+        if let Some(key) = key_event {
+            if key.kind == KeyEventKind::Press {
+                match key.code {
+                    KeyCode::Char('q') | KeyCode::Esc => {
+                        return Ok(());
                     }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        app.next();
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        app.previous();
+                    }
+                    KeyCode::Char('n') => {
+                        app.toggle_sort(SortColumn::Node);
+                    }
+                    KeyCode::Char('c') => {
+                        app.toggle_sort(SortColumn::Cpu);
+                    }
+                    KeyCode::Char('m') => {
+                        app.toggle_sort(SortColumn::Memory);
+                    }
+                    KeyCode::Char('r') => {
+                        // Force refresh by resetting last_update
+                        last_update = Instant::now()
+                            .checked_sub(refresh_duration)
+                            .unwrap_or(Instant::now());
+                    }
+                    _ => {}
                 }
             }
         }
@@ -325,28 +315,14 @@ fn run_app<B: Backend>(
         // Update data if refresh interval has passed
         if last_update.elapsed() >= refresh_duration {
             // Query node info every refresh interval to get updated metrics
-            let request = ControlRequest::GetNodeInfo;
-            let reply_raw = session
-                .request(&serde_json::to_vec(&request).unwrap())
-                .wrap_err("failed to send request to coordinator")?;
-
-            let reply: ControlRequestReply =
-                serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-
-            match reply {
-                ControlRequestReply::NodeInfoList(infos) => {
-                    node_infos = infos;
-                }
-                ControlRequestReply::Error(err) => {
-                    return Err(eyre!("coordinator error: {err}"));
-                }
-                _ => {
-                    return Err(eyre!("unexpected reply from coordinator"));
-                }
-            }
+            let node_infos = rpc(
+                "refresh node info",
+                client.get_node_info(tarpc::context::current()),
+            )
+            .await?;
 
             // Update stats with current node info
-            app.update_stats(node_infos.clone());
+            app.update_stats(node_infos);
             last_update = Instant::now();
         }
     }
@@ -365,7 +341,7 @@ fn ui(f: &mut Frame, app: &mut App, refresh_duration: Duration) {
         }
     };
 
-    let header_strings = vec![
+    let header_strings = [
         format!("NODE{}", sort_indicator(SortColumn::Node)),
         "DATAFLOW".to_string(),
         "PID".to_string(),

@@ -5,13 +5,6 @@ use std::{
 };
 
 fn main() -> eyre::Result<()> {
-    if cfg!(windows) {
-        tracing::error!(
-            "The c++ example does not work on Windows currently because of a linker error"
-        );
-        return Ok(());
-    }
-
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let target = root.join("target");
     std::env::set_current_dir(root.join(file!()).parent().unwrap())
@@ -118,7 +111,7 @@ fn build_package(package: &str) -> eyre::Result<()> {
 fn build_cxx_node(root: &Path, paths: &[&Path], out_name: &str, args: &[&str]) -> eyre::Result<()> {
     let mut clang = std::process::Command::new("clang++");
     clang.args(paths);
-    clang.arg("-std=c++17");
+    clang.arg("-std=c++20");
     #[cfg(target_os = "linux")]
     {
         clang.arg("-l").arg("m");
@@ -148,6 +141,7 @@ fn build_cxx_node(root: &Path, paths: &[&Path], out_name: &str, args: &[&str]) -
         clang.arg("-lmsimg32");
         clang.arg("-lmswsock");
         clang.arg("-lole32");
+        clang.arg("-loleaut32");
         clang.arg("-lopengl32");
         clang.arg("-lsecur32");
         clang.arg("-lshell32");
@@ -190,20 +184,33 @@ fn build_cxx_operator(paths: &[&Path], out_name: &str, link_args: &[&str]) -> ey
     for path in paths {
         let mut compile = std::process::Command::new("clang++");
         compile.arg("-c").arg(path);
-        compile.arg("-std=c++17");
+        compile.arg("-std=c++20");
         let object_file_path = path.with_extension("o");
         compile.arg("-o").arg(&object_file_path);
         #[cfg(unix)]
         compile.arg("-fPIC");
+        #[cfg(target_os = "windows")]
+        {
+            // Use dynamic CRT linkage for consistency with the Rust libraries
+            compile.arg("-D_DLL");
+        }
         if let Some(parent) = path.parent() {
             compile.current_dir(parent);
         }
+        println!("Compiling operator: {:?}", path);
         if !compile.status()?.success() {
             bail!("failed to compile cxx operator");
         };
+        if !object_file_path.exists() {
+            bail!(
+                "object file was not created: {}",
+                object_file_path.display()
+            );
+        }
         object_file_paths.push(object_file_path);
     }
 
+    let output_path = Path::new("../build").join(format!("{DLL_PREFIX}{out_name}{DLL_SUFFIX}"));
     let mut link = std::process::Command::new("clang++");
     link.arg("-shared").args(&object_file_paths);
     link.args(link_args);
@@ -228,6 +235,7 @@ fn build_cxx_operator(paths: &[&Path], out_name: &str, link_args: &[&str]) -> ey
         link.arg("-lmsimg32");
         link.arg("-lmswsock");
         link.arg("-lole32");
+        link.arg("-loleaut32");
         link.arg("-lopengl32");
         link.arg("-lsecur32");
         link.arg("-lshell32");
@@ -235,10 +243,9 @@ fn build_cxx_operator(paths: &[&Path], out_name: &str, link_args: &[&str]) -> ey
         link.arg("-luser32");
         link.arg("-lwinspool");
 
+        // Use dynamic CRT and avoid conflicts with static CRT
         link.arg("-Wl,-nodefaultlib:libcmt");
-        link.arg("-D_DLL");
         link.arg("-lmsvcrt");
-        link.arg("-fms-runtime-lib=static");
     }
     #[cfg(target_os = "macos")]
     {
@@ -250,14 +257,32 @@ fn build_cxx_operator(paths: &[&Path], out_name: &str, link_args: &[&str]) -> ey
         link.arg("-l").arg("c");
         link.arg("-l").arg("m");
     }
-    link.arg("-o")
-        .arg(Path::new("../build").join(format!("{DLL_PREFIX}{out_name}{DLL_SUFFIX}")));
+    link.arg("-o").arg(&output_path);
     if let Some(parent) = paths[0].parent() {
         link.current_dir(parent);
     }
+    println!("Linking operator: {} -> {:?}", out_name, output_path);
     if !link.status()?.success() {
         bail!("failed to create shared library from cxx operator (c api)");
     };
+
+    // Verify the shared library was created
+    let final_path = if let Some(parent) = paths[0].parent() {
+        parent.join(&output_path)
+    } else {
+        output_path.clone()
+    };
+    if !final_path.exists() {
+        bail!(
+            "shared library was not created: {} (expected at {})",
+            out_name,
+            final_path.display()
+        );
+    }
+    println!(
+        "Successfully built operator shared library: {}",
+        final_path.display()
+    );
 
     Ok(())
 }

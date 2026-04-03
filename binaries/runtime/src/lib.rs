@@ -17,11 +17,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     mem,
 };
-use tokio::{
-    runtime::Builder,
-    sync::{mpsc, oneshot},
-};
-use tokio_stream::wrappers::ReceiverStream;
+use tokio::{runtime::Builder, sync::oneshot};
 mod operator;
 
 pub fn main() -> eyre::Result<()> {
@@ -55,12 +51,14 @@ pub fn main() -> eyre::Result<()> {
         ops.remove(0)
     };
 
-    let (operator_events_tx, events) = mpsc::channel(1);
+    let (operator_events_tx, events) = flume::bounded(1);
     let operator_id = operator_definition.id.clone();
-    let operator_events = ReceiverStream::new(events).map(move |event| RuntimeEvent::Operator {
-        id: operator_id.clone(),
-        event,
-    });
+    let operator_events = events
+        .into_stream()
+        .map(move |event| RuntimeEvent::Operator {
+            id: operator_id.clone(),
+            event,
+        });
 
     let tokio_runtime = Builder::new_current_thread()
         .enable_all()
@@ -244,9 +242,11 @@ async fn run(
             RuntimeEvent::Event(Event::Reload {
                 operator_id: Some(operator_id),
             }) => {
-                let _ = operator_channels
-                    .get(&operator_id)
-                    .unwrap()
+                let Some(channel) = operator_channels.get(&operator_id) else {
+                    tracing::warn!("received reload event for unknown operator `{operator_id}`");
+                    continue;
+                };
+                let _ = channel
                     .send_async(Event::Reload {
                         operator_id: Some(operator_id),
                     })

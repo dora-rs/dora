@@ -4,7 +4,7 @@ members = ["cargo:binaries/cli"]
 # Config for 'dist'
 [dist]
 # The preferred dist version to use in CI (Cargo.toml SemVer syntax)
-cargo-dist-version = "0.28.0"
+cargo-dist-version = "0.30.3"
 # CI backends to support
 ci = "github"
 # The installers to generate for each app
@@ -13,7 +13,6 @@ installers = ["shell", "powershell"]
 targets = [
     "aarch64-apple-darwin",
     "aarch64-unknown-linux-gnu",
-    "x86_64-apple-darwin",
     "x86_64-unknown-linux-gnu",
     "x86_64-pc-windows-msvc",
 ]
@@ -33,6 +32,7 @@ unix-archive = ".tar.gz"
 allow-dirty = ["ci"]
 
 [dist.github-custom-runners]
+aarch64-apple-darwin = "macos-14"
 x86_64-pc-windows-msvc = "windows-2022"
 x86_64-unknown-linux-gnu = "ubuntu-22.04"
 aarch64-unknown-linux-gnu = "ubuntu-22.04"

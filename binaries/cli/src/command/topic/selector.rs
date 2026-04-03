@@ -4,16 +4,15 @@ use std::{
     fmt,
 };
 
-use crate::common::resolve_dataflow_identifier_interactive;
-use communication_layer_request_reply::TcpRequestReplyConnection;
+use crate::common::{resolve_dataflow_identifier_interactive, rpc};
 use dora_core::{config::InputMapping, descriptor::Descriptor};
 use dora_message::{
     DataflowId,
-    cli_to_coordinator::ControlRequest,
-    coordinator_to_cli::ControlRequestReply,
+    cli_to_coordinator::CoordinatorControlClient,
     id::{DataId, NodeId},
+    tarpc,
 };
-use eyre::{Context, ContextCompat, bail};
+use eyre::{ContextCompat, bail};
 use uuid::Uuid;
 
 #[derive(Debug, clap::Args)]
@@ -24,27 +23,18 @@ pub struct DataflowSelector {
 }
 
 impl DataflowSelector {
-    pub fn resolve(
+    pub async fn resolve(
         &self,
-        session: &mut TcpRequestReplyConnection,
+        client: &CoordinatorControlClient,
     ) -> eyre::Result<(Uuid, Descriptor)> {
         let dataflow_id =
-            resolve_dataflow_identifier_interactive(&mut *session, self.dataflow.as_deref())?;
-        let reply_raw = session
-            .request(
-                &serde_json::to_vec(&ControlRequest::Info {
-                    dataflow_uuid: dataflow_id,
-                })
-                .unwrap(),
-            )
-            .wrap_err("failed to send message")?;
-        let reply: ControlRequestReply =
-            serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-        match reply {
-            ControlRequestReply::DataflowInfo { descriptor, .. } => Ok((dataflow_id, descriptor)),
-            ControlRequestReply::Error(err) => bail!("{err}"),
-            other => bail!("unexpected list dataflow reply: {other:?}"),
-        }
+            resolve_dataflow_identifier_interactive(client, self.dataflow.as_deref()).await?;
+        let info = rpc(
+            "get dataflow info",
+            client.info(tarpc::context::current(), dataflow_id),
+        )
+        .await?;
+        Ok((dataflow_id, info.descriptor))
     }
 }
 
@@ -70,11 +60,11 @@ impl fmt::Display for TopicIdentifier {
 }
 
 impl TopicSelector {
-    pub fn resolve(
+    pub async fn resolve(
         &self,
-        session: &mut TcpRequestReplyConnection,
+        client: &CoordinatorControlClient,
     ) -> eyre::Result<(DataflowId, BTreeSet<TopicIdentifier>)> {
-        let (dataflow_id, dataflow_descriptor) = self.dataflow.resolve(session)?;
+        let (dataflow_id, dataflow_descriptor) = self.dataflow.resolve(client).await?;
         if !dataflow_descriptor.debug.publish_all_messages_to_zenoh {
             bail!(
                 "Dataflow `{dataflow_id}` does not have `publish_all_messages_to_zenoh` enabled. You should enable it in order to inspect data.\n\

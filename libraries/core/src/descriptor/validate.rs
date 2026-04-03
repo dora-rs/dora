@@ -10,7 +10,7 @@ use dora_message::{
     id::{DataId, NodeId, OperatorId},
 };
 use eyre::{Context, bail, eyre};
-use std::{collections::BTreeMap, path::Path, process::Command};
+use std::{collections::BTreeMap, path::Path, process::Command, time::Duration};
 use tracing::info;
 
 use super::{Descriptor, DescriptorExt, resolve_path};
@@ -24,6 +24,7 @@ pub fn check_dataflow(
 ) -> eyre::Result<()> {
     let nodes = dataflow.resolve_aliases_and_set_defaults()?;
     let mut has_python_operator = false;
+    let mut errors: Vec<String> = Vec::new();
 
     // check that nodes and operators exist
     for node in nodes.values() {
@@ -34,7 +35,9 @@ pub fn check_dataflow(
                     DYNAMIC_SOURCE => (),
                     source => {
                         if source_is_url(source) {
-                            info!("{source} is a URL."); // TODO: Implement url check.
+                            if let Err(err) = check_url(source) {
+                                errors.push(format!("node `{}`: {err}", node.id));
+                            }
                         } else if let Some(remote_daemon_id) = remote_daemon_id {
                             if let Some(deploy) = &node.deploy {
                                 if let Some(machine) = &deploy.machine {
@@ -47,10 +50,8 @@ pub fn check_dataflow(
                             }
                         } else if custom.build.is_some() {
                             info!("skipping path check for node with build command");
-                        } else {
-                            resolve_path(source, working_dir).wrap_err_with(|| {
-                                format!("Could not find source path `{source}`")
-                            })?;
+                        } else if let Err(err) = resolve_path(source, working_dir) {
+                            errors.push(format!("node `{}`: {err}", node.id));
                         };
                     }
                 },
@@ -58,18 +59,37 @@ pub fn check_dataflow(
                     info!("skipping check for node with git source");
                 }
             },
-            descriptor::CoreNodeKind::Runtime(node) => {
-                for operator_definition in &node.operators {
+            descriptor::CoreNodeKind::Runtime(runtime_node) => {
+                for operator_definition in &runtime_node.operators {
                     match &operator_definition.config.source {
                         OperatorSource::SharedLibrary(path) => {
                             if source_is_url(path) {
-                                info!("{path} is a URL."); // TODO: Implement url check.
+                                if let Err(err) = check_url(path) {
+                                    errors.push(format!(
+                                        "node `{}`, operator `{}`: {err}",
+                                        node.id, operator_definition.id,
+                                    ));
+                                }
                             } else if operator_definition.config.build.is_some() {
                                 info!("skipping path check for operator with build command");
                             } else {
-                                let path = adjust_shared_library_path(Path::new(&path))?;
-                                if !working_dir.join(&path).exists() {
-                                    bail!("no shared library at `{}`", path.display());
+                                match adjust_shared_library_path(Path::new(&path)) {
+                                    Ok(path) => {
+                                        if !working_dir.join(&path).exists() {
+                                            errors.push(format!(
+                                                "node `{}`, operator `{}`: no shared library at `{}`",
+                                                node.id,
+                                                operator_definition.id,
+                                                path.display()
+                                            ));
+                                        }
+                                    }
+                                    Err(err) => {
+                                        errors.push(format!(
+                                            "node `{}`, operator `{}`: {err}",
+                                            node.id, operator_definition.id,
+                                        ));
+                                    }
                                 }
                             }
                         }
@@ -77,16 +97,17 @@ pub fn check_dataflow(
                             has_python_operator = true;
                             let path = &python_source.source;
                             if source_is_url(path) {
-                                info!("{path} is a URL."); // TODO: Implement url check.
+                                if let Err(err) = check_url(path) {
+                                    errors.push(format!(
+                                        "node `{}`, operator `{}`: {err}",
+                                        node.id, operator_definition.id,
+                                    ));
+                                }
                             } else if !working_dir.join(path).exists() {
-                                bail!("no Python library at `{path}`");
-                            }
-                        }
-                        OperatorSource::Wasm(path) => {
-                            if source_is_url(path) {
-                                info!("{path} is a URL."); // TODO: Implement url check.
-                            } else if !working_dir.join(path).exists() {
-                                bail!("no WASM library at `{path}`");
+                                errors.push(format!(
+                                    "node `{}`, operator `{}`: no Python library at `{path}`",
+                                    node.id, operator_definition.id,
+                                ));
                             }
                         }
                     }
@@ -100,17 +121,22 @@ pub fn check_dataflow(
         match &node.kind {
             descriptor::CoreNodeKind::Custom(custom_node) => {
                 for (input_id, input) in &custom_node.run_config.inputs {
-                    check_input(input, &nodes, &format!("{}/{input_id}", node.id))?;
+                    if let Err(err) = check_input(input, &nodes, &format!("{}/{input_id}", node.id))
+                    {
+                        errors.push(format!("{err}"));
+                    }
                 }
             }
             descriptor::CoreNodeKind::Runtime(runtime_node) => {
                 for operator_definition in &runtime_node.operators {
                     for (input_id, input) in &operator_definition.config.inputs {
-                        check_input(
+                        if let Err(err) = check_input(
                             input,
                             &nodes,
                             &format!("{}/{}/{input_id}", operator_definition.id, node.id),
-                        )?;
+                        ) {
+                            errors.push(format!("{err}"));
+                        }
                     }
                 }
             }
@@ -119,15 +145,34 @@ pub fn check_dataflow(
 
     // Check that nodes can resolve `send_stdout_as`
     for node in nodes.values() {
-        node.send_stdout_as()
-            .context("Could not resolve `send_stdout_as` configuration")?;
+        if let Err(err) = node.send_stdout_as() {
+            errors.push(format!(
+                "node `{}`: could not resolve `send_stdout_as` configuration: {err}",
+                node.id
+            ));
+        }
     }
 
     if has_python_operator {
-        check_python_runtime()?;
+        if let Err(err) = check_python_runtime() {
+            errors.push(format!("{err}"));
+        }
     }
 
-    Ok(())
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        let error_list = errors
+            .iter()
+            .map(|e| format!("  - {e}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        bail!(
+            "found {} validation error(s):\n{}",
+            errors.len(),
+            error_list
+        );
+    }
 }
 
 pub trait ResolvedNodeExt {
@@ -240,4 +285,117 @@ assert dora.__version__=='{VERSION}',  'Python dora-rs should be {VERSION}, but 
     }
 
     Ok(())
+}
+
+fn check_url(url: &str) -> eyre::Result<()> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .wrap_err("failed to build HTTP client for URL validation")?;
+
+    match client.head(url).send() {
+        Ok(response) => {
+            if response.status().is_success() {
+                Ok(())
+            } else if response.status() == reqwest::StatusCode::METHOD_NOT_ALLOWED {
+                match client.get(url).send() {
+                    Ok(get_response) if get_response.status().is_success() => Ok(()),
+                    Ok(get_response) => eyre::bail!(
+                        "URL `{}` is not reachable (status code: {})",
+                        url,
+                        get_response.status()
+                    ),
+                    Err(err) => eyre::bail!("Failed to reach URL `{}`: {}", url, err),
+                }
+            } else {
+                eyre::bail!(
+                    "URL `{}` is not reachable (status code: {})",
+                    url,
+                    response.status()
+                )
+            }
+        }
+        Err(err) => eyre::bail!("Failed to reach URL `{}`: {}", url, err),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::check_url;
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::thread;
+
+    fn read_request_method(stream: &mut TcpStream) -> String {
+        let mut buffer = [0_u8; 2048];
+        let bytes_read = stream.read(&mut buffer).expect("failed to read request");
+        let request = std::str::from_utf8(&buffer[..bytes_read]).expect("invalid UTF-8 in request");
+        request
+            .lines()
+            .next()
+            .and_then(|line| line.split_whitespace().next())
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    #[test]
+    fn check_url_accepts_success_status() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("failed to bind test server");
+        let addr = listener.local_addr().expect("failed to get local addr");
+
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("failed to accept connection");
+            let _ = read_request_method(&mut stream);
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                .expect("failed to write response");
+        });
+
+        check_url(&format!("http://{addr}/ok")).expect("URL should be reachable");
+        handle.join().expect("server thread panicked");
+    }
+
+    #[test]
+    fn check_url_rejects_non_success_status() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("failed to bind test server");
+        let addr = listener.local_addr().expect("failed to get local addr");
+
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("failed to accept connection");
+            let _ = read_request_method(&mut stream);
+            stream
+                .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
+                .expect("failed to write response");
+        });
+
+        let err = check_url(&format!("http://{addr}/missing")).expect_err("URL should be rejected");
+        assert!(err.to_string().contains("status code: 404"));
+        handle.join().expect("server thread panicked");
+    }
+
+    #[test]
+    fn check_url_falls_back_to_get_when_head_not_allowed() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("failed to bind test server");
+        let addr = listener.local_addr().expect("failed to get local addr");
+
+        let handle = thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().expect("failed to accept connection");
+                let method = read_request_method(&mut stream);
+                if method == "HEAD" {
+                    stream
+                        .write_all(b"HTTP/1.1 405 Method Not Allowed\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
+                        .expect("failed to write response");
+                } else {
+                    stream
+                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                        .expect("failed to write response");
+                }
+            }
+        });
+
+        check_url(&format!("http://{addr}/head-not-allowed"))
+            .expect("GET fallback should mark URL as reachable");
+        handle.join().expect("server thread panicked");
+    }
 }

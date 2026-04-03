@@ -32,34 +32,6 @@ impl RegisterResult {
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
-pub enum DaemonCoordinatorEvent {
-    Build(BuildDataflowNodes),
-    Spawn(SpawnDataflowNodes),
-    AllNodesReady {
-        dataflow_id: DataflowId,
-        exited_before_subscribe: Vec<NodeId>,
-    },
-    StopDataflow {
-        dataflow_id: DataflowId,
-        grace_duration: Option<Duration>,
-        #[serde(default)]
-        force: bool,
-    },
-    ReloadDataflow {
-        dataflow_id: DataflowId,
-        node_id: NodeId,
-        operator_id: Option<OperatorId>,
-    },
-    Logs {
-        dataflow_id: DataflowId,
-        node_id: NodeId,
-        tail: Option<usize>,
-    },
-    Destroy,
-    Heartbeat,
-}
-
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub struct BuildDataflowNodes {
     pub build_id: BuildId,
     pub session_id: SessionId,
@@ -96,4 +68,49 @@ pub struct SpawnDataflowNodes {
     pub spawn_nodes: BTreeSet<NodeId>,
     pub uv: bool,
     pub write_events_to: Option<PathBuf>,
+}
+
+type DaemonResult<T> = std::result::Result<T, String>;
+
+#[tarpc::service]
+pub trait DaemonControl {
+    /// Trigger a dataflow build on this daemon.
+    async fn build(request: BuildDataflowNodes) -> DaemonResult<()>;
+    /// Trigger spawning dataflow nodes on this daemon.
+    async fn spawn(request: SpawnDataflowNodes) -> DaemonResult<()>;
+    /// Notify the daemon that all nodes across all daemons are ready.
+    async fn all_nodes_ready(dataflow_id: DataflowId, exited_before_subscribe: Vec<NodeId>);
+    /// Stop a running dataflow on this daemon.
+    async fn stop_dataflow(
+        dataflow_id: DataflowId,
+        grace_duration: Option<Duration>,
+        force: bool,
+    ) -> DaemonResult<()>;
+    /// Reload a specific node/operator in a running dataflow.
+    async fn reload_dataflow(
+        dataflow_id: DataflowId,
+        node_id: NodeId,
+        operator_id: Option<OperatorId>,
+    ) -> DaemonResult<()>;
+    /// Retrieve log file contents for a specific node.
+    async fn logs(
+        dataflow_id: DataflowId,
+        node_id: NodeId,
+        tail: Option<usize>,
+    ) -> DaemonResult<crate::common::LogsResponse>;
+    /// Destroy the daemon (shut it down).
+    async fn destroy() -> DaemonResult<()>;
+    /// Heartbeat check.
+    async fn heartbeat();
+    /// Return the daemon's version info for compatibility checking.
+    async fn get_version() -> DaemonVersionInfo;
+}
+
+/// Version info returned by the daemon's `get_version` RPC method.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct DaemonVersionInfo {
+    /// The daemon's own crate version (e.g. "0.4.1")
+    pub daemon_version: String,
+    /// The dora-message crate version used by the daemon (e.g. "0.7.0")
+    pub message_format_version: String,
 }

@@ -30,12 +30,6 @@ pub struct NodeConfig {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum DaemonCommunication {
-    Shmem {
-        daemon_control_region_id: SharedMemoryId,
-        daemon_drop_region_id: SharedMemoryId,
-        daemon_events_region_id: SharedMemoryId,
-        daemon_events_close_region_id: SharedMemoryId,
-    },
     Tcp {
         socket_addr: SocketAddr,
     },
@@ -73,7 +67,15 @@ pub enum NodeEvent {
     InputClosed {
         id: DataId,
     },
+    /// Notifies a node that all its inputs have been closed.
+    ///
+    /// This event is only sent to nodes that have at least one input.
     AllInputsClosed,
+    NodeFailed {
+        affected_input_ids: Vec<DataId>,
+        error: String,
+        source_node_id: NodeId,
+    },
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

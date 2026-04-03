@@ -1,5 +1,5 @@
 use dora_arrow_convert::ArrowData;
-use dora_core::config::{DataId, OperatorId};
+use dora_core::config::{DataId, NodeId, OperatorId};
 use dora_message::metadata::Metadata;
 
 /// Represents an incoming Dora event.
@@ -41,20 +41,27 @@ pub enum Event {
         /// assigned to the input in the YAML file.
         id: DataId,
     },
+    /// A node failed and exited with a non-zero exit code.
+    ///
+    /// The daemon automatically creates this event when a node exits with a non-zero exit code.
+    /// This allows downstream nodes to handle the error gracefully (e.g., use cached data,
+    /// switch to backup source, log and continue).
+    NodeFailed {
+        /// The IDs of the inputs that are affected by the node failure, as specified in the YAML file.
+        ///
+        /// A node failure can affect multiple inputs if the failed node produced multiple outputs
+        /// that are consumed by this node.
+        affected_input_ids: Vec<DataId>,
+        /// The error message describing the failure.
+        error: String,
+        /// The ID of the node that failed.
+        source_node_id: NodeId,
+    },
     /// Notification that the event stream is about to close.
     ///
     /// The [`StopCause`] field contains the reason for the event stream closure.
     ///
-    /// Typically, nodes should exit once the event stream closes. One notable
-    /// exception are nodes with no inputs, which will receive aa
-    /// `Event::Stop(StopCause::AllInputsClosed)` right at startup. Source nodes
-    /// might want to keep producing outputs still. (There is currently an open
-    /// discussion of changing this behavior and not sending `AllInputsClosed`
-    /// to nodes without inputs.)
-    ///
-    /// Note: Stop events with `StopCause::Manual` indicate a manual stop operation
-    /// issued through `dora stop` or a `ctrl-c`. Nodes **must exit** once receiving
-    /// such a stop event, otherwise they will be killed by Dora.
+    /// Nodes should exit once the event stream closes.
     Stop(StopCause),
     /// Instructs the node to reload itself or one of its operators.
     ///
@@ -87,5 +94,7 @@ pub enum StopCause {
     /// receiving such a stop event.
     Manual,
     /// The event stream is closed because all of the node's inputs were closed.
+    ///
+    /// This stop event type is only sent for nodes that have at least one input.
     AllInputsClosed,
 }

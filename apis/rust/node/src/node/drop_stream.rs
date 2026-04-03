@@ -26,12 +26,6 @@ impl DropStream {
         let channel = match daemon_communication {
             DaemonCommunicationWrapper::Standard(daemon_communication) => {
                 match daemon_communication {
-                    DaemonCommunication::Shmem {
-                        daemon_drop_region_id,
-                        ..
-                    } => unsafe { DaemonChannel::new_shmem(daemon_drop_region_id) }.wrap_err_with(
-                        || format!("failed to create shmem drop stream for node `{node_id}`"),
-                    )?,
                     DaemonCommunication::Tcp { socket_addr } => {
                         DaemonChannel::new_tcp(*socket_addr).wrap_err_with(|| {
                             format!("failed to connect drop stream for node `{node_id}`")
@@ -80,7 +74,7 @@ impl DropStream {
             other => eyre::bail!("unexpected drop subscribe reply: {other:?}"),
         }
 
-        let (tx, rx) = flume::bounded(0);
+        let (tx, rx) = flume::unbounded();
         let node_id_cloned = node_id.clone();
 
         let handle = std::thread::spawn(|| drop_stream_loop(node_id_cloned, tx, channel, clock));
@@ -170,23 +164,22 @@ impl DropStreamThreadHandle {
 }
 
 impl Drop for DropStreamThreadHandle {
-    #[tracing::instrument(skip(self), fields(node_id = %self.node_id))]
     fn drop(&mut self) {
         if self.handle.is_empty() {
             tracing::trace!("waiting for drop stream thread");
         }
         match self.handle.recv_timeout(Duration::from_secs(2)) {
             Ok(Ok(())) => {
-                tracing::trace!("drop stream thread done");
+                tracing::trace!(node_id = %self.node_id, "drop stream thread done");
             }
             Ok(Err(_)) => {
-                tracing::error!("drop stream thread panicked");
+                tracing::error!(node_id = %self.node_id, "drop stream thread panicked");
             }
             Err(RecvTimeoutError::Timeout) => {
-                tracing::warn!("timeout while waiting for drop stream thread");
+                tracing::warn!(node_id = %self.node_id, "timeout while waiting for drop stream thread");
             }
             Err(RecvTimeoutError::Disconnected) => {
-                tracing::warn!("drop stream thread result channel closed unexpectedly");
+                tracing::warn!(node_id = %self.node_id, "drop stream thread result channel closed unexpectedly");
             }
         }
     }

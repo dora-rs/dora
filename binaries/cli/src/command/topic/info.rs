@@ -13,7 +13,6 @@ use dora_message::{
     common::Timestamped, daemon_to_daemon::InterDaemonEvent, metadata::ArrowTypeInfo,
 };
 use eyre::{Context, eyre};
-use tokio::runtime::Builder;
 
 use crate::{
     command::{Executable, default_tracing, topic::selector::TopicSelector},
@@ -53,10 +52,10 @@ pub struct Info {
 }
 
 impl Executable for Info {
-    fn execute(self) -> eyre::Result<()> {
+    async fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
 
-        info(self.coordinator, self.selector, self.duration)
+        info(self.coordinator, self.selector, self.duration).await
     }
 }
 
@@ -109,13 +108,13 @@ impl TopicStats {
     }
 }
 
-fn info(
+async fn info(
     coordinator: CoordinatorOptions,
     selector: TopicSelector,
     duration_secs: u64,
 ) -> eyre::Result<()> {
-    let mut session = coordinator.connect()?;
-    let (dataflow_id, topics) = selector.resolve(session.as_mut())?;
+    let client = coordinator.connect_rpc().await?;
+    let (dataflow_id, topics) = selector.resolve(&client).await?;
 
     if topics.is_empty() {
         eyre::bail!("No topics specified");
@@ -128,7 +127,7 @@ fn info(
     let topic = topics.into_iter().next().unwrap();
 
     // Get dataflow descriptor to find subscribers
-    let (_, descriptor) = selector.dataflow.resolve(session.as_mut())?;
+    let (_, descriptor) = selector.dataflow.resolve(&client).await?;
 
     // Find subscribers
     let mut subscribers = Vec::new();
@@ -143,70 +142,59 @@ fn info(
     }
 
     // Collect statistics by subscribing to messages
-    let rt = Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .context("tokio runtime failed")?;
+    let stats = TopicStats::default();
 
-    let stats = Arc::new(TopicStats::default());
-    let stats_clone = stats.clone();
-    let dataflow_id_clone = dataflow_id;
-    let topic_clone = topic.clone();
     let coordinator_addr = coordinator.coordinator_addr;
 
-    rt.block_on(async move {
-        let zenoh_session = open_zenoh_session(Some(coordinator_addr))
-            .await
-            .context("failed to open zenoh session")?;
+    let zenoh_session = open_zenoh_session(Some(coordinator_addr))
+        .await
+        .context("failed to open zenoh session")?;
 
-        let subscribe_topic = zenoh_output_publish_topic(
-            dataflow_id_clone,
-            &topic_clone.node_id,
-            &topic_clone.data_id,
-        );
-        let subscriber = zenoh_session
-            .declare_subscriber(subscribe_topic)
-            .await
-            .map_err(|e| eyre!(e))
-            .wrap_err_with(|| format!("failed to subscribe to {}", topic_clone))?;
+    let subscribe_topic = zenoh_output_publish_topic(dataflow_id, &topic.node_id, &topic.data_id);
+    let subscriber = zenoh_session
+        .declare_subscriber(subscribe_topic)
+        .await
+        .map_err(|e| eyre!(e))
+        .wrap_err_with(|| format!("failed to subscribe to {}", topic))?;
 
-        let start_time = Instant::now();
-        let duration = Duration::from_secs(duration_secs);
-        let end_time = start_time + duration;
-        let deadline = tokio::time::Instant::from_std(end_time);
+    let start_time = Instant::now();
+    let duration = Duration::from_secs(duration_secs);
+    let end_time = start_time + duration;
+    let deadline = tokio::time::Instant::from_std(end_time);
 
-        // Collect messages for the specified duration
-        while Instant::now() < end_time {
-            let Ok(sample) = tokio::time::timeout_at(deadline, subscriber.recv_async()).await
-            else {
-                break;
-            };
+    // Collect messages for the specified duration
+    while Instant::now() < end_time {
+        let Ok(sample) = tokio::time::timeout_at(deadline, subscriber.recv_async()).await else {
+            break;
+        };
 
-            match sample {
-                Ok(sample) => {
-                    let event = match Timestamped::deserialize_inter_daemon_event(
-                        &sample.payload().to_bytes(),
-                    ) {
+        match sample {
+            Ok(sample) => {
+                let event =
+                    match Timestamped::deserialize_inter_daemon_event(&sample.payload().to_bytes())
+                    {
                         Ok(event) => event,
                         Err(_) => continue,
                     };
 
-                    match event.inner {
-                        InterDaemonEvent::Output { metadata, data, .. } => {
-                            let data_size = data.as_ref().map(|d| d.len()).unwrap_or(0);
-                            let now = Instant::now();
-                            stats_clone.record(data_size, &metadata.type_info, now);
-                        }
-                        InterDaemonEvent::OutputClosed { .. } => {
-                            break;
-                        }
+                match event.inner {
+                    InterDaemonEvent::Output { metadata, data, .. } => {
+                        let data_size = data.as_ref().map(|d| d.len()).unwrap_or(0);
+                        let now = Instant::now();
+                        stats.record(data_size, &metadata.type_info, now);
+                    }
+                    InterDaemonEvent::OutputClosed { .. } => {
+                        break;
+                    }
+                    InterDaemonEvent::NodeFailed { .. } => {
+                        // Node failed, stop collecting statistics
+                        break;
                     }
                 }
-                Err(_) => break,
             }
+            Err(_) => break,
         }
-        Ok::<(), eyre::Error>(())
-    })?;
+    }
 
     // Display the information
     let message_count = *stats.message_count.lock().unwrap();

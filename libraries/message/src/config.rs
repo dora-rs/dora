@@ -220,15 +220,9 @@ pub struct CommunicationConfig {
     )]
     #[schemars(with = "LocalCommunicationConfig")]
     pub local: LocalCommunicationConfig,
-    #[serde(
-        default,
-        with = "serde_yaml::with::singleton_map",
-        rename = "_unstable_remote"
-    )]
-    #[schemars(with = "String")]
-    pub remote: RemoteCommunicationConfig,
 }
 
+<<<<<<< HEAD
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum LocalCommunicationConfig {
@@ -312,3 +306,11 @@ mod tests {
     }
 }
 
+=======
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+pub enum LocalCommunicationConfig {
+    #[default]
+    Tcp,
+    UnixDomain,
+}
+>>>>>>> upstream/main

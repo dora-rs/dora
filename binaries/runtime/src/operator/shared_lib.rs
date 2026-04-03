@@ -23,14 +23,14 @@ use std::{
     path::Path,
     sync::Arc,
 };
-use tokio::sync::{mpsc::Sender, oneshot};
+use tokio::sync::oneshot;
 use tracing::{field, span};
 
 pub fn run(
     _node_id: &NodeId,
     _operator_id: &OperatorId,
     source: &str,
-    events_tx: Sender<OperatorEvent>,
+    events_tx: flume::Sender<OperatorEvent>,
     incoming_events: flume::Receiver<Event>,
     init_done: oneshot::Sender<Result<()>>,
 ) -> eyre::Result<()> {
@@ -52,7 +52,19 @@ pub fn run(
     };
 
     let closure = AssertUnwindSafe(|| {
-        let bindings = Bindings::init(&library).context("failed to init operator")?;
+        let bindings = match Bindings::init(&library) {
+            Ok(b) => b,
+            Err(err) => {
+                let err = err.wrap_err(format!(
+                    "failed to init operator bindings from `{}`. \
+                        On Windows, ensure that the shared library exports the required symbols \
+                        (dora_init_operator, dora_drop_operator, dora_on_event).",
+                    path.display()
+                ));
+                let _ = init_done.send(Err(eyre!("{err:?}")));
+                return Err(err);
+            }
+        };
 
         let operator = SharedLibraryOperator {
             incoming_events,
@@ -64,13 +76,13 @@ pub fn run(
     });
     match catch_unwind(closure) {
         Ok(Ok(reason)) => {
-            let _ = events_tx.blocking_send(OperatorEvent::Finished { reason });
+            let _ = events_tx.send(OperatorEvent::Finished { reason });
         }
         Ok(Err(err)) => {
-            let _ = events_tx.blocking_send(OperatorEvent::Error(err));
+            let _ = events_tx.send(OperatorEvent::Error(err));
         }
         Err(panic) => {
-            let _ = events_tx.blocking_send(OperatorEvent::Panic(panic));
+            let _ = events_tx.send(OperatorEvent::Panic(panic));
         }
     }
 
@@ -79,7 +91,7 @@ pub fn run(
 
 struct SharedLibraryOperator<'lib> {
     incoming_events: flume::Receiver<Event>,
-    events_tx: Sender<OperatorEvent>,
+    events_tx: flume::Sender<OperatorEvent>,
 
     bindings: Bindings<'lib>,
 }
@@ -140,7 +152,7 @@ impl SharedLibraryOperator<'_> {
 
             let result = self
                 .events_tx
-                .blocking_send(event)
+                .send(event)
                 .map_err(|_| eyre!("failed to send output to runtime"));
 
             match result {
@@ -172,7 +184,9 @@ impl SharedLibraryOperator<'_> {
 
                 let otel = metadata.open_telemetry_context();
                 let cx = deserialize_context(&otel);
-                span.set_parent(cx);
+                span.set_parent(cx)
+                    .context("failed to set parent span")
+                    .unwrap_or_default();
                 let cx = span.context();
                 let string_cx = serialize_context(&cx);
                 metadata.parameters.insert(

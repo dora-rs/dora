@@ -74,6 +74,27 @@ pub struct Descriptor {
     /// Most of the other node fields are optional, but you typically want to specify at least some `inputs` and/or `outputs`.
     pub nodes: Vec<Node>,
 
+    /// Global Environment variables inherited by all nodes (optional)
+    ///
+    /// ## Example
+    ///
+    /// ```yaml
+    /// env:
+    ///     MY_VAR: "my_var"
+    ///
+    /// nodes:
+    ///   - id: foo
+    ///     path: path/to/the/executable
+    ///     # ... (see below)
+    ///   - id: bar
+    ///     path: path/to/another/executable
+    ///     # ... (see below)
+    /// ```
+    ///
+    /// Note that, If there is an env at the node level, Node level env will have more priority than the global env
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<BTreeMap<String, EnvValue>>,
+
     /// Communication configuration (optional, uses defaults)
     #[schemars(skip)]
     #[serde(default)]
@@ -88,6 +109,24 @@ pub struct Descriptor {
     #[schemars(skip)]
     #[serde(default, rename = "_unstable_debug")]
     pub debug: Debug,
+}
+
+/// Specifies when a node should be restarted.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum RestartPolicy {
+    /// Never restart the node (default)
+    #[default]
+    Never,
+    /// Restart the node if it exits with a non-zero exit code.
+    OnFailure,
+    /// Always restart the node when it exits, regardless of exit code.
+    ///
+    /// The node will not be restarted on the following conditions:
+    ///
+    /// - The node was stopped by the user (e.g., via `dora stop`).
+    /// - All inputs to the node have been closed and the node finished with a non-zero exit code.
+    Always,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -462,6 +501,12 @@ pub struct Node {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rev: Option<String>,
 
+    /// Whether this node should be restarted on exit or error.
+    ///
+    /// Defaults to `RestartPolicy::Never`.
+    #[serde(default)]
+    pub restart_policy: RestartPolicy,
+
     /// Unstable machine deployment configuration
     #[schemars(skip)]
     #[serde(rename = "_unstable_deploy")]
@@ -564,8 +609,6 @@ pub struct OperatorConfig {
 pub enum OperatorSource {
     SharedLibrary(String),
     Python(PythonSource),
-    #[schemars(skip)]
-    Wasm(String),
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(from = "PythonSourceDef", into = "PythonSourceDef")]
@@ -635,15 +678,17 @@ pub struct CustomNode {
     /// Args for the executable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub args: Option<String>,
-    /// Environment variables for the custom nodes
-    ///
-    /// Deprecated, use outer-level `env` field instead.
+    /// Environment variables for the custom nodes.
+    #[deprecated(note = "Use the outer-level `env` field on `Node` instead")]
     pub envs: Option<BTreeMap<String, EnvValue>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build: Option<String>,
     /// Send stdout and stderr to another node
     #[serde(skip_serializing_if = "Option::is_none")]
     pub send_stdout_as: Option<String>,
+
+    #[serde(default)]
+    pub restart_policy: RestartPolicy,
 
     #[serde(flatten)]
     pub run_config: NodeRunConfig,

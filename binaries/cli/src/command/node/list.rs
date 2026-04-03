@@ -7,15 +7,12 @@ use uuid::Uuid;
 
 use crate::{
     command::{Executable, default_tracing},
-    common::CoordinatorOptions,
+    common::{CoordinatorOptions, rpc},
     formatting::OutputFormat,
 };
-use communication_layer_request_reply::TcpRequestReplyConnection;
 use dora_message::{
-    cli_to_coordinator::ControlRequest,
-    coordinator_to_cli::{ControlRequestReply, NodeInfo},
+    cli_to_coordinator::CoordinatorControlClient, coordinator_to_cli::NodeInfo, tarpc,
 };
-use eyre::{Context, bail};
 
 /// List all currently running nodes and their status.
 ///
@@ -45,11 +42,11 @@ pub struct List {
 }
 
 impl Executable for List {
-    fn execute(self) -> eyre::Result<()> {
+    async fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
 
-        let mut session = self.coordinator.connect()?;
-        list(session.as_mut(), self.dataflow, self.format)
+        let client = self.coordinator.connect_rpc().await?;
+        list(&client, self.dataflow, self.format).await
     }
 }
 
@@ -64,24 +61,17 @@ struct OutputEntry {
     dataflow: Option<String>,
 }
 
-fn list(
-    session: &mut TcpRequestReplyConnection,
+async fn list(
+    client: &CoordinatorControlClient,
     dataflow_filter: Option<String>,
     format: OutputFormat,
 ) -> eyre::Result<()> {
     // Request node information from coordinator
-    let reply_raw = session
-        .request(&serde_json::to_vec(&ControlRequest::GetNodeInfo).unwrap())
-        .wrap_err("failed to send GetNodeInfo request")?;
-
-    let reply: ControlRequestReply =
-        serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-
-    let node_infos = match reply {
-        ControlRequestReply::NodeInfoList(infos) => infos,
-        ControlRequestReply::Error(err) => bail!("{err}"),
-        other => bail!("unexpected reply: {other:?}"),
-    };
+    let node_infos = rpc(
+        "get node info",
+        client.get_node_info(tarpc::context::current()),
+    )
+    .await?;
 
     // Filter by dataflow if specified
     let filtered_nodes: Vec<NodeInfo> = if let Some(ref filter) = dataflow_filter {

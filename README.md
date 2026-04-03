@@ -79,8 +79,8 @@
 
 |                                   | dora-rs                                                                                                                                                                                                     |
 | --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **APIs**                          | Python >= 3.7 including sync ⭐✅ <br> Rust ✅<br> C/C++ 🆗 <br>ROS2 >= Foxy 🆗                                                                                                                             |
-| **OS**                            | Linux: Arm 32 ⭐✅ Arm 64 ⭐✅ x64_86 ⭐✅ <br>MacOS: Arm 64 ⭐✅ <br>Windows: x64_86 🆗 <br>WSL: x64_86 🆗 <br> Android: 🛠️ (Blocked by: https://github.com/elast0ny/shared_memory/issues/32) <br> IOS: 🛠️ |
+| **APIs**                          | Python >= 3.8 including sync ⭐✅ <br> Rust ✅<br> C/C++ 🆗 <br>ROS2 >= Foxy 🆗                                                                                                                             |
+| **OS**                            | Linux: Arm 32 ⭐✅ Arm 64 ⭐✅ x86_64 ⭐✅ <br>MacOS: Arm 64 ⭐✅ <br>Windows: x86_64 🆗 <br>WSL: x86_64 🆗 <br> Android: 🛠️ (Blocked by: https://github.com/elast0ny/shared_memory/issues/32) <br> IOS: 🛠️ |
 | **Message Format**                | Arrow ✅ <br> Standard Specification 🛠️                                                                                                                                                                     |
 | **Local Communication**           | Shared Memory ✅ <br> [Cuda IPC](https://arrow.apache.org/docs/python/api/cuda.html) 📐                                                                                                                     |
 | **Remote Communication**          | [Zenoh](https://zenoh.io/) 📐                                                                                                                                                                               |
@@ -129,6 +129,8 @@ The node hub is available in the [**`dora-rs/dora-hub`**](https://github.com/dor
 pip install dora-rs-cli
 ```
 
+Note for Ubuntu users: If you encounter an 'externally-managed-environment' error during installation, try installing inside a virtual environment (python3 -m venv venv).
+
 <details close>
 <summary><b>Additional installation methods</b></summary>
 
@@ -144,6 +146,12 @@ cargo install dora-cli
 
 ```bash
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/dora-rs/dora/releases/latest/download/dora-cli-installer.sh | sh
+```
+
+To install a specific version:
+
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf https://raw.githubusercontent.com/dora-rs/dora/main/install.sh | sh -s -- --tag v0.3.12
 ```
 
 ### With Github release for Windows

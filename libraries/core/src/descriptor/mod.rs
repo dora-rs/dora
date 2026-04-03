@@ -10,7 +10,6 @@ use std::{
     path::{Path, PathBuf},
     process::Stdio,
 };
-use tokio::process::Command;
 
 // reexport for compatibility
 pub use dora_message::descriptor::{
@@ -92,6 +91,7 @@ impl DescriptorExt for Descriptor {
                         outputs: node.outputs,
                     },
                     envs: None,
+                    restart_policy: node.restart_policy,
                 }),
                 NodeKindMut::Custom(node) => CoreNodeKind::Custom(node.clone()),
                 NodeKindMut::Runtime(node) => CoreNodeKind::Runtime(node.clone()),
@@ -103,13 +103,21 @@ impl DescriptorExt for Descriptor {
                 }),
             };
 
+            let env = match (self.env.clone(), node.env) {
+                (None, node_env) => node_env,
+                (Some(mut self_env), node_env) => {
+                    self_env.extend(node_env.unwrap_or_default());
+                    Some(self_env)
+                }
+            };
+
             resolved.insert(
                 node.id.clone(),
                 ResolvedNode {
                     id: node.id,
                     name: node.name,
                     description: node.description,
-                    env: node.env,
+                    env,
                     deploy: node.deploy,
                     kind,
                 },
@@ -153,7 +161,7 @@ pub async fn read_as_descriptor(path: &Path) -> eyre::Result<Descriptor> {
     Descriptor::parse(buf)
 }
 
-fn node_kind_mut(node: &mut Node) -> eyre::Result<NodeKindMut> {
+fn node_kind_mut(node: &mut Node) -> eyre::Result<NodeKindMut<'_>> {
     match node.kind()? {
         NodeKind::Standard(_) => {
             let source = match (&node.git, &node.branch, &node.tag, &node.rev) {
@@ -223,14 +231,21 @@ pub fn resolve_path(source: &str, working_dir: &Path) -> Result<PathBuf> {
     } else if which::which("uv").is_ok() {
         // spawn: uv run which <path>
         let which = if cfg!(windows) { "where" } else { "which" };
-        let _output = Command::new("uv")
+        let output = std::process::Command::new("uv")
             .arg("run")
             .arg(which)
             .arg(&path)
             .stdout(Stdio::null())
-            .spawn()
-            .context("Could not find binary within uv")?;
-        Ok(path)
+            .stderr(Stdio::null())
+            .output()
+            .context("Could not run `uv run` to find binary")?;
+        if output.status.success() {
+            Ok(path)
+        } else if let Ok(abs_path) = which::which(&path) {
+            Ok(abs_path)
+        } else {
+            bail!("Could not find source path {}", path.display())
+        }
     } else if let Ok(abs_path) = which::which(&path) {
         Ok(abs_path)
     } else {
@@ -239,11 +254,11 @@ pub fn resolve_path(source: &str, working_dir: &Path) -> Result<PathBuf> {
 }
 
 pub trait NodeExt {
-    fn kind(&self) -> eyre::Result<NodeKind>;
+    fn kind(&self) -> eyre::Result<NodeKind<'_>>;
 }
 
 impl NodeExt for Node {
-    fn kind(&self) -> eyre::Result<NodeKind> {
+    fn kind(&self) -> eyre::Result<NodeKind<'_>> {
         match (&self.path, &self.operators, &self.custom, &self.operator) {
             (None, None, None, None) => {
                 eyre::bail!(

@@ -1,21 +1,16 @@
-use std::{
-    io::Write,
-    net::{SocketAddr, TcpStream},
-};
+use std::io::Write;
 
 use super::{Executable, default_tracing};
 use crate::{
-    common::{connect_to_coordinator, resolve_dataflow_identifier_interactive},
-    output::print_log_message,
+    common::{
+        connect_and_check_version, long_context, resolve_dataflow_identifier_interactive, rpc,
+    },
+    output::subscribe_to_logs,
 };
 use clap::Args;
-use communication_layer_request_reply::{TcpConnection, TcpRequestReplyConnection};
 use dora_core::topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST};
-use dora_message::{
-    cli_to_coordinator::ControlRequest, common::LogMessage,
-    coordinator_to_cli::ControlRequestReply, id::NodeId,
-};
-use eyre::{Context, Result, bail};
+use dora_message::cli_to_coordinator::CoordinatorControlClient;
+use eyre::{Context, Result};
 use uuid::Uuid;
 
 #[derive(Debug, Args)]
@@ -26,7 +21,7 @@ pub struct LogsArgs {
     pub dataflow: Option<String>,
     /// Show logs for the given node
     #[clap(value_name = "NAME")]
-    pub node: NodeId,
+    pub node: dora_message::id::NodeId,
     /// Number of lines to show from the end of the logs
     #[clap(long, short = 'n')]
     pub tail: Option<usize>,
@@ -42,91 +37,70 @@ pub struct LogsArgs {
 }
 
 impl Executable for LogsArgs {
-    fn execute(self) -> eyre::Result<()> {
+    async fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
 
-        let mut session =
-            connect_to_coordinator((self.coordinator_addr, self.coordinator_port).into())
-                .wrap_err("failed to connect to dora coordinator")?;
+        let client = connect_and_check_version(self.coordinator_addr, self.coordinator_port)
+            .await
+            .wrap_err("failed to connect to dora coordinator")?;
         let uuid =
-            resolve_dataflow_identifier_interactive(&mut *session, self.dataflow.as_deref())?;
+            resolve_dataflow_identifier_interactive(&client, self.dataflow.as_deref()).await?;
         logs(
-            &mut *session,
+            &client,
             uuid,
             self.node,
             self.tail,
             self.follow,
-            (self.coordinator_addr, self.coordinator_port).into(),
+            self.coordinator_addr,
         )
+        .await
     }
 }
 
-pub fn logs(
-    session: &mut TcpRequestReplyConnection,
+pub async fn logs(
+    client: &CoordinatorControlClient,
     uuid: Uuid,
-    node: NodeId,
+    node: dora_message::id::NodeId,
     tail: Option<usize>,
     follow: bool,
-    coordinator_addr: SocketAddr,
+    coordinator_addr: std::net::IpAddr,
 ) -> Result<()> {
-    let logs = {
-        let reply_raw = session
-            .request(
-                &serde_json::to_vec(&ControlRequest::Logs {
-                    uuid: Some(uuid),
-                    name: None,
-                    node: node.to_string(),
-                    tail,
-                })
-                .wrap_err("")?,
-            )
-            .wrap_err("failed to send Logs request message")?;
+    // When following, subscribe to zenoh *before* fetching historical logs
+    // so that messages published during the RPC are buffered.  The printer
+    // is only started after the historical output is flushed, with a
+    // timestamp cutoff to deduplicate the overlap window.
+    let subscription = if follow {
+        let log_level = env_logger::Builder::new()
+            .filter_level(log::LevelFilter::Info)
+            .parse_default_env()
+            .build()
+            .filter();
 
-        let reply = serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-        match reply {
-            ControlRequestReply::Logs(data) => data,
-            other => bail!("unexpected reply to daemon logs: {other:?}"),
-        }
+        let zenoh_session = dora_core::topics::open_zenoh_session(Some(coordinator_addr))
+            .await
+            .wrap_err("failed to open zenoh session for log subscription")?;
+        let base_topic = dora_core::topics::zenoh_log_base_topic_for_dataflow_node(uuid, &node);
+        Some(subscribe_to_logs(&zenoh_session, &base_topic, log_level).await?)
+    } else {
+        None
     };
+
+    let response = rpc(
+        "retrieve logs",
+        client.logs(long_context(), Some(uuid), None, node.to_string(), tail),
+    )
+    .await?;
 
     std::io::stdout()
-        .write_all(&logs)
+        .write_all(&response.content)
         .expect("failed to write logs to stdout");
 
-    if !follow {
-        return Ok(());
-    }
-    let log_level = env_logger::Builder::new()
-        .filter_level(log::LevelFilter::Info)
-        .parse_default_env()
-        .build()
-        .filter();
-
-    // subscribe to log messages
-    let mut log_session = TcpConnection {
-        stream: TcpStream::connect(coordinator_addr)
-            .wrap_err("failed to connect to dora coordinator")?,
-    };
-    log_session
-        .send(
-            &serde_json::to_vec(&ControlRequest::LogSubscribe {
-                dataflow_id: uuid,
-                level: log_level,
-            })
-            .wrap_err("failed to serialize message")?,
-        )
-        .wrap_err("failed to send log subscribe request to coordinator")?;
-    while let Ok(raw) = log_session.receive() {
-        let parsed: eyre::Result<LogMessage> =
-            serde_json::from_slice(&raw).context("failed to parse log message");
-        match parsed {
-            Ok(log_message) => {
-                print_log_message(log_message, false, false);
-            }
-            Err(err) => {
-                tracing::warn!("failed to parse log message: {err:?}")
-            }
-        }
+    if let Some(subscription) = subscription {
+        // Use the daemon-side timestamp as the dedup cutoff: messages
+        // with an earlier timestamp are already in the historical output.
+        let log_task = subscription.spawn_printer(false, false, Some(response.daemon_timestamp));
+        // Block until the task ends (subscriber closes).
+        let _ = log_task.await;
     }
 
     Ok(())

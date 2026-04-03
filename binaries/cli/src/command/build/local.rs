@@ -10,22 +10,14 @@ use eyre::Context;
 
 use crate::session::DataflowSession;
 
-pub fn build_dataflow_locally(
+pub async fn build_dataflow_locally(
     dataflow: Descriptor,
     git_sources: &BTreeMap<NodeId, GitSource>,
     dataflow_session: &DataflowSession,
     working_dir: PathBuf,
     uv: bool,
 ) -> eyre::Result<BuildInfo> {
-    let runtime = tokio::runtime::Runtime::new()?;
-
-    runtime.block_on(build_dataflow(
-        dataflow,
-        git_sources,
-        dataflow_session,
-        working_dir,
-        uv,
-    ))
+    build_dataflow(dataflow, git_sources, dataflow_session, working_dir, uv).await
 }
 
 async fn build_dataflow(

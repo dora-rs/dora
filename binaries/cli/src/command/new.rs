@@ -14,7 +14,7 @@ pub struct NewArgs {
 }
 
 impl Executable for NewArgs {
-    fn execute(self) -> eyre::Result<()> {
+    async fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
         crate::template::create(self.args, self.internal_create_with_path_dependencies)
     }

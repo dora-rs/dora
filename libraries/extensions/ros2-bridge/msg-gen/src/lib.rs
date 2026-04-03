@@ -9,7 +9,7 @@
 
 use std::path::Path;
 
-use quote::{ToTokens, format_ident, quote};
+use quote::{format_ident, quote};
 
 pub mod parser;
 pub mod types;

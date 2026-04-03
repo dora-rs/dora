@@ -24,7 +24,7 @@ pub struct Graph {
 }
 
 impl Executable for Graph {
-    fn execute(self) -> eyre::Result<()> {
+    async fn execute(self) -> eyre::Result<()> {
         create(self.dataflow, self.mermaid, self.open)
     }
 }
@@ -69,7 +69,9 @@ fn create(dataflow: std::path::PathBuf, mermaid: bool, open: bool) -> eyre::Resu
         );
 
         if open {
-            webbrowser::open(path.as_os_str().to_str().unwrap())?;
+            webbrowser::open(path.to_str().ok_or_else(|| {
+                eyre::eyre!("graph output path is not valid UTF-8: {}", path.display())
+            })?)?;
         }
     }
     Ok(())

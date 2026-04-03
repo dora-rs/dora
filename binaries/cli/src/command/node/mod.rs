@@ -11,9 +11,9 @@ pub enum Node {
 }
 
 impl Executable for Node {
-    fn execute(self) -> eyre::Result<()> {
+    async fn execute(self) -> eyre::Result<()> {
         match self {
-            Node::List(cmd) => cmd.execute(),
+            Node::List(cmd) => cmd.execute().await,
         }
     }
 }
