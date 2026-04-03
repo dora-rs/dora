@@ -66,7 +66,7 @@ use crate::{
 
 use distributed::{build_distributed_dataflow, wait_until_dataflow_built};
 use local::build_dataflow_locally;
-use lockfile::{BuildLockfile, DescriptorGitSource};
+use lockfile::BuildLockfile;
 
 mod distributed;
 mod git;
@@ -215,27 +215,21 @@ pub fn build(
     let resolved_nodes = dataflow_descriptor
         .resolve_aliases_and_set_defaults()
         .context("failed to resolve nodes")?;
-    for (node_id, node) in resolved_nodes {
+    // Pass 1 (fail-fast): derive descriptor git-source fingerprint and validate lockfile
+    // provenance before any per-node locked-source lookups.
+    for (node_id, node) in &resolved_nodes {
         if let CoreNodeKind::Custom(CustomNode {
             source: NodeSource::GitBranch { repo, rev },
             ..
-        }) = node.kind
+        }) = &node.kind
         {
             descriptor_git_sources.insert(
                 node_id.clone(),
-                DescriptorGitSource {
+                NodeSource::GitBranch {
                     repo: repo.clone(),
                     rev: rev.clone(),
                 },
             );
-            let source = match &build_lockfile {
-                Some(lockfile) => lockfile
-                    .get_source(&node_id, &repo)
-                    .with_context(|| format!("failed to resolve locked git source `{node_id}`"))?,
-                None => git::fetch_commit_hash(repo, rev)
-                    .with_context(|| format!("failed to find commit hash for `{node_id}`"))?,
-            };
-            git_sources.insert(node_id, source);
         }
     }
     let descriptor_fingerprint =
@@ -249,6 +243,24 @@ pub fn build(
                     dataflow_path.display()
                 )
             })?;
+    }
+    // Pass 2: resolve each node's concrete source, now that lockfile provenance
+    // has been validated (when `--locked` is enabled).
+    for (node_id, node) in resolved_nodes {
+        if let CoreNodeKind::Custom(CustomNode {
+            source: NodeSource::GitBranch { repo, rev },
+            ..
+        }) = node.kind
+        {
+            let source = match &build_lockfile {
+                Some(lockfile) => lockfile
+                    .get_source(&node_id, &repo)
+                    .with_context(|| format!("failed to resolve locked git source `{node_id}`"))?,
+                None => git::fetch_commit_hash(repo, rev)
+                    .with_context(|| format!("failed to find commit hash for `{node_id}`"))?,
+            };
+            git_sources.insert(node_id, source);
+        }
     }
     if write_lockfile {
         BuildLockfile::write_git_sources(&lockfile_path, &git_sources, &descriptor_fingerprint)

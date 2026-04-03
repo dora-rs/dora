@@ -3,17 +3,15 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use adora_message::{common::GitSource, descriptor::GitRepoRev, id::NodeId};
+use adora_message::{
+    common::GitSource,
+    descriptor::{GitRepoRev, NodeSource},
+    id::NodeId,
+};
 use eyre::{Context, ContextCompat};
 
 const LOCKFILE_VERSION: u32 = 2;
 const MIN_SUPPORTED_LOCKFILE_VERSION: u32 = 1;
-
-#[derive(Debug, Clone)]
-pub struct DescriptorGitSource {
-    pub repo: String,
-    pub rev: Option<GitRepoRev>,
-}
 
 #[derive(serde::Serialize)]
 struct BuildLockfileView<'a> {
@@ -56,33 +54,47 @@ impl BuildLockfile {
         Ok(lockfile)
     }
 
-    pub fn fingerprint_descriptor_git_sources(
-        descriptor_git_sources: &BTreeMap<NodeId, DescriptorGitSource>,
+    pub(crate) fn fingerprint_descriptor_git_sources(
+        descriptor_git_sources: &BTreeMap<NodeId, NodeSource>,
     ) -> String {
-        let mut out = String::new();
-        out.push_str(&format!("adora-lockfile-v{LOCKFILE_VERSION}\n"));
+        let mut canonical = String::new();
+        // Intentional: include schema version in canonical content so lockfile format
+        // bumps force regeneration even if descriptor sources are unchanged.
+        canonical.push_str(&format!("adora-lockfile-v{LOCKFILE_VERSION}\n"));
 
         for (node_id, source) in descriptor_git_sources {
-            out.push_str(node_id.as_ref());
-            out.push('\n');
-            out.push_str(&source.repo);
-            out.push('\n');
-            let (kind, value) = match &source.rev {
+            let NodeSource::GitBranch { repo, rev } = source else {
+                continue;
+            };
+            canonical.push_str(node_id.as_ref());
+            canonical.push('\n');
+            canonical.push_str(repo);
+            canonical.push('\n');
+            let (kind, value) = match rev {
                 Some(GitRepoRev::Branch(v)) => ("branch", v.as_str()),
                 Some(GitRepoRev::Tag(v)) => ("tag", v.as_str()),
                 Some(GitRepoRev::Rev(v)) => ("rev", v.as_str()),
                 None => ("head", ""),
             };
-            out.push_str(kind);
-            out.push(':');
-            out.push_str(value);
-            out.push('\n');
+            canonical.push_str(kind);
+            canonical.push(':');
+            canonical.push_str(value);
+            canonical.push('\n');
         }
 
-        out
+        // Deterministic compact digest (FNV-1a 64-bit). This is for reproducibility
+        // drift detection, not cryptographic integrity.
+        const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+        const FNV_PRIME: u64 = 0x100000001b3;
+        let mut hash = FNV_OFFSET_BASIS;
+        for byte in canonical.as_bytes() {
+            hash ^= *byte as u64;
+            hash = hash.wrapping_mul(FNV_PRIME);
+        }
+        format!("{hash:016x}")
     }
 
-    pub fn ensure_descriptor_fingerprint_matches(&self, expected: &str) -> eyre::Result<()> {
+    pub(crate) fn ensure_descriptor_fingerprint_matches(&self, expected: &str) -> eyre::Result<()> {
         let Some(actual) = self.descriptor_fingerprint.as_deref() else {
             eyre::bail!(
                 "lockfile is missing `descriptor_fingerprint` (v1 format). \
@@ -162,7 +174,7 @@ mod tests {
         );
         descriptor_git_sources.insert(
             "node-a".parse().unwrap(),
-            DescriptorGitSource {
+            NodeSource::GitBranch {
                 repo: "https://example.com/repo".to_string(),
                 rev: Some(GitRepoRev::Branch("main".to_string())),
             },
@@ -204,7 +216,7 @@ mod tests {
         let mut before = BTreeMap::new();
         before.insert(
             "node-a".parse().unwrap(),
-            DescriptorGitSource {
+            NodeSource::GitBranch {
                 repo: "https://example.com/repo".to_string(),
                 rev: Some(GitRepoRev::Branch("main".to_string())),
             },
@@ -212,7 +224,7 @@ mod tests {
         let mut after = before.clone();
         after.insert(
             "node-b".parse().unwrap(),
-            DescriptorGitSource {
+            NodeSource::GitBranch {
                 repo: "https://example.com/repo2".to_string(),
                 rev: Some(GitRepoRev::Tag("v1.2.3".to_string())),
             },
