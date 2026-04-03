@@ -222,7 +222,6 @@ pub struct CommunicationConfig {
     pub local: LocalCommunicationConfig,
 }
 
-<<<<<<< HEAD
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum LocalCommunicationConfig {
@@ -305,12 +304,3 @@ mod tests {
         }
     }
 }
-
-=======
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
-pub enum LocalCommunicationConfig {
-    #[default]
-    Tcp,
-    UnixDomain,
-}
->>>>>>> upstream/main
