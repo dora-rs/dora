@@ -1,0 +1,54 @@
+nodes:
+  # ── Camera 0 ──────────────────────────────────────
+  - id: webcam_0
+    path: webcam.py
+    inputs:
+      tick: adora/timer/millis/50
+    outputs:
+      - image
+    env:
+      CAMERA_INDEX: 0
+
+  - id: object_detection_0
+    path: object_detection.py
+    restart_policy: on-failure
+    inputs:
+      image: webcam_0/image
+    outputs:
+      - bbox
+
+  - id: plot_0
+    path: plot.py
+    restart_policy: on-failure
+    inputs:
+      image: webcam_0/image
+      bbox: object_detection_0/bbox
+    env:
+      WINDOW_NAME: "Camera 0"
+
+  # ── Camera 1 ──────────────────────────────────────
+  - id: webcam_1
+    path: webcam.py
+    inputs:
+      tick: adora/timer/millis/50
+    outputs:
+      - image
+    env:
+      CAMERA_INDEX: 1
+
+  - id: object_detection_1
+    path: object_detection.py
+    restart_policy: on-failure
+    inputs:
+      image: webcam_1/image
+    outputs:
+      - bbox
+
+  - id: plot_1
+    path: plot.py
+    restart_policy: on-failure
+    inputs:
+      image: webcam_1/image
+      bbox: object_detection_1/bbox
+    env:
+      WINDOW_NAME: "Camera 1"

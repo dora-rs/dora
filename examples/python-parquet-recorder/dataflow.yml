@@ -1,0 +1,22 @@
+nodes:
+  - id: recorder
+    path: recorder.py
+    restart_policy: on-failure
+    inputs:
+      image: camera/image
+    outputs:
+      - status
+    env:
+      LOG_DIR: logs
+      BATCH_SIZE: 30
+
+  - id: camera
+    path: camera.py
+    restart_policy: on-failure
+    inputs:
+      tick: adora/timer/millis/50
+      recorder_status: recorder/status
+    outputs:
+      - image
+    env:
+      CAMERA_INDEX: 0

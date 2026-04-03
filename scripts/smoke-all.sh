@@ -227,6 +227,7 @@ if [ "$RUN_PYTHON" = true ]; then
     echo "=== Python examples (networked) ==="
     run_networked "python-dataflow"        "examples/python-dataflow/dataflow.yml" 30
     run_networked "python-async"           "examples/python-async/dataflow.yaml" 15
+    run_networked "python-echo"            "examples/python-echo/dataflow.yml" 15
     run_networked "python-drain"           "examples/python-drain/dataflow.yaml" 15
     run_networked "python-log"             "examples/python-log/dataflow.yaml" 15
     run_networked "python-logging"         "examples/python-logging/dataflow.yml" 15
@@ -241,6 +242,7 @@ if [ "$RUN_PYTHON" = true ]; then
     echo "=== Python examples (local) ==="
     run_local "local-python-dataflow"        "examples/python-dataflow/dataflow.yml" 30
     run_local "local-python-async"           "examples/python-async/dataflow.yaml" 10
+    run_local "local-python-echo"            "examples/python-echo/dataflow.yml" 10
     run_local "local-python-drain"           "examples/python-drain/dataflow.yaml" 10
     run_local "local-python-log"             "examples/python-log/dataflow.yaml" 10
     run_local "local-python-logging"         "examples/python-logging/dataflow.yml" 10

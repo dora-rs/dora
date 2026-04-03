@@ -372,6 +372,15 @@ fn smoke_python_async() {
 }
 
 #[test]
+fn smoke_python_echo() {
+    run_smoke_test(
+        "python-echo",
+        "examples/python-echo/dataflow.yml",
+        Duration::from_secs(15),
+    );
+}
+
+#[test]
 fn smoke_python_drain() {
     run_smoke_test(
         "python-drain",
@@ -455,6 +464,15 @@ fn smoke_local_python_async() {
         "local-python-async",
         "examples/python-async/dataflow.yaml",
         20,
+    );
+}
+
+#[test]
+fn smoke_local_python_echo() {
+    run_smoke_test_local(
+        "local-python-echo",
+        "examples/python-echo/dataflow.yml",
+        10,
     );
 }
 

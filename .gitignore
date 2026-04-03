@@ -11,6 +11,7 @@ examples/**/*.jsonl
 
 # Remove arrow file from dora-record
 **/*.arrow
+*.parquet
 *.pt
 
 # Remove hdf and stl files
