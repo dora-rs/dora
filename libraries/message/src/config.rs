@@ -264,13 +264,10 @@ mod tests {
     }
 
     #[test]
-    fn test_remote_communication_config_deserialization() {
-        let yaml = "_unstable_remote: tcp\n";
+    fn test_local_only_default() {
+        let yaml = "_unstable_local: tcp\n";
         let config: CommunicationConfig = serde_yaml::from_str(yaml).unwrap();
-        // RemoteCommunicationConfig doesn't derive PartialEq, so we check if it's correct manually
-        match config.remote {
-            RemoteCommunicationConfig::Tcp => {}
-        }
+        assert_eq!(config.local, LocalCommunicationConfig::Tcp);
     }
 
     #[test]
@@ -285,22 +282,15 @@ mod tests {
         let yaml = "{}\n";
         let config: CommunicationConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.local, LocalCommunicationConfig::Tcp);
-        match config.remote {
-            RemoteCommunicationConfig::Tcp => {}
-        }
     }
 
     #[test]
     fn test_roundtrip() {
         let config = CommunicationConfig {
             local: LocalCommunicationConfig::UnixDomain,
-            remote: RemoteCommunicationConfig::Tcp,
         };
         let yaml = serde_yaml::to_string(&config).unwrap();
         let decoded: CommunicationConfig = serde_yaml::from_str(&yaml).unwrap();
         assert_eq!(config.local, decoded.local);
-        match decoded.remote {
-            RemoteCommunicationConfig::Tcp => {}
-        }
     }
 }
