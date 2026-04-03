@@ -192,6 +192,25 @@ impl DoraNode {
         bail!("DORA_NODE_CONFIG env variable is not set")
     }
 
+    /// Create a builder for configuring a dynamic node connection.
+    ///
+    /// This is the recommended way to initialize dynamic nodes when you need
+    /// to customize connection parameters (e.g. daemon port).
+    ///
+    /// ```no_run
+    /// use dora_node_api::DoraNode;
+    /// use dora_node_api::dora_core::config::NodeId;
+    ///
+    /// let (mut node, mut events) = DoraNode::dynamic()
+    ///     .node_id(NodeId::from("plot".to_string()))
+    ///     .daemon_port(6789)
+    ///     .build()
+    ///     .expect("Could not init node");
+    /// ```
+    pub fn dynamic() -> DynamicNodeBuilder {
+        DynamicNodeBuilder::default()
+    }
+
     /// Initiate a node from a dataflow id and a node id.
     ///
     /// This initialization function should be used for [_dynamic nodes_](index.html#dynamic-nodes).
@@ -204,29 +223,7 @@ impl DoraNode {
     /// ```
     ///
     pub fn init_from_node_id(node_id: NodeId) -> eyre::Result<(Self, EventStream)> {
-        // Make sure that the node is initialized outside of dora start.
-        let daemon_address = (LOCALHOST, DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT).into();
-
-        let mut channel =
-            DaemonChannel::new_tcp(daemon_address).context("Could not connect to the daemon")?;
-        let clock = Arc::new(uhlc::HLC::default());
-
-        let reply = channel
-            .request(&Timestamped {
-                inner: DaemonRequest::NodeConfig { node_id },
-                timestamp: clock.new_timestamp(),
-            })
-            .wrap_err("failed to request node config from daemon")?;
-
-        match reply {
-            DaemonReply::NodeConfig {
-                result: Ok(node_config),
-            } => Self::init(node_config),
-            DaemonReply::NodeConfig { result: Err(error) } => {
-                bail!("failed to get node config from daemon: {error}")
-            }
-            _ => bail!("unexpected reply from daemon"),
-        }
+        Self::dynamic().node_id(node_id).build()
     }
 
     /// Dynamic initialization function for nodes that are sometimes used as dynamic nodes.
@@ -810,6 +807,61 @@ impl DoraNode {
                 This might be caused by mismatched version numbers of dora \
                 daemon and the dora node API"
             ),
+        }
+    }
+}
+
+/// Builder for initializing a dynamic node with custom connection parameters.
+///
+/// Created via [`DoraNode::dynamic()`].
+#[derive(Default)]
+pub struct DynamicNodeBuilder {
+    node_id: Option<NodeId>,
+    daemon_port: Option<u16>,
+}
+
+impl DynamicNodeBuilder {
+    /// Set the node ID (required).
+    pub fn node_id(mut self, node_id: NodeId) -> Self {
+        self.node_id = Some(node_id);
+        self
+    }
+
+    /// Set a custom daemon port. Defaults to `DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT` (53291).
+    pub fn daemon_port(mut self, port: u16) -> Self {
+        self.daemon_port = Some(port);
+        self
+    }
+
+    /// Build and connect the dynamic node.
+    pub fn build(self) -> eyre::Result<(DoraNode, EventStream)> {
+        let node_id = self
+            .node_id
+            .ok_or_else(|| eyre::eyre!("node_id is required"))?;
+        let port = self
+            .daemon_port
+            .unwrap_or(DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT);
+        let daemon_address = (LOCALHOST, port).into();
+
+        let mut channel =
+            DaemonChannel::new_tcp(daemon_address).context("Could not connect to the daemon")?;
+        let clock = Arc::new(uhlc::HLC::default());
+
+        let reply = channel
+            .request(&Timestamped {
+                inner: DaemonRequest::NodeConfig { node_id },
+                timestamp: clock.new_timestamp(),
+            })
+            .wrap_err("failed to request node config from daemon")?;
+
+        match reply {
+            DaemonReply::NodeConfig {
+                result: Ok(node_config),
+            } => DoraNode::init(node_config),
+            DaemonReply::NodeConfig { result: Err(error) } => {
+                bail!("failed to get node config from daemon: {error}")
+            }
+            _ => bail!("unexpected reply from daemon"),
         }
     }
 }
