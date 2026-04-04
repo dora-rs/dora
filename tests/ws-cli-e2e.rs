@@ -406,7 +406,7 @@ fn cli_param_set_json_types() {
 
     let test_cases = [
         ("int", serde_json::json!(42)),
-        ("float", serde_json::json!(3.14)),
+        ("float", serde_json::json!(1.23)),
         ("string", serde_json::json!("hello")),
         ("bool", serde_json::json!(true)),
         ("array", serde_json::json!([1, 2, 3])),
@@ -622,23 +622,25 @@ mod real_dataflow {
         // Wait for it to finish
         std::thread::sleep(Duration::from_secs(8));
 
-        // Stop if still running
+        // Stop if still running and wait for full teardown before restarting.
         let _ = Command::new(&adora)
             .args(["stop", "--all"])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
 
-        std::thread::sleep(Duration::from_secs(1));
+        std::thread::sleep(Duration::from_secs(3));
 
         // Second dataflow -- verifies coordinator handles sequential runs
-        let status2 = Command::new(&adora)
+        let output2 = Command::new(&adora)
             .args(["start", yaml.to_str().unwrap(), "--detach"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
+            .output()
             .unwrap();
-        assert!(status2.success(), "second start failed");
+        assert!(
+            output2.status.success(),
+            "second start failed: {}",
+            String::from_utf8_lossy(&output2.stderr)
+        );
 
         std::thread::sleep(Duration::from_secs(1));
 
@@ -751,7 +753,7 @@ mod real_dataflow {
 
         let test_cases: Vec<(&str, serde_json::Value)> = vec![
             ("int", serde_json::json!(42)),
-            ("float", serde_json::json!(3.14)),
+            ("float", serde_json::json!(1.23)),
             ("string", serde_json::json!("hello")),
             ("bool", serde_json::json!(true)),
             ("null", serde_json::json!(null)),

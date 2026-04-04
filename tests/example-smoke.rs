@@ -469,11 +469,7 @@ fn smoke_local_python_async() {
 
 #[test]
 fn smoke_local_python_echo() {
-    run_smoke_test_local(
-        "local-python-echo",
-        "examples/python-echo/dataflow.yml",
-        10,
-    );
+    run_smoke_test_local("local-python-echo", "examples/python-echo/dataflow.yml", 10);
 }
 
 #[test]
