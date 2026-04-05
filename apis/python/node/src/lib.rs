@@ -46,7 +46,7 @@ fn host_log<'py>(record: Bound<'py, PyAny>) -> PyResult<()> {
         let _enter = span.enter();
         tracing::event!(tracing::Level::ERROR, file=pathname, line=lineno, %target, %message);
     } else if level.ge(&30u8) {
-        let span = span!(Level::ERROR, "dora.python.log.warn", file=pathname, line=lineno, %target, %message);
+        let span = span!(Level::WARN, "dora.python.log.warn", file=pathname, line=lineno, %target, %message);
         let _enter = span.enter();
         tracing::event!(tracing::Level::WARN, file=pathname, line=lineno, %target, %message);
     } else if level.ge(&20u8){
@@ -153,7 +153,6 @@ impl Node {
         let dataflow_id = *node.dataflow_id();
         let node_id = node.id().clone();
         let node = DelayedCleanup::new(node);
-        let events = events;
         let cleanup_handle = NodeCleanupHandle {
             _handles: Arc::new(node.handle()),
         };
