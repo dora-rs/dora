@@ -66,7 +66,7 @@ members = [
 edition = "2024"
 rust-version = "1.85.0"
 # Python packages derive version from CARGO_PKG_VERSION automatically.
-version = "0.2.0"
+version = "0.2.1"
 description = "`adora` goal is to be a low latency, composable, and distributed data flow."
 documentation = "https://adora-rs.ai"
 readme = "./README.md"
