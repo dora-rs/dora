@@ -556,6 +556,7 @@ pub(crate) async fn start_dataflow(
         created_at: state::now_millis(),
         store_generation: 0,
         last_recovery_attempt: BTreeMap::new(),
+        last_replay_attempt: BTreeMap::new(),
         uv,
         state_log_sequence: 0,
         state_log: Vec::new(),

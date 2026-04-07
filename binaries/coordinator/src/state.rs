@@ -201,6 +201,9 @@ pub(crate) struct RunningDataflow {
 
     /// Per-daemon timestamp of last auto-recovery attempt (for backoff).
     pub(crate) last_recovery_attempt: BTreeMap<DaemonId, Instant>,
+    /// Per-daemon timestamp of last full fallback param replay attempt
+    /// (for state catch-up backoff on pruned logs).
+    pub(crate) last_replay_attempt: BTreeMap<DaemonId, Instant>,
 
     /// Whether UV was used for this dataflow (needed for restart).
     pub(crate) uv: bool,
