@@ -95,13 +95,17 @@ fn event_stream_loop(
         }
 
         let events = match channel.next_event(std::mem::take(&mut drop_tokens)) {
-            Ok(events) => {
+            Ok(Some(events)) => {
                 if events.is_empty() {
                     tracing::trace!("event stream closed for node `{node_id}`");
                     break Ok(());
                 } else {
                     events
                 }
+            }
+            Ok(None) => {
+                // Keepalive — server had no events yet, silently retry
+                continue;
             }
             Err(err) => {
                 let err = err.wrap_err("failed to receive incoming event");

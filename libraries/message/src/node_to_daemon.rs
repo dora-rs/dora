@@ -18,8 +18,11 @@ mod node_control_service {
         async fn register(request: NodeRegisterRequest) -> Result<()>;
         async fn subscribe() -> Result<()>;
         async fn subscribe_drop() -> Result<()>;
-        async fn next_event(drop_tokens: Vec<DropToken>) -> Vec<Timestamped<NodeEvent>>;
-        async fn next_finished_drop_tokens() -> Vec<Timestamped<NodeDropEvent>>;
+        /// Returns `Some(events)` with actual events, or `None` as a keepalive
+        /// signal indicating the server is still alive but has no events yet.
+        async fn next_event(drop_tokens: Vec<DropToken>) -> Option<Vec<Timestamped<NodeEvent>>>;
+        /// Returns `Some(events)` with actual drop events, or `None` as a keepalive.
+        async fn next_finished_drop_tokens() -> Option<Vec<Timestamped<NodeDropEvent>>>;
         async fn send_message(
             output_id: DataId,
             metadata: Metadata,

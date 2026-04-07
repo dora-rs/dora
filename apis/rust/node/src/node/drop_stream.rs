@@ -85,13 +85,17 @@ fn drop_stream_loop(
 ) {
     'outer: loop {
         let events = match channel.next_finished_drop_tokens() {
-            Ok(events) => {
+            Ok(Some(events)) => {
                 if events.is_empty() {
                     tracing::trace!("drop stream closed for node `{node_id}`");
                     break;
                 } else {
                     events
                 }
+            }
+            Ok(None) => {
+                // Keepalive — server had no events yet, silently retry
+                continue;
             }
             Err(err) => {
                 tracing::warn!("failed to receive incoming drop event: {err:?}");

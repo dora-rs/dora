@@ -128,10 +128,11 @@ impl DaemonChannel {
         }
     }
 
+    /// Returns `Some(events)` on real data, `None` as a keepalive (caller should retry).
     pub fn next_event(
         &mut self,
         drop_tokens: Vec<DropToken>,
-    ) -> eyre::Result<Vec<Timestamped<NodeEvent>>> {
+    ) -> eyre::Result<Option<Vec<Timestamped<NodeEvent>>>> {
         match self {
             DaemonChannel::Tarpc { client, runtime } => runtime
                 .block_on(async { client.next_event(long_context(), drop_tokens).await })
@@ -142,7 +143,7 @@ impl DaemonChannel {
                     timestamp: dora_core::uhlc::HLC::default().new_timestamp(),
                 })?;
                 match reply {
-                    DaemonReply::NextEvents(events) => Ok(events),
+                    DaemonReply::NextEvents(events) => Ok(Some(events)),
                     DaemonReply::Result(Err(err)) => Err(eyre!("{err}")),
                     other => bail!("unexpected NextEvent reply: {other:?}"),
                 }
@@ -150,7 +151,10 @@ impl DaemonChannel {
         }
     }
 
-    pub fn next_finished_drop_tokens(&mut self) -> eyre::Result<Vec<Timestamped<NodeDropEvent>>> {
+    /// Returns `Some(events)` on real data, `None` as a keepalive (caller should retry).
+    pub fn next_finished_drop_tokens(
+        &mut self,
+    ) -> eyre::Result<Option<Vec<Timestamped<NodeDropEvent>>>> {
         match self {
             DaemonChannel::Tarpc { client, runtime } => runtime
                 .block_on(async { client.next_finished_drop_tokens(long_context()).await })
@@ -161,7 +165,7 @@ impl DaemonChannel {
                     timestamp: dora_core::uhlc::HLC::default().new_timestamp(),
                 })?;
                 match reply {
-                    DaemonReply::NextDropEvents(events) => Ok(events),
+                    DaemonReply::NextDropEvents(events) => Ok(Some(events)),
                     other => bail!("unexpected NextFinishedDropTokens reply: {other:?}"),
                 }
             }

@@ -143,17 +143,17 @@ impl NodeControl for MainListenerServer {
         self,
         _context: tarpc::context::Context,
         _drop_tokens: Vec<DropToken>,
-    ) -> Vec<Timestamped<NodeEvent>> {
+    ) -> Option<Vec<Timestamped<NodeEvent>>> {
         tracing::warn!("next_event is not supported on the main daemon listener");
-        vec![]
+        Some(vec![])
     }
 
     async fn next_finished_drop_tokens(
         self,
         _context: tarpc::context::Context,
-    ) -> Vec<Timestamped<NodeDropEvent>> {
+    ) -> Option<Vec<Timestamped<NodeDropEvent>>> {
         tracing::warn!("next_finished_drop_tokens is not supported on the main daemon listener");
-        vec![]
+        Some(vec![])
     }
 
     async fn send_message(

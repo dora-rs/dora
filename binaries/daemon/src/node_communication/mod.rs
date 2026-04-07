@@ -16,6 +16,7 @@ use eyre::Context;
 use std::{
     collections::BTreeMap,
     sync::{Arc, OnceLock},
+    time::Duration,
 };
 use tokio::{
     net::TcpListener,
@@ -55,6 +56,11 @@ pub async fn spawn_listener_loop(
 
     Ok((DaemonCommunication::Tcp { socket_addr }, Some(abort_handle)))
 }
+
+/// Server-side keepalive timeout for long-polling RPCs.
+/// Must be shorter than the client-side `long_context()` deadline so the
+/// server replies before tarpc times out the call.
+const KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Registration info, set once via `register` and then read-only.
 struct Registration {
@@ -193,7 +199,7 @@ impl NodeControl for NodeControlServer {
         self,
         _context: tarpc::context::Context,
         drop_tokens: Vec<DropToken>,
-    ) -> Vec<Timestamped<NodeEvent>> {
+    ) -> Option<Vec<Timestamped<NodeEvent>>> {
         // Report drop tokens (no lock needed — uses only thread-safe fields)
         if let Err(err) = self.report_drop_tokens_inner(drop_tokens).await {
             tracing::warn!("failed to report drop tokens: {err}");
@@ -210,16 +216,17 @@ impl NodeControl for NodeControlServer {
                     events.push(event);
                 }
                 if events.is_empty() {
-                    // Nothing buffered — wait for the next event
-                    match rx.recv().await {
-                        Some(event) => vec![event],
-                        None => vec![],
+                    // Nothing buffered — wait with a keepalive timeout
+                    match tokio::time::timeout(KEEPALIVE_TIMEOUT, rx.recv()).await {
+                        Ok(Some(event)) => Some(vec![event]),
+                        Ok(None) => Some(vec![]), // channel closed
+                        Err(_) => None,           // timeout → keepalive
                     }
                 } else {
-                    events
+                    Some(events)
                 }
             }
-            None => vec![],
+            None => Some(vec![]),
         };
 
         // Put the receiver back
@@ -233,16 +240,19 @@ impl NodeControl for NodeControlServer {
     async fn next_finished_drop_tokens(
         self,
         _context: tarpc::context::Context,
-    ) -> Vec<Timestamped<NodeDropEvent>> {
+    ) -> Option<Vec<Timestamped<NodeDropEvent>>> {
         // Take the receiver out to avoid holding the lock across await
         let mut rx = self.subscribed_drop_events.lock().await.take();
 
         let result = match rx.as_mut() {
-            Some(events) => match events.recv().await {
-                Some(event) => vec![event],
-                None => vec![],
-            },
-            None => vec![],
+            Some(events) => {
+                match tokio::time::timeout(KEEPALIVE_TIMEOUT, events.recv()).await {
+                    Ok(Some(event)) => Some(vec![event]),
+                    Ok(None) => Some(vec![]), // channel closed
+                    Err(_) => None,           // timeout → keepalive
+                }
+            }
+            None => Some(vec![]),
         };
 
         if let Some(rx) = rx {
