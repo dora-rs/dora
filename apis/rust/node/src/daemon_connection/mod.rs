@@ -6,7 +6,7 @@ use dora_core::{
 use dora_message::{
     DataflowId,
     common::{DropToken, Timestamped},
-    daemon_to_node::{DaemonReply, NodeConfig, NodeDropEvent, NodeEvent},
+    daemon_to_node::{DaemonReply, NodeConfig, NodeDropEvent, NodeEvent, NodeEventOrUnknown},
     metadata::Metadata,
     node_to_daemon::{DaemonRequest, DataMessage, NodeControlClient, NodeRegisterRequest},
     tarpc::{self, client, serde_transport},
@@ -160,7 +160,7 @@ impl DaemonChannel {
     pub fn next_event(
         &mut self,
         drop_tokens: Vec<DropToken>,
-    ) -> eyre::Result<Option<Vec<Timestamped<NodeEvent>>>> {
+    ) -> eyre::Result<Option<Vec<Timestamped<NodeEventOrUnknown>>>> {
         match self {
             DaemonChannel::Tarpc {
                 client,
@@ -171,6 +171,7 @@ impl DaemonChannel {
                 runtime
                     .block_on(async { client.next_event(long_context(), ts, drop_tokens).await })
                     .map_err(|e| eyre!("{e}"))
+                    .map(|opt| opt.map(|events| events.into_iter().map(Into::into).collect()))
             }
             _ => {
                 let reply = self.request(&Timestamped {
