@@ -28,7 +28,7 @@ impl DropStream {
             DaemonCommunicationWrapper::Standard(daemon_communication) => {
                 match daemon_communication {
                     DaemonCommunication::Tcp { socket_addr } => {
-                        DaemonChannel::new_tcp(*socket_addr).wrap_err_with(|| {
+                        DaemonChannel::new_tcp(*socket_addr, hlc.clone()).wrap_err_with(|| {
                             format!("failed to connect drop stream for node `{node_id}`")
                         })?
                     }

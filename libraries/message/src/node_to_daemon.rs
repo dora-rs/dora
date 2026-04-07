@@ -15,24 +15,30 @@ mod node_control_service {
 
     #[tarpc::service]
     pub trait NodeControl {
-        async fn register(request: NodeRegisterRequest) -> Result<()>;
-        async fn subscribe() -> Result<()>;
-        async fn subscribe_drop() -> Result<()>;
+        async fn register(timestamp: uhlc::Timestamp, request: NodeRegisterRequest) -> Result<()>;
+        async fn subscribe(timestamp: uhlc::Timestamp) -> Result<()>;
+        async fn subscribe_drop(timestamp: uhlc::Timestamp) -> Result<()>;
         /// Returns `Some(events)` with actual events, or `None` as a keepalive
         /// signal indicating the server is still alive but has no events yet.
-        async fn next_event(drop_tokens: Vec<DropToken>) -> Option<Vec<Timestamped<NodeEvent>>>;
+        async fn next_event(
+            timestamp: uhlc::Timestamp,
+            drop_tokens: Vec<DropToken>,
+        ) -> Option<Vec<Timestamped<NodeEvent>>>;
         /// Returns `Some(events)` with actual drop events, or `None` as a keepalive.
-        async fn next_finished_drop_tokens() -> Option<Vec<Timestamped<NodeDropEvent>>>;
+        async fn next_finished_drop_tokens(
+            timestamp: uhlc::Timestamp,
+        ) -> Option<Vec<Timestamped<NodeDropEvent>>>;
         async fn send_message(
+            timestamp: uhlc::Timestamp,
             output_id: DataId,
             metadata: Metadata,
             data: Option<DataMessage>,
         ) -> ();
-        async fn close_outputs(outputs: Vec<DataId>) -> Result<()>;
-        async fn outputs_done() -> Result<()>;
-        async fn report_drop_tokens(drop_tokens: Vec<DropToken>) -> ();
-        async fn event_stream_dropped() -> Result<()>;
-        async fn node_config(node_id: NodeId) -> Result<NodeConfig>;
+        async fn close_outputs(timestamp: uhlc::Timestamp, outputs: Vec<DataId>) -> Result<()>;
+        async fn outputs_done(timestamp: uhlc::Timestamp) -> Result<()>;
+        async fn report_drop_tokens(timestamp: uhlc::Timestamp, drop_tokens: Vec<DropToken>) -> ();
+        async fn event_stream_dropped(timestamp: uhlc::Timestamp) -> Result<()>;
+        async fn node_config(timestamp: uhlc::Timestamp, node_id: NodeId) -> Result<NodeConfig>;
     }
 }
 pub use node_control_service::*;

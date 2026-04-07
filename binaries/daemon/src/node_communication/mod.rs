@@ -99,6 +99,13 @@ impl NodeControlServer {
             .ok_or_else(|| "node not registered".to_string())
     }
 
+    /// Synchronize the daemon's HLC with the node's timestamp.
+    fn sync_clock(&self, timestamp: &uhlc::Timestamp) {
+        if let Err(err) = self.clock.update_with_timestamp(timestamp) {
+            tracing::warn!("failed to update HLC: {err}");
+        }
+    }
+
     /// Send a fire-and-forget event to the daemon main loop (no reply expected).
     async fn send_daemon_event_no_reply(&self, event: DaemonNodeEvent) -> Result<(), String> {
         let reg = self.registration()?;
@@ -152,8 +159,10 @@ impl NodeControl for NodeControlServer {
     async fn register(
         self,
         _context: tarpc::context::Context,
+        timestamp: uhlc::Timestamp,
         request: NodeRegisterRequest,
     ) -> Result<(), String> {
+        self.sync_clock(&timestamp);
         request.check_version()?;
         self.registration
             .set(Registration {
@@ -163,7 +172,12 @@ impl NodeControl for NodeControlServer {
             .map_err(|_| "node already registered".to_string())
     }
 
-    async fn subscribe(self, _context: tarpc::context::Context) -> Result<(), String> {
+    async fn subscribe(
+        self,
+        _context: tarpc::context::Context,
+        timestamp: uhlc::Timestamp,
+    ) -> Result<(), String> {
+        self.sync_clock(&timestamp);
         let (tx, rx) = mpsc::unbounded_channel();
         let (reply_sender, reply_rx) = oneshot::channel();
         let reply = self
@@ -179,7 +193,12 @@ impl NodeControl for NodeControlServer {
         Self::extract_result(reply)
     }
 
-    async fn subscribe_drop(self, _context: tarpc::context::Context) -> Result<(), String> {
+    async fn subscribe_drop(
+        self,
+        _context: tarpc::context::Context,
+        timestamp: uhlc::Timestamp,
+    ) -> Result<(), String> {
+        self.sync_clock(&timestamp);
         let (tx, rx) = mpsc::unbounded_channel();
         let (reply_sender, reply_rx) = oneshot::channel();
         let reply = self
@@ -198,8 +217,10 @@ impl NodeControl for NodeControlServer {
     async fn next_event(
         self,
         _context: tarpc::context::Context,
+        timestamp: uhlc::Timestamp,
         drop_tokens: Vec<DropToken>,
     ) -> Option<Vec<Timestamped<NodeEvent>>> {
+        self.sync_clock(&timestamp);
         // Report drop tokens (no lock needed — uses only thread-safe fields)
         if let Err(err) = self.report_drop_tokens_inner(drop_tokens).await {
             tracing::warn!("failed to report drop tokens: {err}");
@@ -233,7 +254,9 @@ impl NodeControl for NodeControlServer {
     async fn next_finished_drop_tokens(
         self,
         _context: tarpc::context::Context,
+        timestamp: uhlc::Timestamp,
     ) -> Option<Vec<Timestamped<NodeDropEvent>>> {
+        self.sync_clock(&timestamp);
         // Hold the lock across the await to prevent concurrent calls from
         // racing on the receiver.
         let mut guard = self.subscribed_drop_events.lock().await;
@@ -252,10 +275,12 @@ impl NodeControl for NodeControlServer {
     async fn send_message(
         self,
         _context: tarpc::context::Context,
+        timestamp: uhlc::Timestamp,
         output_id: DataId,
         metadata: Metadata,
         data: Option<DataMessage>,
     ) {
+        self.sync_clock(&timestamp);
         let event = DaemonNodeEvent::SendOut {
             output_id,
             metadata,
@@ -269,8 +294,10 @@ impl NodeControl for NodeControlServer {
     async fn close_outputs(
         self,
         _context: tarpc::context::Context,
+        timestamp: uhlc::Timestamp,
         outputs: Vec<DataId>,
     ) -> Result<(), String> {
+        self.sync_clock(&timestamp);
         let (reply_sender, reply_rx) = oneshot::channel();
         let reply = self
             .send_daemon_event_with_reply(
@@ -284,7 +311,12 @@ impl NodeControl for NodeControlServer {
         Self::extract_result(reply)
     }
 
-    async fn outputs_done(self, _context: tarpc::context::Context) -> Result<(), String> {
+    async fn outputs_done(
+        self,
+        _context: tarpc::context::Context,
+        timestamp: uhlc::Timestamp,
+    ) -> Result<(), String> {
+        self.sync_clock(&timestamp);
         let (reply_sender, reply_rx) = oneshot::channel();
         let reply = self
             .send_daemon_event_with_reply(DaemonNodeEvent::OutputsDone { reply_sender }, reply_rx)
@@ -295,14 +327,21 @@ impl NodeControl for NodeControlServer {
     async fn report_drop_tokens(
         self,
         _context: tarpc::context::Context,
+        timestamp: uhlc::Timestamp,
         drop_tokens: Vec<DropToken>,
     ) {
+        self.sync_clock(&timestamp);
         if let Err(err) = self.report_drop_tokens_inner(drop_tokens).await {
             tracing::warn!("failed to report drop tokens: {err}");
         }
     }
 
-    async fn event_stream_dropped(self, _context: tarpc::context::Context) -> Result<(), String> {
+    async fn event_stream_dropped(
+        self,
+        _context: tarpc::context::Context,
+        timestamp: uhlc::Timestamp,
+    ) -> Result<(), String> {
+        self.sync_clock(&timestamp);
         let (reply_sender, reply_rx) = oneshot::channel();
         let reply = self
             .send_daemon_event_with_reply(
@@ -316,8 +355,10 @@ impl NodeControl for NodeControlServer {
     async fn node_config(
         self,
         _context: tarpc::context::Context,
+        timestamp: uhlc::Timestamp,
         _node_id: NodeId,
     ) -> Result<NodeConfig, String> {
+        self.sync_clock(&timestamp);
         Err("unexpected node config request on per-node channel".to_string())
     }
 }

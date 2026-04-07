@@ -86,7 +86,7 @@ impl EventStream {
             DaemonCommunicationWrapper::Standard(daemon_communication) => {
                 match daemon_communication {
                     DaemonCommunication::Tcp { socket_addr } => {
-                        DaemonChannel::new_tcp(*socket_addr).wrap_err_with(|| {
+                        DaemonChannel::new_tcp(*socket_addr, clock.clone()).wrap_err_with(|| {
                             format!("failed to connect event stream for node `{node_id}`")
                         })?
                     }
@@ -105,7 +105,7 @@ impl EventStream {
             DaemonCommunicationWrapper::Standard(daemon_communication) => {
                 match daemon_communication {
                     DaemonCommunication::Tcp { socket_addr } => {
-                        DaemonChannel::new_tcp(*socket_addr).wrap_err_with(|| {
+                        DaemonChannel::new_tcp(*socket_addr, clock.clone()).wrap_err_with(|| {
                             format!("failed to connect event close channel for node `{node_id}`")
                         })?
                     }

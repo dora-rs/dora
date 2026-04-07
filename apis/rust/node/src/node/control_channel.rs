@@ -27,7 +27,7 @@ impl ControlChannel {
             DaemonCommunicationWrapper::Standard(daemon_communication) => {
                 match daemon_communication {
                     DaemonCommunication::Tcp { socket_addr } => {
-                        DaemonChannel::new_tcp(*socket_addr)
+                        DaemonChannel::new_tcp(*socket_addr, clock.clone())
                             .wrap_err("failed to connect control channel")?
                     }
                     DaemonCommunication::Interactive => {

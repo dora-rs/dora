@@ -1,6 +1,6 @@
 use dora_core::{
     config::{DataId, NodeId},
-    uhlc::HLC,
+    uhlc::{self, HLC},
 };
 use dora_message::{
     common::Timestamped,
@@ -126,22 +126,32 @@ impl NodeControl for MainListenerServer {
     async fn register(
         self,
         _context: tarpc::context::Context,
+        _timestamp: uhlc::Timestamp,
         _request: NodeRegisterRequest,
     ) -> Result<(), String> {
         Err("register is not supported on the main daemon listener".to_string())
     }
 
-    async fn subscribe(self, _context: tarpc::context::Context) -> Result<(), String> {
+    async fn subscribe(
+        self,
+        _context: tarpc::context::Context,
+        _timestamp: uhlc::Timestamp,
+    ) -> Result<(), String> {
         Err("subscribe is not supported on the main daemon listener".to_string())
     }
 
-    async fn subscribe_drop(self, _context: tarpc::context::Context) -> Result<(), String> {
+    async fn subscribe_drop(
+        self,
+        _context: tarpc::context::Context,
+        _timestamp: uhlc::Timestamp,
+    ) -> Result<(), String> {
         Err("subscribe_drop is not supported on the main daemon listener".to_string())
     }
 
     async fn next_event(
         self,
         _context: tarpc::context::Context,
+        _timestamp: uhlc::Timestamp,
         _drop_tokens: Vec<DropToken>,
     ) -> Option<Vec<Timestamped<NodeEvent>>> {
         tracing::warn!("next_event is not supported on the main daemon listener");
@@ -151,6 +161,7 @@ impl NodeControl for MainListenerServer {
     async fn next_finished_drop_tokens(
         self,
         _context: tarpc::context::Context,
+        _timestamp: uhlc::Timestamp,
     ) -> Option<Vec<Timestamped<NodeDropEvent>>> {
         tracing::warn!("next_finished_drop_tokens is not supported on the main daemon listener");
         Some(vec![])
@@ -159,6 +170,7 @@ impl NodeControl for MainListenerServer {
     async fn send_message(
         self,
         _context: tarpc::context::Context,
+        _timestamp: uhlc::Timestamp,
         _output_id: DataId,
         _metadata: Metadata,
         _data: Option<DataMessage>,
@@ -169,30 +181,41 @@ impl NodeControl for MainListenerServer {
     async fn close_outputs(
         self,
         _context: tarpc::context::Context,
+        _timestamp: uhlc::Timestamp,
         _outputs: Vec<DataId>,
     ) -> Result<(), String> {
         Err("close_outputs is not supported on the main daemon listener".to_string())
     }
 
-    async fn outputs_done(self, _context: tarpc::context::Context) -> Result<(), String> {
+    async fn outputs_done(
+        self,
+        _context: tarpc::context::Context,
+        _timestamp: uhlc::Timestamp,
+    ) -> Result<(), String> {
         Err("outputs_done is not supported on the main daemon listener".to_string())
     }
 
     async fn report_drop_tokens(
         self,
         _context: tarpc::context::Context,
+        _timestamp: uhlc::Timestamp,
         _drop_tokens: Vec<DropToken>,
     ) {
         tracing::warn!("report_drop_tokens is not supported on the main daemon listener");
     }
 
-    async fn event_stream_dropped(self, _context: tarpc::context::Context) -> Result<(), String> {
+    async fn event_stream_dropped(
+        self,
+        _context: tarpc::context::Context,
+        _timestamp: uhlc::Timestamp,
+    ) -> Result<(), String> {
         Err("event_stream_dropped is not supported on the main daemon listener".to_string())
     }
 
     async fn node_config(
         self,
         _context: tarpc::context::Context,
+        _timestamp: uhlc::Timestamp,
         node_id: NodeId,
     ) -> Result<NodeConfig, String> {
         let (reply_tx, reply_rx) = oneshot::channel();

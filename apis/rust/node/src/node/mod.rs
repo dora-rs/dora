@@ -207,8 +207,9 @@ impl DoraNode {
         // Make sure that the node is initialized outside of dora start.
         let daemon_address = (LOCALHOST, DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT).into();
 
-        let mut channel =
-            DaemonChannel::new_tcp(daemon_address).context("Could not connect to the daemon")?;
+        let clock = Arc::new(uhlc::HLC::default());
+        let mut channel = DaemonChannel::new_tcp(daemon_address, clock)
+            .context("Could not connect to the daemon")?;
 
         let node_config = channel
             .node_config_rpc(node_id)
