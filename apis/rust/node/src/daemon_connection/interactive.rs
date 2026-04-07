@@ -32,7 +32,7 @@ impl InteractiveEvents {
             DaemonRequest::NextEvent { .. } => {
                 let events = if let Some(event) = self.next_event()? {
                     let event = Timestamped {
-                        inner: event,
+                        inner: event.into(),
                         timestamp: HLC::default().new_timestamp(),
                     };
                     vec![event]
