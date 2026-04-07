@@ -208,12 +208,19 @@ impl DoraNode {
         let daemon_address = (LOCALHOST, DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT).into();
 
         let clock = Arc::new(uhlc::HLC::default());
-        let mut channel = DaemonChannel::new_tcp(daemon_address, clock)
+        let mut channel = DaemonChannel::new_tcp(daemon_address, clock.clone())
             .context("Could not connect to the daemon")?;
 
         let node_config = channel
             .node_config_rpc(node_id)
             .wrap_err("failed to request node config from daemon")?;
+
+        // Drop the channel (and its clone of `clock`) before `init` creates a
+        // new HLC.  The synchronization that happened during `node_config_rpc`
+        // is on `clock`, but `init` currently builds its own HLC, so the
+        // benefit is limited.  Cloning above avoids *moving* the Arc so that
+        // callers who extend this path can reuse `clock` in the future.
+        drop(channel);
 
         Self::init(node_config)
     }

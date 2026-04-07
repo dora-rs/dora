@@ -247,7 +247,10 @@ impl NodeControl for NodeControlServer {
                     Some(events)
                 }
             }
-            None => Some(vec![]),
+            None => {
+                tracing::warn!("next_event called before subscribe — returning keepalive");
+                None
+            }
         }
     }
 
@@ -268,7 +271,12 @@ impl NodeControl for NodeControlServer {
                     Err(_) => None,           // timeout → keepalive
                 }
             }
-            None => Some(vec![]),
+            None => {
+                tracing::warn!(
+                    "next_finished_drop_tokens called before subscribe_drop — returning keepalive"
+                );
+                None
+            }
         }
     }
 
