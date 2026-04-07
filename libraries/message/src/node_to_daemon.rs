@@ -33,10 +33,13 @@ mod node_control_service {
             output_id: DataId,
             metadata: Metadata,
             data: Option<DataMessage>,
-        ) -> ();
+        ) -> Result<()>;
         async fn close_outputs(timestamp: uhlc::Timestamp, outputs: Vec<DataId>) -> Result<()>;
         async fn outputs_done(timestamp: uhlc::Timestamp) -> Result<()>;
-        async fn report_drop_tokens(timestamp: uhlc::Timestamp, drop_tokens: Vec<DropToken>) -> ();
+        async fn report_drop_tokens(
+            timestamp: uhlc::Timestamp,
+            drop_tokens: Vec<DropToken>,
+        ) -> Result<()>;
         async fn event_stream_dropped(timestamp: uhlc::Timestamp) -> Result<()>;
         async fn node_config(timestamp: uhlc::Timestamp, node_id: NodeId) -> Result<NodeConfig>;
     }
@@ -68,42 +71,6 @@ pub enum DaemonRequest {
     NodeConfig {
         node_id: NodeId,
     },
-}
-
-impl DaemonRequest {
-    pub fn expects_tcp_bincode_reply(&self) -> bool {
-        #[allow(clippy::match_like_matches_macro)]
-        match self {
-            DaemonRequest::SendMessage { .. }
-            | DaemonRequest::NodeConfig { .. }
-            | DaemonRequest::ReportDropTokens { .. } => false,
-            DaemonRequest::Register(NodeRegisterRequest { .. })
-            | DaemonRequest::Subscribe
-            | DaemonRequest::CloseOutputs(_)
-            | DaemonRequest::OutputsDone
-            | DaemonRequest::NextEvent { .. }
-            | DaemonRequest::SubscribeDrop
-            | DaemonRequest::NextFinishedDropTokens
-            | DaemonRequest::EventStreamDropped => true,
-        }
-    }
-
-    pub fn expects_tcp_json_reply(&self) -> bool {
-        #[allow(clippy::match_like_matches_macro)]
-        match self {
-            DaemonRequest::NodeConfig { .. } => true,
-            DaemonRequest::Register(NodeRegisterRequest { .. })
-            | DaemonRequest::Subscribe
-            | DaemonRequest::CloseOutputs(_)
-            | DaemonRequest::OutputsDone
-            | DaemonRequest::NextEvent { .. }
-            | DaemonRequest::SubscribeDrop
-            | DaemonRequest::NextFinishedDropTokens
-            | DaemonRequest::ReportDropTokens { .. }
-            | DaemonRequest::SendMessage { .. }
-            | DaemonRequest::EventStreamDropped => false,
-        }
-    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

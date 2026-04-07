@@ -233,6 +233,7 @@ impl DaemonChannel {
                             .send_message(long_context(), ts, output_id, metadata, data)
                             .await
                     })
+                    .map_err(|e| eyre!("{e}"))?
                     .map_err(|e| eyre!("{e}"))
             }
             _ => {
@@ -315,6 +316,7 @@ impl DaemonChannel {
                             .report_drop_tokens(long_context(), ts, drop_tokens)
                             .await
                     })
+                    .map_err(|e| eyre!("{e}"))?
                     .map_err(|e| eyre!("{e}"))
             }
             _ => {

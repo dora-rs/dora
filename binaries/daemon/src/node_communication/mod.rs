@@ -279,16 +279,14 @@ impl NodeControl for NodeControlServer {
         output_id: DataId,
         metadata: Metadata,
         data: Option<DataMessage>,
-    ) {
+    ) -> Result<(), String> {
         self.sync_clock(&timestamp);
         let event = DaemonNodeEvent::SendOut {
             output_id,
             metadata,
             data,
         };
-        if let Err(err) = self.send_daemon_event_no_reply(event).await {
-            tracing::warn!("failed to send message to daemon: {err}");
-        }
+        self.send_daemon_event_no_reply(event).await
     }
 
     async fn close_outputs(
@@ -329,11 +327,9 @@ impl NodeControl for NodeControlServer {
         _context: tarpc::context::Context,
         timestamp: uhlc::Timestamp,
         drop_tokens: Vec<DropToken>,
-    ) {
+    ) -> Result<(), String> {
         self.sync_clock(&timestamp);
-        if let Err(err) = self.report_drop_tokens_inner(drop_tokens).await {
-            tracing::warn!("failed to report drop tokens: {err}");
-        }
+        self.report_drop_tokens_inner(drop_tokens).await
     }
 
     async fn event_stream_dropped(

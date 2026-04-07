@@ -174,8 +174,8 @@ impl NodeControl for MainListenerServer {
         _output_id: DataId,
         _metadata: Metadata,
         _data: Option<DataMessage>,
-    ) {
-        tracing::warn!("send_message is not supported on the main daemon listener");
+    ) -> Result<(), String> {
+        Err("send_message is not supported on the main daemon listener".to_string())
     }
 
     async fn close_outputs(
@@ -200,8 +200,8 @@ impl NodeControl for MainListenerServer {
         _context: tarpc::context::Context,
         _timestamp: uhlc::Timestamp,
         _drop_tokens: Vec<DropToken>,
-    ) {
-        tracing::warn!("report_drop_tokens is not supported on the main daemon listener");
+    ) -> Result<(), String> {
+        Err("report_drop_tokens is not supported on the main daemon listener".to_string())
     }
 
     async fn event_stream_dropped(
