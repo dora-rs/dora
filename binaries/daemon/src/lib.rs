@@ -1042,9 +1042,13 @@ impl Daemon {
                 )
             }
         }
-        let node_working_dirs = build_info
-            .map(|info| info.node_working_dirs.clone())
+        // Reuse build-time metadata so runtime spawn can follow the same
+        // working-directory and managed-env decisions.
+        let (node_working_dirs, python_env_dirs) = build_info
+            .as_ref()
+            .map(|info| (info.node_working_dirs.clone(), info.python_env_dirs.clone()))
             .unwrap_or_default();
+        drop(build_info);
 
         // calculate info about mappings
         for node in nodes.values() {
@@ -1130,11 +1134,15 @@ impl Daemon {
                 let node_write_events_to = write_events_to
                     .as_ref()
                     .map(|p| p.join(format!("inputs-{}.json", node.id)));
+                // Thread the managed env path through spawn now; later runtime
+                // slices decide which Python launch paths consume it.
+                let configured_python_env_dir = python_env_dirs.get(&node_id).cloned();
                 match spawner
                     .clone()
                     .spawn_node(
                         node,
                         node_working_dir,
+                        configured_python_env_dir,
                         node_stderr_most_recent,
                         node_write_events_to,
                         &mut logger,
@@ -2565,6 +2573,7 @@ impl Daemon {
         let task = async move {
             let mut info = BuildInfo {
                 node_working_dirs: Default::default(),
+                python_env_dirs: Default::default(),
             };
             for task in tasks {
                 let NodeBuildTask {
@@ -2576,7 +2585,10 @@ impl Daemon {
                     .await
                     .with_context(|| format!("failed to build node `{node_id}`"))?;
                 info.node_working_dirs
-                    .insert(node_id, node.node_working_dir);
+                    .insert(node_id.clone(), node.node_working_dir);
+                if let Some(python_env_dir) = node.python_env_dir {
+                    info.python_env_dirs.insert(node_id, python_env_dir);
+                }
             }
             Ok(info)
         };

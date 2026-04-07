@@ -1,5 +1,6 @@
 use crate::log::NodeLogger;
 use clonable_command::Command;
+use dora_core::build::managed_python_interpreter;
 use dora_core::{
     descriptor::{DYNAMIC_SOURCE, SHELL_SOURCE, resolve_path, source_is_url},
     get_python_path,
@@ -12,6 +13,7 @@ use std::path::Path;
 pub(super) async fn path_spawn_command(
     working_dir: &Path,
     uv: bool,
+    python_env_dir: Option<&Path>,
     logger: &mut NodeLogger<'_>,
     node: &dora_core::descriptor::CustomNode,
     permit_url: bool,
@@ -57,17 +59,48 @@ pub(super) async fn path_spawn_command(
             let mut cmd = match resolved_path.extension().map(|ext| ext.to_str()) {
                 Some(Some("py")) => {
                     let mut cmd = if uv {
-                        let mut cmd = Command::new("uv");
-                        cmd = cmd.arg("run");
-                        cmd = cmd.arg("python");
-                        logger
-                            .log(
-                                LogLevel::Info,
-                                Some("spawner".into()),
-                                format!("spawning: uv run python -u {}", resolved_path.display()),
-                            )
-                            .await;
-                        cmd
+                        if let Some(python_env_dir) =
+                            python_env_dir.filter(|_| node.build.is_some())
+                        {
+                            // Reuse the interpreter from Dora's prepared env so
+                            // custom Python nodes see the dependencies built there.
+                            let python = managed_python_interpreter(python_env_dir);
+                            if !python.is_file() {
+                                eyre::bail!(
+                                    "managed Python interpreter `{}` is missing",
+                                    python.display()
+                                );
+                            }
+                            logger
+                                .log(
+                                    LogLevel::Info,
+                                    Some("spawner".into()),
+                                    format!(
+                                        "spawning managed Python {} -u {}",
+                                        python.display(),
+                                        resolved_path.display()
+                                    ),
+                                )
+                                .await;
+                            Command::new(python)
+                        } else {
+                            // Nodes without build-time Python setup still rely on
+                            // the caller's active uv environment for imports.
+                            let mut cmd = Command::new("uv");
+                            cmd = cmd.arg("run");
+                            cmd = cmd.arg("python");
+                            logger
+                                .log(
+                                    LogLevel::Info,
+                                    Some("spawner".into()),
+                                    format!(
+                                        "spawning: uv run python -u {}",
+                                        resolved_path.display()
+                                    ),
+                                )
+                                .await;
+                            cmd
+                        }
                     } else {
                         let python = get_python_path()
                             .wrap_err("Could not find python path when spawning custom node")?;
