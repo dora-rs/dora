@@ -1,0 +1,71 @@
+# cargo-deny configuration — see https://embarkstudios.github.io/cargo-deny/
+#
+# Enforces license, source, and dependency policy for the adora workspace.
+# Run via: cargo deny check
+# Or via:  scripts/qa/audit.sh
+
+[graph]
+all-features = false
+no-default-features = false
+
+[output]
+feature-depth = 1
+
+# ----- Advisories -----
+[advisories]
+version = 2
+yanked = "deny"
+ignore = [
+    # --- Unmaintained transitive dependencies ---
+    # All waived pending upstream migration by parent crates. Review quarterly.
+    "RUSTSEC-2025-0141",  # bincode 1.x + 2.x unmaintained. Workspace dep; migration to postcard/bincode2 planned post-1.0. Review: 2026-09.
+    "RUSTSEC-2025-0057",  # fxhash: transitive, waiting for upstream. Review: 2026-07.
+    "RUSTSEC-2025-0119",  # number_prefix: transitive, low risk. Review: 2026-07.
+    "RUSTSEC-2024-0436",  # paste: transitive (safer_ffi / macro_rules_attribute). Low risk. Review: 2026-07.
+]
+
+# ----- Licenses -----
+[licenses]
+version = 2
+confidence-threshold = 0.8
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-3-Clause",
+    "BSD-2-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+    "CC0-1.0",
+    "MPL-2.0",
+    "OpenSSL",
+    "BSL-1.0",
+    "CDLA-Permissive-2.0",  # used by webpki-roots for CA cert data
+]
+
+[[licenses.clarify]]
+name = "ring"
+expression = "MIT AND ISC AND OpenSSL"
+license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
+
+# ----- Bans -----
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+workspace-default-features = "allow"
+external-default-features = "allow"
+
+# Crates we deliberately want to track. Empty for now; add as needed.
+deny = []
+skip = []
+skip-tree = []
+
+# ----- Sources -----
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
