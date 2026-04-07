@@ -9,9 +9,8 @@ use std::{
 
 use dora_message::{
     DataflowId,
-    daemon_to_node::{DaemonCommunication, DaemonReply, DataMessage, NodeEvent},
+    daemon_to_node::{DaemonCommunication, DataMessage, NodeEvent},
     id::DataId,
-    node_to_daemon::{DaemonRequest, Timestamped},
 };
 pub use event::{Event, StopCause};
 use futures::{
@@ -187,21 +186,9 @@ impl EventStream {
         write_events_to: Option<WriteEventsTo>,
     ) -> eyre::Result<Self> {
         channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;
-        let reply = channel
-            .request(&Timestamped {
-                inner: DaemonRequest::Subscribe,
-                timestamp: clock.new_timestamp(),
-            })
-            .map_err(|e| eyre!(e))
+        channel
+            .subscribe()
             .wrap_err("failed to create subscription with dora-daemon")?;
-
-        match reply {
-            DaemonReply::Result(Ok(())) => {}
-            DaemonReply::Result(Err(err)) => {
-                eyre::bail!("subscribe failed: {err}")
-            }
-            other => eyre::bail!("unexpected subscribe reply: {other:?}"),
-        }
 
         close_channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;
 
@@ -606,20 +593,10 @@ impl Stream for EventStream {
 
 impl Drop for EventStream {
     fn drop(&mut self) {
-        let request = Timestamped {
-            inner: DaemonRequest::EventStreamDropped,
-            timestamp: self.clock.new_timestamp(),
-        };
         let result = self
             .close_channel
-            .request(&request)
-            .map_err(|e| eyre!(e))
-            .wrap_err("failed to signal event stream closure to dora-daemon")
-            .and_then(|r| match r {
-                DaemonReply::Result(Ok(())) => Ok(()),
-                DaemonReply::Result(Err(err)) => Err(eyre!("EventStreamClosed failed: {err}")),
-                other => Err(eyre!("unexpected EventStreamClosed reply: {other:?}")),
-            });
+            .event_stream_dropped()
+            .wrap_err("failed to signal event stream closure to dora-daemon");
         if let Err(err) = result {
             tracing::warn!("{err:?}")
         }

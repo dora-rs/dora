@@ -7,22 +7,17 @@ use dora_core::{
 use dora_message::{
     DataflowId,
     common::{DropToken, Timestamped},
-    daemon_to_node::{
-        DaemonCommunication, DaemonReply, NodeDropEvent, NodeEvent, NodeEventOrUnknown,
-    },
-    node_to_daemon::DaemonRequest,
+    daemon_to_node::{DaemonCommunication, DaemonReply, NodeConfig, NodeDropEvent, NodeEvent},
+    metadata::Metadata,
+    node_to_daemon::{DataMessage, NodeControl, NodeRegisterRequest},
+    tarpc,
 };
-use eyre::{Context, eyre};
-use futures::{Future, future, task};
-use std::{
-    collections::{BTreeMap, VecDeque},
-    mem,
-    sync::Arc,
-    task::Poll,
-};
+use eyre::Context;
+use std::{collections::BTreeMap, mem, sync::Arc};
 use tokio::{
     net::TcpListener,
     sync::{
+        Mutex,
         mpsc::{self, UnboundedReceiver},
         oneshot,
     },
@@ -58,375 +53,337 @@ pub async fn spawn_listener_loop(
     Ok((DaemonCommunication::Tcp { socket_addr }, Some(abort_handle)))
 }
 
-struct Listener {
-    dataflow_id: DataflowId,
-    node_id: NodeId,
+/// Shared mutable state for the tarpc NodeControl server.
+///
+/// Since tarpc clones the server struct for each request, we wrap the mutable
+/// state in `Arc<Mutex<...>>`.
+struct NodeControlState {
+    dataflow_id: Option<DataflowId>,
+    node_id: Option<NodeId>,
     daemon_tx: mpsc::Sender<Timestamped<Event>>,
     subscribed_events: Option<UnboundedReceiver<Timestamped<NodeEvent>>>,
     subscribed_drop_events: Option<UnboundedReceiver<Timestamped<NodeDropEvent>>>,
-    queue: VecDeque<Box<Option<Timestamped<NodeEventOrUnknown>>>>,
+    event_queue: Vec<Timestamped<NodeEvent>>,
     clock: Arc<uhlc::HLC>,
 }
 
-impl Listener {
-    pub(crate) async fn run<C: Connection>(
-        mut connection: C,
-        daemon_tx: mpsc::Sender<Timestamped<Event>>,
-        hlc: Arc<uhlc::HLC>,
-    ) {
-        // receive the first message
-        let message = match connection
-            .receive_message()
-            .await
-            .wrap_err("failed to receive register message")
-        {
-            Ok(Some(m)) => m,
-            Ok(None) => {
-                tracing::info!("channel disconnected before register message");
-                return;
-            } // disconnected
-            Err(err) => {
-                tracing::info!("{err:?}");
-                return;
-            }
-        };
+/// tarpc-based server that implements `NodeControl`.
+#[derive(Clone)]
+pub(crate) struct NodeControlServer {
+    state: Arc<Mutex<NodeControlState>>,
+}
 
-        if let Err(err) = hlc.update_with_timestamp(&message.timestamp) {
-            tracing::warn!("failed to update HLC: {err}");
+impl NodeControlServer {
+    pub(crate) fn new(daemon_tx: mpsc::Sender<Timestamped<Event>>, clock: Arc<uhlc::HLC>) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(NodeControlState {
+                dataflow_id: None,
+                node_id: None,
+                daemon_tx,
+                subscribed_events: None,
+                subscribed_drop_events: None,
+                event_queue: Vec::new(),
+                clock,
+            })),
         }
-
-        match message.inner {
-            DaemonRequest::Register(register_request) => {
-                let result = register_request.check_version();
-                let send_result = connection
-                    .send_reply(DaemonReply::Result(result.clone()))
-                    .await
-                    .wrap_err("failed to send register reply");
-                let dataflow_id = register_request.dataflow_id;
-                let node_id = register_request.node_id;
-                match (result, send_result) {
-                    (Ok(()), Ok(())) => {
-                        let mut listener = Listener {
-                            dataflow_id,
-                            node_id,
-                            daemon_tx,
-                            subscribed_events: None,
-                            subscribed_drop_events: None,
-                            queue: VecDeque::new(),
-                            clock: hlc.clone(),
-                        };
-                        match listener
-                            .run_inner(connection)
-                            .await
-                            .wrap_err("listener failed")
-                        {
-                            Ok(()) => {}
-                            Err(err) => tracing::error!("{err:?}"),
-                        }
-                    }
-                    (Err(err), _) => {
-                        tracing::warn!("failed to register node {dataflow_id}/{node_id}: {err}");
-                    }
-                    (Ok(()), Err(err)) => {
-                        tracing::warn!(
-                            "failed send register reply to node {dataflow_id}/{node_id}: {err:?}"
-                        );
-                    }
-                }
-            }
-            other => {
-                tracing::warn!("expected register message, got `{other:?}`");
-                let reply = DaemonReply::Result(Err("must send register message first".into()));
-                if let Err(err) = connection
-                    .send_reply(reply)
-                    .await
-                    .wrap_err("failed to send  reply")
-                {
-                    tracing::warn!("{err:?}");
-                }
-            }
-        }
-    }
-
-    async fn run_inner<C: Connection>(&mut self, mut connection: C) -> eyre::Result<()> {
-        loop {
-            let mut next_message = connection.receive_message();
-            let message = loop {
-                let next_event = self.next_event();
-                let event = match future::select(next_event, next_message).await {
-                    future::Either::Left((event, n)) => {
-                        next_message = n;
-                        event
-                    }
-                    future::Either::Right((message, _)) => break message,
-                };
-
-                self.queue.push_back(Box::new(Some(event.into())));
-                self.handle_events().await?;
-            };
-
-            match message.wrap_err("failed to receive DaemonRequest") {
-                Ok(Some(message)) => {
-                    if let Err(err) = self.handle_message(message, &mut connection).await {
-                        tracing::warn!("{err:?}");
-                    }
-                }
-                Err(err) => {
-                    tracing::warn!("{err:?}");
-                }
-                Ok(None) => {
-                    break; // disconnected
-                }
-            }
-        }
-        Ok(())
-    }
-
-    async fn handle_events(&mut self) -> eyre::Result<()> {
-        if let Some(events) = &mut self.subscribed_events {
-            while let Ok(event) = events.try_recv() {
-                self.queue.push_back(Box::new(Some(event.into())));
-            }
-        }
-        Ok(())
-    }
-
-    #[tracing::instrument(skip(self, connection), fields(%self.dataflow_id, %self.node_id), level = "trace")]
-    async fn handle_message<C: Connection>(
-        &mut self,
-        message: Timestamped<DaemonRequest>,
-        connection: &mut C,
-    ) -> eyre::Result<()> {
-        let timestamp = message.timestamp;
-        if let Err(err) = self.clock.update_with_timestamp(&timestamp) {
-            tracing::warn!("failed to update HLC: {err}");
-        }
-        match message.inner {
-            DaemonRequest::Register { .. } => {
-                let reply = DaemonReply::Result(Err("unexpected register message".into()));
-                self.send_reply(reply, connection)
-                    .await
-                    .wrap_err("failed to send register reply")?;
-            }
-            DaemonRequest::NodeConfig { .. } => {
-                let reply = DaemonReply::Result(Err("unexpected node config message".into()));
-                self.send_reply(reply, connection)
-                    .await
-                    .wrap_err("failed to send register reply")?;
-            }
-            DaemonRequest::OutputsDone => {
-                let (reply_sender, reply) = oneshot::channel();
-                self.process_daemon_event(
-                    DaemonNodeEvent::OutputsDone { reply_sender },
-                    Some(reply),
-                    connection,
-                )
-                .await?
-            }
-            DaemonRequest::CloseOutputs(outputs) => {
-                let (reply_sender, reply) = oneshot::channel();
-                self.process_daemon_event(
-                    DaemonNodeEvent::CloseOutputs {
-                        outputs,
-                        reply_sender,
-                    },
-                    Some(reply),
-                    connection,
-                )
-                .await?
-            }
-            DaemonRequest::SendMessage {
-                output_id,
-                metadata,
-                data,
-            } => {
-                let event = crate::DaemonNodeEvent::SendOut {
-                    output_id,
-                    metadata,
-                    data,
-                };
-                self.process_daemon_event(event, None, connection).await?;
-            }
-            DaemonRequest::Subscribe => {
-                let (tx, rx) = mpsc::unbounded_channel();
-                let (reply_sender, reply) = oneshot::channel();
-                self.process_daemon_event(
-                    DaemonNodeEvent::Subscribe {
-                        event_sender: tx,
-                        reply_sender,
-                    },
-                    Some(reply),
-                    connection,
-                )
-                .await?;
-                self.subscribed_events = Some(rx);
-            }
-            DaemonRequest::SubscribeDrop => {
-                let (tx, rx) = mpsc::unbounded_channel();
-                let (reply_sender, reply) = oneshot::channel();
-                self.process_daemon_event(
-                    DaemonNodeEvent::SubscribeDrop {
-                        event_sender: tx,
-                        reply_sender,
-                    },
-                    Some(reply),
-                    connection,
-                )
-                .await?;
-                self.subscribed_drop_events = Some(rx);
-            }
-            DaemonRequest::NextEvent { drop_tokens } => {
-                self.report_drop_tokens(drop_tokens).await?;
-
-                // try to take the queued events first
-                let queued_events: Vec<_> = mem::take(&mut self.queue)
-                    .into_iter()
-                    .filter_map(|e| *e)
-                    .collect();
-                let reply = if queued_events.is_empty() {
-                    match self.subscribed_events.as_mut() {
-                        // wait for next event
-                        Some(events) => match events.recv().await {
-                            Some(event) => DaemonReply::NextEvents(vec![event.into()]),
-                            None => DaemonReply::NextEvents(vec![]),
-                        },
-                        None => {
-                            DaemonReply::Result(Err("Ignoring event request because no subscribe \
-                                message was sent yet"
-                                .into()))
-                        }
-                    }
-                } else {
-                    DaemonReply::NextEvents(queued_events)
-                };
-
-                self.send_reply(reply.clone(), connection)
-                    .await
-                    .wrap_err_with(|| format!("failed to send NextEvent reply: {reply:?}"))?;
-            }
-            DaemonRequest::ReportDropTokens { drop_tokens } => {
-                self.report_drop_tokens(drop_tokens).await?;
-
-                self.send_reply(DaemonReply::Empty, connection)
-                    .await
-                    .wrap_err("failed to send ReportDropTokens reply")?;
-            }
-            DaemonRequest::NextFinishedDropTokens => {
-                let reply = match self.subscribed_drop_events.as_mut() {
-                    // wait for next event
-                    Some(events) => match events.recv().await {
-                        Some(event) => DaemonReply::NextDropEvents(vec![event]),
-                        None => DaemonReply::NextDropEvents(vec![]),
-                    },
-                    None => DaemonReply::Result(Err("Ignoring event request because no drop \
-                        subscribe message was sent yet"
-                        .into())),
-                };
-
-                self.send_reply(reply.clone(), connection)
-                    .await
-                    .wrap_err_with(|| {
-                        format!("failed to send NextFinishedDropTokens reply: {reply:?}")
-                    })?;
-            }
-            DaemonRequest::EventStreamDropped => {
-                let (reply_sender, reply) = oneshot::channel();
-                self.process_daemon_event(
-                    DaemonNodeEvent::EventStreamDropped { reply_sender },
-                    Some(reply),
-                    connection,
-                )
-                .await?;
-            }
-        }
-        Ok(())
-    }
-
-    async fn report_drop_tokens(&mut self, drop_tokens: Vec<DropToken>) -> eyre::Result<()> {
-        if !drop_tokens.is_empty() {
-            let event = Event::Node {
-                dataflow_id: self.dataflow_id,
-                node_id: self.node_id.clone(),
-                event: DaemonNodeEvent::ReportDrop {
-                    tokens: drop_tokens,
-                },
-            };
-            let event = Timestamped {
-                inner: event,
-                timestamp: self.clock.new_timestamp(),
-            };
-            self.daemon_tx
-                .send(event)
-                .await
-                .map_err(|_| eyre!("failed to report drop tokens to daemon"))?;
-        }
-        Ok(())
-    }
-
-    async fn process_daemon_event<C: Connection>(
-        &mut self,
-        event: DaemonNodeEvent,
-        reply: Option<oneshot::Receiver<DaemonReply>>,
-        connection: &mut C,
-    ) -> eyre::Result<()> {
-        // send NodeEvent to daemon main loop
-        let event = Event::Node {
-            dataflow_id: self.dataflow_id,
-            node_id: self.node_id.clone(),
-            event,
-        };
-        let event = Timestamped {
-            inner: event,
-            timestamp: self.clock.new_timestamp(),
-        };
-        self.daemon_tx
-            .send(event)
-            .await
-            .map_err(|_| eyre!("failed to send event to daemon"))?;
-        let reply = if let Some(reply) = reply {
-            reply
-                .await
-                .map_err(|_| eyre!("failed to receive reply from daemon"))?
-        } else {
-            DaemonReply::Empty
-        };
-        self.send_reply(reply, connection).await?;
-        Ok(())
-    }
-
-    async fn send_reply<C: Connection>(
-        &mut self,
-        reply: DaemonReply,
-        connection: &mut C,
-    ) -> eyre::Result<()> {
-        connection
-            .send_reply(reply)
-            .await
-            .wrap_err_with(|| format!("failed to send reply to node `{}`", self.node_id))
-    }
-
-    /// Awaits the next subscribed event if any. Never resolves if the event channel is closed.
-    ///
-    /// This is similar to `self.subscribed_events.recv()`. The difference is that the future
-    /// does not return `None` when the channel is closed and instead stays pending forever.
-    /// This behavior can be useful when waiting for multiple event sources at once.
-    fn next_event(&mut self) -> impl Future<Output = Timestamped<NodeEvent>> + Unpin + '_ {
-        let poll = |cx: &mut task::Context<'_>| {
-            if let Some(events) = &mut self.subscribed_events {
-                match events.poll_recv(cx) {
-                    Poll::Ready(Some(event)) => Poll::Ready(event),
-                    Poll::Ready(None) | Poll::Pending => Poll::Pending,
-                }
-            } else {
-                Poll::Pending
-            }
-        };
-        future::poll_fn(poll)
     }
 }
 
-#[async_trait::async_trait]
-trait Connection {
-    async fn receive_message(&mut self) -> eyre::Result<Option<Timestamped<DaemonRequest>>>;
-    async fn send_reply(&mut self, message: DaemonReply) -> eyre::Result<()>;
+
+impl NodeControlServer {
+    /// Send a fire-and-forget event to the daemon main loop (no reply expected).
+    async fn send_daemon_event_no_reply(
+        state: &mut NodeControlState,
+        event: DaemonNodeEvent,
+    ) -> Result<(), String> {
+        let dataflow_id = state
+            .dataflow_id
+            .ok_or_else(|| "node not registered".to_string())?;
+        let node_id = state
+            .node_id
+            .clone()
+            .ok_or_else(|| "node not registered".to_string())?;
+
+        let daemon_event = Event::Node {
+            dataflow_id,
+            node_id,
+            event,
+        };
+        let timestamped = Timestamped {
+            inner: daemon_event,
+            timestamp: state.clock.new_timestamp(),
+        };
+        state
+            .daemon_tx
+            .send(timestamped)
+            .await
+            .map_err(|_| "failed to send event to daemon".to_string())
+    }
+
+    /// Send a DaemonNodeEvent that carries its own oneshot reply_sender, and wait for the reply.
+    async fn send_daemon_event_with_reply(
+        state: &mut NodeControlState,
+        event: DaemonNodeEvent,
+        reply_rx: oneshot::Receiver<DaemonReply>,
+    ) -> Result<DaemonReply, String> {
+        let dataflow_id = state
+            .dataflow_id
+            .ok_or_else(|| "node not registered".to_string())?;
+        let node_id = state
+            .node_id
+            .clone()
+            .ok_or_else(|| "node not registered".to_string())?;
+
+        let daemon_event = Event::Node {
+            dataflow_id,
+            node_id,
+            event,
+        };
+        let timestamped = Timestamped {
+            inner: daemon_event,
+            timestamp: state.clock.new_timestamp(),
+        };
+        state
+            .daemon_tx
+            .send(timestamped)
+            .await
+            .map_err(|_| "failed to send event to daemon".to_string())?;
+
+        reply_rx
+            .await
+            .map_err(|_| "failed to receive reply from daemon".to_string())
+    }
+
+    async fn report_drop_tokens_inner(
+        state: &mut NodeControlState,
+        drop_tokens: Vec<DropToken>,
+    ) -> Result<(), String> {
+        if drop_tokens.is_empty() {
+            return Ok(());
+        }
+        let dataflow_id = state
+            .dataflow_id
+            .ok_or_else(|| "node not registered".to_string())?;
+        let node_id = state
+            .node_id
+            .clone()
+            .ok_or_else(|| "node not registered".to_string())?;
+
+        let event = Event::Node {
+            dataflow_id,
+            node_id,
+            event: DaemonNodeEvent::ReportDrop {
+                tokens: drop_tokens,
+            },
+        };
+        let timestamped = Timestamped {
+            inner: event,
+            timestamp: state.clock.new_timestamp(),
+        };
+        state
+            .daemon_tx
+            .send(timestamped)
+            .await
+            .map_err(|_| "failed to report drop tokens to daemon".to_string())
+    }
+
+    /// Extract the Result payload from a DaemonReply.
+    fn extract_result(reply: DaemonReply) -> Result<(), String> {
+        match reply {
+            DaemonReply::Result(r) => r,
+            DaemonReply::Empty => Ok(()),
+            other => Err(format!("unexpected reply: {other:?}")),
+        }
+    }
+}
+
+impl NodeControl for NodeControlServer {
+    async fn register(
+        self,
+        _context: tarpc::context::Context,
+        request: NodeRegisterRequest,
+    ) -> Result<(), String> {
+        request.check_version()?;
+
+        let mut state = self.state.lock().await;
+        state.dataflow_id = Some(request.dataflow_id);
+        state.node_id = Some(request.node_id);
+        Ok(())
+    }
+
+    async fn subscribe(self, _context: tarpc::context::Context) -> Result<(), String> {
+        let mut state = self.state.lock().await;
+        let (tx, rx) = mpsc::unbounded_channel();
+        let (reply_sender, reply_rx) = oneshot::channel();
+
+        let reply = Self::send_daemon_event_with_reply(
+            &mut state,
+            DaemonNodeEvent::Subscribe {
+                event_sender: tx,
+                reply_sender,
+            },
+            reply_rx,
+        )
+        .await?;
+        state.subscribed_events = Some(rx);
+        Self::extract_result(reply)
+    }
+
+    async fn subscribe_drop(self, _context: tarpc::context::Context) -> Result<(), String> {
+        let mut state = self.state.lock().await;
+        let (tx, rx) = mpsc::unbounded_channel();
+        let (reply_sender, reply_rx) = oneshot::channel();
+
+        let reply = Self::send_daemon_event_with_reply(
+            &mut state,
+            DaemonNodeEvent::SubscribeDrop {
+                event_sender: tx,
+                reply_sender,
+            },
+            reply_rx,
+        )
+        .await?;
+        state.subscribed_drop_events = Some(rx);
+        Self::extract_result(reply)
+    }
+
+    async fn next_event(
+        self,
+        _context: tarpc::context::Context,
+        drop_tokens: Vec<DropToken>,
+    ) -> Vec<Timestamped<NodeEvent>> {
+        let mut state = self.state.lock().await;
+
+        // Report drop tokens
+        if let Err(err) = Self::report_drop_tokens_inner(&mut state, drop_tokens).await {
+            tracing::warn!("failed to report drop tokens: {err}");
+        }
+
+        // Drain any queued events first
+        // Also drain any ready events from the channel
+        {
+            let mut drained = Vec::new();
+            if let Some(events) = &mut state.subscribed_events {
+                while let Ok(event) = events.try_recv() {
+                    drained.push(event);
+                }
+            }
+            state.event_queue.extend(drained);
+        }
+
+        if !state.event_queue.is_empty() {
+            return mem::take(&mut state.event_queue);
+        }
+
+        // Wait for the next event
+        match state.subscribed_events.as_mut() {
+            Some(events) => {
+                // We need to drop the lock while waiting, otherwise other requests
+                // would deadlock. Use a pattern where we take the receiver out,
+                // drop the lock, wait, then put it back.
+                // But since tarpc serializes calls through the server, we can
+                // just hold the lock.
+                match events.recv().await {
+                    Some(event) => vec![event],
+                    None => vec![],
+                }
+            }
+            None => vec![],
+        }
+    }
+
+    async fn next_finished_drop_tokens(
+        self,
+        _context: tarpc::context::Context,
+    ) -> Vec<Timestamped<NodeDropEvent>> {
+        let mut state = self.state.lock().await;
+
+        match state.subscribed_drop_events.as_mut() {
+            Some(events) => match events.recv().await {
+                Some(event) => vec![event],
+                None => vec![],
+            },
+            None => vec![],
+        }
+    }
+
+    async fn send_message(
+        self,
+        _context: tarpc::context::Context,
+        output_id: DataId,
+        metadata: Metadata,
+        data: Option<DataMessage>,
+    ) {
+        let mut state = self.state.lock().await;
+        let event = DaemonNodeEvent::SendOut {
+            output_id,
+            metadata,
+            data,
+        };
+        if let Err(err) = Self::send_daemon_event_no_reply(&mut state, event).await {
+            tracing::warn!("failed to send message to daemon: {err}");
+        }
+    }
+
+    async fn close_outputs(
+        self,
+        _context: tarpc::context::Context,
+        outputs: Vec<DataId>,
+    ) -> Result<(), String> {
+        let mut state = self.state.lock().await;
+        let (reply_sender, reply_rx) = oneshot::channel();
+        let reply = Self::send_daemon_event_with_reply(
+            &mut state,
+            DaemonNodeEvent::CloseOutputs {
+                outputs,
+                reply_sender,
+            },
+            reply_rx,
+        )
+        .await?;
+        Self::extract_result(reply)
+    }
+
+    async fn outputs_done(self, _context: tarpc::context::Context) -> Result<(), String> {
+        let mut state = self.state.lock().await;
+        let (reply_sender, reply_rx) = oneshot::channel();
+        let reply = Self::send_daemon_event_with_reply(
+            &mut state,
+            DaemonNodeEvent::OutputsDone { reply_sender },
+            reply_rx,
+        )
+        .await?;
+        Self::extract_result(reply)
+    }
+
+    async fn report_drop_tokens(
+        self,
+        _context: tarpc::context::Context,
+        drop_tokens: Vec<DropToken>,
+    ) {
+        let mut state = self.state.lock().await;
+        if let Err(err) = Self::report_drop_tokens_inner(&mut state, drop_tokens).await {
+            tracing::warn!("failed to report drop tokens: {err}");
+        }
+    }
+
+    async fn event_stream_dropped(self, _context: tarpc::context::Context) -> Result<(), String> {
+        let mut state = self.state.lock().await;
+        let (reply_sender, reply_rx) = oneshot::channel();
+        let reply = Self::send_daemon_event_with_reply(
+            &mut state,
+            DaemonNodeEvent::EventStreamDropped { reply_sender },
+            reply_rx,
+        )
+        .await?;
+        Self::extract_result(reply)
+    }
+
+    async fn node_config(
+        self,
+        _context: tarpc::context::Context,
+        _node_id: NodeId,
+    ) -> Result<NodeConfig, String> {
+        Err("unexpected node config request on per-node channel".to_string())
+    }
 }

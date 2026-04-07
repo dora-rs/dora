@@ -26,7 +26,7 @@ use dora_message::{
     DataflowId,
     daemon_to_node::{DaemonCommunication, DaemonReply, NodeConfig},
     metadata::{ArrowTypeInfo, Metadata, MetadataParameters},
-    node_to_daemon::{DaemonRequest, DataMessage, DropToken, Timestamped},
+    node_to_daemon::{DataMessage, DropToken},
 };
 use eyre::{WrapErr, bail};
 use is_terminal::IsTerminal;
@@ -209,24 +209,12 @@ impl DoraNode {
 
         let mut channel =
             DaemonChannel::new_tcp(daemon_address).context("Could not connect to the daemon")?;
-        let clock = Arc::new(uhlc::HLC::default());
 
-        let reply = channel
-            .request(&Timestamped {
-                inner: DaemonRequest::NodeConfig { node_id },
-                timestamp: clock.new_timestamp(),
-            })
+        let node_config = channel
+            .node_config_rpc(node_id)
             .wrap_err("failed to request node config from daemon")?;
 
-        match reply {
-            DaemonReply::NodeConfig {
-                result: Ok(node_config),
-            } => Self::init(node_config),
-            DaemonReply::NodeConfig { result: Err(error) } => {
-                bail!("failed to get node config from daemon: {error}")
-            }
-            _ => bail!("unexpected reply from daemon"),
-        }
+        Self::init(node_config)
     }
 
     /// Dynamic initialization function for nodes that are sometimes used as dynamic nodes.

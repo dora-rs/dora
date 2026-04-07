@@ -1,11 +1,8 @@
 use dora_core::{
     config::NodeId,
-    uhlc::{self, Timestamp},
+    uhlc::{self},
 };
-use dora_message::{
-    daemon_to_node::{DaemonReply, NodeEvent, NodeEventOrUnknown},
-    node_to_daemon::{DaemonRequest, DropToken, Timestamped},
-};
+use dora_message::{common::Timestamped, daemon_to_node::NodeEvent, node_to_daemon::DropToken};
 use eyre::{Context, eyre};
 use flume::RecvTimeoutError;
 use std::{
@@ -97,31 +94,14 @@ fn event_stream_loop(
             break 'outer Err(err);
         }
 
-        let daemon_request = Timestamped {
-            inner: DaemonRequest::NextEvent {
-                drop_tokens: std::mem::take(&mut drop_tokens),
-            },
-            timestamp: clock.new_timestamp(),
-        };
-        let events = match channel.request(&daemon_request) {
-            Ok(DaemonReply::NextEvents(events)) => {
+        let events = match channel.next_event(std::mem::take(&mut drop_tokens)) {
+            Ok(events) => {
                 if events.is_empty() {
                     tracing::trace!("event stream closed for node `{node_id}`");
                     break Ok(());
                 } else {
                     events
                 }
-            }
-            Ok(DaemonReply::Result(Err(err))) => {
-                let err = eyre!(err).wrap_err("error in incoming event");
-                tracing::error!("{err:?}");
-                continue;
-            }
-
-            Ok(other) => {
-                let err = eyre!("unexpected control reply: {other:?}");
-                tracing::warn!("{err:?}");
-                continue;
             }
             Err(err) => {
                 let err = err.wrap_err("failed to receive incoming event");
@@ -191,13 +171,8 @@ fn event_stream_loop(
         }
     }
 
-    if let Err(err) = report_remaining_drop_tokens(
-        channel,
-        drop_tokens,
-        pending_drop_tokens,
-        clock.new_timestamp(),
-    )
-    .context("failed to report remaining drop tokens")
+    if let Err(err) = report_remaining_drop_tokens(channel, drop_tokens, pending_drop_tokens)
+        .context("failed to report remaining drop tokens")
     {
         tracing::warn!("{err:?}");
     }
@@ -232,10 +207,11 @@ fn report_remaining_drop_tokens(
     mut channel: DaemonChannel,
     mut drop_tokens: Vec<DropToken>,
     mut pending_drop_tokens: Vec<(DropToken, flume::Receiver<()>, Instant, u64)>,
-    timestamp: Timestamp,
 ) -> eyre::Result<()> {
     while !(pending_drop_tokens.is_empty() && drop_tokens.is_empty()) {
-        report_drop_tokens(&mut drop_tokens, &mut channel, timestamp)?;
+        if !drop_tokens.is_empty() {
+            channel.report_drop_tokens_rpc(std::mem::take(&mut drop_tokens))?;
+        }
 
         let mut still_pending = Vec::new();
         for (token, rx, since, _) in pending_drop_tokens.drain(..) {
@@ -265,24 +241,4 @@ fn report_remaining_drop_tokens(
     }
 
     Ok(())
-}
-
-fn report_drop_tokens(
-    drop_tokens: &mut Vec<DropToken>,
-    channel: &mut DaemonChannel,
-    timestamp: Timestamp,
-) -> Result<(), eyre::ErrReport> {
-    if drop_tokens.is_empty() {
-        return Ok(());
-    }
-    let daemon_request = Timestamped {
-        inner: DaemonRequest::ReportDropTokens {
-            drop_tokens: std::mem::take(drop_tokens),
-        },
-        timestamp,
-    };
-    match channel.request(&daemon_request)? {
-        DaemonReply::Empty => Ok(()),
-        other => Err(eyre!("unexpected ReportDropTokens reply: {other:?}")),
-    }
 }

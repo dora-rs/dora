@@ -4,10 +4,11 @@ use crate::{DaemonCommunicationWrapper, daemon_connection::DaemonChannel};
 use dora_core::{config::NodeId, uhlc};
 use dora_message::{
     DataflowId,
-    daemon_to_node::{DaemonCommunication, DaemonReply, NodeDropEvent},
-    node_to_daemon::{DaemonRequest, DropToken, Timestamped},
+    common::Timestamped,
+    daemon_to_node::{DaemonCommunication, NodeDropEvent},
+    node_to_daemon::DropToken,
 };
-use eyre::{Context, eyre};
+use eyre::Context;
 use flume::RecvTimeoutError;
 
 pub struct DropStream {
@@ -51,22 +52,9 @@ impl DropStream {
         clock: Arc<uhlc::HLC>,
     ) -> eyre::Result<Self> {
         channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;
-
-        let reply = channel
-            .request(&Timestamped {
-                inner: DaemonRequest::SubscribeDrop,
-                timestamp: clock.new_timestamp(),
-            })
-            .map_err(|e| eyre!(e))
-            .wrap_err("failed to create subscription with dora-daemon")?;
-
-        match reply {
-            DaemonReply::Result(Ok(())) => {}
-            DaemonReply::Result(Err(err)) => {
-                eyre::bail!("drop subscribe failed: {err}")
-            }
-            other => eyre::bail!("unexpected drop subscribe reply: {other:?}"),
-        }
+        channel
+            .subscribe_drop()
+            .wrap_err("failed to create drop subscription with dora-daemon")?;
 
         let (tx, rx) = flume::unbounded();
         let node_id_cloned = node_id.clone();
@@ -96,12 +84,8 @@ fn drop_stream_loop(
     clock: Arc<uhlc::HLC>,
 ) {
     'outer: loop {
-        let daemon_request = Timestamped {
-            inner: DaemonRequest::NextFinishedDropTokens,
-            timestamp: clock.new_timestamp(),
-        };
-        let events = match channel.request(&daemon_request) {
-            Ok(DaemonReply::NextDropEvents(events)) => {
+        let events = match channel.next_finished_drop_tokens() {
+            Ok(events) => {
                 if events.is_empty() {
                     tracing::trace!("drop stream closed for node `{node_id}`");
                     break;
@@ -109,15 +93,9 @@ fn drop_stream_loop(
                     events
                 }
             }
-            Ok(other) => {
-                let err = eyre!("unexpected drop reply: {other:?}");
-                tracing::warn!("{err:?}");
-                continue;
-            }
             Err(err) => {
-                let err = eyre!(err).wrap_err("failed to receive incoming drop event");
-                tracing::error!("{err:?}");
-                break;
+                tracing::warn!("failed to receive incoming drop event: {err:?}");
+                continue;
             }
         };
         for Timestamped { inner, timestamp } in events {

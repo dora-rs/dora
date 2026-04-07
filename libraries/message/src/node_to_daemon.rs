@@ -3,10 +3,36 @@ pub use crate::common::{
 };
 use crate::{
     DataflowId, current_crate_version,
+    daemon_to_node::{NodeConfig, NodeDropEvent, NodeEvent},
     id::{DataId, NodeId},
     metadata::Metadata,
     versions_compatible,
 };
+
+mod node_control_service {
+    use super::*;
+    type Result<T> = std::result::Result<T, String>;
+
+    #[tarpc::service]
+    pub trait NodeControl {
+        async fn register(request: NodeRegisterRequest) -> Result<()>;
+        async fn subscribe() -> Result<()>;
+        async fn subscribe_drop() -> Result<()>;
+        async fn next_event(drop_tokens: Vec<DropToken>) -> Vec<Timestamped<NodeEvent>>;
+        async fn next_finished_drop_tokens() -> Vec<Timestamped<NodeDropEvent>>;
+        async fn send_message(
+            output_id: DataId,
+            metadata: Metadata,
+            data: Option<DataMessage>,
+        ) -> ();
+        async fn close_outputs(outputs: Vec<DataId>) -> Result<()>;
+        async fn outputs_done() -> Result<()>;
+        async fn report_drop_tokens(drop_tokens: Vec<DropToken>) -> ();
+        async fn event_stream_dropped() -> Result<()>;
+        async fn node_config(node_id: NodeId) -> Result<NodeConfig>;
+    }
+}
+pub use node_control_service::*;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum DaemonRequest {
