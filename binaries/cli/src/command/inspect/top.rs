@@ -329,7 +329,9 @@ fn run_app<B: Backend>(
     app.update_stats(node_infos.clone());
 
     loop {
-        terminal.draw(|f| ui(f, &mut app, refresh_duration))?;
+        terminal
+            .draw(|f| ui(f, &mut app, refresh_duration))
+            .map_err(|e| eyre!("terminal draw failed: {e}"))?;
 
         let timeout = refresh_duration
             .checked_sub(last_update.elapsed())

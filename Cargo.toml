@@ -64,7 +64,7 @@ members = [
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.85.0"
+rust-version = "1.88.0"
 # Python packages derive version from CARGO_PKG_VERSION automatically.
 version = "0.2.1"
 description = "`adora` goal is to be a low latency, composable, and distributed data flow."

@@ -461,7 +461,7 @@ fn ui(
                     let hi = lo + step;
                     Bar::default()
                         .value(c)
-                        .label(format!("{:.3}-{:.3}", lo, hi).into())
+                        .label(ratatui::text::Line::from(format!("{:.3}-{:.3}", lo, hi)))
                         .style(Style::default().fg(Color::Green))
                 })
                 .collect();

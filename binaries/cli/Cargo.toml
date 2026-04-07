@@ -62,7 +62,7 @@ tabwriter = "1.4.0"
 log = { version = "0.4.21", features = ["serde"] }
 colored = { workspace = true }
 crossterm = "0.29.0"
-ratatui = "0.29.0"
+ratatui = "0.30.0"
 itertools = "0.14"
 sysinfo = "0.36.1"
 
