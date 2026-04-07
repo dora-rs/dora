@@ -45,14 +45,15 @@
           ]
         },
         "envs": {
-          "description": "Environment variables for the custom nodes\n\nDeprecated, use outer-level `env` field instead.",
+          "description": "Environment variables for the custom nodes.",
           "type": [
             "object",
             "null"
           ],
           "additionalProperties": {
             "$ref": "#/$defs/EnvValue"
-          }
+          },
+          "deprecated": true
         },
         "inputs": {
           "description": "Inputs for the nodes as a map from input ID to `node_id/output_id`.\n\ne.g.\n\ninputs:\n\n  example_input: example_node/example_output1",
