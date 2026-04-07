@@ -50,7 +50,7 @@ async fn handle_connection(
         tracing::warn!("failed to set nodelay for connection: {err}");
     }
 
-    let codec = tokio_serde::formats::Json::<
+    let codec = tokio_serde::formats::Bincode::<
         tarpc::ClientMessage<NodeControlRequest>,
         tarpc::Response<NodeControlResponse>,
     >::default();

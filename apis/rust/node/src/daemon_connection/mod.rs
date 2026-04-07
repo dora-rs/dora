@@ -54,7 +54,7 @@ impl DaemonChannel {
         let client = runtime.block_on(async {
             let transport = serde_transport::tcp::connect(
                 socket_addr,
-                tarpc::tokio_serde::formats::Json::default,
+                tarpc::tokio_serde::formats::Bincode::default,
             )
             .await?;
             Ok::<_, eyre::Error>(
