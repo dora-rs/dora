@@ -216,15 +216,25 @@ pub struct CommunicationConfig {
     #[serde(
         default,
         with = "serde_yaml::with::singleton_map",
-        rename = "_unstable_local"
+        rename = "_unstable_remote"
     )]
     #[schemars(with = "String")]
-    pub local: LocalCommunicationConfig,
+    pub remote: RemoteCommunicationConfig,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
-pub enum LocalCommunicationConfig {
-    #[default]
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(deny_unknown_fields, rename_all = "lowercase")]
+pub enum RemoteCommunicationConfig {
     Tcp,
-    UnixDomain,
+    // TODO:a
+    // Zenoh {
+    //     config: Option<serde_yaml::Value>,
+    //     prefix: String,
+    // },
+}
+
+impl Default for RemoteCommunicationConfig {
+    fn default() -> Self {
+        Self::Tcp
+    }
 }

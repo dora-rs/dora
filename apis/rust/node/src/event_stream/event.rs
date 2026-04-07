@@ -1,5 +1,6 @@
 use dora_arrow_convert::ArrowData;
 use dora_core::config::{DataId, NodeId, OperatorId};
+pub use dora_message::daemon_to_node::StopCause;
 use dora_message::metadata::Metadata;
 
 /// Represents an incoming Dora event.
@@ -78,23 +79,4 @@ pub enum Event {
     ///
     /// It's a good idea to output or log this error for debugging.
     Error(String),
-}
-
-/// The reason for closing the event stream.
-///
-/// This enum is marked as `non_exhaustive` because we might add additional
-/// variants in the future.
-#[derive(Debug, Clone)]
-#[non_exhaustive]
-pub enum StopCause {
-    /// The dataflow is stopped early after a `dora stop` command (or on `ctrl-c`).
-    ///
-    /// Nodes should exit as soon as possible if they receive a stop event of
-    /// this type. Dora will kill nodes that keep running for too long after
-    /// receiving such a stop event.
-    Manual,
-    /// The event stream is closed because all of the node's inputs were closed.
-    ///
-    /// This stop event type is only sent for nodes that have at least one input.
-    AllInputsClosed,
 }

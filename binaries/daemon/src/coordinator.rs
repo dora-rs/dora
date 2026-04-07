@@ -241,6 +241,8 @@ impl DaemonControl for DaemonControlServer {
             spawn_nodes,
             uv,
             write_events_to,
+            hot_reload,
+            dataflow_path,
         } = request;
 
         // For spawn, we still route through the event loop because spawn_dataflow
@@ -258,6 +260,8 @@ impl DaemonControl for DaemonControlServer {
                 spawn_nodes,
                 uv,
                 write_events_to,
+                hot_reload,
+                dataflow_path,
                 reply_tx: result_tx,
             },
             timestamp: clock.new_timestamp(),
@@ -358,23 +362,104 @@ impl DaemonControl for DaemonControlServer {
         node_id: NodeId,
         operator_id: Option<OperatorId>,
     ) -> Result<(), String> {
+        use dora_message::daemon_to_node::StopCause;
         let mut dataflow =
             self.state.running.get_mut(&dataflow_id).ok_or_else(|| {
                 format!("Reload failed: no running dataflow with ID `{dataflow_id}`")
             })?;
-        if let Some(channel) = dataflow.subscribe_channels.get(&node_id) {
-            match send_with_timestamp(
-                channel,
-                NodeEvent::Reload { operator_id },
-                &self.state.clock,
-            ) {
-                Ok(()) => {}
-                Err(_) => {
-                    dataflow.subscribe_channels.remove(&node_id);
+
+        // If operator_id is None, this is a custom node reload (hot-reload of binary).
+        // Send a Stop event with HotReload reason so the node can save state and exit gracefully.
+        // A fallback SIGTERM is sent after 2 seconds in case the node doesn't respond.
+        if operator_id.is_none() {
+            if dataflow.running_nodes.contains_key(&node_id) {
+                tracing::info!(
+                    "Hot-reload: sending Stop(HotReload) to custom node `{}` for restart",
+                    node_id
+                );
+
+                // Set pending_hot_reload flag before sending the stop event to avoid races
+                let running_node = dataflow.running_nodes.get(&node_id).unwrap();
+                running_node
+                    .pending_hot_reload
+                    .store(true, std::sync::atomic::Ordering::Release);
+
+                // Send Stop event with HotReload reason
+                if let Some(channel) = dataflow.subscribe_channels.get(&node_id) {
+                    let _ = send_with_timestamp(
+                        channel,
+                        NodeEvent::Stop {
+                            reason: Some(StopCause::HotReload),
+                        },
+                        &self.state.clock,
+                    );
+                }
+
+                // Spawn a fallback task: if the node doesn't exit within 2 seconds, send SIGTERM
+                if let Some(process) = &running_node.process {
+                    let sender = process.clone_sender();
+                    let pending_flag = running_node.pending_hot_reload.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                        if pending_flag.load(std::sync::atomic::Ordering::Acquire) {
+                            let _ = sender.send(crate::ProcessOperation::SoftKill);
+                        }
+                    });
+                }
+            } else {
+                tracing::info!(
+                    "Hot-reload: node `{}` is not running, cannot reload",
+                    node_id
+                );
+            }
+        } else {
+            // For Python operators in Runtime nodes, send the reload event
+            let event = NodeEvent::Reload { operator_id };
+            if let Some(channel) = dataflow.subscribe_channels.get(&node_id) {
+                match send_with_timestamp(channel, event, &self.state.clock) {
+                    Ok(()) => {}
+                    Err(_) => {
+                        dataflow.subscribe_channels.remove(&node_id);
+                    }
                 }
             }
         }
         Ok(())
+    }
+
+    async fn stop_node(
+        self,
+        _ctx: tarpc::context::Context,
+        _dataflow_id: DataflowId,
+        _node_id: NodeId,
+    ) -> Result<(), String> {
+        // Stop node is handled via the enhanced reload_dataflow for now.
+        // Full implementation would route through the event loop.
+        Err("stop_node not yet implemented via RPC".to_string())
+    }
+
+    async fn dynamic_spawn(
+        self,
+        _ctx: tarpc::context::Context,
+        _dataflow_id: DataflowId,
+        _node_id: NodeId,
+        _node: Box<dora_message::descriptor::ResolvedNode>,
+        _dataflow_descriptor: Box<dora_message::descriptor::Descriptor>,
+    ) -> Result<(), String> {
+        // Dynamic spawn would route through the event loop.
+        Err("dynamic_spawn not yet implemented via RPC".to_string())
+    }
+
+    async fn restart_node(
+        self,
+        _ctx: tarpc::context::Context,
+        _dataflow_id: DataflowId,
+        _node_id: NodeId,
+        _new_node: Box<dora_message::descriptor::ResolvedNode>,
+        _dataflow_descriptor: Box<dora_message::descriptor::Descriptor>,
+    ) -> Result<(), String> {
+        // Restart node would route through the event loop.
+        Err("restart_node not yet implemented via RPC".to_string())
     }
 
     async fn logs(

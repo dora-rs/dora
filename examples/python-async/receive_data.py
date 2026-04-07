@@ -31,6 +31,7 @@ async def main():
             break
 
         if event_type in ("ERROR", "INPUT_CLOSED"):
+        if event is None or event["type"] == "STOP":
             break
 
         if event_type == "INPUT":
@@ -41,6 +42,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(main())
+    asyncio.run(main())

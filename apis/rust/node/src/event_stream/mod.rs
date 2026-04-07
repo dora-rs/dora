@@ -3,6 +3,7 @@ use std::{
     path::PathBuf,
     pin::pin,
     sync::Arc,
+    task::Poll,
     time::Duration,
 };
 
@@ -14,7 +15,7 @@ use dora_message::{
 };
 pub use event::{Event, StopCause};
 use futures::{
-    FutureExt, Stream, StreamExt,
+    FutureExt, Stream,
     future::{Either, select},
 };
 use futures_timer::Delay;
@@ -61,7 +62,7 @@ mod thread;
 /// [`StopCause::Manual`] was received.
 pub struct EventStream {
     node_id: NodeId,
-    receiver: flume::r#async::RecvStream<'static, EventItem>,
+    receiver: tokio::sync::mpsc::UnboundedReceiver<EventItem>,
     _thread_handle: EventStreamThreadHandle,
     close_channel: DaemonChannel,
     clock: Arc<uhlc::HLC>,
@@ -69,6 +70,7 @@ pub struct EventStream {
     write_events_to: Option<WriteEventsTo>,
     start_timestamp: uhlc::Timestamp,
     use_scheduler: bool,
+    closed: bool,
 }
 
 impl EventStream {
@@ -89,12 +91,6 @@ impl EventStream {
                             format!("failed to connect event stream for node `{node_id}`")
                         })?
                     }
-                    #[cfg(unix)]
-                    DaemonCommunication::UnixDomain { socket_file } => {
-                        DaemonChannel::new_unix_socket(socket_file).wrap_err_with(|| {
-                            format!("failed to connect event stream for node `{node_id}`")
-                        })?
-                    }
                     DaemonCommunication::Interactive => {
                         DaemonChannel::Interactive(Default::default())
                     }
@@ -111,12 +107,6 @@ impl EventStream {
                 match daemon_communication {
                     DaemonCommunication::Tcp { socket_addr } => {
                         DaemonChannel::new_tcp(*socket_addr).wrap_err_with(|| {
-                            format!("failed to connect event close channel for node `{node_id}`")
-                        })?
-                    }
-                    #[cfg(unix)]
-                    DaemonCommunication::UnixDomain { socket_file } => {
-                        DaemonChannel::new_unix_socket(socket_file).wrap_err_with(|| {
                             format!("failed to connect event close channel for node `{node_id}`")
                         })?
                     }
@@ -215,7 +205,11 @@ impl EventStream {
 
         close_channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;
 
-        let (tx, rx) = flume::bounded(100_000_000);
+        // Use tokio mpsc instead of flume to avoid a deadlock between flume's
+        // internal Spinlock and pyo3's GIL-acquiring waker (AsyncioWaker).
+        // tokio mpsc drops its internal lock before calling waker.wake(),
+        // preventing the deadlock.
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
 
         let use_scheduler = match &channel {
             DaemonChannel::IntegrationTestChannel(_) => {
@@ -230,7 +224,7 @@ impl EventStream {
 
         Ok(EventStream {
             node_id: node_id.clone(),
-            receiver: rx.into_stream(),
+            receiver: rx,
             _thread_handle: thread_handle,
             close_channel,
             start_timestamp: clock.new_timestamp(),
@@ -238,6 +232,7 @@ impl EventStream {
             scheduler,
             write_events_to,
             use_scheduler,
+            closed: false,
         })
     }
 
@@ -257,6 +252,12 @@ impl EventStream {
     /// If you want to receive the events in their original chronological order, use the
     /// asynchronous [`StreamExt::next`] method instead ([`EventStream`] implements the
     /// [`Stream`] trait).
+    ///
+    /// ## Panics
+    ///
+    /// This method will panic if called after the event stream has been closed, i.e. after
+    /// it has returned `None` once. Use [`is_closed`][Self::is_closed] to check if the stream
+    /// is closed.
     pub fn recv(&mut self) -> Option<Event> {
         futures::executor::block_on(self.recv_async())
     }
@@ -279,6 +280,12 @@ impl EventStream {
     /// If you want to receive the events in their original chronological order, use the
     /// asynchronous [`StreamExt::next`] method instead ([`EventStream`] implements the
     /// [`Stream`] trait).
+    ///
+    /// ## Panics
+    ///
+    /// This method will panic if called after the event stream has been closed, i.e. after
+    /// it has returned `None` once. Use [`is_closed`][Self::is_closed] to check if the stream
+    /// is closed.
     pub fn recv_timeout(&mut self, dur: Duration) -> Option<Event> {
         futures::executor::block_on(self.recv_async_timeout(dur))
     }
@@ -296,31 +303,54 @@ impl EventStream {
     /// If you want to receive the events in their original chronological order, use the
     /// [`StreamExt::next`] method with a custom timeout future instead
     /// ([`EventStream`] implements the [`Stream`] trait).
+    ///
+    /// ## Panics
+    ///
+    /// This method will panic if called after the event stream has been closed, i.e. after
+    /// it has returned `None` once. Use [`is_closed`][Self::is_closed] to check if the stream
+    /// is closed.
     pub async fn recv_async(&mut self) -> Option<Event> {
+        assert!(
+            !self.closed,
+            "receive function called after None was returned"
+        );
+
         if !self.use_scheduler {
-            return self.receiver.next().await.map(Self::convert_event_item);
+            return self.receiver.recv().await.map(Self::convert_event_item);
         }
         loop {
             if self.scheduler.is_empty() {
-                if let Some(event) = self.receiver.next().await {
+                if let Some(event) = self.receiver.recv().await {
                     self.add_event(event);
                 } else {
                     break;
                 }
             } else {
-                match self.receiver.next().now_or_never().flatten() {
-                    Some(event) => self.add_event(event),
-                    None => break, // no other ready events
+                match self.receiver.try_recv() {
+                    Ok(event) => self.add_event(event),
+                    Err(_) => break, // no other ready events or closed
                 };
             }
         }
         let event = self.scheduler.next();
+        tracing::debug!("received event from scheduler: {:?}", event);
+        if event.is_none() {
+            self.closed = true;
+        }
         event.map(Self::convert_event_item)
     }
 
     /// Check if there are any buffered events in the scheduler or the receiver.
     pub fn is_empty(&self) -> bool {
-        self.scheduler.is_empty() & self.receiver.is_empty()
+        self.scheduler.is_empty() && self.receiver.is_empty()
+    }
+
+    /// Returns `true` if the event stream has been closed.
+    ///
+    /// An event stream is closed after it has returned `None` once from
+    /// any of its receive methods. Calling receive methods again after that will panic.
+    pub fn is_closed(&self) -> bool {
+        self.closed
     }
 
     fn add_event(&mut self, event: EventItem) {
@@ -332,13 +362,14 @@ impl EventStream {
         if let Some(write_events_to) = &mut self.write_events_to {
             let event_json = match event {
                 EventItem::NodeEvent { event, .. } => match event {
-                    NodeEvent::Stop => {
+                    NodeEvent::Stop { reason } => {
                         let time_offset = self
                             .clock
                             .new_timestamp()
                             .get_diff_duration(&self.start_timestamp);
                         let event_json = serde_json::json!({
                             "type": "Stop",
+                            "reason": format!("{:?}", reason.as_ref().unwrap_or(&StopCause::Manual)),
                             "time_offset_secs": time_offset.as_secs_f64(),
                         });
                         Some(event_json)
@@ -485,7 +516,7 @@ impl EventStream {
     fn convert_event_item(item: EventItem) -> Event {
         match item {
             EventItem::NodeEvent { event, ack_channel } => match event {
-                NodeEvent::Stop => Event::Stop(event::StopCause::Manual),
+                NodeEvent::Stop { reason } => Event::Stop(reason.unwrap_or(StopCause::Manual)),
                 NodeEvent::Reload { operator_id } => Event::Reload { operator_id },
                 NodeEvent::InputClosed { id } => Event::InputClosed { id },
                 NodeEvent::NodeFailed {
@@ -508,7 +539,7 @@ impl EventStream {
                         Err(err) => Event::Error(format!("{err:?}")),
                     }
                 }
-                NodeEvent::AllInputsClosed => Event::Stop(event::StopCause::AllInputsClosed),
+                NodeEvent::AllInputsClosed => Event::Stop(StopCause::AllInputsClosed),
             },
 
             EventItem::FatalError(err) => {
@@ -566,9 +597,9 @@ impl Stream for EventStream {
     fn poll_next(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
+    ) -> Poll<Option<Self::Item>> {
         self.receiver
-            .poll_next_unpin(cx)
+            .poll_recv(cx)
             .map(|item| item.map(Self::convert_event_item))
     }
 }

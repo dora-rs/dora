@@ -68,6 +68,12 @@ pub struct SpawnDataflowNodes {
     pub spawn_nodes: BTreeSet<NodeId>,
     pub uv: bool,
     pub write_events_to: Option<PathBuf>,
+    /// When true, hot-reload file watching is enabled for this dataflow.
+    #[serde(default)]
+    pub hot_reload: bool,
+    /// Path to the dataflow YAML file, used for hot-reload YAML watching.
+    #[serde(default)]
+    pub dataflow_path: Option<PathBuf>,
 }
 
 type DaemonResult<T> = std::result::Result<T, String>;
@@ -98,6 +104,22 @@ pub trait DaemonControl {
         node_id: NodeId,
         tail: Option<usize>,
     ) -> DaemonResult<crate::common::LogsResponse>;
+    /// Stop a single node within a running dataflow (for hot-reload).
+    async fn stop_node(dataflow_id: DataflowId, node_id: NodeId) -> DaemonResult<()>;
+    /// Dynamically spawn a node into a running dataflow (for hot-reload).
+    async fn dynamic_spawn(
+        dataflow_id: DataflowId,
+        node_id: NodeId,
+        node: Box<ResolvedNode>,
+        dataflow_descriptor: Box<Descriptor>,
+    ) -> DaemonResult<()>;
+    /// Restart a node with new configuration (for hot-reload).
+    async fn restart_node(
+        dataflow_id: DataflowId,
+        node_id: NodeId,
+        new_node: Box<ResolvedNode>,
+        dataflow_descriptor: Box<Descriptor>,
+    ) -> DaemonResult<()>;
     /// Destroy the daemon (shut it down).
     async fn destroy() -> DaemonResult<()>;
     /// Heartbeat check.

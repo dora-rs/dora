@@ -307,9 +307,11 @@ pub struct Node {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operator: Option<SingleOperatorDefinition>,
 
-    /// Legacy node configuration (deprecated).
-    ///
-    /// Please use the top-level [`path`](Self::path), [`args`](Self::args), etc. fields instead.
+    /// Legacy node configuration.
+    #[deprecated(
+        since = "0.3.5",
+        note = "Use top-level `path`, `args`, etc fields instead"
+    )]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom: Option<CustomNode>,
 
@@ -719,9 +721,8 @@ pub struct CustomNode {
     /// Args for the executable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub args: Option<String>,
-    /// Environment variables for the custom nodes
-    ///
-    /// Deprecated, use outer-level `env` field instead.
+    /// Environment variables for the custom nodes.
+    #[deprecated(note = "Use the outer-level `env` field on `Node` instead")]
     pub envs: Option<BTreeMap<String, EnvValue>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     /// Build commands

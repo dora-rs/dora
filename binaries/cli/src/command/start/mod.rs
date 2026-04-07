@@ -124,6 +124,7 @@ impl Executable for Start {
             &client,
             self.name,
             self.uv,
+            self.hot_reload,
             dataflow_id,
         )
         .await?;
@@ -158,6 +159,7 @@ async fn send_start_rpc(
     client: &CoordinatorControlClient,
     name: Option<String>,
     uv: bool,
+    hot_reload: bool,
     dataflow_id: Uuid,
 ) -> Result<(), eyre::Error> {
     let local_working_dir = local_working_dir(dataflow, dataflow_descriptor, client).await?;
@@ -175,6 +177,7 @@ async fn send_start_rpc(
                 local_working_dir,
                 uv,
                 write_events_to: write_events_to(),
+                hot_reload,
             },
         ),
     )

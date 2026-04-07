@@ -32,7 +32,7 @@ impl InteractiveEvents {
             DaemonRequest::NextEvent { .. } => {
                 let events = if let Some(event) = self.next_event()? {
                     let event = Timestamped {
-                        inner: event,
+                        inner: event.into(),
                         timestamp: HLC::default().new_timestamp(),
                     };
                     vec![event]
@@ -107,7 +107,7 @@ impl InteractiveEvents {
         let event = if id.is_empty() {
             println!("{}", "given input ID is empty -> stopping".blue());
             self.stopped = true;
-            NodeEvent::Stop
+            NodeEvent::Stop { reason: None }
         } else {
             let id = id.into();
             let (data, type_info) = loop {
