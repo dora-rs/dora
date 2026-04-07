@@ -24,10 +24,9 @@ pub async fn attach_dataflow(
 ) -> Result<(), eyre::ErrReport> {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
 
-    // Generate path hashmap
-    let mut node_path_lookup = HashMap::new();
-
     let nodes = dataflow.resolve_aliases_and_set_defaults()?;
+
+    let mut node_path_lookup: HashMap<PathBuf, (Uuid, NodeId, Option<OperatorId>)> = HashMap::new();
 
     let working_dir = dataflow_path
         .canonicalize()

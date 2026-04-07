@@ -62,6 +62,10 @@ pub struct StartRequest {
     pub local_working_dir: Option<PathBuf>,
     pub uv: bool,
     pub write_events_to: Option<PathBuf>,
+    /// When true, the daemon watches node binaries for changes
+    /// and restarts nodes on hot-reload events.
+    #[serde(default)]
+    pub hot_reload: bool,
 }
 
 type Result<T> = std::result::Result<T, String>;

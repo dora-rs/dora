@@ -197,6 +197,7 @@ impl Daemon {
         log_destination: LogDestination,
         write_events_to: Option<PathBuf>,
         stop_after: Option<Duration>,
+        hot_reload: bool,
     ) -> eyre::Result<DataflowResult> {
         let working_dir = dataflow_path
             .canonicalize()
@@ -246,6 +247,8 @@ impl Daemon {
             dataflow_descriptor: descriptor,
             uv,
             write_events_to,
+            hot_reload,
+            dataflow_path: Some(dataflow_path.to_path_buf()),
         };
 
         let clock = Arc::new(HLC::default());
@@ -295,6 +298,8 @@ impl Daemon {
                     spawn_nodes: spawn_command.spawn_nodes,
                     uv: spawn_command.uv,
                     write_events_to: spawn_command.write_events_to,
+                    hot_reload: spawn_command.hot_reload,
+                    dataflow_path: spawn_command.dataflow_path,
                     reply_tx,
                 },
                 timestamp: spawn_event_clock.new_timestamp(),
@@ -475,6 +480,8 @@ impl Daemon {
                     spawn_nodes,
                     uv,
                     write_events_to,
+                    hot_reload,
+                    dataflow_path,
                     reply_tx,
                 } => {
                     let result = self
@@ -487,6 +494,8 @@ impl Daemon {
                             spawn_nodes,
                             uv,
                             write_events_to,
+                            hot_reload,
+                            dataflow_path,
                         )
                         .await;
                     let _ = reply_tx.send(result);
@@ -706,6 +715,8 @@ impl Daemon {
         spawn_nodes: BTreeSet<NodeId>,
         uv: bool,
         write_events_to: Option<PathBuf>,
+        hot_reload: bool,
+        dataflow_path: Option<PathBuf>,
     ) -> Result<(), String> {
         // Resolve base working dir — for spawn we use the daemon's working dir
         let base_working_dir = match local_working_dir {
@@ -736,6 +747,8 @@ impl Daemon {
                 spawn_nodes,
                 uv,
                 write_events_to,
+                hot_reload,
+                dataflow_path,
             )
             .await;
         let (trigger_result, result_task) = match result {
@@ -987,6 +1000,8 @@ impl Daemon {
         spawn_nodes: BTreeSet<NodeId>,
         uv: bool,
         write_events_to: Option<PathBuf>,
+        hot_reload: bool,
+        dataflow_path: Option<PathBuf>,
     ) -> eyre::Result<impl Future<Output = eyre::Result<()>> + use<>> {
         let mut logger = self
             .logger
@@ -1913,7 +1928,13 @@ impl Daemon {
             if let Some(node) = dataflow.running_nodes.get_mut(&node_id) {
                 node.disable_restart();
             }
-            let _ = send_with_timestamp(&event_sender, NodeEvent::Stop, clock);
+            let _ = send_with_timestamp(
+                &event_sender,
+                NodeEvent::Stop {
+                    reason: Some(dora_message::daemon_to_node::StopCause::Manual),
+                },
+                clock,
+            );
         }
 
         dataflow.subscribe_channels.insert(node_id, event_sender);
@@ -2019,6 +2040,17 @@ impl Daemon {
                 ),
             };
 
+            // Check if this node was stopped via hot-reload (stop_single_node).
+            // If so, the cleanup was already done and a new node with the same ID might exist,
+            // so we should skip normal cleanup here.
+            if dataflow.hot_reload_stopped_nodes.remove(node_id) {
+                tracing::debug!(
+                    "Hot-reload: node `{}` was stopped via hot-reload, skipping exit cleanup",
+                    node_id
+                );
+                return Ok(());
+            }
+
             let df = &mut *dataflow;
             df.pending_nodes
                 .handle_node_stop(node_id, &mut df.cascading_error_causes)
@@ -2088,8 +2120,15 @@ impl Daemon {
             }
         }
 
-        // node only reaches here if it will not be restarted
-        let might_restart = false;
+        // When hot-reload is active, the node might be re-spawned after the user fixes
+        // the file. Keep outputs open so downstream nodes don't receive InputClosed events.
+        let hot_reload_active = self
+            .state
+            .running
+            .get(&dataflow_id)
+            .map(|d| d._hot_reload_watcher.is_some())
+            .unwrap_or(false);
+        let might_restart = hot_reload_active;
 
         self.handle_outputs_done(dataflow_id, node_id, might_restart)
             .await?;
@@ -2777,6 +2816,9 @@ pub struct RunningNode {
     /// This flag is set when all inputs of the node were closed and when a manual stop command
     /// was sent.
     disable_restart: Arc<AtomicBool>,
+    /// When set to true, the restart loop will restart the node regardless of
+    /// the configured restart policy. Used for hot-reload.
+    pending_hot_reload: Arc<AtomicBool>,
     /// Abort handle for this node's listener task, carried here until the dataflow
     /// collects it into `RunningDataflow::_listener_tasks`.
     listener_abort_handle: Option<tokio::task::AbortHandle>,
@@ -2853,6 +2895,11 @@ impl ProcessHandle {
     pub fn submit(&self, operation: ProcessOperation) -> bool {
         self.op_tx.send(operation).is_ok()
     }
+
+    /// Clone the sender for use in background tasks (e.g. hot-reload fallback).
+    pub fn clone_sender(&self) -> flume::Sender<ProcessOperation> {
+        self.op_tx.clone()
+    }
 }
 
 impl Drop for ProcessHandle {
@@ -2926,6 +2973,12 @@ pub struct RunningDataflow {
     finished_tx: broadcast::Sender<()>,
 
     publish_all_messages_to_zenoh: bool,
+
+    /// Tracks nodes that were stopped via hot-reload (`stop_single_node`).
+    /// Their exit is expected, so normal cleanup is skipped.
+    hot_reload_stopped_nodes: BTreeSet<NodeId>,
+    /// File watcher for hot-reload, kept alive to maintain the watch.
+    _hot_reload_watcher: Option<notify::RecommendedWatcher>,
 }
 
 /// Indicates whether a dataflow should be finished immediately after stop_all()
@@ -2971,6 +3024,8 @@ impl RunningDataflow {
             finished_tx,
             publish_all_messages_to_zenoh: dataflow_descriptor.debug.publish_all_messages_to_zenoh,
             descriptor: dataflow_descriptor,
+            hot_reload_stopped_nodes: BTreeSet::new(),
+            _hot_reload_watcher: None,
         }
     }
 
@@ -3054,7 +3109,13 @@ impl RunningDataflow {
         }
 
         for (_node_id, channel) in self.subscribe_channels.drain() {
-            let _ = send_with_timestamp(&channel, NodeEvent::Stop, &state.clock);
+            let _ = send_with_timestamp(
+                &channel,
+                NodeEvent::Stop {
+                    reason: Some(dora_message::daemon_to_node::StopCause::Manual),
+                },
+                &state.clock,
+            );
         }
 
         let running_processes: Vec<_> = self
@@ -3116,7 +3177,13 @@ impl RunningDataflow {
         }
 
         for (_node_id, channel) in self.subscribe_channels.drain() {
-            let _ = send_with_timestamp(&channel, NodeEvent::Stop, &state.clock);
+            let _ = send_with_timestamp(
+                &channel,
+                NodeEvent::Stop {
+                    reason: Some(dora_message::daemon_to_node::StopCause::Manual),
+                },
+                &state.clock,
+            );
         }
 
         let running_processes: Vec<_> = self
@@ -3273,6 +3340,8 @@ pub enum Event {
         spawn_nodes: BTreeSet<NodeId>,
         uv: bool,
         write_events_to: Option<PathBuf>,
+        hot_reload: bool,
+        dataflow_path: Option<PathBuf>,
         reply_tx: oneshot::Sender<Result<(), String>>,
     },
     /// Coordinator requested stopping a dataflow (routed from RPC server).

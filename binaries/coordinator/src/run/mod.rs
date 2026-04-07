@@ -31,6 +31,7 @@ pub(super) fn plan_dataflow(
     daemon_connections: &DaemonConnections,
     uv: bool,
     write_events_to: Option<PathBuf>,
+    hot_reload: bool,
 ) -> eyre::Result<DataflowPlan> {
     let nodes = dataflow.resolve_aliases_and_set_defaults()?;
     let uuid = dataflow_id.unwrap_or_else(|| Uuid::new_v7(Timestamp::now(NoContext)));
@@ -62,6 +63,8 @@ pub(super) fn plan_dataflow(
             spawn_nodes,
             uv,
             write_events_to: write_events_to.clone(),
+            hot_reload,
+            dataflow_path: None,
         };
 
         daemon_spawn_commands.push((daemon_id.clone(), spawn_command));

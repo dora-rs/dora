@@ -118,6 +118,7 @@ impl CoordinatorControl for CoordinatorControlServer {
             local_working_dir,
             uv,
             write_events_to,
+            hot_reload,
         } = request;
 
         let name = name.or_else(|| petname(2, "-"));
@@ -146,6 +147,7 @@ impl CoordinatorControl for CoordinatorControlServer {
             &self.state.running_dataflows,
             uv,
             write_events_to,
+            hot_reload,
         )
         .await
         .map_err(err_to_string)?;

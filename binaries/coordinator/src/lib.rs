@@ -957,6 +957,7 @@ async fn start_dataflow(
     running_dataflows: &DashMap<Uuid, RunningDataflow>,
     uv: bool,
     write_events_to: Option<PathBuf>,
+    hot_reload: bool,
 ) -> eyre::Result<Uuid> {
     let plan = run::plan_dataflow(
         dataflow_id,
@@ -967,6 +968,7 @@ async fn start_dataflow(
         daemon_connections,
         uv,
         write_events_to,
+        hot_reload,
     )?;
 
     let uuid = plan.uuid;

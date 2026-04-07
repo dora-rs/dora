@@ -171,9 +171,10 @@ impl PyEvent {
         match event {
             Event::Input { id, .. } => Some(id),
             Event::InputClosed { id } => Some(id),
-            Event::Stop(cause) => match cause {
+            Event::Stop(reason) => match reason {
                 StopCause::Manual => Some("MANUAL"),
                 StopCause::AllInputsClosed => Some("ALL_INPUTS_CLOSED"),
+                StopCause::HotReload => Some("HOT_RELOAD"),
                 &_ => None,
             },
             _ => None,
