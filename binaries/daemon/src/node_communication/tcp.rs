@@ -1,8 +1,8 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::sync::Arc;
 
 use super::NodeControlServer;
 use crate::Event;
-use dora_core::{config::DataId, uhlc::HLC};
+use dora_core::uhlc::HLC;
 use dora_message::{
     common::Timestamped,
     node_to_daemon::{NodeControl, NodeControlRequest, NodeControlResponse},
@@ -22,7 +22,6 @@ use tokio::{
 pub async fn listener_loop(
     listener: TcpListener,
     daemon_tx: mpsc::Sender<Timestamped<Event>>,
-    queue_sizes: BTreeMap<DataId, usize>,
     clock: Arc<HLC>,
 ) {
     loop {
@@ -34,7 +33,6 @@ pub async fn listener_loop(
                 tokio::spawn(handle_connection(
                     connection,
                     daemon_tx.clone(),
-                    queue_sizes.clone(),
                     clock.clone(),
                 ));
             }
@@ -46,7 +44,6 @@ pub async fn listener_loop(
 async fn handle_connection(
     connection: TcpStream,
     daemon_tx: mpsc::Sender<Timestamped<Event>>,
-    queue_sizes: BTreeMap<DataId, usize>,
     clock: Arc<HLC>,
 ) {
     if let Err(err) = connection.set_nodelay(true) {
@@ -62,9 +59,8 @@ async fn handle_connection(
     let server = NodeControlServer::new(daemon_tx, clock);
     let channel = BaseChannel::with_defaults(transport);
 
-    // Allow up to 10 concurrent in-flight requests per connection.
-    // next_event and next_finished_drop_tokens can block for a long time,
-    // so we need concurrency to handle other requests while those are pending.
+    // Spawn each response handler concurrently so that long-blocking RPCs
+    // (next_event, next_finished_drop_tokens) don't prevent other requests.
     channel
         .execute(server.serve())
         .for_each(|response_handler| async {

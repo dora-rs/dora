@@ -13,8 +13,6 @@ use eyre::Context;
 
 pub(crate) struct ControlChannel {
     channel: DaemonChannel,
-    #[allow(dead_code)]
-    clock: Arc<HLC>,
 }
 
 impl ControlChannel {
@@ -54,7 +52,7 @@ impl ControlChannel {
     ) -> eyre::Result<Self> {
         channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;
 
-        Ok(Self { channel, clock })
+        Ok(Self { channel })
     }
 
     pub fn report_outputs_done(&mut self) -> eyre::Result<()> {

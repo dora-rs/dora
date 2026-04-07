@@ -5,10 +5,7 @@ use dora_message::{
     common::{DropToken, Timestamped},
     daemon_to_node::{DaemonReply, NodeConfig, NodeDropEvent, NodeEvent},
     metadata::Metadata,
-    node_to_daemon::{
-        DaemonRequest, DataMessage, NodeControlClient, NodeControlRequest, NodeControlResponse,
-        NodeRegisterRequest,
-    },
+    node_to_daemon::{DaemonRequest, DataMessage, NodeControlClient, NodeRegisterRequest},
     tarpc::{self, client, serde_transport},
 };
 use eyre::{Context, bail, eyre};
@@ -72,7 +69,7 @@ impl DaemonChannel {
         &mut self,
         dataflow_id: DataflowId,
         node_id: NodeId,
-        _timestamp: Timestamp,
+        timestamp: Timestamp,
     ) -> eyre::Result<()> {
         match self {
             DaemonChannel::Tarpc { client, runtime } => {
@@ -87,7 +84,7 @@ impl DaemonChannel {
             DaemonChannel::IntegrationTestChannel(channel) => {
                 let msg = Timestamped {
                     inner: DaemonRequest::Register(NodeRegisterRequest::new(dataflow_id, node_id)),
-                    timestamp: _timestamp,
+                    timestamp,
                 };
                 let (reply_tx, reply) = oneshot::channel();
                 channel
