@@ -3948,7 +3948,7 @@ dependencies = [
  "kqueue",
  "libc",
  "log",
- "mio 1.1.1",
+ "mio 1.2.0",
  "notify-types",
  "walkdir",
  "windows-sys 0.60.2",
