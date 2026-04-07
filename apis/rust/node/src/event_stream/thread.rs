@@ -17,7 +17,7 @@ use crate::daemon_connection::DaemonChannel;
 
 pub fn init(
     node_id: NodeId,
-    tx: flume::Sender<EventItem>,
+    tx: tokio::sync::mpsc::UnboundedSender<EventItem>,
     channel: DaemonChannel,
     clock: Arc<uhlc::HLC>,
 ) -> eyre::Result<EventStreamThreadHandle> {
@@ -83,7 +83,7 @@ impl Drop for EventStreamThreadHandle {
 #[tracing::instrument(skip(tx, channel, clock))]
 fn event_stream_loop(
     node_id: NodeId,
-    tx: flume::Sender<EventItem>,
+    tx: tokio::sync::mpsc::UnboundedSender<EventItem>,
     mut channel: DaemonChannel,
     clock: Arc<uhlc::HLC>,
 ) {
@@ -157,7 +157,7 @@ fn event_stream_loop(
                 }) {
                     Ok(()) => {}
                     Err(send_error) => {
-                        let event = send_error.into_inner();
+                        let event = send_error.0;
                         tracing::warn!(
                             "event channel was closed already, could not forward `{event:?}`"
                         );
@@ -180,8 +180,8 @@ fn event_stream_loop(
     };
     if let Err(err) = result {
         if let Some(tx) = tx.as_ref() {
-            if let Err(flume::SendError(item)) = tx.send(EventItem::FatalError(err)) {
-                let err = match item {
+            if let Err(send_error) = tx.send(EventItem::FatalError(err)) {
+                let err = match send_error.0 {
                     EventItem::FatalError(err) => err,
                     _ => unreachable!(),
                 };

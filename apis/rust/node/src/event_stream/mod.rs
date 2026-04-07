@@ -3,6 +3,7 @@ use std::{
     path::PathBuf,
     pin::pin,
     sync::Arc,
+    task::Poll,
     time::Duration,
 };
 
@@ -14,7 +15,7 @@ use dora_message::{
 };
 pub use event::{Event, StopCause};
 use futures::{
-    FutureExt, Stream, StreamExt,
+    FutureExt, Stream,
     future::{Either, select},
 };
 use futures_timer::Delay;
@@ -61,7 +62,7 @@ mod thread;
 /// [`StopCause::Manual`] was received.
 pub struct EventStream {
     node_id: NodeId,
-    receiver: flume::r#async::RecvStream<'static, EventItem>,
+    receiver: tokio::sync::mpsc::UnboundedReceiver<EventItem>,
     _thread_handle: EventStreamThreadHandle,
     close_channel: DaemonChannel,
     clock: Arc<uhlc::HLC>,
@@ -204,7 +205,11 @@ impl EventStream {
 
         close_channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;
 
-        let (tx, rx) = flume::bounded(100_000_000);
+        // Use tokio mpsc instead of flume to avoid a deadlock between flume's
+        // internal Spinlock and pyo3's GIL-acquiring waker (AsyncioWaker).
+        // tokio mpsc drops its internal lock before calling waker.wake(),
+        // preventing the deadlock.
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
 
         let use_scheduler = match &channel {
             DaemonChannel::IntegrationTestChannel(_) => {
@@ -219,7 +224,7 @@ impl EventStream {
 
         Ok(EventStream {
             node_id: node_id.clone(),
-            receiver: rx.into_stream(),
+            receiver: rx,
             _thread_handle: thread_handle,
             close_channel,
             start_timestamp: clock.new_timestamp(),
@@ -311,19 +316,19 @@ impl EventStream {
         );
 
         if !self.use_scheduler {
-            return self.receiver.next().await.map(Self::convert_event_item);
+            return self.receiver.recv().await.map(Self::convert_event_item);
         }
         loop {
             if self.scheduler.is_empty() {
-                if let Some(event) = self.receiver.next().await {
+                if let Some(event) = self.receiver.recv().await {
                     self.add_event(event);
                 } else {
                     break;
                 }
             } else {
-                match self.receiver.next().now_or_never().flatten() {
-                    Some(event) => self.add_event(event),
-                    None => break, // no other ready events
+                match self.receiver.try_recv() {
+                    Ok(event) => self.add_event(event),
+                    Err(_) => break, // no other ready events or closed
                 };
             }
         }
@@ -337,7 +342,7 @@ impl EventStream {
 
     /// Check if there are any buffered events in the scheduler or the receiver.
     pub fn is_empty(&self) -> bool {
-        self.scheduler.is_empty() & self.receiver.is_empty()
+        self.scheduler.is_empty() && self.receiver.is_empty()
     }
 
     /// Returns `true` if the event stream has been closed.
@@ -592,9 +597,9 @@ impl Stream for EventStream {
     fn poll_next(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
+    ) -> Poll<Option<Self::Item>> {
         self.receiver
-            .poll_next_unpin(cx)
+            .poll_recv(cx)
             .map(|item| item.map(Self::convert_event_item))
     }
 }
