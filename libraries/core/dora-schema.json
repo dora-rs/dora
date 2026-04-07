@@ -265,7 +265,7 @@
           ]
         },
         "custom": {
-          "description": "Legacy node configuration (deprecated).\n\nPlease use the top-level [`path`](Self::path), [`args`](Self::args), etc. fields instead.",
+          "description": "Legacy node configuration.",
           "anyOf": [
             {
               "$ref": "#/$defs/CustomNode"
@@ -273,7 +273,8 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "deprecated": true
         },
         "description": {
           "description": "Detailed description of the node's functionality.\n\n## Example\n\n```yaml\nnodes:\n  - id: camera_node\n    description: \"Captures video frames from webcam\"\n```",
