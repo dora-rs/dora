@@ -217,7 +217,7 @@ impl NodeControl for MainListenerServer {
         _context: tarpc::context::Context,
         _timestamp: uhlc::Timestamp,
         node_id: NodeId,
-    ) -> Result<NodeConfig, String> {
+    ) -> Result<String, String> {
         let (reply_tx, reply_rx) = oneshot::channel();
         let timestamp = self.clock.new_timestamp();
 
@@ -234,8 +234,11 @@ impl NodeControl for MainListenerServer {
             .await
             .map_err(|_| format!("failed to send node_config request for `{node_id}` to daemon"))?;
 
-        reply_rx
+        let node_config = reply_rx
             .await
-            .map_err(|_| "daemon did not reply to node_config request".to_string())?
+            .map_err(|_| "daemon did not reply to node_config request".to_string())??;
+
+        serde_yaml::to_string(&node_config)
+            .map_err(|e| format!("failed to serialize node config: {e}"))
     }
 }

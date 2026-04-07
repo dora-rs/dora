@@ -7,7 +7,7 @@ use dora_core::{
 use dora_message::{
     DataflowId,
     common::{DropToken, Timestamped},
-    daemon_to_node::{DaemonCommunication, DaemonReply, NodeConfig, NodeDropEvent, NodeEvent},
+    daemon_to_node::{DaemonCommunication, DaemonReply, NodeDropEvent, NodeEvent},
     metadata::Metadata,
     node_to_daemon::{DataMessage, NodeControl, NodeRegisterRequest},
     tarpc,
@@ -361,7 +361,7 @@ impl NodeControl for NodeControlServer {
         _context: tarpc::context::Context,
         timestamp: uhlc::Timestamp,
         _node_id: NodeId,
-    ) -> Result<NodeConfig, String> {
+    ) -> Result<String, String> {
         self.sync_clock(&timestamp);
         Err("unexpected node config request on per-node channel".to_string())
     }

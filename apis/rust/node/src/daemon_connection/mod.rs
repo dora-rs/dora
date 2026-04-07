@@ -364,10 +364,11 @@ impl DaemonChannel {
                 clock,
             } => {
                 let ts = clock.new_timestamp();
-                runtime
+                let yaml = runtime
                     .block_on(async { client.node_config(long_context(), ts, node_id).await })
                     .map_err(|e| eyre!("{e}"))?
-                    .map_err(|e| eyre!("{e}"))
+                    .map_err(|e| eyre!("{e}"))?;
+                serde_yaml::from_str(&yaml).context("failed to deserialize node config from daemon")
             }
             _ => {
                 let reply = self.request(&Timestamped {

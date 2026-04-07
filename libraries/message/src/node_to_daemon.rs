@@ -3,7 +3,7 @@ pub use crate::common::{
 };
 use crate::{
     DataflowId, current_crate_version,
-    daemon_to_node::{NodeConfig, NodeDropEvent, NodeEvent},
+    daemon_to_node::{NodeDropEvent, NodeEvent},
     id::{DataId, NodeId},
     metadata::Metadata,
     versions_compatible,
@@ -41,7 +41,12 @@ mod node_control_service {
             drop_tokens: Vec<DropToken>,
         ) -> Result<()>;
         async fn event_stream_dropped(timestamp: uhlc::Timestamp) -> Result<()>;
-        async fn node_config(timestamp: uhlc::Timestamp, node_id: NodeId) -> Result<NodeConfig>;
+        /// Returns the node config as a YAML string.
+        ///
+        /// `NodeConfig` contains `serde_yaml::Value` which is incompatible with
+        /// Bincode (`deserialize_any` is not supported), so we pass it as a
+        /// pre-serialized YAML string instead.
+        async fn node_config(timestamp: uhlc::Timestamp, node_id: NodeId) -> Result<String>;
     }
 }
 pub use node_control_service::*;
