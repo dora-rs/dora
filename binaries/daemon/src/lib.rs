@@ -219,6 +219,8 @@ impl Daemon {
         descriptor.check(&working_dir)?;
         let nodes = descriptor.resolve_aliases_and_set_defaults()?;
 
+        let clock = Arc::new(HLC::default());
+
         let (events_tx, events_rx) = flume::bounded(10);
         if nodes
             .iter()
@@ -228,6 +230,7 @@ impl Daemon {
             let _listen_port = local_listener::spawn_listener_loop(
                 (LOCALHOST, DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT).into(),
                 events_tx,
+                clock.clone(),
             )
             .await?;
         }
@@ -250,8 +253,6 @@ impl Daemon {
             hot_reload,
             dataflow_path: Some(dataflow_path.to_path_buf()),
         };
-
-        let clock = Arc::new(HLC::default());
 
         let ctrlc_events = ReceiverStream::new(set_up_ctrlc_handler(clock.clone())?);
 
@@ -1419,10 +1420,7 @@ impl Daemon {
                     0 => Err(format!("no node with ID `{node_id}`")),
                 };
 
-                let reply = DaemonReply::NodeConfig {
-                    result: node_config,
-                };
-                let _ = reply_tx.send(Some(reply)).map_err(|_| {
+                let _ = reply_tx.send(node_config).map_err(|_| {
                     error!("could not send node info reply from daemon to coordinator")
                 });
                 Ok(())
@@ -2680,9 +2678,12 @@ async fn set_up_event_stream(
     });
 
     let (events_tx, events_rx) = flume::bounded(10);
-    let _listen_port =
-        local_listener::spawn_listener_loop((LOCALHOST, local_listen_port).into(), events_tx)
-            .await?;
+    let _listen_port = local_listener::spawn_listener_loop(
+        (LOCALHOST, local_listen_port).into(),
+        events_tx,
+        clock.clone(),
+    )
+    .await?;
     let dynamic_node_events = events_rx.into_stream().map(|e| Timestamped {
         inner: Event::DynamicNode(e.inner),
         timestamp: e.timestamp,

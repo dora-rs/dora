@@ -1,10 +1,24 @@
-use crate::socket_stream_utils::{socket_stream_receive, socket_stream_send};
+use dora_core::{
+    config::{DataId, NodeId},
+    uhlc::HLC,
+};
 use dora_message::{
-    daemon_to_node::DaemonReply,
-    node_to_daemon::{DaemonRequest, DynamicNodeEvent, Timestamped},
+    common::Timestamped,
+    daemon_to_node::{NodeConfig, NodeDropEvent, NodeEvent},
+    metadata::Metadata,
+    node_to_daemon::{
+        DataMessage, DropToken, DynamicNodeEvent, NodeControl, NodeControlRequest,
+        NodeControlResponse, NodeRegisterRequest,
+    },
+    tarpc::{
+        self,
+        server::{BaseChannel, Channel},
+        tokio_serde,
+    },
 };
 use eyre::Context;
-use std::{io::ErrorKind, net::SocketAddr};
+use futures::StreamExt;
+use std::{io::ErrorKind, net::SocketAddr, sync::Arc};
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::oneshot,
@@ -13,12 +27,13 @@ use tokio::{
 #[derive(Debug)]
 pub struct DynamicNodeEventWrapper {
     pub event: DynamicNodeEvent,
-    pub reply_tx: oneshot::Sender<Option<DaemonReply>>,
+    pub reply_tx: oneshot::Sender<Result<NodeConfig, String>>,
 }
 
 pub async fn spawn_listener_loop(
     bind: SocketAddr,
     events_tx: flume::Sender<Timestamped<DynamicNodeEventWrapper>>,
+    clock: Arc<HLC>,
 ) -> eyre::Result<Option<u16>> {
     let socket = match TcpListener::bind(bind).await {
         Ok(socket) => socket,
@@ -40,7 +55,7 @@ pub async fn spawn_listener_loop(
         .port();
 
     tokio::spawn(async move {
-        listener_loop(socket, events_tx).await;
+        listener_loop(socket, events_tx, clock).await;
     });
 
     Ok(Some(listen_port))
@@ -49,6 +64,7 @@ pub async fn spawn_listener_loop(
 async fn listener_loop(
     listener: TcpListener,
     events_tx: flume::Sender<Timestamped<DynamicNodeEventWrapper>>,
+    clock: Arc<HLC>,
 ) {
     loop {
         match listener
@@ -60,88 +76,143 @@ async fn listener_loop(
                 tracing::info!("{err}");
             }
             Ok((connection, _)) => {
-                tokio::spawn(handle_connection_loop(connection, events_tx.clone()));
+                tokio::spawn(handle_connection(
+                    connection,
+                    events_tx.clone(),
+                    clock.clone(),
+                ));
             }
         }
     }
 }
 
-async fn handle_connection_loop(
-    mut connection: TcpStream,
+async fn handle_connection(
+    connection: TcpStream,
     events_tx: flume::Sender<Timestamped<DynamicNodeEventWrapper>>,
+    clock: Arc<HLC>,
 ) {
     if let Err(err) = connection.set_nodelay(true) {
         tracing::warn!("failed to set nodelay for connection: {err}");
     }
 
-    loop {
-        match receive_message(&mut connection).await {
-            Ok(Some(Timestamped {
-                inner: DaemonRequest::NodeConfig { node_id },
-                timestamp,
-            })) => {
-                let (reply_tx, reply_rx) = oneshot::channel();
-                if events_tx
-                    .send_async(Timestamped {
-                        inner: DynamicNodeEventWrapper {
-                            event: DynamicNodeEvent::NodeConfig { node_id },
-                            reply_tx,
-                        },
-                        timestamp,
-                    })
-                    .await
-                    .is_err()
-                {
-                    break;
-                }
-                let Ok(reply) = reply_rx.await else {
-                    tracing::warn!("daemon sent no reply");
-                    continue;
-                };
-                if let Some(reply) = reply {
-                    let serialized = match serde_json::to_vec(&reply)
-                        .wrap_err("failed to serialize DaemonReply")
-                    {
-                        Ok(r) => r,
-                        Err(err) => {
-                            tracing::error!("{err:?}");
-                            continue;
-                        }
-                    };
-                    if let Err(err) = socket_stream_send(&mut connection, &serialized).await {
-                        tracing::warn!("failed to send reply: {err}");
-                        continue;
-                    };
-                }
-            }
-            Ok(None) => break,
-            Err(err) => {
-                tracing::warn!("{err:?}");
-                break;
-            }
-            _ => tracing::warn!(
-                "Unexpected Daemon Request that is not yet by Additional local listener controls"
-            ),
-        }
-    }
+    let codec = tokio_serde::formats::Json::<
+        tarpc::ClientMessage<NodeControlRequest>,
+        tarpc::Response<NodeControlResponse>,
+    >::default();
+    let transport = tarpc::serde_transport::Transport::from((connection, codec));
+
+    let server = MainListenerServer { events_tx, clock };
+    let channel = BaseChannel::with_defaults(transport);
+
+    channel
+        .execute(server.serve())
+        .for_each(|response_handler| async {
+            tokio::spawn(response_handler);
+        })
+        .await;
 }
 
-async fn receive_message(
-    connection: &mut TcpStream,
-) -> eyre::Result<Option<Timestamped<DaemonRequest>>> {
-    let raw = match socket_stream_receive(connection).await {
-        Ok(raw) => raw,
-        Err(err) => match err.kind() {
-            ErrorKind::UnexpectedEof
-            | ErrorKind::ConnectionAborted
-            | ErrorKind::ConnectionReset => return Ok(None),
-            _other => {
-                return Err(err)
-                    .context("unexpected I/O error while trying to receive DaemonRequest");
-            }
-        },
-    };
-    bincode::deserialize(&raw)
-        .wrap_err("failed to deserialize DaemonRequest")
-        .map(Some)
+/// tarpc server for the daemon's main listener port.
+///
+/// Only handles `node_config` requests (for dynamic node initialization).
+/// All other RPC methods return errors since they belong on per-node channels.
+#[derive(Clone)]
+struct MainListenerServer {
+    events_tx: flume::Sender<Timestamped<DynamicNodeEventWrapper>>,
+    clock: Arc<HLC>,
+}
+
+impl NodeControl for MainListenerServer {
+    async fn register(
+        self,
+        _context: tarpc::context::Context,
+        _request: NodeRegisterRequest,
+    ) -> Result<(), String> {
+        Err("register is not supported on the main daemon listener".to_string())
+    }
+
+    async fn subscribe(self, _context: tarpc::context::Context) -> Result<(), String> {
+        Err("subscribe is not supported on the main daemon listener".to_string())
+    }
+
+    async fn subscribe_drop(self, _context: tarpc::context::Context) -> Result<(), String> {
+        Err("subscribe_drop is not supported on the main daemon listener".to_string())
+    }
+
+    async fn next_event(
+        self,
+        _context: tarpc::context::Context,
+        _drop_tokens: Vec<DropToken>,
+    ) -> Vec<Timestamped<NodeEvent>> {
+        tracing::warn!("next_event is not supported on the main daemon listener");
+        vec![]
+    }
+
+    async fn next_finished_drop_tokens(
+        self,
+        _context: tarpc::context::Context,
+    ) -> Vec<Timestamped<NodeDropEvent>> {
+        tracing::warn!("next_finished_drop_tokens is not supported on the main daemon listener");
+        vec![]
+    }
+
+    async fn send_message(
+        self,
+        _context: tarpc::context::Context,
+        _output_id: DataId,
+        _metadata: Metadata,
+        _data: Option<DataMessage>,
+    ) {
+        tracing::warn!("send_message is not supported on the main daemon listener");
+    }
+
+    async fn close_outputs(
+        self,
+        _context: tarpc::context::Context,
+        _outputs: Vec<DataId>,
+    ) -> Result<(), String> {
+        Err("close_outputs is not supported on the main daemon listener".to_string())
+    }
+
+    async fn outputs_done(self, _context: tarpc::context::Context) -> Result<(), String> {
+        Err("outputs_done is not supported on the main daemon listener".to_string())
+    }
+
+    async fn report_drop_tokens(
+        self,
+        _context: tarpc::context::Context,
+        _drop_tokens: Vec<DropToken>,
+    ) {
+        tracing::warn!("report_drop_tokens is not supported on the main daemon listener");
+    }
+
+    async fn event_stream_dropped(self, _context: tarpc::context::Context) -> Result<(), String> {
+        Err("event_stream_dropped is not supported on the main daemon listener".to_string())
+    }
+
+    async fn node_config(
+        self,
+        _context: tarpc::context::Context,
+        node_id: NodeId,
+    ) -> Result<NodeConfig, String> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let timestamp = self.clock.new_timestamp();
+
+        self.events_tx
+            .send_async(Timestamped {
+                inner: DynamicNodeEventWrapper {
+                    event: DynamicNodeEvent::NodeConfig {
+                        node_id: node_id.clone(),
+                    },
+                    reply_tx,
+                },
+                timestamp,
+            })
+            .await
+            .map_err(|_| format!("failed to send node_config request for `{node_id}` to daemon"))?;
+
+        reply_rx
+            .await
+            .map_err(|_| "daemon did not reply to node_config request".to_string())?
+    }
 }
