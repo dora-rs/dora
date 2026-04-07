@@ -205,10 +205,10 @@ impl NodeControl for NodeControlServer {
             tracing::warn!("failed to report drop tokens: {err}");
         }
 
-        // Take the receiver out so we don't hold the lock across the await below.
-        let mut rx = self.subscribed_events.lock().await.take();
-
-        let result = match rx.as_mut() {
+        // Hold the lock across the await to prevent concurrent next_event calls
+        // from racing on the receiver.
+        let mut guard = self.subscribed_events.lock().await;
+        match guard.as_mut() {
             Some(rx) => {
                 // Drain any already-buffered events
                 let mut events = Vec::new();
@@ -227,39 +227,26 @@ impl NodeControl for NodeControlServer {
                 }
             }
             None => Some(vec![]),
-        };
-
-        // Put the receiver back
-        if let Some(rx) = rx {
-            *self.subscribed_events.lock().await = Some(rx);
         }
-
-        result
     }
 
     async fn next_finished_drop_tokens(
         self,
         _context: tarpc::context::Context,
     ) -> Option<Vec<Timestamped<NodeDropEvent>>> {
-        // Take the receiver out to avoid holding the lock across await
-        let mut rx = self.subscribed_drop_events.lock().await.take();
-
-        let result = match rx.as_mut() {
-            Some(events) => {
-                match tokio::time::timeout(KEEPALIVE_TIMEOUT, events.recv()).await {
+        // Hold the lock across the await to prevent concurrent calls from
+        // racing on the receiver.
+        let mut guard = self.subscribed_drop_events.lock().await;
+        match guard.as_mut() {
+            Some(rx) => {
+                match tokio::time::timeout(KEEPALIVE_TIMEOUT, rx.recv()).await {
                     Ok(Some(event)) => Some(vec![event]),
                     Ok(None) => Some(vec![]), // channel closed
                     Err(_) => None,           // timeout → keepalive
                 }
             }
             None => Some(vec![]),
-        };
-
-        if let Some(rx) = rx {
-            *self.subscribed_drop_events.lock().await = Some(rx);
         }
-
-        result
     }
 
     async fn send_message(
