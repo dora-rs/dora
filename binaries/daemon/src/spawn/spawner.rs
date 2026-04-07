@@ -59,7 +59,6 @@ impl Spawner {
             &dataflow_id,
             &node_id,
             &self.daemon_tx,
-            self.dataflow_descriptor.communication.local,
             queue_sizes,
             self.clock.clone(),
         )
