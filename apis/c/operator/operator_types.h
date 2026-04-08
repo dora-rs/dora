@@ -164,7 +164,25 @@ char *
 adora_read_input_id (
     Input_t const * input);
 
-/** <No documentation available> */
+/** \brief
+ *  Send an output from a C/C++ operator.
+ *
+ *  # Safety
+ *
+ *  - `send_output` must be a valid reference.
+ *  - `id` must be a valid null-terminated UTF-8 string.
+ *  - If `data_len > 0`, then `data_ptr` must be a non-null, well-aligned
+ *  pointer to `data_len` bytes of initialized memory, and that memory
+ *  must not be mutated for the duration of this call.
+ *  - If `data_len == 0`, then `data_ptr` may be null — the empty-data
+ *  case is handled explicitly to match the C idiom of passing
+ *  `(NULL, 0)` for zero-length messages.
+ *
+ *  This function parallels `adora_send_output` in `apis/c/node/src/lib.rs`,
+ *  which has had a null check since its introduction. Adding the
+ *  equivalent here closes the gap found during the 2026-04-08 unsafe
+ *  audit.
+ */
 AdoraResult_t
 adora_send_operator_output (
     SendOutput_t const * send_output,
