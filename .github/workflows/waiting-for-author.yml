@@ -1,0 +1,67 @@
+name: "Waiting for Author"
+
+on:
+  pull_request_review:
+    types: [submitted]
+  issue_comment:
+    types: [created]
+  pull_request:
+    types: [synchronize]
+
+jobs:
+  add-label:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      issues: write
+    if: >-
+      (github.event_name == 'pull_request_review'
+        && (github.event.review.user.login == 'phil-opp' || github.event.review.user.login == 'haixuanTao')
+        && github.event.review.user.login != github.event.pull_request.user.login
+      ) || (
+        github.event_name == 'issue_comment'
+        && github.event.issue.pull_request
+        && (github.event.comment.user.login == 'phil-opp' || github.event.comment.user.login == 'haixuanTao')
+        && github.event.comment.user.login != github.event.issue.user.login
+      )
+    steps:
+      - name: Add waiting-for-author label
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request_review" ]]; then
+            PR_NUMBER="${{ github.event.pull_request.number }}"
+          else
+            PR_NUMBER="${{ github.event.issue.number }}"
+          fi
+          gh pr edit "$PR_NUMBER" --add-label "waiting-for-author"
+
+  remove-label:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      issues: write
+    if: >-
+      (github.event_name == 'issue_comment'
+        && github.event.issue.pull_request
+        && github.event.comment.user.login == github.event.issue.user.login
+      ) || (
+        github.event_name == 'pull_request'
+        && github.event.action == 'synchronize'
+      )
+    steps:
+      - name: Remove waiting-for-author label
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            PR_NUMBER="${{ github.event.pull_request.number }}"
+          else
+            PR_NUMBER="${{ github.event.issue.number }}"
+          fi
+          # Only remove if the label exists
+          if gh pr view "$PR_NUMBER" --json labels --jq '.labels[].name' | grep -q '^waiting-for-author$'; then
+            gh pr edit "$PR_NUMBER" --remove-label "waiting-for-author"
+          fi
