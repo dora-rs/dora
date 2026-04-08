@@ -44,5 +44,9 @@
 # remove this waiver and expect the mutation to be caught by existing
 # tests.
 exclude_re = [
-    "libraries/core/src/types\\.rs:177:29.*replace \\|\\| with &&.*types_match",
+    # Line/column numbers intentionally omitted so that unrelated edits
+    # above the target function don't silently break this waiver.
+    # The mutation name uniquely identifies this specific || → &&
+    # replacement inside types_match (only one such mutation exists).
+    "libraries/core/src/types\\.rs:.*replace \\|\\| with && in types_match",
 ]
