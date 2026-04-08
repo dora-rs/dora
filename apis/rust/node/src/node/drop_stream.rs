@@ -116,8 +116,8 @@ fn drop_stream_loop(
             }
             Err(err) => {
                 let err = eyre!(err).wrap_err("failed to receive incoming drop event");
-                tracing::warn!("{err:?}");
-                continue;
+                tracing::error!("{err:?}");
+                break;
             }
         };
         for Timestamped { inner, timestamp } in events {

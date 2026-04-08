@@ -125,8 +125,7 @@ fn event_stream_loop(
             }
             Err(err) => {
                 let err = err.wrap_err("failed to receive incoming event");
-                tracing::warn!("{err:?}");
-                continue;
+                break 'outer Err(err);
             }
         };
         for Timestamped { inner, timestamp } in events {
