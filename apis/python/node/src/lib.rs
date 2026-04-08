@@ -136,9 +136,7 @@ impl Node {
     #[pyo3(signature = (node_id=None, daemon_port=None))]
     pub fn new(node_id: Option<String>, daemon_port: Option<u16>) -> eyre::Result<Self> {
         let (node, events) = if let Some(node_id) = node_id {
-            let mut builder = DoraNode::builder()
-                .node_id(NodeId::from(node_id))
-                .dynamic();
+            let mut builder = DoraNode::builder().node_id(NodeId::from(node_id)).dynamic();
             if let Some(port) = daemon_port {
                 builder = builder.daemon_port(port);
             }
