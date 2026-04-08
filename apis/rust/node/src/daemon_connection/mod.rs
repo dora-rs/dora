@@ -28,7 +28,12 @@ mod json_to_arrow;
 pub enum DaemonChannel {
     Tarpc {
         client: NodeControlClient,
-        runtime: tokio::runtime::Runtime,
+        /// Dedicated thread + runtime for tarpc I/O.
+        ///
+        /// All `block_on` calls are dispatched to this thread so that
+        /// `DaemonChannel` can be used from within an existing tokio
+        /// runtime (e.g. Python operators inside `dora.start_runtime()`).
+        rt: TarpcRuntime,
         clock: Arc<uhlc::HLC>,
     },
     Interactive(InteractiveEvents),
@@ -38,6 +43,44 @@ pub enum DaemonChannel {
             tokio::sync::oneshot::Sender<DaemonReply>,
         )>,
     ),
+}
+
+/// A tokio runtime that lives on its own OS thread so that `block_on`
+/// never conflicts with an outer runtime on the calling thread.
+pub struct TarpcRuntime {
+    tx: std::sync::mpsc::Sender<Box<dyn FnOnce(&tokio::runtime::Runtime) + Send>>,
+}
+
+impl TarpcRuntime {
+    fn new() -> eyre::Result<Self> {
+        let (tx, rx) =
+            std::sync::mpsc::channel::<Box<dyn FnOnce(&tokio::runtime::Runtime) + Send>>();
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("failed to create tokio runtime for tarpc client");
+            while let Ok(task) = rx.recv() {
+                task(&runtime);
+            }
+        });
+        Ok(Self { tx })
+    }
+
+    /// Run a closure on the dedicated runtime thread and block the
+    /// calling thread until it completes.
+    fn block_on<T: Send + 'static>(
+        &self,
+        task: impl FnOnce(&tokio::runtime::Runtime) -> T + Send + 'static,
+    ) -> T {
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
+        let _ = self.tx.send(Box::new(move |rt| {
+            let _ = result_tx.send(task(rt));
+        }));
+        result_rx
+            .recv()
+            .expect("tarpc runtime thread dropped unexpectedly")
+    }
 }
 
 /// Long deadline for tarpc RPC calls (10 minutes).
@@ -51,27 +94,22 @@ fn long_context() -> tarpc::context::Context {
 impl DaemonChannel {
     #[tracing::instrument(level = "trace", skip(clock))]
     pub fn new_tcp(socket_addr: SocketAddr, clock: Arc<uhlc::HLC>) -> eyre::Result<Self> {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .wrap_err("failed to create tokio runtime for tarpc client")?;
+        let rt = TarpcRuntime::new()?;
 
-        let client = runtime.block_on(async {
-            let transport = serde_transport::tcp::connect(
-                socket_addr,
-                tarpc::tokio_serde::formats::Bincode::default,
-            )
-            .await?;
-            Ok::<_, eyre::Error>(
-                NodeControlClient::new(client::Config::default(), transport).spawn(),
-            )
+        let client = rt.block_on(move |rt| {
+            rt.block_on(async {
+                let transport = serde_transport::tcp::connect(
+                    socket_addr,
+                    tarpc::tokio_serde::formats::Bincode::default,
+                )
+                .await?;
+                Ok::<_, eyre::Error>(
+                    NodeControlClient::new(client::Config::default(), transport).spawn(),
+                )
+            })
         })?;
 
-        Ok(DaemonChannel::Tarpc {
-            client,
-            runtime,
-            clock,
-        })
+        Ok(DaemonChannel::Tarpc { client, rt, clock })
     }
 
     pub fn register(
@@ -81,15 +119,11 @@ impl DaemonChannel {
         timestamp: Timestamp,
     ) -> eyre::Result<()> {
         match self {
-            DaemonChannel::Tarpc {
-                client,
-                runtime,
-                clock,
-            } => {
+            DaemonChannel::Tarpc { client, rt, clock } => {
+                let client = client.clone();
                 let request = NodeRegisterRequest::new(dataflow_id, node_id);
                 let ts = clock.new_timestamp();
-                runtime
-                    .block_on(async { client.register(long_context(), ts, request).await })
+                rt.block_on(move |rt| rt.block_on(client.register(long_context(), ts, request)))
                     .map_err(|e| eyre!("{e}"))?
                     .map_err(|e| eyre!("{e}"))
                     .wrap_err("failed to register node with dora-daemon")
@@ -119,14 +153,10 @@ impl DaemonChannel {
 
     pub fn subscribe(&mut self) -> eyre::Result<()> {
         match self {
-            DaemonChannel::Tarpc {
-                client,
-                runtime,
-                clock,
-            } => {
+            DaemonChannel::Tarpc { client, rt, clock } => {
+                let client = client.clone();
                 let ts = clock.new_timestamp();
-                runtime
-                    .block_on(async { client.subscribe(long_context(), ts).await })
+                rt.block_on(move |rt| rt.block_on(client.subscribe(long_context(), ts)))
                     .map_err(|e| eyre!("{e}"))?
                     .map_err(|e| eyre!("{e}"))
             }
@@ -140,14 +170,10 @@ impl DaemonChannel {
 
     pub fn subscribe_drop(&mut self) -> eyre::Result<()> {
         match self {
-            DaemonChannel::Tarpc {
-                client,
-                runtime,
-                clock,
-            } => {
+            DaemonChannel::Tarpc { client, rt, clock } => {
+                let client = client.clone();
                 let ts = clock.new_timestamp();
-                runtime
-                    .block_on(async { client.subscribe_drop(long_context(), ts).await })
+                rt.block_on(move |rt| rt.block_on(client.subscribe_drop(long_context(), ts)))
                     .map_err(|e| eyre!("{e}"))?
                     .map_err(|e| eyre!("{e}"))
             }
@@ -162,16 +188,14 @@ impl DaemonChannel {
         drop_tokens: Vec<DropToken>,
     ) -> eyre::Result<Option<Vec<Timestamped<NodeEventOrUnknown>>>> {
         match self {
-            DaemonChannel::Tarpc {
-                client,
-                runtime,
-                clock,
-            } => {
+            DaemonChannel::Tarpc { client, rt, clock } => {
+                let client = client.clone();
                 let ts = clock.new_timestamp();
-                runtime
-                    .block_on(async { client.next_event(long_context(), ts, drop_tokens).await })
-                    .map_err(|e| eyre!("{e}"))
-                    .map(|opt| opt.map(|events| events.into_iter().map(Into::into).collect()))
+                rt.block_on(move |rt| {
+                    rt.block_on(client.next_event(long_context(), ts, drop_tokens))
+                })
+                .map_err(|e| eyre!("{e}"))
+                .map(|opt| opt.map(|events| events.into_iter().map(Into::into).collect()))
             }
             _ => {
                 let reply = self.request(&Timestamped {
@@ -192,15 +216,13 @@ impl DaemonChannel {
         &mut self,
     ) -> eyre::Result<Option<Vec<Timestamped<NodeDropEvent>>>> {
         match self {
-            DaemonChannel::Tarpc {
-                client,
-                runtime,
-                clock,
-            } => {
+            DaemonChannel::Tarpc { client, rt, clock } => {
+                let client = client.clone();
                 let ts = clock.new_timestamp();
-                runtime
-                    .block_on(async { client.next_finished_drop_tokens(long_context(), ts).await })
-                    .map_err(|e| eyre!("{e}"))
+                rt.block_on(move |rt| {
+                    rt.block_on(client.next_finished_drop_tokens(long_context(), ts))
+                })
+                .map_err(|e| eyre!("{e}"))
             }
             _ => {
                 let reply = self.request(&Timestamped {
@@ -222,20 +244,14 @@ impl DaemonChannel {
         data: Option<DataMessage>,
     ) -> eyre::Result<()> {
         match self {
-            DaemonChannel::Tarpc {
-                client,
-                runtime,
-                clock,
-            } => {
+            DaemonChannel::Tarpc { client, rt, clock } => {
+                let client = client.clone();
                 let ts = clock.new_timestamp();
-                runtime
-                    .block_on(async {
-                        client
-                            .send_message(long_context(), ts, output_id, metadata, data)
-                            .await
-                    })
-                    .map_err(|e| eyre!("{e}"))?
-                    .map_err(|e| eyre!("{e}"))
+                rt.block_on(move |rt| {
+                    rt.block_on(client.send_message(long_context(), ts, output_id, metadata, data))
+                })
+                .map_err(|e| eyre!("{e}"))?
+                .map_err(|e| eyre!("{e}"))
             }
             _ => {
                 let _reply = self.request(&Timestamped {
@@ -253,16 +269,14 @@ impl DaemonChannel {
 
     pub fn close_outputs(&mut self, outputs: Vec<dora_core::config::DataId>) -> eyre::Result<()> {
         match self {
-            DaemonChannel::Tarpc {
-                client,
-                runtime,
-                clock,
-            } => {
+            DaemonChannel::Tarpc { client, rt, clock } => {
+                let client = client.clone();
                 let ts = clock.new_timestamp();
-                runtime
-                    .block_on(async { client.close_outputs(long_context(), ts, outputs).await })
-                    .map_err(|e| eyre!("{e}"))?
-                    .map_err(|e| eyre!("{e}"))
+                rt.block_on(move |rt| {
+                    rt.block_on(client.close_outputs(long_context(), ts, outputs))
+                })
+                .map_err(|e| eyre!("{e}"))?
+                .map_err(|e| eyre!("{e}"))
             }
             _ => {
                 let reply = self.request(&Timestamped {
@@ -279,14 +293,10 @@ impl DaemonChannel {
 
     pub fn outputs_done(&mut self) -> eyre::Result<()> {
         match self {
-            DaemonChannel::Tarpc {
-                client,
-                runtime,
-                clock,
-            } => {
+            DaemonChannel::Tarpc { client, rt, clock } => {
+                let client = client.clone();
                 let ts = clock.new_timestamp();
-                runtime
-                    .block_on(async { client.outputs_done(long_context(), ts).await })
+                rt.block_on(move |rt| rt.block_on(client.outputs_done(long_context(), ts)))
                     .map_err(|e| eyre!("{e}"))?
                     .map_err(|e| eyre!("{e}"))
             }
@@ -305,20 +315,14 @@ impl DaemonChannel {
 
     pub fn report_drop_tokens_rpc(&mut self, drop_tokens: Vec<DropToken>) -> eyre::Result<()> {
         match self {
-            DaemonChannel::Tarpc {
-                client,
-                runtime,
-                clock,
-            } => {
+            DaemonChannel::Tarpc { client, rt, clock } => {
+                let client = client.clone();
                 let ts = clock.new_timestamp();
-                runtime
-                    .block_on(async {
-                        client
-                            .report_drop_tokens(long_context(), ts, drop_tokens)
-                            .await
-                    })
-                    .map_err(|e| eyre!("{e}"))?
-                    .map_err(|e| eyre!("{e}"))
+                rt.block_on(move |rt| {
+                    rt.block_on(client.report_drop_tokens(long_context(), ts, drop_tokens))
+                })
+                .map_err(|e| eyre!("{e}"))?
+                .map_err(|e| eyre!("{e}"))
             }
             _ => {
                 let _reply = self.request(&Timestamped {
@@ -332,14 +336,10 @@ impl DaemonChannel {
 
     pub fn event_stream_dropped(&mut self) -> eyre::Result<()> {
         match self {
-            DaemonChannel::Tarpc {
-                client,
-                runtime,
-                clock,
-            } => {
+            DaemonChannel::Tarpc { client, rt, clock } => {
+                let client = client.clone();
                 let ts = clock.new_timestamp();
-                runtime
-                    .block_on(async { client.event_stream_dropped(long_context(), ts).await })
+                rt.block_on(move |rt| rt.block_on(client.event_stream_dropped(long_context(), ts)))
                     .map_err(|e| eyre!("{e}"))?
                     .map_err(|e| eyre!("{e}"))
             }
@@ -358,14 +358,13 @@ impl DaemonChannel {
 
     pub fn node_config_rpc(&mut self, node_id: NodeId) -> eyre::Result<NodeConfig> {
         match self {
-            DaemonChannel::Tarpc {
-                client,
-                runtime,
-                clock,
-            } => {
+            DaemonChannel::Tarpc { client, rt, clock } => {
+                let client = client.clone();
                 let ts = clock.new_timestamp();
-                let yaml = runtime
-                    .block_on(async { client.node_config(long_context(), ts, node_id).await })
+                let yaml = rt
+                    .block_on(move |rt| {
+                        rt.block_on(client.node_config(long_context(), ts, node_id))
+                    })
                     .map_err(|e| eyre!("{e}"))?
                     .map_err(|e| eyre!("{e}"))?;
                 serde_yaml::from_str(&yaml).context("failed to deserialize node config from daemon")
