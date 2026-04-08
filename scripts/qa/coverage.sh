@@ -21,14 +21,20 @@ if ! command -v cargo-llvm-cov >/dev/null; then
   exit 2
 fi
 
-cargo llvm-cov --workspace \
-  --exclude adora-node-api-python \
-  --exclude adora-operator-api-python \
-  --exclude adora-ros2-bridge-python \
-  --exclude adora-cli-api-python \
-  --exclude adora-examples \
-  --lcov --output-path lcov.info \
-  --summary-only
+EXCLUDES=(
+  --exclude adora-node-api-python
+  --exclude adora-operator-api-python
+  --exclude adora-ros2-bridge-python
+  --exclude adora-cli-api-python
+  --exclude adora-examples
+)
+
+# Single invocation: runs tests, writes lcov.info, prints summary table.
+# --summary-only limits text output but is mutually exclusive with --lcov,
+# so we call cargo-llvm-cov twice; the second call reuses cached test data.
+cargo llvm-cov --workspace "${EXCLUDES[@]}" --summary-only
+cargo llvm-cov --workspace "${EXCLUDES[@]}" --lcov --output-path lcov.info
 
 echo
-echo "Coverage report written to lcov.info"
+echo "Coverage written to lcov.info"
+echo "For an HTML report: cargo llvm-cov --workspace --html --open"
