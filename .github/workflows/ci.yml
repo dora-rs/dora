@@ -149,3 +149,83 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: crate-ci/typos@master
+
+  # ===== QA gates (see docs/plan-agentic-qa-strategy.md) =====
+  # Each job calls the same local scripts (make qa-*) that developers
+  # run before pushing, so CI is a verification mirror, not a separate
+  # source of truth.
+
+  audit:
+    name: Audit (cargo-audit + cargo-deny)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit,cargo-deny
+      - run: make qa-audit
+
+  unwrap-budget:
+    name: Unwrap budget
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: make qa-unwrap
+
+  coverage:
+    name: Coverage (tracked)
+    runs-on: ubuntu-latest
+    needs: test
+    # Non-blocking: report only, do not fail the gate yet.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+      - name: Generate coverage
+        run: make qa-coverage
+      - name: Post summary
+        if: always()
+        run: |
+          echo "## Coverage" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          # Extract the TOTAL line from the summary output
+          cargo llvm-cov report --summary-only 2>&1 | tail -5 >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload lcov artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lcov-${{ github.sha }}
+          path: lcov.info
+          retention-days: 14
+
+  semver:
+    name: SemVer check
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    # Soft gate during 0.x — warn only. Hard-fails after 1.0.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-semver-checks
+      - run: make qa-semver

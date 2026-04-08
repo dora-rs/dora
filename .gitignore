@@ -1,5 +1,8 @@
-# Local cargo config (machine-specific paths)
-.cargo/
+# Local cargo config (machine-specific paths). Use .cargo/* instead of
+# .cargo/ so that git can re-include specific tracked files below.
+.cargo/*
+# Project-wide cargo-mutants config must be tracked.
+!.cargo/mutants.toml
 
 # Generated coverage artifacts (make qa-coverage)
 /lcov.info

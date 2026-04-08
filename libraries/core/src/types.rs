@@ -737,6 +737,45 @@ mod tests {
         assert!(!types_match("std/core/v1/Float32", "std/core/v1/Float64"));
     }
 
+    // --- Fallback path: parse_urn returns None ---
+    //
+    // The two `let Some(...) else { return a == b; }` branches in
+    // types_match() were uncovered (caught by mutation testing: mutants at
+    // lines 168 and 171 escaped the existing suite). These tests exercise
+    // empty-string and malformed-URN inputs so that the fallback equality
+    // check is both reachable and semantically load-bearing.
+
+    #[test]
+    fn types_match_first_unparseable_falls_back_to_equality() {
+        // `a` is empty -> parse_urn(a) is None -> falls back to a == b.
+        // These assertions fail for both the unmutated code and mutations
+        // that would change `==` to `!=` only if the result differs.
+        assert!(!types_match("", "std/core/v1/Float32"));
+        assert!(!types_match("std/core/v1/Float32[", "std/core/v1/Float32"));
+    }
+
+    #[test]
+    fn types_match_second_unparseable_falls_back_to_equality() {
+        // `a` parses, `b` does not -> falls back to a == b (= false since
+        // a is a valid URN and b is empty/malformed).
+        assert!(!types_match("std/core/v1/Float32", ""));
+        assert!(!types_match("std/core/v1/Float32", "std/core/v1/Float32["));
+    }
+
+    #[test]
+    fn types_match_both_unparseable_equal_strings() {
+        // Both fail to parse but are byte-identical: fallback says true.
+        assert!(types_match("", ""));
+        assert!(types_match("malformed[", "malformed["));
+    }
+
+    #[test]
+    fn types_match_both_unparseable_different_strings() {
+        // Both fail to parse and differ: fallback says false.
+        assert!(!types_match("malformed[", "other["));
+        assert!(!types_match("", "[empty-base]"));
+    }
+
     // --- Phase 4: compatibility graph tests ---
 
     #[test]
