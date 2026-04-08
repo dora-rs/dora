@@ -370,18 +370,39 @@ The first full POC pass produced six distinct findings. Summary table:
 
 ### Updated metric snapshots
 
-| Metric | Initial (2026-04-07) | After POC (2026-04-08) | Delta |
+| Metric | Initial (2026-04-07) | End of POC session (2026-04-08) | Delta |
 |---|---|---|---|
 | Line coverage (adora-core) | 33.85% | — (unchanged, pending re-run) | — |
-| Mutation score (adora-core) | 37.2% | 37.8% | +0.6pp (2 mutants caught) |
-| Mutation score (adora-message) | — | 38.1% | (new baseline) |
-| Unwrap count | 622 | 643 | +21 (test-code only; script limitation) |
-| `cargo-audit` real findings | 2 (1 DoS + 1 unsoundness) | 0 | both fixed |
+| **Mutation score (adora-core)** | **37.2% (149/400)** | **43.4% (173/399)** | **+6.1pp, +24 caught** |
+| Mutation score (adora-message) | — | 38.1% (59/155) | new baseline |
+| Mutation score (adora-coordinator-store) | — | 33.0% (29/88) | new baseline |
+| Mutation score (adora-daemon) | — | pending | run in progress |
+| Mutation score (adora-coordinator) | — | pending | run pending |
+| Unwrap count (production code, corrected script) | 622 (reported) | **212 (true)** | 684→212 after script fix; old script counted test/bench code |
+| `cargo-audit` real findings | 2 (time DoS + lru unsoundness) | 0 | both fixed |
 | Open audit critical issues | per 2026-03-21 report | pending re-check | TBD |
-| Tier 1 gates wired | 0 | 6 of 6 | fmt, clippy, test, audit, unwrap, coverage (soft), semver (soft) |
-| Tier 2 gates with baselines | 0 | 2 of 4 | proptest (ws_protocol), miri (metadata) — fuzz/fault injection pending |
-| Adversarial review setup | no | yes (local-only, CI pending API secret) | |
-| Case studies with fixes landed | 0 | 6 | |
+| Tier 1 gates wired | 0 | 6 of 6 | fmt, clippy, test, audit, unwrap, coverage, semver |
+| Tier 2 gates with baselines | 0 | 3 of 4 | proptest (ws_protocol), miri (metadata), mutation (adora-core + message + coordinator-store); fault injection planned but not implemented |
+| Adversarial review setup | no | yes (local; CI pending API secret) | — |
+| Case studies with fixes landed | 0 | 8 (+22 mutation-score tests) | — |
+| Diff coverage gate | no | yes (70% threshold on PRs) | — |
+| Dogfood campaign | undesigned | designed (`plan-dogfood-campaign.md`) | — |
+| Fault injection suite | 3 tests | 3 tests + 8 scenarios designed (`plan-fault-injection.md`) | — |
+
+### Mutation-score hotspots by crate
+
+**adora-core** (173 caught / 226 missed / 46 unviable = 445 total):
+- Top remaining missed in `validate.rs` (now 69, was 91): `validate_ros2_qos`, `send_stdout_as`, `max_rotated_files`
+- `inference.rs`, `build/git.rs`, `descriptor/visualize.rs` — zero or near-zero coverage
+
+**adora-message** (59 caught / 96 missed / 47 unviable = 202 total):
+- `coordinator_to_cli.rs` Display impls, `DataflowList::get_active`
+- Worth a focused case study similar to `types_match` — likely 50+% gain possible
+
+**adora-coordinator-store** (29 caught / 59 missed / 7 unviable = 95 total):
+- **52 of 59 missed mutants are in `redb_store.rs`** — the persistence layer
+- Critical code path with weak test coverage. Potential off-by-one / transaction-boundary bugs likely hiding here (same class as `metadata::from_array` finding)
+- Recommended follow-up: focused unsafe-audit-style read of `redb_store.rs` while writing tests for it
 
 ---
 
