@@ -24,10 +24,17 @@ PUBLIC_CRATES=(
   adora-arrow-convert
 )
 
+# adora-* crates are not yet published on crates.io, so use the last git
+# tag as the baseline. Override by exporting SEMVER_BASELINE=<ref> before
+# running this script.
+BASELINE="${SEMVER_BASELINE:-$(git describe --tags --abbrev=0 2>/dev/null || echo main)}"
+echo "Baseline: $BASELINE"
+echo
+
 FAILED=0
 for crate in "${PUBLIC_CRATES[@]}"; do
   echo "--- $crate ---"
-  if ! cargo semver-checks check-release -p "$crate"; then
+  if ! cargo semver-checks check-release -p "$crate" --baseline-rev "$BASELINE"; then
     FAILED=1
   fi
 done

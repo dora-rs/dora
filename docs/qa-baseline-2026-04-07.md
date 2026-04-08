@@ -126,6 +126,105 @@ Waived unmaintained transitive dependencies (see `deny.toml`):
 
 ---
 
+## Mutation testing (`cargo-mutants`)
+
+Command: `./scripts/qa/mutants.sh --full` (scoped to `adora-core` initially)
+
+**Initial baseline on `adora-core`:**
+
+| Metric | Value |
+|---|---|
+| Total mutations | 431 |
+| Viable (built successfully) | 400 |
+| **Caught (test detected)** | **149** |
+| Missed (test did not detect) | 251 |
+| Unviable (won't compile) | 31 |
+| Timeout | 0 |
+| **Mutation score** | **37.2%** |
+
+**Interpretation:** A 37% mutation score is a low baseline but an honest one.
+It reflects the reality that much of `adora-core`'s code is either untested
+(matching the coverage gaps) or tested by assertions that pass regardless of
+whether the implementation is correct.
+
+### Missed-mutant hotspots by file
+
+| File | Missed | Line coverage | Signal |
+|---|---|---|---|
+| `libraries/core/src/descriptor/validate.rs` | 91 | 67% | Biggest absolute gap; many validation paths have happy-path only tests |
+| `libraries/core/src/inference.rs` | 36 | — | Needs investigation |
+| `libraries/core/src/types.rs` | 32 | **90%** | **Tautological tests — 90% line coverage but 32 uncaught mutations. Classic AI-agent failure mode.** |
+| `libraries/core/src/descriptor/visualize.rs` | 25 | 0% | No tests exist |
+| `libraries/core/src/build/git.rs` | 21 | 0% | No tests exist |
+| `libraries/core/src/descriptor/mod.rs` | 16 | 30% | Needs tests |
+| `libraries/core/src/lib.rs` | 9 | 0% | No tests |
+| `libraries/core/src/descriptor/expand.rs` | 9 | 91% | Edge-case gaps |
+| `libraries/core/src/build/build_command.rs` | 6 | 0% | No tests |
+
+### Top-priority test improvements (ranked by ROI)
+
+1. **`types.rs` tautological tests** — highest ROI. High coverage + high escape
+   rate means the tests exist but assert trivially. Rewriting these tests to
+   verify behavior (not existence) would likely add 20+ caught mutants.
+2. **`validate.rs` error-path coverage** — 91 escaped mutants is the biggest
+   absolute gap. Adding tests for each validation failure mode (not just the
+   happy path) should catch ~50-70 of these.
+3. **`descriptor/mod.rs` and `expand.rs`** — smaller gaps, moderate difficulty.
+4. **`visualize.rs`, `build/git.rs`, `build/build_command.rs`, `lib.rs`** —
+   zero-coverage modules. Add unit tests first, then mutation tests will
+   catch things automatically.
+
+### Mutation testing gate policy
+
+Starting from this baseline:
+
+- **Full-repo runs:** weekly in CI (T2.5). Track the score trend in
+  `docs/qa-baseline-*.md` updates.
+- **PR-scoped runs (`--in-diff`):** eventually gate PRs (T1.2). For now,
+  run locally on touched files. Zero escaped mutants in diff is the target
+  once tuning is done.
+- **Target by end of Q1 POC:** 70% mutation score on `adora-core`.
+- **Target for other critical crates** (next to run): `adora-daemon`,
+  `adora-coordinator`, `adora-message`, `adora-coordinator-store`,
+  `shared-memory-server`.
+
+### Reproduce
+
+```bash
+# Run once (2-3 hours for adora-core)
+cargo mutants --package adora-core --jobs 4 --timeout 120 --output /tmp/adora-core-mutants
+
+# Check scores
+wc -l /tmp/adora-core-mutants/mutants.out/{caught,missed,unviable,timeout}.txt
+
+# Check hotspots
+awk -F: '{print $1}' /tmp/adora-core-mutants/mutants.out/missed.txt | sort | uniq -c | sort -rn
+```
+
+---
+
+## SemVer check (`cargo-semver-checks`)
+
+Command: `./scripts/qa/semver.sh`
+
+**Baseline: v0.2.1 git tag** (adora-* crates are not on crates.io, so we
+compare against the last git tag via `--baseline-rev`).
+
+**Result:** all 5 publishable crates PASS (no breaking changes detected).
+
+| Crate | Checks | Result |
+|---|---|---|
+| `adora-node-api` | 196 | pass |
+| `adora-operator-api` | 196 | pass |
+| `adora-core` | 196 | pass |
+| `adora-message` | 196 | pass |
+| `adora-arrow-convert` | 196 | pass |
+
+Expected result since HEAD == v0.2.1 at baseline capture. Real signal will
+surface on subsequent PRs.
+
+---
+
 ## Unwrap budget
 
 Command: `./scripts/qa/unwrap-budget.sh`
