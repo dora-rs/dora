@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const LOCKFILE_NAME: &str = "dora.lock";
+const LOCKFILE_EXTENSION: &str = "dora.lock";
 const LOCKFILE_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -134,7 +134,12 @@ fn lockfile_path(dataflow_path: &Path) -> eyre::Result<PathBuf> {
     let dir = dataflow_path
         .parent()
         .ok_or_else(|| eyre::eyre!("dataflow path has no parent directory"))?;
-    Ok(dir.join(LOCKFILE_NAME))
+    let stem = dataflow_path
+        .file_stem()
+        .ok_or_else(|| eyre::eyre!("dataflow path has no file stem"))?
+        .to_string_lossy();
+
+    Ok(dir.join(format!("{stem}.{LOCKFILE_EXTENSION}")))
 }
 
 #[cfg(test)]
@@ -203,6 +208,63 @@ mod tests {
         let loaded = DoraLock::read_for_dataflow(&dataflow_path).unwrap();
         assert_eq!(loaded.version, LOCKFILE_VERSION);
         assert_eq!(loaded.git_sources.len(), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lockfile_isolated_per_dataflow_in_same_directory() {
+        let dir = std::env::temp_dir().join(format!("dora-lock-test-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let df_a = dir.join("a.yml");
+        let df_b = dir.join("b.yaml");
+        std::fs::write(&df_a, "nodes: []\n").unwrap();
+        std::fs::write(&df_b, "nodes: []\n").unwrap();
+
+        let mut lock_a = DoraLock::new();
+        lock_a.set_git_source(
+            NodeId::from("node-a".to_owned()),
+            "https://github.com/dora-rs/dora.git".to_owned(),
+            None,
+            "aaaa".to_owned(),
+        );
+        lock_a.write_for_dataflow(&df_a).unwrap();
+
+        let mut lock_b = DoraLock::new();
+        lock_b.set_git_source(
+            NodeId::from("node-b".to_owned()),
+            "https://github.com/dora-rs/dora.git".to_owned(),
+            None,
+            "bbbb".to_owned(),
+        );
+        lock_b.write_for_dataflow(&df_b).unwrap();
+
+        let loaded_a = DoraLock::read_for_dataflow(&df_a).unwrap();
+        let loaded_b = DoraLock::read_for_dataflow(&df_b).unwrap();
+
+        assert_eq!(loaded_a.git_sources.len(), 1);
+        assert!(
+            loaded_a
+                .git_sources
+                .contains_key(&NodeId::from("node-a".to_owned()))
+        );
+        assert!(
+            !loaded_a
+                .git_sources
+                .contains_key(&NodeId::from("node-b".to_owned()))
+        );
+
+        assert_eq!(loaded_b.git_sources.len(), 1);
+        assert!(
+            loaded_b
+                .git_sources
+                .contains_key(&NodeId::from("node-b".to_owned()))
+        );
+        assert!(
+            !loaded_b
+                .git_sources
+                .contains_key(&NodeId::from("node-a".to_owned()))
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

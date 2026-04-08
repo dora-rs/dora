@@ -25,8 +25,8 @@
 //!     - not when using `tag` or `rev`, because these are not expected to change
 //! - after fetching changes, the `build` command will be executed again
 //!     - _tip:_ use a build tool that supports incremental builds (e.g. `cargo`) to make this rebuild faster
-//! - resolved git commits are written to `dora.lock` in the dataflow directory
-//!     - if a matching entry is present in `dora.lock`, it is reused on the next build
+//! - resolved git commits are written to `<dataflow-name>.dora.lock` in the dataflow directory
+//!     - if a matching entry is present in that lockfile, it is reused on the next build
 //!
 //! The **working directory** will be set to the git repository.
 //! This means that both the `build` and `path` keys will be run from this folder.
@@ -141,8 +141,8 @@ pub async fn build_async(
         DataflowSession::read_session(&dataflow_path).context("failed to read DataflowSession")?;
 
     let mut git_sources = BTreeMap::new();
-    let mut lockfile = DoraLock::read_for_dataflow(&dataflow_path)
-        .context("failed to read dora.lock for this dataflow")?;
+    let mut lockfile =
+        DoraLock::read_for_dataflow(&dataflow_path).context("failed to read lockfile")?;
     let mut next_lockfile = DoraLock::new();
     let mut lock_hits = 0usize;
     let resolved_nodes = dataflow_descriptor
@@ -170,7 +170,7 @@ pub async fn build_async(
     }
     if !git_sources.is_empty() {
         log::info!(
-            "resolved git sources using dora.lock ({} cached, {} fetched)",
+            "resolved git sources using lockfile ({} cached, {} fetched)",
             lock_hits,
             git_sources.len().saturating_sub(lock_hits)
         );
@@ -267,7 +267,7 @@ pub async fn build_async(
     if !git_sources.is_empty() {
         lockfile
             .write_for_dataflow(&dataflow_path)
-            .context("failed to write dora.lock for this dataflow")?;
+            .context("failed to write lockfile")?;
     }
 
     Ok(())
