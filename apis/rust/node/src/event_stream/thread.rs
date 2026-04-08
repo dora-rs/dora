@@ -2,7 +2,11 @@ use dora_core::{
     config::NodeId,
     uhlc::{self},
 };
-use dora_message::{common::Timestamped, daemon_to_node::NodeEvent, node_to_daemon::DropToken};
+use dora_message::{
+    common::Timestamped,
+    daemon_to_node::{NodeEvent, NodeEventOrUnknown},
+    node_to_daemon::DropToken,
+};
 use eyre::{Context, eyre};
 use flume::RecvTimeoutError;
 use std::{
