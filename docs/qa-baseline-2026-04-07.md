@@ -376,8 +376,8 @@ The first full POC pass produced six distinct findings. Summary table:
 | **Mutation score (adora-core)** | **37.2% (149/400)** | **43.4% (173/399)** | **+6.1pp, +24 caught** |
 | Mutation score (adora-message) | — | 38.1% (59/155) | new baseline |
 | Mutation score (adora-coordinator-store) | — | 33.0% (29/88) | new baseline |
-| Mutation score (adora-daemon) | — | pending | run in progress |
-| Mutation score (adora-coordinator) | — | pending | run pending |
+| Mutation score (adora-coordinator) | — | 26.1% (73/280) | new baseline |
+| Mutation score (adora-daemon) | — | **5.8% (24/413) — misleading, see note below** | new baseline (caveat) |
 | Unwrap count (production code, corrected script) | 622 (reported) | **212 (true)** | 684→212 after script fix; old script counted test/bench code |
 | `cargo-audit` real findings | 2 (time DoS + lru unsoundness) | 0 | both fixed |
 | Open audit critical issues | per 2026-03-21 report | pending re-check | TBD |
@@ -403,6 +403,53 @@ The first full POC pass produced six distinct findings. Summary table:
 - **52 of 59 missed mutants are in `redb_store.rs`** — the persistence layer
 - Critical code path with weak test coverage. Potential off-by-one / transaction-boundary bugs likely hiding here (same class as `metadata::from_array` finding)
 - Recommended follow-up: focused unsafe-audit-style read of `redb_store.rs` while writing tests for it
+
+**adora-coordinator** (73 caught / 207 missed / 54 unviable = 334 total, 26.1% score):
+- **115 of 207 missed mutants in `lib.rs`** — the monolithic main module (audit 2026-03-21 flagged this as a "daemon monolith" architectural concern that applies equally here)
+- 31 in `state.rs`, 19 in `handlers.rs`
+- Expected score, given the architecture: the coordinator is primarily tested via E2E tests that run the whole coordinator as a process. Those tests don't run under cargo-mutants scoped to the coordinator package (see meta-finding below).
+
+**adora-daemon** (24 caught / 389 missed / 90 unviable = 503 total, 5.8% score — **misleading, see meta-finding below**):
+- 184 missed in `lib.rs`, 53 in `spawn/prepared.rs`, 21 in `fault_tolerance.rs`
+- 16 missed in `bench_support` helper code (unreachable by tests by design — should be excluded from mutation testing)
+
+### Meta-finding: cargo-mutants package scoping loses cross-package E2E coverage
+
+**The low daemon and coordinator scores are misleading.** Running
+`cargo mutants --package adora-daemon` only executes tests that live
+**inside** the daemon package (`binaries/daemon/tests/`, plus unit
+tests in the daemon's own source). The workspace-level E2E tests
+that actually exercise the daemon heavily — `tests/ws-cli-e2e.rs`,
+`tests/fault-tolerance-e2e.rs`, `tests/example-smoke.rs` — belong
+to the `adora-examples` workspace package, not the daemon package.
+`cargo test --package adora-daemon` does not run them, and therefore
+`cargo mutants` doesn't either.
+
+In practice the daemon is very well-tested by these workspace-level
+E2E tests — smoke tests spin up real daemons, fault-tolerance tests
+exercise restart policies, ws-cli-e2e tests stress the full CLI →
+coordinator → daemon → node path. But those tests are invisible to
+mutation testing as currently invoked.
+
+**Implication for the QA plan:** `plan-agentic-qa-strategy.md`
+Section 5.2 should be amended. Running cargo-mutants at package
+scope is appropriate for pure-library crates (`adora-core`,
+`adora-message`, `adora-coordinator-store` — which are tested
+primarily by their own unit tests). For the binary crates
+(`adora-daemon`, `adora-coordinator`), two options exist:
+
+1. **Run cargo-mutants at workspace scope** with `--package
+   adora-daemon` as a filter for which files to mutate, but letting
+   `cargo test` discover and run all workspace tests. This is the
+   `cargo mutants --workspace --package adora-daemon` pattern (if
+   cargo-mutants supports it — check docs).
+2. **Move E2E tests into the daemon package** as integration tests
+   (`binaries/daemon/tests/*.rs`). Invasive but aligns mutation
+   testing with test coverage.
+
+For the POC, we're accepting the misleading score and documenting
+the limitation. Follow-up: investigate cargo-mutants workspace-scoped
+invocation and re-run the daemon/coordinator baselines.
 
 ---
 
