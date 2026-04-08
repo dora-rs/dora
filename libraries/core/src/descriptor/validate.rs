@@ -78,14 +78,12 @@ pub fn check_dataflow(
                         if source_is_url(source) {
                             info!("{source} is a URL."); // TODO: Implement url check.
                         } else if let Some(remote_daemon_id) = remote_daemon_id {
-                            if let Some(deploy) = &node.deploy {
-                                if let Some(machine) = &deploy.machine {
-                                    if remote_daemon_id.contains(&machine.as_str())
-                                        || coordinator_is_remote
-                                    {
-                                        info!("skipping path check for remote node `{}`", node.id);
-                                    }
-                                }
+                            if let Some(deploy) = &node.deploy
+                                && let Some(machine) = &deploy.machine
+                                && (remote_daemon_id.contains(&machine.as_str())
+                                    || coordinator_is_remote)
+                            {
+                                info!("skipping path check for remote node `{}`", node.id);
                             }
                         } else if custom.build.is_some() {
                             info!("skipping path check for node with build command");
@@ -626,23 +624,23 @@ fn validate_ros2_qos(
             ),
         }
     }
-    if let Some(depth) = qos.keep_last {
-        if !(1..=10_000).contains(&depth) {
-            bail!(
-                "node `{node_id}`: QoS keep_last depth {depth} out of range, \
+    if let Some(depth) = qos.keep_last
+        && !(1..=10_000).contains(&depth)
+    {
+        bail!(
+            "node `{node_id}`: QoS keep_last depth {depth} out of range, \
                  must be between 1 and 10000"
-            );
-        }
+        );
     }
-    if let Some(t) = qos.max_blocking_time {
-        if !t.is_finite() || t < 0.0 {
-            bail!("node `{node_id}`: QoS max_blocking_time must be a finite non-negative number");
-        }
+    if let Some(t) = qos.max_blocking_time
+        && (!t.is_finite() || t < 0.0)
+    {
+        bail!("node `{node_id}`: QoS max_blocking_time must be a finite non-negative number");
     }
-    if let Some(t) = qos.lease_duration {
-        if !t.is_finite() || t < 0.0 {
-            bail!("node `{node_id}`: QoS lease_duration must be a finite non-negative number");
-        }
+    if let Some(t) = qos.lease_duration
+        && (!t.is_finite() || t < 0.0)
+    {
+        bail!("node `{node_id}`: QoS lease_duration must be a finite non-negative number");
     }
     Ok(())
 }
@@ -995,16 +993,16 @@ fn check_metadata_annotations(
     }
 
     // Validate pattern shorthand
-    if let Some(pat) = pattern {
-        if crate::types::pattern_metadata_keys(pat).is_none() {
-            warnings.push(TypeWarning {
-                node_id: node_id.to_string(),
-                message: format!(
-                    "unknown pattern \"{pat}\", expected one of: \
+    if let Some(pat) = pattern
+        && crate::types::pattern_metadata_keys(pat).is_none()
+    {
+        warnings.push(TypeWarning {
+            node_id: node_id.to_string(),
+            message: format!(
+                "unknown pattern \"{pat}\", expected one of: \
                      service-server, service-client, action-server, action-client"
-                ),
-            });
-        }
+            ),
+        });
     }
 }
 

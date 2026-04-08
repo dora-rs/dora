@@ -170,21 +170,21 @@ pub fn check_module_file(module_path: &Path) -> eyre::Result<()> {
     // Check _mod/ references point to declared inputs
     for node in &module_file.nodes {
         for (input_id, input) in &node.inputs {
-            if let InputMapping::User(m) = &input.mapping {
-                if m.source.to_string() == MODULE_INPUT_SOURCE {
-                    let port = m.output.to_string();
-                    if !all_input_names.contains(&port) {
-                        bail!(
-                            "module `{}`: node `{}` input `{}` references \
+            if let InputMapping::User(m) = &input.mapping
+                && m.source.to_string() == MODULE_INPUT_SOURCE
+            {
+                let port = m.output.to_string();
+                if !all_input_names.contains(&port) {
+                    bail!(
+                        "module `{}`: node `{}` input `{}` references \
                              `_mod/{}` but `{}` is not declared in module \
                              inputs or inputs_optional",
-                            module_file.module.name,
-                            node.id,
-                            input_id,
-                            port,
-                            port,
-                        );
-                    }
+                        module_file.module.name,
+                        node.id,
+                        input_id,
+                        port,
+                        port,
+                    );
                 }
             }
         }
@@ -376,20 +376,21 @@ fn expand_module_node(
         inner_node.inputs = new_inputs;
 
         // Resolve relative paths: make inner node paths relative to base_dir
-        if let Some(ref path) = inner_node.path {
-            if !super::source_is_url(path) && !Path::new(path).is_absolute() {
-                let resolved = module_dir.join(path);
-                let relative = resolved.strip_prefix(canonical_base).map_err(|_| {
-                    eyre::eyre!(
-                        "module node `{}` path `{}` resolves outside the project \
+        if let Some(ref path) = inner_node.path
+            && !super::source_is_url(path)
+            && !Path::new(path).is_absolute()
+        {
+            let resolved = module_dir.join(path);
+            let relative = resolved.strip_prefix(canonical_base).map_err(|_| {
+                eyre::eyre!(
+                    "module node `{}` path `{}` resolves outside the project \
                          directory (resolved to `{}`)",
-                        inner_node.id,
-                        path,
-                        resolved.display()
-                    )
-                })?;
-                inner_node.path = Some(relative.to_string_lossy().into_owned());
-            }
+                    inner_node.id,
+                    path,
+                    resolved.display()
+                )
+            })?;
+            inner_node.path = Some(relative.to_string_lossy().into_owned());
         }
 
         // Propagate deploy from module node to inner nodes

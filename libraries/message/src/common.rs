@@ -335,10 +335,10 @@ impl DaemonId {
         machine_id: Option<String>,
     ) -> std::io::Result<Self> {
         let path = working_dir.join(".daemon-id");
-        if let Ok(contents) = std::fs::read_to_string(&path) {
-            if let Ok(uuid) = contents.trim().parse::<Uuid>() {
-                return Ok(DaemonId { machine_id, uuid });
-            }
+        if let Ok(contents) = std::fs::read_to_string(&path)
+            && let Ok(uuid) = contents.trim().parse::<Uuid>()
+        {
+            return Ok(DaemonId { machine_id, uuid });
         }
         let id = Self::new(machine_id);
         std::fs::write(&path, id.uuid.to_string())?;

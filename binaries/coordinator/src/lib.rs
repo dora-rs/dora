@@ -1209,11 +1209,9 @@ async fn start_inner(
                                                                 },
                                                                 timestamp: clock.new_timestamp(),
                                                             })
-                                                        {
-                                                            if let Some(conn) =
+                                                            && let Some(conn) =
                                                                 daemon_connections.get_mut(&daemon_id)
-                                                            {
-                                                                if let Err(e) =
+                                                                && let Err(e) =
                                                                     conn.send_and_receive(&msg).await
                                                                 {
                                                                     tracing::warn!(
@@ -1222,8 +1220,6 @@ async fn start_inner(
                                                                         "param persisted in store; runtime forwarding is best-effort and failed: {e}"
                                                                     );
                                                                 }
-                                                            }
-                                                        }
                                                     } else {
                                                         // Dataflow may have been removed after target resolution.
                                                         tracing::warn!(
@@ -1278,11 +1274,9 @@ async fn start_inner(
                                                             },
                                                             timestamp: clock.new_timestamp(),
                                                         })
-                                                    {
-                                                        if let Some(conn) =
+                                                        && let Some(conn) =
                                                             daemon_connections.get_mut(&daemon_id)
-                                                        {
-                                                            if let Err(e) =
+                                                            && let Err(e) =
                                                                 conn.send_and_receive(&msg).await
                                                             {
                                                                 tracing::warn!(
@@ -1291,8 +1285,6 @@ async fn start_inner(
                                                                     "param deleted in store; runtime forwarding is best-effort and failed: {e}"
                                                                 );
                                                             }
-                                                        }
-                                                    }
                                                 } else {
                                                     // Dataflow may have been removed after target resolution.
                                                     tracing::warn!(
@@ -1751,20 +1743,19 @@ async fn start_inner(
                             send_log_message(&mut dataflow.log_subscribers, &message).await;
                         }
                     }
-                } else if let Some(build_id) = &message.build_id {
-                    if let Some(build) = running_builds.get_mut(build_id) {
-                        if build.log_subscribers.is_empty() {
-                            if build.buffered_log_messages.len() < MAX_BUFFERED_LOG_MESSAGES {
-                                build.buffered_log_messages.push(message);
-                            } else if build.buffered_log_messages.len() == MAX_BUFFERED_LOG_MESSAGES
-                            {
-                                tracing::warn!(
-                                    "log buffer full for build {build_id}, dropping new messages"
-                                );
-                            }
-                        } else {
-                            send_log_message(&mut build.log_subscribers, &message).await;
+                } else if let Some(build_id) = &message.build_id
+                    && let Some(build) = running_builds.get_mut(build_id)
+                {
+                    if build.log_subscribers.is_empty() {
+                        if build.buffered_log_messages.len() < MAX_BUFFERED_LOG_MESSAGES {
+                            build.buffered_log_messages.push(message);
+                        } else if build.buffered_log_messages.len() == MAX_BUFFERED_LOG_MESSAGES {
+                            tracing::warn!(
+                                "log buffer full for build {build_id}, dropping new messages"
+                            );
                         }
+                    } else {
+                        send_log_message(&mut build.log_subscribers, &message).await;
                     }
                 }
             }
@@ -1982,10 +1973,10 @@ async fn start_inner(
                         continue;
                     }
                     // Backoff: skip if we attempted recovery recently
-                    if let Some(last) = df.last_recovery_attempt.get(&daemon_id) {
-                        if now.duration_since(*last) < RECOVERY_BACKOFF {
-                            continue;
-                        }
+                    if let Some(last) = df.last_recovery_attempt.get(&daemon_id)
+                        && now.duration_since(*last) < RECOVERY_BACKOFF
+                    {
+                        continue;
                     }
                     // Collect nodes assigned to this daemon
                     let spawn_nodes: BTreeSet<_> = df
@@ -2024,10 +2015,10 @@ async fn start_inner(
                             continue;
                         }
                     };
-                    if let Some(conn) = daemon_connections.get_mut(&daemon_id) {
-                        if let Err(e) = conn.send(&message).await {
-                            tracing::warn!("failed to send re-spawn to daemon {daemon_id}: {e}");
-                        }
+                    if let Some(conn) = daemon_connections.get_mut(&daemon_id)
+                        && let Err(e) = conn.send(&message).await
+                    {
+                        tracing::warn!("failed to send re-spawn to daemon {daemon_id}: {e}");
                     }
                 }
 
@@ -2057,14 +2048,12 @@ async fn start_inner(
                             if let Ok(msg) = serde_json::to_vec(&Timestamped {
                                 inner: event,
                                 timestamp: clock.new_timestamp(),
-                            }) {
-                                if let Some(conn) = daemon_connections.get_mut(&daemon_id) {
-                                    if let Err(e) = conn.send(&msg).await {
-                                        tracing::warn!(
-                                            "failed to send state catch-up to daemon {daemon_id}: {e}"
-                                        );
-                                    }
-                                }
+                            }) && let Some(conn) = daemon_connections.get_mut(&daemon_id)
+                                && let Err(e) = conn.send(&msg).await
+                            {
+                                tracing::warn!(
+                                    "failed to send state catch-up to daemon {daemon_id}: {e}"
+                                );
                             }
                         }
                         None => {
@@ -2146,14 +2135,14 @@ async fn handle_pruned_state_catchup_fallback(
     clock: Arc<HLC>,
     now: Instant,
 ) {
-    if let Some(last_replay_attempt) = dataflow.last_replay_attempt.get(daemon_id) {
-        if now.duration_since(*last_replay_attempt) < FALLBACK_REPLAY_BACKOFF {
-            tracing::debug!(
-                "skipping fallback replay for dataflow {dataflow_id} on daemon {daemon_id}: \
+    if let Some(last_replay_attempt) = dataflow.last_replay_attempt.get(daemon_id)
+        && now.duration_since(*last_replay_attempt) < FALLBACK_REPLAY_BACKOFF
+    {
+        tracing::debug!(
+            "skipping fallback replay for dataflow {dataflow_id} on daemon {daemon_id}: \
                  backoff active"
-            );
-            return;
-        }
+        );
+        return;
     }
 
     let Some(connection) = daemon_connections.get_mut(daemon_id).cloned() else {

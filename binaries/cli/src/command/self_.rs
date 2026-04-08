@@ -105,11 +105,11 @@ impl Executable for SelfSubCommand {
                         .args(["pip", "uninstall", "adora-rs-cli"])
                         .status();
 
-                    if let Ok(status) = uv_status {
-                        if status.success() {
-                            println!("Adora CLI has been successfully uninstalled via uv pip.");
-                            return Ok(());
-                        }
+                    if let Ok(status) = uv_status
+                        && status.success()
+                    {
+                        println!("Adora CLI has been successfully uninstalled via uv pip.");
+                        return Ok(());
                     }
 
                     // Fall back to regular pip uninstall

@@ -46,24 +46,20 @@ pub(crate) fn get_python_adora_version() -> Option<String> {
     if let Ok(output) = std::process::Command::new("uv")
         .args(["pip", "show", "adora-rs"])
         .output()
+        && output.status.success()
+        && let Some(version) = parse_version_from_pip_show(&output.stdout)
     {
-        if output.status.success() {
-            if let Some(version) = parse_version_from_pip_show(&output.stdout) {
-                return Some(version);
-            }
-        }
+        return Some(version);
     }
 
     // Try with regular pip
     if let Ok(output) = std::process::Command::new("pip")
         .args(["show", "adora-rs"])
         .output()
+        && output.status.success()
+        && let Some(version) = parse_version_from_pip_show(&output.stdout)
     {
-        if output.status.success() {
-            if let Some(version) = parse_version_from_pip_show(&output.stdout) {
-                return Some(version);
-            }
-        }
+        return Some(version);
     }
 
     None

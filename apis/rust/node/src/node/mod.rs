@@ -704,20 +704,19 @@ impl AdoraNode {
             // If the node was started outside the daemon (manual dynamic node),
             // the user must set the required env vars before launching the
             // process.
-            if let Ok(descriptor) = &node.dataflow_descriptor {
-                if let Some(env_vars) = descriptor
+            if let Ok(descriptor) = &node.dataflow_descriptor
+                && let Some(env_vars) = descriptor
                     .nodes
                     .iter()
                     .find(|n| n.id == node.id)
                     .and_then(|n| n.env.as_ref())
-                {
-                    for key in env_vars.keys() {
-                        if std::env::var(key).is_err() {
-                            warn!(
-                                "env var `{key}` declared in dataflow descriptor is not set; \
+            {
+                for key in env_vars.keys() {
+                    if std::env::var(key).is_err() {
+                        warn!(
+                            "env var `{key}` declared in dataflow descriptor is not set; \
                                  it should have been injected by the daemon at spawn time"
-                            );
-                        }
+                        );
                     }
                 }
             }
@@ -805,22 +804,22 @@ impl AdoraNode {
         let arrow_array = data.to_data();
 
         // Runtime type check (only when ADORA_RUNTIME_TYPE_CHECK is set)
-        if let Some((mode, checks)) = &self.runtime_type_checks {
-            if let Some(expected) = checks.get(&output_id) {
-                let actual = arrow_array.data_type();
-                if actual != expected {
-                    let msg = format!(
-                        "output \"{output_id}\": expected Arrow type {expected:?}, got {actual:?}"
-                    );
-                    match mode {
-                        RuntimeTypeCheck::Error => {
-                            return Err(NodeError::Output(msg));
-                        }
-                        RuntimeTypeCheck::Warn => {
-                            warn!("type mismatch: {msg}");
-                        }
-                        RuntimeTypeCheck::Off => unreachable!(),
+        if let Some((mode, checks)) = &self.runtime_type_checks
+            && let Some(expected) = checks.get(&output_id)
+        {
+            let actual = arrow_array.data_type();
+            if actual != expected {
+                let msg = format!(
+                    "output \"{output_id}\": expected Arrow type {expected:?}, got {actual:?}"
+                );
+                match mode {
+                    RuntimeTypeCheck::Error => {
+                        return Err(NodeError::Output(msg));
                     }
+                    RuntimeTypeCheck::Warn => {
+                        warn!("type mismatch: {msg}");
+                    }
+                    RuntimeTypeCheck::Off => unreachable!(),
                 }
             }
         }

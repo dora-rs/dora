@@ -405,7 +405,7 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
                 writer.write_entry(&entry)?;
                 msg_count += 1;
 
-                if msg_count % 100 == 0 {
+                if msg_count.is_multiple_of(100) {
                     writer.flush()?;
                 }
             }

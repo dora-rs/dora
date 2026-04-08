@@ -269,7 +269,7 @@ pub(crate) async fn handle_control_ws(
                                     frame.extend_from_slice(&payload);
                                     if binary_tx.try_send(frame).is_err() {
                                         dropped += 1;
-                                        if dropped == 1 || dropped % 100 == 0 {
+                                        if dropped == 1 || dropped.is_multiple_of(100) {
                                             tracing::warn!(
                                                 "backpressure: dropped {dropped} frame(s) on {topic} (channel full)"
                                             );

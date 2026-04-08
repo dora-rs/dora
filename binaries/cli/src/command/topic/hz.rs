@@ -286,32 +286,31 @@ fn run_hz(
             )
         })?;
 
-        if crossterm::event::poll(Duration::from_millis(50))? {
-            if let Event::Key(key) = crossterm::event::read()? {
-                if matches!(key.code, KeyCode::Char('q') | KeyCode::Esc)
-                    || (key.modifiers.contains(KeyModifiers::CONTROL)
-                        && key.code == KeyCode::Char('c'))
-                {
-                    break;
-                }
+        if crossterm::event::poll(Duration::from_millis(50))?
+            && let Event::Key(key) = crossterm::event::read()?
+        {
+            if matches!(key.code, KeyCode::Char('q') | KeyCode::Esc)
+                || (key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c'))
+            {
+                break;
+            }
 
-                match key.code {
-                    KeyCode::Up => {
-                        if selected == 0 {
-                            selected = stats.len().saturating_sub(1);
-                        } else {
-                            selected -= 1;
-                        }
+            match key.code {
+                KeyCode::Up => {
+                    if selected == 0 {
+                        selected = stats.len().saturating_sub(1);
+                    } else {
+                        selected -= 1;
                     }
-                    KeyCode::Down => {
-                        if stats.is_empty() {
-                            selected = 0;
-                        } else {
-                            selected = (selected + 1) % stats.len();
-                        }
-                    }
-                    _ => {}
                 }
+                KeyCode::Down => {
+                    if stats.is_empty() {
+                        selected = 0;
+                    } else {
+                        selected = (selected + 1) % stats.len();
+                    }
+                }
+                _ => {}
             }
         }
     }

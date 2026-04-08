@@ -337,35 +337,34 @@ fn run_app<B: Backend>(
             .checked_sub(last_update.elapsed())
             .unwrap_or(Duration::from_millis(100));
 
-        if event::poll(timeout)? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
-                    match key.code {
-                        KeyCode::Char('q') | KeyCode::Esc => {
-                            return Ok(());
-                        }
-                        KeyCode::Down | KeyCode::Char('j') => {
-                            app.next();
-                        }
-                        KeyCode::Up | KeyCode::Char('k') => {
-                            app.previous();
-                        }
-                        KeyCode::Char('n') => {
-                            app.toggle_sort(SortColumn::Node);
-                        }
-                        KeyCode::Char('c') => {
-                            app.toggle_sort(SortColumn::Cpu);
-                        }
-                        KeyCode::Char('m') => {
-                            app.toggle_sort(SortColumn::Memory);
-                        }
-                        KeyCode::Char('r') => {
-                            // Force refresh by resetting last_update
-                            last_update = Instant::now() - refresh_duration;
-                        }
-                        _ => {}
-                    }
+        if event::poll(timeout)?
+            && let Event::Key(key) = event::read()?
+            && key.kind == KeyEventKind::Press
+        {
+            match key.code {
+                KeyCode::Char('q') | KeyCode::Esc => {
+                    return Ok(());
                 }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    app.next();
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    app.previous();
+                }
+                KeyCode::Char('n') => {
+                    app.toggle_sort(SortColumn::Node);
+                }
+                KeyCode::Char('c') => {
+                    app.toggle_sort(SortColumn::Cpu);
+                }
+                KeyCode::Char('m') => {
+                    app.toggle_sort(SortColumn::Memory);
+                }
+                KeyCode::Char('r') => {
+                    // Force refresh by resetting last_update
+                    last_update = Instant::now() - refresh_duration;
+                }
+                _ => {}
             }
         }
 

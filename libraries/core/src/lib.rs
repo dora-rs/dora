@@ -67,14 +67,14 @@ pub fn get_python_path() -> Result<std::path::PathBuf, eyre::ErrReport> {
             .args(["python", "find"])
             .output();
 
-        if let Ok(output) = output {
-            if output.status.success() {
-                let python_path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                if !python_path.is_empty() {
-                    let path = std::path::PathBuf::from(&python_path);
-                    if path.exists() {
-                        return Ok(path);
-                    }
+        if let Ok(output) = output
+            && output.status.success()
+        {
+            let python_path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !python_path.is_empty() {
+                let path = std::path::PathBuf::from(&python_path);
+                if path.exists() {
+                    return Ok(path);
                 }
             }
         }

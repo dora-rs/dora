@@ -139,10 +139,11 @@ fn info(
     let mut subscribers = Vec::new();
     for node in &descriptor.nodes {
         for (input_id, input) in &node.inputs {
-            if let InputMapping::User(user) = &input.mapping {
-                if user.source == topic.node_id && user.output == topic.data_id {
-                    subscribers.push(format!("{}/{}", node.id, input_id));
-                }
+            if let InputMapping::User(user) = &input.mapping
+                && user.source == topic.node_id
+                && user.output == topic.data_id
+            {
+                subscribers.push(format!("{}/{}", node.id, input_id));
             }
         }
     }

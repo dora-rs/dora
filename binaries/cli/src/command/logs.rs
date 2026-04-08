@@ -103,26 +103,25 @@ impl Executable for LogsArgs {
         }
 
         // Single node via coordinator (unchanged)
-        if let Some(ref _node) = self.node {
-            if !self.all_nodes {
-                let node = self.node.clone().unwrap();
-                let config = build_log_config(&self)?;
-                let session = self.coordinator.connect()?;
-                let uuid =
-                    resolve_dataflow_identifier_interactive(&session, self.dataflow.as_deref())?;
-                return logs(
-                    &session,
-                    uuid,
-                    node,
-                    self.tail,
-                    self.follow,
-                    self.grep.as_deref(),
-                    &self.level,
-                    self.since,
-                    self.until,
-                    &config,
-                );
-            }
+        if let Some(ref _node) = self.node
+            && !self.all_nodes
+        {
+            let node = self.node.clone().unwrap();
+            let config = build_log_config(&self)?;
+            let session = self.coordinator.connect()?;
+            let uuid = resolve_dataflow_identifier_interactive(&session, self.dataflow.as_deref())?;
+            return logs(
+                &session,
+                uuid,
+                node,
+                self.tail,
+                self.follow,
+                self.grep.as_deref(),
+                &self.level,
+                self.since,
+                self.until,
+                &config,
+            );
         }
 
         // All nodes (explicit --all-nodes or no node specified):
@@ -350,14 +349,14 @@ fn find_log_files(dataflow_dir: &Path) -> Result<Vec<PathBuf>> {
 fn rotation_index(path: &Path) -> u32 {
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
     // Pattern: log_<node>.<N>.jsonl
-    if let Some(rest) = name.strip_prefix("log_") {
-        if let Some(rest) = rest.strip_suffix(".jsonl") {
-            // Check if the last segment after the last '.' is a number
-            if let Some(dot_pos) = rest.rfind('.') {
-                if let Ok(idx) = rest[dot_pos + 1..].parse::<u32>() {
-                    return idx;
-                }
-            }
+    if let Some(rest) = name.strip_prefix("log_")
+        && let Some(rest) = rest.strip_suffix(".jsonl")
+    {
+        // Check if the last segment after the last '.' is a number
+        if let Some(dot_pos) = rest.rfind('.')
+            && let Ok(idx) = rest[dot_pos + 1..].parse::<u32>()
+        {
+            return idx;
         }
     }
     0 // current file
@@ -449,15 +448,15 @@ fn apply_time_filters(
     messages
         .into_iter()
         .filter(|msg| {
-            if let Some(threshold) = since_threshold {
-                if msg.timestamp < threshold {
-                    return false;
-                }
+            if let Some(threshold) = since_threshold
+                && msg.timestamp < threshold
+            {
+                return false;
             }
-            if let Some(threshold) = until_threshold {
-                if msg.timestamp > threshold {
-                    return false;
-                }
+            if let Some(threshold) = until_threshold
+                && msg.timestamp > threshold
+            {
+                return false;
             }
             true
         })
@@ -494,15 +493,15 @@ fn matches_grep(msg: &LogMessage, pattern: Option<&str>) -> bool {
     if msg.message.to_lowercase().contains(&pattern_lower) {
         return true;
     }
-    if let Some(node) = &msg.node_id {
-        if node.to_string().to_lowercase().contains(&pattern_lower) {
-            return true;
-        }
+    if let Some(node) = &msg.node_id
+        && node.to_string().to_lowercase().contains(&pattern_lower)
+    {
+        return true;
     }
-    if let Some(target) = &msg.target {
-        if target.to_lowercase().contains(&pattern_lower) {
-            return true;
-        }
+    if let Some(target) = &msg.target
+        && target.to_lowercase().contains(&pattern_lower)
+    {
+        return true;
     }
     false
 }
@@ -771,15 +770,15 @@ fn stream_logs_from_coordinator(
             serde_json::from_slice(&raw).context("failed to parse log message");
         match parsed {
             Ok(log_message) => {
-                if let Some(threshold) = since_threshold {
-                    if log_message.timestamp < threshold {
-                        continue;
-                    }
+                if let Some(threshold) = since_threshold
+                    && log_message.timestamp < threshold
+                {
+                    continue;
                 }
-                if let Some(threshold) = until_threshold {
-                    if log_message.timestamp > threshold {
-                        continue;
-                    }
+                if let Some(threshold) = until_threshold
+                    && log_message.timestamp > threshold
+                {
+                    continue;
                 }
                 if matches_grep(&log_message, grep) {
                     print_log_message(log_message, config);

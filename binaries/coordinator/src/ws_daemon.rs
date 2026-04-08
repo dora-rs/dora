@@ -136,14 +136,14 @@ async fn handle_daemon_request(
                 return false;
             }
             // Validate machine_id length to prevent abuse
-            if let Some(ref mid) = register_request.machine_id {
-                if mid.len() > 256 {
-                    tracing::warn!(
-                        "daemon register rejected: machine_id too long ({} bytes)",
-                        mid.len()
-                    );
-                    return false;
-                }
+            if let Some(ref mid) = register_request.machine_id
+                && mid.len() > 256
+            {
+                tracing::warn!(
+                    "daemon register rejected: machine_id too long ({} bytes)",
+                    mid.len()
+                );
+                return false;
             }
             let version_check_result = register_request.check_version();
             let labels = register_request.labels;
@@ -169,13 +169,13 @@ async fn handle_daemon_request(
         }
         CoordinatorRequest::Event { daemon_id, event } => {
             // Verify daemon_id matches the registered one (prevent impersonation)
-            if let Some(tracked) = tracked_daemon_id {
-                if *tracked != daemon_id {
-                    tracing::warn!(
-                        "daemon sent event with mismatched id: expected `{tracked}`, got `{daemon_id}` — closing connection"
-                    );
-                    return false;
-                }
+            if let Some(tracked) = tracked_daemon_id
+                && *tracked != daemon_id
+            {
+                tracing::warn!(
+                    "daemon sent event with mismatched id: expected `{tracked}`, got `{daemon_id}` — closing connection"
+                );
+                return false;
             }
             if let Some(coordinator_event) = translate_daemon_event(daemon_id, event) {
                 event_tx.send(coordinator_event).await.is_ok()

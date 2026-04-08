@@ -183,24 +183,24 @@ pub fn remove_token(working_dir: &Path) {
 /// Returns `None` if no token is found.
 pub fn discover_token() -> Option<AuthToken> {
     // 1. Environment variable override
-    if let Ok(val) = std::env::var("ADORA_AUTH_TOKEN") {
-        if !val.is_empty() {
-            return Some(AuthToken(val));
-        }
+    if let Ok(val) = std::env::var("ADORA_AUTH_TOKEN")
+        && !val.is_empty()
+    {
+        return Some(AuthToken(val));
     }
 
     // 2. Token file in current working directory
-    if let Ok(cwd) = std::env::current_dir() {
-        if let Ok(Some(token)) = read_token(&cwd) {
-            return Some(token);
-        }
+    if let Ok(cwd) = std::env::current_dir()
+        && let Ok(Some(token)) = read_token(&cwd)
+    {
+        return Some(token);
     }
 
     // 3. Token file in user config directory
-    if let Some(config_path) = config_token_path() {
-        if let Ok(Some(token)) = read_token_from_path(&config_path) {
-            return Some(token);
-        }
+    if let Some(config_path) = config_token_path()
+        && let Ok(Some(token)) = read_token_from_path(&config_path)
+    {
+        return Some(token);
     }
 
     None

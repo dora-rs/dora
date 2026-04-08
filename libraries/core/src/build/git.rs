@@ -43,16 +43,16 @@ impl GitManager {
             .filter(|p| p.git_source.repo == repo)
             .map(|p| &p.git_source.commit_hash);
 
-        if let Some(using) = self.clones_in_use.get(&clone_dir) {
-            if !using.is_empty() {
-                // The directory is currently in use by another dataflow. Rebuilding
-                // while a dataflow is running could lead to unintended behavior.
-                eyre::bail!(
-                    "the build directory is still in use by the following \
+        if let Some(using) = self.clones_in_use.get(&clone_dir)
+            && !using.is_empty()
+        {
+            // The directory is currently in use by another dataflow. Rebuilding
+            // while a dataflow is running could lead to unintended behavior.
+            eyre::bail!(
+                "the build directory is still in use by the following \
                     dataflows, please stop them before rebuilding: {}",
-                    using.iter().join(", ")
-                )
-            }
+                using.iter().join(", ")
+            )
         }
 
         let reuse = if self.clone_dir_ready(session_id, &clone_dir) {

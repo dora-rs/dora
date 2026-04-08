@@ -236,11 +236,10 @@ pub async fn register(
                                     WsResponse::err(request_id, format!("{e}"))
                                 }
                             };
-                            if let Ok(json) = serde_json::to_string(&response) {
-                                if ws_tx.send(Message::Text(json.into())).await.is_err() {
+                            if let Ok(json) = serde_json::to_string(&response)
+                                && ws_tx.send(Message::Text(json.into())).await.is_err() {
                                     break;
                                 }
-                            }
                         }
                         if let DaemonCoordinatorReply::DestroyResult { notify, .. } = reply {
                             if let Some(notify) = notify {

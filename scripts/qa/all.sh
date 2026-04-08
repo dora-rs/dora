@@ -32,17 +32,17 @@ run() {
 
 # ----- Always run (fast) -----
 run "fmt"           cargo fmt --all -- --check
+run "clippy"        cargo clippy --all \
+                      --exclude adora-node-api-python \
+                      --exclude adora-operator-api-python \
+                      --exclude adora-ros2-bridge-python \
+                      -- -D warnings
 run "audit"         scripts/qa/audit.sh
 run "unwrap-budget" scripts/qa/unwrap-budget.sh
 
 if [[ "$MODE" == "--fast" ]]; then
   : # done
 elif [[ "$MODE" == "--full" || "$MODE" == "--tier1" ]]; then
-  run "clippy" cargo clippy --all \
-    --exclude adora-node-api-python \
-    --exclude adora-operator-api-python \
-    --exclude adora-ros2-bridge-python \
-    -- -D warnings
   run "test" cargo test --all \
     --exclude adora-node-api-python \
     --exclude adora-operator-api-python \

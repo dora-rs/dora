@@ -89,12 +89,11 @@ pub(crate) struct TokenQuery {
 
 /// Extract the auth token from the Authorization header ("Bearer <hex>").
 pub(crate) fn extract_token(headers: &HeaderMap) -> Option<String> {
-    if let Some(auth_header) = headers.get("authorization") {
-        if let Ok(value) = auth_header.to_str() {
-            if let Some(token) = value.strip_prefix("Bearer ") {
-                return Some(token.to_string());
-            }
-        }
+    if let Some(auth_header) = headers.get("authorization")
+        && let Ok(value) = auth_header.to_str()
+        && let Some(token) = value.strip_prefix("Bearer ")
+    {
+        return Some(token.to_string());
     }
     None
 }

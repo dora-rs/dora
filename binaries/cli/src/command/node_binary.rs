@@ -19,10 +19,8 @@ pub fn find(binary_name: &str, crate_name: &str) -> eyre::Result<PathBuf> {
         .status()
         .is_ok_and(|s| s.success());
 
-    if build_ok {
-        if let Some(path) = search(binary_name) {
-            return Ok(path);
-        }
+    if build_ok && let Some(path) = search(binary_name) {
+        return Ok(path);
     }
 
     // Fall back to cargo install (works for standalone installations)

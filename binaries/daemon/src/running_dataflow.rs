@@ -337,10 +337,10 @@ impl RunningDataflow {
         }
 
         for (node_id, channel) in self.subscribe_channels.drain() {
-            if send_with_timestamp(&channel, NodeEvent::Stop, clock).ok() == Some(true) {
-                if let Some(counter) = self.pending_messages.get(&node_id) {
-                    counter.fetch_add(1, atomic::Ordering::Relaxed);
-                }
+            if send_with_timestamp(&channel, NodeEvent::Stop, clock).ok() == Some(true)
+                && let Some(counter) = self.pending_messages.get(&node_id)
+            {
+                counter.fetch_add(1, atomic::Ordering::Relaxed);
             }
         }
 
@@ -362,10 +362,10 @@ impl RunningDataflow {
                 tokio::time::sleep(duration).await;
 
                 for (node, proc) in &running_processes {
-                    if let Some(proc) = proc {
-                        if proc.submit(ProcessOperation::SoftKill) {
-                            grace_duration_kills.insert(node.clone());
-                        }
+                    if let Some(proc) = proc
+                        && proc.submit(ProcessOperation::SoftKill)
+                    {
+                        grace_duration_kills.insert(node.clone());
                     }
                 }
 
@@ -373,14 +373,14 @@ impl RunningDataflow {
                 tokio::time::sleep(kill_duration).await;
 
                 for (node, proc) in &running_processes {
-                    if let Some(proc) = proc {
-                        if proc.submit(ProcessOperation::Kill) {
-                            grace_duration_kills.insert(node.clone());
-                            warn!(
-                                "{node} was killed due to not stopping within the {:#?} grace period",
-                                duration + kill_duration
-                            );
-                        }
+                    if let Some(proc) = proc
+                        && proc.submit(ProcessOperation::Kill)
+                    {
+                        grace_duration_kills.insert(node.clone());
+                        warn!(
+                            "{node} was killed due to not stopping within the {:#?} grace period",
+                            duration + kill_duration
+                        );
                     }
                 }
             });
@@ -461,12 +461,11 @@ impl RunningDataflow {
         grace_duration: Option<Duration>,
         default_grace: Duration,
     ) {
-        if let Some(channel) = self.subscribe_channels.get(node_id) {
-            if send_with_timestamp(channel, NodeEvent::Stop, clock).ok() == Some(true) {
-                if let Some(counter) = self.pending_messages.get(node_id) {
-                    counter.fetch_add(1, atomic::Ordering::Relaxed);
-                }
-            }
+        if let Some(channel) = self.subscribe_channels.get(node_id)
+            && send_with_timestamp(channel, NodeEvent::Stop, clock).ok() == Some(true)
+            && let Some(counter) = self.pending_messages.get(node_id)
+        {
+            counter.fetch_add(1, atomic::Ordering::Relaxed);
         }
 
         if let Some(proc) = process {

@@ -528,19 +528,18 @@ impl EventStream {
         if let Some(Event::Input {
             ref id, ref data, ..
         }) = event
+            && let Some(expected) = self.input_type_checks.remove(id)
         {
-            if let Some(expected) = self.input_type_checks.remove(id) {
-                let actual = data.data_type();
-                // Skip check for Null type (timer ticks, empty payloads)
-                // to avoid spurious warnings on annotated timer inputs.
-                if *actual != arrow_schema::DataType::Null && *actual != expected {
-                    tracing::warn!(
-                        input = %id,
-                        expected = ?expected,
-                        actual = ?actual,
-                        "input type mismatch on first message"
-                    );
-                }
+            let actual = data.data_type();
+            // Skip check for Null type (timer ticks, empty payloads)
+            // to avoid spurious warnings on annotated timer inputs.
+            if *actual != arrow_schema::DataType::Null && *actual != expected {
+                tracing::warn!(
+                    input = %id,
+                    expected = ?expected,
+                    actual = ?actual,
+                    "input type mismatch on first message"
+                );
             }
         }
 
@@ -828,17 +827,16 @@ impl Stream for EventStream {
         if let std::task::Poll::Ready(Some(Event::Input {
             ref id, ref data, ..
         })) = poll
+            && let Some(expected) = self.input_type_checks.remove(id)
         {
-            if let Some(expected) = self.input_type_checks.remove(id) {
-                let actual = data.data_type();
-                if *actual != arrow_schema::DataType::Null && *actual != expected {
-                    tracing::warn!(
-                        input = %id,
-                        expected = ?expected,
-                        actual = ?actual,
-                        "input type mismatch on first message (Stream path)"
-                    );
-                }
+            let actual = data.data_type();
+            if *actual != arrow_schema::DataType::Null && *actual != expected {
+                tracing::warn!(
+                    input = %id,
+                    expected = ?expected,
+                    actual = ?actual,
+                    "input type mismatch on first message (Stream path)"
+                );
             }
         }
 
@@ -866,13 +864,13 @@ impl Drop for EventStream {
             tracing::warn!("{err:?}")
         }
 
-        if let Some(write_events_to) = self.write_events_to.take() {
-            if let Err(err) = write_events_to.write_out() {
-                tracing::warn!(
-                    "failed to write out events for node {}: {err:?}",
-                    self.node_id
-                );
-            }
+        if let Some(write_events_to) = self.write_events_to.take()
+            && let Err(err) = write_events_to.write_out()
+        {
+            tracing::warn!(
+                "failed to write out events for node {}: {err:?}",
+                self.node_id
+            );
         }
     }
 }

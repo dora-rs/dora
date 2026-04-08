@@ -332,12 +332,11 @@ async fn session_loop(ws_stream: WsStream, mut cmd_rx: mpsc::UnboundedReceiver<S
                         };
 
                         if let Some(event_name) = &frame.event {
-                            if event_name == "log" {
-                                if let Some(payload) = &frame.payload {
+                            if event_name == "log"
+                                && let Some(payload) = &frame.payload {
                                     let bytes = payload.get().as_bytes().to_vec();
                                     log_subscribers.retain(|tx| tx.send(Ok(bytes.clone())).is_ok());
                                 }
-                            }
                         } else if let Some(id) = frame.id {
                             handle_response(
                                 id,
@@ -362,11 +361,10 @@ async fn session_loop(ws_stream: WsStream, mut cmd_rx: mpsc::UnboundedReceiver<S
                         };
                         let sub_id = Uuid::from_bytes(sub_id_bytes);
                         let payload = data[16..].to_vec();
-                        if let Some(tx) = topic_subscribers.get(&sub_id) {
-                            if tx.send(Ok(payload)).is_err() {
+                        if let Some(tx) = topic_subscribers.get(&sub_id)
+                            && tx.send(Ok(payload)).is_err() {
                                 topic_subscribers.remove(&sub_id);
                             }
-                        }
                     }
                     Ok(Message::Close(_)) => break,
                     Ok(Message::Ping(data)) => {

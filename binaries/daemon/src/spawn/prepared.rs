@@ -223,11 +223,11 @@ impl PreparedNode {
             // Check restart limits before committing to restart
             let restart = if restart {
                 // Reset window if expired
-                if let Some(window) = config.restart_window {
-                    if window_start.elapsed() > window {
-                        window_count = 0;
-                        window_start = tokio::time::Instant::now();
-                    }
+                if let Some(window) = config.restart_window
+                    && window_start.elapsed() > window
+                {
+                    window_count = 0;
+                    window_start = tokio::time::Instant::now();
                 }
                 window_count += 1;
 
@@ -735,10 +735,10 @@ impl PreparedNode {
                 };
 
                 // Apply min_log_level filter
-                if let Some(min_level) = &min_log_level {
-                    if !log_message.level.passes(min_level) {
-                        continue;
-                    }
+                if let Some(min_level) = &min_log_level
+                    && !log_message.level.passes(min_level)
+                {
+                    continue;
                 }
 
                 // Broadcast to adora/logs subscribers (try_send to avoid
@@ -761,30 +761,29 @@ impl PreparedNode {
                 // Route structured logs via send_logs_as
                 if let (Some(logs_output_name), Some(daemon_tx)) =
                     (&send_logs_to, &daemon_tx_logs_as)
+                    && let Ok(json) = serde_json::to_string(&log_message)
                 {
-                    if let Ok(json) = serde_json::to_string(&log_message) {
-                        let array = json.as_str().into_arrow();
-                        let array: ArrayData = array.into();
-                        let total_len = required_data_size(&array);
-                        let mut sample: AVec<u8, ConstAlign<128>> =
-                            AVec::__from_elem(128, 0, total_len);
-                        let type_info = copy_array_into_sample(&mut sample, &array);
-                        let metadata = Metadata::new(uhlc.new_timestamp(), type_info);
-                        let output_id =
-                            OutputId(node_id.clone(), DataId::from(logs_output_name.to_string()));
-                        let event = AdoraEvent::Logs {
-                            dataflow_id,
-                            output_id,
-                            metadata,
-                            message: DataMessage::Vec(sample),
-                        }
-                        .into();
-                        let event = Timestamped {
-                            inner: event,
-                            timestamp: uhlc.new_timestamp(),
-                        };
-                        let _ = daemon_tx.try_send(event);
+                    let array = json.as_str().into_arrow();
+                    let array: ArrayData = array.into();
+                    let total_len = required_data_size(&array);
+                    let mut sample: AVec<u8, ConstAlign<128>> =
+                        AVec::__from_elem(128, 0, total_len);
+                    let type_info = copy_array_into_sample(&mut sample, &array);
+                    let metadata = Metadata::new(uhlc.new_timestamp(), type_info);
+                    let output_id =
+                        OutputId(node_id.clone(), DataId::from(logs_output_name.to_string()));
+                    let event = AdoraEvent::Logs {
+                        dataflow_id,
+                        output_id,
+                        metadata,
+                        message: DataMessage::Vec(sample),
                     }
+                    .into();
+                    let event = Timestamped {
+                        inner: event,
+                        timestamp: uhlc.new_timestamp(),
+                    };
+                    let _ = daemon_tx.try_send(event);
                 }
 
                 // Write JSONL to log file
@@ -828,49 +827,43 @@ impl PreparedNode {
                 }
 
                 // Rotate if max_log_size exceeded
-                if let Some(max_size) = max_log_size {
-                    if bytes_written >= max_size {
-                        // Flush and drop the current file handle
-                        let _ = file.flush().await;
-                        drop(file);
-                        if let Err(err) = log::rotate_log_files(
-                            &working_dir_c,
-                            &dataflow_id,
-                            &node_id,
-                            max_rotated_files,
-                        ) {
+                if let Some(max_size) = max_log_size
+                    && bytes_written >= max_size
+                {
+                    // Flush and drop the current file handle
+                    let _ = file.flush().await;
+                    drop(file);
+                    if let Err(err) = log::rotate_log_files(
+                        &working_dir_c,
+                        &dataflow_id,
+                        &node_id,
+                        max_rotated_files,
+                    ) {
+                        logger_c
+                            .log(
+                                LogLevel::Error,
+                                Some("daemon".into()),
+                                format!("Could not rotate log files: {err}"),
+                            )
+                            .await;
+                    }
+                    // Create a fresh log file
+                    file = match File::create(log::log_path(&working_dir_c, &dataflow_id, &node_id))
+                        .await
+                    {
+                        Ok(f) => f,
+                        Err(err) => {
                             logger_c
                                 .log(
                                     LogLevel::Error,
                                     Some("daemon".into()),
-                                    format!("Could not rotate log files: {err}"),
+                                    format!("Could not create new log file after rotation: {err}"),
                                 )
                                 .await;
+                            break;
                         }
-                        // Create a fresh log file
-                        file = match File::create(log::log_path(
-                            &working_dir_c,
-                            &dataflow_id,
-                            &node_id,
-                        ))
-                        .await
-                        {
-                            Ok(f) => f,
-                            Err(err) => {
-                                logger_c
-                                    .log(
-                                        LogLevel::Error,
-                                        Some("daemon".into()),
-                                        format!(
-                                            "Could not create new log file after rotation: {err}"
-                                        ),
-                                    )
-                                    .await;
-                                break;
-                            }
-                        };
-                        bytes_written = 0;
-                    }
+                    };
+                    bytes_written = 0;
                 }
 
                 // Forward to channel/coordinator for live display

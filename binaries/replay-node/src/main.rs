@@ -34,13 +34,13 @@ fn main() -> eyre::Result<()> {
             }
 
             // Sleep to maintain timing
-            if speed > 0.0 {
-                if let Some(prev) = prev_offset {
-                    let delta_nanos = entry.timestamp_offset_nanos.saturating_sub(prev);
-                    let sleep_nanos = (delta_nanos as f64 / speed) as u64;
-                    if sleep_nanos > 0 {
-                        thread::sleep(Duration::from_nanos(sleep_nanos));
-                    }
+            if speed > 0.0
+                && let Some(prev) = prev_offset
+            {
+                let delta_nanos = entry.timestamp_offset_nanos.saturating_sub(prev);
+                let sleep_nanos = (delta_nanos as f64 / speed) as u64;
+                if sleep_nanos > 0 {
+                    thread::sleep(Duration::from_nanos(sleep_nanos));
                 }
             }
             prev_offset = Some(entry.timestamp_offset_nanos);

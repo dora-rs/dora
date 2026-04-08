@@ -64,14 +64,14 @@ impl serde::Serialize for SequenceSerializeWrapper<'_> {
             )));
         };
         // Enforce BoundedSequence max_size
-        if let Some(max) = self.max_size {
-            if entry.len() > max {
-                return Err(error(format!(
-                    "sequence length {} exceeds BoundedSequence max_size {}",
-                    entry.len(),
-                    max
-                )));
-            }
+        if let Some(max) = self.max_size
+            && entry.len() > max
+        {
+            return Err(error(format!(
+                "sequence length {} exceeds BoundedSequence max_size {}",
+                entry.len(),
+                max
+            )));
         }
         match &self.item_type {
             NestableType::BasicType(t) => match t {

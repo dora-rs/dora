@@ -44,7 +44,7 @@ fn main() -> Result<()> {
                     .wrap_err("failed to write to log file")?;
 
                 count += 1;
-                if count % 100 == 0 {
+                if count.is_multiple_of(100) {
                     writer.flush().wrap_err("failed to flush log file")?;
                 }
             }

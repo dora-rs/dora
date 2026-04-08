@@ -76,10 +76,10 @@ impl DescriptorExt for Descriptor {
             // adjust ROS2 bridge input mappings early (before node_kind borrows node)
             if node.ros2.is_some() {
                 for input in node.inputs.values_mut() {
-                    if let InputMapping::User(m) = &mut input.mapping {
-                        if let Some(op_name) = single_operator_nodes.get(&m.source).copied() {
-                            m.output = DataId::from(format!("{op_name}/{}", m.output));
-                        }
+                    if let InputMapping::User(m) = &mut input.mapping
+                        && let Some(op_name) = single_operator_nodes.get(&m.source).copied()
+                    {
+                        m.output = DataId::from(format!("{op_name}/{}", m.output));
                     }
                 }
             }

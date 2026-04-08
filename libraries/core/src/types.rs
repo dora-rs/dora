@@ -179,10 +179,10 @@ pub fn types_match(a: &str, b: &str) -> bool {
     }
     // Both have params — all shared keys must agree
     for (k, va) in &pa.params {
-        if let Some(vb) = pb.params.get(k) {
-            if va != vb {
-                return false;
-            }
+        if let Some(vb) = pb.params.get(k)
+            && va != vb
+        {
+            return false;
         }
     }
     true
@@ -276,10 +276,10 @@ impl CompatibilityGraph {
                 (Some(fp), Some(tp)) if !fp.is_empty() && !tp.is_empty() => {
                     // Both have params — all shared keys must agree
                     for (k, va) in fp {
-                        if let Some(vb) = tp.get(k) {
-                            if va != vb {
-                                return false;
-                            }
+                        if let Some(vb) = tp.get(k)
+                            && va != vb
+                        {
+                            return false;
                         }
                     }
                 }
@@ -440,10 +440,10 @@ impl TypeRegistry {
             return Some(def);
         }
         // Try stripping parameters
-        if let Some(parsed) = parse_urn(urn) {
-            if parsed.base != urn {
-                return self.types.get(&parsed.base);
-            }
+        if let Some(parsed) = parse_urn(urn)
+            && parsed.base != urn
+        {
+            return self.types.get(&parsed.base);
         }
         None
     }

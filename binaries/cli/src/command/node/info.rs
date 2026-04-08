@@ -225,10 +225,11 @@ fn build_output_info(
             let mut subscribers = Vec::new();
             for other_node in &descriptor.nodes {
                 for (input_id, input) in &other_node.inputs {
-                    if let InputMapping::User(user) = &input.mapping {
-                        if user.source == node_desc.id && user.output == *output_id {
-                            subscribers.push(format!("{}/{}", other_node.id, input_id));
-                        }
+                    if let InputMapping::User(user) = &input.mapping
+                        && user.source == node_desc.id
+                        && user.output == *output_id
+                    {
+                        subscribers.push(format!("{}/{}", other_node.id, input_id));
                     }
                 }
             }

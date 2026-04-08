@@ -247,23 +247,22 @@ fn visualize_user_mapping(
             }
             CoreNodeKind::Runtime(RuntimeNode { operators, .. }) => {
                 let (operator_id, output) = output.split_once('/').unwrap_or(("", output));
-                if let Some(operator) = operators.iter().find(|o| o.id.as_ref() == operator_id) {
-                    if operator.config.outputs.contains(output) {
-                        let type_label = operator
-                            .config
-                            .output_types
-                            .get(&DataId::from(output.to_owned()))
-                            .map(|t| format_type_label(t))
-                            .unwrap_or_default();
-                        let data = if output == input_id.as_str() {
-                            format!("{output}{type_label}")
-                        } else {
-                            format!("{output} as {input_id}{type_label}")
-                        };
-                        writeln!(flowchart, "  {source}/{operator_id} -- {data} --> {target}")
-                            .unwrap();
-                        source_found = true;
-                    }
+                if let Some(operator) = operators.iter().find(|o| o.id.as_ref() == operator_id)
+                    && operator.config.outputs.contains(output)
+                {
+                    let type_label = operator
+                        .config
+                        .output_types
+                        .get(&DataId::from(output.to_owned()))
+                        .map(|t| format_type_label(t))
+                        .unwrap_or_default();
+                    let data = if output == input_id.as_str() {
+                        format!("{output}{type_label}")
+                    } else {
+                        format!("{output} as {input_id}{type_label}")
+                    };
+                    writeln!(flowchart, "  {source}/{operator_id} -- {data} --> {target}").unwrap();
+                    source_found = true;
                 }
             }
         }

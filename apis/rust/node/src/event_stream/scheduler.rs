@@ -132,15 +132,13 @@ impl Scheduler {
         };
 
         // Flush older queued messages when flush=true is present
-        if should_flush {
-            if let Some((_size, queue)) = self.event_queues.get_mut(event_id) {
-                let drained = queue.len();
-                queue.clear();
-                if drained > 0 {
-                    tracing::debug!(
-                        "Flushed {drained} queued event(s) for input `{event_id}` (flush signal)"
-                    );
-                }
+        if should_flush && let Some((_size, queue)) = self.event_queues.get_mut(event_id) {
+            let drained = queue.len();
+            queue.clear();
+            if drained > 0 {
+                tracing::debug!(
+                    "Flushed {drained} queued event(s) for input `{event_id}` (flush signal)"
+                );
             }
         }
 
@@ -183,21 +181,20 @@ impl Scheduler {
         if let Some((_size, queue)) = self
             .event_queues
             .get_mut(&DataId::from(NON_INPUT_EVENT.to_string()))
+            && let Some(event) = queue.pop_front()
         {
-            if let Some(event) = queue.pop_front() {
-                return Some(event);
-            }
+            return Some(event);
         }
 
         // Process the ID with the oldest timestamp using BTreeMap Ordering
         for (index, id) in self.last_used.clone().iter().enumerate() {
-            if let Some((_size, queue)) = self.event_queues.get_mut(id) {
-                if let Some(event) = queue.pop_front() {
-                    // Put last used at last
-                    self.last_used.remove(index);
-                    self.last_used.push_back(id.clone());
-                    return Some(event);
-                }
+            if let Some((_size, queue)) = self.event_queues.get_mut(id)
+                && let Some(event) = queue.pop_front()
+            {
+                // Put last used at last
+                self.last_used.remove(index);
+                self.last_used.push_back(id.clone());
+                return Some(event);
             }
         }
 

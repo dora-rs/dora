@@ -175,13 +175,13 @@ where
     fn on_record(&self, id: &Id, values: &tracing::span::Record<'_>, ctx: Context<'_, S>) {
         if let Some(span) = ctx.span(id) {
             let mut ext = span.extensions_mut();
-            if let Some(data) = ext.get_mut::<SpanData>() {
-                if data.fields.len() < MAX_FIELDS_PER_SPAN {
-                    let mut visitor = FieldVisitor(Vec::new());
-                    values.record(&mut visitor);
-                    let remaining = MAX_FIELDS_PER_SPAN.saturating_sub(data.fields.len());
-                    data.fields.extend(visitor.0.into_iter().take(remaining));
-                }
+            if let Some(data) = ext.get_mut::<SpanData>()
+                && data.fields.len() < MAX_FIELDS_PER_SPAN
+            {
+                let mut visitor = FieldVisitor(Vec::new());
+                values.record(&mut visitor);
+                let remaining = MAX_FIELDS_PER_SPAN.saturating_sub(data.fields.len());
+                data.fields.extend(visitor.0.into_iter().take(remaining));
             }
         }
     }

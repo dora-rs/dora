@@ -26,12 +26,12 @@ pub fn fetch_commit_hash(repo_url: String, rev: Option<GitRepoRev>) -> eyre::Res
         }
     }
 
-    if commit_hash.is_none() {
-        if let Some(GitRepoRev::Rev(rev)) = &rev {
-            // rev might be a commit hash instead of a reference
-            if rev.is_ascii() && rev.bytes().all(|b| b.is_ascii_alphanumeric()) {
-                commit_hash = Some(rev.clone());
-            }
+    if commit_hash.is_none()
+        && let Some(GitRepoRev::Rev(rev)) = &rev
+    {
+        // rev might be a commit hash instead of a reference
+        if rev.is_ascii() && rev.bytes().all(|b| b.is_ascii_alphanumeric()) {
+            commit_hash = Some(rev.clone());
         }
     }
 

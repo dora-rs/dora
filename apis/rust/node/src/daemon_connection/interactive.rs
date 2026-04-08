@@ -209,7 +209,7 @@ fn decode_hex_as_uint8_array(hex: &str) -> eyre::Result<arrow::array::ArrayData>
     eyre::ensure!(!hex.is_empty(), "HEX: input is empty");
     eyre::ensure!(hex.is_ascii(), "HEX: input contains non-ASCII characters");
     eyre::ensure!(
-        hex.len() % 2 == 0,
+        hex.len().is_multiple_of(2),
         "HEX: odd number of characters ({}), hex bytes must come in pairs",
         hex.len()
     );

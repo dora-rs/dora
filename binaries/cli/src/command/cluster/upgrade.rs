@@ -95,14 +95,13 @@ impl Executable for Upgrade {
             let mut reconnected = false;
             while Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(500));
-                if let Ok(connected) = query_connected_daemons(&session) {
-                    if connected
+                if let Ok(connected) = query_connected_daemons(&session)
+                    && connected
                         .iter()
                         .any(|d| d.daemon_id.matches_machine_id(&machine.id))
-                    {
-                        reconnected = true;
-                        break;
-                    }
+                {
+                    reconnected = true;
+                    break;
                 }
             }
 

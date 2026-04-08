@@ -434,10 +434,10 @@ async fn collect_and_send_metrics_bg(
     }
 
     // Return the refreshed System to the shared mutex for reuse.
-    if let Some(sys) = refreshed_system {
-        if let Ok(mut guard) = metrics_system.lock() {
-            *guard = sys;
-        }
+    if let Some(sys) = refreshed_system
+        && let Ok(mut guard) = metrics_system.lock()
+    {
+        *guard = sys;
     }
 
     Ok(())
@@ -839,10 +839,10 @@ impl Daemon {
                 },
                 timestamp: self.clock.new_timestamp(),
             };
-            if let Ok(bytes) = serde_json::to_vec(&stamped) {
-                if let Err(err) = sender.send_event(&bytes).await {
-                    tracing::warn!("failed to send status report to coordinator: {err}");
-                }
+            if let Ok(bytes) = serde_json::to_vec(&stamped)
+                && let Err(err) = sender.send_event(&bytes).await
+            {
+                tracing::warn!("failed to send status report to coordinator: {err}");
             }
         }
 
@@ -1605,10 +1605,10 @@ impl Daemon {
                 tracing::info!(%dataflow_id, "{source_node}/{source_output} -x- {target_node}/{target_input}");
                 if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
                     let output_id = OutputId(source_node, source_output);
-                    if let Some(receivers) = dataflow.mappings.get_mut(&output_id) {
-                        if receivers.remove(&(target_node.clone(), target_input.clone())) {
-                            close_input(dataflow, &target_node, &target_input, &self.clock);
-                        }
+                    if let Some(receivers) = dataflow.mappings.get_mut(&output_id)
+                        && receivers.remove(&(target_node.clone(), target_input.clone()))
+                    {
+                        close_input(dataflow, &target_node, &target_input, &self.clock);
                     }
                 }
                 let _ = reply_tx.send(None);
@@ -1631,38 +1631,38 @@ impl Daemon {
                             key,
                             value,
                         } => {
-                            if let Some(dataflow) = self.running.get(&dataflow_id) {
-                                if let Some(channel) = dataflow.subscribe_channels.get(node_id) {
-                                    match send_with_timestamp(
-                                        channel,
-                                        NodeEvent::ParamUpdate {
-                                            key: key.clone(),
-                                            value: value.clone(),
-                                        },
-                                        &self.clock,
-                                    ) {
-                                        Ok(true) => dataflow.inc_pending(node_id),
-                                        Ok(false) => {} // dropped (channel full)
-                                        Err(_) => tracing::warn!(
-                                            "catch-up: node `{node_id}` channel closed"
-                                        ),
+                            if let Some(dataflow) = self.running.get(&dataflow_id)
+                                && let Some(channel) = dataflow.subscribe_channels.get(node_id)
+                            {
+                                match send_with_timestamp(
+                                    channel,
+                                    NodeEvent::ParamUpdate {
+                                        key: key.clone(),
+                                        value: value.clone(),
+                                    },
+                                    &self.clock,
+                                ) {
+                                    Ok(true) => dataflow.inc_pending(node_id),
+                                    Ok(false) => {} // dropped (channel full)
+                                    Err(_) => {
+                                        tracing::warn!("catch-up: node `{node_id}` channel closed")
                                     }
                                 }
                             }
                         }
                         StateCatchUpOperation::DeleteParam { node_id, key } => {
-                            if let Some(dataflow) = self.running.get(&dataflow_id) {
-                                if let Some(channel) = dataflow.subscribe_channels.get(node_id) {
-                                    match send_with_timestamp(
-                                        channel,
-                                        NodeEvent::ParamDeleted { key: key.clone() },
-                                        &self.clock,
-                                    ) {
-                                        Ok(true) => dataflow.inc_pending(node_id),
-                                        Ok(false) => {}
-                                        Err(_) => tracing::warn!(
-                                            "catch-up: node `{node_id}` channel closed"
-                                        ),
+                            if let Some(dataflow) = self.running.get(&dataflow_id)
+                                && let Some(channel) = dataflow.subscribe_channels.get(node_id)
+                            {
+                                match send_with_timestamp(
+                                    channel,
+                                    NodeEvent::ParamDeleted { key: key.clone() },
+                                    &self.clock,
+                                ) {
+                                    Ok(true) => dataflow.inc_pending(node_id),
+                                    Ok(false) => {}
+                                    Err(_) => {
+                                        tracing::warn!("catch-up: node `{node_id}` channel closed")
                                     }
                                 }
                             }
@@ -1670,26 +1670,24 @@ impl Daemon {
                     }
                 }
                 // Send ack back to coordinator so it can prune the log.
-                if max_seq > 0 {
-                    if let Some(sender) = &self.coordinator_sender {
-                        let ack = DaemonEvent::StateCatchUpAck {
-                            dataflow_id,
-                            ack_sequence: max_seq,
-                        };
-                        let stamped = Timestamped {
-                            inner: CoordinatorRequest::Event {
-                                daemon_id: self.daemon_id.clone(),
-                                event: ack,
-                            },
-                            timestamp: self.clock.new_timestamp(),
-                        };
-                        if let Ok(bytes) = serde_json::to_vec(&stamped) {
-                            if let Err(err) = sender.send_event(&bytes).await {
-                                tracing::warn!(
-                                    "failed to send state catch-up ack to coordinator: {err}"
-                                );
-                            }
-                        }
+                if max_seq > 0
+                    && let Some(sender) = &self.coordinator_sender
+                {
+                    let ack = DaemonEvent::StateCatchUpAck {
+                        dataflow_id,
+                        ack_sequence: max_seq,
+                    };
+                    let stamped = Timestamped {
+                        inner: CoordinatorRequest::Event {
+                            daemon_id: self.daemon_id.clone(),
+                            event: ack,
+                        },
+                        timestamp: self.clock.new_timestamp(),
+                    };
+                    if let Ok(bytes) = serde_json::to_vec(&stamped)
+                        && let Err(err) = sender.send_event(&bytes).await
+                    {
+                        tracing::warn!("failed to send state catch-up ack to coordinator: {err}");
                     }
                 }
                 let _ = reply_tx.send(None);
@@ -2039,15 +2037,15 @@ impl Daemon {
 
         let build_info = build_id.and_then(|build_id| self.builds.get(&build_id));
         let node_with_git_source = nodes.values().find(|n| n.has_git_source());
-        if let Some(git_node) = node_with_git_source {
-            if build_info.is_none() {
-                eyre::bail!(
-                    "node {} has git source, but no `adora build` was run yet\n\n\
+        if let Some(git_node) = node_with_git_source
+            && build_info.is_none()
+        {
+            eyre::bail!(
+                "node {} has git source, but no `adora build` was run yet\n\n\
                     nodes with a `git` field must be built using `adora build` before starting the \
                     dataflow",
-                    git_node.id
-                )
-            }
+                git_node.id
+            )
         }
         let node_working_dirs = build_info
             .map(|info| info.node_working_dirs.clone())
@@ -3177,16 +3175,16 @@ impl Daemon {
                 let mut closed = Vec::new();
                 for sub in &dataflow.log_subscribers {
                     // Apply level filter
-                    if let Some(min_level) = &sub.filter.min_level {
-                        if !log_message.level.passes(min_level) {
-                            continue;
-                        }
+                    if let Some(min_level) = &sub.filter.min_level
+                        && !log_message.level.passes(min_level)
+                    {
+                        continue;
                     }
                     // Apply node filter
-                    if let Some(node_filter) = &sub.filter.node_filter {
-                        if log_message.node_id.as_ref() != Some(node_filter) {
-                            continue;
-                        }
+                    if let Some(node_filter) = &sub.filter.node_filter
+                        && log_message.node_id.as_ref() != Some(node_filter)
+                    {
+                        continue;
                     }
                     // Don't deliver logs to the subscriber itself (avoid loops)
                     if log_message.node_id.as_ref() == Some(&sub.node_id) {
@@ -3742,10 +3740,10 @@ fn break_input(
     input_id: &DataId,
     clock: &HLC,
 ) {
-    if let Some(open_inputs) = dataflow.open_inputs.get_mut(receiver_id) {
-        if !open_inputs.remove(input_id) {
-            return;
-        }
+    if let Some(open_inputs) = dataflow.open_inputs.get_mut(receiver_id)
+        && !open_inputs.remove(input_id)
+    {
+        return;
     }
     if let Some(channel) = dataflow.subscribe_channels.get(receiver_id) {
         if send_with_timestamp(

@@ -155,14 +155,14 @@ impl TypedValue<'_> {
                             check_single_element(string_array.len(), "LargeStringArray")?;
                             string_array.value(0)
                         };
-                        if let GenericString::BoundedString(max) = t {
-                            if string.len() > *max {
-                                return Err(error(format!(
-                                    "string length {} exceeds BoundedString max {}",
-                                    string.len(),
-                                    max
-                                )));
-                            }
+                        if let GenericString::BoundedString(max) = t
+                            && string.len() > *max
+                        {
+                            return Err(error(format!(
+                                "string length {} exceeds BoundedString max {}",
+                                string.len(),
+                                max
+                            )));
                         }
                         s.serialize_field(string)?;
                     }
