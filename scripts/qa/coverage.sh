@@ -27,6 +27,11 @@ EXCLUDES=(
   --exclude adora-ros2-bridge-python
   --exclude adora-cli-api-python
   --exclude adora-examples
+  # C++ bindings: their build.rs fails under llvm-cov instrumentation
+  # (safer_ffi header generation). Bindings are not logic, so low
+  # coverage value anyway.
+  --exclude adora-node-api-cxx
+  --exclude adora-operator-api-cxx
 )
 
 # Single invocation: runs tests, writes lcov.info, prints summary table.
