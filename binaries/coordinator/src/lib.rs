@@ -15,7 +15,7 @@ use dora_message::{
         CoordinatorControlResponse,
     },
     common::{DaemonId, NodeError, NodeErrorCause, NodeExitStatus},
-    coordinator_to_cli::{DataflowResult, LogMessage, StopDataflowReply},
+    coordinator_to_cli::{DataflowResult, StopDataflowReply},
     coordinator_to_daemon::{
         BuildDataflowNodes, DaemonControlClient, DaemonControlRequest, DaemonControlResponse,
         RegisterResult, Timestamped,
@@ -524,21 +524,6 @@ async fn start_inner(
     tracing::info!("stopped");
 
     Ok(())
-}
-
-pub(crate) async fn send_log_message(
-    log_subscribers: &mut Vec<LogSubscriber>,
-    message: &LogMessage,
-) {
-    for subscriber in log_subscribers.iter_mut() {
-        let send_result =
-            tokio::time::timeout(Duration::from_millis(100), subscriber.send_message(message));
-
-        if send_result.await.is_err() {
-            subscriber.close();
-        }
-    }
-    log_subscribers.retain(|s| !s.is_closed());
 }
 
 pub(crate) async fn handle_daemon_disconnect(
@@ -1309,8 +1294,6 @@ mod tests {
                 node_metrics: BTreeMap::new(),
                 spawn_result: CachedResult::default(),
                 stop_reply_senders: vec![stop_tx],
-                buffered_log_messages: Vec::new(),
-                log_subscribers: Vec::new(),
                 pending_spawn_results: [daemon_id.clone()].into_iter().collect(),
             },
         );
