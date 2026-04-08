@@ -5,6 +5,13 @@
 # Fails if count exceeds the baseline in .unwrap-budget.
 # Reductions are reported but not auto-applied; commit a smaller budget
 # in the same PR if you reduce.
+#
+# KNOWN LIMITATION: this script excludes `tests/` directories and
+# `examples/`, but it does NOT exclude `#[cfg(test)] mod tests {}` blocks
+# inline in source files. Adding test-only unwraps to a source file will
+# inflate the count and require a budget bump even though no production
+# code changed. Fix queued: parse with syn/ast-grep to count only
+# non-test scopes. See follow-up tracking.
 
 set -euo pipefail
 

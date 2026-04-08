@@ -37,6 +37,7 @@ libc = "0.2"
 [dev-dependencies]
 tempfile = { workspace = true }
 criterion = { version = "0.5", features = ["html_reports"] }
+proptest = "1.5"
 
 [[bench]]
 name = "message_serde"
