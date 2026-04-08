@@ -183,6 +183,10 @@ jobs:
     needs: test
     # Non-blocking: report only, do not fail the gate yet.
     continue-on-error: true
+    env:
+      # Diff coverage gate: enforce 70% on touched lines on PRs.
+      # Soft target; raise to 80% once the codebase catches up.
+      DIFF_COVERAGE_FAIL_UNDER: ${{ github.event_name == 'pull_request' && '70' || '0' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -195,7 +199,9 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-llvm-cov
-      - name: Generate coverage
+      - name: Install diff-cover
+        run: pip install diff-cover
+      - name: Generate coverage + diff gate
         run: make qa-coverage
       - name: Post summary
         if: always()
