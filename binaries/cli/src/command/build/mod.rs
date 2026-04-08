@@ -255,7 +255,7 @@ pub async fn build_async(
             )
             .await?;
 
-            dataflow_session.git_sources = git_sources;
+            dataflow_session.git_sources = git_sources.clone();
             dataflow_session.build_id = Some(build_id);
             dataflow_session.local_build = None;
             dataflow_session
