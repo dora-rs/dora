@@ -1921,4 +1921,187 @@ nodes:
             "expected error about missing output, got: {err}"
         );
     }
+
+    // --- Focused unit tests for parse_byte_size and parse_log_level ---
+    //
+    // Added 2026-04-08 to close the biggest mutation-score gap in
+    // adora-core: 14 escaped mutants in parse_byte_size and 6 in
+    // parse_log_level (20 of the 91 missed mutants in validate.rs).
+    // See docs/qa-baseline-2026-04-07.md.
+    //
+    // These tests exercise every match arm and every boundary case by
+    // construction, so any mutation that deletes an arm, flips a
+    // comparison, or changes a multiplier is caught.
+
+    // parse_byte_size: every unit produces the exact byte count ----
+
+    #[test]
+    fn parse_byte_size_bare_number() {
+        assert_eq!(parse_byte_size("0").unwrap(), 0);
+        assert_eq!(parse_byte_size("1").unwrap(), 1);
+        assert_eq!(parse_byte_size("100").unwrap(), 100);
+        assert_eq!(parse_byte_size("1000000").unwrap(), 1_000_000);
+    }
+
+    #[test]
+    fn parse_byte_size_bytes_unit() {
+        assert_eq!(parse_byte_size("0B").unwrap(), 0);
+        assert_eq!(parse_byte_size("1B").unwrap(), 1);
+        assert_eq!(parse_byte_size("42B").unwrap(), 42);
+        // case insensitive
+        assert_eq!(parse_byte_size("42b").unwrap(), 42);
+    }
+
+    #[test]
+    fn parse_byte_size_kilobyte_units() {
+        assert_eq!(parse_byte_size("1KB").unwrap(), 1024);
+        assert_eq!(parse_byte_size("1K").unwrap(), 1024);
+        assert_eq!(parse_byte_size("2KB").unwrap(), 2048);
+        assert_eq!(parse_byte_size("4K").unwrap(), 4096);
+        // case insensitive
+        assert_eq!(parse_byte_size("1kb").unwrap(), 1024);
+        assert_eq!(parse_byte_size("1k").unwrap(), 1024);
+    }
+
+    #[test]
+    fn parse_byte_size_megabyte_units() {
+        assert_eq!(parse_byte_size("1MB").unwrap(), 1024 * 1024);
+        assert_eq!(parse_byte_size("1M").unwrap(), 1024 * 1024);
+        assert_eq!(parse_byte_size("10MB").unwrap(), 10 * 1024 * 1024);
+        // distinct from KB: pins the multiplier ratio
+        assert_eq!(
+            parse_byte_size("1MB").unwrap(),
+            1024 * parse_byte_size("1KB").unwrap()
+        );
+    }
+
+    #[test]
+    fn parse_byte_size_gigabyte_units() {
+        assert_eq!(parse_byte_size("1GB").unwrap(), 1024 * 1024 * 1024);
+        assert_eq!(parse_byte_size("1G").unwrap(), 1024 * 1024 * 1024);
+        // distinct from MB: pins the multiplier ratio
+        assert_eq!(
+            parse_byte_size("1GB").unwrap(),
+            1024 * parse_byte_size("1MB").unwrap()
+        );
+    }
+
+    #[test]
+    fn parse_byte_size_all_units_are_distinct() {
+        // Pins each unit's multiplier to catch mutations that swap arms
+        // (e.g., KB → MB would make "1KB" and "1MB" equal).
+        let b = parse_byte_size("1B").unwrap();
+        let kb = parse_byte_size("1KB").unwrap();
+        let mb = parse_byte_size("1MB").unwrap();
+        let gb = parse_byte_size("1GB").unwrap();
+        assert_eq!(b, 1);
+        assert_eq!(kb, 1024);
+        assert_eq!(mb, 1024 * kb);
+        assert_eq!(gb, 1024 * mb);
+        // And strict ordering
+        assert!(b < kb);
+        assert!(kb < mb);
+        assert!(mb < gb);
+    }
+
+    #[test]
+    fn parse_byte_size_float_path() {
+        // When the integer parse fails, fall back to float.
+        assert_eq!(parse_byte_size("1.5KB").unwrap(), 1536);
+        assert_eq!(parse_byte_size("0.5MB").unwrap(), 512 * 1024);
+        assert_eq!(parse_byte_size("2.25KB").unwrap(), 2304);
+    }
+
+    #[test]
+    fn parse_byte_size_whitespace_tolerated() {
+        assert_eq!(parse_byte_size(" 1KB ").unwrap(), 1024);
+        assert_eq!(parse_byte_size("1 KB").unwrap(), 1024);
+        assert_eq!(parse_byte_size("  1  KB  ").unwrap(), 1024);
+    }
+
+    #[test]
+    fn parse_byte_size_rejects_unknown_unit() {
+        assert!(parse_byte_size("1TB").is_err());
+        assert!(parse_byte_size("1XB").is_err());
+        assert!(parse_byte_size("1foo").is_err());
+    }
+
+    #[test]
+    fn parse_byte_size_rejects_invalid_number() {
+        assert!(parse_byte_size("abc").is_err());
+        assert!(parse_byte_size("abcKB").is_err());
+        assert!(parse_byte_size("1.2.3KB").is_err());
+    }
+
+    // parse_log_level: every level variant ----
+
+    #[test]
+    fn parse_log_level_all_levels() {
+        use adora_message::common::LogLevelOrStdout;
+
+        assert!(matches!(
+            parse_log_level("error").unwrap(),
+            LogLevelOrStdout::LogLevel(log::Level::Error)
+        ));
+        assert!(matches!(
+            parse_log_level("warn").unwrap(),
+            LogLevelOrStdout::LogLevel(log::Level::Warn)
+        ));
+        assert!(matches!(
+            parse_log_level("info").unwrap(),
+            LogLevelOrStdout::LogLevel(log::Level::Info)
+        ));
+        assert!(matches!(
+            parse_log_level("debug").unwrap(),
+            LogLevelOrStdout::LogLevel(log::Level::Debug)
+        ));
+        assert!(matches!(
+            parse_log_level("trace").unwrap(),
+            LogLevelOrStdout::LogLevel(log::Level::Trace)
+        ));
+        assert!(matches!(
+            parse_log_level("stdout").unwrap(),
+            LogLevelOrStdout::Stdout
+        ));
+    }
+
+    #[test]
+    fn parse_log_level_case_insensitive() {
+        use adora_message::common::LogLevelOrStdout;
+
+        for variant in ["ERROR", "Error", "error", "ErRoR"] {
+            assert!(matches!(
+                parse_log_level(variant).unwrap(),
+                LogLevelOrStdout::LogLevel(log::Level::Error)
+            ));
+        }
+        for variant in ["STDOUT", "Stdout", "stdout"] {
+            assert!(matches!(
+                parse_log_level(variant).unwrap(),
+                LogLevelOrStdout::Stdout
+            ));
+        }
+    }
+
+    #[test]
+    fn parse_log_level_rejects_unknown() {
+        assert!(parse_log_level("").is_err());
+        assert!(parse_log_level("INVALID").is_err());
+        assert!(parse_log_level("fatal").is_err());
+        assert!(parse_log_level("log").is_err());
+    }
+
+    #[test]
+    fn parse_log_level_error_message_lists_options() {
+        let err = parse_log_level("bogus").unwrap_err().to_string();
+        // The error message should name at least the valid options so
+        // users can fix typos. Pinning this so the fmt::Display impl
+        // used in the bail! macro stays informative.
+        for expected in ["error", "warn", "info", "debug", "trace", "stdout"] {
+            assert!(
+                err.contains(expected),
+                "expected '{expected}' to be mentioned in error, got: {err}"
+            );
+        }
+    }
 }
