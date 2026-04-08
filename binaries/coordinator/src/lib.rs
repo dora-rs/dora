@@ -14,8 +14,8 @@ use dora_message::{
         BuildRequest, CoordinatorControl, CoordinatorControlClient, CoordinatorControlRequest,
         CoordinatorControlResponse,
     },
-    common::DaemonId,
-    coordinator_to_cli::{DataflowResult, StopDataflowReply},
+    common::{DaemonId, NodeError, NodeErrorCause, NodeExitStatus},
+    coordinator_to_cli::{DataflowResult, LogMessage, StopDataflowReply},
     coordinator_to_daemon::{
         BuildDataflowNodes, DaemonControlClient, DaemonControlRequest, DaemonControlResponse,
         RegisterResult, Timestamped,
@@ -501,7 +501,7 @@ async fn start_inner(
                     tracing::error!("Disconnecting daemons that failed watchdog: {disconnected:?}");
                     for machine_id in disconnected {
                         coordinator_state.daemon_connections.remove(&machine_id);
-                        handle_daemon_disconnect(&coordinator_state, &machine_id);
+                        handle_daemon_disconnect(&coordinator_state, &machine_id).await;
                     }
                 }
             }
@@ -541,11 +541,11 @@ pub(crate) async fn send_log_message(
     log_subscribers.retain(|s| !s.is_closed());
 }
 
-pub(crate) fn handle_daemon_disconnect(
+pub(crate) async fn handle_daemon_disconnect(
     coordinator_state: &state::CoordinatorState,
     daemon_id: &DaemonId,
 ) {
-    let mut dataflows_to_finalize = Vec::new();
+    let mut affected_dataflows = Vec::new();
     for mut dataflow in coordinator_state.running_dataflows.iter_mut() {
         let removed = dataflow.daemons.remove(daemon_id);
         if !removed {
@@ -560,12 +560,68 @@ pub(crate) fn handle_daemon_disconnect(
             dataflow.uuid
         );
 
-        if dataflow.daemons.is_empty() {
-            dataflows_to_finalize.push(dataflow.uuid);
-        }
+        let error = eyre!(
+            "daemon `{daemon_id}` disconnected while dataflow `{}` was active",
+            dataflow.uuid
+        );
+        dataflow.spawn_result.set_result(Err(error));
+
+        let failed_nodes: BTreeMap<NodeId, Result<(), NodeError>> = dataflow
+            .node_to_daemon
+            .iter()
+            .filter(|(_, assigned_daemon)| *assigned_daemon == daemon_id)
+            .map(|(node_id, _)| {
+                let node_error = NodeError {
+                    timestamp: coordinator_state.clock.new_timestamp(),
+                    cause: NodeErrorCause::Other {
+                        stderr: format!("daemon `{daemon_id}` disconnected"),
+                    },
+                    exit_status: NodeExitStatus::Unknown,
+                };
+                (node_id.clone(), Err(node_error))
+            })
+            .collect();
+        coordinator_state
+            .dataflow_results
+            .entry(dataflow.uuid)
+            .or_default()
+            .insert(
+                daemon_id.clone(),
+                DataflowDaemonResult {
+                    timestamp: coordinator_state.clock.new_timestamp(),
+                    node_results: failed_nodes,
+                },
+            );
+
+        let remaining_daemons = dataflow.daemons.iter().cloned().collect::<Vec<_>>();
+        affected_dataflows.push((dataflow.uuid, remaining_daemons));
     }
 
-    for dataflow_id in dataflows_to_finalize {
+    for (dataflow_id, remaining_daemons) in affected_dataflows {
+        for remaining_daemon in remaining_daemons {
+            let Some(connection) = coordinator_state.daemon_connections.get(&remaining_daemon)
+            else {
+                tracing::warn!(
+                    "failed to stop dataflow `{dataflow_id}` on daemon `{remaining_daemon}` after disconnect: no daemon connection"
+                );
+                continue;
+            };
+            let client = connection.client.clone();
+            drop(connection);
+            match client
+                .stop_dataflow(tarpc::context::current(), dataflow_id, None, false)
+                .await
+            {
+                Err(err) => tracing::warn!(
+                    "failed to stop dataflow `{dataflow_id}` on daemon `{remaining_daemon}` after disconnect: {err}"
+                ),
+                Ok(Err(err)) => tracing::warn!(
+                    "daemon `{remaining_daemon}` reported stop_dataflow error for `{dataflow_id}` after disconnect: {err}"
+                ),
+                Ok(Ok(())) => {}
+            }
+        }
+
         let Some((_, mut finished_dataflow)) =
             coordinator_state.running_dataflows.remove(&dataflow_id)
         else {
@@ -592,9 +648,7 @@ pub(crate) fn handle_daemon_disconnect(
             let _ = sender.send(Ok(reply.clone()));
         }
 
-        tracing::warn!(
-            "finalized dataflow `{dataflow_id}` after daemon disconnect because no daemons remained"
-        );
+        tracing::warn!("failed active dataflow `{dataflow_id}` after daemon disconnect");
     }
 }
 pub(crate) fn dataflow_result(
@@ -1220,10 +1274,11 @@ mod tests {
         }
     }
 
-    #[test]
-    fn daemon_disconnect_removes_daemon_and_finalizes_dataflow_when_last_daemon_drops() {
+    #[tokio::test]
+    async fn daemon_disconnect_fails_dataflow_when_last_daemon_drops() {
         let daemon_id = dora_message::common::DaemonId::new(Some("machine-1".into()));
         let dataflow_id = Uuid::new_v4();
+        let node_id = dora_core::config::NodeId::from("node-a".to_owned());
 
         let (abort_handle, _registration) = futures::stream::AbortHandle::new_pair();
         let (daemon_events_tx, _daemon_events_rx) = mpsc::channel(1);
@@ -1250,7 +1305,7 @@ mod tests {
                 pending_daemons: [daemon_id.clone()].into_iter().collect(),
                 exited_before_subscribe: Vec::new(),
                 nodes: BTreeMap::new(),
-                node_to_daemon: BTreeMap::new(),
+                node_to_daemon: BTreeMap::from([(node_id.clone(), daemon_id.clone())]),
                 node_metrics: BTreeMap::new(),
                 spawn_result: CachedResult::default(),
                 stop_reply_senders: vec![stop_tx],
@@ -1260,7 +1315,7 @@ mod tests {
             },
         );
 
-        handle_daemon_disconnect(&coordinator_state, &daemon_id);
+        handle_daemon_disconnect(&coordinator_state, &daemon_id).await;
 
         assert!(
             coordinator_state
@@ -1278,14 +1333,14 @@ mod tests {
         );
 
         let stop_reply = stop_rx
-            .blocking_recv()
+            .await
             .expect("stop waiter should be resolved")
             .expect("stop waiter should get success reply");
         assert_eq!(stop_reply.uuid, dataflow_id);
         assert_eq!(stop_reply.result.uuid, dataflow_id);
         assert!(
-            stop_reply.result.node_results.is_empty(),
-            "finalized dataflow without daemon results should be empty"
+            !stop_reply.result.node_results.is_empty(),
+            "daemon disconnect should mark at least one node as failed"
         );
     }
 }

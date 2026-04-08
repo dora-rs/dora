@@ -236,7 +236,7 @@ impl CoordinatorNotify for CoordinatorNotifyServer {
         self.coordinator_state
             .daemon_connections
             .remove(&self.daemon_id);
-        handle_daemon_disconnect(&self.coordinator_state, &self.daemon_id);
+        handle_daemon_disconnect(&self.coordinator_state, &self.daemon_id).await;
     }
 
     async fn node_metrics(
