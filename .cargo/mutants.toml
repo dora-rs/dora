@@ -7,6 +7,23 @@
 # DO NOT ADD untested code to this skip list. The goal is to drive the
 # mutation score up by improving tests, not to hide gaps.
 
+# Run ALL workspace tests for every mutation, not just the tests in the
+# mutated package. This is required for binary crates (adora-daemon,
+# adora-coordinator) whose real test coverage comes from workspace-level
+# E2E tests in `tests/` (ws-cli-e2e, fault-tolerance-e2e, example-smoke)
+# that belong to the `adora-examples` package.
+#
+# Experimental verification 2026-04-08 (commit b878e50 follow-up):
+# fault_tolerance.rs under the daemon went from 21 missed / 0 caught
+# (package-scoped) to 21 caught / 0 missed (workspace-scoped). The
+# original 5.8% daemon mutation score was almost entirely an artifact
+# of cargo-mutants' default scoping behavior, not a real test gap.
+#
+# Cost: roughly 10-40 seconds per mutation depending on which tests
+# are triggered. A full daemon re-run with this config takes ~5 hours.
+# Budget accordingly.
+test_workspace = true
+
 # ---- Equivalent mutants (documented) ----
 #
 # libraries/core/src/types.rs:177:29  replace || with && in types_match
