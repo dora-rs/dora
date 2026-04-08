@@ -41,3 +41,5 @@ syn = { version = "2", features = ["full", "visit"], optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# Direct arrow-buffer access for unit tests of metadata.rs unsafe paths.
+arrow-buffer = "58"

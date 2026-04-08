@@ -157,6 +157,7 @@ name = "adora-core"
 version = "0.2.1"
 dependencies = [
  "adora-message",
+ "arrow-buffer",
  "arrow-schema",
  "dunce",
  "eyre",
