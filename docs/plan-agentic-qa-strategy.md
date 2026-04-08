@@ -950,6 +950,124 @@ If the mutation score or coverage starts dropping while velocity rises, the veri
 
 ---
 
+## 10a. POC findings and lessons learned (2026-04-08)
+
+The first POC pass wired up Tier 1 and part of Tier 2 in a single working session. This section records what happened, what was found, and what it taught us about the plan itself. Corrections to the rest of this document should flow from this section.
+
+### 10a.1 Case studies: findings by gate
+
+Six findings across the QA stack, in commit order:
+
+| # | Finding | Gate that caught it | Severity |
+|---|---|---|---|
+| 1 | `time 0.3.45` DoS (RUSTSEC-2026-0009) | `cargo-audit` | Medium 6.8 — fixed by upgrade |
+| 2 | `lru 0.12.5` unsoundness (RUSTSEC-2026-0002) | `cargo-audit` | Latent UB — fixed by ratatui 0.30 upgrade |
+| 3 | `types_match` tautological tests in `adora-core` | `cargo-mutants` | Low — 2 of 3 missed mutants fixed, 1 equivalent mutant documented |
+| 4 | `.cargo/mutants.toml` regex pinned to specific line | Adversarial LLM review (claude) | Low — silently breaks if unrelated edits shift code |
+| 5 | `WsResponse { result: Some(Value::Null) }` serde asymmetry | Property testing (proptest, first 12 cases) | Low — documented as intentional invariant with regression test |
+| 6 | **`metadata::from_array` double off-by-one in region bounds** | **Reading the code while writing miri tests** | **High — rejects valid Arrow buffers at region start / empty buffers at region end** |
+
+**Commits:**
+- `333cddb` — security fixes (1, 2)
+- `98c6639` — types_match case study (3)
+- `3ff3785` — mutants.toml regex fix (4)
+- `28c99b3` — ws_protocol property tests + Some(Null) invariant (5)
+- `d12e6b8` — metadata::from_array off-by-one fix + miri-runnable tests (6)
+
+### 10a.2 Hierarchy of what each gate actually catches
+
+Based on the six findings above, here is the distinct signal each gate produced that no other gate would have:
+
+| Gate | Uniquely caught in the POC | Caught by other gates too |
+|---|---|---|
+| Coverage | Nothing uniquely | Established baseline for prioritization |
+| `cargo-audit` + `cargo-deny` | Transitive CVEs (2/6 findings) | — |
+| Mutation testing | Tautological tests in tested code | — |
+| Property testing | `Some(Value::Null)` asymmetry (1/6, would not be caught by any other gate) | Would have caught the f64 edge case too, but that was a proptest-scoping issue not a real bug |
+| Adversarial LLM review | Config file fragility (1/6, would not be caught by any other gate) | — |
+| **Writing miri-runnable tests** | **Off-by-one in unsafe code path (1/6, highest severity)** | — |
+| Miri (the actual tool) | **Nothing in this POC** — either couldn't run (shared-memory-server) or passed cleanly (metadata.rs) | — |
+| Semver check | Nothing | Baseline established |
+
+**Four of six findings (#3, #4, #5, #6) would have been missed by every gate that existed in adora prior to this POC.** That is the core validation of the agentic QA strategy: the new gates catch things the old gates couldn't.
+
+### 10a.3 Meta-finding: "infrastructure as forcing function"
+
+The single highest-severity bug (#6, `metadata::from_array` off-by-one) was **not** found by running a tool. It was found by **reading the code while preparing to use a tool**.
+
+Specifically: I sat down to run miri on `metadata.rs`'s unsafe pointer arithmetic. To do that I needed unit tests. While writing the unit tests, I read `from_array` carefully enough to spot the bug by eye. Miri then ran cleanly on the fix. The tool didn't catch the bug; the discipline of preparing the tool did.
+
+**Lesson for the strategy**: new gates are valuable even when they don't directly fire. They force close-reading of code that would otherwise never be close-read. This is an argument for a broader rollout, not a narrower one — because the "reading discipline" cost is per-gate-target, not per-gate-type.
+
+**Implication**: the section on Tier 2 miri targets should expand beyond "run miri" to "write the miri-required tests." The tests themselves are the most valuable output, miri runs are the gate.
+
+### 10a.4 Meta-finding: `shared-memory-server` is a critical QA blind spot
+
+**Corrects Section 6.3 of this doc**, which recommended running miri on `shared-memory-server`.
+
+Miri cannot run `shared-memory-server` tests. Every test in that crate calls `ShmemConf::create` which invokes libc's `shm_open`, and miri's foreign function support does not cover POSIX shared memory syscalls on any platform.
+
+This matters because:
+
+1. `shared-memory-server` contains **30 unsafe blocks** — the single largest concentration of `unsafe` in the workspace.
+2. It handles **every local node↔daemon message** (the 4 control channels per node plus dynamic data regions for messages ≥ 4KB).
+3. The 2026-03-21 audit found 3 memory-safety issues in exactly this area (shmem OOB read, unsound `Sync` impl, ARM data race). Those were caught by manual audit, not automated tools.
+4. None of our current tooling covers it:
+   - Miri: can't run (FFI)
+   - Property testing: no pure-Rust entry points to target
+   - Fuzzing: same reason
+   - Coverage: only covered by integration tests that spin up real shmem
+   - Mutation testing: would mutate unsafe code but tests take 60+ seconds each (real shmem lifecycle)
+
+**Options** (none chosen yet, this is for discussion):
+
+- **Option A:** Refactor `shared-memory-server` to have a pure-Rust core (all pointer arithmetic) and a libc wrapper (shm_open/mmap). The pure-Rust core gets miri + proptest + fuzz; the wrapper is thin. Moderate work.
+- **Option B:** Adopt Zenoh's native shared memory feature (see `plan-zenoh-shared-memory.md` — upstream dora already did this in `dora-rs/dora#1378`). Deletes 660 lines and ~11 unsafe blocks from `channel.rs`, removes the pinned `raw_sync_2 =0.1.5` fork dep, aligns with upstream. **This is also the right thing to do as part of the dora 1.0 consolidation.**
+- **Option C:** Add a mock-shmem backend conditionally compiled for miri targets. Complex, maintenance burden.
+
+**Recommendation: Option B, sequenced as part of dora 1.0 consolidation.** Fold the zenoh-SHM migration into the consolidation merge. The 30 unsafe blocks stop being an adora problem because they stop being code. See `plan-dora-1.0-consolidation.md` for the amendment.
+
+### 10a.5 Meta-finding: proptest strategies need scope discipline
+
+The `ws_protocol` property tests initially failed on two things:
+
+1. **f64 precision near the edge** — arbitrary `f64` values like `-5.78e+120` lose 1 ULP through the JSON Number roundtrip. Not an adora bug, a JSON limitation. The proptest strategy was too broad; it was testing a property of JSON itself, not a property of adora's serialization.
+
+2. **`Some(Value::Null)` asymmetry** — a real bug in adora that the broad strategy uncovered.
+
+**Lesson**: broad proptest strategies find a mix of real bugs and "properties of the underlying platform." Triaging which is which is a skill. The first reaction to a proptest failure should be:
+- Reproduce manually
+- Ask "is this a property of my code, or a property of what my code depends on?"
+- If the latter: constrain the strategy, document why
+- If the former: it's a real finding, fix or document as invariant
+
+**Action item for the doc**: Section 6.1 (property-based testing) should add a paragraph on "scope discipline" — writing strategies that test *your* invariants, not the platform's.
+
+### 10a.6 Meta-finding: the unwrap-budget script has a false-positive mode
+
+The `scripts/qa/unwrap-budget.sh` script counts `.unwrap()` inside `#[cfg(test)] mod tests {}` blocks that live inline in source files (as opposed to the `tests/` directory, which is correctly excluded). During the POC the budget bumped 622 → 638 → 643 from adding test-code unwraps — no production code changed.
+
+**Current state**: documented as a KNOWN LIMITATION in the script header.
+
+**Proper fix queued**: parse Rust with `syn` or `ast-grep` to count only non-test scopes. Moderate effort.
+
+### 10a.7 Amendments to this document
+
+Based on the POC, the following sections of this doc should be updated:
+
+| Section | Amendment |
+|---|---|
+| 5.2 Mutation testing | Add: "Initial runs typically find 60-70% missed mutations. Triage into real test gaps (most), tautological tests (some), and equivalent mutants (few, 3-10%). Document equivalent mutants with explicit `exclude_re` entries — see `.cargo/mutants.toml` for the pattern." |
+| 5.2 Mutation testing | Add: "`exclude_re` regexes should match on the mutation name only, never pin to line:column numbers — fragility lesson from commit `3ff3785`." |
+| 6.1 Property-based testing | Add: "Scope discipline is critical. Constrain strategies to inputs that test *your* invariants, not properties of the underlying serialization format. f64 values near precision limits do not round-trip exactly through JSON; filter them out of strategies that test serde roundtrips." |
+| 6.3 Miri | **Replace** the "miri on `shared-memory-server`" recommendation with: "`shared-memory-server` is not miri-runnable (FFI dependency). Target `metadata.rs`, `arrow-convert`, and any other pure-Rust crate with unsafe blocks instead. Prepare the miri rollout by first writing focused unit tests for each unsafe function — this step has historically caught more bugs than miri itself." |
+| 6.3 Miri | Add: "Preferred long-term solution for shared-memory-server coverage: adopt Zenoh SHM (see `plan-zenoh-shared-memory.md`). This is sequenced into the dora 1.0 consolidation." |
+| 8 POC plan | Add actual POC results section after this plan is fully executed. |
+
+These amendments are **to-do** and should be applied in a follow-up commit.
+
+---
+
 ## 11. Metrics and KPIs
 
 ### 11.1 PR-level (agent feedback loop)

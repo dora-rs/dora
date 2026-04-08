@@ -344,6 +344,43 @@ Iterate until all four are green.
 
 **Gate:** dora 1.0 tree contains a strict union of adora and dora test coverage; verification loop still passes.
 
+### Phase 3b: Adopt Zenoh shared memory (2-3 days)
+
+**Added 2026-04-08 after the Q1 POC on adora exposed `shared-memory-server` as a QA blind spot.** See `plan-agentic-qa-strategy.md` section 10a.4 and `plan-zenoh-shared-memory.md`.
+
+**Rationale.** Adora's `libraries/shared-memory-server` crate has 30 `unsafe` blocks handling every local node↔daemon message (4 control channels per node + data regions ≥ 4KB). It is the largest concentration of unsafe code in the workspace and cannot be analyzed by miri (FFI), property testing (no pure-Rust entry points), or fuzzing. Upstream dora already migrated to Zenoh's native SHM in `dora-rs/dora#1378`, which deletes ~660 lines of DropToken lifecycle code, removes ~11 unsafe blocks from `channel.rs`, gives 35% lower latency on messages ≥ 64B and 3-10× throughput on messages ≥ 2KB, and removes the pinned `raw_sync_2 =0.1.5` fork dependency.
+
+**Doing this as part of the consolidation, not before or after, is the right sequencing:**
+- **Before the consolidation**: migration would touch code that is about to be replaced — wasted work, double-tested.
+- **After the consolidation**: the 30 unsafe blocks ship in dora 1.0 under the dora brand, inheriting the QA gap adora already has.
+- **During the consolidation**: the migration naturally aligns adora's tree with upstream dora, removes code that was never going to be QA-covered, and closes the miri gap by removing the uncoverable code entirely. The consolidation is already editing these files, so the churn is already paid for.
+
+**Tasks:**
+1. **Port `dora-rs/dora#1378`** into the `v1.0-rewrite` branch. This is the source code change adora has been queueing.
+2. **Delete** `apis/rust/node/src/node/drop_stream.rs`, `DropToken` types in `libraries/message/src/common.rs`, `pending_drop_tokens` and `check_drop_token` in daemon, and the 4 blocking shmem threads per node.
+3. **Rewrite** `apis/rust/node/src/node/mod.rs` to add a zenoh session + `ShmProvider` to `DoraNode`.
+4. **Update** `send_output` to publish via zenoh when data ≥ threshold.
+5. **Update** `apis/rust/node/src/event_stream/data_conversion.rs` to add `RawData::ZenohShm(ZShm)`.
+6. **Update** `libraries/core/src/topics.rs` with zenoh topic helpers.
+7. **Add** recording support by copying `ZShm` data at the record-node level (the PR skips this; we must restore it because adora has `.adorec` support that upstream doesn't).
+8. **Keep the 4KB threshold** for small messages — they continue via the existing TCP control path (per `plan-zenoh-shared-memory.md` recommendation).
+9. **Handle memlock gracefully** with a fallback + warning for `dora run` local dev.
+10. **Pre-warm the zenoh session** during node init to avoid the 16× first-message latency spike.
+
+**Dependencies to remove during this phase:**
+- `shared_memory_extended` (niche, low maintenance)
+- `raw_sync_2 =0.1.5` (exact-version pin on a custom fork)
+
+**Dependencies to verify:**
+- `zenoh` must stay pinned to `~1.8` (already done in adora)
+- `zenoh`'s `shared-memory` + `unstable` features must be enabled
+
+**Gate:** `cargo test --all --exclude <python>` passes on the rewrite branch; benchmark regression shows p50 latency improved vs dora 0.x; the `shared-memory-server` crate is either deleted or reduced to <5 unsafe blocks; migration guide documents the breaking change for custom node implementations whose data path consumed `Option<Arc<DataMessage>>`.
+
+**Risk:** zenoh's SHM API is marked `unstable`. It has been stable since zenoh 0.10 (2023) but could change in zenoh 2.0. Mitigation: pinned to `~1.8`, monitor zenoh releases during the 1.0 post-release period.
+
+**Follow-up (post-1.0, possibly 1.1):** Phase 3 of `plan-zenoh-shared-memory.md` — migrate the 4 control channels to zenoh as well. This fully deletes `shared-memory-server` and eliminates all custom shmem code from the workspace.
+
 ### Phase 4: Compat layer (2 days)
 
 **Tasks:**
@@ -420,6 +457,9 @@ Iterate until all four are green.
 | R-12 | Blog post gets dunked on for "AI rewrote it and broke my stuff" | Medium | Medium | Honest framing; lead with test/verification story not velocity story |
 | R-13 | Legacy 0.x branch rots and users on 0.x stop getting security fixes | High (over 6+ months) | Medium | Define explicit EOL date in the migration guide; give 6 months notice |
 | R-14 | Merge commit confuses `git blame` or breaks third-party tooling | Low | Low | Documented in README; `--first-parent` works |
+| R-15 | Zenoh SHM migration (Phase 3b) regresses latency on small messages | Medium | Medium | Keep 4KB threshold; messages below it continue via existing TCP path; benchmark regression gate blocks release if p99 drops |
+| R-16 | Zenoh SHM `unstable` API breaks in a future zenoh release | Low (6-12 months) | Medium | Pin to `~1.8`; monitor zenoh releases; CI nightly rebuild against zenoh's main branch as early-warning |
+| R-17 | Zenoh SHM recording (`.adorec`) support not finished before release | Medium | High | Phase 3b explicitly includes recording support via a ZShm → Vec<u8> copy at record-node level; gate the release on `examples/validated-pipeline` recording end-to-end test passing |
 
 ---
 
@@ -491,6 +531,19 @@ These are the decisions that cannot be made unilaterally. Each needs explicit re
 **Recommendation:** D-5a, with strong emphasis on the verification layer (Q1 testing plan). "We rewrote dora with agents and here is how we verified it's safe to ship" is a more honest and interesting narrative than hiding the process. The Q1 plan is the proof.
 
 **Decision owner:** heyong4725 + marketing/community lead
+
+### D-7: Zenoh SHM migration scope and timing
+
+**Context:** Added 2026-04-08 after the Q1 POC on adora exposed `shared-memory-server` as the largest concentration of unsafe code in the workspace (30 blocks) and a QA blind spot (can't be analyzed by miri, proptest, or fuzz because tests call libc's `shm_open`). Upstream dora already adopted Zenoh SHM in `dora-rs/dora#1378`. Phase 3b of this plan proposes folding the migration into the consolidation merge.
+
+**Options:**
+- **D-7a:** Do it in Phase 3b as currently written. Deletes ~660 lines, removes ~11 unsafe blocks, eliminates `raw_sync_2` pinned fork dep, aligns with upstream. Adds 2-3 days to the critical path.
+- **D-7b:** Defer to dora 1.1. Consolidation ships with the current shared-memory-server; zenoh migration happens as a follow-up. Shorter 1.0 critical path; 1.0 ships with the known QA gap.
+- **D-7c:** Partial: migrate the data plane in Phase 3b (Phase 1 of `plan-zenoh-shared-memory.md`) but keep the 4 control channels on custom shmem until 1.1. This is roughly what upstream dora did.
+
+**Recommendation:** D-7c. Full migration is ~2-3 days more work than partial, and the control channels are relatively stable. D-7a risks scope creep; D-7b ships the QA gap under the dora brand.
+
+**Decision owner:** maintainers (phil-opp, haixuanTao) + heyong4725
 
 ### D-6: Archive or maintain adora repo
 
@@ -569,11 +622,12 @@ These are questions this plan cannot answer without maintainer input or investig
 | 1 | Mechanical merge | 1 day | Phase 0 complete |
 | 2 | Rename pass | 2-3 days | Phase 1 green |
 | 3 | Test and example union | 3-5 days | Phase 2 green |
-| 4 | Compat layer | 2 days | Phase 3 green |
+| 3b | Zenoh SHM migration (data plane, D-7c) | 2-3 days | Phase 3 green |
+| 4 | Compat layer | 2 days | Phase 3b green |
 | 5 | Release | 2 days | Phase 4 green + dogfood evidence |
 | 6 | Post-release support | 6 weeks (ongoing) | Phase 5 complete |
 
-**Critical path:** ~4 weeks from Phase -1 kickoff to 1.0 tag, assuming no blockers in governance or protocol audit.
+**Critical path:** ~4-5 weeks from Phase -1 kickoff to 1.0 tag, assuming no blockers in governance or protocol audit. Phase 3b adds 2-3 days vs. the original estimate.
 
 **Parallel tracks during Phases 1-4:**
 - Dogfood campaign (1 week of real-workload running)

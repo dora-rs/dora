@@ -335,20 +335,53 @@ To regenerate just the coverage numbers in this file:
 
 ## Next steps
 
-In priority order per [`plan-agentic-qa-strategy.md`](plan-agentic-qa-strategy.md):
+**Update 2026-04-08**: Tier 1 is now fully wired (local + CI), plus T2.1 (property tests on `adora-message`) and T2.3 (miri on `adora-core::metadata`). The remaining work in priority order:
 
-1. **T1.2 Mutation testing** — install `cargo-mutants`, run on
-   `adora-core` first, establish initial mutation score baseline, triage
-   escaped mutants, commit `mutants.toml` skip list.
-2. **T1.6 SemVer check** — run `cargo-semver-checks` on the publishable
-   crates to see current breakage state vs last published version.
-3. **T1.4 Adversarial LLM review** — wire `scripts/qa/adversarial.sh`
-   calling Claude API with the prompt template from
-   `plan-agentic-qa-strategy.md` Appendix C.
-4. **Coverage diff gate** — install `diff-cover`, wire the 80%-on-touched
-   rule, add as a CI-only gate (local runs skip it).
-5. **CI integration** — add the QA jobs to `.github/workflows/ci.yml`
-   calling the same `make qa-*` targets used locally.
+1. **Audit remaining `unsafe` code for bugs similar to `metadata::from_array`** (~1-2 hrs) — the metadata.rs find suggests other unsafe boundaries may have similar issues. Focus on pure-Rust unsafe in `libraries/core`, `libraries/coordinator-store`, `libraries/message`, `apis/rust/node`.
+2. **`validate.rs` test improvements** (1-2 days) — biggest mutation score gain available (91 missed mutants at 67% coverage).
+3. **Dogfood campaign** (1 week background) — needed for any future 1.0 release claim.
+4. **Diff coverage gate** (~30 min) — `diff-cover` integration for the 80%-on-touched rule.
+5. **T2.4 Fault injection expansion** (~1 day) — add the 4 chaos scenarios in the QA plan's Section 6.4.
+6. **T2.2 cargo-fuzz on `ws_protocol`** (~1-2 hrs) — extends from the proptest work.
+
+**Strategic follow-up (not immediate):**
+- Adopt Zenoh shared memory to close the `shared-memory-server` QA blind spot (30 unsafe blocks, miri-uncoverable). Sequenced into the dora 1.0 consolidation as Phase 3b — see `plan-dora-1.0-consolidation.md#phase-3b`.
+
+---
+
+## POC case studies (2026-04-08 update)
+
+The first full POC pass produced six distinct findings. Summary table:
+
+| # | Finding | Caught by | Severity | Commit |
+|---|---|---|---|---|
+| 1 | `time 0.3.45` DoS (RUSTSEC-2026-0009) | `cargo-audit` | Medium 6.8 | `333cddb` |
+| 2 | `lru 0.12.5` unsoundness (RUSTSEC-2026-0002) | `cargo-audit` | Latent UB | `333cddb` |
+| 3 | `types_match` tautological tests | `cargo-mutants` | Low | `98c6639` |
+| 4 | `.cargo/mutants.toml` regex pinned to line:col | Adversarial LLM review | Low | `3ff3785` |
+| 5 | `WsResponse { Some(Null) }` serde asymmetry | Property testing | Low | `28c99b3` |
+| 6 | **`metadata::from_array` double off-by-one** | **Reading code while writing miri tests** | **High** | `d12e6b8` |
+
+**4 of 6 findings** would have been missed by every gate that existed in adora prior to this POC session. See [`plan-agentic-qa-strategy.md`](plan-agentic-qa-strategy.md) Section 10a for the full analysis and lessons learned, including:
+- Miri/FFI limitation (shared-memory-server is not miri-runnable)
+- "Infrastructure as forcing function" meta-finding
+- Proptest scope discipline
+- Unwrap budget script false-positive mode
+
+### Updated metric snapshots
+
+| Metric | Initial (2026-04-07) | After POC (2026-04-08) | Delta |
+|---|---|---|---|
+| Line coverage (adora-core) | 33.85% | — (unchanged, pending re-run) | — |
+| Mutation score (adora-core) | 37.2% | 37.8% | +0.6pp (2 mutants caught) |
+| Mutation score (adora-message) | — | 38.1% | (new baseline) |
+| Unwrap count | 622 | 643 | +21 (test-code only; script limitation) |
+| `cargo-audit` real findings | 2 (1 DoS + 1 unsoundness) | 0 | both fixed |
+| Open audit critical issues | per 2026-03-21 report | pending re-check | TBD |
+| Tier 1 gates wired | 0 | 6 of 6 | fmt, clippy, test, audit, unwrap, coverage (soft), semver (soft) |
+| Tier 2 gates with baselines | 0 | 2 of 4 | proptest (ws_protocol), miri (metadata) — fuzz/fault injection pending |
+| Adversarial review setup | no | yes (local-only, CI pending API secret) | |
+| Case studies with fixes landed | 0 | 6 | |
 
 ---
 
@@ -357,3 +390,4 @@ In priority order per [`plan-agentic-qa-strategy.md`](plan-agentic-qa-strategy.m
 | Date | Commit | Change |
 |---|---|---|
 | 2026-04-07 | 333cddb | Initial baseline captured |
+| 2026-04-08 | d12e6b8 | Added 6 case studies from first POC session + updated next-steps |
