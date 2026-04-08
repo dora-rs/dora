@@ -96,7 +96,9 @@ impl NodeRegisterRequest {
         } else {
             Err(format!(
                 "version mismatch: message format v{} is not compatible \
-                with expected message format v{crate_version}",
+                with expected message format v{crate_version}. \
+                This usually means the daemon and node were built from different \
+                dora commits or versions. Rebuild both from the same checkout.",
                 self.dora_version
             ))
         }

@@ -2,6 +2,7 @@
 //!
 
 #![allow(clippy::missing_safety_doc)]
+#![warn(missing_docs)]
 
 /// The version of the dora-message crate
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -9,21 +10,33 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub use tarpc;
 pub use uhlc;
 
+/// Common message types and utilities
 pub mod common;
+/// Configuration structures for dataflow nodes and operators
 pub mod config;
+/// Message descriptor definitions for dataflow configuration
 pub mod descriptor;
+/// Node, operator, and data identifiers
 pub mod id;
+/// Message metadata structures
 pub mod metadata;
 
+/// Protocol messages from coordinator to daemon
 pub mod coordinator_to_daemon;
+/// Protocol messages from daemon to coordinator
 pub mod daemon_to_coordinator;
 
+/// Protocol messages between daemons
 pub mod daemon_to_daemon;
 
+/// Protocol messages from daemon to node
 pub mod daemon_to_node;
+/// Protocol messages from node to daemon
 pub mod node_to_daemon;
 
+/// Protocol messages from CLI to coordinator
 pub mod cli_to_coordinator;
+/// Protocol messages from coordinator to CLI
 pub mod coordinator_to_cli;
 
 pub mod integration_testing_format;

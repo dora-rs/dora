@@ -139,8 +139,18 @@ impl GitManager {
         repo_url: &Url,
         commit_hash: &String,
     ) -> eyre::Result<PathBuf> {
-        let mut path = base_dir.join(repo_url.host_str().context("git URL has no hostname")?);
-        path.extend(repo_url.path_segments().context("no path in git URL")?);
+        // For file:// URLs, use to_file_path() which correctly handles Windows drive letters
+        // (url.path() returns "/D:/..." on Windows which is an invalid path).
+        // For other URLs, use host + path segments joined under base_dir.
+        let path = if repo_url.scheme() == "file" {
+            repo_url
+                .to_file_path()
+                .map_err(|_| eyre::eyre!("failed to convert file URL to path: {repo_url}"))?
+        } else {
+            let mut path = base_dir.join(repo_url.host_str().context("git URL has no hostname")?);
+            path.extend(repo_url.path_segments().context("no path in git URL")?);
+            path
+        };
         let path = path.join(commit_hash);
         Ok(dunce::simplified(&path).to_owned())
     }

@@ -1,10 +1,4 @@
-"""LLM-based operator for dora-rs dataflow.
-
-This operator integrates Large Language Models (LLMs) to modify code,
-format messages as JSON, or act as a general assistant within a dora-rs
-robotic pipeline. It uses the Transformers library for model inference
-and supports several distinct prompting templates.
-"""
+"""LLM operator for code modification and assistant functionality."""
 
 import json
 import os
@@ -16,8 +10,29 @@ import pylcs
 from dora import DoraStatus
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-MODEL_NAME_OR_PATH = "TheBloke/deepseek-coder-6.7B-instruct-GPTQ"
-# MODEL_NAME_OR_PATH = "hanspeterlyngsoeraaschoujensen/deepseek-math-7b-instruct-GPTQ"
+# Check if GPTQ support is available
+try:
+    import auto_gptq  # noqa: F401
+
+    GPTQ_AVAILABLE = True
+except ImportError:
+    GPTQ_AVAILABLE = False
+    print(
+        "Warning: auto-gptq not installed. GPTQ models will not be available. "
+        "Install with: pip install optimum auto-gptq>=0.7.1"
+    )
+
+# Model configuration - set via environment variables or defaults
+# For GPTQ models, ensure optimum and auto-gptq are installed
+GPTQ_MODEL = "hanspeterlyngsoeraaschoujensen/deepseek-math-7b-instruct-GPTQ"
+FALLBACK_MODEL = "microsoft/DialoGPT-medium"  # Smaller fallback model
+
+# Use GPTQ model if available and supported, otherwise use fallback
+if GPTQ_AVAILABLE:
+    MODEL_NAME_OR_PATH = os.getenv("DORA_LLM_MODEL", GPTQ_MODEL)
+else:
+    MODEL_NAME_OR_PATH = os.getenv("DORA_LLM_MODEL", FALLBACK_MODEL)
+    print(f"Using fallback model: {MODEL_NAME_OR_PATH}")
 
 CODE_MODIFIER_TEMPLATE = """
 ### Instruction
@@ -60,12 +75,24 @@ User {user_message}
 """
 
 
+# Check for CUDA availability
+import torch
+
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+if DEVICE == "cpu":
+    print(
+        "Warning: CUDA not available. Running on CPU may be slow. "
+        "Consider using a smaller model."
+    )
+
 model = AutoModelForCausalLM.from_pretrained(
     MODEL_NAME_OR_PATH,
-    device_map="auto",
+    device_map="auto" if DEVICE == "cuda" else None,
     trust_remote_code=True,
     revision="main",
 )
+if DEVICE == "cpu":
+    model = model.to(DEVICE)
 
 
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME_OR_PATH, use_fast=True)
@@ -279,21 +306,13 @@ class Operator:
         return DoraStatus.CONTINUE
 
     def ask_llm(self, prompt):
+        """Generate LLM response for the given prompt."""
         # Generate output
-        # prompt = PROMPT_TEMPLATE.format(system_message=system_message, prompt=prompt))
-        """Generate a response from the LLM based on the provided prompt.
-
-        Args:
-            prompt (str): The input text to the model.
-
-        Returns:
-            str: The generated text from the model, skipping the initial prompt.
-        """
         input = tokenizer(prompt, return_tensors="pt")
-        input_ids = input.input_ids.cuda()
+        input_ids = input.input_ids.to(DEVICE)
 
         # add attention mask here
-        attention_mask = input["attention_mask"].cuda()
+        attention_mask = input["attention_mask"].to(DEVICE)
 
         output = model.generate(
             inputs=input_ids,

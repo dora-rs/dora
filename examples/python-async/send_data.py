@@ -1,15 +1,22 @@
-"""Asynchronous data sender example for dora-rs.
+"""Send data node for async dataflow example."""
 
-This script demonstrates how to send data from a Python node to a dora-rs
-dataflow. It sends a sequence of timestamps as 64-bit unsigned integers
-to an output named "data".
-"""
-
+import signal
+import sys
 import time
 
 import numpy as np
 import pyarrow as pa
 from dora import Node
+
+
+def handle_sigterm(signum, frame):
+    """Handle SIGTERM for graceful shutdown."""
+    print("Received SIGTERM, shutting down gracefully...")
+    sys.exit(0)
+
+
+# Register signal handler
+signal.signal(signal.SIGTERM, handle_sigterm)
 
 node = Node()
 

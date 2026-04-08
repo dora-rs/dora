@@ -28,8 +28,11 @@ nodes:
 
   ## Speech to text
   - id: keyboard
-    custom:
-      source: keyboard_op.py
+    operator:
+      python: keyboard_op.py
+      inputs:
+        tick: dora/timer/millis/50
+        recording: whisper/text
       outputs:
         - buffer
         - submitted
@@ -37,8 +40,6 @@ nodes:
         - ask
         - send
         - change
-      inputs:
-        recording: whisper/text
 
   - id: microphone
     operator:
