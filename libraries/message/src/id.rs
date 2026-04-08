@@ -55,8 +55,15 @@ impl FromStr for NodeId {
 
 /// # Panics
 ///
-/// Panics if `id` contains invalid characters. Prefer `id.parse::<NodeId>()`
-/// or `NodeId::try_from(s)` when handling untrusted input.
+/// Panics if `id` contains invalid characters (not in `[a-zA-Z0-9_.-]`).
+///
+/// **For untrusted input, use `id.parse::<NodeId>()`** which calls
+/// `FromStr::from_str` and returns `Result<Self, InvalidId>`.
+///
+/// Do NOT use `NodeId::try_from(s)`: `TryFrom<String>` is the
+/// auto-derived blanket impl that delegates to this `From` impl, so it
+/// panics exactly like `.into()`. Only `parse::<NodeId>()` / `from_str`
+/// is fallible.
 impl From<String> for NodeId {
     fn from(id: String) -> Self {
         if let Err(e) = validate_id(&id) {

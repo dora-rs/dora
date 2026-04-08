@@ -583,4 +583,382 @@ mod tests {
             }
         }
     }
+
+    // --- Focused tests for redb_store edge cases (added 2026-04-08) ---
+    //
+    // Added during the POC's follow-up case study on the persistence
+    // layer. 52 of 59 missed mutants in adora-coordinator-store were in
+    // this file. These tests cover boundary conditions, separator
+    // handling, and prefix-scan behavior that the basic CRUD tests
+    // did not exercise.
+
+    use crate::{MAX_PARAM_KEY_BYTES, MAX_PARAM_VALUE_BYTES};
+
+    /// Empty param KEY: currently allowed and stored under the prefix-only
+    /// marker. Pins the behavior. If this test fails because empty keys
+    /// start being rejected, update the doc on `put_node_param` and the
+    /// failure case in `list_node_params` to match.
+    #[test]
+    fn param_empty_key_is_accepted_and_round_trips() {
+        let (store, _dir) = temp_store();
+        let df = Uuid::new_v4();
+        let node: NodeId = "camera".to_string().into();
+
+        store.put_node_param(&df, &node, "", b"value").unwrap();
+        let got = store.get_node_param(&df, &node, "").unwrap();
+        assert_eq!(got, Some(b"value".to_vec()));
+
+        // list_node_params should also return it under key ""
+        let list = store.list_node_params(&df, &node).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].0, "");
+        assert_eq!(list[0].1, b"value");
+    }
+
+    /// Empty param VALUE: allowed (a common "unset" sentinel).
+    #[test]
+    fn param_empty_value_round_trips() {
+        let (store, _dir) = temp_store();
+        let df = Uuid::new_v4();
+        let node: NodeId = "n".to_string().into();
+        store.put_node_param(&df, &node, "k", b"").unwrap();
+        assert_eq!(store.get_node_param(&df, &node, "k").unwrap(), Some(vec![]));
+    }
+
+    /// Param key at exactly MAX_PARAM_KEY_BYTES is accepted; one byte
+    /// over is rejected. Pins the inclusive/exclusive boundary.
+    #[test]
+    fn param_key_length_boundary() {
+        let (store, _dir) = temp_store();
+        let df = Uuid::new_v4();
+        let node: NodeId = "n".to_string().into();
+
+        let max_key = "a".repeat(MAX_PARAM_KEY_BYTES);
+        store.put_node_param(&df, &node, &max_key, b"ok").unwrap();
+        assert_eq!(
+            store.get_node_param(&df, &node, &max_key).unwrap(),
+            Some(b"ok".to_vec())
+        );
+
+        let too_long = "a".repeat(MAX_PARAM_KEY_BYTES + 1);
+        let err = store
+            .put_node_param(&df, &node, &too_long, b"bad")
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("too long"),
+            "expected 'too long' error, got: {err}"
+        );
+    }
+
+    /// Param value at exactly MAX_PARAM_VALUE_BYTES is accepted; one byte
+    /// over is rejected. Pins the inclusive/exclusive boundary.
+    #[test]
+    fn param_value_length_boundary() {
+        let (store, _dir) = temp_store();
+        let df = Uuid::new_v4();
+        let node: NodeId = "n".to_string().into();
+
+        let max_val = vec![0u8; MAX_PARAM_VALUE_BYTES];
+        store.put_node_param(&df, &node, "k", &max_val).unwrap();
+        assert_eq!(
+            store
+                .get_node_param(&df, &node, "k")
+                .unwrap()
+                .map(|v| v.len()),
+            Some(MAX_PARAM_VALUE_BYTES)
+        );
+
+        let too_large = vec![0u8; MAX_PARAM_VALUE_BYTES + 1];
+        let err = store
+            .put_node_param(&df, &node, "k2", &too_large)
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("too large"),
+            "expected 'too large' error, got: {err}"
+        );
+    }
+
+    /// Null-byte attack on node id is caught at the NodeId type boundary,
+    /// before reaching redb_store. This test pins the layered defense:
+    /// NodeId validation via `FromStr` rejects null bytes (and other
+    /// invalid chars) at construction, so `check_no_separator` in
+    /// `make_param_key` is effectively dead code for node_id — a
+    /// deliberate belt-and-braces check.
+    ///
+    /// NOTE on the API: do NOT use `NodeId::try_from("...".to_string())`
+    /// for untrusted input. Despite the doc comment on `From<String>`,
+    /// `TryFrom` is the auto-derived blanket impl which delegates to
+    /// `From` — and `From<String>` PANICS on invalid input. The actual
+    /// safe path is `s.parse::<NodeId>()` which uses `FromStr` and
+    /// returns `Result<Self, InvalidId>`. Discovered 2026-04-08.
+    #[test]
+    fn node_id_with_null_byte_is_rejected_at_type_boundary() {
+        use std::str::FromStr;
+        let result = NodeId::from_str("foo\0bar");
+        assert!(
+            result.is_err(),
+            "NodeId::from_str must reject strings containing null bytes"
+        );
+    }
+
+    /// Param key containing a null byte is rejected.
+    #[test]
+    fn param_key_with_null_byte_is_rejected() {
+        let (store, _dir) = temp_store();
+        let df = Uuid::new_v4();
+        let node: NodeId = "n".to_string().into();
+        let err = store.put_node_param(&df, &node, "k\0ey", b"v").unwrap_err();
+        assert!(
+            err.to_string().contains("null bytes"),
+            "expected 'null bytes' error, got: {err}"
+        );
+    }
+
+    /// list_node_params must isolate params across dataflows: putting a
+    /// param under df_a/node_x must not show up when listing df_b/node_x.
+    #[test]
+    fn list_node_params_isolates_across_dataflows() {
+        let (store, _dir) = temp_store();
+        let df_a = Uuid::new_v4();
+        let df_b = Uuid::new_v4();
+        let node: NodeId = "shared".to_string().into();
+
+        store.put_node_param(&df_a, &node, "k1", b"a").unwrap();
+        store.put_node_param(&df_b, &node, "k2", b"b").unwrap();
+
+        let list_a = store.list_node_params(&df_a, &node).unwrap();
+        let list_b = store.list_node_params(&df_b, &node).unwrap();
+        assert_eq!(list_a.len(), 1);
+        assert_eq!(list_a[0].0, "k1");
+        assert_eq!(list_b.len(), 1);
+        assert_eq!(list_b[0].0, "k2");
+    }
+
+    /// list_node_params must isolate params across nodes in the same
+    /// dataflow: the prefix scan must stop at the node boundary.
+    /// This exercises the strip_prefix `None => break` path in
+    /// redb_store.rs list_node_params.
+    #[test]
+    fn list_node_params_isolates_across_nodes_in_same_dataflow() {
+        let (store, _dir) = temp_store();
+        let df = Uuid::new_v4();
+        let node_a: NodeId = "a".to_string().into();
+        let node_b: NodeId = "b".to_string().into();
+
+        store.put_node_param(&df, &node_a, "k1", b"va").unwrap();
+        store.put_node_param(&df, &node_b, "k2", b"vb").unwrap();
+
+        let list_a = store.list_node_params(&df, &node_a).unwrap();
+        assert_eq!(list_a.len(), 1);
+        assert_eq!(list_a[0].0, "k1");
+        assert_eq!(list_a[0].1, b"va");
+    }
+
+    /// list_node_params must isolate params when one node_id is a prefix
+    /// of another (e.g., "node" vs "node_extended"). The null byte
+    /// separator ensures this, but the test pins the behavior.
+    #[test]
+    fn list_node_params_isolates_when_node_id_is_prefix_of_another() {
+        let (store, _dir) = temp_store();
+        let df = Uuid::new_v4();
+        let node: NodeId = "node".to_string().into();
+        let node_long: NodeId = "node_extended".to_string().into();
+
+        store.put_node_param(&df, &node, "k", b"short").unwrap();
+        store.put_node_param(&df, &node_long, "k", b"long").unwrap();
+
+        let list = store.list_node_params(&df, &node).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].1, b"short");
+
+        let list_long = store.list_node_params(&df, &node_long).unwrap();
+        assert_eq!(list_long.len(), 1);
+        assert_eq!(list_long[0].1, b"long");
+    }
+
+    /// list_node_params returns empty when no params exist (no accidental
+    /// returns from unrelated rows).
+    #[test]
+    fn list_node_params_empty_when_no_params() {
+        let (store, _dir) = temp_store();
+        let df = Uuid::new_v4();
+        let node: NodeId = "lonely".to_string().into();
+
+        // Populate unrelated data to verify the scan still returns empty.
+        let other_df = Uuid::new_v4();
+        let other_node: NodeId = "busy".to_string().into();
+        store
+            .put_node_param(&other_df, &other_node, "k", b"v")
+            .unwrap();
+
+        let list = store.list_node_params(&df, &node).unwrap();
+        assert!(list.is_empty());
+    }
+
+    /// list_node_params returns all keys under a node, sorted
+    /// alphabetically (redb range scan is sorted).
+    #[test]
+    fn list_node_params_returns_sorted_keys() {
+        let (store, _dir) = temp_store();
+        let df = Uuid::new_v4();
+        let node: NodeId = "n".to_string().into();
+
+        store.put_node_param(&df, &node, "z", b"3").unwrap();
+        store.put_node_param(&df, &node, "a", b"1").unwrap();
+        store.put_node_param(&df, &node, "m", b"2").unwrap();
+
+        let keys: Vec<String> = store
+            .list_node_params(&df, &node)
+            .unwrap()
+            .into_iter()
+            .map(|(k, _)| k)
+            .collect();
+        assert_eq!(keys, vec!["a", "m", "z"]);
+    }
+
+    /// register_daemon is idempotent: registering twice with the same id
+    /// updates rather than duplicates.
+    #[test]
+    fn register_daemon_is_idempotent_update() {
+        let (store, _dir) = temp_store();
+        let id = DaemonId::new(Some("host".into()));
+
+        let info_v1 = DaemonInfo {
+            daemon_id: id.clone(),
+            machine_id: Some("host".into()),
+            labels: [("env".to_string(), "dev".to_string())].into(),
+        };
+        store.register_daemon(info_v1).unwrap();
+
+        let info_v2 = DaemonInfo {
+            daemon_id: id.clone(),
+            machine_id: Some("host".into()),
+            labels: [("env".to_string(), "prod".to_string())].into(),
+        };
+        store.register_daemon(info_v2).unwrap();
+
+        // Should be exactly one daemon, with the updated label.
+        let daemons = store.list_daemons().unwrap();
+        assert_eq!(daemons.len(), 1);
+        assert_eq!(
+            daemons[0].labels.get("env").map(String::as_str),
+            Some("prod")
+        );
+    }
+
+    /// delete_dataflow on a non-existent uuid is a no-op, not an error.
+    #[test]
+    fn delete_dataflow_missing_is_not_error() {
+        let (store, _dir) = temp_store();
+        let uuid = Uuid::new_v4();
+        // Nothing was stored. delete should still succeed.
+        store.delete_dataflow(&uuid).unwrap();
+    }
+
+    /// delete_node_param on a non-existent key is a no-op.
+    #[test]
+    fn delete_node_param_missing_is_not_error() {
+        let (store, _dir) = temp_store();
+        let df = Uuid::new_v4();
+        let node: NodeId = "n".to_string().into();
+        store.delete_node_param(&df, &node, "never-set").unwrap();
+    }
+
+    /// After delete, get returns None and subsequent put works (the key
+    /// can be reused). Pins redb-specific tombstone vs reinsert behavior.
+    #[test]
+    fn delete_then_reinsert_works() {
+        let (store, _dir) = temp_store();
+        let df = Uuid::new_v4();
+        let node: NodeId = "n".to_string().into();
+
+        store.put_node_param(&df, &node, "k", b"v1").unwrap();
+        store.delete_node_param(&df, &node, "k").unwrap();
+        assert!(store.get_node_param(&df, &node, "k").unwrap().is_none());
+        store.put_node_param(&df, &node, "k", b"v2").unwrap();
+        assert_eq!(
+            store.get_node_param(&df, &node, "k").unwrap(),
+            Some(b"v2".to_vec())
+        );
+    }
+
+    /// Schema version exactly equal to SCHEMA_VERSION succeeds on reopen.
+    /// Complements `schema_version_mismatch_is_rejected` by pinning the
+    /// match-arm boundary: guard `v != SCHEMA_VERSION` must be FALSE for
+    /// the currently compiled version.
+    #[test]
+    fn reopen_exact_schema_version_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("exact.redb");
+
+        // First open writes SCHEMA_VERSION; second must accept it.
+        let _s1 = RedbStore::open(&path).unwrap();
+        drop(_s1);
+        let _s2 = RedbStore::open(&path).unwrap();
+    }
+
+    /// Schema version SCHEMA_VERSION - 1 is rejected (older file).
+    /// Complements the "+1" test already above. Both directions pinned.
+    #[test]
+    fn older_schema_version_is_rejected() {
+        if SCHEMA_VERSION == 0 {
+            return; // can't represent v-1
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("older.redb");
+        {
+            let db = Database::create(&path).unwrap();
+            let txn = db.begin_write().unwrap();
+            {
+                let mut meta = txn.open_table(META).unwrap();
+                meta.insert(SCHEMA_VERSION_KEY, SCHEMA_VERSION - 1).unwrap();
+            }
+            txn.commit().unwrap();
+        }
+        match RedbStore::open(&path) {
+            Ok(_) => panic!("expected schema version mismatch error"),
+            Err(err) => assert!(
+                err.to_string().contains("schema version mismatch"),
+                "expected schema version mismatch, got: {err}"
+            ),
+        }
+    }
+
+    /// A corrupt bincode blob in the dataflows table surfaces as an error
+    /// on the read path, not a panic. This is the file-corruption scenario
+    /// from plan-fault-injection.md section 3.3 at the API level.
+    #[test]
+    fn corrupt_dataflow_record_returns_error_not_panic() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("corrupt.redb");
+        let uuid = Uuid::new_v4();
+
+        // Open store, write a garbage blob directly into DATAFLOWS, close.
+        {
+            let store = RedbStore::open(&path).unwrap();
+            let txn = store.db.begin_write().unwrap();
+            {
+                let mut table = txn.open_table(DATAFLOWS).unwrap();
+                let garbage: &[u8] = b"not a valid bincode record XXXXXXXX";
+                let key: &[u8] = uuid.as_bytes();
+                table.insert(key, garbage).unwrap();
+            }
+            txn.commit().unwrap();
+        }
+
+        // Reopen and attempt to read. get_dataflow should return an error
+        // (decode failure), not panic and not silently succeed.
+        let store = RedbStore::open(&path).unwrap();
+        let result = store.get_dataflow(&uuid);
+        assert!(
+            result.is_err(),
+            "expected decode error on corrupt blob, got Ok({:?})",
+            result.ok()
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("decode"),
+            "expected error mentioning 'decode', got: {err_msg}"
+        );
+    }
 }
