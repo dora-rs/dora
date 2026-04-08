@@ -96,5 +96,30 @@ impl std::ops::Deref for MappedInputData {
     }
 }
 
+// SAFETY: MappedInputData wraps a `Box<Shmem>` that represents a read-only
+// mapping of a POSIX shared memory region. Soundness of Send + Sync relies
+// on protocol invariants that Rust cannot verify:
+//
+// 1. The region is opened with `writable(false)` in `map()` above, so this
+//    reader cannot write to the memory.
+// 2. The sender (daemon or another node) is required by adora's wire
+//    protocol to finish writing and signal readiness BEFORE this reader
+//    maps the region, and not to reuse the region UNTIL this reader drops
+//    its `SharedMemoryData` (the drop token in the parent struct signals
+//    completion via a flume channel).
+// 3. Multiple threads concurrently dereferencing the same MappedInputData
+//    via `&MappedInputData` is safe under the above protocol: all threads
+//    see the same immutable bytes.
+//
+// Violating invariant (2) — e.g., a buggy daemon that reuses a region
+// before the reader's drop token is observed — would produce torn reads
+// or inconsistent data. This would be a protocol bug, not a Rust soundness
+// bug, but the consequences are the same from the user's perspective.
+//
+// Flagged by the 2026-03-21 audit as a potentially unsound Sync impl.
+// After review on 2026-04-08: the impl is sound modulo the protocol, but
+// the fragility is real. See `plan-zenoh-shared-memory.md` for the
+// proposed long-term fix: replace this whole layer with Zenoh SHM, which
+// handles shared-memory lifecycle through its own tracking.
 unsafe impl Send for MappedInputData {}
 unsafe impl Sync for MappedInputData {}
