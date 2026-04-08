@@ -18,9 +18,39 @@ use tracing_subscriber::{
 };
 
 use tracing_subscriber::Registry;
+use tracing_subscriber::filter::Directive;
 pub mod metrics;
 pub mod span_store;
 pub mod telemetry;
+
+/// Parse a tracing directive known to be syntactically valid by
+/// construction. Panics on failure — call sites must only pass string
+/// literals. Replaces ~20 individual `.parse().unwrap()` sites with a
+/// single documented helper, and keeps the panic path centralized.
+fn directive(literal: &'static str) -> Directive {
+    literal
+        .parse()
+        .unwrap_or_else(|e| panic!("invalid hardcoded tracing directive `{literal}`: {e}"))
+}
+
+/// Standard set of noisy-crate suppressions applied to every filter in
+/// this module. Centralized so the list is the same everywhere.
+const NOISY_CRATES_OFF: &[&str] = &[
+    "hyper=off",
+    "tonic=off",
+    "tokio=off",
+    "process_wrap=off",
+    "h2=off",
+    "reqwest=off",
+];
+
+/// Add the `NOISY_CRATES_OFF` directives to an `EnvFilter`.
+fn with_noisy_crates_off(mut filter: EnvFilter) -> EnvFilter {
+    for d in NOISY_CRATES_OFF {
+        filter = filter.add_directive(directive(d));
+    }
+    filter
+}
 
 /// Setup tracing with a default configuration.
 ///
@@ -67,17 +97,10 @@ impl TracingBuilder {
     /// This is the recommended layer for user nodes: `tracing::info!()` calls
     /// are automatically parsed by the daemon and routed through the log pipeline.
     pub fn with_node_stdout(mut self, filter: impl AsRef<str>) -> Self {
-        let mut parsed = EnvFilter::builder()
-            .parse_lossy(filter)
-            .add_directive("hyper=off".parse().unwrap())
-            .add_directive("tonic=off".parse().unwrap())
-            .add_directive("tokio=off".parse().unwrap())
-            .add_directive("process_wrap=off".parse().unwrap())
-            .add_directive("h2=off".parse().unwrap())
-            .add_directive("reqwest=off".parse().unwrap());
+        let mut parsed = with_noisy_crates_off(EnvFilter::builder().parse_lossy(filter));
         let env_log = std::env::var("RUST_LOG").unwrap_or_default();
         if !env_log.contains("zenoh") {
-            parsed = parsed.add_directive("zenoh=warn".parse().unwrap());
+            parsed = parsed.add_directive(directive("zenoh=warn"));
         }
         let env_filter = EnvFilter::from_default_env().or(parsed);
         let layer = tracing_subscriber::fmt::layer()
@@ -94,23 +117,16 @@ impl TracingBuilder {
     /// it uses [std::io::stdout] which is synchronous
     /// and might block the logging thread.
     pub fn with_stdout(mut self, filter: impl AsRef<str>, json: bool) -> Self {
-        let mut parsed = EnvFilter::builder()
-            .parse_lossy(filter)
-            .add_directive("hyper=off".parse().unwrap())
-            .add_directive("tonic=off".parse().unwrap())
-            .add_directive("tokio=off".parse().unwrap())
-            .add_directive("process_wrap=off".parse().unwrap())
-            .add_directive("h2=off".parse().unwrap())
-            .add_directive("reqwest=off".parse().unwrap());
+        let mut parsed = with_noisy_crates_off(EnvFilter::builder().parse_lossy(filter));
         let env_log = std::env::var("RUST_LOG").unwrap_or_default();
         if !env_log.contains("adora_daemon") {
-            parsed = parsed.add_directive("adora_daemon=info".parse().unwrap());
+            parsed = parsed.add_directive(directive("adora_daemon=info"));
         }
         if !env_log.contains("adora_core") {
-            parsed = parsed.add_directive("adora_core=warn".parse().unwrap());
+            parsed = parsed.add_directive(directive("adora_core=warn"));
         }
         if !env_log.contains("zenoh") {
-            parsed = parsed.add_directive("zenoh=warn".parse().unwrap());
+            parsed = parsed.add_directive(directive("zenoh=warn"));
         }
         let env_filter = EnvFilter::from_default_env().or(parsed);
         let layer = tracing_subscriber::fmt::layer()
@@ -179,16 +195,10 @@ impl TracingBuilder {
 
         self.guard = Some(guard);
         self.layers.push(MetricsLayer::new(meter_provider).boxed());
-        let mut filter_otel = EnvFilter::new("trace")
-            .add_directive("hyper=off".parse().unwrap())
-            .add_directive("tonic=off".parse().unwrap())
-            .add_directive("tokio=off".parse().unwrap())
-            .add_directive("process_wrap=off".parse().unwrap())
-            .add_directive("h2=off".parse().unwrap())
-            .add_directive("reqwest=off".parse().unwrap());
+        let mut filter_otel = with_noisy_crates_off(EnvFilter::new("trace"));
         let env_log = std::env::var("RUST_LOG").unwrap_or_default();
         if !env_log.contains("adora_daemon") {
-            filter_otel = filter_otel.add_directive("adora_daemon=debug".parse().unwrap());
+            filter_otel = filter_otel.add_directive(directive("adora_daemon=debug"));
         }
         self.layers.push(
             OpenTelemetryLayer::new(tracer)
@@ -210,8 +220,8 @@ impl TracingBuilder {
     /// from third-party dependencies.
     pub fn with_span_capture(mut self, store: span_store::SharedSpanStore) -> Self {
         let filter = EnvFilter::new("off")
-            .add_directive("adora_coordinator=info".parse().expect("valid directive"))
-            .add_directive("adora_core=info".parse().expect("valid directive"));
+            .add_directive(directive("adora_coordinator=info"))
+            .add_directive(directive("adora_core=info"));
         let layer = span_store::SpanCaptureLayer::new(store).with_filter(filter);
         self.layers.push(layer.boxed());
         self
