@@ -462,8 +462,15 @@ impl RunningDataflow {
             .get_mut(node_id)
             .ok_or_else(|| eyre!("node `{node_id}` not found in running dataflow"))?;
         let process = node.process.take();
-        // Re-enable restart only after the process handle is taken, so the
-        // restart loop cannot fire before the grace timer has a chance to run.
+        // Clear any prior disable (e.g. from an earlier stop_single_node
+        // or a cascading AllInputsClosed) so the restart_loop will pick
+        // up the next exit and spawn a replacement.
+        //
+        // With the per-incarnation channel pair introduced for
+        // dora-rs/adora#152, the old grace-kill task sends to a closed
+        // op_rx and cannot reach the replacement process, so ordering
+        // between this store and the grace-kill submission no longer
+        // matters.
         node.disable_restart.store(false, atomic::Ordering::Release);
         self.send_stop_and_schedule_kill(
             node_id,
@@ -558,11 +565,6 @@ mod tests {
 
     #[test]
     fn unarmed_deadline_is_never_timed_out() {
-        // An input that has never received a message (last_received = None)
-        // must not trip the circuit breaker, even if `timeout` has long
-        // since elapsed relative to dataflow start. This prevents false
-        // positives on service response inputs that are legitimately idle
-        // until the client sends its first request.
         let deadline = InputDeadline {
             timeout: Duration::from_millis(1),
             last_received: None,
@@ -591,18 +593,48 @@ mod tests {
 
     #[test]
     fn arming_a_previously_unarmed_deadline_starts_the_clock() {
-        // Simulates: input starts unarmed, first message arrives, the
-        // clock begins counting, timeout must elapse before firing.
         let mut deadline = InputDeadline {
             timeout: Duration::from_millis(50),
             last_received: None,
         };
         assert!(!deadline.is_timed_out(), "unarmed should not fire");
-
         deadline.last_received = Some(Instant::now());
         assert!(
             !deadline.is_timed_out(),
             "just-armed should not fire immediately"
+        );
+    }
+
+    // ---- dora-rs/adora#152: restart isolation via fresh op_tx/op_rx ----
+
+    #[test]
+    fn submit_to_dropped_receiver_returns_false() {
+        let (tx, rx) = flume::bounded::<ProcessOperation>(2);
+        let handle = ProcessHandle::new(tx);
+        drop(rx);
+        assert!(!handle.submit(ProcessOperation::SoftKill));
+        assert!(!handle.submit(ProcessOperation::Kill));
+    }
+
+    #[test]
+    fn submit_to_live_receiver_succeeds() {
+        let (tx, rx) = flume::bounded::<ProcessOperation>(2);
+        let handle = ProcessHandle::new(tx);
+        assert!(handle.submit(ProcessOperation::SoftKill));
+        let received = rx.try_recv().expect("op should have been queued");
+        assert!(matches!(received, ProcessOperation::SoftKill));
+    }
+
+    #[test]
+    fn two_independent_channels_do_not_cross_deliver() {
+        let (old_tx, old_rx) = flume::bounded::<ProcessOperation>(2);
+        let old_handle = ProcessHandle::new(old_tx);
+        drop(old_rx);
+        let (_new_tx, new_rx) = flume::bounded::<ProcessOperation>(2);
+        let _ = old_handle.submit(ProcessOperation::Kill);
+        assert!(
+            new_rx.try_recv().is_err(),
+            "kill from the previous incarnation must not reach the replacement process"
         );
     }
 }

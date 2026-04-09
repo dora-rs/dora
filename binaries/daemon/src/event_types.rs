@@ -154,6 +154,18 @@ pub enum AdoraEvent {
         restart: bool,
         restart_count: u32,
     },
+    /// The per-node `restart_loop` spawned a fresh process after an exit
+    /// and now wants the daemon to swap the tracked `ProcessHandle` in
+    /// `running_nodes` so subsequent kill/stop operations reach the new
+    /// incarnation rather than the dead predecessor.
+    ///
+    /// Restores per-incarnation isolation of the process-operation
+    /// channel and closes the stale-kill race in dora-rs/adora#152.
+    ProcessHandleReplaced {
+        dataflow_id: DataflowId,
+        node_id: NodeId,
+        new_handle: crate::ProcessHandle,
+    },
 }
 
 #[must_use]
