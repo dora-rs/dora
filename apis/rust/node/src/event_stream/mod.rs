@@ -525,21 +525,42 @@ impl EventStream {
 
         // First-message type validation: check once per input, then remove.
         // Zero cost after first message per input.
+        //
+        // Skip the check when the message carries pattern metadata
+        // (`request_id`, `goal_id`, or `goal_status`) — the input is
+        // polymorphic by pattern design and a single declared type
+        // cannot cover all variants. The check stays armed so a later
+        // non-pattern message can still validate (dora-rs/adora#150).
         if let Some(Event::Input {
-            ref id, ref data, ..
+            ref id,
+            ref metadata,
+            ref data,
         }) = event
-            && let Some(expected) = self.input_type_checks.remove(id)
+            && let Some(expected) = self.input_type_checks.get(id).cloned()
         {
-            let actual = data.data_type();
-            // Skip check for Null type (timer ticks, empty payloads)
-            // to avoid spurious warnings on annotated timer inputs.
-            if *actual != arrow_schema::DataType::Null && *actual != expected {
-                tracing::warn!(
-                    input = %id,
-                    expected = ?expected,
-                    actual = ?actual,
-                    "input type mismatch on first message"
-                );
+            let is_pattern_message = metadata
+                .parameters
+                .contains_key(adora_message::metadata::REQUEST_ID)
+                || metadata
+                    .parameters
+                    .contains_key(adora_message::metadata::GOAL_ID)
+                || metadata
+                    .parameters
+                    .contains_key(adora_message::metadata::GOAL_STATUS);
+            if !is_pattern_message {
+                // Consume the check and validate.
+                self.input_type_checks.remove(id);
+                let actual = data.data_type();
+                // Skip check for Null type (timer ticks, empty payloads)
+                // to avoid spurious warnings on annotated timer inputs.
+                if *actual != arrow_schema::DataType::Null && *actual != expected {
+                    tracing::warn!(
+                        input = %id,
+                        expected = ?expected,
+                        actual = ?actual,
+                        "input type mismatch on first message"
+                    );
+                }
             }
         }
 
