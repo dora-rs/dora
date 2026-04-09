@@ -86,6 +86,14 @@ pub trait DaemonControl {
     async fn spawn(request: SpawnDataflowNodes) -> DaemonResult<()>;
     /// Notify the daemon that all nodes across all daemons are ready.
     async fn all_nodes_ready(dataflow_id: DataflowId, exited_before_subscribe: Vec<NodeId>);
+    /// Notify the daemon that one peer daemon disconnected while this dataflow was active.
+    ///
+    /// `failed_nodes` contains node IDs that were running on the disconnected daemon.
+    async fn daemon_disconnected(
+        dataflow_id: DataflowId,
+        disconnected_daemon_id: DaemonId,
+        failed_nodes: Vec<NodeId>,
+    );
     /// Stop a running dataflow on this daemon.
     async fn stop_dataflow(
         dataflow_id: DataflowId,

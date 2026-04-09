@@ -1,11 +1,10 @@
 use crate::{
-    ArchivedDataflow, BuildFinishedResult, CachedResult, DaemonRequest, Event, dataflow_result,
-    handle_daemon_disconnect, state, tcp_utils::tcp_receive,
+    BuildFinishedResult, DaemonRequest, Event, finalize_dataflow, handle_daemon_disconnect, state,
+    tcp_utils::tcp_receive,
 };
 use dora_core::uhlc::HLC;
 use dora_message::{
     common::DaemonId,
-    coordinator_to_cli::{DataflowResult, StopDataflowReply},
     daemon_to_coordinator::{
         CoordinatorNotify, CoordinatorRequest, DataflowDaemonResult, NodeMetrics, Timestamped,
     },
@@ -175,44 +174,23 @@ impl CoordinatorNotify for CoordinatorNotifyServer {
         );
         match self.coordinator_state.running_dataflows.entry(dataflow_id) {
             dashmap::Entry::Occupied(mut entry) => {
-                let dataflow = entry.get_mut();
-                dataflow.daemons.remove(&daemon_id);
-                tracing::info!(
-                    "removed machine id: {daemon_id} from dataflow: {:#?}",
-                    dataflow.uuid
-                );
-                self.coordinator_state
-                    .dataflow_results
-                    .entry(dataflow_id)
-                    .or_default()
-                    .insert(daemon_id, result);
-
-                if dataflow.daemons.is_empty() {
-                    // Archive finished dataflow
+                let should_finalize = {
+                    let dataflow = entry.get_mut();
+                    dataflow.daemons.remove(&daemon_id);
+                    tracing::info!(
+                        "removed machine id: {daemon_id} from dataflow: {:#?}",
+                        dataflow.uuid
+                    );
                     self.coordinator_state
-                        .archived_dataflows
+                        .dataflow_results
                         .entry(dataflow_id)
-                        .or_insert_with(|| ArchivedDataflow::from(entry.get()));
-                    let finished_dataflow = entry.remove();
-                    let clock = &self.coordinator_state.clock;
-
-                    let reply = StopDataflowReply {
-                        uuid: dataflow_id,
-                        result: self
-                            .coordinator_state
-                            .dataflow_results
-                            .get(&dataflow_id)
-                            .map(|r| dataflow_result(r.value(), dataflow_id, clock))
-                            .unwrap_or_else(|| {
-                                DataflowResult::ok_empty(dataflow_id, clock.new_timestamp())
-                            }),
-                    };
-                    for sender in finished_dataflow.stop_reply_senders {
-                        let _ = sender.send(Ok(reply.clone()));
-                    }
-                    if !matches!(finished_dataflow.spawn_result, CachedResult::Cached { .. }) {
-                        log::error!("pending spawn result on dataflow finish");
-                    }
+                        .or_default()
+                        .insert(daemon_id, result);
+                    dataflow.daemons.is_empty()
+                };
+                if should_finalize {
+                    drop(entry);
+                    finalize_dataflow(&self.coordinator_state, dataflow_id);
                 }
             }
             dashmap::Entry::Vacant(_) => {
