@@ -4,9 +4,85 @@ use adora_message::{
     config::{DEFAULT_QUEUE_SIZE, QueuePolicy},
     daemon_to_node::NodeEvent,
     id::DataId,
+    metadata::{GOAL_ID, GOAL_STATUS, REQUEST_ID, get_string_param},
 };
 
 use super::thread::EventItem;
+
+/// Returns `true` if the event carries request/response or action correlation
+/// metadata (`request_id`, `goal_id`, or `goal_status`).
+///
+/// These keys bind a message to a specific service request or action goal.
+/// Silently dropping such a message breaks the correlation contract — the
+/// client waits forever for a response or result that never arrives
+/// (dora-rs/adora#145).
+fn is_correlated(event: &EventItem) -> bool {
+    let EventItem::NodeEvent {
+        event: NodeEvent::Input { metadata, .. },
+        ..
+    } = event
+    else {
+        return false;
+    };
+    let params = &metadata.parameters;
+    params.contains_key(REQUEST_ID)
+        || params.contains_key(GOAL_ID)
+        || params.contains_key(GOAL_STATUS)
+}
+
+/// Outcome of `select_eviction`.
+enum Eviction {
+    /// Remove event at this index from the queue and push the incoming event.
+    RemoveAt(usize),
+    /// The queue is entirely correlated and the incoming event is not —
+    /// drop the incoming event instead of breaking a correlation.
+    DropIncoming,
+    /// The queue is entirely correlated and the incoming event is also
+    /// correlated — drop the oldest (front) event with a loud error log.
+    DropFrontLoud,
+}
+
+/// Choose which event to drop when the queue is at capacity.
+///
+/// Prefers sacrificing non-correlated events so that service responses and
+/// action results survive. See `is_correlated` for the metadata keys that
+/// mark an event as part of a pattern.
+fn select_eviction(queue: &VecDeque<EventItem>, incoming: &EventItem) -> Eviction {
+    if let Some(idx) = queue.iter().position(|e| !is_correlated(e)) {
+        return Eviction::RemoveAt(idx);
+    }
+    if !is_correlated(incoming) {
+        return Eviction::DropIncoming;
+    }
+    Eviction::DropFrontLoud
+}
+
+/// Emit a loud error when a correlated event has to be dropped because
+/// everything in the queue is also correlated. Identifies the correlation
+/// keys so operators can trace the affected request/goal.
+fn log_correlation_drop(event_id: &DataId, dropped: &EventItem) {
+    let EventItem::NodeEvent {
+        event: NodeEvent::Input { metadata, .. },
+        ..
+    } = dropped
+    else {
+        return;
+    };
+    let params = &metadata.parameters;
+    let request_id = get_string_param(params, REQUEST_ID);
+    let goal_id = get_string_param(params, GOAL_ID);
+    let goal_status = get_string_param(params, GOAL_STATUS);
+    tracing::error!(
+        input = %event_id,
+        ?request_id,
+        ?goal_id,
+        ?goal_status,
+        "queue full of correlated messages; dropping oldest correlation. \
+         This breaks the service/action request-response contract. \
+         Consider increasing queue_size or switching this input to \
+         `queue_policy: backpressure`."
+    );
+}
 pub(crate) const NON_INPUT_EVENT: &str = "adora.non_input_event";
 
 /// This scheduler will make sure that there is fairness between inputs.
@@ -171,7 +247,21 @@ impl Scheduler {
                 tracing::warn!("Discarding event for input `{event_id}` due to queue size limit");
             }
             *self.dropped.entry(event_id.clone()).or_insert(0) += 1;
-            queue.pop_front();
+            match select_eviction(queue, &event) {
+                Eviction::RemoveAt(idx) => {
+                    queue.remove(idx);
+                }
+                Eviction::DropIncoming => {
+                    // Queue is entirely correlated; preserve correlations
+                    // by dropping the incoming (non-correlated) event.
+                    return;
+                }
+                Eviction::DropFrontLoud => {
+                    if let Some(front) = queue.pop_front() {
+                        log_correlation_drop(event_id, &front);
+                    }
+                }
+            }
         }
         queue.push_back(event);
     }
@@ -335,6 +425,139 @@ mod tests {
         // After drain, counts reset
         let counts = sched.drain_drop_counts();
         assert!(counts.is_empty());
+    }
+
+    // ---- dora-rs/adora#145: drop_oldest must not silently drop correlated messages ----
+
+    /// Helper: extract request_id from an event's metadata, if any.
+    fn request_id_of(event: &EventItem) -> Option<String> {
+        let EventItem::NodeEvent {
+            event: NodeEvent::Input { metadata, .. },
+            ..
+        } = event
+        else {
+            return None;
+        };
+        get_string_param(&metadata.parameters, REQUEST_ID).map(|s| s.to_string())
+    }
+
+    fn with_request_id(id: &str) -> MetadataParameters {
+        let mut params = MetadataParameters::new();
+        params.insert(REQUEST_ID.into(), Parameter::String(id.to_string()));
+        params
+    }
+
+    #[test]
+    fn drop_oldest_preserves_correlated_when_non_correlated_present() {
+        // Queue has [correlated(req-1), non-correlated, non-correlated]
+        // Adding one more should drop a non-correlated event, not req-1.
+        let (mut sched, id) = make_scheduler(3);
+
+        sched.add_event(make_input("audio", with_request_id("req-1")));
+        sched.add_event(make_input("audio", MetadataParameters::new()));
+        sched.add_event(make_input("audio", MetadataParameters::new()));
+        sched.add_event(make_input("audio", MetadataParameters::new()));
+
+        let queue = &sched.event_queues[&id].1;
+        assert_eq!(queue.len(), 3);
+        // req-1 must still be somewhere in the queue
+        assert!(
+            queue
+                .iter()
+                .any(|e| request_id_of(e).as_deref() == Some("req-1")),
+            "correlated message was dropped even though non-correlated events were available"
+        );
+    }
+
+    #[test]
+    fn drop_oldest_drops_middle_non_correlated_to_save_front_correlated() {
+        // Queue: [req-1 (correlated), B, req-2 (correlated)]
+        // Adding C should drop B (the only non-correlated), not req-1.
+        let (mut sched, id) = make_scheduler(3);
+
+        sched.add_event(make_input("audio", with_request_id("req-1")));
+        sched.add_event(make_input("audio", MetadataParameters::new()));
+        sched.add_event(make_input("audio", with_request_id("req-2")));
+        sched.add_event(make_input("audio", MetadataParameters::new()));
+
+        let queue = &sched.event_queues[&id].1;
+        assert_eq!(queue.len(), 3);
+        assert!(
+            queue
+                .iter()
+                .any(|e| request_id_of(e).as_deref() == Some("req-1"))
+        );
+        assert!(
+            queue
+                .iter()
+                .any(|e| request_id_of(e).as_deref() == Some("req-2"))
+        );
+    }
+
+    #[test]
+    fn drop_oldest_drops_incoming_if_queue_is_fully_correlated_and_incoming_is_not() {
+        // Queue: [req-1, req-2] (both correlated). Incoming is non-correlated.
+        // The correlations must survive; incoming gets dropped instead.
+        let (mut sched, id) = make_scheduler(2);
+
+        sched.add_event(make_input("audio", with_request_id("req-1")));
+        sched.add_event(make_input("audio", with_request_id("req-2")));
+        sched.add_event(make_input("audio", MetadataParameters::new()));
+
+        let queue = &sched.event_queues[&id].1;
+        assert_eq!(queue.len(), 2);
+        let ids: Vec<_> = queue.iter().filter_map(request_id_of).collect();
+        assert_eq!(ids, vec!["req-1".to_string(), "req-2".to_string()]);
+
+        // Drop counter still increments — we rejected a message.
+        let counts = sched.drain_drop_counts();
+        assert_eq!(counts.get(&id), Some(&1));
+    }
+
+    #[test]
+    fn drop_oldest_drops_front_loudly_when_both_queue_and_incoming_are_correlated() {
+        // Queue: [req-1, req-2] (both correlated). Incoming is req-3.
+        // Unavoidable drop — the oldest correlation (req-1) is evicted.
+        let (mut sched, id) = make_scheduler(2);
+
+        sched.add_event(make_input("audio", with_request_id("req-1")));
+        sched.add_event(make_input("audio", with_request_id("req-2")));
+        sched.add_event(make_input("audio", with_request_id("req-3")));
+
+        let queue = &sched.event_queues[&id].1;
+        assert_eq!(queue.len(), 2);
+        let ids: Vec<_> = queue.iter().filter_map(request_id_of).collect();
+        assert_eq!(ids, vec!["req-2".to_string(), "req-3".to_string()]);
+    }
+
+    #[test]
+    fn drop_oldest_goal_id_is_also_preserved() {
+        // Same preservation as request_id, but via goal_id.
+        let (mut sched, id) = make_scheduler(2);
+
+        let mut goal_params = MetadataParameters::new();
+        goal_params.insert(GOAL_ID.into(), Parameter::String("goal-42".to_string()));
+
+        sched.add_event(make_input("audio", goal_params));
+        sched.add_event(make_input("audio", MetadataParameters::new()));
+        sched.add_event(make_input("audio", MetadataParameters::new()));
+
+        let queue = &sched.event_queues[&id].1;
+        assert_eq!(queue.len(), 2);
+        let has_goal = queue.iter().any(|e| {
+            let EventItem::NodeEvent {
+                event: NodeEvent::Input { metadata, .. },
+                ..
+            } = e
+            else {
+                return false;
+            };
+            get_string_param(&metadata.parameters, GOAL_ID) == Some("goal-42")
+        });
+        assert!(
+            has_goal,
+            "goal-42 was dropped despite having non-correlated events to drop"
+        );
     }
 
     #[test]
