@@ -549,6 +549,34 @@ cargo run --example python-dataflow
 cargo run --example benchmark --release
 ```
 
+## Quality assurance
+
+Adora ships with a three-tier QA system designed for AI-authored code. Everything runs locally first; CI mirrors the same scripts.
+
+```bash
+make qa-install     # one-time: install cargo-audit, cargo-deny, cargo-llvm-cov, cargo-mutants, cargo-semver-checks
+make qa-fast        # ~15s  -- fmt + clippy + audit + unwrap-budget (pre-commit)
+make qa-full        # ~5-10 min -- qa-fast + tests + coverage (pre-push)
+make qa-tier1       # ~1-2 hrs  -- qa-full + mutation testing + semver (pre-release)
+```
+
+**Gates in place:**
+
+- **Supply chain** -- `cargo-audit` + `cargo-deny` for CVEs, license policy, dependency bans
+- **Unwrap ratchet** -- counts `.unwrap()` / `.expect(` in production code; can only go down (`.unwrap-budget`)
+- **Coverage** -- `cargo-llvm-cov` with diff-coverage gate (70% on PR-touched lines)
+- **Mutation testing** -- `cargo-mutants` against critical crates (library crates at package scope, binary crates with `test_workspace = true`)
+- **Property testing** -- `proptest` on wire-protocol types; catches edge cases unit tests miss
+- **Miri** -- UB detection on pure-Rust unsafe hotspots (e.g., `adora-core::metadata`)
+- **SemVer check** -- `cargo-semver-checks` against the last git tag
+- **Adversarial LLM review** -- `scripts/qa/adversarial.sh` runs a *different* model on your diff to catch single-model blind spots (local today; CI pending API secret)
+
+**Reference docs:**
+
+- [QA Runbook](docs/qa-runbook.md) -- day-to-day command reference, failure modes, and fixes
+- [Agentic QA Strategy](docs/plan-agentic-qa-strategy.md) -- full three-tier design and rationale
+- [POC Report](docs/qa-poc-report-2026-04-09.md) -- case studies, metrics, lessons learned, recommendations for the wider ecosystem
+
 ## Contributing
 
 We welcome contributors of all experience levels. See the [contributing guide](CONTRIBUTING.md) to get started.
