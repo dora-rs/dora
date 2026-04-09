@@ -233,6 +233,29 @@ Target runtime: 15 minutes for the full gate. Current CI is ~12 minutes (Format,
 
 **Expected initial pain:** the first mutation run on adora will find dozens of escaped mutants. This is the point. Triage them into: (a) real test gaps to fix, (b) untestable code to refactor, (c) grandfathered legacy to accept. The skip list should shrink over time.
 
+**Triage guidance (added 2026-04-08 from POC experience)**: initial runs typically find 60-70% escaped mutants on library crates with basic unit test coverage. Sort them into four buckets:
+
+1. **Real test gaps** (most) — function had tests but they weren't thorough. Add focused tests that distinguish each match arm / comparison / boundary. Example: `parse_byte_size` in `adora-core::descriptor::validate` — 14 escaped mutants fixed by writing one test per unit (B/KB/MB/GB).
+2. **Tautological tests** (some) — code had high coverage but tests mirror the implementation. Rewrite tests to assert behavior from the spec, not from the implementation. Example: `types_match` in `adora-core::types` — 2 of 3 escaped mutants were in unparseable-URN fallback paths no test exercised.
+3. **Equivalent mutants** (rare, 3-10%) — mathematically indistinguishable from the original code. No test can catch them. Document in `.cargo/mutants.toml` with explicit `exclude_re` entry + inline reasoning. See `types_match` `||`→`&&` example.
+4. **Cargo-mutants scoping artifacts** — low caught-rate on binary crates like `adora-daemon` (5.8% initially) is an artifact of `cargo mutants --package` not running workspace-level tests. Fix: set `test_workspace = true` in `.cargo/mutants.toml`. Verified 2026-04-08 that `fault_tolerance.rs` goes from 21 missed/0 caught (package-scoped) to 0 missed/21 caught (workspace-scoped).
+
+**`exclude_re` pattern discipline**: when adding an equivalent-mutant waiver, match on the mutation **name** only, never pin to line:column numbers. Line numbers shift when unrelated code above the target is edited, silently breaking the waiver and reintroducing the mutant as noise. Learned in commit `3ff3785`.
+
+Good:
+```toml
+exclude_re = [
+    "libraries/core/src/types\\.rs:.*replace \\|\\| with && in types_match",
+]
+```
+
+Bad (fragile — line and column pin):
+```toml
+exclude_re = [
+    "libraries/core/src/types\\.rs:177:29.*replace \\|\\| with &&.*types_match",
+]
+```
+
 **Agent collaboration pattern:** when a PR has an escaped mutant, the agent's next task is "add a test that detects mutation M on file F at line L." This gives the agent a concrete, verifiable subtask. Mutation testing turns into a test-writing prompt generator.
 
 ### T1.3 Supply chain gates: `cargo-audit` + `cargo-deny` (HALF DAY)
@@ -459,6 +482,15 @@ Target runtime: <4 hours. Runs once per night on main. Failures page the contrac
 
 **Why:** catches edge cases no one would think to write. AI agents are particularly weak at generating test inputs they didn't use while writing the code.
 
+**Scope discipline (added 2026-04-08)**: write strategies that test **your** invariants, not properties of the platform your code depends on. Broad strategies like `any::<f64>()` will find failures in the platform (e.g., JSON number precision near the edge, `Some(Value::Null)` vs `None` in serde Option handling) and report them as "bugs" in your code. When a property fails:
+
+1. Reproduce manually with the minimal failing input.
+2. Ask: "is this a property of my code, or a property of what my code depends on?"
+3. If the latter: constrain the strategy, document why in a comment, and add a regression unit test pinning the equivalence as intentional.
+4. If the former: it's a real finding. Fix or document as invariant.
+
+Concrete example from the POC (commit `28c99b3`, `ws_protocol.rs`): `any::<f64>()` produced values like `-5.78e+120` that lose 1 ULP through JSON Number roundtrip. Not an adora bug, a property of JSON. Strategy was constrained to `i32 as f64` (always representable losslessly). Then the *real* finding surfaced: `WsResponse { result: Some(Value::Null) }` does not round-trip through the wire (serde collapses `Some(Null)` to `None`). That was pinned as a documented invariant with a regression unit test.
+
 **High-value targets for adora/dora:**
 
 1. **`adora-message` encode/decode round-trip.** For every message type:
@@ -558,7 +590,23 @@ cargo fuzz add yaml_descriptor
 
 **What:** `miri` is a Rust interpreter that detects undefined behavior (data races, use-after-free, out-of-bounds, pointer provenance violations). Run on the crates that contain `unsafe` blocks.
 
-**Why:** adora has 185 `unsafe` blocks, mostly in `shared-memory-server`. The 2026-03-21 audit found memory-safety issues in exactly this area. `miri` would have caught them before the audit.
+**Why:** adora has ~185 `unsafe` blocks at the time of writing, concentrated in `shared-memory-server` (custom POSIX shmem IPC). The 2026-03-21 audit found memory-safety issues in exactly that area.
+
+**Major amendment 2026-04-08**: the initial target list in this plan was wrong. `shared-memory-server` **cannot** be analyzed by miri — every test in that crate calls `ShmemConf::create` which invokes libc's `shm_open`, and miri does not support foreign function calls to POSIX shmem syscalls on any platform. Every test entry point aborts with "unsupported operation" before the unsafe code under test is reached.
+
+**Correct target list (pure-Rust crates with unsafe):**
+
+1. **`libraries/core/src/metadata.rs`** — pointer arithmetic (`ptr.offset_from`). Has focused unit tests added 2026-04-08 (`metadata/tests.rs`). Runs cleanly under miri. This is where POC commit `d12e6b8` found a double off-by-one bug.
+2. **`libraries/coordinator-store`** — pure-Rust storage abstraction. Some unsafe in the redb-backed store.
+3. **`apis/rust/operator/types/src/lib.rs`** — `slice::from_raw_parts` at the FFI boundary. Runs under miri if you write tests that construct inputs without touching safer_ffi.
+4. **`apis/rust/node/src/event_stream/data_conversion.rs`** — `Buffer::from_custom_allocation` with raw pointers; cannot test the `Shmem`-backed path under miri, but the `Vec`-backed path is analyzable.
+
+**The shared-memory-server coverage gap is real and requires a different mitigation.** Two options:
+
+- **Preferred**: adopt Zenoh's native shared memory feature. Upstream dora already did this in `dora-rs/dora#1378`. Deletes ~660 lines and ~11 unsafe blocks from `channel.rs`, eliminates the uncoverable code by removing it. This is sequenced into the dora 1.0 consolidation as Phase 3b — see [`plan-dora-1.0-consolidation.md`](plan-dora-1.0-consolidation.md).
+- **Short-term**: refactor `shared-memory-server` to separate the pure-Rust pointer-arithmetic core from the libc wrapper. Test the core under miri + proptest; leave the wrapper thin. ~2-3 days of work.
+
+**Infrastructure-as-forcing-function meta-finding**: when applying miri to a new target, always **write the miri-required unit tests first, then run miri**. Writing the tests forces close-reading of the unsafe code, which is when bugs are most likely to be spotted. Miri itself has never caught a bug in this POC — but the process of preparing it to run has caught two (`metadata::from_array` off-by-one and `adora_send_operator_output` null UB).
 
 **Setup:**
 ```yaml
@@ -572,12 +620,13 @@ cargo fuzz add yaml_descriptor
         with:
           toolchain: nightly
           components: miri
-      - run: cargo miri test -p shared-memory-server
-      - run: cargo miri test -p adora-arrow-convert
-      - run: cargo miri test -p adora-message
+      - run: cargo miri test -p adora-core metadata::tests
+      # Other miri-compatible targets to be added as they gain
+      # focused unit tests. Do NOT add shared-memory-server — its
+      # tests require libc shm_open which miri does not support.
 ```
 
-**Limitations:** miri is slow and doesn't run FFI code (so tests using `pyo3` or `safer-ffi` won't work under miri). Scope to pure-Rust crates with unsafe.
+**Limitations:** miri is slow and doesn't run FFI code (so tests using `pyo3` or `safer-ffi` or libc syscalls won't work under miri). Scope to pure-Rust code paths only.
 
 **Gate:** miri failure pages on-call and opens an issue.
 
@@ -761,6 +810,17 @@ This report is part of the release notes. Users see it. It is the claim-with-evi
 ## 8. POC plan in adora
 
 The goal of the POC is to validate these tools on the adora codebase, tune them, and produce a known-good CI configuration that can be ported to dora 1.0 post-consolidation.
+
+**POC executed 2026-04-07 to 2026-04-08**: compressed the 5-week phased plan below into a single intensive session. Actual results:
+
+- Tier 1 gates: all 6 wired (fmt, clippy, test, audit, unwrap, coverage+semver soft). CI integration landed on the `main` branch of adora.
+- Tier 2 gates: 3 of 4 wired (proptest on `ws_protocol`, miri on `metadata.rs`, mutation baselines on 4 critical crates). Fault injection designed (`plan-fault-injection.md`) but not yet implemented.
+- Tier 3 gates: dogfood campaign designed (`plan-dogfood-campaign.md`); first execution tied to the dora 1.0 release cycle.
+- Case studies landed: 8 (+22 tautological-test fixes), 3 of which are genuine production bugs (`metadata::from_array` double off-by-one, `adora_send_operator_output` null UB, `NodeId::TryFrom` misleading doc), all caught by focused unsafe-code audit during miri or mutation prep — not by the tools themselves.
+
+The full case-study table, metrics before/after, and meta-findings live in Section 10a of this doc.
+
+**The 5-week phased plan below is retained as a reference for repeating the rollout on dora post-consolidation.**
 
 ### Phase P1: Establish baselines (week 1)
 
