@@ -266,7 +266,6 @@ async fn start_inner(
         HashMap::new();
     let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
     let mut daemon_connections = DaemonConnections::default();
-    let mut persist_failure_count: u64 = 0;
 
     // Clear stale daemon records -- connections cannot survive a coordinator restart.
     match store.list_daemons() {
@@ -309,7 +308,6 @@ async fn start_inner(
                         record.generation += 1;
                         record.updated_at = state::now_millis();
                         if let Err(e) = store.put_dataflow(&record) {
-                            persist_failure_count += 1;
                             tracing::warn!("failed to update stale dataflow record: {e}");
                         }
                     }
@@ -383,7 +381,6 @@ async fn start_inner(
                                     labels,
                                 })
                             {
-                                persist_failure_count += 1;
                                 tracing::warn!("failed to persist daemon registration: {e}");
                             }
                         }
@@ -535,7 +532,6 @@ async fn start_inner(
                                     .make_record(final_status)
                                     .and_then(|r| store.put_dataflow(&r))
                                 {
-                                    persist_failure_count += 1;
                                     tracing::warn!("failed to persist dataflow finish: {e}");
                                 }
 
@@ -673,7 +669,6 @@ async fn start_inner(
                                         .make_record(StoreDataflowStatus::Pending)
                                         .and_then(|r| store.put_dataflow(&r))
                                     {
-                                        persist_failure_count += 1;
                                         tracing::warn!("failed to persist dataflow start: {e}");
                                     }
                                     running_dataflows.insert(uuid, dataflow);
@@ -811,7 +806,6 @@ async fn start_inner(
                                         .make_record(StoreDataflowStatus::Stopping)
                                         .and_then(|r| store.put_dataflow(&r))
                                     {
-                                        persist_failure_count += 1;
                                         tracing::warn!("failed to persist dataflow stopping: {e}");
                                     }
                                     dataflow.stop_reply_senders.push(reply_sender);
@@ -854,7 +848,6 @@ async fn start_inner(
                                             .make_record(StoreDataflowStatus::Stopping)
                                             .and_then(|r| store.put_dataflow(&r))
                                         {
-                                            persist_failure_count += 1;
                                             tracing::warn!(
                                                 "failed to persist dataflow stopping: {e}"
                                             );
@@ -883,7 +876,6 @@ async fn start_inner(
                                 &mut daemon_connections,
                                 &clock,
                                 store.as_ref(),
-                                &mut persist_failure_count,
                             )
                             .await;
                             let _ = reply_sender.send(result);
@@ -902,7 +894,6 @@ async fn start_inner(
                                     &mut daemon_connections,
                                     &clock,
                                     store.as_ref(),
-                                    &mut persist_failure_count,
                                 )
                                 .await;
                                 let _ = reply_sender.send(result);
@@ -1628,7 +1619,6 @@ async fn start_inner(
                     for machine_id in &disconnected {
                         daemon_connections.remove(machine_id);
                         if let Err(e) = store.unregister_daemon(machine_id) {
-                            persist_failure_count += 1;
                             tracing::warn!("failed to persist daemon unregistration: {e}");
                         }
                     }
@@ -1662,13 +1652,6 @@ async fn start_inner(
                         }
                     }
                 }
-                if persist_failure_count > 0 {
-                    tracing::warn!(
-                        persist_failures = persist_failure_count,
-                        "store persistence failures since startup"
-                    );
-                }
-
                 // Recovery timeout: transition stale Recovering dataflows to Failed.
                 // Dataflows are marked Recovering on coordinator startup and should
                 // be reclaimed by reconnecting daemons within 60 seconds.
@@ -1763,7 +1746,6 @@ async fn start_inner(
                 tracing::info!("Daemon `{daemon_id}` exited");
                 daemon_connections.remove(&daemon_id);
                 if let Err(e) = store.unregister_daemon(&daemon_id) {
-                    persist_failure_count += 1;
                     tracing::warn!("failed to persist daemon unregistration: {e}");
                 }
             }
@@ -1883,7 +1865,6 @@ async fn start_inner(
                                     .make_record(StoreDataflowStatus::Running)
                                     .and_then(|r| store.put_dataflow(&r))
                                 {
-                                    persist_failure_count += 1;
                                     tracing::warn!("failed to persist dataflow running: {e}");
                                 }
                             }
@@ -1897,7 +1878,6 @@ async fn start_inner(
                                 })
                                 .and_then(|r| store.put_dataflow(&r))
                             {
-                                persist_failure_count += 1;
                                 tracing::warn!("failed to persist dataflow spawn failure: {e}");
                             }
                             dataflow.spawn_result.set_result(Err(err));
@@ -1937,7 +1917,6 @@ async fn start_inner(
                                 record.generation += 1;
                                 record.updated_at = state::now_millis();
                                 if let Err(e) = store.put_dataflow(&record) {
-                                    persist_failure_count += 1;
                                     tracing::warn!("failed to reconcile dataflow {df_id}: {e}");
                                 }
                             }
@@ -3053,7 +3032,6 @@ async fn restart_dataflow(
     daemon_connections: &mut DaemonConnections,
     clock: &HLC,
     store: &dyn CoordinatorStore,
-    persist_failure_count: &mut u64,
 ) -> eyre::Result<ControlRequestReply> {
     // 1. Extract descriptor, name, and uv from the running dataflow
     let (descriptor, name, uv) = {
@@ -3080,7 +3058,6 @@ async fn restart_dataflow(
             .make_record(StoreDataflowStatus::Stopping)
             .and_then(|r| store.put_dataflow(&r))
         {
-            *persist_failure_count += 1;
             tracing::warn!("failed to persist dataflow stopping: {e}");
         }
     }
@@ -3110,7 +3087,6 @@ async fn restart_dataflow(
         .make_record(StoreDataflowStatus::Pending)
         .and_then(|r| store.put_dataflow(&r))
     {
-        *persist_failure_count += 1;
         tracing::warn!("failed to persist restarted dataflow: {e}");
     }
     running_dataflows.insert(new_uuid, new_df);
