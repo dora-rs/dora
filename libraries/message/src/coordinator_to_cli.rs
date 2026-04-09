@@ -14,6 +14,13 @@ use crate::{
 pub enum ControlRequestReply {
     Error(String),
     CoordinatorStopped,
+    /// Response to [`ControlRequest::Hello`][crate::cli_to_coordinator::ControlRequest::Hello].
+    /// Carries the coordinator's own adora crate version so the CLI can
+    /// display it on version mismatches and in debug output
+    /// (dora-rs/adora#151).
+    HelloOk {
+        adora_version: semver::Version,
+    },
     DataflowBuildTriggered {
         build_id: BuildId,
     },

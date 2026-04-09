@@ -1534,6 +1534,16 @@ async fn start_inner(
                             };
                             let _ = reply_sender.send(result);
                         }
+                        ControlRequest::Hello { .. } => {
+                            // Handled directly in ws_control.rs; never
+                            // forwarded to the event loop. This arm exists
+                            // only to keep the match exhaustive
+                            // (dora-rs/adora#151).
+                            let _ = reply_sender.send(Err(eyre!(
+                                "Hello must be handled at the WS layer; \
+                                 reaching the event loop is a bug"
+                            )));
+                        }
                     }
                 }
                 ControlEvent::Error(err) => tracing::error!("{err:?}"),

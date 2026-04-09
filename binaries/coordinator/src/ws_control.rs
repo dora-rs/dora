@@ -1,9 +1,10 @@
 use crate::{Event, control::ControlEvent};
 use adora_core::topics::zenoh_output_publish_topic;
 use adora_message::{
-    cli_to_coordinator::ControlRequest,
+    cli_to_coordinator::{ControlRequest, check_cli_version},
     common::Timestamped,
     coordinator_to_cli::ControlRequestReply,
+    current_crate_version,
     daemon_to_daemon::InterDaemonEvent,
     metadata::{ArrowTypeInfo, BufferOffset, Metadata},
     ws_protocol::{WsRequest, WsResponse},
@@ -136,8 +137,34 @@ pub(crate) async fn handle_control_ws(
                     }
                 };
 
-                // Handle LogSubscribe / BuildLogSubscribe / TopicSubscribe / TopicUnsubscribe specially
+                // Handle Hello / LogSubscribe / BuildLogSubscribe / TopicSubscribe / TopicUnsubscribe specially
                 match &control_request {
+                    ControlRequest::Hello { adora_version } => {
+                        // Protocol version handshake — reply directly from
+                        // this loop rather than forwarding to the event
+                        // loop, so mismatched CLIs fail fast before any
+                        // stateful interaction (dora-rs/adora#151).
+                        let resp = match check_cli_version(adora_version) {
+                            Ok(()) => {
+                                let reply = ControlRequestReply::HelloOk {
+                                    adora_version: current_crate_version(),
+                                };
+                                match serde_json::to_value(&reply) {
+                                    Ok(val) => WsResponse::ok(req.id, val),
+                                    Err(e) => WsResponse::err(
+                                        req.id,
+                                        format!("failed to serialize HelloOk: {e}"),
+                                    ),
+                                }
+                            }
+                            Err(msg) => {
+                                tracing::warn!("rejecting CLI with {msg}");
+                                WsResponse::err(req.id, msg)
+                            }
+                        };
+                        let _ = send_ws_response(&mut ws_tx, &resp).await;
+                        continue;
+                    }
                     ControlRequest::LogSubscribe { dataflow_id, level } => {
                         let (found_tx, found_rx) = oneshot::channel();
                         let _ = event_tx.send(Event::Control(ControlEvent::LogSubscribe {
