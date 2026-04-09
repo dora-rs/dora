@@ -46,7 +46,30 @@ use process_wrap::tokio::TokioChildWrapper;
 
 pub(crate) struct InputDeadline {
     pub timeout: Duration,
-    pub last_received: Instant,
+    /// Wall-clock time of the most recent message delivery.
+    ///
+    /// `None` means the input has never received a message and the
+    /// circuit-breaker clock should NOT count against it yet. This
+    /// prevents false-positive timeouts on on-demand inputs that are
+    /// legitimately idle at dataflow startup — most notably service
+    /// response inputs on clients that haven't sent a request yet
+    /// (dora-rs/adora#149).
+    pub last_received: Option<Instant>,
+}
+
+impl InputDeadline {
+    /// Returns `true` if the circuit breaker should fire for this input.
+    ///
+    /// An input is only considered timed out once it has received at
+    /// least one message (`last_received = Some(_)`) and the elapsed
+    /// time since that message exceeds the configured timeout. An
+    /// input that has never received a message is never timed out
+    /// — its clock is unarmed (dora-rs/adora#149).
+    pub fn is_timed_out(&self) -> bool {
+        self.last_received
+            .map(|t| t.elapsed() > self.timeout)
+            .unwrap_or(false)
+    }
 }
 
 #[derive(Debug)]
@@ -524,5 +547,62 @@ impl RunningDataflow {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ---- dora-rs/adora#149: InputDeadline::is_timed_out ----
+
+    #[test]
+    fn unarmed_deadline_is_never_timed_out() {
+        // An input that has never received a message (last_received = None)
+        // must not trip the circuit breaker, even if `timeout` has long
+        // since elapsed relative to dataflow start. This prevents false
+        // positives on service response inputs that are legitimately idle
+        // until the client sends its first request.
+        let deadline = InputDeadline {
+            timeout: Duration::from_millis(1),
+            last_received: None,
+        };
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(!deadline.is_timed_out());
+    }
+
+    #[test]
+    fn armed_deadline_within_timeout_is_not_timed_out() {
+        let deadline = InputDeadline {
+            timeout: Duration::from_secs(60),
+            last_received: Some(Instant::now()),
+        };
+        assert!(!deadline.is_timed_out());
+    }
+
+    #[test]
+    fn armed_deadline_past_timeout_is_timed_out() {
+        let deadline = InputDeadline {
+            timeout: Duration::from_millis(1),
+            last_received: Some(Instant::now() - Duration::from_millis(10)),
+        };
+        assert!(deadline.is_timed_out());
+    }
+
+    #[test]
+    fn arming_a_previously_unarmed_deadline_starts_the_clock() {
+        // Simulates: input starts unarmed, first message arrives, the
+        // clock begins counting, timeout must elapse before firing.
+        let mut deadline = InputDeadline {
+            timeout: Duration::from_millis(50),
+            last_received: None,
+        };
+        assert!(!deadline.is_timed_out(), "unarmed should not fire");
+
+        deadline.last_received = Some(Instant::now());
+        assert!(
+            !deadline.is_timed_out(),
+            "just-armed should not fire immediately"
+        );
     }
 }

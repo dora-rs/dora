@@ -174,28 +174,32 @@ nodes:
 
 The `input_timeout` is set per input, not per node. Different inputs can have different timeouts.
 
+> **Warning — not for on-demand inputs.** `input_timeout` assumes the upstream publishes continuously. Do **not** set it on inputs that are only populated in response to an outbound request (service response inputs, action result inputs, or any other bursty / on-demand channel). Natural idle periods will look identical to a dead upstream and trip the circuit breaker spuriously. For per-request waits, use [`EventStream::recv_service_response(request_id, server, timeout)`](../apis/rust/node/src/event_stream/mod.rs) or [`EventStream::recv_action_result(goal_id, server, timeout)`](../apis/rust/node/src/event_stream/mod.rs) instead — they bound each individual request without tripping the dataflow-level circuit breaker. See `docs/patterns.md` §6 "Fault tolerance for correlated patterns".
+
 ### How It Works Internally
 
 The daemon maintains an `InputDeadline` for each input with a timeout:
 
 ```
 struct InputDeadline {
-    timeout: Duration,        // configured timeout
-    last_received: Instant,   // last time data arrived
+    timeout: Duration,                   // configured timeout
+    last_received: Option<Instant>,      // last time data arrived (None = unarmed)
 }
 ```
 
 These are stored in `RunningDataflow.input_deadlines` keyed by `(NodeId, DataId)`.
 
+**Deadline arming**: `last_received` starts as `None` at dataflow start. The circuit-breaker clock does not count against the input until the first message actually arrives (see `InputDeadline::is_timed_out`). This prevents false positives on inputs that are idle at startup — dora-rs/adora#149.
+
 **Timeout detection** runs during the same 5-second health check interval. The `check_input_timeouts` function:
 
 1. Scans all `input_deadlines` entries
-2. If `last_received.elapsed() > timeout`, the input is "broken"
+2. For armed entries only (`last_received = Some(_)`), if `last_received.elapsed() > timeout`, the input is "broken"
 3. The `(node_id, input_id)` pair is moved from `input_deadlines` to `broken_inputs`
 4. The daemon calls `break_input()` which sends `InputClosed { id }` to the downstream node
 5. If all of a node's inputs are now closed (and none are broken/recoverable), `AllInputsClosed` is sent and the node's restart is disabled
 
-**Deadline reset**: Every time data arrives on an input, its `last_received` is reset to `Instant::now()`.
+**Deadline arming/reset**: Every time data arrives on an input, its `last_received` is set to `Some(Instant::now())`, both arming a previously-unarmed deadline and resetting an already-armed one.
 
 ### Circuit Breaker: Auto-Recovery
 
