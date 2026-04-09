@@ -100,20 +100,22 @@ Internal transport:
 
 ### Pre-commit local CI (MANDATORY)
 
-**Run these checks locally before every commit.** Remote CI failures waste time and block other work. Do not push code that has not passed all of these:
+**Remote CI runners are slower than your local machine and have limited capacity.** Every remote CI failure costs 5-15 minutes of wall-clock time, blocks other work, and wastes shared GitHub Actions minutes. **Always run the simple local CI below before pushing.** Catching a failure on your laptop is an order of magnitude cheaper than catching it on a GitHub runner.
+
+This is **the same simple CI we had before the larger QA system was added** — fmt, clippy, tests. Nothing fancy, nothing slow. Fast enough to run on every push without thinking about it.
 
 ```bash
-# 1. Format (must pass — CI rejects formatting diffs)
+# 1. Format — CI rejects formatting diffs
 cargo fmt --all -- --check
 
-# 2. Clippy with warnings-as-errors (must pass — CI uses -D warnings)
+# 2. Clippy with warnings-as-errors — CI uses -D warnings
 cargo clippy --all \
   --exclude adora-node-api-python \
   --exclude adora-operator-api-python \
   --exclude adora-ros2-bridge-python \
   -- -D warnings
 
-# 3. Tests (must pass — run at minimum the affected crate)
+# 3. Tests — at minimum the affected crate; full workspace before push
 cargo test --all \
   --exclude adora-node-api-python \
   --exclude adora-operator-api-python \
@@ -121,11 +123,25 @@ cargo test --all \
   --exclude adora-cli-api-python \
   --exclude adora-examples
 
-# Quick single-crate check when iterating:
+# Quick single-crate check while iterating:
 # cargo test -p <crate-name>
 ```
 
+**Shortcut**: `make qa-fast` runs fmt + clippy + supply-chain audit + unwrap budget in ~30 seconds. Use it as a sanity check before every commit. Then run the full `cargo test` above before `git push`.
+
 If you add new example dataflows, also run `./scripts/smoke-all.sh --rust-only` to verify smoke tests pass.
+
+### Do NOT run the full QA suite on every commit/push
+
+The deeper QA gates — `make qa-full`, `make qa-tier1`, `make qa-coverage`, `make qa-mutants`, `make qa-semver` — are designed for **focused investigation and pre-release gating**, not the per-commit loop. Do not run them routinely, and do not add them to remote CI:
+
+- `make qa-full` (qa-fast + full tests + coverage) — ~5-10 minutes. Run before a significant push if you want extra confidence; coverage is too slow for every push.
+- `make qa-tier1` (qa-full + mutation testing + semver) — ~1-2 hours. Run before a release or when auditing a specific crate.
+- `make qa-coverage` — generates an lcov report locally. Run when you want to see what's covered.
+- `make qa-mutants` — mutation testing, slow. Run when investigating test quality on a specific file or on the PR diff.
+- `make qa-semver` — breaking-change check. Run before publishing to crates.io.
+
+**Remote CI is deliberately kept lean** — only the fast hard gates (fmt, clippy, test, typos, supply chain audit, unwrap budget, E2E, benchmark regression) — so it stays fast and runner capacity is not a bottleneck. Do not expand remote CI with slow jobs. See [`docs/qa-runbook.md`](docs/qa-runbook.md) for when and how to use each deep gate locally.
 
 ### Remote CI jobs
 
