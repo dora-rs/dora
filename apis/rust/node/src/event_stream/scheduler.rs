@@ -207,13 +207,28 @@ impl Scheduler {
             _ => (&DataId::from(NON_INPUT_EVENT.to_string()), false),
         };
 
-        // Flush older queued messages when flush=true is present
+        // Flush older queued messages when flush=true is present.
+        //
+        // Streaming pattern's `flush: true` means "discard stale stream chunks".
+        // It must NOT wipe service responses or action results that happen to
+        // share the same input, because those carry `request_id` / `goal_id` /
+        // `goal_status` correlations whose senders are waiting for them
+        // (dora-rs/adora#146). Use the same correlation predicate that the
+        // drop_oldest path uses and retain correlated events across the flush.
         if should_flush && let Some((_size, queue)) = self.event_queues.get_mut(event_id) {
-            let drained = queue.len();
-            queue.clear();
+            let before = queue.len();
+            queue.retain(is_correlated);
+            let drained = before - queue.len();
             if drained > 0 {
                 tracing::debug!(
                     "Flushed {drained} queued event(s) for input `{event_id}` (flush signal)"
+                );
+            }
+            if !queue.is_empty() {
+                tracing::debug!(
+                    input = %event_id,
+                    preserved = queue.len(),
+                    "flush signal retained correlated (request_id/goal_id) events"
                 );
             }
         }
@@ -425,6 +440,82 @@ mod tests {
         // After drain, counts reset
         let counts = sched.drain_drop_counts();
         assert!(counts.is_empty());
+    }
+
+    // ---- dora-rs/adora#146: flush: true must not wipe correlated messages ----
+
+    #[test]
+    fn flush_retains_correlated_events() {
+        // Queue holds a service response (request_id) and two stream chunks.
+        // A flush signal should drop the stream chunks but keep the response.
+        let (mut sched, id) = make_scheduler(10);
+
+        sched.add_event(make_input("audio", with_request_id("req-1")));
+        sched.add_event(make_input("audio", MetadataParameters::new()));
+        sched.add_event(make_input("audio", MetadataParameters::new()));
+        assert_eq!(sched.event_queues[&id].1.len(), 3);
+
+        let mut flush_params = MetadataParameters::new();
+        flush_params.insert(FLUSH.into(), Parameter::Bool(true));
+        sched.add_event(make_input("audio", flush_params));
+
+        let queue = &sched.event_queues[&id].1;
+        // Expect: [req-1, flush_message]
+        assert_eq!(queue.len(), 2);
+        assert!(
+            queue
+                .iter()
+                .any(|e| request_id_of(e).as_deref() == Some("req-1")),
+            "service response with request_id was wiped by flush"
+        );
+    }
+
+    #[test]
+    fn flush_retains_goal_id_events() {
+        // Same preservation via goal_id.
+        let (mut sched, id) = make_scheduler(10);
+
+        let mut goal_params = MetadataParameters::new();
+        goal_params.insert(GOAL_ID.into(), Parameter::String("goal-7".to_string()));
+        sched.add_event(make_input("audio", goal_params));
+        sched.add_event(make_input("audio", MetadataParameters::new()));
+
+        let mut flush_params = MetadataParameters::new();
+        flush_params.insert(FLUSH.into(), Parameter::Bool(true));
+        sched.add_event(make_input("audio", flush_params));
+
+        let queue = &sched.event_queues[&id].1;
+        // Expect: [goal-7, flush_message]
+        assert_eq!(queue.len(), 2);
+        let has_goal = queue.iter().any(|e| {
+            let EventItem::NodeEvent {
+                event: NodeEvent::Input { metadata, .. },
+                ..
+            } = e
+            else {
+                return false;
+            };
+            get_string_param(&metadata.parameters, GOAL_ID) == Some("goal-7")
+        });
+        assert!(has_goal, "action result with goal_id was wiped by flush");
+    }
+
+    #[test]
+    fn flush_with_all_correlated_queue_keeps_everything() {
+        // All queued events are correlations. Flush should preserve them all,
+        // then admit the flush message itself.
+        let (mut sched, id) = make_scheduler(10);
+
+        sched.add_event(make_input("audio", with_request_id("req-1")));
+        sched.add_event(make_input("audio", with_request_id("req-2")));
+        sched.add_event(make_input("audio", with_request_id("req-3")));
+
+        let mut flush_params = MetadataParameters::new();
+        flush_params.insert(FLUSH.into(), Parameter::Bool(true));
+        sched.add_event(make_input("audio", flush_params));
+
+        // Expect: [req-1, req-2, req-3, flush_message]
+        assert_eq!(sched.event_queues[&id].1.len(), 4);
     }
 
     // ---- dora-rs/adora#145: drop_oldest must not silently drop correlated messages ----
