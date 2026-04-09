@@ -22,7 +22,7 @@ use scheduler::{NON_INPUT_EVENT, Scheduler};
 
 use self::thread::{EventItem, EventStreamThreadHandle};
 use crate::{
-    DaemonCommunicationWrapper,
+    DaemonCommunicationWrapper, PatternError,
     daemon_connection::{DaemonChannel, node_integration_testing::convert_output_to_json},
     event_stream::data_conversion::{MappedInputData, RawData, SharedMemoryData},
 };
@@ -77,6 +77,12 @@ pub struct EventStream {
     /// Expected input types from YAML descriptor (for first-message validation).
     /// Each input is checked once; after the first message, the entry is removed.
     input_type_checks: HashMap<DataId, arrow_schema::DataType>,
+    /// Events that were consumed by a pattern-aware helper
+    /// (`recv_service_response`, `recv_action_result`) while searching
+    /// for a correlation match. Drained first on the next `recv()` so
+    /// the caller's main event loop never loses intermediate events
+    /// (dora-rs/adora#148).
+    pending_passthrough: std::collections::VecDeque<Event>,
 }
 
 impl EventStream {
@@ -444,6 +450,7 @@ impl EventStream {
             write_events_to,
             use_scheduler,
             input_type_checks,
+            pending_passthrough: std::collections::VecDeque::new(),
         })
     }
 
@@ -503,6 +510,15 @@ impl EventStream {
     /// [`StreamExt::next`] method with a custom timeout future instead
     /// ([`EventStream`] implements the [`Stream`] trait).
     pub async fn recv_async(&mut self) -> Option<Event> {
+        // Drain any events that were stashed by pattern-aware helpers
+        // (`recv_service_response`, `recv_action_result`) while they
+        // were waiting for a specific correlation. These must be
+        // returned to the caller before we poll the underlying
+        // scheduler, so the caller's main event loop never loses
+        // events that arrived during a helper wait (dora-rs/adora#148).
+        if let Some(event) = self.pending_passthrough.pop_front() {
+            return Some(event);
+        }
         let event = if !self.use_scheduler {
             self.receiver.next().await.map(Self::convert_event_item)
         } else {
@@ -728,6 +744,192 @@ impl EventStream {
         }
     }
 
+    /// Waits for a service response carrying `request_id` in its metadata.
+    ///
+    /// Drives the event loop internally and returns the matching
+    /// [`Event::Input`] as soon as it arrives. Non-matching events are
+    /// buffered and replayed on the next call to `recv()` / `recv_async()`,
+    /// so your main event loop does not lose intermediate events.
+    ///
+    /// Terminal conditions return a [`PatternError`]:
+    ///
+    /// - `Timeout` — `timeout` elapsed before any matching response arrived.
+    /// - `ServerRestarted(expected_server)` — the expected server node
+    ///   restarted, which means its in-flight `request_id` correlation
+    ///   was orphaned. The caller should retry against the new instance.
+    /// - `StreamEnded` — the event stream closed (dataflow stopping)
+    ///   before a response arrived. The terminal `Stop` event is still
+    ///   returned to the caller's next `recv()`.
+    /// - `StreamError` — an upstream error event surfaced during the wait.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let request_id = node.send_service_request(...)?;
+    /// match events
+    ///     .recv_service_response(&request_id, &server_id, Duration::from_secs(5))
+    ///     .await
+    /// {
+    ///     Ok(Event::Input { data, .. }) => handle_response(data),
+    ///     Err(PatternError::Timeout) => fallback_path(),
+    ///     Err(PatternError::ServerRestarted(_)) => retry_with_new_instance(),
+    ///     Err(e) => return Err(e.into()),
+    ///     _ => unreachable!(),
+    /// }
+    /// ```
+    pub async fn recv_service_response(
+        &mut self,
+        request_id: &str,
+        expected_server: &NodeId,
+        timeout: Duration,
+    ) -> Result<Event, PatternError> {
+        self.wait_for_correlation(
+            timeout,
+            expected_server,
+            |event, request_id| match event {
+                Event::Input { metadata, .. } => {
+                    adora_message::metadata::get_string_param(
+                        &metadata.parameters,
+                        adora_message::metadata::REQUEST_ID,
+                    ) == Some(request_id)
+                }
+                _ => false,
+            },
+            request_id,
+        )
+        .await
+    }
+
+    /// Waits for a terminal action result (`goal_status` ∈
+    /// {`succeeded`, `aborted`, `canceled`}) with a matching `goal_id`.
+    ///
+    /// Semantics mirror [`recv_service_response`](Self::recv_service_response)
+    /// but match on `goal_id` + a terminal `goal_status` instead of
+    /// `request_id`. Intermediate feedback events (matching `goal_id`
+    /// without a terminal `goal_status`) are stashed for the caller's
+    /// main loop — use `recv()` separately if you need to observe them.
+    pub async fn recv_action_result(
+        &mut self,
+        goal_id: &str,
+        expected_server: &NodeId,
+        timeout: Duration,
+    ) -> Result<Event, PatternError> {
+        self.wait_for_correlation(
+            timeout,
+            expected_server,
+            |event, goal_id| match event {
+                Event::Input { metadata, .. } => {
+                    let matches_goal = adora_message::metadata::get_string_param(
+                        &metadata.parameters,
+                        adora_message::metadata::GOAL_ID,
+                    ) == Some(goal_id);
+                    if !matches_goal {
+                        return false;
+                    }
+                    matches!(
+                        adora_message::metadata::get_string_param(
+                            &metadata.parameters,
+                            adora_message::metadata::GOAL_STATUS,
+                        ),
+                        Some(adora_message::metadata::GOAL_STATUS_SUCCEEDED)
+                            | Some(adora_message::metadata::GOAL_STATUS_ABORTED)
+                            | Some(adora_message::metadata::GOAL_STATUS_CANCELED)
+                    )
+                }
+                _ => false,
+            },
+            goal_id,
+        )
+        .await
+    }
+
+    /// Core loop for the pattern-aware helpers. Waits up to `timeout`
+    /// for an event that satisfies `is_match(event, needle)`. Buffers
+    /// every non-matching event so the caller's main event loop can
+    /// still see them via `recv()`.
+    async fn wait_for_correlation<F>(
+        &mut self,
+        timeout: Duration,
+        expected_server: &NodeId,
+        is_match: F,
+        needle: &str,
+    ) -> Result<Event, PatternError>
+    where
+        F: Fn(&Event, &str) -> bool,
+    {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return Err(PatternError::Timeout);
+            }
+            let event = match select(Delay::new(remaining), pin!(self.recv_async())).await {
+                Either::Left((_elapsed, _)) => return Err(PatternError::Timeout),
+                Either::Right((None, _)) => return Err(PatternError::StreamEnded),
+                Either::Right((Some(e), _)) => e,
+            };
+
+            match classify_correlation_event(&event, expected_server, |e| is_match(e, needle)) {
+                CorrelationOutcome::Match => return Ok(event),
+                CorrelationOutcome::ServerRestarted => {
+                    self.pending_passthrough.push_back(event);
+                    return Err(PatternError::ServerRestarted(expected_server.to_string()));
+                }
+                CorrelationOutcome::StreamEnded => {
+                    self.pending_passthrough.push_back(event);
+                    return Err(PatternError::StreamEnded);
+                }
+                CorrelationOutcome::StreamError => {
+                    if let Event::Error(err) = event {
+                        return Err(PatternError::StreamError(err));
+                    }
+                    unreachable!("StreamError only returned for Event::Error");
+                }
+                CorrelationOutcome::Passthrough => {
+                    self.pending_passthrough.push_back(event);
+                }
+            }
+        }
+    }
+}
+
+/// Outcome of classifying a single event during a pattern-aware wait.
+/// Separated from `wait_for_correlation` so the decision logic can be
+/// unit-tested without a live `EventStream`.
+#[derive(Debug, PartialEq, Eq)]
+enum CorrelationOutcome {
+    /// The event satisfies the caller's predicate — return it.
+    Match,
+    /// `Event::NodeRestarted { id }` where `id == expected_server`.
+    ServerRestarted,
+    /// `Event::Stop(_)` — the dataflow is shutting down.
+    StreamEnded,
+    /// `Event::Error(_)` — the stream surfaced an error.
+    StreamError,
+    /// Unrelated event — buffer it and keep waiting.
+    Passthrough,
+}
+
+fn classify_correlation_event<F>(
+    event: &Event,
+    expected_server: &NodeId,
+    is_match: F,
+) -> CorrelationOutcome
+where
+    F: Fn(&Event) -> bool,
+{
+    if is_match(event) {
+        return CorrelationOutcome::Match;
+    }
+    match event {
+        Event::NodeRestarted { id } if id == expected_server => CorrelationOutcome::ServerRestarted,
+        Event::Stop(_) => CorrelationOutcome::StreamEnded,
+        Event::Error(_) => CorrelationOutcome::StreamError,
+        _ => CorrelationOutcome::Passthrough,
+    }
+}
+
+impl EventStream {
     fn convert_event_item(item: EventItem) -> Event {
         match item {
             EventItem::NodeEvent { event, ack_channel } => match event {
@@ -990,5 +1192,211 @@ mod tests {
             Event::NodeRestarted { id } => assert_eq!(AsRef::<str>::as_ref(&id), "upstream"),
             other => panic!("expected NodeRestarted, got {other:?}"),
         }
+    }
+
+    // ---- dora-rs/adora#148: pattern-aware correlation classification ----
+
+    use adora_arrow_convert::ArrowData;
+    use adora_message::metadata::{
+        ArrowTypeInfo, GOAL_ID, GOAL_STATUS, GOAL_STATUS_ABORTED, GOAL_STATUS_SUCCEEDED, Metadata,
+        MetadataParameters, Parameter, REQUEST_ID,
+    };
+    use arrow::array::new_empty_array;
+    use arrow::datatypes::DataType as ArrowDataType;
+
+    fn make_metadata(params: MetadataParameters) -> Metadata {
+        let type_info = ArrowTypeInfo {
+            data_type: ArrowDataType::Null,
+            len: 0,
+            null_count: 0,
+            validity: None,
+            offset: 0,
+            buffer_offsets: vec![],
+            child_data: vec![],
+            field_names: None,
+            schema_hash: None,
+        };
+        Metadata::from_parameters(
+            adora_core::uhlc::HLC::default().new_timestamp(),
+            type_info,
+            params,
+        )
+    }
+
+    fn make_input_event(id: &str, params: MetadataParameters) -> Event {
+        Event::Input {
+            id: id.into(),
+            metadata: make_metadata(params),
+            data: ArrowData(new_empty_array(&ArrowDataType::Null)),
+        }
+    }
+
+    fn request_id_params(id: &str) -> MetadataParameters {
+        let mut p = MetadataParameters::new();
+        p.insert(REQUEST_ID.into(), Parameter::String(id.to_string()));
+        p
+    }
+
+    fn goal_params(goal_id: &str, status: Option<&str>) -> MetadataParameters {
+        let mut p = MetadataParameters::new();
+        p.insert(GOAL_ID.into(), Parameter::String(goal_id.to_string()));
+        if let Some(s) = status {
+            p.insert(GOAL_STATUS.into(), Parameter::String(s.to_string()));
+        }
+        p
+    }
+
+    fn is_request_match(needle: &str) -> impl Fn(&Event) -> bool + '_ {
+        move |event: &Event| match event {
+            Event::Input { metadata, .. } => {
+                adora_message::metadata::get_string_param(&metadata.parameters, REQUEST_ID)
+                    == Some(needle)
+            }
+            _ => false,
+        }
+    }
+
+    fn is_action_result_match(needle: &str) -> impl Fn(&Event) -> bool + '_ {
+        move |event: &Event| match event {
+            Event::Input { metadata, .. } => {
+                let p = &metadata.parameters;
+                adora_message::metadata::get_string_param(p, GOAL_ID) == Some(needle)
+                    && matches!(
+                        adora_message::metadata::get_string_param(p, GOAL_STATUS),
+                        Some(GOAL_STATUS_SUCCEEDED)
+                            | Some(GOAL_STATUS_ABORTED)
+                            | Some(adora_message::metadata::GOAL_STATUS_CANCELED)
+                    )
+            }
+            _ => false,
+        }
+    }
+
+    #[test]
+    fn classify_matching_request_id_returns_match() {
+        let server = NodeId::from("calc".to_string());
+        let event = make_input_event("response", request_id_params("req-42"));
+        assert_eq!(
+            classify_correlation_event(&event, &server, is_request_match("req-42")),
+            CorrelationOutcome::Match
+        );
+    }
+
+    #[test]
+    fn classify_different_request_id_is_passthrough() {
+        let server = NodeId::from("calc".to_string());
+        let event = make_input_event("response", request_id_params("req-99"));
+        assert_eq!(
+            classify_correlation_event(&event, &server, is_request_match("req-42")),
+            CorrelationOutcome::Passthrough
+        );
+    }
+
+    #[test]
+    fn classify_expected_server_restart_returns_server_restarted() {
+        let server = NodeId::from("calc".to_string());
+        let event = Event::NodeRestarted { id: server.clone() };
+        assert_eq!(
+            classify_correlation_event(&event, &server, is_request_match("req-42")),
+            CorrelationOutcome::ServerRestarted
+        );
+    }
+
+    #[test]
+    fn classify_unrelated_node_restart_is_passthrough() {
+        let server = NodeId::from("calc".to_string());
+        let event = Event::NodeRestarted {
+            id: NodeId::from("other".to_string()),
+        };
+        assert_eq!(
+            classify_correlation_event(&event, &server, is_request_match("req-42")),
+            CorrelationOutcome::Passthrough
+        );
+    }
+
+    #[test]
+    fn classify_stop_returns_stream_ended() {
+        let server = NodeId::from("calc".to_string());
+        let event = Event::Stop(StopCause::Manual);
+        assert_eq!(
+            classify_correlation_event(&event, &server, is_request_match("req-42")),
+            CorrelationOutcome::StreamEnded
+        );
+    }
+
+    #[test]
+    fn classify_error_returns_stream_error() {
+        let server = NodeId::from("calc".to_string());
+        let event = Event::Error("boom".to_string());
+        assert_eq!(
+            classify_correlation_event(&event, &server, is_request_match("req-42")),
+            CorrelationOutcome::StreamError
+        );
+    }
+
+    #[test]
+    fn classify_unrelated_input_is_passthrough() {
+        let server = NodeId::from("calc".to_string());
+        let event = make_input_event("sensor", MetadataParameters::new());
+        assert_eq!(
+            classify_correlation_event(&event, &server, is_request_match("req-42")),
+            CorrelationOutcome::Passthrough
+        );
+    }
+
+    #[test]
+    fn classify_param_update_is_passthrough() {
+        // Runtime parameter updates must survive a helper wait.
+        let server = NodeId::from("calc".to_string());
+        let event = Event::ParamUpdate {
+            key: "threshold".to_string(),
+            value: serde_json::json!(0.85),
+        };
+        assert_eq!(
+            classify_correlation_event(&event, &server, is_request_match("req-42")),
+            CorrelationOutcome::Passthrough
+        );
+    }
+
+    #[test]
+    fn classify_action_result_terminal_succeeded_matches() {
+        let server = NodeId::from("nav".to_string());
+        let event = make_input_event("result", goal_params("goal-1", Some(GOAL_STATUS_SUCCEEDED)));
+        assert_eq!(
+            classify_correlation_event(&event, &server, is_action_result_match("goal-1")),
+            CorrelationOutcome::Match
+        );
+    }
+
+    #[test]
+    fn classify_action_result_terminal_aborted_matches() {
+        let server = NodeId::from("nav".to_string());
+        let event = make_input_event("result", goal_params("goal-1", Some(GOAL_STATUS_ABORTED)));
+        assert_eq!(
+            classify_correlation_event(&event, &server, is_action_result_match("goal-1")),
+            CorrelationOutcome::Match
+        );
+    }
+
+    #[test]
+    fn classify_action_feedback_without_terminal_status_is_passthrough() {
+        // Intermediate feedback (no terminal goal_status) should pass
+        // through so the caller's main loop can observe it.
+        let server = NodeId::from("nav".to_string());
+        let event = make_input_event("feedback", goal_params("goal-1", None));
+        assert_eq!(
+            classify_correlation_event(&event, &server, is_action_result_match("goal-1")),
+            CorrelationOutcome::Passthrough
+        );
+    }
+
+    #[test]
+    fn classify_action_result_for_different_goal_is_passthrough() {
+        let server = NodeId::from("nav".to_string());
+        let event = make_input_event("result", goal_params("goal-2", Some(GOAL_STATUS_SUCCEEDED)));
+        assert_eq!(
+            classify_correlation_event(&event, &server, is_action_result_match("goal-1")),
+            CorrelationOutcome::Passthrough
+        );
     }
 }
