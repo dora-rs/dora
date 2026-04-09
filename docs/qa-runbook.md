@@ -316,6 +316,7 @@ If you want to add a new QA check:
 
 ## 11. Related documents
 
+- [`qa-followups.md`](qa-followups.md) — **open items tracker**: everything the POC deferred, organized by effort and trigger. Check here for "what's left to do"
 - [`plan-agentic-qa-strategy.md`](plan-agentic-qa-strategy.md) — the full strategy, including the three-tier model, case studies, and meta-findings
 - [`qa-baseline-2026-04-07.md`](qa-baseline-2026-04-07.md) — metrics snapshot as of the POC session
 - [`plan-dogfood-campaign.md`](plan-dogfood-campaign.md) — pre-release dogfood campaign spec

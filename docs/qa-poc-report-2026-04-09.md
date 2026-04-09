@@ -405,6 +405,7 @@ Finding #10 is the warning shot: default tool invocations can give wildly mislea
 ### 11.2 Operational documents
 
 - [`qa-runbook.md`](qa-runbook.md) — how to run QA day-to-day (commands, failure modes, fixes)
+- [`qa-followups.md`](qa-followups.md) — open items tracker: everything this POC deferred, with effort estimates, triggers, and owners
 - [`qa-baseline-2026-04-07.md`](qa-baseline-2026-04-07.md) — metrics snapshot with case study details
 
 ### 11.3 Gate configuration
