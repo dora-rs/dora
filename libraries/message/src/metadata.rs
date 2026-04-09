@@ -58,12 +58,16 @@ pub struct ArrowTypeInfo {
     pub child_data: Vec<ArrowTypeInfo>,
     /// Optional field names for struct types (enables schema introspection
     /// without full Arrow IPC framing).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ///
+    /// NOTE: must not use `#[serde(skip_serializing_if)]`. The wire format
+    /// is bincode, which is positional and non-self-describing; skipping a
+    /// field at serialize time desyncs the deserializer (dora-rs/adora#135).
     pub field_names: Option<Vec<String>>,
     /// Hash of the full Arrow schema for fast type matching.
     /// Populated when data is sent via the raw buffer path or Arrow IPC framing.
     /// Receivers can compare this O(1) value before doing a full type check.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ///
+    /// NOTE: see `field_names` above — no `skip_serializing_if`.
     pub schema_hash: Option<u64>,
 }
 
@@ -258,5 +262,30 @@ mod tests {
         let mut params = MetadataParameters::default();
         params.insert("n".to_string(), Parameter::Integer(1));
         assert_eq!(get_bool_param(&params, "n"), None);
+    }
+
+    /// Regression test for dora-rs/adora#135: `ArrowTypeInfo` must survive a
+    /// bincode roundtrip even when the optional fields `field_names` and
+    /// `schema_hash` are mixed (one `None`, one `Some`). bincode is a
+    /// positional format, so `#[serde(skip_serializing_if)]` desyncs the
+    /// wire and the deserializer reads misaligned bytes.
+    #[test]
+    fn arrow_type_info_bincode_roundtrip() {
+        let value = ArrowTypeInfo {
+            data_type: DataType::Null,
+            len: 0,
+            null_count: 0,
+            validity: None,
+            offset: 0,
+            buffer_offsets: Vec::new(),
+            child_data: Vec::new(),
+            field_names: None,
+            schema_hash: Some(0xdead_beef_cafe_1234),
+        };
+
+        let bytes = bincode::serialize(&value).expect("serialize");
+        let decoded: ArrowTypeInfo = bincode::deserialize(&bytes).expect("deserialize");
+        assert_eq!(decoded.schema_hash, value.schema_hash);
+        assert_eq!(decoded.field_names, value.field_names);
     }
 }
