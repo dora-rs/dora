@@ -3333,6 +3333,9 @@ impl Daemon {
                             .collect();
                         for receiver_id in &downstream {
                             if let Some(channel) = dataflow.subscribe_channels.get(receiver_id) {
+                                // First try the non-blocking path. NodeRestarted is
+                                // control-classed inside send_with_timestamp, so it
+                                // benefits from the control headroom reservation.
                                 match send_with_timestamp(
                                     channel,
                                     NodeEvent::NodeRestarted {
@@ -3343,10 +3346,65 @@ impl Daemon {
                                     Ok(true) => {
                                         dataflow.inc_pending(receiver_id);
                                     }
-                                    Ok(false) => { /* event dropped (channel full) */ }
+                                    Ok(false) => {
+                                        // Channel full even with control headroom.
+                                        // This is rare but unacceptable to swallow:
+                                        // dropping NodeRestarted leaves service/action
+                                        // clients blocked on pre-crash correlations
+                                        // (dora-rs/adora#148). Fall back to a
+                                        // backpressure-aware send with a short timeout
+                                        // so we don't stall the daemon main loop on a
+                                        // stuck receiver.
+                                        tracing::error!(
+                                            %dataflow_id,
+                                            restarted_node = %node_id,
+                                            %receiver_id,
+                                            "NodeRestarted try_send failed (channel full); \
+                                             falling back to bounded await"
+                                        );
+                                        let msg = Timestamped {
+                                            inner: NodeEvent::NodeRestarted {
+                                                id: node_id.clone(),
+                                            },
+                                            timestamp: self.clock.new_timestamp(),
+                                        };
+                                        match tokio::time::timeout(
+                                            Duration::from_millis(500),
+                                            channel.send(msg),
+                                        )
+                                        .await
+                                        {
+                                            Ok(Ok(())) => {
+                                                dataflow.inc_pending(receiver_id);
+                                            }
+                                            Ok(Err(_closed)) => {
+                                                tracing::warn!(
+                                                    %dataflow_id,
+                                                    restarted_node = %node_id,
+                                                    %receiver_id,
+                                                    "NodeRestarted fallback failed: \
+                                                     receiver channel closed"
+                                                );
+                                            }
+                                            Err(_elapsed) => {
+                                                tracing::error!(
+                                                    %dataflow_id,
+                                                    restarted_node = %node_id,
+                                                    %receiver_id,
+                                                    "CRITICAL: NodeRestarted delivery \
+                                                     timed out after 500ms; client may \
+                                                     hold orphaned request_id/goal_id \
+                                                     correlations (dora-rs/adora#148)"
+                                                );
+                                            }
+                                        }
+                                    }
                                     Err(_) => {
                                         tracing::warn!(
-                                            "failed to send NodeRestarted to `{receiver_id}`"
+                                            %dataflow_id,
+                                            restarted_node = %node_id,
+                                            %receiver_id,
+                                            "failed to send NodeRestarted: receiver channel closed"
                                         );
                                     }
                                 }
