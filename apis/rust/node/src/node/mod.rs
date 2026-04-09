@@ -1611,8 +1611,13 @@ pub fn init_tracing(
     // dataflow_id is only used when metrics feature is enabled
     let _ = &dataflow_id;
 
+    // Only start the OTLP metrics exporter when an endpoint is configured.
+    // The exporter schedules via `tokio::time::interval` and would otherwise
+    // panic on callers whose runtime lacks the time driver, and would also
+    // attempt to connect to `localhost:4317` on every node startup. Mirrors
+    // the gating applied to tracing above.
     #[cfg(feature = "metrics")]
-    {
+    if std::env::var("ADORA_OTLP_ENDPOINT").is_ok() {
         let id = format!("{dataflow_id}/{node_id}");
         let monitor_task = async move {
             use adora_metrics::run_metrics_monitor;
@@ -1626,7 +1631,7 @@ pub fn init_tracing(
         };
         let rt = Handle::try_current().context("failed to get tokio runtime handle")?;
         rt.spawn(monitor_task);
-    };
+    }
     Ok(guard)
 }
 

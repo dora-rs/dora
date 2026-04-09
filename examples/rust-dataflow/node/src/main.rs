@@ -12,6 +12,7 @@ fn main() -> eyre::Result<()> {
 
     let (node, events) = AdoraNode::init_from_env()?;
     let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
         .build()
         .context("failed to build tokio runtime")?;
     let rt_guard = rt.enter();
