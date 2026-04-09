@@ -450,6 +450,8 @@ dependencies = [
  "futures",
  "futures-concurrency",
  "pyo3",
+ "pythonize",
+ "serde_json",
  "serde_yaml",
 ]
 

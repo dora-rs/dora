@@ -23,3 +23,5 @@ aligned-vec = "0.5.0"
 futures = { workspace = true }
 futures-concurrency = "7.3.0"
 chrono = { version = "0.4", features = ["serde"] }
+pythonize = { workspace = true }
+serde_json = { workspace = true }
