@@ -1,8 +1,10 @@
 use super::{Executable, default_tracing};
-use crate::common::{CoordinatorOptions, handle_dataflow_result, query_running_dataflows};
+use crate::common::{
+    CoordinatorOptions, expect_reply, handle_dataflow_result, query_running_dataflows,
+    send_control_request,
+};
 use crate::ws_client::WsSession;
 use adora_message::cli_to_coordinator::ControlRequest;
-use adora_message::coordinator_to_cli::ControlRequestReply;
 use duration_str::parse;
 use eyre::{Context, bail};
 use std::io::IsTerminal;
@@ -83,25 +85,16 @@ fn stop_dataflow(
     force: bool,
     session: &WsSession,
 ) -> Result<(), eyre::ErrReport> {
-    let reply_raw = session
-        .request(
-            &serde_json::to_vec(&ControlRequest::Stop {
-                dataflow_uuid: uuid,
-                grace_duration,
-                force,
-            })
-            .unwrap(),
-        )
-        .wrap_err("failed to send dataflow stop message")?;
-    let result: ControlRequestReply =
-        serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-    match result {
-        ControlRequestReply::DataflowStopped { uuid, result } => {
-            handle_dataflow_result(result, Some(uuid))
-        }
-        ControlRequestReply::Error(err) => bail!("{err}"),
-        other => bail!("unexpected stop dataflow reply: {other:?}"),
-    }
+    let reply = send_control_request(
+        session,
+        &ControlRequest::Stop {
+            dataflow_uuid: uuid,
+            grace_duration,
+            force,
+        },
+    )?;
+    let (uuid, result) = expect_reply!(reply, DataflowStopped { uuid, result })?;
+    handle_dataflow_result(result, Some(uuid))
 }
 
 fn stop_dataflow_by_name(
@@ -110,23 +103,14 @@ fn stop_dataflow_by_name(
     force: bool,
     session: &WsSession,
 ) -> Result<(), eyre::ErrReport> {
-    let reply_raw = session
-        .request(
-            &serde_json::to_vec(&ControlRequest::StopByName {
-                name,
-                grace_duration,
-                force,
-            })
-            .unwrap(),
-        )
-        .wrap_err("failed to send dataflow stop_by_name message")?;
-    let result: ControlRequestReply =
-        serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-    match result {
-        ControlRequestReply::DataflowStopped { uuid, result } => {
-            handle_dataflow_result(result, Some(uuid))
-        }
-        ControlRequestReply::Error(err) => bail!("{err}"),
-        other => bail!("unexpected stop dataflow reply: {other:?}"),
-    }
+    let reply = send_control_request(
+        session,
+        &ControlRequest::StopByName {
+            name,
+            grace_duration,
+            force,
+        },
+    )?;
+    let (uuid, result) = expect_reply!(reply, DataflowStopped { uuid, result })?;
+    handle_dataflow_result(result, Some(uuid))
 }

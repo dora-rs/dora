@@ -2,16 +2,12 @@ use std::io::Write;
 
 use super::{Executable, default_tracing};
 use crate::{
-    common::{CoordinatorOptions, query_running_dataflows},
+    common::{CoordinatorOptions, expect_reply, query_running_dataflows, send_control_request},
     formatting::OutputFormat,
     ws_client::WsSession,
 };
-use adora_message::{
-    cli_to_coordinator::ControlRequest,
-    coordinator_to_cli::{ControlRequestReply, DataflowStatus},
-};
+use adora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::DataflowStatus};
 use clap::Args;
-use eyre::{Context, bail};
 use serde::Serialize;
 use tabwriter::TabWriter;
 use uuid::Uuid;
@@ -96,18 +92,8 @@ fn list(
     let list = query_running_dataflows(session)?;
 
     // Get node information
-    let node_info_reply = session
-        .request(&serde_json::to_vec(&ControlRequest::GetNodeInfo).unwrap())
-        .wrap_err("failed to send GetNodeInfo request")?;
-
-    let reply: ControlRequestReply =
-        serde_json::from_slice(&node_info_reply).wrap_err("failed to parse node info reply")?;
-
-    let node_infos = match reply {
-        ControlRequestReply::NodeInfoList(infos) => infos,
-        ControlRequestReply::Error(err) => bail!("{err}"),
-        other => bail!("unexpected node info reply: {other:?}"),
-    };
+    let reply = send_control_request(session, &ControlRequest::GetNodeInfo)?;
+    let node_infos = expect_reply!(reply, NodeInfoList(infos))?;
 
     // Aggregate metrics by dataflow UUID
     let mut dataflow_metrics: std::collections::BTreeMap<Uuid, DataflowMetrics> =
