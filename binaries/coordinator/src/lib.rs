@@ -1304,6 +1304,13 @@ async fn start_inner(
                                             node.id
                                         ))
                                     } else {
+                                        // Keep a clone of the original Node so
+                                        // we can push it into the stored
+                                        // descriptor after a successful spawn
+                                        // (so `adora info` reflects the new
+                                        // node).
+                                        let original_node = node.clone();
+
                                         // Resolve the Node into a ResolvedNode via a
                                         // temporary single-node descriptor.
                                         let tmp_desc = adora_message::descriptor::Descriptor {
@@ -1334,7 +1341,7 @@ async fn start_inner(
                                                                 inner:
                                                                     DaemonCoordinatorEvent::AddNode {
                                                                         dataflow_id,
-                                                                        node: resolved_node,
+                                                                        node: resolved_node.clone(),
                                                                         uv: dataflow.uv,
                                                                     },
                                                                 timestamp: clock.new_timestamp(),
@@ -1352,6 +1359,18 @@ async fn start_inner(
                                                                                 node_id.clone(),
                                                                                 did,
                                                                             );
+                                                                        // Update the stored descriptor
+                                                                        // and resolved nodes so
+                                                                        // `adora info` reflects the
+                                                                        // new node.
+                                                                        dataflow
+                                                                            .descriptor
+                                                                            .nodes
+                                                                            .push(original_node);
+                                                                        dataflow.nodes.insert(
+                                                                            node_id.clone(),
+                                                                            resolved_node,
+                                                                        );
                                                                         Ok(
                                                                             ControlRequestReply::NodeAdded {
                                                                                 dataflow_id,

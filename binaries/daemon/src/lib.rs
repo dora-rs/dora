@@ -1540,8 +1540,62 @@ impl Daemon {
                         .cloned()
                         .unwrap_or_else(|| std::path::PathBuf::from("."));
 
-                    // 1. Register inputs (open_inputs, mappings, timers, deadlines)
+                    // Collect input metadata for post-spawn registration.
+                    // State mutations are DEFERRED until after the spawn
+                    // succeeds so a spawn failure doesn't leave stale
+                    // routing/deadline/pending state behind.
                     let inputs = node_inputs(&node);
+                    let is_dynamic = node.kind.dynamic();
+
+                    // Prepare stderr buffer (harmless — just an empty
+                    // ArrayQueue, no routing implications).
+                    let node_stderr = dataflow
+                        .node_stderr_most_recent
+                        .entry(node_id.clone())
+                        .or_insert_with(|| Arc::new(ArrayQueue::new(STDERR_LOG_LINES_MAX)))
+                        .clone();
+
+                    // --- Spawn the node (before any routing state is touched) ---
+                    let descriptor = dataflow.descriptor.clone();
+                    let spawner = Spawner {
+                        dataflow_id,
+                        daemon_tx: self.events_tx.clone(),
+                        dataflow_descriptor: descriptor,
+                        clock: self.clock.clone(),
+                        uv,
+                        ft_stats: self.ft_stats.clone(),
+                        shutdown: dataflow.listener_shutdown_rx.clone(),
+                    };
+                    let mut logger = self
+                        .logger
+                        .for_dataflow(dataflow_id)
+                        .for_node(node_id.clone())
+                        .try_clone()
+                        .await
+                        .context("failed to clone logger")?;
+                    let task = spawner
+                        .spawn_node(
+                            node.clone(),
+                            base_working_dir,
+                            node_stderr,
+                            None,
+                            &mut logger,
+                        )
+                        .await
+                        .wrap_err("failed to prepare node")?;
+                    let prepared = task.await.wrap_err("failed to build node")?;
+                    let running_node = prepared
+                        .spawn(logger)
+                        .await
+                        .wrap_err("failed to spawn node")?;
+
+                    // --- Spawn succeeded — now apply state mutations ---
+                    let dataflow = self
+                        .running
+                        .get_mut(&dataflow_id)
+                        .ok_or_else(|| eyre!("dataflow disappeared during spawn"))?;
+
+                    // Register inputs (open_inputs, mappings, timers, deadlines)
                     for (input_id, input) in &inputs {
                         dataflow
                             .open_inputs
@@ -1584,67 +1638,20 @@ impl Daemon {
                         }
                     }
 
-                    // 2. Mark as pending so the dataflow doesn't finish
-                    //    before the node is ready.
-                    if node.kind.dynamic() {
+                    // Mark as pending
+                    if is_dynamic {
                         dataflow.dynamic_nodes.insert(node_id.clone());
                     } else {
                         dataflow.pending_nodes.insert(node_id.clone());
                     }
 
-                    // 3. Prepare stderr buffer
-                    let node_stderr = dataflow
-                        .node_stderr_most_recent
-                        .entry(node_id.clone())
-                        .or_insert_with(|| Arc::new(ArrayQueue::new(STDERR_LOG_LINES_MAX)))
-                        .clone();
-
-                    // 4. Spawn the node
-                    let descriptor = dataflow.descriptor.clone();
-                    let spawner = Spawner {
-                        dataflow_id,
-                        daemon_tx: self.events_tx.clone(),
-                        dataflow_descriptor: descriptor,
-                        clock: self.clock.clone(),
-                        uv,
-                        ft_stats: self.ft_stats.clone(),
-                        shutdown: dataflow.listener_shutdown_rx.clone(),
-                    };
-                    let mut logger = self
-                        .logger
-                        .for_dataflow(dataflow_id)
-                        .for_node(node_id.clone())
-                        .try_clone()
-                        .await
-                        .context("failed to clone logger")?;
-                    let task = spawner
-                        .spawn_node(
-                            node,
-                            base_working_dir,
-                            node_stderr,
-                            None, // no write_events_to for dynamically added nodes
-                            &mut logger,
-                        )
-                        .await
-                        .wrap_err("failed to prepare node")?;
-                    let prepared = task.await.wrap_err("failed to build node")?;
-                    let dynamic_node = prepared.dynamic();
-                    let running_node = prepared
-                        .spawn(logger)
-                        .await
-                        .wrap_err("failed to spawn node")?;
-
-                    // 5. Register the running node
-                    let dataflow = self
-                        .running
-                        .get_mut(&dataflow_id)
-                        .ok_or_else(|| eyre!("dataflow disappeared during spawn"))?;
+                    // Insert the running node
                     dataflow.running_nodes.insert(node_id.clone(), running_node);
 
                     tracing::info!(
                         %dataflow_id,
                         %node_id,
-                        dynamic = dynamic_node,
+                        dynamic = is_dynamic,
                         "node added successfully"
                     );
                     Ok(())
