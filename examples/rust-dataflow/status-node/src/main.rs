@@ -26,7 +26,13 @@ fn main() -> eyre::Result<()> {
                     )?;
                 }
                 "fail" => {
-                    panic!("simulated failure as requested");
+                    // Only crash on the first incarnation so a
+                    // restart_policy can actually recover. Subsequent
+                    // incarnations (restart_count > 0) ignore the
+                    // signal, proving the restart succeeded.
+                    if node.restart_count() == 0 {
+                        panic!("simulated failure as requested");
+                    }
                 }
                 "trigger-exit" => {
                     println!("trigger-exit received, sending exit signal to sink");
