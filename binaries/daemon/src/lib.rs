@@ -1524,10 +1524,192 @@ impl Daemon {
             DaemonCoordinatorEvent::AddNode {
                 dataflow_id,
                 node,
-                uv: _,
+                uv,
             } => {
-                // FIXME: implement full node spawning (spawn_node + listener + subscribe)
-                tracing::warn!(%dataflow_id, node_id = %node.id, "AddNode not yet implemented — node will not be spawned");
+                let node_id = node.id.clone();
+                tracing::info!(%dataflow_id, %node_id, "adding node to running dataflow");
+
+                let result: eyre::Result<()> = async {
+                    let dataflow = self
+                        .running
+                        .get_mut(&dataflow_id)
+                        .ok_or_else(|| eyre!("no running dataflow with ID `{dataflow_id}`"))?;
+                    let base_working_dir = self
+                        .working_dir
+                        .get(&dataflow_id)
+                        .cloned()
+                        .unwrap_or_else(|| std::path::PathBuf::from("."));
+
+                    // Collect input metadata for post-spawn registration.
+                    // State mutations are DEFERRED until after the spawn
+                    // succeeds so a spawn failure doesn't leave stale
+                    // routing/deadline/pending state behind.
+                    let inputs = node_inputs(&node);
+                    let is_dynamic = node.kind.dynamic();
+
+                    // Prepare stderr buffer (harmless — just an empty
+                    // ArrayQueue, no routing implications).
+                    let node_stderr = dataflow
+                        .node_stderr_most_recent
+                        .entry(node_id.clone())
+                        .or_insert_with(|| Arc::new(ArrayQueue::new(STDERR_LOG_LINES_MAX)))
+                        .clone();
+
+                    // --- Spawn the node (before any routing state is touched) ---
+                    let descriptor = dataflow.descriptor.clone();
+                    let spawner = Spawner {
+                        dataflow_id,
+                        daemon_tx: self.events_tx.clone(),
+                        dataflow_descriptor: descriptor,
+                        clock: self.clock.clone(),
+                        uv,
+                        ft_stats: self.ft_stats.clone(),
+                        shutdown: dataflow.listener_shutdown_rx.clone(),
+                    };
+                    let mut logger = self
+                        .logger
+                        .for_dataflow(dataflow_id)
+                        .for_node(node_id.clone())
+                        .try_clone()
+                        .await
+                        .context("failed to clone logger")?;
+                    let task = spawner
+                        .spawn_node(
+                            node.clone(),
+                            base_working_dir,
+                            node_stderr,
+                            None,
+                            &mut logger,
+                        )
+                        .await
+                        .wrap_err("failed to prepare node")?;
+                    let prepared = task.await.wrap_err("failed to build node")?;
+                    let running_node = prepared
+                        .spawn(logger)
+                        .await
+                        .wrap_err("failed to spawn node")?;
+
+                    // --- Spawn succeeded — now apply state mutations ---
+                    let dataflow = self
+                        .running
+                        .get_mut(&dataflow_id)
+                        .ok_or_else(|| eyre!("dataflow disappeared during spawn"))?;
+
+                    // Register inputs (open_inputs, mappings, timers, deadlines)
+                    for (input_id, input) in &inputs {
+                        dataflow
+                            .open_inputs
+                            .entry(node_id.clone())
+                            .or_default()
+                            .insert(input_id.clone());
+                        match &input.mapping {
+                            InputMapping::User(mapping) => {
+                                if let Some(timeout) = input.input_timeout {
+                                    dataflow.input_deadlines.insert(
+                                        (node_id.clone(), input_id.clone()),
+                                        InputDeadline {
+                                            timeout: Duration::from_secs_f64(timeout),
+                                            last_received: None,
+                                        },
+                                    );
+                                }
+                                dataflow
+                                    .mappings
+                                    .entry(OutputId(mapping.source.clone(), mapping.output.clone()))
+                                    .or_default()
+                                    .insert((node_id.clone(), input_id.clone()));
+                            }
+                            InputMapping::Timer { interval } => {
+                                dataflow
+                                    .timers
+                                    .entry(*interval)
+                                    .or_default()
+                                    .insert((node_id.clone(), input_id.clone()));
+                            }
+                            InputMapping::Logs(filter) => {
+                                dataflow.log_subscribers.push(
+                                    crate::running_dataflow::LogSubscriber {
+                                        node_id: node_id.clone(),
+                                        input_id: input_id.clone(),
+                                        filter: filter.clone(),
+                                    },
+                                );
+                            }
+                        }
+                    }
+
+                    // Mark as pending
+                    if is_dynamic {
+                        dataflow.dynamic_nodes.insert(node_id.clone());
+                    } else {
+                        dataflow.pending_nodes.insert(node_id.clone());
+                    }
+
+                    // Insert the running node
+                    dataflow.running_nodes.insert(node_id.clone(), running_node);
+
+                    // Update the daemon's stored descriptor so
+                    // descriptor-based lookups (e.g. AllInputsClosed
+                    // check at handle_outputs_done) find the new node.
+                    // Construct a minimal Node from the inputs we
+                    // already collected — only `id` and `inputs` are
+                    // consulted by the daemon.
+                    dataflow
+                        .descriptor
+                        .nodes
+                        .push(adora_message::descriptor::Node {
+                            id: node_id.clone(),
+                            name: None,
+                            description: None,
+                            path: None,
+                            args: None,
+                            env: None,
+                            operators: None,
+                            operator: None,
+                            ros2: None,
+                            custom: None,
+                            outputs: Default::default(),
+                            output_types: Default::default(),
+                            output_framing: Default::default(),
+                            inputs: inputs.into_iter().collect(),
+                            input_types: Default::default(),
+                            output_metadata: Default::default(),
+                            pattern: None,
+                            send_stdout_as: None,
+                            send_logs_as: None,
+                            min_log_level: None,
+                            max_log_size: None,
+                            max_rotated_files: None,
+                            build: None,
+                            git: None,
+                            branch: None,
+                            tag: None,
+                            rev: None,
+                            restart_policy: Default::default(),
+                            max_restarts: 0,
+                            restart_delay: None,
+                            max_restart_delay: None,
+                            restart_window: None,
+                            health_check_timeout: None,
+                            module: None,
+                            params: Default::default(),
+                            cpu_affinity: None,
+                            deploy: None,
+                        });
+
+                    tracing::info!(
+                        %dataflow_id,
+                        %node_id,
+                        dynamic = is_dynamic,
+                        "node added successfully"
+                    );
+                    Ok(())
+                }
+                .await;
+
+                if let Err(err) = &result {
+                    tracing::error!(%dataflow_id, %node_id, "AddNode failed: {err:?}");
+                }
                 let _ = reply_tx.send(None);
                 RunStatus::Continue
             }
@@ -1567,6 +1749,10 @@ impl Daemon {
                     dataflow.subscribe_channels.remove(&node_id);
                     dataflow.drop_channels.remove(&node_id);
                     dataflow.pending_messages.remove(&node_id);
+
+                    // Remove from stored descriptor (inverse of AddNode
+                    // push) so descriptor-based lookups stay consistent.
+                    dataflow.descriptor.nodes.retain(|n| n.id != node_id);
                 }
                 let _ = reply_tx.send(None);
                 RunStatus::Continue

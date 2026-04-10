@@ -1304,6 +1304,13 @@ async fn start_inner(
                                             node.id
                                         ))
                                     } else {
+                                        // Keep a clone of the original Node so
+                                        // we can push it into the stored
+                                        // descriptor after a successful spawn
+                                        // (so `adora info` reflects the new
+                                        // node).
+                                        let original_node = node.clone();
+
                                         // Resolve the Node into a ResolvedNode via a
                                         // temporary single-node descriptor.
                                         let tmp_desc = adora_message::descriptor::Descriptor {
@@ -1334,9 +1341,8 @@ async fn start_inner(
                                                                 inner:
                                                                     DaemonCoordinatorEvent::AddNode {
                                                                         dataflow_id,
-                                                                        node: resolved_node,
-                                                                        // FIXME: thread `uv` from ControlRequest::AddNode when available
-                                                                        uv: false,
+                                                                        node: resolved_node.clone(),
+                                                                        uv: dataflow.uv,
                                                                     },
                                                                 timestamp: clock.new_timestamp(),
                                                             })?;
@@ -1353,6 +1359,18 @@ async fn start_inner(
                                                                                 node_id.clone(),
                                                                                 did,
                                                                             );
+                                                                        // Update the stored descriptor
+                                                                        // and resolved nodes so
+                                                                        // `adora info` reflects the
+                                                                        // new node.
+                                                                        dataflow
+                                                                            .descriptor
+                                                                            .nodes
+                                                                            .push(original_node);
+                                                                        dataflow.nodes.insert(
+                                                                            node_id.clone(),
+                                                                            resolved_node,
+                                                                        );
                                                                         Ok(
                                                                             ControlRequestReply::NodeAdded {
                                                                                 dataflow_id,
@@ -1405,6 +1423,7 @@ async fn start_inner(
                                                     match conn.send_and_receive(&msg).await {
                                                         Ok(_) => {
                                                             // Clean up coordinator state
+                                                            // (inverse of AddNode inserts)
                                                             if let Some(dataflow) =
                                                                 running_dataflows
                                                                     .get_mut(&dataflow_id)
@@ -1412,6 +1431,11 @@ async fn start_inner(
                                                                 dataflow
                                                                     .node_to_daemon
                                                                     .remove(&node_id);
+                                                                dataflow
+                                                                    .descriptor
+                                                                    .nodes
+                                                                    .retain(|n| n.id != node_id);
+                                                                dataflow.nodes.remove(&node_id);
                                                             }
                                                             Ok(ControlRequestReply::NodeRemoved {
                                                                 dataflow_id,
