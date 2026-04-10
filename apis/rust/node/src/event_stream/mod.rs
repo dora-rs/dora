@@ -1058,19 +1058,37 @@ impl Stream for EventStream {
             .map(|item| item.map(Self::convert_event_item));
 
         // Run first-message type check on the Stream path too.
+        //
+        // Mirror the recv_async() logic: skip the check (and keep it
+        // armed) when the message carries pattern metadata, so a later
+        // non-pattern message can still validate (dora-rs/adora#174).
         if let std::task::Poll::Ready(Some(Event::Input {
-            ref id, ref data, ..
+            ref id,
+            ref metadata,
+            ref data,
         })) = poll
-            && let Some(expected) = self.input_type_checks.remove(id)
+            && let Some(expected) = self.input_type_checks.get(id).cloned()
         {
-            let actual = data.data_type();
-            if *actual != arrow_schema::DataType::Null && *actual != expected {
-                tracing::warn!(
-                    input = %id,
-                    expected = ?expected,
-                    actual = ?actual,
-                    "input type mismatch on first message (Stream path)"
-                );
+            let is_pattern_message = metadata
+                .parameters
+                .contains_key(adora_message::metadata::REQUEST_ID)
+                || metadata
+                    .parameters
+                    .contains_key(adora_message::metadata::GOAL_ID)
+                || metadata
+                    .parameters
+                    .contains_key(adora_message::metadata::GOAL_STATUS);
+            if !is_pattern_message {
+                self.input_type_checks.remove(id);
+                let actual = data.data_type();
+                if *actual != arrow_schema::DataType::Null && *actual != expected {
+                    tracing::warn!(
+                        input = %id,
+                        expected = ?expected,
+                        actual = ?actual,
+                        "input type mismatch on first message (Stream path)"
+                    );
+                }
             }
         }
 
